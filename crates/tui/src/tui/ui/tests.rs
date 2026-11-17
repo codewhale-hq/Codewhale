@@ -35841,6 +35841,112 @@ fn g3_real_height_resize_keeps_wrapped_rows_and_tool_projection() {
     assert_eq!(app.viewport.transcript_cache.total_lines(), lines);
 }
 
+#[cfg(not(windows))]
+#[test]
+fn focus_recapture_repaints_cells_without_erasing_the_viewport() {
+    use super::frame::{FrameRepaint, draw_frame_with_repaint, synchronized_frame};
+    use ratatui::buffer::CellDiffOption;
+
+    #[derive(Clone, Default)]
+    struct Capture(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[allow(deprecated)]
+    fn render_fixture(frame: &mut ratatui::Frame<'_>) {
+        let buffer = frame.buffer_mut();
+        buffer.set_string(0, 0, "A界Z☀️E", ratatui::style::Style::default());
+        buffer[(8, 0)].set_symbol("L").set_skip(true);
+        buffer[(10, 0)]
+            .set_symbol("S")
+            .set_diff_option(CellDiffOption::Skip);
+        buffer[(12, 0)]
+            .set_symbol("W")
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                std::num::NonZeroU16::new(2).unwrap(),
+            ));
+    }
+
+    assert!(FrameRepaint::Clear.max(FrameRepaint::Recapture) == FrameRepaint::Clear);
+    for (width, height) in [(80, 24), (120, 40)] {
+        for synchronized in [false, true] {
+            let capture = Capture::default();
+            let mut backend = crate::tui::color_compat::ColorCompatBackend::new(
+                capture.clone(),
+                codewhale_palette::ColorDepth::TrueColor,
+                codewhale_palette::PaletteMode::Dark,
+            );
+            backend.force_size(Size::new(width, height));
+            let mut terminal = Terminal::new(backend).unwrap();
+            let draw = |terminal: &mut Terminal<_>, repaint| {
+                synchronized_frame(terminal, synchronized, |terminal| {
+                    draw_frame_with_repaint(terminal, repaint, render_fixture)
+                })
+                .unwrap();
+            };
+
+            draw(&mut terminal, FrameRepaint::Diff);
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Recapture);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            assert!(!text.contains("\x1b[2J"), "{text:?}");
+            assert!(
+                output
+                    .windows(TERMINAL_ORIGIN_RESET.len())
+                    .any(|bytes| bytes == TERMINAL_ORIGIN_RESET),
+                "{text:?}"
+            );
+            assert!(text.contains("界\x1b[1;4HZ"), "{text:?}");
+            assert!(text.contains("☀️\x1b[1;7HE"), "{text:?}");
+            assert!(
+                output
+                    .windows(usize::from(width))
+                    .any(|bytes| bytes.iter().all(|byte| *byte == b' ')),
+                "default blank cells must be repainted: {text:?}"
+            );
+            for skipped in ['L', 'S', 'W'] {
+                assert!(!text.contains(skipped), "{text:?}");
+            }
+            if synchronized {
+                assert!(output.starts_with(BEGIN_SYNC_UPDATE), "{text:?}");
+                assert!(output.ends_with(END_SYNC_UPDATE), "{text:?}");
+            } else {
+                assert!(!text.contains("\x1b[?2026h"), "{text:?}");
+                assert!(!text.contains("\x1b[?2026l"), "{text:?}");
+            }
+
+            draw(&mut terminal, FrameRepaint::Diff);
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Diff);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            for repainted in ['A', '界', '☀', 'E', ' '] {
+                assert!(
+                    !text.contains(repainted),
+                    "unchanged frame must settle: {text:?}"
+                );
+            }
+
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Clear);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            assert!(
+                text.contains("\x1b[2J"),
+                "explicit clear must be preserved: {text:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn g3_resize_clear_and_failure_are_inside_synchronized_output() {
     #[derive(Clone, Default)]

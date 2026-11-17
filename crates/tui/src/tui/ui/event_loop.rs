@@ -2140,7 +2140,7 @@ pub(crate) async fn run_event_loop(
     // Last observed coarse turn state for the session-state hook transitions
     // (#6004); `None` until the first publish records it without firing.
     let mut previous_turn_state = None;
-    let mut force_terminal_repaint = false;
+    let mut terminal_repaint = FrameRepaint::Diff;
     // #6311: while the terminal reports unfocused, frames are pure backlog
     // (GTK3 defers all VTE damage on occlusion and replays it on return).
     // Event ingestion continues; only `terminal.draw` emission is gated.
@@ -2237,7 +2237,7 @@ pub(crate) async fn run_event_loop(
             // falsely clear a child's gate.
             app.status_message = Some("Resumed after suspend".to_string());
             app.needs_redraw = true;
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
         }
 
         // The background session-store repair's one-line result (#6144).
@@ -4407,7 +4407,7 @@ pub(crate) async fn run_event_loop(
                                     None,
                                 );
                                 app.needs_redraw = true;
-                                force_terminal_repaint = true;
+                                terminal_repaint = FrameRepaint::Clear;
                                 // As above, withholding the acknowledgement
                                 // keeps the child from launching.
                                 continue;
@@ -5594,7 +5594,7 @@ pub(crate) async fn run_event_loop(
             terminal_paused_at = None;
             app.status_message = Some("Terminal controls restored".to_string());
             app.needs_redraw = true;
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
         }
 
         let now = Instant::now();
@@ -5740,12 +5740,12 @@ pub(crate) async fn run_event_loop(
         // Merge the per-app full-repaint hint (set by theme switches)
         // into the loop-level flag before the draw decision.
         if app.force_next_full_repaint {
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
             app.force_next_full_repaint = false;
         }
         if app.needs_redraw && draw_wait.is_none() && !terminal_unfocused {
-            draw_app_frame_inner(terminal, app, config, force_terminal_repaint)?;
-            force_terminal_repaint = false;
+            draw_app_frame_inner(terminal, app, config, terminal_repaint)?;
+            terminal_repaint = FrameRepaint::Diff;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
             if std::mem::take(&mut telemetry_notice_awaiting_render) {
@@ -5851,7 +5851,7 @@ pub(crate) async fn run_event_loop(
                     persist_recovery_snapshot(app);
                     last_recovery_snapshot_at = Some(now);
                 }
-                force_terminal_repaint = true;
+                terminal_repaint = FrameRepaint::Clear;
                 app.needs_redraw = true;
             }
         }
@@ -5902,8 +5902,8 @@ pub(crate) async fn run_event_loop(
                 continue;
             }
 
-            // Re-establish terminal mode flags on focus-gain and force a full
-            // viewport reset before repainting. App-switching and interactive
+            // Re-establish terminal mode flags on focus-gain and recapture the
+            // viewport without clearing it first. App-switching and interactive
             // handoffs can leave the host terminal scrolled away from row 0
             // and (on macOS) can drop the keyboard, mouse-tracking, or
             // bracketed-paste modes — recover_terminal_modes() is the
@@ -5918,7 +5918,7 @@ pub(crate) async fn run_event_loop(
                     );
                     last_focus_recovery = now;
                 }
-                force_terminal_repaint = true;
+                terminal_repaint = terminal_repaint.max(FrameRepaint::Recapture);
                 app.needs_redraw = true;
             }
             if let Event::Resize(width, height) = evt {
@@ -5948,7 +5948,7 @@ pub(crate) async fn run_event_loop(
                         final_h,
                         "zero-size Resize event ignored while terminal is hidden/minimized"
                     );
-                    force_terminal_repaint = true;
+                    terminal_repaint = FrameRepaint::Clear;
                     app.needs_redraw = true;
                     continue;
                 }
@@ -5960,11 +5960,11 @@ pub(crate) async fn run_event_loop(
                 // #6311: a resize that lands while unfocused records the size
                 // but must not emit the frame — same deferral as zero-size.
                 if terminal_unfocused {
-                    force_terminal_repaint = true;
+                    terminal_repaint = FrameRepaint::Clear;
                     app.needs_redraw = true;
                     continue;
                 }
-                draw_app_frame_inner(terminal, app, config, true)?;
+                draw_app_frame_inner(terminal, app, config, FrameRepaint::Clear)?;
                 app.needs_redraw = false;
                 continue;
             }
@@ -7862,7 +7862,7 @@ pub(crate) async fn run_event_loop(
                                 }
                             });
                             terminal_input.resume_after_child_terminal();
-                            force_terminal_repaint = true;
+                            terminal_repaint = FrameRepaint::Clear;
                             result
                         }
                     };
