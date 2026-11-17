@@ -12946,6 +12946,9 @@ fn clear_active_provider_api_key_under_lock(provider: &str) -> Result<()> {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod model_resolution_golden;
+
 /// #5045 regression coverage: credential writes must never land in a
 /// workspace-scoped `.codewhale/config.toml`.
 #[cfg(test)]
