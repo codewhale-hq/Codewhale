@@ -1153,7 +1153,7 @@ impl App {
             agent_roster_print_requested: false,
             active_tool_entry_completed_at: HashMap::new(),
             exploring_entries: HashMap::new(),
-            ignored_tool_calls: HashSet::new(),
+            ignored_tool_calls: HashMap::new(),
             last_exec_wait_command: None,
             streaming_message_index: None,
             streaming_source_receipt: None,

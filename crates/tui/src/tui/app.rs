@@ -2454,7 +2454,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
