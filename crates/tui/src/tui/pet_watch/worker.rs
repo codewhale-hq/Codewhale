@@ -93,11 +93,7 @@ fn run(
     let runtime = Runtime::new().map_err(|_| ())?;
     runtime.set_memory_limit(64 * 1024 * 1024);
     runtime.set_max_stack_size(2 * 1024 * 1024);
-    let deadline = Arc::new(Mutex::new(Instant::now() + Duration::from_secs(2)));
-    let check = Arc::clone(&deadline);
-    runtime.set_interrupt_handler(Some(Box::new(move || {
-        check.lock().map_or(true, |d| Instant::now() > *d)
-    })));
+    let deadline = Arc::new(Mutex::new(Instant::now() + Duration::from_secs(5)));
     let context = Context::full(&runtime).map_err(|_| ())?;
     context
         .with(|ctx| -> rquickjs::Result<()> {
@@ -118,6 +114,10 @@ fn run(
             Ok(())
         })
         .map_err(|_| ())?;
+    let check = Arc::clone(&deadline);
+    runtime.set_interrupt_handler(Some(Box::new(move || {
+        check.lock().map_or(true, |d| Instant::now() > *d)
+    })));
     let mut store = None;
     let mut offset_ms = 0.0;
     if let Some(session) = session {
