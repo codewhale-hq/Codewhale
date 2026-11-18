@@ -323,7 +323,9 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   (never re-read from disk mid-session), and typed `person_messages` from the
   conversation owner newest first (on subagent turns, inherited from the root
   conversation rather than child briefs; empty on agent-created `Background`
-  threads). Attached `@file` bodies, skill instructions, expanded context, tool
+  threads). On runtime threads the owner composer is the signed-in web client
+  or a runtime-token caller that names `"client": "desktop"` (or `tui`/`web`)
+  on the turn or steer request; other Runtime API callers record nothing. Attached `@file` bodies, skill instructions, expanded context, tool
   outputs, and assistant prose are never passed to the reviewer. Context is
   capped at 64 KiB; the current request and exact proposed call are never
   truncated (exceeding the cap alone fails closed as unavailable), and under

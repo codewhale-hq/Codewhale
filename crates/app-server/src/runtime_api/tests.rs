@@ -28271,7 +28271,7 @@ async fn request_fields_cannot_grant_interactive_origin_or_owner_presence() -> R
 }
 
 #[tokio::test]
-async fn runtime_api_web_composer_records_person_messages_while_mobile_device_master_and_smuggling_do_not()
+async fn runtime_api_owner_composers_record_person_messages_while_mobile_device_master_and_smuggling_do_not()
 -> Result<()> {
     use codewhale_engine::core::ops::TurnInputAuthorship;
 
@@ -28504,6 +28504,29 @@ async fn runtime_api_web_composer_records_person_messages_while_mobile_device_ma
         assert_eq!(wait_turn_done(turn_id).await?, "completed");
     }
 
+    let device_claims_desktop = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&drive_token)
+        .json(&json!({ "prompt": "device-claims-desktop", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(device_claims_desktop.status(), StatusCode::FORBIDDEN);
+
+    let desktop_turn: Value = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&token)
+        .json(&json!({ "prompt": "from-desktop-owner", "client": "desktop" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let desktop_turn_id = desktop_turn["turn"]["id"]
+        .as_str()
+        .context("desktop turn id")?
+        .to_string();
+    assert_eq!(wait_turn_done(desktop_turn_id).await?, "completed");
+
     let web_turn_resp = client
         .post(format!("{origin}/v1/threads/{thread_id}/turns"))
         .header(header::COOKIE, &web_cookie)
@@ -28531,6 +28554,7 @@ async fn runtime_api_web_composer_records_person_messages_while_mobile_device_ma
             TurnInputAuthorship::NotPerson,
             TurnInputAuthorship::NotPerson,
             TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::Person("from-desktop-owner".to_string()),
             TurnInputAuthorship::Person("from-web-owner".to_string()),
         ]
     );

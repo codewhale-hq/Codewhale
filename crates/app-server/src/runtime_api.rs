@@ -10807,11 +10807,34 @@ async fn start_thread_turn(
             "paired remote devices are restricted to their paired conversation",
         ));
     }
-    let owner_composer = matches!(
-        caller,
-        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
-    );
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
     start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer, scope).await
+}
+
+fn turn_caller_is_owner_composer(
+    state: &RuntimeApiState,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    body: &Value,
+) -> Result<bool, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    let Some(axum::Extension(caller)) = caller else {
+        return Ok(false);
+    };
+    let client = match body.get("client") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<ApprovalResponder>(value.clone())
+                .map_err(|error| ApiError::unprocessable(format!("client: {error}")))?,
+        ),
+    };
+    if caller == auth::RuntimeAuthCaller::MasterOrLocal && state.runtime_token.is_none() {
+        return Ok(false);
+    }
+    Ok(
+        resolve_approval_responder(caller, client)?
+            .is_some_and(ApprovalResponder::is_owner_surface),
+    )
 }
 
 async fn start_thread_turn_for_caller(
@@ -11063,12 +11086,11 @@ async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
     caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
-    Json(req): Json<SteerTurnRequest>,
+    Json(value): Json<Value>,
 ) -> Result<Json<TurnRecord>, ApiError> {
-    let owner_composer = matches!(
-        caller,
-        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
-    );
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
+    let req: SteerTurnRequest = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(error.to_string()))?;
     let turn = state
         .runtime_threads
         .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
