@@ -130,6 +130,7 @@ struct BundledProviderTrust {
     api_key_env: Option<String>,
     default_model: Option<String>,
     is_descriptor: bool,
+    raw: Map<String, Value>,
 }
 
 static BUNDLED_PROVIDER_TRUST: OnceLock<BTreeMap<String, BundledProviderTrust>> = OnceLock::new();
@@ -179,6 +180,7 @@ fn bundled_provider_trust() -> &'static BTreeMap<String, BundledProviderTrust> {
                             .and_then(Value::as_str)
                             .map(String::from),
                         is_descriptor: false,
+                        raw: entry.as_object().cloned().unwrap_or_default(),
                     },
                 );
             }
@@ -213,6 +215,7 @@ fn bundled_provider_trust() -> &'static BTreeMap<String, BundledProviderTrust> {
                             .and_then(Value::as_str)
                             .map(String::from),
                         is_descriptor: true,
+                        raw: entry.as_object().cloned().unwrap_or_default(),
                     },
                 );
             }
@@ -320,6 +323,95 @@ fn automation_provider_violation(
                 return Some(format!("provider {:?} changes auth", row.id));
             }
         }
+        for (key, value) in obj {
+            if value.is_null()
+                || matches!(
+                    key.as_str(),
+                    "id" | "admission"
+                        | "auth"
+                        | "kind"
+                        | "base_url"
+                        | "wire_policy"
+                        | "wire"
+                        | "api_key_env"
+                        | "secret_store_slot"
+                        | "env_vars"
+                )
+            {
+                continue;
+            }
+            if key == "models" {
+                let Some(models) = value.as_object() else {
+                    return Some(format!("provider {:?} has malformed models", row.id));
+                };
+                let bundled_models = bundled.raw.get("models").and_then(Value::as_object);
+                for (rule, rule_value) in models {
+                    if rule_value.is_null() || matches!(rule.as_str(), "aliases" | "wire_slugs") {
+                        continue;
+                    }
+                    if bundled_models.and_then(|m| m.get(rule)) != Some(rule_value) {
+                        return Some(format!(
+                            "provider {:?} changes models.{rule}, which requires a founder signature",
+                            row.id
+                        ));
+                    }
+                }
+                continue;
+            }
+            if bundled.raw.get(key) != Some(value) {
+                return Some(format!(
+                    "provider {:?} changes {key}, which requires a founder signature",
+                    row.id
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn automation_offering_violation(offerings: &[Value]) -> Option<String> {
+    let is_true = |obj: Option<&Map<String, Value>>, key: &str| {
+        obj.and_then(|o| o.get(key)).and_then(Value::as_bool) == Some(true)
+    };
+    for offering in offerings {
+        let Some(obj) = offering.as_object() else {
+            continue;
+        };
+        let label = format!(
+            "offering {:?}/{:?}",
+            obj.get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            obj.get("id")
+                .or_else(|| obj.get("wire_model_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
+        if obj.get("pricing_withheld").is_some_and(|v| !v.is_null()) {
+            return Some(format!(
+                "{label} sets pricing_withheld, which requires a founder signature"
+            ));
+        }
+        if obj
+            .get("corrections")
+            .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
+        {
+            return Some(format!(
+                "{label} carries corrections, which require a founder signature"
+            ));
+        }
+        let catalog = obj.get("catalog").and_then(Value::as_object);
+        let transport = obj.get("transport").and_then(Value::as_object);
+        if is_true(Some(obj), "default")
+            || is_true(Some(obj), "default_for_provider")
+            || is_true(catalog, "default")
+            || is_true(catalog, "default_for_provider")
+            || is_true(transport, "default_for_provider")
+        {
+            return Some(format!(
+                "{label} changes the provider default, which requires a founder signature"
+            ));
+        }
     }
     None
 }
@@ -420,6 +512,7 @@ pub fn verify_registry_envelope(
             check_automation_window(generated_at, not_after, now_unix)?;
             if let Some(violation) =
                 automation_provider_violation(&registry, raw_providers.as_ref())
+                    .or_else(|| automation_offering_violation(&registry.offerings))
             {
                 return Err(FactsRejection::OutOfScope(violation));
             }

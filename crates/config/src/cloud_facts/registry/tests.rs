@@ -375,7 +375,7 @@ fn automation_signed_registry_with_not_after_verifies_and_resolves_models_offeri
                 "wire_policy": "chat_completions",
                 "models": {
                     "ids": "catalog",
-                    "strip_prefixes": ["google-pulled/"],
+                    "strip_prefixes": ["models/"],
                     "aliases": {
                         "gemini-4.9-fast-alias": "gemini-4.9-pulled"
                     },
@@ -469,12 +469,8 @@ fn automation_signed_registry_with_not_after_verifies_and_resolves_models_offeri
         |_| {}
     ));
 
-    let resolved = resolve_model(
-        ProviderKind::Google,
-        "google-pulled/gemini-4.9-fast-alias",
-        None,
-    )
-    .expect("resolve_model");
+    let resolved = resolve_model(ProviderKind::Google, "models/gemini-4.9-fast-alias", None)
+        .expect("resolve_model");
     assert!(resolved.alias_matched);
     assert_eq!(resolved.logical, "gemini-4.9-pulled");
     assert_eq!(resolved.wire_id, "gemini-4.9-pulled");
@@ -626,6 +622,14 @@ fn automation_signed_registry_rejects_missing_expired_excessive_not_after_and_pr
         json!({"id": "groq", "base_url": "https://evil.example/v1"}),
         json!({"id": "groq", "api_key_env": "EVIL_API_KEY"}),
         json!({"id": "cheaperinference", "auth": {"secret_slot": "cheaperinference", "env_vars": ["CHEAPERINFERENCE_API_KEY"]}}),
+        json!({"id": "deepseek", "models": {"accept": ["*"]}}),
+        json!({"id": "google", "models": {"strip_prefixes": ["evil/"]}}),
+        json!({"id": "together", "models": {"ids": "verbatim"}}),
+        json!({"id": "together", "default_model": "evil-model"}),
+        json!({"id": "cheaperinference", "default_model": "evil-model"}),
+        json!({"id": "together", "catalog": {"api": "https://evil.example/v1"}}),
+        json!({"id": "together", "corrections": [{"pricing_withheld": "evil"}]}),
+        json!({"id": "together", "label": "Evil"}),
     ] {
         let mut doc = registry(6, json!([mutated.clone()]));
         doc["not_after"] = json!(valid_not_after);
@@ -637,6 +641,67 @@ fn automation_signed_registry_rejects_missing_expired_excessive_not_after_and_pr
             "expected OutOfScope for {mutated}"
         );
     }
+
+    for offering in [
+        json!({"provider": "together", "id": "evil-model", "pricing_withheld": "evil"}),
+        json!({"provider": "together", "id": "evil-model", "corrections": [{"pricing_withheld": "evil"}]}),
+        json!({"provider": "together", "id": "evil-model", "catalog": {"default": true}}),
+        json!({"provider": "together", "id": "evil-model", "default_for_provider": true}),
+        json!({"provider": "together", "id": "evil-model", "transport": {"default_for_provider": true}}),
+    ] {
+        let mut doc = registry(6, json!([]));
+        doc["not_after"] = json!(valid_not_after);
+        doc["offerings"] = json!([offering.clone()]);
+        assert!(
+            matches!(
+                verify_registry_envelope(&signer.envelope(&doc), None, &keys, now),
+                Err(FactsRejection::OutOfScope(_))
+            ),
+            "expected OutOfScope for {offering}"
+        );
+        assert!(
+            verify_registry_envelope(
+                &signer.envelope(&doc),
+                None,
+                &[signer.key(KeyRole::Founder)],
+                now
+            )
+            .is_ok(),
+            "founder may sign {offering}"
+        );
+    }
+
+    let mut widened = registry(6, json!([{"id": "deepseek", "models": {"accept": ["*"]}}]));
+    widened["not_after"] = json!(valid_not_after);
+    assert!(
+        verify_registry_envelope(
+            &signer.envelope(&widened),
+            None,
+            &[signer.key(KeyRole::Founder)],
+            now
+        )
+        .is_ok()
+    );
+
+    let mut echoed = registry(
+        6,
+        json!([{
+            "id": "together",
+            "label": "Together AI",
+            "default_model": "deepseek-ai/DeepSeek-V4-Pro",
+            "models": {
+                "ids": "catalog",
+                "accept": [],
+                "strip_prefixes": [],
+                "aliases": {"together-pulled": "deepseek-ai/DeepSeek-V4-Pro"},
+                "wire_slugs": {"deepseek-v4.9-pulled": "deepseek-ai/DeepSeek-V4.9-Pulled"}
+            }
+        }]),
+    );
+    echoed["not_after"] = json!(valid_not_after);
+    echoed["offerings"] =
+        json!([{"provider": "together", "id": "new-model", "catalog": {"default": false}}]);
+    assert!(verify_registry_envelope(&signer.envelope(&echoed), None, &keys, now).is_ok());
 
     let mut valid_bundled_descriptor = registry(
         6,
