@@ -282,16 +282,26 @@ pub fn get(path: &Path, key: &str) -> Result<Option<String>> {
         ));
     }
     let identity = model_identity(&config, key)?;
+    let active_key = config
+        .active_provider_identity()
+        .ok()
+        .map(|active| active.key.to_string());
     config
         .scope_to_provider_identity(&identity)
         .map_err(anyhow::Error::msg)?;
+    let has_root_model = config.default_text_model.is_some() || config.legacy_model.is_some();
+    if has_root_model
+        && active_key.as_deref() != Some(identity.key.as_str())
+        && config.configured_model_error().is_some()
+    {
+        config.default_text_model = None;
+        config.legacy_model = None;
+    }
     Ok(config
         .provider_config_for(&identity)
         .and_then(|entry| entry.model.clone())
         .or_else(|| {
-            (provider_model_id(key).is_none()
-                && (config.default_text_model.is_some() || config.legacy_model.is_some()))
-            .then(|| config.default_model())
+            (provider_model_id(key).is_none() && has_root_model).then(|| config.default_model())
         }))
 }
 
