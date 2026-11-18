@@ -59,7 +59,6 @@ transaction_paths=(
   "${readmes[@]}"
   crates/tui/CHANGELOG.md
   web/lib/facts.generated.ts
-  web/data/agent-docs.generated.json
   crates/config/src/route/providers-export.golden.json
   crates/tui/src/commands/contract/fixtures/config_policy/status.json
 )
