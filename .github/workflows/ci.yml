@@ -218,7 +218,7 @@ jobs:
               crates/*|docs/HOOKS.md|docs/KEYBINDINGS.md|docs/TELEMETRY.md|docs/FLEET.md|docs/FLEET_WORKFLOW_TUTORIAL.md|docs/zh_hans/FLEET.md|docs/2512.24601v2.pdf|docs/cloud-facts/*|docs/examples/*)
                 heavy=true
                 ;;
-              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-ohos-deps.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
+              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-versions.test.sh|scripts/release/check-ohos-deps.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
                 ;;
               *)
                 heavy=true
@@ -313,7 +313,9 @@ jobs:
       - name: Check release helper contracts
         run: |
           bash .github/scripts/agent-task-metadata.test.sh
+          bash scripts/release/app-server-smoke.test.sh
           bash scripts/release/check-feature-release-notes.test.sh
+          bash scripts/release/check-versions.test.sh
           bash scripts/release/generate-release-body.test.sh
           bash scripts/release/install-dogfood.test.sh
           bash scripts/release/prepare-release.test.sh
@@ -321,6 +323,7 @@ jobs:
           bash scripts/release/require-rc-receipt.test.sh
           bash scripts/release/require-release-tag-checkout.test.sh
           bash scripts/release/validate-crate-publish-order.test.sh
+          python3 scripts/release/contributor-wall.test.py
           python3 scripts/release/publish-crates.test.py
           bash scripts/release/verify-remote-tag.test.sh
           bash packaging/aur/render.test.sh

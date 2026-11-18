@@ -32,7 +32,7 @@ notes="$(printf '%s\n' "${section}" | awk '
 
 summary="$(printf '%s\n' "${notes}" | awk '/^### / { in_details = 1 } !in_details { print }')"
 details="$(printf '%s\n' "${notes}" | awk '/^### / { in_details = 1 } in_details { print }')"
-if [[ -z "${summary//[[:space:]]/}" ]]; then
+if [[ "${summary}" != *[![:space:]]* ]]; then
   summary="${notes}"
   details=""
 fi
@@ -187,6 +187,9 @@ EOF
 
 body="$(render_body)"
 if (( ${#body} >= 125000 )); then
+  if [[ -z "${details}" ]]; then
+    summary=""
+  fi
   details="The full notes exceed GitHub's release-description limit. Read the [complete changelog for ${tag}](https://github.com/codewhale-hq/CodeWhale/blob/${tag}/CHANGELOG.md)."
   body="$(render_body)"
 fi

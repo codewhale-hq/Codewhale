@@ -17,6 +17,7 @@ make_fixture() {
     "${root}/npm/runtime-sdk" \
     "${root}/scripts/remote-smoke" \
     "${root}/scripts/release" \
+    "${root}/web/data" \
     "${root}/web/lib" \
     "${root}/web/scripts"
 
@@ -133,6 +134,7 @@ EOF
 
   printf 'fixture packaged changelog\n' >"${root}/crates/tui/CHANGELOG.md"
   printf 'fixture generated facts\n' >"${root}/web/lib/facts.generated.ts"
+  printf '{"features":[]}\n' >"${root}/web/data/features.generated.json"
 
   mkdir -p \
     "${root}/crates/config/src/route" \
@@ -181,6 +183,8 @@ EOF
   cat >"${root}/web/scripts/derive-facts.mjs" <<'EOF'
 import { writeFileSync } from "node:fs";
 
+writeFileSync("web/data/features.generated.json", '{"features":["mutated"]}\n');
+writeFileSync("web/data/release-baseline.json", '{"tag":"v0.8.67"}\n');
 writeFileSync(`${process.env.PREPARE_RELEASE_TEST_MARKERS}/derive-facts`, "");
 EOF
 
@@ -378,5 +382,29 @@ fi
 
 grep -Fq "restored the checkout's pre-run release files" "${failure_log}"
 diff -ru "${failure_snapshot}" "${failure_root}"
+
+gate_failure_root="${tmp_dir}/gate-failure"
+gate_failure_snapshot="${tmp_dir}/gate-failure-before"
+gate_failure_markers="${tmp_dir}/gate-failure-markers"
+gate_failure_log="${tmp_dir}/gate-failure.log"
+make_fixture "${gate_failure_root}"
+mkdir -p "${gate_failure_markers}"
+cat >"${gate_failure_root}/scripts/release/check-versions.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 19
+EOF
+chmod +x "${gate_failure_root}/scripts/release/check-versions.sh"
+cp -R "${gate_failure_root}" "${gate_failure_snapshot}"
+
+if PREPARE_RELEASE_TEST_MARKERS="${gate_failure_markers}" \
+  PATH="${gate_failure_root}/bin:${PATH}" \
+  "${gate_failure_root}/scripts/release/prepare-release.sh" 0.9.0 \
+  >"${gate_failure_log}" 2>&1; then
+  echo "failing check-versions gate unexpectedly passed" >&2
+  exit 1
+fi
+
+grep -Fq "restored the checkout's pre-run release files" "${gate_failure_log}"
+diff -ru "${gate_failure_snapshot}" "${gate_failure_root}"
 
 echo "prepare-release tests passed"

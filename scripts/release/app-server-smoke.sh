@@ -125,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix="cw-", dir="/tmp") as temporary:
     config = root / "config.toml"
     config.write_text("telemetry = false\n")
     env = {key: os.environ[key] for key in ("PATH", "USER", "SYSTEMROOT") if key in os.environ}
-    env.update(CODEWHALE_HOME=str(state_root), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), TMPDIR=str(root), CODEWHALE_NO_UPDATE_CHECK="1")
+    env.update(HOME=str(state_root), USERPROFILE=str(state_root), CODEWHALE_HOME=str(state_root), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), TMPDIR=str(root), CODEWHALE_NO_UPDATE_CHECK="1")
     requests = json.dumps({"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "codewhale-smoke", "version": "1"}}}) + "\n"
     requests += json.dumps({"method": "initialized"}) + "\n"
     requests += "".join(json.dumps({"id": i, "method": method}) + "\n"
