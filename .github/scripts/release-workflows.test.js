@@ -243,6 +243,10 @@ assert.match(
   /run: cargo build --release --locked -p codewhale-cli --bin codewhale/,
 );
 assert.match(
+  namedStep(npmSmokeJob, "Qualify Windows x64 static imports"),
+  /python scripts\/release\/check-windows-imports\.py --expected-machine windows-x64 --output \$output target\/release\/codewhale\.exe/,
+);
+assert.match(
   namedStep(npmSmokeJob, "Smoke wrapper install and delegated entrypoints"),
   /run: node scripts\/release\/npm-wrapper-smoke\.js/,
 );
@@ -256,6 +260,7 @@ const npmSmokeCases = [
   ["manual Ubuntu", "workflow_dispatch", true, "ubuntu-latest", true, true, true, true, false],
   ["main Ubuntu", "push", true, "ubuntu-latest", true, true, false, false, false],
   ["manual macOS", "workflow_dispatch", true, "macos-latest", true, true, true, false, false],
+  ["manual Windows", "workflow_dispatch", true, "windows-latest", true, true, true, false, false],
   ["main Windows", "push", true, "windows-latest", true, true, false, false, false],
   ["main cache failure", "push", true, "windows-latest", true, false, false, false, false],
   ["light main", "push", false, "ubuntu-latest", true, true, false, false, false],
@@ -290,7 +295,9 @@ for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of
     else if (name === "Install Linux system dependencies") expected = linuxDeps;
     else if (name === "Linux smoke location") expected = cnb;
     else if (name === sccacheInstallStep) expected = installed;
-    else if (name === "Enable sccache" || name === "sccache stats") expected = installed && cache;
+    else if (name === "Enable sccache") expected = installed && cache && os !== "windows-latest";
+    else if (name === "sccache stats") expected = installed && cache;
+    else if (name === "Qualify Windows x64 static imports") expected = execute && os === "windows-latest";
     if (!jobEnabled) expected = false;
     assert.equal(
       Boolean(jobEnabled && vm.runInNewContext(guard, context)),

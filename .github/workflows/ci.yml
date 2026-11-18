@@ -1366,6 +1366,14 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: 'off'
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: cargo build --release --locked -p codewhale-cli --bin codewhale
+      - name: Qualify Windows x64 static imports
+        if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'windows-imports-ci'
+          python scripts/release/check-windows-imports.py --expected-machine windows-x64 --output $output target/release/codewhale.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows static import qualification failed' }
       - name: Smoke wrapper install and delegated entrypoints
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         timeout-minutes: 5
