@@ -342,7 +342,7 @@ impl OceanColumn {
         self
     }
 
-    fn paint_theme(self, ground: Color) -> Option<codewhale_ratatui::Theme> {
+    pub(crate) fn paint_theme(self, ground: Color) -> Option<codewhale_ratatui::Theme> {
         let mut caps = self.paint_caps?;
         // Equality-matched opaque ground is actual pane evidence. A terminal
         // Reset/named ink supplies no RGB evidence; an OS hint cannot fill it.

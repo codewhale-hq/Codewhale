@@ -70,7 +70,6 @@ pub struct ChatWidget {
     #[cfg(test)]
     life_presence_fixed: u16,
     ambient_presence: f32,
-    fish_flee_elapsed_ms: Option<u128>,
     ambient_life: bool,
     scroll_track: Color,
     scroll_thumb: Color,
@@ -200,12 +199,6 @@ impl ChatWidget {
             )
             .with_paint_caps(app.viewport.ocean_caps)
         });
-        let fish_flee_elapsed_ms = underwater_motion_enabled
-            .then_some(())
-            .and(app.turn_started_at)
-            .map(|started| started.elapsed().as_millis())
-            .filter(|elapsed| *elapsed < 800)
-            .filter(|_| matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         let scroll_track = app.ui_theme.border;
         let scroll_thumb = app.ui_theme.status_working;
         let jump_border = app.ui_theme.border;
@@ -250,7 +243,6 @@ impl ChatWidget {
                 #[cfg(test)]
                 life_presence_fixed,
                 ambient_presence,
-                fish_flee_elapsed_ms,
                 ambient_life: ambient_motion,
                 scroll_track,
                 scroll_thumb,
@@ -761,7 +753,6 @@ impl ChatWidget {
             #[cfg(test)]
             life_presence_fixed,
             ambient_presence,
-            fish_flee_elapsed_ms,
             ambient_life: ambient_motion,
             scroll_track,
             scroll_thumb,
@@ -1167,42 +1158,25 @@ impl ChatWidget {
         }
 
         if self.ambient_life
-            && let Some(inks) = self.ambient_inks
+            && let (Some(inks), Some(column)) = (self.ambient_inks, self.ocean_column)
+            && let Some(theme) = column.paint_theme(self.background)
         {
-            // The scatter has a centre. It used to be column 0 with a row in
-            // the middle of the field, which is neither where the school
-            // swims nor anywhere the eye is: the flee proximity test
-            // (|dy| < 6) could not even fire on a tall field, and when it did
-            // every fish was to the right of the anchor so the whole school
-            // slid the same way. Anchored on the composer's centre line and
-            // the school's own band, a turn beginning reads as the shoal
-            // parting around the thing that just happened.
-            let cursor = crate::tui::ambient_life::AmbientCursor {
-                column: area.x.saturating_add(area.width / 2),
-                row: area
-                    .y
-                    .saturating_add(crate::tui::ambient_life::school_band_row(area)),
-                flee_elapsed_ms: self.fish_flee_elapsed_ms,
-            };
-            // Whale cameo rides the completion breath clock when present.
             let whale = crate::tui::ambient_life::WhaleCameo {
-                elapsed_ms: self.ocean_column.and_then(|c| c.completion_elapsed_ms()),
+                elapsed_ms: column.completion_elapsed_ms(),
                 anchor_x: area.x.saturating_add(area.width / 2),
                 anchor_y: area.y.saturating_add(area.height.saturating_mul(2) / 3),
             };
-            // Per-frame budget counters (built/painted/skipped/clipped);
-            // consumed by ambient-life tests and debug tooling, not by the
-            // widget itself.
             let _ambient_stats = crate::tui::ambient_life::render_ambient_life(
                 area,
                 buf,
-                inks,
+                &theme,
+                inks.0,
                 &self.lines,
                 self.ocean_elapsed_ms,
                 self.ocean_presence_f32(),
-                cursor,
                 whale,
                 self.ocean_activity,
+                &self.ocean_protected,
             );
         }
     }
@@ -1213,11 +1187,6 @@ impl ChatWidget {
     fn ocean_presence_f32(&self) -> f32 {
         self.ambient_presence.clamp(0.0, 1.0)
     }
-}
-
-#[cfg(test)]
-fn fish_flee_offset(elapsed_ms: u128) -> u16 {
-    crate::tui::ambient_life::fish_flee_offset(elapsed_ms)
 }
 
 #[cfg(test)]
@@ -4169,11 +4138,11 @@ mod tests {
         approval_palette, approval_truncation_hint, build_empty_state_lines,
         composer_content_geometry, composer_empty_hint_text, composer_height, composer_inner_area,
         composer_max_height, composer_submit_hint, composer_top_padding, cursor_row_col,
-        empty_composer_visual_rows, enclosed_composer_panel_fits, fish_flee_offset, fish_heading,
-        fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
-        placeholder_visual_lines, push_command_entry, receipt_is_settling, revision_in_domain,
-        should_render_empty_state, slash_completion_hints, test_native_ocean_caps,
-        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        empty_composer_visual_rows, enclosed_composer_panel_fits, fish_heading, fish_mark,
+        history_entry_revision, layout_input, layout_input_with_scroll, placeholder_visual_lines,
+        push_command_entry, receipt_is_settling, revision_in_domain, should_render_empty_state,
+        slash_completion_hints, test_native_ocean_caps, tool_run_summary_revision,
+        wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -7798,19 +7767,9 @@ mod tests {
 
         assert_ne!(buf[(0, 0)].bg, buf[(0, 19)].bg);
         let rendered = buffer_text(&buf, area);
-        // One loose wedge school, every member facing the same way (facing
-        // equals travel by construction). The counter knows both silhouette
-        // families: the native braille poses this terminal paints and the
-        // ASCII bodies of `CODEWHALE_ASCII_SAFE=1`.
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
         assert!(
-            rightward == 0 || leftward == 0,
-            "one school shares one direction:\n{rendered}"
-        );
-        let fish_count = rightward + leftward;
-        assert!(
-            (4..=7).contains(&fish_count),
-            "wide idle water should show one cohesive wedge school (got {fish_count}):\n{rendered}"
+            ambient_life_cells(&mut app, area, 0) > 0,
+            "wide idle water shows ocean life:\n{rendered}"
         );
 
         let context_x = ((100usize - UnicodeWidthStr::width(context.as_str())) / 2) as u16;
@@ -7844,11 +7803,10 @@ mod tests {
 
         assert_eq!(buf[(0, 0)].bg, base);
         assert_eq!(buf[(0, 19)].bg, base, "flat keeps the plain theme surface");
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "terminal-owned themes must keep a normal shell without decorative fish:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "terminal-owned themes must keep a normal shell without decorative fish"
         );
     }
 
@@ -7877,11 +7835,10 @@ mod tests {
             canonical_base3,
             "Solarized Light must keep canonical Base3 through the viewport"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "a theme with no painted field earns no ambient life:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "a theme with no painted field earns no ambient life"
         );
     }
 
@@ -7922,11 +7879,10 @@ mod tests {
             (0..area.height).all(|y| (0..area.width).all(|x| buf[(x, y)].bg == Color::Reset)),
             "the Terminal treatment must never paint a background"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene"
         );
     }
 
@@ -8543,17 +8499,28 @@ mod tests {
     fn browsing_history_holds_no_fish() {
         let rows = history_field_rows(4);
         let rendered = rows.join("\n");
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
         for index in 0..4 {
             assert!(
                 rendered.contains(&format!("history row {index}")),
                 "ambient life damaged history row {index}:\n{rendered}"
             );
         }
+    }
+
+    fn ambient_life_cells(app: &mut App, area: Rect, elapsed: u128) -> usize {
+        let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        still.ambient_life = false;
+        let mut alive_buf = Buffer::empty(area);
+        alive.render(area, &mut alive_buf);
+        let mut still_buf = Buffer::empty(area);
+        still.render(area, &mut still_buf);
+        alive_buf
+            .content
+            .iter()
+            .zip(&still_buf.content)
+            .filter(|(a, b)| a != b)
+            .count()
     }
 
     fn assert_life_keeps_clear_of_text(app: &mut App, area: Rect) -> String {
@@ -8601,6 +8568,9 @@ mod tests {
     #[test]
     fn active_tail_life_keeps_clear_of_text() {
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         for index in 0..18 {
@@ -8625,6 +8595,9 @@ mod tests {
     #[test]
     fn completed_turn_life_keeps_clear_of_text() {
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         app.add_message(HistoryCell::Assistant {
@@ -8658,8 +8631,8 @@ mod tests {
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
+            ambient_life_cells(&mut app, area, 0),
+            0,
             "a full transcript is not an aquarium:\n{rendered}"
         );
     }
@@ -10141,14 +10114,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(receipt_is_settling(1, 140));
         assert!(!receipt_is_settling(6, 560));
         assert!(!receipt_is_settling(60, 560));
-    }
-
-    #[test]
-    fn fish_flee_is_one_shot_and_returns_to_ambient_origin() {
-        assert_eq!(fish_flee_offset(0), 0);
-        assert!(fish_flee_offset(400) >= 8);
-        assert_eq!(fish_flee_offset(800), 0);
-        assert_eq!(fish_flee_offset(8_000), 0);
     }
 
     /// Cold-versus-warm proof for the whole chat frame (#6652): the cached

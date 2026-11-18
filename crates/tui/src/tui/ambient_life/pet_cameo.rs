@@ -15,8 +15,6 @@ const HEIGHT: u16 = 6;
 pub(super) const DURATION_MS: u128 = 2_400;
 const FPS: u128 = 30;
 const FRAMES: usize = (DURATION_MS * FPS / 1_000) as usize;
-#[cfg(test)]
-pub(super) const MAX_MARKS: u32 = 3 * WIDTH as u32 * HEIGHT as u32;
 
 struct CameoFrame {
     buffer: Buffer,
