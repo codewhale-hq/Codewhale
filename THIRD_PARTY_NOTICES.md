@@ -1009,3 +1009,11 @@ WebCore, and TinyCC, as well as other linked and embedded dependencies. The
 release preparation contract is documented in
 `scripts/release/compiled-host-licenses/README.md`. This file does not replace
 the full notices carried with an eligible compiled image.
+
+## Geist and Geist Mono fonts (Vercel) — SIL Open Font License 1.1
+
+Copyright (c) 2023 Vercel, in collaboration with basement.studio. The variable
+Geist and Geist Mono fonts are embedded in the Engine for Makewhale artboard
+rendering (`crates/engine/assets/design/`) and served by the web site
+(`web/public/brand/fonts/`). The full license text ships beside them as
+`OFL.txt`.

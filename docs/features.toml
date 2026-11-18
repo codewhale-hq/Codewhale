@@ -688,6 +688,15 @@ surfaces = { tui = "stable" }
 docs = "docs/GITHUB_APP.md"
 owner = "crates/engine/src/tools/github"
 
+[[feature]]
+id = "makewhale"
+name = "Makewhale design canvas"
+summary = "Agents draw HTML/CSS artboards on design tokens with design_* tools; sandboxed screenshots; /v1/designs for clients."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+owner = "crates/engine/src/design.rs"
+
 # --- Interface ---
 
 [[feature]]

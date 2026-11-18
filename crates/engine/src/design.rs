@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const DESIGNS_DIR: &str = "designs";
-pub const TOKENS_CSS: &str = include_str!("../../../vendor/codewhale-design/tokens.css");
-pub const GEIST_SANS: &[u8] = include_bytes!("../../../web/public/brand/fonts/Geist-Variable.woff2");
+pub const TOKENS_CSS: &str = include_str!("../assets/design/tokens.css");
+pub const GEIST_SANS: &[u8] = include_bytes!("../assets/design/Geist-Variable.woff2");
 pub const GEIST_MONO: &[u8] =
-    include_bytes!("../../../web/public/brand/fonts/GeistMono-Variable.woff2");
+    include_bytes!("../assets/design/GeistMono-Variable.woff2");
 
 const MAX_FRAGMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 10 * 1024 * 1024;
@@ -814,6 +814,13 @@ mod tests {
         assert!(store.asset_path("d", "../design.json").is_err());
         assert!(store.asset_path("d", "fonts/../../x").is_err());
         assert!(store.asset_path("d", "fonts/Geist-Variable.woff2").is_ok());
+    }
+
+    #[test]
+    fn bundled_design_assets_match_their_sources() {
+        assert_eq!(TOKENS_CSS, include_str!("../../../vendor/codewhale-design/tokens.css"));
+        assert_eq!(GEIST_SANS, include_bytes!("../../../web/public/brand/fonts/Geist-Variable.woff2"));
+        assert_eq!(GEIST_MONO, include_bytes!("../../../web/public/brand/fonts/GeistMono-Variable.woff2"));
     }
 
     #[test]
