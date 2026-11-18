@@ -495,7 +495,6 @@ impl DesignStore {
             .arg("--disable-sync")
             .arg("--disable-component-update")
             .arg("--disable-features=Translate,MediaRouter,OptimizationHints")
-            .arg("--blink-settings=scriptEnabled=false")
             .arg("--host-resolver-rules=MAP * ~NOTFOUND")
             .arg("--proxy-server=127.0.0.1:9")
             .arg("--proxy-bypass-list=<-loopback>")
