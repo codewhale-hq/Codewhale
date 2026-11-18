@@ -210,7 +210,12 @@ async fn journey() -> Result<()> {
                 allow,
             )
             .await?;
-            assert_eq!(done["result"]["stopReason"], "end_turn");
+            assert_eq!(
+                done["result"]["stopReason"],
+                "end_turn",
+                "{done}\nframes: {}",
+                Value::Array(frames.clone())
+            );
             assert!(!updates(&frames, "tool_call").is_empty());
             assert_eq!(text_of(&frames, "agent_message_chunk"), "settled after approval");
 
@@ -229,8 +234,13 @@ async fn journey() -> Result<()> {
             client
                 .send(json!({"jsonrpc":"2.0","id":permission["id"],"result":wire(acp::RequestPermissionResponse::new(acp::RequestPermissionOutcome::Cancelled))}))
                 .await?;
-            let (cancelled, _) = client.until_response(cancel_id).await?;
-            assert_eq!(cancelled["result"]["stopReason"], "cancelled");
+            let (cancelled, cancel_frames) = client.until_response(cancel_id).await?;
+            assert_eq!(
+                cancelled["result"]["stopReason"],
+                "cancelled",
+                "{cancelled}\nframes: {}",
+                Value::Array(cancel_frames)
+            );
             let (listed, _) = client
                 .request(
                     "session/list",
