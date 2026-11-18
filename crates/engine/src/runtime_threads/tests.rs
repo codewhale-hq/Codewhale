@@ -24597,6 +24597,155 @@ async fn canonical_sessions_root_is_resolved_off_the_ui_runtime_and_cached() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn runtime_thread_title_comes_from_the_first_prompt_only() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    for prompt in [
+        "The case-insensitivity test in tests/test_core.py fails. Fix tally/core.py so word counting ignores case.",
+        "Please try that again.",
+    ] {
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: prompt.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage(TurnSpec { .. }))
+        ));
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                previous_source: None,
+                turn_id: turn.id.clone(),
+                created_at: Utc::now(),
+                route: None,
+                submission_id: None,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+                turn_id: None,
+                submission_id: None,
+                compaction_id: None,
+                usage: Usage::default(),
+                parent_route_usage: Usage::default(),
+                routed_usage_dropped_records: 0,
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+            })
+            .await?;
+        wait_for_terminal_turn(&manager, &turn.id).await?;
+    }
+    let title = manager.store.load_thread(&thread.id)?.title;
+    assert_eq!(
+        title.as_deref(),
+        Some("The case-insensitivity test in tests/test_core.py fails. ...")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_provider_last_check_reports_the_last_call_failure() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let config = manager.config.read().clone();
+    let identity = config.test_identity_for_kind(ProviderKind::Google);
+    let receipt = crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+        &config,
+        ProviderKind::Google,
+        "gemini-4-hydrogen",
+    );
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "hello".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: turn.id.clone(),
+            created_at: Utc::now(),
+            route: Some(crate::core::events::TurnRoute {
+                provider: ProviderKind::Google,
+                provider_identity: identity.key.to_string(),
+                model: "gemini-4-hydrogen".to_string(),
+                auto_model: false,
+                receipt: Some(receipt),
+                billing: None,
+                base_url: config.base_url_for_route(&identity),
+                billing_product: crate::route_billing::RouteProduct::Unproven,
+            }),
+            submission_id: None,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::Error {
+            envelope: crate::llm_client::LlmError::Other(
+                "HTTP 402: RESOURCE_EXHAUSTED: Your prepayment credits are depleted".to_string(),
+            )
+            .into(),
+            recoverable: false,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Failed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    wait_for_terminal_turn(&manager, &turn.id).await?;
+    match manager.provider_last_check(&identity) {
+        Some(crate::provider_readiness::LastProviderCheck::Failed { category, message }) => {
+            assert_eq!(category, codewhale_error_taxonomy::ErrorCategory::RateLimit);
+            assert!(message.contains("402"), "{message}");
+        }
+        other => panic!("expected the 402 to be the provider's last check: {other:?}"),
+    }
+    Ok(())
+}
+
 /// B1: a credential a tool printed is masked in the durable tool item (and
 /// the event log built from it) on Runtime API threads, as it is in the
 /// engine transcript.
@@ -24691,9 +24840,17 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
             model_call: None,
             id: "tool-error".into(),
             name: "exec_command".into(),
-            result: Err(crate::tools::spec::ToolError::execution_failed(format!(
-                "failed with {EXACT}"
-            ))),
+            result: Err(
+                crate::tools::spec::ToolError::execution_failed_with_metadata(
+                    format!("failed with {EXACT}"),
+                    json!({
+                        "exit_code": 1,
+                        "status": "Failed",
+                        "stderr_summary": format!("failed with {EXACT}"),
+                        "execution_receipt": {"stdout_preview": "x"},
+                    }),
+                ),
+            ),
         })
         .await?;
     harness
@@ -24734,6 +24891,22 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
     assert_eq!(metadata["stdout_len"], 120, "ordinary metadata survives");
     assert_eq!(metadata["exit_code"], 0);
     assert_eq!(metadata["api_key"], codewhale_config::persistence::REDACTED);
+    let failed = items
+        .iter()
+        .find(|item| {
+            item.metadata
+                .as_ref()
+                .is_some_and(|meta| meta["tool_result_for"] == "tool-error")
+        })
+        .context("the failed call keeps its item")?;
+    let failed_meta = failed.metadata.as_ref().context("failed metadata kept")?;
+    assert_eq!(failed_meta["exit_code"], 1, "{failed_meta}");
+    assert_eq!(failed_meta["status"], "Failed");
+    assert_eq!(failed_meta["is_error"], true);
+    assert!(
+        failed_meta.get("execution_receipt").is_none(),
+        "{failed_meta}"
+    );
     let events = serde_json::to_string(&manager.events_since(&thread.id, None)?)?;
     assert!(!events.contains(TOKEN), "the event log holds no live token");
     assert!(

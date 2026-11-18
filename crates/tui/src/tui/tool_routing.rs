@@ -798,11 +798,10 @@ pub(super) fn handle_tool_call_complete(
     // event at all, so "fires after each tool call" was not true.
     fire_tool_completion_hooks(app, id, name, result);
 
-    // The engine prefixes an approved call's result with a note for the model
-    // ("[approval] This tool call required approval…"). The person gave that
-    // approval a moment ago; repeating it as the first line of the output
-    // reads as an internal log (#6566). The model's copy keeps the note. The
-    // engine's approval stamp decides what is a note, never the text alone.
+    // Results recorded by earlier engines begin with a note for the model
+    // ("[approval] This tool call required approval…"). Repeating it as the
+    // first line of the output reads as an internal log (#6566). The engine's
+    // approval stamp decides what is a note, never the text alone.
     let displayed;
     let result = match result {
         Ok(tool_result) => {

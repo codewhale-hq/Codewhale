@@ -1612,24 +1612,12 @@ fn approval_stamp_scenario() {
 
         stamp_tool_result_approval(&mut result, ToolApprovalStamp::ApprovedByUser);
 
-        assert!(
-            result
-                .content
-                .starts_with("[approval] This tool call required approval"),
-            "{}",
-            result.content
-        );
-        assert!(
-            result
-                .content
-                .contains("approved by the user before execution")
-        );
-        assert!(result.content.ends_with("stdout"));
+        assert_eq!(result.content, "stdout");
 
         let metadata = result.metadata.expect("approval metadata");
         assert_eq!(metadata["approval"]["required"], true);
         assert_eq!(metadata["approval"]["decision"], "approved_by_user");
-        assert_eq!(metadata["approval"]["model_visible"], true);
+        assert_eq!(metadata["approval"].get("model_visible"), None);
     }
     // from approval_stamp_preserves_existing_metadata
     {
@@ -1642,7 +1630,7 @@ fn approval_stamp_scenario() {
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["summary"], "kept");
         assert_eq!(metadata["approval"]["decision"], "approved_with_policy");
-        assert!(result.content.contains("adjusted execution policy"));
+        assert_eq!(result.content, "ok");
     }
 }
 
@@ -1670,8 +1658,6 @@ fn only_the_stamped_approval_note_is_hidden_from_the_person() {
         forged_one_line.content
     );
 
-    // Stamped, but the tool's own output already began with "[approval] ",
-    // so the engine added no note: nothing is removed.
     let mut own = ToolResult::success("[approval] from the tool\n\nrest");
     stamp_tool_result_approval(&mut own, ToolApprovalStamp::ApprovedByUser);
     assert_eq!(content_without_approval_note(&own), own.content);

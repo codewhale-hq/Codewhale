@@ -311,7 +311,7 @@ impl ToolApprovalStamp {
         }
     }
 
-    fn model_visible_note(self) -> &'static str {
+    fn legacy_model_visible_note(self) -> &'static str {
         match self {
             Self::ApprovedByUser => {
                 "[approval] This tool call required approval and was approved by the user before execution."
@@ -327,7 +327,6 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
     let approval_metadata = json!({
         "required": true,
         "decision": approval.decision(),
-        "model_visible": true,
     });
     let metadata = result.metadata.get_or_insert_with(|| json!({}));
     if let Some(object) = metadata.as_object_mut() {
@@ -339,20 +338,11 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
             object.insert("approval".to_string(), approval_metadata);
         }
     }
-
-    let note = approval.model_visible_note();
-    if result.content.starts_with("[approval] ") {
-        return;
-    }
-    if result.content.is_empty() {
-        result.content = note.to_string();
-    } else {
-        result.content = format!("{note}\n\n{}", result.content);
-    }
 }
 
-/// The tool output a person reads: the result without the note
-/// [`stamp_tool_result_approval`] put in front of it for the model (#6566).
+/// The tool output a person reads: a result recorded by an earlier Codewhale
+/// without the approval note those versions put in front of it for the model
+/// (#6566).
 ///
 /// Only a result the engine stamped (`metadata.approval.model_visible`) loses
 /// a note, and only that decision's exact note text followed by a blank line
@@ -381,7 +371,7 @@ pub fn content_without_approval_note(result: &ToolResult) -> &str {
     else {
         return content;
     };
-    match content.strip_prefix(stamp.model_visible_note()) {
+    match content.strip_prefix(stamp.legacy_model_visible_note()) {
         Some("") => "",
         Some(rest) => rest.strip_prefix("\n\n").unwrap_or(content),
         None => content,

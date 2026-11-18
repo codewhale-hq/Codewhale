@@ -1373,13 +1373,12 @@ async fn injected_model_sandbox_escalation_applies_only_after_exact_call_approva
 
         let result = approved_result.expect("paired escalated tool result");
         assert!(result.success, "{result:?}");
-        assert!(
-            result
-                .content
-                .contains("approved by the user with an adjusted execution policy"),
-            "{}",
-            result.content
+        assert_eq!(
+            result.metadata.as_ref().and_then(|meta| meta["approval"]["decision"].as_str()),
+            Some("approved_with_policy"),
+            "{result:?}"
         );
+        assert!(!result.content.contains("[approval]"), "{}", result.content);
         assert!(workspace.path().join("escalation.txt").exists());
         assert_eq!(mock.call_count(), 2);
         handle.send(Op::Shutdown).await.expect("shutdown engine");

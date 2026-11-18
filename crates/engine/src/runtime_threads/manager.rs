@@ -3584,6 +3584,8 @@ pub struct RuntimeThreadManager {
         Arc<parking_lot::Mutex<HashMap<String, crate::cost_status::NativeUsageOrigin>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
+    pub(super) provider_health:
+        Arc<parking_lot::Mutex<crate::provider_readiness::ProviderReadinessSnapshot>>,
     pub(super) auto_review_blocks: Arc<
         parking_lot::Mutex<
             HashMap<String, Vec<crate::core::authority::auto_review::AutoReviewBlockedAction>>,
@@ -4636,6 +4638,7 @@ impl RuntimeThreadManager {
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
+            provider_health: Arc::default(),
             auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_dynamic_tools: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -7334,6 +7337,7 @@ impl RuntimeThreadManager {
         let pending_approvals = self.pending_approvals.clone();
         let grants = self.grants.clone();
         let auto_review_blocks = self.auto_review_blocks.clone();
+        let provider_health = self.provider_health.clone();
         let pending_user_inputs = self.pending_user_inputs.clone();
         let pending_dynamic_tools = self.pending_dynamic_tools.clone();
         let pending_commands = self.pending_commands.clone();
@@ -7393,6 +7397,7 @@ impl RuntimeThreadManager {
                 turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 grants: grants.clone(),
                 auto_review_blocks: auto_review_blocks.clone(),
+                provider_health: provider_health.clone(),
                 pending_user_inputs: pending_user_inputs.clone(),
                 pending_dynamic_tools: pending_dynamic_tools.clone(),
                 pending_commands: pending_commands.clone(),
@@ -14355,6 +14360,17 @@ impl RuntimeThreadManager {
         .await
     }
 
+    #[must_use]
+    pub fn provider_last_check(
+        &self,
+        identity: &codewhale_runtime::config::ProviderIdentity,
+    ) -> Option<crate::provider_readiness::LastProviderCheck> {
+        self.provider_health
+            .lock()
+            .last_for_provider(identity)
+            .cloned()
+    }
+
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
         self.start_turn_inner(thread_id, req, None).await
     }
@@ -15045,6 +15061,9 @@ impl RuntimeThreadManager {
             .input_summary
             .clone()
             .unwrap_or_else(|| summarize_text(&prompt, SUMMARY_LIMIT));
+        let first_prompt_title = matches!(input_source, RuntimeTurnInputSource::ExternalUser)
+            .then(|| crate::session_manager::truncate_title(&prompt, 60))
+            .filter(|title| !title.is_empty());
         let mut turn = TurnRecord {
 source_usage_origin_turn_id: None,
 
@@ -15355,6 +15374,9 @@ source_usage_records: Default::default(),
                     self.store.save_turn(&turn)?;
                 }
                 current_thread.schema_version = current_thread.schema_version.max(turn.schema_version);
+                if current_thread.title.is_none() && current_thread.latest_turn_id.is_none() {
+                    current_thread.title = first_prompt_title;
+                }
                 current_thread.latest_turn_id = Some(turn_id.clone());
                 current_thread.updated_at = now;
                 self.store.save_thread(&current_thread)?;
@@ -17655,6 +17677,7 @@ source_usage_records: Default::default(),
         let mut saw_engine_activity = false;
         let mut saw_turn_started = false;
         let mut engine_turn_id: Option<String> = None;
+        let mut health_route: Option<crate::core::events::TurnRoute> = None;
         let mut dispatched_route: Option<EffectiveRouteEnvelope> = None;
         let mut pending_events: VecDeque<EngineEvent> = VecDeque::new();
         let mut event_channel_closed = false;
@@ -17838,6 +17861,7 @@ source_usage_records: Default::default(),
                 } => {
                     saw_turn_started = true;
                     engine_turn_id = Some(started_turn_id);
+                    health_route = route.clone();
                     let started_route = route
                         .as_ref()
                         .and_then(crate::core::events::TurnRoute::cost_envelope);
@@ -18421,6 +18445,12 @@ source_usage_records: Default::default(),
                             }
                             Err(err) => {
                                 item.status = TurnItemLifecycleStatus::Failed;
+                                let failure_meta = err.metadata().map(|value| {
+                                    crate::client::redact_json_model_bound_text(
+                                        value,
+                                        &receipt_secrets,
+                                    )
+                                });
                                 let err = crate::client::redact_model_bound_text(
                                     &err.to_string(),
                                     &receipt_secrets,
@@ -18437,6 +18467,13 @@ source_usage_records: Default::default(),
                                 // result. Without the marker a restart rebuilt
                                 // a call nothing answered (#6803).
                                 if let Some(Value::Object(meta)) = item.metadata.as_mut() {
+                                    if let Some(Value::Object(failure)) = failure_meta {
+                                        for (key, value) in failure {
+                                            if key != "execution_receipt" {
+                                                meta.entry(key).or_insert(value);
+                                            }
+                                        }
+                                    }
                                     meta.insert("tool_result_for".to_string(), json!(id));
                                     meta.insert("is_error".to_string(), json!(true));
                                 }
@@ -19224,6 +19261,17 @@ source_usage_records: Default::default(),
                     .await?;
                 }
                 EngineEvent::Error { envelope, .. } => {
+                    if let Some(route) = health_route.as_ref()
+                        && let Some(receipt) = route.receipt.as_ref()
+                    {
+                        let config = self.config.read();
+                        self.provider_health.lock().record_failure(
+                            &config,
+                            receipt,
+                            &route.model,
+                            &envelope,
+                        );
+                    }
                     turn_status = Some(RuntimeTurnStatus::Failed);
                     turn_error = Some(envelope.message.clone());
                     let message = envelope.message.clone();
@@ -19478,6 +19526,15 @@ source_usage_records: Default::default(),
                             reported_status
                         },
                     );
+                    if turn_status == Some(RuntimeTurnStatus::Completed)
+                        && let Some(route) = health_route.as_ref()
+                        && let Some(receipt) = route.receipt.as_ref()
+                    {
+                        let config = self.config.read();
+                        self.provider_health
+                            .lock()
+                            .record_success(&config, receipt, &route.model);
+                    }
                     if let Some(err) = error {
                         turn_error = Some(err);
                     }

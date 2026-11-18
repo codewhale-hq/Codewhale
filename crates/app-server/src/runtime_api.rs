@@ -12951,6 +12951,35 @@ struct ProviderEntry {
     credential_writable_reason: Option<&'static str>,
     #[serde(rename = "browserConnect", skip_serializing_if = "std::ops::Not::not")]
     browser_connect: bool,
+    #[serde(rename = "lastCheck", skip_serializing_if = "Option::is_none")]
+    last_check: Option<ProviderLastCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProviderLastCheck {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<codewhale_error_taxonomy::ErrorCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl From<codewhale_engine::provider_readiness::LastProviderCheck> for ProviderLastCheck {
+    fn from(check: codewhale_engine::provider_readiness::LastProviderCheck) -> Self {
+        use codewhale_engine::provider_readiness::LastProviderCheck;
+        match check {
+            LastProviderCheck::Passed | LastProviderCheck::ModelsEndpointPassed => Self {
+                ok: true,
+                category: None,
+                message: None,
+            },
+            LastProviderCheck::Failed { category, message } => Self {
+                ok: false,
+                category: Some(category),
+                message: Some(message),
+            },
+        }
+    }
 }
 
 /// Stable, non-secret wire projection of provider readiness.
@@ -13678,6 +13707,7 @@ fn configured_custom_provider_routes(config: &Config) -> Vec<String> {
 fn provider_entry_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
+    last_check: Option<codewhale_engine::provider_readiness::LastProviderCheck>,
 ) -> ProviderEntry {
     let writeability = secrets::credential_writeability(config, identity);
     ProviderEntry {
@@ -13699,6 +13729,7 @@ fn provider_entry_for_api(
         browser_connect: identity.provider == ProviderKind::Orcarouter
             && writeability.writable
             && !config.session_provider_keys_only,
+        last_check: last_check.map(ProviderLastCheck::from),
     }
 }
 
@@ -13715,13 +13746,14 @@ async fn list_providers(
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
         let current = active_identity.as_ref().map_or_else(|| config.provider.clone().unwrap_or_else(|| "unavailable".into()), |identity| identity.persisted_kind().to_string());
-        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity)).collect::<Vec<_>>();
+        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity, state.runtime_threads.provider_last_check(identity))).collect::<Vec<_>>();
         providers.extend(config.unadmitted_provider_keys().into_iter().map(|key| ProviderEntry {
             id: key.to_string(), model_provider_id: Some(key.to_string()), display_name: format!("{key} (unavailable)"),
             default_model: String::new(), has_model_catalog: false,
             credential_state: ProviderCredentialState::Legacy, credential_source: secrets::ProviderCredentialSource::None,
             credential_writable: false, credential_writable_reason: Some("This configured route is unavailable; repair its exact provider definition before using it."),
             browser_connect: false,
+            last_check: None,
         }));
         Ok(Json(ProvidersResponse {
             current_provider_id: active_identity.as_ref().and_then(|identity| identity.persisted_id()).map(str::to_string),

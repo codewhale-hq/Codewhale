@@ -3375,6 +3375,15 @@ prove endpoint reachability, credential validity, model entitlement, or a
 successful request. The models route below is also only a selection catalog; a
 non-empty list does not prove that the route can currently serve a request.
 
+`lastCheck` is the outcome of the last real call this process made on the
+provider, and is absent until a turn has used it:
+`{ "ok": true }` after a completed turn, or
+`{ "ok": false, "category": "rate_limit", "message": "HTTP 402: …" }` after a
+provider-owned failure (network, authentication, authorization, rate limit or
+quota such as HTTP 402, timeout). `message` is the provider's error text cut to
+120 characters. The record lives in memory and starts empty when the Engine
+restarts.
+
 ### `GET /v1/providers/{id}/models`
 
 ```json

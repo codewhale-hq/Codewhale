@@ -8154,7 +8154,7 @@ pub fn strip_thinking_tags(text: &str) -> String {
 }
 
 /// Truncate a string to create a title (character-safe for UTF-8)
-fn truncate_title(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_title(s: &str, max_len: usize) -> String {
     let s = s.trim();
     // Older sessions may carry a title saved before sanitization existed;
     // never echo raw controls into stdout or the picker. Take the first
