@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "26c80fff52ba6a992cb890dfeafe073714effe4a7e2c2636386b0b4a2158a688"
+    "sha256": "943429ed1872878036c84e58a6089cd2b517dac6a82836548326624e5fcef073"
   },
   "features": [
     {
@@ -1046,6 +1046,19 @@
       "registryLine": 785
     },
     {
+      "id": "claude-org-billing",
+      "name": "Claude organization billing",
+      "summary": "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\".",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/PROVIDERS.md",
+      "registryLine": 793
+    },
+    {
       "id": "account-computer-files",
       "name": "Account computer files",
       "summary": "Save computer files as account versions, restore with revision checks, and download verified bytes.",
@@ -1056,7 +1069,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 793
+      "registryLine": 802
     },
     {
       "id": "context-anchors",
@@ -1069,7 +1082,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 802
+      "registryLine": 811
     },
     {
       "id": "window-pin",
@@ -1082,7 +1095,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 810
+      "registryLine": 819
     },
     {
       "id": "structured-copy",
@@ -1095,7 +1108,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 818
+      "registryLine": 827
     },
     {
       "id": "conversation-export",
@@ -1108,7 +1121,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GUIDE.md#exporting-a-conversation",
-      "registryLine": 826
+      "registryLine": 835
     },
     {
       "id": "live-thinking",
@@ -1121,7 +1134,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 836
+      "registryLine": 845
     },
     {
       "id": "local-model-reasoning",
@@ -1136,7 +1149,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/LOCAL_MODEL_REASONING.md",
-      "registryLine": 844
+      "registryLine": 853
     },
     {
       "id": "workbar",
@@ -1149,7 +1162,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 854
+      "registryLine": 863
     },
     {
       "id": "terminal-dock",
@@ -1162,7 +1175,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 862
+      "registryLine": 871
     },
     {
       "id": "telemetry",
@@ -1175,7 +1188,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 873
+      "registryLine": 882
     },
     {
       "id": "docker",
@@ -1188,7 +1201,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 882
+      "registryLine": 891
     },
     {
       "id": "termux",
@@ -1201,7 +1214,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 891
+      "registryLine": 900
     },
     {
       "id": "harmonyos-native",
@@ -1214,7 +1227,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/HarmonyOS.md",
-      "registryLine": 900
+      "registryLine": 909
     },
     {
       "id": "chatgpt-plan-sign-in",
@@ -1229,7 +1242,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 909
+      "registryLine": 918
     },
     {
       "id": "plugin-oauth-providers",
@@ -1244,7 +1257,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 919
+      "registryLine": 928
     },
     {
       "id": "orcarouter-sign-in",
@@ -1259,7 +1272,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 929
+      "registryLine": 938
     },
     {
       "id": "merch-interest",
@@ -1274,7 +1287,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 940
+      "registryLine": 949
     },
     {
       "id": "local-whale-voice",
@@ -1288,7 +1301,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#local-whale-voice",
-      "registryLine": 950
+      "registryLine": 959
     },
     {
       "id": "profile-constitution",
@@ -1302,7 +1315,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 960
+      "registryLine": 969
     },
     {
       "id": "plugin-shell-install",
@@ -1315,7 +1328,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 970
+      "registryLine": 979
     },
     {
       "id": "herdr-agent-state",
@@ -1328,7 +1341,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 980
+      "registryLine": 989
     },
     {
       "id": "instruction-budgets",
@@ -1341,7 +1354,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 989
+      "registryLine": 998
     },
     {
       "id": "github-action-review",
@@ -1354,7 +1367,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 999
+      "registryLine": 1008
     },
     {
       "id": "telegram-agent",
@@ -1367,7 +1380,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 1009
+      "registryLine": 1018
     },
     {
       "id": "dingtalk-agent",
@@ -1380,7 +1393,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 1019
+      "registryLine": 1028
     },
     {
       "id": "compaction-archive-recall",
@@ -1393,7 +1406,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": null,
-      "registryLine": 1029
+      "registryLine": 1038
     },
     {
       "id": "usage-statistics",
@@ -1406,7 +1419,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
-      "registryLine": 1038
+      "registryLine": 1047
     },
     {
       "id": "cache-call-receipts",
@@ -1419,7 +1432,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
-      "registryLine": 1048
+      "registryLine": 1057
     },
     {
       "id": "local-proxy-fallback",
@@ -1433,7 +1446,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started",
-      "registryLine": 1058
+      "registryLine": 1067
     },
     {
       "id": "rate-limit-recovery",
@@ -1448,7 +1461,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/rate-limit-retries.md",
-      "registryLine": 1068
+      "registryLine": 1077
     },
     {
       "id": "custom-responses-profile",
@@ -1461,7 +1474,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 1077
+      "registryLine": 1086
     },
     {
       "id": "native-runtime-attachment",
@@ -1474,7 +1487,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/NATIVE_RUNTIME.md",
-      "registryLine": 1087
+      "registryLine": 1096
     }
   ]
 }
