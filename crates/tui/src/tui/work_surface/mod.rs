@@ -1352,8 +1352,8 @@ mod tests {
 
         assert_eq!(
             fleet_row(&rows),
-            " ▸ general-purpose  running  Streaming dead-code removal                  \
-12m 33s · ↓ 111.9k tokens"
+            "│ ▸ general-purpose  running  Streaming dead-code removal                \
+12m 33s · ↓ 111.9k tokens │"
         );
         // The group header the strip already had stays put.
         assert!(
@@ -1375,10 +1375,10 @@ mod tests {
             .insert("agent_stream".to_string(), 1);
         let focused = fleet_row(&render_rows(&mut app, 110, 4));
         assert!(
-            focused.trim_start().starts_with("❯ ▸ general-purpose"),
+            focused.starts_with("│ ❯ ▸ general-purpose"),
             "left-edge marker names the addressed fork: {focused}"
         );
-        assert!(focused.ends_with("· 1 queued"), "{focused}");
+        assert!(focused.ends_with("· 1 queued │"), "{focused}");
 
         // The counter is the runtime's truth: once the child takes the input
         // the next AgentList refresh clears it and the suffix disappears.
@@ -1750,7 +1750,7 @@ mod tests {
         // Nine projected rows (header + eight workers); two fit, seven do not.
         assert!(more.contains("↓ 7 more"), "{more}");
         // Right-aligned against the content column, not the left margin.
-        assert!(more.starts_with("        "), "{more}");
+        assert!(more.starts_with("│        "), "{more}");
     }
 
     #[test]
@@ -3056,13 +3056,17 @@ mod tests {
                 .find(|tab| tab.target == DockTabTarget::Panel(super::RailPanel::Tasks))
                 .unwrap();
             let cell = &terminal.backend().buffer()[(tab.area.x + 1, tab.area.y)];
-            assert_eq!(cell.bg, app.ui_theme.selection_bg, "{theme_id:?}");
+            assert_eq!(cell.bg, app.ui_theme.composer_bg, "{theme_id:?}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "{theme_id:?}");
             assert!(!cell.modifier.contains(Modifier::REVERSED), "{theme_id:?}");
             if let Some(ratio) = codewhale_palette::contrast_ratio(cell.fg, cell.bg) {
                 assert!(ratio >= 4.5, "{theme_id:?}: {cell:?} ({ratio})");
             } else {
-                // Native terminal colors are user supplied and cannot be measured here.
-                assert_eq!(*theme_id, codewhale_palette::ThemeId::Terminal);
+                assert_eq!(
+                    app.ui_theme.composer_bg,
+                    ratatui::style::Color::Reset,
+                    "{theme_id:?}"
+                );
             }
         }
         for width in [1, 2, 3, 8, 16, 40, 60, 80] {
@@ -4061,5 +4065,165 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn bottom_rounded_frame_separates_top_border_tabs_from_resize_drag() {
+        let mut app = app();
+        app.onboarding_workspace_trust_gate = false;
+        app.onboarding = crate::tui::app::OnboardingState::None;
+        app.ui_theme = codewhale_palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(
+            crate::tui::color_compat::ColorCompatBackend::new(
+                std::io::sink(),
+                codewhale_palette::ColorDepth::TrueColor,
+                codewhale_palette::PaletteMode::Dark,
+            )
+            .native_ocean_caps(),
+        );
+        app.work_surface.placement = WorkSurfacePlacement::Bottom;
+        app.work_surface.effective_placement = WorkSurfacePlacement::Bottom;
+        app.work_surface.top_height = 6;
+        add_todos(&mut app, 4);
+        for index in 0..24 {
+            app.add_message(HistoryCell::User {
+                content: format!("transcript line {index}"),
+            });
+        }
+
+        let config = Config::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let _ = crate::tui::ui::render(frame, &mut app, &config);
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        let composer = app.viewport.last_composer_area.expect("composer area");
+        let strip = app.work_surface.last_area.expect("workbar area");
+        let transcript = app.viewport.last_transcript_area.expect("transcript area");
+
+        assert_eq!(transcript.right(), 100);
+        assert_eq!(strip.x, composer.x);
+        assert_eq!(strip.right(), composer.right());
+        assert_eq!(buf[(strip.x, strip.y)].symbol(), "╭");
+        assert_eq!(buf[(strip.right() - 1, strip.y)].symbol(), "╮");
+        assert_eq!(buf[(strip.x, strip.bottom() - 1)].symbol(), "╰");
+        assert_eq!(buf[(strip.right() - 1, strip.bottom() - 1)].symbol(), "╯");
+        assert_ne!(
+            buf[(strip.x + 1, strip.y + 1)].bg,
+            codewhale_palette::UNDERWATER_UI_THEME.composer_bg
+        );
+
+        let terminal_tab = app
+            .work_surface
+            .dock_tabs
+            .iter()
+            .find(|hitbox| {
+                hitbox.target == super::model::DockTabTarget::Panel(super::RailPanel::Terminal)
+            })
+            .expect("Terminal tab hitbox")
+            .area;
+        assert_eq!(terminal_tab.y, strip.y);
+
+        let close_tab = app
+            .work_surface
+            .dock_tabs
+            .iter()
+            .find(|hitbox| hitbox.target == super::model::DockTabTarget::Close)
+            .expect("close hitbox")
+            .area;
+        assert_eq!(close_tab.y, strip.y);
+        let border_col = close_tab.x.saturating_sub(2);
+        assert_eq!(buf[(border_col, strip.y)].symbol(), "─");
+
+        let hover_tab = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: terminal_tab.x + 1,
+                row: strip.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(hover_tab.consumed);
+        assert_eq!(
+            app.work_surface.hovered_tab,
+            Some(super::model::DockTabTarget::Panel(
+                super::RailPanel::Terminal
+            ))
+        );
+        assert!(!app.work_surface.divider_hovered);
+
+        let hover_border = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: border_col,
+                row: strip.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(hover_border.consumed);
+        assert!(app.work_surface.divider_hovered);
+        assert!(app.work_surface.hovered_tab.is_none());
+
+        let click_down = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: terminal_tab.x + 1,
+                row: strip.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(click_down.consumed);
+        assert!(!app.work_surface.resizing);
+        let click_up = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: terminal_tab.x + 1,
+                row: strip.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(click_up.consumed);
+        assert_eq!(app.work_surface.panel, super::RailPanel::Terminal);
+
+        let start_height = strip.height;
+        let drag_down = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: border_col,
+                row: strip.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(drag_down.consumed);
+        assert!(app.work_surface.resizing);
+        let drag_move = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: border_col,
+                row: strip.y.saturating_sub(2),
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(drag_move.consumed);
+        assert_eq!(app.work_surface.top_height, start_height + 2);
+        let drag_up = super::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: border_col,
+                row: strip.y.saturating_sub(2),
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(drag_up.consumed);
+        assert!(!app.work_surface.resizing);
     }
 }

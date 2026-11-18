@@ -239,9 +239,13 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
             mouse.row == area.bottom().saturating_sub(1)
                 && mouse.column >= area.x
                 && mouse.column < area.right()
+                && dock_tab_at(app, mouse.column, mouse.row).is_none()
         }
         WorkSurfacePlacement::Bottom => {
-            mouse.row == area.y && mouse.column >= area.x && mouse.column < area.right()
+            mouse.row == area.y
+                && mouse.column >= area.x
+                && mouse.column < area.right()
+                && dock_tab_at(app, mouse.column, mouse.row).is_none()
         }
         WorkSurfacePlacement::Left => {
             mouse.column == area.right().saturating_sub(1)
@@ -261,6 +265,11 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
 
     match mouse.kind {
         MouseEventKind::Moved if on_divider => {
+            if app.work_surface.hovered_tab.take().is_some()
+                || app.work_surface.hovered.take().is_some()
+            {
+                app.needs_redraw = true;
+            }
             return MouseOutcome {
                 consumed: true,
                 action: None,
