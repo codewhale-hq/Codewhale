@@ -1641,8 +1641,11 @@ organization directly for the requests Codewhale sends with it.
 
 1. Sign in to Codewhale: `codewhale login`.
 2. Link the organization: `codewhale account claude-org link`. Codewhale prints
-   an authorization URL, tries to open it in a browser and waits up to 10
-   minutes for the link to finish. `codewhale account claude-org status` and
+   a link on the Codewhale account API's own origin
+   (`/api/claude-billing/start`, which confirms and then hands over to Claude),
+   tries to open it in a browser and waits up to 10 minutes for the link to
+   finish. Any other URL is refused. If an organization is already linked it
+   says so and opens nothing. `codewhale account claude-org status` and
    `codewhale account claude-org unlink` show and remove the link.
 3. Select the mode:
 
@@ -1655,18 +1658,28 @@ In this mode each request fetches a short-lived connection token from the
 Codewhale control plane (`POST /api/claude-billing/token`, authenticated with
 your Codewhale session) and sends it to `https://api.anthropic.com` as
 `Authorization: Bearer`, with no `x-api-key` and with the `anthropic-version`
-the control plane returns instead of `2023-06-01`. The token is reused until it
+the control plane returns instead of `2023-06-01`. When the token response
+names a `userProfileId`, every request also sends `anthropic-user-profile-id`
+and adds `user-profiles-billing-2026-10-01` to any existing `anthropic-beta`
+values, and `/v1/messages` bodies carry
+`"billing_policy": {"type": "billing_policy", "bill_to": "user_profile"}`
+(not `/v1/models` or token counting). The token is reused until it
 is within two minutes of expiry; a 401 from Anthropic refetches it and retries
 the request once. The token is sent only to the origin the control plane bound
 it to, and only on the official Anthropic endpoint: a custom `base_url` with
-this mode fails at load.
+this mode fails at load. A session provider key from the app server still wins
+over the linked organization, and session-only key policy refuses this mode.
 
 Errors say what to do. Not signed in to Codewhale: run `codewhale login`. No
 organization linked, or the link ended: run `codewhale account claude-org link`.
 A 402 `linked_organization_spend_limit_reached` or
-`linked_organization_billing_unavailable`, or a 403 `user_profile_not_billable`,
-means your organization's spend cap or credit stopped the request: check Linked
-platforms and Billing in the Claude Console. Those are never retried.
+`linked_organization_billing_unavailable` means your organization's spend cap
+or credit stopped the request: check Linked platforms and Billing in the Claude
+Console. A 403 `user_profile_not_billable` means the link ended or the
+organization cannot be billed: run `codewhale account claude-org link` and
+check Linked platforms in the Claude Console. Those are never retried. When the
+Codewhale control plane is temporarily unavailable the request is not sent and
+is retried like a connection failure.
 
 Known limits: readiness reports the mode as configured without checking that a
 link exists; the first request does that. The token cache lives in one client,

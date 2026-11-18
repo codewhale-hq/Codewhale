@@ -3269,7 +3269,7 @@ fn run_with<T: CloudTransport, W: Write>(
             Ok(())
         }
         CloudCommand::ClaudeOrg(args) => {
-            claude_org::run_claude_org(args, &client, out, opener, sleeper)
+            claude_org::run_claude_org(args, &client, api_base, out, opener, sleeper)
         }
         CloudCommand::Status => match client.load_auth()? {
             Some(_) => {

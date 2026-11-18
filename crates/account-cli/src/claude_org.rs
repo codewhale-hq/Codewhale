@@ -6,6 +6,7 @@ use super::*;
 const TOKEN_PATH: &str = "/api/claude-billing/token";
 const LINK_PATH: &str = "/api/claude-billing/link";
 const STATUS_PATH: &str = "/api/claude-billing";
+const LINK_START_PATH: &str = "/api/claude-billing/start";
 const TOKEN_REFRESH_MARGIN_SECS: i64 = 120;
 const LINK_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -107,6 +108,7 @@ pub struct ClaudeOrgToken {
     pub expires_at: DateTime<Utc>,
     pub base_url: String,
     pub anthropic_version: String,
+    pub user_profile_id: Option<String>,
 }
 
 impl std::fmt::Debug for ClaudeOrgToken {
@@ -116,6 +118,7 @@ impl std::fmt::Debug for ClaudeOrgToken {
             .field("expires_at", &self.expires_at)
             .field("base_url", &self.base_url)
             .field("anthropic_version", &self.anthropic_version)
+            .field("user_profile_id", &self.user_profile_id)
             .finish()
     }
 }
@@ -135,6 +138,7 @@ struct TokenWire {
     expires_at: String,
     base_url: String,
     anthropic_version: String,
+    user_profile_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -182,6 +186,13 @@ pub(crate) fn claude_org_token_from_response(
     if base.scheme() != "https" || base.host_str().is_none_or(str::is_empty) {
         return Err(invalid());
     }
+    if wire
+        .user_profile_id
+        .as_deref()
+        .is_some_and(|id| !valid_user_profile_id(id))
+    {
+        return Err(invalid());
+    }
     let expires_at = DateTime::parse_from_rfc3339(&wire.expires_at)
         .map_err(|_| invalid())?
         .with_timezone(&Utc);
@@ -190,7 +201,36 @@ pub(crate) fn claude_org_token_from_response(
         expires_at,
         base_url: wire.base_url,
         anthropic_version: wire.anthropic_version,
+        user_profile_id: wire.user_profile_id,
     })
+}
+
+fn valid_user_profile_id(id: &str) -> bool {
+    id.strip_prefix("uprof_").is_some_and(|rest| {
+        (1..=96).contains(&rest.len())
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
+}
+
+fn validate_link_start_url(value: &str, api_base: &str) -> Result<Url> {
+    let unsafe_url = || anyhow!("The Codewhale service returned an unsafe Claude link URL");
+    let url = Url::parse(value).map_err(|_| unsafe_url())?;
+    let api = Url::parse(api_base).context("invalid Codewhale account API base URL")?;
+    if value != url.as_str()
+        || url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.host_str() != api.host_str()
+        || url.port_or_known_default() != api.port_or_known_default()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path() != LINK_START_PATH
+    {
+        return Err(unsafe_url());
+    }
+    Ok(url)
 }
 
 fn response_code(response: &CloudResponse) -> Option<String> {
@@ -204,7 +244,8 @@ fn claude_org_error(response: &CloudResponse) -> ClaudeOrgError {
         (401, _) => ClaudeOrgErrorKind::NotSignedIn,
         (_, Some("claude_not_linked")) => ClaudeOrgErrorKind::NotLinked,
         (_, Some("claude_relink_required")) => ClaudeOrgErrorKind::RelinkRequired,
-        (_, Some("claude_billing_disabled")) => ClaudeOrgErrorKind::Disabled,
+        (_, Some("claude_billing_disabled")) | (404, None) => ClaudeOrgErrorKind::Disabled,
+        (_, Some("claude_refresh_busy")) => ClaudeOrgErrorKind::Unavailable,
         (500..=599, _) => ClaudeOrgErrorKind::Unavailable,
         _ => ClaudeOrgErrorKind::Invalid,
     };
@@ -249,26 +290,49 @@ impl AccountClient {
     }
 }
 
+fn link_status<T: CloudTransport>(client: &CloudClient<'_, T>) -> Result<LinkStatus> {
+    expect_claude_org_json(client.execute_authenticated(HttpMethod::Get, STATUS_PATH, None)?)
+}
+
+fn transient_poll_error(error: &anyhow::Error) -> bool {
+    outcome_unknown(error)
+        || error
+            .downcast_ref::<ClaudeOrgError>()
+            .is_some_and(|error| error.kind == ClaudeOrgErrorKind::Unavailable)
+}
+
 pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
     args: ClaudeOrgArgs,
     client: &CloudClient<'_, T>,
+    api_base: &str,
     out: &mut W,
     opener: &mut dyn FnMut(String) -> bool,
     sleeper: &mut dyn FnMut(Duration),
 ) -> Result<()> {
+    let unavailable = || anyhow::Error::new(ClaudeOrgError::new(ClaudeOrgErrorKind::Disabled));
     match args.command {
         ClaudeOrgCommand::Link(link) => {
+            let before = link_status(client)?;
+            if !before.available {
+                return Err(unavailable());
+            }
+            if before.linked {
+                writeln!(
+                    out,
+                    "A Claude organization is already linked to your Codewhale account."
+                )?;
+                writeln!(
+                    out,
+                    "Run `codewhale account claude-org unlink` first to link a different one."
+                )?;
+                return Ok(());
+            }
             let start: LinkStart = expect_claude_org_json(client.execute_authenticated(
                 HttpMethod::Post,
                 LINK_PATH,
                 Some(b"{}".to_vec()),
             )?)?;
-            let url = Url::parse(&start.authorization_url)
-                .ok()
-                .filter(|url| url.scheme() == "https" && url.host_str().is_some())
-                .ok_or_else(|| {
-                    anyhow!("The Codewhale service returned an invalid authorization URL")
-                })?;
+            let url = validate_link_start_url(&start.authorization_url, api_base)?;
             writeln!(out, "Link a Claude Platform organization")?;
             writeln!(out, "Open: {url}")?;
             if !link.no_open && !opener(url.to_string()) {
@@ -276,37 +340,37 @@ pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
             }
             writeln!(out, "Waiting for the link to finish in your browser...")?;
             let deadline = std::time::Instant::now() + Duration::from_secs(link.timeout_seconds);
+            let mut tolerated_error = false;
             loop {
-                let status: LinkStatus = expect_claude_org_json(client.execute_authenticated(
-                    HttpMethod::Get,
-                    STATUS_PATH,
-                    None,
-                )?)?;
-                if status.linked {
-                    writeln!(
-                        out,
-                        "Linked. Anthropic now bills your Claude organization directly for requests Codewhale sends with it."
-                    )?;
-                    writeln!(
-                        out,
-                        "To use it, set `auth_mode = \"claude-org\"` under `[providers.anthropic]` in your Codewhale config."
-                    )?;
-                    return Ok(());
+                sleeper(LINK_POLL_INTERVAL);
+                match link_status(client) {
+                    Ok(status) if !status.available => return Err(unavailable()),
+                    Ok(status) if status.linked => {
+                        writeln!(
+                            out,
+                            "Linked. Anthropic now bills your Claude organization directly for requests Codewhale sends with it."
+                        )?;
+                        writeln!(
+                            out,
+                            "To use it, set `auth_mode = \"claude-org\"` under `[providers.anthropic]` in your Codewhale config."
+                        )?;
+                        return Ok(());
+                    }
+                    Ok(_) => tolerated_error = false,
+                    Err(error) if !tolerated_error && transient_poll_error(&error) => {
+                        tolerated_error = true;
+                    }
+                    Err(error) => return Err(error),
                 }
                 if std::time::Instant::now() >= deadline {
                     bail!(
                         "The Claude organization link did not finish in time. Run `{CLAUDE_ORG_LINK_COMMAND}` to try again."
                     );
                 }
-                sleeper(LINK_POLL_INTERVAL);
             }
         }
         ClaudeOrgCommand::Status => {
-            let status: LinkStatus = expect_claude_org_json(client.execute_authenticated(
-                HttpMethod::Get,
-                STATUS_PATH,
-                None,
-            )?)?;
+            let status = link_status(client)?;
             if !status.available {
                 writeln!(
                     out,

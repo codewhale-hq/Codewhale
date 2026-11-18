@@ -742,14 +742,9 @@ impl LlmError {
 
     #[must_use]
     pub fn from_linked_organization_billing_stop(status: u16, body: &str) -> Option<Self> {
-        let stopped = match status {
-            402 => {
-                body.contains("linked_organization_spend_limit_reached")
-                    || body.contains("linked_organization_billing_unavailable")
-            }
-            403 => body.contains("user_profile_not_billable"),
-            _ => false,
-        };
+        let stopped = status == 402
+            && (body.contains("linked_organization_spend_limit_reached")
+                || body.contains("linked_organization_billing_unavailable"));
         stopped.then(|| {
             Self::QuotaExhausted(QuotaExhaustionError::from_http_message(
                 "Your Claude organization's spend cap or credit stopped this request. Check Linked platforms and Billing in the Claude Console.".to_string(),

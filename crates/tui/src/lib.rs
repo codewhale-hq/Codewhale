@@ -9114,6 +9114,12 @@ fn doctor_auth_scheme(config: &Config) -> &'static str {
         config.auth_mode_for_provider(&identity).as_deref(),
     ) {
         "none"
+    } else if provider == codewhale_config::ProviderKind::Anthropic
+        && codewhale_config::credentials::auth_mode_is_claude_org(
+            config.auth_mode_for_provider(&identity).as_deref(),
+        )
+    {
+        "bearer"
     } else if provider == codewhale_config::ProviderKind::Anthropic {
         "x-api-key"
     } else if provider == codewhale_config::ProviderKind::XiaomiMimo

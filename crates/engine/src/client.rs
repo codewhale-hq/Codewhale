@@ -1923,14 +1923,23 @@ impl CodewhaleClient {
             |entry| entry.http_headers.clone().unwrap_or_default(),
         );
         let auth_mode = config.auth_mode_for_provider(&admitted_identity);
-        let claude_org = (api_provider == ProviderKind::Anthropic
-            && codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref()))
-        .then(|| {
-            Arc::new(claude_org::ClaudeOrgAuth::for_profile(
+        let claude_org = if api_provider == ProviderKind::Anthropic
+            && api_key_source == codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE
+        {
+            anyhow::ensure!(
+                !config.session_provider_keys_only,
+                "Claude organization billing is unavailable under session-only provider key policy"
+            );
+            Some(Arc::new(claude_org::ClaudeOrgAuth::for_profile(
                 config.account_profile.clone(),
-                base_url.clone(),
-            ))
-        });
+                http_headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                    .map(|(_, value)| value.clone()),
+            )))
+        } else {
+            None
+        };
         let auth_disabled =
             auth_mode_disables_api_key(auth_mode.as_deref()) || claude_org.is_some();
         let insecure_skip_tls_verify = config.insecure_skip_tls_verify();
@@ -2093,17 +2102,21 @@ impl CodewhaleClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder> {
-        if let Some(claude_org) = &self.claude_org {
-            return claude_org
-                .authorize(request, None)
-                .await
-                .map(|(request, _)| request)
-                .map_err(anyhow::Error::new);
-        }
         anyhow::ensure!(
             !self.session_provider_keys_only || self.plugin_provider.is_none(),
             "Stored OAuth authorization is unavailable under session-only provider key policy"
         );
+        if let Some(claude_org) = &self.claude_org {
+            anyhow::ensure!(
+                !self.session_provider_keys_only,
+                "Claude organization billing is unavailable under session-only provider key policy"
+            );
+            return claude_org
+                .authorize(request, self.claude_org_test_transport_base())
+                .await
+                .map(|(request, _)| request)
+                .map_err(anyhow::Error::new);
+        }
         let Some(provider) = self.plugin_provider.clone() else {
             return Ok(request);
         };
@@ -2153,6 +2166,14 @@ impl CodewhaleClient {
         })
         .await??;
         Ok(request.bearer_auth(token))
+    }
+
+    fn claude_org_test_transport_base(&self) -> Option<&str> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(base_url) = self.test_messages_transport_base_url.as_deref() {
+            return Some(base_url);
+        }
+        None
     }
 
     /// Map a failed HTTP response, naming the route, host and key source on
@@ -4780,6 +4801,14 @@ impl CodewhaleClient {
         if self.plugin_provider.is_some() {
             return "plugin provider request failed".into();
         }
+        let claude_org_redacted;
+        let raw = match &self.claude_org {
+            Some(claude_org) => {
+                claude_org_redacted = claude_org.redact(raw);
+                claude_org_redacted.as_str()
+            }
+            None => raw,
+        };
         let provider = Some(self.api_provider.provider().display_name());
         let ErrorBodyDisclosure::Guarded { request_secrets } = disclosure else {
             return sanitize_http_error_body(provider, status, raw);
@@ -4900,13 +4929,15 @@ impl CodewhaleClient {
         operation: crate::llm_client::RetryOperation,
     ) -> std::result::Result<reqwest::Response, LlmError> {
         let replay = self.claude_org.as_ref().and_then(|_| request.try_clone());
-        let (response, sent_token) = self.dispatch_authorized(request, operation, None).await?;
+        let (response, sent_token) = self.dispatch_authorized(request, operation).await?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
-            && let (Some(replay), Some(sent_token)) = (replay, sent_token)
+            && let (Some(claude_org), Some(replay), Some(sent_token)) =
+                (self.claude_org.as_ref(), replay, sent_token)
+            && claude_org.refetch_after_rejection(&sent_token).await?
         {
             drop(response);
             return self
-                .dispatch_authorized(replay, operation, Some(&sent_token))
+                .dispatch_authorized(replay, operation)
                 .await
                 .map(|(response, _)| response);
         }
@@ -4918,11 +4949,18 @@ impl CodewhaleClient {
         &self,
         request: reqwest::RequestBuilder,
         operation: crate::llm_client::RetryOperation,
-        rejected_token: Option<&str>,
     ) -> std::result::Result<(reqwest::Response, Option<String>), LlmError> {
         let (request, sent_token) = match &self.claude_org {
+            Some(_) if self.session_provider_keys_only => {
+                return Err(LlmError::Other(
+                    "Claude organization billing is unavailable under session-only provider key policy"
+                        .into(),
+                ));
+            }
             Some(claude_org) => {
-                let (request, token) = claude_org.authorize(request, rejected_token).await?;
+                let (request, token) = claude_org
+                    .authorize(request, self.claude_org_test_transport_base())
+                    .await?;
                 (request, Some(token))
             }
             None => (
@@ -5073,9 +5111,10 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let billing_stop = self.claude_org.as_ref().and_then(|_| {
-                        LlmError::from_linked_organization_billing_stop(status.as_u16(), &raw)
-                    });
+                    let billing_stop = self
+                        .claude_org
+                        .as_ref()
+                        .and_then(|_| claude_org::http_error(status.as_u16(), &raw));
                     let error = match (billing_stop, provider_error, route_error) {
                         (Some(stop), _, _) => stop,
                         (
@@ -5237,9 +5276,10 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let billing_stop = self.claude_org.as_ref().and_then(|_| {
-                        LlmError::from_linked_organization_billing_stop(status.as_u16(), &raw)
-                    });
+                    let billing_stop = self
+                        .claude_org
+                        .as_ref()
+                        .and_then(|_| claude_org::http_error(status.as_u16(), &raw));
                     let error = match (billing_stop, provider_error, route_error) {
                         (Some(stop), _, _) => stop,
                         (
