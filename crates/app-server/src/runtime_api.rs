@@ -3285,7 +3285,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             "/v1/designs/{doc}/artboards/{artboard}/render",
             get(design::render_artboard),
         )
-        .route("/v1/designs/{doc}/assets/{*path}", get(design::design_asset))
+        .route(
+            "/v1/designs/{doc}/assets/{*path}",
+            get(design::design_asset),
+        )
         .route("/v1/todos", get(plans::list_todos))
         .route(
             "/v1/targets",

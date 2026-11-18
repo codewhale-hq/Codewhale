@@ -7,8 +7,7 @@ use sha2::{Digest, Sha256};
 pub const DESIGNS_DIR: &str = "designs";
 pub const TOKENS_CSS: &str = include_str!("../assets/design/tokens.css");
 pub const GEIST_SANS: &[u8] = include_bytes!("../assets/design/Geist-Variable.woff2");
-pub const GEIST_MONO: &[u8] =
-    include_bytes!("../assets/design/GeistMono-Variable.woff2");
+pub const GEIST_MONO: &[u8] = include_bytes!("../assets/design/GeistMono-Variable.woff2");
 
 const MAX_FRAGMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 10 * 1024 * 1024;
@@ -149,7 +148,11 @@ pub fn slugify(name: &str) -> String {
         }
     }
     let out = out.trim_end_matches('-').to_string();
-    if out.is_empty() { "artboard".to_string() } else { out }
+    if out.is_empty() {
+        "artboard".to_string()
+    } else {
+        out
+    }
 }
 
 fn require_id(kind: &str, id: &str) -> DesignResult<()> {
@@ -164,6 +167,14 @@ fn require_id(kind: &str, id: &str) -> DesignResult<()> {
 
 pub struct DesignStore {
     root: PathBuf,
+}
+
+struct ScreenshotJob {
+    board: Artboard,
+    page: PathBuf,
+    out: PathBuf,
+    browser: PathBuf,
+    profile: tempfile::TempDir,
 }
 
 impl DesignStore {
@@ -192,12 +203,18 @@ impl DesignStore {
 
     fn fragment_file(&self, doc: &str, artboard: &str) -> DesignResult<PathBuf> {
         require_id("artboard", artboard)?;
-        Ok(self.doc_dir(doc)?.join("artboards").join(format!("{artboard}.html")))
+        Ok(self
+            .doc_dir(doc)?
+            .join("artboards")
+            .join(format!("{artboard}.html")))
     }
 
     pub fn shot_file(&self, doc: &str, artboard: &str) -> DesignResult<PathBuf> {
         require_id("artboard", artboard)?;
-        Ok(self.doc_dir(doc)?.join("shots").join(format!("{artboard}.png")))
+        Ok(self
+            .doc_dir(doc)?
+            .join("shots")
+            .join(format!("{artboard}.png")))
     }
 
     pub fn list(&self) -> DesignResult<Vec<DesignSummary>> {
@@ -234,7 +251,9 @@ impl DesignStore {
         let raw = match std::fs::read(&path) {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DesignError::NotFound(format!("design `{doc}` does not exist")));
+                return Err(DesignError::NotFound(format!(
+                    "design `{doc}` does not exist"
+                )));
             }
             Err(err) => return Err(err.into()),
         };
@@ -297,7 +316,11 @@ impl DesignStore {
     }
 
     pub fn create_artboard(&self, doc: &str, spec: NewArtboard) -> DesignResult<WriteReport> {
-        if spec.width == 0 || spec.height == 0 || spec.width > MAX_ARTBOARD_EDGE || spec.height > MAX_ARTBOARD_EDGE {
+        if spec.width == 0
+            || spec.height == 0
+            || spec.width > MAX_ARTBOARD_EDGE
+            || spec.height > MAX_ARTBOARD_EDGE
+        {
             return Err(DesignError::Invalid(format!(
                 "artboard size must be between 1 and {MAX_ARTBOARD_EDGE} px on each edge"
             )));
@@ -379,7 +402,13 @@ impl DesignStore {
         Ok(report)
     }
 
-    pub fn move_artboard(&self, doc: &str, artboard: &str, x: i64, y: i64) -> DesignResult<Artboard> {
+    pub fn move_artboard(
+        &self,
+        doc: &str,
+        artboard: &str,
+        x: i64,
+        y: i64,
+    ) -> DesignResult<Artboard> {
         let mut loaded = self.load(doc)?;
         let index = find(&loaded, artboard)?;
         let stamp = now();
@@ -405,7 +434,9 @@ impl DesignStore {
     ) -> DesignResult<Comment> {
         let body = body.trim();
         if body.is_empty() || body.len() > 8000 {
-            return Err(DesignError::Invalid("comment body must be 1-8000 bytes".to_string()));
+            return Err(DesignError::Invalid(
+                "comment body must be 1-8000 bytes".to_string(),
+            ));
         }
         let mut loaded = self.load(doc)?;
         find(&loaded, artboard)?;
@@ -427,10 +458,17 @@ impl DesignStore {
         Ok(comment)
     }
 
-    pub fn set_comment_resolved(&self, doc: &str, comment: &str, resolved: bool) -> DesignResult<Comment> {
+    pub fn set_comment_resolved(
+        &self,
+        doc: &str,
+        comment: &str,
+        resolved: bool,
+    ) -> DesignResult<Comment> {
         let mut loaded = self.load(doc)?;
         let Some(found) = loaded.comments.iter_mut().find(|c| c.id == comment) else {
-            return Err(DesignError::NotFound(format!("comment `{comment}` does not exist")));
+            return Err(DesignError::NotFound(format!(
+                "comment `{comment}` does not exist"
+            )));
         };
         found.resolved = resolved;
         let found = found.clone();
@@ -451,21 +489,29 @@ impl DesignStore {
                 || part.contains('\0')
                 || part.starts_with('.')
             {
-                return Err(DesignError::Invalid(format!("asset path `{relative}` is not allowed")));
+                return Err(DesignError::Invalid(format!(
+                    "asset path `{relative}` is not allowed"
+                )));
             }
             path.push(part);
         }
         Ok(path)
     }
 
-    pub fn compose_document(&self, doc: &str, artboard: &str, base: &str, csp_source: &str) -> DesignResult<String> {
+    pub fn compose_document(
+        &self,
+        doc: &str,
+        artboard: &str,
+        base: &str,
+        csp_source: &str,
+    ) -> DesignResult<String> {
         let loaded = self.load(doc)?;
         let board = &loaded.artboards[find(&loaded, artboard)?];
         let fragment = self.read_fragment(doc, artboard)?;
         Ok(compose(board, &fragment, base, csp_source))
     }
 
-    pub async fn screenshot(&self, doc: &str, artboard: &str, scale: f32) -> DesignResult<PathBuf> {
+    fn prepare_screenshot(&self, doc: &str, artboard: &str) -> DesignResult<ScreenshotJob> {
         let dir = self.doc_dir(doc)?;
         let base = url_for_dir(&dir);
         let html = self.compose_document(doc, artboard, &base, "file:")?;
@@ -483,7 +529,27 @@ impl DesignStore {
                     .to_string(),
             )
         })?;
-        let profile = tempfile::tempdir()?;
+        Ok(ScreenshotJob {
+            board,
+            page,
+            out,
+            browser,
+            profile: tempfile::tempdir()?,
+        })
+    }
+
+    pub async fn screenshot(&self, doc: &str, artboard: &str, scale: f32) -> DesignResult<PathBuf> {
+        let store = DesignStore::at(self.root.clone());
+        let (doc_id, board_id) = (doc.to_string(), artboard.to_string());
+        let ScreenshotJob {
+            board,
+            page,
+            out,
+            browser,
+            profile,
+        } = tokio::task::spawn_blocking(move || store.prepare_screenshot(&doc_id, &board_id))
+            .await
+            .map_err(|_| DesignError::Io("screenshot preparation failed".to_string()))??;
         let mut cmd = tokio::process::Command::new(&browser);
         cmd.arg("--headless=new")
             .arg("--disable-gpu")
@@ -499,7 +565,10 @@ impl DesignStore {
             .arg("--proxy-server=127.0.0.1:9")
             .arg("--proxy-bypass-list=<-loopback>")
             .arg(format!("--user-data-dir={}", profile.path().display()))
-            .arg(format!("--force-device-scale-factor={}", scale.clamp(0.25, 3.0)))
+            .arg(format!(
+                "--force-device-scale-factor={}",
+                scale.clamp(0.25, 3.0)
+            ))
             .arg(format!("--window-size={},{}", board.width, board.height))
             .arg(format!("--screenshot={}", out.display()))
             .arg(url_for_file(&page))
@@ -511,7 +580,11 @@ impl DesignStore {
         let output = tokio::time::timeout(SCREENSHOT_TIMEOUT, child.wait_with_output())
             .await
             .map_err(|_| DesignError::Io("headless render timed out".to_string()))??;
-        if !out.is_file() {
+        let produced = tokio::fs::metadata(&out)
+            .await
+            .is_ok_and(|meta| meta.is_file());
+        let _ = tokio::task::spawn_blocking(move || drop(profile)).await;
+        if !produced {
             let tail: String = String::from_utf8_lossy(&output.stderr)
                 .lines()
                 .rev()
@@ -539,7 +612,9 @@ impl DesignStore {
             out.push_str(&rest[..start]);
             let tail = &rest[start..];
             let end = tail
-                .find(|c: char| c == '"' || c == '\'' || c == ')' || c.is_whitespace() || c == '<' || c == '>')
+                .find(|c: char| {
+                    c == '"' || c == '\'' || c == ')' || c.is_whitespace() || c == '<' || c == '>'
+                })
                 .unwrap_or(tail.len());
             let url = &tail[..end];
             match self.copy_local_asset(doc, url, source_dir) {
@@ -561,7 +636,12 @@ impl DesignStore {
         Ok(out)
     }
 
-    fn copy_local_asset(&self, doc: &str, url: &str, source_dir: Option<&Path>) -> Result<String, String> {
+    fn copy_local_asset(
+        &self,
+        doc: &str,
+        url: &str,
+        source_dir: Option<&Path>,
+    ) -> Result<String, String> {
         let raw = url.trim_start_matches("file://");
         let decoded = percent_decode(raw);
         let path = PathBuf::from(&decoded);
@@ -570,12 +650,30 @@ impl DesignStore {
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        if !matches!(ext.as_str(), "svg" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "woff2" | "woff" | "ttf" | "otf") {
+        if !matches!(
+            ext.as_str(),
+            "svg"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "avif"
+                | "woff2"
+                | "woff"
+                | "ttf"
+                | "otf"
+        ) {
             return Err("only image and font files are copied into a design".to_string());
         }
-        let canonical = path.canonicalize().map_err(|_| "file does not exist".to_string())?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| "file does not exist".to_string())?;
         let Some(allowed) = source_dir.and_then(|d| d.canonicalize().ok()) else {
-            return Err("local files are only copied when the HTML comes from a file inside the workspace".to_string());
+            return Err(
+                "local files are only copied when the HTML comes from a file inside the workspace"
+                    .to_string(),
+            );
         };
         let fonts_ok = matches!(ext.as_str(), "woff2" | "woff" | "ttf" | "otf")
             && canonical
@@ -583,7 +681,10 @@ impl DesignStore {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("Geist"));
         if fonts_ok {
-            let name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let name = canonical
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
             return Ok(format!("fonts/{name}"));
         }
         if !canonical.starts_with(&allowed) {
@@ -617,12 +718,19 @@ fn find(doc: &DesignDoc, artboard: &str) -> DesignResult<usize> {
     doc.artboards
         .iter()
         .position(|a| a.id == artboard)
-        .ok_or_else(|| DesignError::NotFound(format!("artboard `{artboard}` is not in design `{}`", doc.id)))
+        .ok_or_else(|| {
+            DesignError::NotFound(format!(
+                "artboard `{artboard}` is not in design `{}`",
+                doc.id
+            ))
+        })
 }
 
 fn check_fragment(html: &str) -> DesignResult<()> {
     if html.len() > MAX_FRAGMENT_BYTES {
-        return Err(DesignError::Invalid("artboard HTML is larger than 4 MiB".to_string()));
+        return Err(DesignError::Invalid(
+            "artboard HTML is larger than 4 MiB".to_string(),
+        ));
     }
     Ok(())
 }
@@ -681,7 +789,10 @@ fn percent_decode(raw: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Some(v) = raw.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            if let Some(v) = raw
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 out.push(v);
                 i += 3;
                 continue;
@@ -738,7 +849,13 @@ pub fn find_chromium() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let names = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "microsoft-edge"];
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "microsoft-edge",
+    ];
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
         for name in names {
@@ -765,22 +882,51 @@ mod tests {
     fn artboards_round_trip_and_place_left_to_right() {
         let (_dir, store) = store();
         let first = store
-            .create_artboard("shell", NewArtboard { name: "Shell Dark".into(), width: 1440, height: 900, html: "<div id=\"ab\"></div>".into(), ..Default::default() })
+            .create_artboard(
+                "shell",
+                NewArtboard {
+                    name: "Shell Dark".into(),
+                    width: 1440,
+                    height: 900,
+                    html: "<div id=\"ab\"></div>".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let second = store
-            .create_artboard("shell", NewArtboard { name: "Shell Dark".into(), width: 400, height: 300, html: String::new(), ..Default::default() })
+            .create_artboard(
+                "shell",
+                NewArtboard {
+                    name: "Shell Dark".into(),
+                    width: 400,
+                    height: 300,
+                    html: String::new(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let first = first.artboard.unwrap();
         let second = second.artboard.unwrap();
         assert_eq!(first.id, "shell-dark");
         assert_eq!(second.id, "shell-dark-2");
         assert_eq!(second.x, 1440 + ARTBOARD_GAP);
-        store.write_html("shell", "shell-dark", "<p>hi</p>", WriteMode::Append, None).unwrap();
-        assert_eq!(store.read_fragment("shell", "shell-dark").unwrap(), "<div id=\"ab\"><p>hi</p></div>");
+        store
+            .write_html("shell", "shell-dark", "<p>hi</p>", WriteMode::Append, None)
+            .unwrap();
+        assert_eq!(
+            store.read_fragment("shell", "shell-dark").unwrap(),
+            "<div id=\"ab\"><p>hi</p></div>"
+        );
         let doc = store.load("shell").unwrap();
         assert_eq!(doc.rev, 3);
         assert_eq!(doc.artboards[0].rev, 2);
-        assert!(store.doc_dir("shell").unwrap().join("assets/fonts/Geist-Variable.woff2").is_file());
+        assert!(
+            store
+                .doc_dir("shell")
+                .unwrap()
+                .join("assets/fonts/Geist-Variable.woff2")
+                .is_file()
+        );
     }
 
     #[test]
@@ -797,7 +943,17 @@ mod tests {
             outside.display()
         );
         let report = store
-            .create_artboard("d", NewArtboard { name: "a".into(), width: 10, height: 10, html, source_dir: Some(src), ..Default::default() })
+            .create_artboard(
+                "d",
+                NewArtboard {
+                    name: "a".into(),
+                    width: 10,
+                    height: 10,
+                    html,
+                    source_dir: Some(src),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(report.assets_copied.len(), 1);
         assert_eq!(report.refused_references.len(), 1);
@@ -818,14 +974,33 @@ mod tests {
 
     #[test]
     fn bundled_design_assets_match_their_sources() {
-        assert_eq!(TOKENS_CSS, include_str!("../../../vendor/codewhale-design/tokens.css"));
-        assert_eq!(GEIST_SANS, include_bytes!("../../../web/public/brand/fonts/Geist-Variable.woff2"));
-        assert_eq!(GEIST_MONO, include_bytes!("../../../web/public/brand/fonts/GeistMono-Variable.woff2"));
+        assert_eq!(
+            TOKENS_CSS,
+            include_str!("../../../vendor/codewhale-design/tokens.css")
+        );
+        assert_eq!(
+            GEIST_SANS,
+            include_bytes!("../../../web/public/brand/fonts/Geist-Variable.woff2")
+        );
+        assert_eq!(
+            GEIST_MONO,
+            include_bytes!("../../../web/public/brand/fonts/GeistMono-Variable.woff2")
+        );
     }
 
     #[test]
     fn composed_document_blocks_scripts_and_network() {
-        let board = Artboard { id: "a".into(), name: "a".into(), x: 0, y: 0, width: 10, height: 20, theme: "dark\"><script>".into(), rev: 1, updated_at: String::new() };
+        let board = Artboard {
+            id: "a".into(),
+            name: "a".into(),
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 20,
+            theme: "dark\"><script>".into(),
+            rev: 1,
+            updated_at: String::new(),
+        };
         let html = compose(&board, "<p>x</p>", "artboard://d/", "artboard:");
         assert!(html.contains("script-src 'none'"));
         assert!(html.contains("default-src 'none'"));

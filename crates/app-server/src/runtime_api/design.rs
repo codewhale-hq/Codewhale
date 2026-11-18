@@ -67,12 +67,20 @@ fn raw(bytes: Vec<u8>, content_type: &'static str) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     response
 }
 
 fn asset_type(path: &str) -> &'static str {
-    match path.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+    match path
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
@@ -100,7 +108,10 @@ pub(super) async fn get_design(
     Path(doc): Path<String>,
     Query(query): Query<DesignQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let design = with_store(&state, query.thread_id.as_deref(), move |store| store.load(&doc)).await?;
+    let design = with_store(&state, query.thread_id.as_deref(), move |store| {
+        store.load(&doc)
+    })
+    .await?;
     Ok(Json(json!({ "design": design })))
 }
 

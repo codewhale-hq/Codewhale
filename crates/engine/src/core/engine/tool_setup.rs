@@ -80,14 +80,15 @@ impl Engine {
     ) -> ToolRegistryBuilder {
         let shell_policy = shell_policy_for_mode(mode, allow_shell);
         if mode != AppMode::Plan {
-            let mut builder = ToolRegistryBuilder::new().with_agent_runtime_surface(
-                client.clone(),
-                model.to_string(),
-                self.agent_tool_surface_options(shell_policy),
-                todo_list,
-                plan_state,
-            )
-            .with_design_tools();
+            let mut builder = ToolRegistryBuilder::new()
+                .with_agent_runtime_surface(
+                    client.clone(),
+                    model.to_string(),
+                    self.agent_tool_surface_options(shell_policy),
+                    todo_list,
+                    plan_state,
+                )
+                .with_design_tools();
             if self.config.features.enabled(Feature::Mcp) {
                 builder = builder.with_registry_mcp_sync_tool();
             }

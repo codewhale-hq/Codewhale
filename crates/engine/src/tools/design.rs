@@ -77,7 +77,10 @@ fn report_text(verb: &str, doc: &str, report: &WriteReport) -> String {
         None => format!("{verb} design `{doc}`."),
     };
     if !report.assets_copied.is_empty() {
-        text.push_str(&format!(" Copied {} local asset(s) into the design.", report.assets_copied.len()));
+        text.push_str(&format!(
+            " Copied {} local asset(s) into the design.",
+            report.assets_copied.len()
+        ));
     }
     if !report.refused_references.is_empty() {
         text.push_str(&format!(
@@ -103,13 +106,15 @@ async fn read_html_source(
     let html = optional_str(input, "html")?;
     let html_file = optional_str(input, "html_file")?;
     match (html, html_file) {
-        (Some(_), Some(_)) => Err(ToolError::invalid_input("pass `html` or `html_file`, not both")),
+        (Some(_), Some(_)) => Err(ToolError::invalid_input(
+            "pass `html` or `html_file`, not both",
+        )),
         (Some(html), None) => Ok((html.to_string(), Some(context.workspace.clone()))),
         (None, Some(file)) => {
             let path = context.resolve_path(file)?;
-            let text = tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|err| ToolError::execution_failed(format!("could not read {}: {err}", path.display())))?;
+            let text = tokio::fs::read_to_string(&path).await.map_err(|err| {
+                ToolError::execution_failed(format!("could not read {}: {err}", path.display()))
+            })?;
             Ok((text, Some(context.workspace.clone())))
         }
         (None, None) => Ok((String::new(), None)),
@@ -131,12 +136,24 @@ impl ToolSpec for DesignTool {
 
     fn description(&self) -> &'static str {
         match self.0 {
-            DesignOp::List => "List Makewhale designs in this workspace, or the artboards and open comments of one design. Designs are HTML/CSS artboards on the desktop design canvas.",
-            DesignOp::CreateArtboard => "Create an HTML/CSS artboard on a Makewhale design canvas (the design is created if new). Provide body HTML (no <html>/<head>) as `html` or a workspace file as `html_file`. The codewhale-design tokens (CSS variables such as --surface, --text, --accent) and Geist / Geist Mono fonts are always available. Scripts never run and the network is blocked; workspace image files referenced by file:// URLs are copied into the design. Returns the artboard id.",
-            DesignOp::WriteHtml => "Write HTML into an existing Makewhale artboard. mode `replace` swaps the whole body; `append` inserts the HTML inside the artboard's root element, so build a design in several small writes. The desktop canvas live-reloads after each write.",
-            DesignOp::ReadHtml => "Read back an artboard's current body HTML so you can edit it precisely.",
-            DesignOp::Screenshot => "Render an artboard in a sandboxed headless browser (no scripts, no network) and return the PNG so you can review it visually. The image is saved in the design's shots folder.",
-            DesignOp::Comments => "List the comments people pinned to a design's artboards, optionally resolving one by id after you address it.",
+            DesignOp::List => {
+                "List Makewhale designs in this workspace, or the artboards and open comments of one design. Designs are HTML/CSS artboards on the desktop design canvas."
+            }
+            DesignOp::CreateArtboard => {
+                "Create an HTML/CSS artboard on a Makewhale design canvas (the design is created if new). Provide body HTML (no <html>/<head>) as `html` or a workspace file as `html_file`. The codewhale-design tokens (CSS variables such as --surface, --text, --accent) and Geist / Geist Mono fonts are always available. Scripts never run and the network is blocked; workspace image files referenced by file:// URLs are copied into the design. Returns the artboard id."
+            }
+            DesignOp::WriteHtml => {
+                "Write HTML into an existing Makewhale artboard. mode `replace` swaps the whole body; `append` inserts the HTML inside the artboard's root element, so build a design in several small writes. The desktop canvas live-reloads after each write."
+            }
+            DesignOp::ReadHtml => {
+                "Read back an artboard's current body HTML so you can edit it precisely."
+            }
+            DesignOp::Screenshot => {
+                "Render an artboard in a sandboxed headless browser (no scripts, no network) and return the PNG so you can review it visually. The image is saved in the design's shots folder."
+            }
+            DesignOp::Comments => {
+                "List the comments people pinned to a design's artboards, optionally resolving one by id after you address it."
+            }
         }
     }
 
@@ -203,7 +220,9 @@ impl ToolSpec for DesignTool {
             DesignOp::CreateArtboard | DesignOp::WriteHtml | DesignOp::Comments => {
                 vec![ToolCapability::WritesFiles]
             }
-            DesignOp::List | DesignOp::ReadHtml | DesignOp::Screenshot => vec![ToolCapability::ReadOnly],
+            DesignOp::List | DesignOp::ReadHtml | DesignOp::Screenshot => {
+                vec![ToolCapability::ReadOnly]
+            }
         }
     }
 
@@ -217,7 +236,11 @@ impl ToolSpec for DesignTool {
             .map(RichToolResult::into_result)
     }
 
-    async fn execute_rich(&self, input: Value, context: &ToolContext) -> Result<RichToolResult, ToolError> {
+    async fn execute_rich(
+        &self,
+        input: Value,
+        context: &ToolContext,
+    ) -> Result<RichToolResult, ToolError> {
         let store = store(context);
         match self.0 {
             DesignOp::List => {
@@ -229,7 +252,12 @@ impl ToolSpec for DesignTool {
                         let lines: Vec<String> = loaded
                             .artboards
                             .iter()
-                            .map(|a| format!("- {} \"{}\" {}x{} at {},{} {} rev {}", a.id, a.name, a.width, a.height, a.x, a.y, a.theme, a.rev))
+                            .map(|a| {
+                                format!(
+                                    "- {} \"{}\" {}x{} at {},{} {} rev {}",
+                                    a.id, a.name, a.width, a.height, a.x, a.y, a.theme, a.rev
+                                )
+                            })
                             .collect();
                         ToolResult::success(format!(
                             "Design `{}` ({} artboards, {} open comments, rev {}):\n{}",
@@ -245,7 +273,12 @@ impl ToolSpec for DesignTool {
                         let all = blocking(move || store.list()).await?;
                         let lines: Vec<String> = all
                             .iter()
-                            .map(|d| format!("- {} \"{}\": {} artboards, {} open comments", d.id, d.name, d.artboards, d.open_comments))
+                            .map(|d| {
+                                format!(
+                                    "- {} \"{}\": {} artboards, {} open comments",
+                                    d.id, d.name, d.artboards, d.open_comments
+                                )
+                            })
                             .collect();
                         let text = if lines.is_empty() {
                             "No designs yet. Create one with design_create_artboard.".to_string()
@@ -287,11 +320,17 @@ impl ToolSpec for DesignTool {
                 let mode = match optional_str(&input, "mode")?.unwrap_or("append") {
                     "replace" => WriteMode::Replace,
                     "append" => WriteMode::Append,
-                    other => return Err(ToolError::invalid_input(format!("unknown mode `{other}`; use replace or append"))),
+                    other => {
+                        return Err(ToolError::invalid_input(format!(
+                            "unknown mode `{other}`; use replace or append"
+                        )));
+                    }
                 };
                 let (html, source_dir) = read_html_source(&input, context).await?;
                 if html.is_empty() && mode == WriteMode::Append {
-                    return Err(ToolError::invalid_input("append needs `html` or `html_file`"));
+                    return Err(ToolError::invalid_input(
+                        "append needs `html` or `html_file`",
+                    ));
                 }
                 let doc_for = doc.clone();
                 let report = blocking(move || {
@@ -313,13 +352,19 @@ impl ToolSpec for DesignTool {
                 let doc = required_str(&input, "doc")?.to_string();
                 let artboard = required_str(&input, "artboard")?.to_string();
                 let scale = input.get("scale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-                let shot = store.screenshot(&doc, &artboard, scale).await.map_err(map_err)?;
+                let shot = store
+                    .screenshot(&doc, &artboard, scale)
+                    .await
+                    .map_err(map_err)?;
                 let mut rich = super::read_media::execute_read_media(
                     json!({ "path": shot.display().to_string(), "detail": "auto" }),
                     context,
                 )
                 .await?;
-                let note = format!("Rendered artboard `{artboard}` of design `{doc}` to {}.\n", shot.display());
+                let note = format!(
+                    "Rendered artboard `{artboard}` of design `{doc}` to {}.\n",
+                    shot.display()
+                );
                 rich.result.content = format!("{note}{}", rich.result.content);
                 Ok(rich)
             }

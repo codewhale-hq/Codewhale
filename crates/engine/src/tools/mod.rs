@@ -30,6 +30,7 @@ pub mod file;
 pub mod file_search;
 pub mod finance;
 
+pub mod design;
 pub mod fetch_url;
 pub mod file_tool;
 pub mod fim;
@@ -55,7 +56,6 @@ pub mod plan;
 pub mod plugin;
 pub mod present;
 pub mod project;
-pub mod design;
 pub mod read_media;
 pub mod registry;
 pub mod remember;
