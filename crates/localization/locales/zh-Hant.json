@@ -2746,13 +2746,13 @@
   "HelpAliasesSuffix": "（別名：{aliases}）",
   "PaletteAliasesSuffix": "別名：{aliases}",
   "DiffSummaryLine": "摘要：{files}，+{added} -{deleted}，{hunks}",
-  "DiffHunkOne": "{count}個區塊",
-  "DiffHunkMany": "{count}個區塊",
+  "DiffHunkOne": "{count}處變更",
+  "DiffHunkMany": "{count}處變更",
   "ComposerContextResolvedOnSend": "傳送時解析",
   "StatusCatalogLive": "models.dev 即時",
   "StatusCatalogStale": "models.dev 已過期",
   "StatusCatalogRefreshFailed": "models.dev 重新整理失敗",
-  "StatusCatalogOfferings": "{count} 個模型項目",
+  "StatusCatalogOfferings": "{count} 個可用模型",
   "StatusCatalogFetched": "{age}取得",
   "StatusCloudFactsOff": "關閉"
 }

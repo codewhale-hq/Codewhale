@@ -1929,10 +1929,10 @@ mod tests {
         view.set_locale(Locale::ZhHans);
         let chinese = view.body_text();
         assert!(
-            chinese.starts_with("摘要：1个文件，+1 -1，1个变更块\n"),
+            chinese.starts_with("摘要：1个文件，+1 -1，1处改动\n"),
             "{chinese}"
         );
-        assert!(chinese.contains("src/a.rs +1 -1 1个变更块"), "{chinese}");
+        assert!(chinese.contains("src/a.rs +1 -1 1处改动"), "{chinese}");
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
