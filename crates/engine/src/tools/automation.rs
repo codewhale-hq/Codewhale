@@ -157,7 +157,7 @@ impl ToolSpec for AutomationTool {
                 "Inspect durable scheduled automations. Actions: \"list\" (status, next run, last run) and \"read\" (one automation plus recent run records)."
             }
             _ => {
-                "Manage durable scheduled automations. Actions: \"create\" (approval; schedules support ONCE, HOURLY, WEEKLY, and 5-field CRON forms; watcher mode uses EXACT NOTHING_TO_REPORT for no-change checks), \"list\", \"read\", \"update\" (approval), \"pause\" (approval), \"resume\" (approval), \"adopt\" (approval), \"delete\" (approval), \"run\" (approval)."
+                "Manage durable scheduled automations. Actions: \"create\" (approval; ONCE, HOURLY, WEEKLY, or 5-field CRON; watcher uses EXACT NOTHING_TO_REPORT when unchanged), \"list\", \"read\", and approval-gated \"update\", \"pause\", \"resume\", \"adopt\", \"delete\", \"run\"."
             }
         }
     }
@@ -248,7 +248,7 @@ impl ToolSpec for AutomationTool {
         }
         properties.insert(
             "automation_id".to_string(),
-            json!({ "type": "string", "description": "Target automation id (action=read/update/pause/resume/adopt/delete/run)." }),
+            json!({ "type": "string", "description": "Automation id (read/update/pause/resume/adopt/delete/run)." }),
         );
         properties.insert(
             "limit".to_string(),
