@@ -33,7 +33,7 @@ use codewhale_models::hand_pricing::{
     is_minimax_m3, minimax_m3_standard_pricing,
 };
 use codewhale_models::{Usage, has_date_snapshot_suffix};
-use codewhale_runtime::config::{DEEPSEEK_ALIAS_RETIREMENT_UTC, canonical_model_id_for_provider};
+use codewhale_runtime::config::DEEPSEEK_ALIAS_RETIREMENT_UTC;
 
 /// Cost estimate in displayable currencies.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1161,6 +1161,17 @@ pub fn audit_turn_cost_for_provider_on_endpoint_at(
     )
 }
 
+fn resolved_pricing_model(provider: ProviderKind, model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    if trimmed.chars().any(char::is_control) {
+        return None;
+    }
+    codewhale_config::route::resolve_model(provider, trimmed, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.logical)
+}
+
 /// Identity-aware provider audit for named compatible routes.
 ///
 /// `ProviderKind::Custom` is only a transport family, so it is never sufficient
@@ -1186,9 +1197,6 @@ fn audit_turn_cost_for_provider_on_endpoint_for_identity_at(
         return TurnCostAudit::unpriced(UnpricedReason::AmbiguousBillingSurface);
     }
     if provider == ProviderKind::Custom {
-        // A transport family plus current mutable catalog state is not a
-        // billing receipt. Reviewed custom routes are priced only by the
-        // frozen dispatch quote handled in the route-audit path below.
         return TurnCostAudit::unpriced(UnpricedReason::UnknownBillingBasis);
     }
     if route_requires_billing_surface(provider, model) {
@@ -1200,7 +1208,7 @@ fn audit_turn_cost_for_provider_on_endpoint_for_identity_at(
         provider,
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
     );
-    let Some(canonical_model) = canonical_model_id_for_provider(provider, normalized_model) else {
+    let Some(canonical_model) = resolved_pricing_model(provider, normalized_model) else {
         return TurnCostAudit::unpriced(UnpricedReason::NoPricingRow);
     };
     let catalog_model = if direct_deepseek
@@ -1760,8 +1768,7 @@ fn audit_openrouter_immutable_pricing(
     usage: &Usage,
     recorded_at: DateTime<Utc>,
 ) -> TurnCostAudit {
-    let Some(canonical_model) = canonical_model_id_for_provider(ProviderKind::Openrouter, model)
-    else {
+    let Some(canonical_model) = resolved_pricing_model(ProviderKind::Openrouter, model) else {
         return TurnCostAudit::unpriced(UnpricedReason::NoPricingRow);
     };
     if let Some(offering) = crate::provider_lake::bundled_catalog_offering_for_model(
@@ -5390,5 +5397,53 @@ mod tests {
             );
             assert_eq!(actual, expected, "{provider:?}/{model}");
         }
+    }
+
+    #[test]
+    fn pricing_resolves_prefixed_route_models_and_refuses_auto_sentinel() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+        let usage = Usage {
+            input_tokens: 100_000,
+            output_tokens: 10_000,
+            input_audio_tokens: Some(0),
+            ..Usage::default()
+        };
+        let bare = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
+            ProviderKind::Google,
+            Some("google"),
+            "gemini-4-hydrogen",
+            None,
+            &usage,
+            now,
+            false,
+            None,
+        );
+        let prefixed = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
+            ProviderKind::Google,
+            Some("google"),
+            "models/gemini-4-hydrogen",
+            None,
+            &usage,
+            now,
+            false,
+            None,
+        );
+        assert!(bare.estimate.is_some());
+        assert_eq!(prefixed, bare);
+
+        let auto_audit = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
+            ProviderKind::Google,
+            Some("google"),
+            "auto",
+            None,
+            &usage,
+            now,
+            false,
+            None,
+        );
+        assert_eq!(
+            auto_audit.unpriced_reason,
+            Some(UnpricedReason::NoPricingRow)
+        );
     }
 }

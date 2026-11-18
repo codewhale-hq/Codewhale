@@ -940,7 +940,7 @@ def validate_reviewed(data: Any) -> dict[str, Any]:
     if not isinstance(intrinsic, dict):
         die("reviewed intrinsic facts must be an object")
     for key, row in intrinsic.items():
-        if not identifier(key) or not isinstance(row, dict) or not identifier(row.get("source")) or any(not positive(row.get(field)) for field in ("context_window", "max_output", "generation_default")) or not (row.get("reasoning") is None or isinstance(row.get("reasoning"), bool)):
+        if not identifier(key) or not isinstance(row, dict) or not identifier(row.get("source")) or any(not positive(row.get(field)) for field in ("context_window", "max_output", "generation_default")) or any(not (row.get(field) is None or isinstance(row.get(field), bool)) for field in ("reasoning", "thought_signatures_required", "thinking_can_disable")):
             die("malformed reviewed intrinsic fact")
     public = data.get("public_models", [])
     if not isinstance(public, list):

@@ -717,32 +717,19 @@ fn is_google_openai_compat_chat_route(base_url: &str) -> bool {
     host == "generativelanguage.googleapis.com" && path == "v1beta/openai"
 }
 
-/// Gemini models whose thinking makes thought signatures load-bearing on
-/// the OpenAI-compat route. Gemini 2.5 Flash-Lite ships with thinking off
-/// by default, so a missing signature there degrades with a warning
-/// instead of failing the turn.
-fn google_model_requires_thought_signatures(model: &str) -> bool {
-    let model = model.trim().to_ascii_lowercase();
-    // Google names the same model both ways on this endpoint, and a route
-    // configured as `models/gemini-3-pro` matched none of the prefixes below:
-    // the model that most needs a signature looked like one that needs none,
-    // so the fail-closed check waved it through and Google rejected the replay
-    // instead (#6018).
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    if model.starts_with("gemini-3") {
-        return true;
-    }
-    if model.starts_with("gemini-2.5-pro") {
-        return true;
-    }
-    model.starts_with("gemini-2.5-flash") && !model.starts_with("gemini-2.5-flash-lite")
+fn resolve_google_route_model(model: &str) -> Option<String> {
+    codewhale_config::route::resolve_model(ProviderKind::Google, model, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.wire_id)
 }
 
-/// Google's compatibility endpoint accepts the ordinary `reasoning_effort`
-/// field across Gemini 2.5 and 3. A top-level `google` object is rejected;
-/// native thinking controls would require `extra_body.google` instead.
-/// Use one control, since the endpoint rejects overlapping effort and native
-/// thinking settings. https://ai.google.dev/gemini-api/docs/openai#thinking
+fn google_model_requires_thought_signatures(model: &str) -> bool {
+    resolve_google_route_model(model)
+        .as_deref()
+        .is_some_and(codewhale_models::model_requires_thought_signatures)
+}
+
 fn apply_google_reasoning_effort(
     body: &mut serde_json::Value,
     base_url: &str,
@@ -755,13 +742,11 @@ fn apply_google_reasoning_effort(
     let Some(effort) = effort else {
         return;
     };
-    let model = model.trim().to_ascii_lowercase();
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    let can_disable = model.starts_with("gemini-2.5-") && !model.starts_with("gemini-2.5-pro");
+    let can_disable = resolve_google_route_model(model)
+        .as_deref()
+        .is_some_and(codewhale_models::model_can_disable_thinking);
     let effort = match effort.trim().to_ascii_lowercase().as_str() {
         "off" | "disabled" | "none" | "false" if can_disable => "none",
-        // Gemini 3 and 2.5 Pro cannot disable thinking. The compatibility
-        // layer maps minimal to the selected model's lowest supported level.
         "off" | "disabled" | "none" | "false" | "minimal" => "minimal",
         "low" => "low",
         "medium" | "mid" | "" => "medium",
@@ -8645,21 +8630,27 @@ mod google_thought_signature_tests {
     /// that needs none and the replay reached Google unsigned (#6018).
     #[test]
     fn google_route_fails_closed_for_a_models_prefixed_thinking_id() {
-        let mut request = google_request_with_signed_tool(None);
-        request.model = "models/gemini-3-pro-preview".to_string();
-        let error = build_chat_wire_body(
-            &request,
-            ProviderKind::Google,
-            DEFAULT_GOOGLE_BASE_URL,
-            false,
-            None,
-        )
-        .err()
-        .expect("a models/-prefixed thinking id must fail closed like its bare spelling");
-        assert!(
-            error.to_string().contains("thought signature"),
-            "error must name the missing signature: {error}"
-        );
+        for model in [
+            "models/gemini-3-pro-preview",
+            "gemini-4-hydrogen",
+            "models/gemini-4-hydrogen",
+        ] {
+            let mut request = google_request_with_signed_tool(None);
+            request.model = model.to_string();
+            let error = build_chat_wire_body(
+                &request,
+                ProviderKind::Google,
+                DEFAULT_GOOGLE_BASE_URL,
+                false,
+                None,
+            )
+            .err()
+            .expect("a thinking id must fail closed across bare and models/-prefixed spellings");
+            assert!(
+                error.to_string().contains("thought signature"),
+                "error must name the missing signature for {model}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -1611,36 +1611,75 @@
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.8-flash": {
         "source": "official vendor model docs, verified 2026-10-17; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.6-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.5-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.5-flash-lite": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-flash-lite": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-flash-lite-preview": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3.1-pro": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3.1-pro-preview": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-4-argon": {
@@ -1648,6 +1687,8 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-4-carbon": {
@@ -1655,24 +1696,67 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-3-pro": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-3-pro-preview": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-2.5-pro": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       },
       "gemini-2.5-flash": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 1048576,
         "max_output": 65536,
+        "thought_signatures_required": true,
+        "thinking_can_disable": true,
+        "family": "Google"
+      },
+      "gemini-2.5-flash-lite": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "thought_signatures_required": false,
+        "thinking_can_disable": true,
+        "family": "Google"
+      },
+      "gemini-flash-latest": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
+      "gemini-flash-lite-latest": {
+        "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": false,
+        "thinking_can_disable": true,
         "family": "Google"
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -1929,6 +2013,8 @@
         "context_window": 1048576,
         "max_output": 65536,
         "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
         "family": "Google"
       }
     },

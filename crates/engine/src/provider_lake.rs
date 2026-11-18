@@ -2355,218 +2355,195 @@ pub fn provider_capability(provider: ProviderKind, resolved_model: &str) -> Prov
     provider_capability_with_wire(provider, resolved_model, None)
 }
 
-/// Wire-aware variant of [`provider_capability`] that respects
-/// `wire = "responses" | "anthropic" | "chat"` for `Custom` providers.
-///
-/// Built-ins keep their fixed policy; `Custom` defaults to `Chat` when `wire`
-/// is absent so existing configs stay compatible. Mirrors
-/// `crates/engine/src/client.rs::provider_wire_format_for_config` and the
-/// `Custom` comment in `crates/config/src/provider.rs`.
+const fn payload_mode_for_wire(
+    format: codewhale_config::provider::WireFormat,
+) -> RequestPayloadMode {
+    match format {
+        codewhale_config::provider::WireFormat::ChatCompletions => {
+            RequestPayloadMode::ChatCompletions
+        }
+        codewhale_config::provider::WireFormat::Responses => RequestPayloadMode::Responses,
+        codewhale_config::provider::WireFormat::AnthropicMessages => {
+            RequestPayloadMode::AnthropicMessages
+        }
+    }
+}
+
+pub(crate) fn provider_uses_anthropic_messages_floor(provider: ProviderKind) -> bool {
+    let descriptor = codewhale_config::route::ProviderDescriptor::for_kind(provider);
+    descriptor.wire_policy()
+        == codewhale_config::provider::WirePolicy::Fixed(
+            codewhale_config::provider::WireFormat::AnthropicMessages,
+        )
+        && matches!(descriptor.family(), "anthropic" | "minimax" | "openmodel")
+}
+
+pub(crate) fn catalog_max_output_for_route(provider: ProviderKind, model: &str) -> Option<u32> {
+    let resolved = codewhale_config::route::resolve_model(provider, model, None)
+        .ok()
+        .filter(|row| !row.is_auto);
+    let wire_id = resolved
+        .as_ref()
+        .map_or_else(|| model.trim(), |row| row.wire_id.as_str());
+    let logical = resolved.as_ref().map(|row| row.logical.as_str());
+    let canonical = resolved
+        .as_ref()
+        .and_then(|row| row.model.as_ref())
+        .map(|id| id.as_str());
+    let route_offering = resolved.as_ref().and_then(|row| row.offering.as_ref());
+    let catalog_offering = bundled_catalog_offering_for_model(provider, wire_id);
+
+    codewhale_models::max_output_tokens_for_model(wire_id)
+        .or_else(|| logical.and_then(codewhale_models::max_output_tokens_for_model))
+        .or_else(|| canonical.and_then(codewhale_models::max_output_tokens_for_model))
+        .or_else(|| {
+            route_offering
+                .and_then(|offering| offering.limits.output_tokens)
+                .and_then(|limit| u32::try_from(limit).ok())
+        })
+        .or_else(|| {
+            catalog_offering
+                .as_ref()
+                .and_then(|offering| offering.limit.as_ref())
+                .and_then(|limit| limit.output)
+                .and_then(|limit| u32::try_from(limit).ok())
+        })
+}
+
 #[must_use]
 pub fn provider_capability_with_wire(
     provider: ProviderKind,
     resolved_model: &str,
     wire: Option<&str>,
 ) -> ProviderCapability {
-    // Custom wire overrides must be checked before the generic fallback so
-    // `[providers.<name>] wire = "responses"` / `"anthropic"` is honored.
-    if provider == ProviderKind::Custom {
+    let descriptor = codewhale_config::route::ProviderDescriptor::for_kind(provider);
+    let resolved = codewhale_config::route::resolve_model(provider, resolved_model, None)
+        .ok()
+        .filter(|row| !row.is_auto);
+    let wire_id = resolved
+        .as_ref()
+        .map_or_else(|| resolved_model.trim(), |row| row.wire_id.as_str());
+    let logical = resolved.as_ref().map(|row| row.logical.as_str());
+    let canonical = resolved
+        .as_ref()
+        .and_then(|row| row.model.as_ref())
+        .map(|id| id.as_str());
+    let route_offering = resolved.as_ref().and_then(|row| row.offering.as_ref());
+    let catalog_offering = bundled_catalog_offering_for_model(provider, wire_id);
+
+    let request_payload_mode = if provider == ProviderKind::Custom {
         if codewhale_config::provider::wire_dialect_prefers_anthropic(wire) {
-            return ProviderCapability {
-                provider,
-                resolved_model: resolved_model.to_string(),
-                context_window: codewhale_models::context_window_for_model(resolved_model)
-                    .unwrap_or(codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
-                max_output: codewhale_models::max_output_tokens_for_model(resolved_model),
-                thinking_supported: codewhale_models::model_supports_reasoning(resolved_model),
-                cache_telemetry_supported: false,
-                request_payload_mode: RequestPayloadMode::AnthropicMessages,
-                alias_deprecation: None,
-            };
+            RequestPayloadMode::AnthropicMessages
+        } else if codewhale_config::provider::wire_dialect_prefers_responses(wire) {
+            RequestPayloadMode::Responses
+        } else {
+            RequestPayloadMode::ChatCompletions
         }
-        if codewhale_config::provider::wire_dialect_prefers_responses(wire) {
-            return ProviderCapability {
-                provider,
-                resolved_model: resolved_model.to_string(),
-                context_window: codewhale_models::context_window_for_model(resolved_model)
-                    .unwrap_or(codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
-                max_output: codewhale_models::max_output_tokens_for_model(resolved_model),
-                thinking_supported: codewhale_models::model_supports_reasoning(resolved_model),
-                cache_telemetry_supported: false,
-                request_payload_mode: RequestPayloadMode::Responses,
-                alias_deprecation: None,
-            };
+    } else {
+        match descriptor.wire_policy() {
+            codewhale_config::provider::WirePolicy::Fixed(format) => payload_mode_for_wire(format),
+            codewhale_config::provider::WirePolicy::ModelAware => {
+                let endpoint_key = route_offering
+                    .map(|offering| offering.endpoint_key.as_str())
+                    .or_else(|| {
+                        catalog_offering
+                            .as_ref()
+                            .map(|offering| offering.endpoint_key.as_str())
+                    })
+                    .or_else(|| {
+                        (provider == ProviderKind::Codewhale).then(|| {
+                            codewhale_config::route::codewhale_endpoint_key_for_model(wire_id)
+                        })
+                    })
+                    .or_else(|| {
+                        (provider == ProviderKind::OpencodeZen
+                            && wire_id.to_ascii_lowercase().contains("muse-spark"))
+                        .then_some("responses")
+                    });
+                endpoint_key
+                    .and_then(|key| descriptor.protocol_for_endpoint(key))
+                    .map_or(RequestPayloadMode::ChatCompletions, payload_mode_for_wire)
+            }
         }
-    }
+    };
 
-    if matches!(
-        provider,
-        ProviderKind::Anthropic | ProviderKind::MinimaxAnthropic | ProviderKind::Openmodel
-    ) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            // 200K is the conservative Anthropic floor; 4.6+ models resolve
-            // their 1M windows from models.rs rows (#3014).
-            context_window: codewhale_models::context_window_for_model(resolved_model)
-                .unwrap_or(200_000),
-            // 64K is the documented Anthropic Messages floor. For a model
-            // the catalogue describes this carries its documented ceiling;
-            // for an unknown one it is an *assumed* floor, and
-            // `route_budget::output_ceiling_source` labels it unverified so
-            // no receipt renders it as "documented" (#5440).
-            max_output: Some(
-                codewhale_models::max_output_tokens_for_model(resolved_model).unwrap_or(64_000),
-            ),
-            thinking_supported: codewhale_models::model_supports_reasoning(resolved_model),
-            cache_telemetry_supported: matches!(provider, ProviderKind::Anthropic),
-            request_payload_mode: RequestPayloadMode::AnthropicMessages,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ProviderKind::OpenaiCodex) {
+    if provider == ProviderKind::OpenaiCodex {
         return ProviderCapability {
             provider,
             resolved_model: resolved_model.to_string(),
             context_window: codewhale_runtime::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
-            // The OAuth cache does not publish an output ceiling. This 4K is a
-            // deliberate, long-standing product decision for the Codex route
-            // (not a fallback): keep the compatibility capability conservative
-            // instead of inheriting the public API model's output limit. It is
-            // an assumption, not a documented fact — receipts label it
-            // unverified (#5440).
             max_output: Some(4096),
             thinking_supported: true,
             cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::Responses,
-            alias_deprecation: None,
-        };
-    }
-
-    // #3023: Delete the Openai/Atlascloud/Moonshot early-return so these
-    // providers use the generic model-based path below, which correctly
-    // resolves context windows, output limits, and thinking support from
-    // models.rs lookups.  Ollama also falls through to model-based lookups
-    // with 8192 as the last-resort fallback instead of a hardcoded floor.
-    if matches!(provider, ProviderKind::XiaomiMimo) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: codewhale_models::context_window_for_model(resolved_model)
-                .unwrap_or(codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
-            // No documented output maximum for these routes: stay unknown so
-            // no compatibility clamp is applied downstream.
-            max_output: codewhale_models::max_output_tokens_for_model(resolved_model),
-            thinking_supported: codewhale_models::model_supports_reasoning(resolved_model),
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::ChatCompletions,
-            alias_deprecation: None,
-        };
-    }
-
-    if matches!(provider, ProviderKind::Arcee) {
-        return ProviderCapability {
-            provider,
-            resolved_model: resolved_model.to_string(),
-            context_window: codewhale_models::context_window_for_model(resolved_model)
-                .unwrap_or(codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
-            // No documented output maximum for these routes: stay unknown so
-            // no compatibility clamp is applied downstream.
-            max_output: codewhale_models::max_output_tokens_for_model(resolved_model),
-            thinking_supported: codewhale_models::model_supports_reasoning(resolved_model),
-            cache_telemetry_supported: false,
-            request_payload_mode: RequestPayloadMode::ChatCompletions,
+            request_payload_mode,
             alias_deprecation: None,
         };
     }
 
     let model_lower = resolved_model.to_ascii_lowercase();
-    let alias_deprecation = if matches!(
-        provider,
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) {
+    let alias_deprecation = if descriptor.family() == "deepseek" {
         codewhale_runtime::config::deepseek_alias_deprecation(&model_lower)
     } else {
         None
     };
-    let official_deepseek = codewhale_models::canonical_official_deepseek_model_id(&model_lower)
-        .is_some()
-        || alias_deprecation.is_some();
-    let is_reasoner = matches!(provider, ProviderKind::WanjieArk)
-        && (model_lower.contains("reasoner") || model_lower.contains("r1"));
 
-    // Provider-owned wire IDs can have exact catalog facts without a legacy
-    // model-only row. Reuse those facts before conservative fallback budgets.
-    let offering = bundled_catalog_offering_for_model(provider, resolved_model);
+    let anthropic_floor = provider_uses_anthropic_messages_floor(provider);
+    let intrinsic_window = |candidate: &str| {
+        codewhale_models::context_window_for_model(candidate)
+            .filter(|_| codewhale_models::name_suffix_context_window_hint(candidate).is_none())
+    };
     let context_window = if provider == ProviderKind::Ollama {
         8192
-    } else if official_deepseek {
-        codewhale_models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
-    } else if let Some(window) = codewhale_models::context_window_for_model(resolved_model) {
-        window
-    } else if let Some(window) = offering
-        .as_ref()
-        .and_then(|row| row.limit.as_ref())
-        .and_then(|limit| limit.context)
-        .and_then(|window| u32::try_from(window).ok())
-    {
-        window
     } else {
-        codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
+        intrinsic_window(wire_id)
+            .or_else(|| logical.and_then(intrinsic_window))
+            .or_else(|| canonical.and_then(intrinsic_window))
+            .or_else(|| {
+                route_offering
+                    .and_then(|offering| offering.limits.context_tokens)
+                    .and_then(|window| u32::try_from(window).ok())
+            })
+            .or_else(|| {
+                catalog_offering
+                    .as_ref()
+                    .and_then(|offering| offering.limit.as_ref())
+                    .and_then(|limit| limit.context)
+                    .and_then(|window| u32::try_from(window).ok())
+            })
+            .or_else(|| codewhale_models::name_suffix_context_window_hint(wire_id))
+            .unwrap_or(if anthropic_floor {
+                200_000
+            } else {
+                codewhale_models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS
+            })
     };
 
-    // Output limits require an exact catalog row or an explicitly recognized
-    // compatibility alias. A family-name match cannot document a new model.
-    // The catalog answers
-    // `None` when the catalogue has no row. That is the truthful state for
-    // membership routes such as the `kimi-for-coding` family, whose ceilings
-    // are owned by the membership catalog. It must not become a placeholder
-    // number: a fabricated 4K here silently clamped offline membership routes
-    // to 4K output via `route_budget`.
-    let max_output = codewhale_models::max_output_tokens_for_model(resolved_model)
-        .or_else(|| {
-            // Provider-owned wire IDs need not exist in the legacy model-only
-            // catalog (for example Fireworks' accounts/... slug). Reuse the
-            // exact bundled offering instead of inferring a family ceiling.
-            offering
-                .as_ref()
-                .and_then(|offering| offering.limit.as_ref())
-                .and_then(|limit| limit.output)
-                .and_then(|limit| u32::try_from(limit).ok())
-        })
-        .or_else(|| {
-            codewhale_models::canonical_official_deepseek_model_id(resolved_model)
-                .or_else(|| {
-                    alias_deprecation.as_ref().map(|_| {
-                        codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT
-                    })
-                })
-                .and_then(codewhale_models::max_output_tokens_for_model)
-        });
+    let max_output = catalog_max_output_for_route(provider, resolved_model)
+        .or_else(|| anthropic_floor.then_some(64_000));
 
-    // Exact catalog reasoning facts and recognized compatibility aliases only.
-    let thinking_supported = official_deepseek
-        || is_reasoner
-        || offering
+    let thinking_supported = route_offering
+        .is_some_and(|offering| offering.capabilities.reasoning.is_supported())
+        || catalog_offering
             .as_ref()
-            .is_some_and(|row| row.reasoning == Some(true))
-        || codewhale_models::model_supports_reasoning(resolved_model);
+            .is_some_and(|offering| offering.reasoning == Some(true))
+        || codewhale_config::catalog::reviewed::selection_supports_reasoning(
+            provider.as_str(),
+            wire_id,
+        )
+        || logical.is_some_and(|id| {
+            codewhale_config::catalog::reviewed::selection_supports_reasoning(provider.as_str(), id)
+        })
+        || codewhale_models::model_supports_reasoning(wire_id)
+        || logical.is_some_and(codewhale_models::model_supports_reasoning)
+        || canonical.is_some_and(codewhale_models::model_supports_reasoning);
 
-    // Cache telemetry: returned only by DeepSeek-native and NVIDIA NIM endpoints.
     let cache_telemetry_supported = matches!(
         provider,
-        ProviderKind::Deepseek | ProviderKind::NvidiaNim | ProviderKind::Volcengine
+        ProviderKind::Anthropic
+            | ProviderKind::Deepseek
+            | ProviderKind::NvidiaNim
+            | ProviderKind::Volcengine
     );
-
-    let request_payload_mode = if matches!(
-        provider,
-        ProviderKind::DeepseekAnthropic | ProviderKind::MinimaxAnthropic | ProviderKind::Openmodel
-    ) {
-        RequestPayloadMode::AnthropicMessages
-    } else {
-        RequestPayloadMode::ChatCompletions
-    };
 
     ProviderCapability {
         provider,
@@ -5101,5 +5078,33 @@ mod tests {
         }
 
         clear_live_snapshot();
+    }
+
+    #[test]
+    fn provider_capability_reads_resolved_route_facts_and_wire_policy() {
+        let google_prefixed = provider_capability(ProviderKind::Google, "models/gemini-4-hydrogen");
+        let google_bare = provider_capability(ProviderKind::Google, "gemini-4-hydrogen");
+        assert_eq!(google_prefixed.context_window, 1_048_576);
+        assert_eq!(google_prefixed.max_output, Some(65_536));
+        assert!(google_prefixed.thinking_supported);
+        assert_eq!(google_prefixed.context_window, google_bare.context_window);
+        assert_eq!(google_prefixed.max_output, google_bare.max_output);
+
+        assert_eq!(
+            provider_capability(ProviderKind::Deepseek, "deepseek-flash").request_payload_mode,
+            RequestPayloadMode::Responses
+        );
+        assert_eq!(
+            provider_capability(ProviderKind::Deepseek, "deepseek-v4-pro").request_payload_mode,
+            RequestPayloadMode::ChatCompletions
+        );
+        assert_eq!(
+            provider_capability(ProviderKind::OpencodeZen, "claude-opus-5").request_payload_mode,
+            RequestPayloadMode::AnthropicMessages
+        );
+        assert_eq!(
+            provider_capability(ProviderKind::Concentrate, "deepseek-v4-pro").request_payload_mode,
+            RequestPayloadMode::Responses
+        );
     }
 }

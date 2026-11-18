@@ -273,6 +273,19 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
     reviewed_model_limit(model, |row| row.generation_default.or(row.max_output))
 }
 
+fn reviewed_model_flag(
+    model: &str,
+    flag: impl Fn(codewhale_config::catalog::reviewed::IntrinsicModel) -> Option<bool>,
+) -> Option<bool> {
+    codewhale_config::catalog::reviewed::intrinsic_model(model)
+        .and_then(&flag)
+        .or_else(|| {
+            reviewed_snapshot_model(model)
+                .and_then(codewhale_config::catalog::reviewed::intrinsic_model)
+                .and_then(flag)
+        })
+}
+
 /// Catalog-first reasoning capability. `None` means no catalog row and no
 /// remaining cited fallback — unknown, not "not a reasoning model".
 ///
@@ -281,19 +294,22 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
 /// unknown to `false` for existing stream/UI gates.
 #[must_use]
 pub fn model_reasoning_capability(model: &str) -> Option<bool> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.reasoning)
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.reasoning)
-            })
-        })
+    reviewed_model_flag(model, |row| row.reasoning)
 }
 
 #[must_use]
 pub fn model_supports_reasoning(model: &str) -> bool {
     model_reasoning_capability(model).unwrap_or(false)
+}
+
+#[must_use]
+pub fn model_requires_thought_signatures(model: &str) -> bool {
+    reviewed_model_flag(model, |row| row.thought_signatures_required).unwrap_or(false)
+}
+
+#[must_use]
+pub fn model_can_disable_thinking(model: &str) -> bool {
+    reviewed_model_flag(model, |row| row.thinking_can_disable).unwrap_or(false)
 }
 
 /// Contributor tier of Muse Spark 1.2 is a distinct selectable id with

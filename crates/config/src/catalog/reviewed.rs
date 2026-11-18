@@ -53,6 +53,10 @@ pub struct IntrinsicModel {
     #[serde(default)]
     pub reasoning: Option<bool>,
     #[serde(default)]
+    pub thought_signatures_required: Option<bool>,
+    #[serde(default)]
+    pub thinking_can_disable: Option<bool>,
+    #[serde(default)]
     pub family: Option<ModelFamily>,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -328,6 +332,14 @@ pub fn intrinsic_model_in(catalog: &ModelsDevCatalog, model: &str) -> Option<Int
         .find(|(key, _)| key.eq_ignore_ascii_case(&id))
         .map(|(_, row)| row);
     let mut result = reviewed.cloned().or_else(|| canonical.map(from_canonical));
+    if let Some(base) = result
+        .as_ref()
+        .and_then(|row| row.canonical_id.as_deref())
+        .and_then(|base| catalog.reviewed.intrinsic.get(&base.to_ascii_lowercase()))
+        && let Some(row) = &mut result
+    {
+        fill_missing(row, base);
+    }
     if let Some(canonical) = canonical {
         let canonical = from_canonical(canonical);
         if let Some(row) = &mut result {
@@ -439,10 +451,22 @@ fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
     row.context_window = row.context_window.or(other.context_window);
     row.max_output = row.max_output.or(other.max_output);
     row.reasoning = row.reasoning.or(other.reasoning);
+    row.thought_signatures_required = row
+        .thought_signatures_required
+        .or(other.thought_signatures_required);
+    row.thinking_can_disable = row.thinking_can_disable.or(other.thinking_can_disable);
     row.family = row.family.or(other.family);
     if row.display_name.is_none() {
         row.display_name.clone_from(&other.display_name);
     }
+}
+
+#[must_use]
+pub fn selection_supports_reasoning(provider: &str, model: &str) -> bool {
+    let trimmed = model.trim();
+    bundled_reviewed().selections.iter().any(|row| {
+        row.supports_reasoning && row.provider == provider && row.id.eq_ignore_ascii_case(trimmed)
+    })
 }
 
 /// Exact public bundled identifiers only. Live/private/configured model IDs
