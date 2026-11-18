@@ -1,7 +1,10 @@
 use super::*;
 use codewhale_engine::command_catalog::{BuiltinCommand, CommandCatalog, UserCommand};
 
-struct Catalog(Arc<std::sync::Mutex<Option<String>>>);
+struct Catalog(
+    Arc<std::sync::Mutex<Option<String>>>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+);
 
 impl CommandCatalog for Catalog {
     fn answers_to(&self, _name: &str) -> bool {
@@ -26,6 +29,18 @@ impl CommandCatalog for Catalog {
         };
         vec![command("mine", None), command("ship", plugin_id)]
     }
+    fn user_commands_with_plugins(
+        &self,
+        workspace: &Path,
+        plugins: &codewhale_plugins::PluginRegistry,
+    ) -> Vec<UserCommand> {
+        *self.1.lock().expect("adopted") = plugins
+            .list()
+            .iter()
+            .map(|plugin| plugin.name().to_string())
+            .collect();
+        self.user_commands(workspace)
+    }
 }
 
 #[tokio::test]
@@ -36,8 +51,10 @@ async fn the_index_lists_every_kind_once_and_a_plugin_carries_what_it_adds() -> 
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
     let plugin_id = Arc::new(std::sync::Mutex::new(None));
+    let adopted = Arc::new(std::sync::Mutex::new(Vec::new()));
     let _catalog = codewhale_engine::command_catalog::CatalogGuard::install(Arc::new(Catalog(
         plugin_id.clone(),
+        adopted.clone(),
     )));
     let sources = root.join("sources");
     fs::create_dir_all(&sources)?;
@@ -91,6 +108,23 @@ async fn the_index_lists_every_kind_once_and_a_plugin_carries_what_it_adds() -> 
         .and_then(|rows| rows.iter().find(|row| row["name"] == "ship"))
         .expect("ship row");
     assert_eq!(ship["plugin_id"], id.as_str());
+    assert!(
+        adopted
+            .lock()
+            .expect("adopted")
+            .contains(&"indexed".to_string()),
+        "/v1/commands hands the workspace's plugins to the catalog"
+    );
+
+    let detail: Value = client
+        .get(format!("http://{addr}/v1/apps/plugins/indexed"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(detail["review"]["commands"], serde_json::json!(["ship"]));
+    assert_eq!(detail["review"]["agents"], serde_json::json!(["reviewer"]));
 
     let index: Value = client
         .get(format!("http://{addr}/v1/apps/plugin-index"))

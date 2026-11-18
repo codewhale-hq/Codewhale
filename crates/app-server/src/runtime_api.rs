@@ -6193,10 +6193,14 @@ async fn list_commands(
     };
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let plugins = state.plugin_discovery.registry_for_workspace(&workspace);
     let commands = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let mut commands = command_catalog(&catalog.builtins(), &catalog.user_commands(&workspace));
+        let mut commands = command_catalog(
+            &catalog.builtins(),
+            &catalog.user_commands_with_plugins(&workspace, &plugins),
+        );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
             *counts
