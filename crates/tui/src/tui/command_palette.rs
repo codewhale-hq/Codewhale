@@ -281,7 +281,14 @@ fn palette_description_for_unshadowed_aliases(
     if aliases.is_empty() {
         desc.to_string()
     } else {
-        format!("{}  aliases: {}", desc, aliases.join(", "))
+        format!(
+            "{}  {}",
+            desc,
+            tr(locale, MessageId::PaletteAliasesSuffix).replace(
+                "{aliases}",
+                &aliases.join(&tr(locale, MessageId::ListSeparator))
+            )
+        )
     }
 }
 
@@ -919,14 +926,12 @@ impl ModalView for CommandPaletteView {
             Style::default().fg(palette::TEXT_MUTED),
         )));
         let match_count = if self.query.is_empty() {
-            format!(
-                "{} shown / {} entries",
-                self.filtered.len(),
-                self.entries.len()
-            )
+            tr(self.locale, MessageId::PaletteShownCount)
         } else {
-            format!("{} / {} matches", self.filtered.len(), self.entries.len())
-        };
+            tr(self.locale, MessageId::HelpMatchCount)
+        }
+        .replace("{shown}", &self.filtered.len().to_string())
+        .replace("{total}", &self.entries.len().to_string());
         lines.push(Line::from(Span::styled(
             match_count,
             Style::default().fg(palette::TEXT_DIM).italic(),
@@ -2286,6 +2291,44 @@ mod tests {
                 }) if command == "$plugin:review"
             ));
         }
+    }
+
+    #[test]
+    fn zh_hans_palette_localizes_aliases_and_the_entry_count() {
+        let attach = commands::command_infos()
+            .into_iter()
+            .find(|info| info.name == "attach")
+            .expect("/attach");
+        assert!(
+            attach
+                .palette_description_for(Locale::En)
+                .ends_with("  aliases: image, media, fujian")
+        );
+        assert!(
+            attach
+                .palette_description_for(Locale::ZhHans)
+                .ends_with("  别名：image、media、fujian")
+        );
+
+        let view = CommandPaletteView::new_for_locale(
+            Locale::ZhHans,
+            vec![palette_entry(
+                PaletteSection::Command,
+                "/config",
+                "open config",
+                "/config",
+            )],
+        );
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let dump: String = buf
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .filter(|symbol| *symbol != " ")
+            .collect();
+        assert!(dump.contains("显示1个/共1个条目"), "{dump}");
     }
 
     #[test]

@@ -237,6 +237,10 @@ pub enum StatusText {
     SessionMetricsTtft,
     SessionMetricsTurn,
     SessionMetricsTurns,
+    SessionsTimeDaysAgo,
+    SessionsTimeHoursAgo,
+    SessionsTimeJustNow,
+    SessionsTimeMinutesAgo,
     SnapshotsDisabledTooLarge,
     SnapshotsDisabledTooManyFiles,
     SnapshotsDisabledUnsafeLocation,
@@ -249,6 +253,12 @@ pub enum StatusText {
     StatusApprovalNever,
     StatusCacheNotReported,
     StatusCacheSummary,
+    StatusCatalogFetched,
+    StatusCatalogLive,
+    StatusCatalogOfferings,
+    StatusCatalogRefreshFailed,
+    StatusCatalogStale,
+    StatusCloudFactsOff,
     StatusContextSourceCatalog,
     StatusContextSourceConfigured,
     StatusContextSourceConfiguredModel,
@@ -319,6 +329,10 @@ pub struct StatusMessages {
     session_metrics_ttft: String,
     session_metrics_turn: String,
     session_metrics_turns: String,
+    sessions_time_days_ago: String,
+    sessions_time_hours_ago: String,
+    sessions_time_just_now: String,
+    sessions_time_minutes_ago: String,
     snapshots_disabled_too_large: String,
     snapshots_disabled_too_many_files: String,
     snapshots_disabled_unsafe_location: String,
@@ -331,6 +345,12 @@ pub struct StatusMessages {
     status_approval_never: String,
     status_cache_not_reported: String,
     status_cache_summary: String,
+    status_catalog_fetched: String,
+    status_catalog_live: String,
+    status_catalog_offerings: String,
+    status_catalog_refresh_failed: String,
+    status_catalog_stale: String,
+    status_cloud_facts_off: String,
     status_context_source_catalog: String,
     status_context_source_configured: String,
     status_context_source_configured_model: String,
@@ -405,6 +425,13 @@ impl StatusMessages {
             session_metrics_ttft: presentation.translate("session_metrics_ttft", &[])?,
             session_metrics_turn: presentation.translate("session_metrics_turn", &[])?,
             session_metrics_turns: presentation.translate("session_metrics_turns", &[])?,
+            sessions_time_days_ago: presentation
+                .translate("sessions_time_days_ago", &[("count", "{count}")])?,
+            sessions_time_hours_ago: presentation
+                .translate("sessions_time_hours_ago", &[("count", "{count}")])?,
+            sessions_time_just_now: presentation.translate("sessions_time_just_now", &[])?,
+            sessions_time_minutes_ago: presentation
+                .translate("sessions_time_minutes_ago", &[("count", "{count}")])?,
             snapshots_disabled_too_large: presentation.translate(
                 "snapshots_disabled_too_large",
                 &[
@@ -441,6 +468,15 @@ impl StatusMessages {
                 "status_cache_summary",
                 &[("hit", "{hit}"), ("miss", "{miss}")],
             )?,
+            status_catalog_fetched: presentation
+                .translate("status_catalog_fetched", &[("age", "{age}")])?,
+            status_catalog_live: presentation.translate("status_catalog_live", &[])?,
+            status_catalog_offerings: presentation
+                .translate("status_catalog_offerings", &[("count", "{count}")])?,
+            status_catalog_refresh_failed: presentation
+                .translate("status_catalog_refresh_failed", &[])?,
+            status_catalog_stale: presentation.translate("status_catalog_stale", &[])?,
+            status_cloud_facts_off: presentation.translate("status_cloud_facts_off", &[])?,
             status_context_source_catalog: presentation
                 .translate("status_context_source_catalog", &[])?,
             status_context_source_configured: presentation
@@ -586,6 +622,10 @@ impl StatusMessages {
                 StatusText::SessionMetricsTtft => &self.session_metrics_ttft,
                 StatusText::SessionMetricsTurn => &self.session_metrics_turn,
                 StatusText::SessionMetricsTurns => &self.session_metrics_turns,
+                StatusText::SessionsTimeDaysAgo => &self.sessions_time_days_ago,
+                StatusText::SessionsTimeHoursAgo => &self.sessions_time_hours_ago,
+                StatusText::SessionsTimeJustNow => &self.sessions_time_just_now,
+                StatusText::SessionsTimeMinutesAgo => &self.sessions_time_minutes_ago,
                 StatusText::SnapshotsDisabledTooLarge => &self.snapshots_disabled_too_large,
                 StatusText::SnapshotsDisabledTooManyFiles => {
                     &self.snapshots_disabled_too_many_files
@@ -602,6 +642,12 @@ impl StatusMessages {
                 StatusText::StatusApprovalNever => &self.status_approval_never,
                 StatusText::StatusCacheNotReported => &self.status_cache_not_reported,
                 StatusText::StatusCacheSummary => &self.status_cache_summary,
+                StatusText::StatusCatalogFetched => &self.status_catalog_fetched,
+                StatusText::StatusCatalogLive => &self.status_catalog_live,
+                StatusText::StatusCatalogOfferings => &self.status_catalog_offerings,
+                StatusText::StatusCatalogRefreshFailed => &self.status_catalog_refresh_failed,
+                StatusText::StatusCatalogStale => &self.status_catalog_stale,
+                StatusText::StatusCloudFactsOff => &self.status_cloud_facts_off,
                 StatusText::StatusContextSourceCatalog => &self.status_context_source_catalog,
                 StatusText::StatusContextSourceConfigured => &self.status_context_source_configured,
                 StatusText::StatusContextSourceConfiguredModel => {

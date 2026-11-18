@@ -26691,6 +26691,7 @@ fn exploring_label_uses_progressive_for_read_file() {
         "read_file",
         &serde_json::json!({"path": "src/foo.rs"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Reading src/foo.rs");
 }
@@ -26701,13 +26702,19 @@ fn exploring_label_uses_progressive_for_list_dir() {
         "list_dir",
         &serde_json::json!({"path": "crates/tui/src/"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Listing crates/tui/src/");
 }
 
 #[test]
 fn exploring_label_uses_progressive_for_list_dir_no_path() {
-    let label = exploring_label("list_dir", &serde_json::json!({}), std::path::Path::new(""));
+    let label = exploring_label(
+        "list_dir",
+        &serde_json::json!({}),
+        std::path::Path::new(""),
+        codewhale_localization::Locale::En,
+    );
     assert_eq!(label, "Listing directory");
 }
 
@@ -26717,6 +26724,7 @@ fn exploring_label_for_grep_quotes_pattern_with_searching_for() {
         "grep_files",
         &serde_json::json!({"pattern": "TranscriptScroll"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Searching for `TranscriptScroll`");
 }
@@ -26727,8 +26735,35 @@ fn exploring_label_for_list_files_uses_progressive() {
         "list_files",
         &serde_json::json!({}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Listing files");
+}
+
+#[test]
+fn exploring_labels_follow_the_ui_locale() {
+    let label = |name: &str, input: serde_json::Value| {
+        exploring_label(
+            name,
+            &input,
+            std::path::Path::new(""),
+            codewhale_localization::Locale::ZhHans,
+        )
+    };
+    assert_eq!(
+        label("read_file", serde_json::json!({"path": "src/foo.rs"})),
+        "正在读取 src/foo.rs"
+    );
+    assert_eq!(
+        label("list_dir", serde_json::json!({"path": "src/"})),
+        "正在列出 src/"
+    );
+    assert_eq!(label("list_dir", serde_json::json!({})), "正在列出目录");
+    assert_eq!(
+        label("grep_files", serde_json::json!({"pattern": "foo"})),
+        "正在搜索 `foo`"
+    );
+    assert_eq!(label("list_files", serde_json::json!({})), "正在列出文件");
 }
 
 // `running_status_label_with_elapsed` lives in `crate::tui::history` next to

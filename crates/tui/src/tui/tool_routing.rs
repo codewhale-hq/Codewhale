@@ -31,6 +31,7 @@ use codewhale_engine::tools::ReviewOutput;
 use codewhale_engine::tools::plan::PlanSnapshot;
 use codewhale_engine::tools::spec::{ToolError, ToolResult};
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_tools::patch_preflight::{NormalizedApplyPatchInput, normalize_apply_patch_input};
 
 #[allow(clippy::too_many_lines)]
@@ -59,7 +60,7 @@ pub(super) fn handle_tool_call_started(
     }
 
     if is_exploring_tool(semantic_name) {
-        let label = exploring_label(semantic_name, input, &app.workspace);
+        let label = exploring_label(semantic_name, input, &app.workspace, app.ui_locale);
         push_active_tool_cell(
             app,
             &id,
@@ -68,6 +69,7 @@ pub(super) fn handle_tool_call_started(
             HistoryCell::Tool(ToolCell::Exploring(ExploringCell {
                 entries: vec![ExploringEntry {
                     label,
+                    search: semantic_name == "grep_files",
                     status: ToolStatus::Running,
                     error: None,
                 }],
@@ -1716,6 +1718,7 @@ pub(super) fn exploring_label(
     name: &str,
     input: &serde_json::Value,
     workspace: &std::path::Path,
+    locale: Locale,
 ) -> String {
     let fallback = format!("{name} tool");
     let obj = input.as_object();
@@ -1725,18 +1728,21 @@ pub(super) fn exploring_label(
             .map(|path| codewhale_util::utils::workspace_relative(path, workspace))
     };
     match name {
-        "read_file" => path().map_or(fallback, |path| format!("Reading {path}")),
-        "list_dir" => path().map_or("Listing directory".to_string(), |path| {
-            format!("Listing {path}")
+        "read_file" => path().map_or(fallback, |path| {
+            tr(locale, MessageId::ToolExploringReading).replace("{path}", &path)
         }),
+        "list_dir" => path().map_or_else(
+            || tr(locale, MessageId::ToolExploringListingDirectory).into_owned(),
+            |path| tr(locale, MessageId::ToolExploringListing).replace("{path}", &path),
+        ),
         "grep_files" => {
             let pattern = obj
                 .and_then(|o| o.get("pattern"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("pattern");
-            format!("Searching for `{pattern}`")
+            tr(locale, MessageId::ToolExploringSearching).replace("{pattern}", pattern)
         }
-        "list_files" => "Listing files".to_string(),
+        "list_files" => tr(locale, MessageId::ToolExploringListingFiles).into_owned(),
         _ => fallback,
     }
 }

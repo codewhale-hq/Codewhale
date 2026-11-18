@@ -1597,26 +1597,27 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     preview.locale = app.ui_locale;
     let selected_attachment = app.selected_composer_attachment_index();
     let mut attachment_index = 0usize;
-    preview.context_items = crate::tui::file_mention::pending_context_previews(&app.input)
-        .into_iter()
-        .map(|item| {
-            let selected = if item.removable {
-                let selected = selected_attachment == Some(attachment_index);
-                attachment_index += 1;
-                selected
-            } else {
-                false
-            };
-            ContextPreviewItem {
-                kind: item.kind,
-                label: item.label,
-                detail: item.detail,
-                included: item.included,
-                removable: item.removable,
-                selected,
-            }
-        })
-        .collect();
+    preview.context_items =
+        crate::tui::file_mention::pending_context_previews(&app.input, app.ui_locale)
+            .into_iter()
+            .map(|item| {
+                let selected = if item.removable {
+                    let selected = selected_attachment == Some(attachment_index);
+                    attachment_index += 1;
+                    selected
+                } else {
+                    false
+                };
+                ContextPreviewItem {
+                    kind: item.kind,
+                    label: item.label,
+                    detail: item.detail,
+                    included: item.included,
+                    removable: item.removable,
+                    selected,
+                }
+            })
+            .collect();
     // #6190: a steer the engine has not recorded yet is exactly what this
     // bucket's "sending into turn" label describes, so it shares it rather
     // than growing a fourth bucket and a fifteenth locale string.

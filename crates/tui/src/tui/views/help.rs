@@ -523,13 +523,16 @@ fn build_entries(
             localized.to_string()
         } else {
             format!(
-                "{}  (aliases: {})",
+                "{}  {}",
                 localized,
-                visible_aliases
-                    .iter()
-                    .map(|a| format!("/{a}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                tr(locale, MessageId::HelpAliasesSuffix).replace(
+                    "{aliases}",
+                    &visible_aliases
+                        .iter()
+                        .map(|a| format!("/{a}"))
+                        .collect::<Vec<_>>()
+                        .join(&tr(locale, MessageId::ListSeparator))
+                )
             )
         };
         let haystack = format!(
@@ -812,7 +815,7 @@ fn default_collapsed(ordering: HelpOrdering) -> HashSet<String> {
 /// are the marks the descriptions already use: a trailing parenthetical (the
 /// alias list), a semicolon or em-dash clause, then ordinary sentence and
 /// comma boundaries.
-const FIELD_JOINTS: [&str; 6] = [" (", "; ", " — ", ". ", ": ", ", "];
+const FIELD_JOINTS: [&str; 7] = [" (", " （", "; ", " — ", ". ", ": ", ", "];
 
 /// Fit a description into `max_width` by shedding whole fields, never by
 /// cutting one.
@@ -838,8 +841,8 @@ fn shed_to_width(text: &str, max_width: usize, locale: Locale) -> Cow<'_, str> {
     let mut depth = 0usize;
     for (idx, ch) in trimmed.char_indices() {
         match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
+            '(' | '（' => depth += 1,
+            ')' | '）' => depth = depth.saturating_sub(1),
             _ => {}
         }
         // Only cut where the parentheses balance. `(aliases: /image, /media)`
@@ -1193,9 +1196,12 @@ impl ModalView for HelpView {
             format!("{}{}", self.tr(MessageId::HelpFilterPrefix), self.query)
         };
         let match_count = if self.query.is_empty() {
-            format!("{} entries", self.entries.len())
+            self.tr(MessageId::HelpEntryCount)
+                .replace("{count}", &self.entries.len().to_string())
         } else {
-            format!("{} / {} matches", self.filtered.len(), self.entries.len())
+            self.tr(MessageId::HelpMatchCount)
+                .replace("{shown}", &self.filtered.len().to_string())
+                .replace("{total}", &self.entries.len().to_string())
         };
         let rows = self.render_rows();
         // Two header rows: the filter with its count, and the detail row
@@ -1857,6 +1863,48 @@ mod tests {
             let closes = shed.matches(')').count();
             assert_eq!(opens, closes, "unbalanced at width {width}: {shed:?}");
         }
+    }
+
+    #[test]
+    fn zh_hans_help_localizes_the_alias_list_and_the_entry_count() {
+        let view = HelpView::new_for_locale(Locale::ZhHans);
+        let clear = view
+            .entries
+            .iter()
+            .find(|entry| entry.label == "/clear")
+            .expect("/clear entry");
+        assert!(
+            clear.description.ends_with("  （别名：/qingping）"),
+            "{}",
+            clear.description
+        );
+        let attach = view
+            .entries
+            .iter()
+            .find(|entry| entry.label == "/attach")
+            .expect("/attach entry");
+        assert!(
+            attach.description.contains("/image、/media"),
+            "{}",
+            attach.description
+        );
+        for width in 4..attach.description.width() {
+            let shed = shed_to_width(&attach.description, width, Locale::ZhHans);
+            assert_eq!(
+                shed.matches('（').count(),
+                shed.matches('）').count(),
+                "unbalanced at width {width}: {shed:?}"
+            );
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let dump = buffer_text(&buf, area).replace(' ', "");
+        assert!(
+            dump.contains(&format!("{}个条目", view.entries.len())),
+            "{dump}"
+        );
+        assert!(!dump.contains("entries"), "{dump}");
     }
 
     /// A single-clause description has no joint to shed at. Shedding the whole

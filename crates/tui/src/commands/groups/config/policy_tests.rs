@@ -15,36 +15,51 @@ impl CommandPresentationContext for English {
         if self.fail_key == Some(key) {
             return Err("invalid translation replacement contract".into());
         }
-        let catalog: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../../localization/locales/en.json"))
-                .unwrap();
-        let id: String = key
-            .split('_')
-            .map(|word| {
-                let mut chars = word.chars();
-                chars
-                    .next()
-                    .unwrap()
-                    .to_uppercase()
-                    .chain(chars)
-                    .collect::<String>()
-            })
-            .collect();
-        let template = catalog[&id]
-            .as_str()
-            .ok_or_else(|| format!("unknown test key {key}"))?;
-        let names: Vec<_> = replacements
-            .iter()
-            .map(|(name, value)| (format!("{{{name}}}"), *value))
-            .collect();
-        Ok(interpolate(
-            template,
-            &names
-                .iter()
-                .map(|(name, value)| (name.as_str(), *value))
-                .collect::<Vec<_>>(),
-        ))
+        translate_from(
+            include_str!("../../../../../localization/locales/en.json"),
+            key,
+            replacements,
+        )
     }
+}
+struct ZhHans;
+impl CommandPresentationContext for ZhHans {
+    fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+        translate_from(
+            include_str!("../../../../../localization/locales/zh-Hans.json"),
+            key,
+            replacements,
+        )
+    }
+}
+fn translate_from(pack: &str, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+    let catalog: serde_json::Value = serde_json::from_str(pack).unwrap();
+    let id: String = key
+        .split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .unwrap()
+                .to_uppercase()
+                .chain(chars)
+                .collect::<String>()
+        })
+        .collect();
+    let template = catalog[&id]
+        .as_str()
+        .ok_or_else(|| format!("unknown test key {key}"))?;
+    let names: Vec<_> = replacements
+        .iter()
+        .map(|(name, value)| (format!("{{{name}}}"), *value))
+        .collect();
+    Ok(interpolate(
+        template,
+        &names
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect::<Vec<_>>(),
+    ))
 }
 struct Permissions {
     view: PermissionsView,
@@ -168,6 +183,9 @@ impl CommandConfigStatusContext for Status {
     }
 }
 fn report(view: ConfigStatusView) -> String {
+    report_in(view, &mut English { fail_key: None })
+}
+fn report_in(view: ConfigStatusView, presentation: &mut dyn CommandPresentationContext) -> String {
     let expected = view.clone();
     let mut s = Status {
         view,
@@ -176,7 +194,7 @@ fn report(view: ConfigStatusView) -> String {
     let result = status::execute(
         CommandContexts::empty()
             .with_config_status(&mut s)
-            .with_presentation(&mut English { fail_key: None }),
+            .with_presentation(presentation),
         Some("ignored"),
     );
     assert!(!result.is_error, "{result:?}");
@@ -369,6 +387,28 @@ fn status_optional_drift_notice_catalog_metrics_and_output_keep_order() {
     assert!(text.contains("1 turn · 2 steps"));
     assert!(text.contains("2 KB"));
     assert!(text.find("Fleet:").unwrap() < text.find("Context window:").unwrap());
+}
+#[test]
+fn status_window_source_row_follows_the_locale() {
+    let mut view = status_view();
+    view.catalog = StatusCatalog {
+        freshness: StatusCatalogFreshness::Live,
+        offering_count: 9070,
+        fetched_at: Some(3480),
+        last_error: None,
+    };
+    let english = report(view.clone());
+    assert!(
+        english.contains(
+            "Catalog: models.dev live · 9070 offerings · fetched 2m ago · Cloud facts: off"
+        ),
+        "{english}"
+    );
+    let chinese = report_in(view, &mut ZhHans);
+    assert!(
+        chinese.contains("目录: models.dev 实时 · 9070 个模型条目 · 2 分钟前获取 · 云端事实: 关闭"),
+        "{chinese}"
+    );
 }
 #[test]
 fn status_translation_failure_never_observes_host() {
