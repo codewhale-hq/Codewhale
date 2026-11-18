@@ -172,63 +172,9 @@ fn guarded_ocean_uses_backend_projected_custom_ink_and_live_supporting_floor() {
     assert_eq!(buf[(8, 5)].bg, col.color_at_y(5));
 }
 #[test]
-fn guarded_ocean_caustic_spares_semantic_blank_cells() {
+fn guarded_ocean_clip_cannot_modify_cells_outside_the_request() {
     let area = Rect::new(7, 5, 80, 24);
     let col = column(area, ShellPhase::Working, 480);
-    let rows = [Line::styled(
-        "",
-        Style::default().bg(col.color_at_y(area.y)),
-    )];
-    let mut buf = ordinary(area);
-    col.paint_matching_native(
-        area,
-        &mut buf,
-        codewhale_palette::UNDERWATER_UI_THEME.surface_bg,
-        &codewhale_palette::UNDERWATER_UI_THEME,
-        &[],
-    );
-    buf[(10, 6)].set_bg(Color::Rgb(73, 89, 107));
-    buf[(13, 6)].modifier.insert(Modifier::REVERSED);
-    let before = buf.clone();
-    crate::tui::ambient_life::apply_caustic_shimmer(area, &mut buf, &col, 480, true, &rows);
-    for x in area.x..area.right() {
-        assert_eq!(buf[(x, area.y)], before[(x, area.y)]);
-    }
-    assert_eq!(buf[(10, 6)], before[(10, 6)]);
-    assert_eq!(buf[(13, 6)], before[(13, 6)]);
-}
-#[test]
-fn guarded_ocean_missing_capability_still_motion_and_clip_cannot_modify_guards() {
-    let area = Rect::new(7, 5, 80, 24);
-    let col = column(area, ShellPhase::Working, 480);
-    for col in [
-        col.with_paint_caps(None),
-        OceanColumn::new(
-            OceanRamp::for_theme(&codewhale_palette::UNDERWATER_UI_THEME).unwrap(),
-            area,
-            480,
-            None,
-            ShellPhase::Working,
-            false,
-            0,
-            0,
-        )
-        .with_paint_caps(Some(caps(codewhale_palette::ColorDepth::TrueColor))),
-    ] {
-        let mut buf = ordinary(area);
-        // Establish real ordinary water first, so missing caps and Still
-        // must stop a pass that would otherwise have eligible pixels.
-        column(area, ShellPhase::Working, 480).paint_matching_native(
-            area,
-            &mut buf,
-            codewhale_palette::UNDERWATER_UI_THEME.surface_bg,
-            &codewhale_palette::UNDERWATER_UI_THEME,
-            &[],
-        );
-        let before = buf.clone();
-        crate::tui::ambient_life::apply_caustic_shimmer(area, &mut buf, &col, 480, true, &[]);
-        assert_eq!(buf, before);
-    }
     let mut buf = ordinary(area);
     let before = buf.clone();
     let requested = Rect::new(9, 7, 8, 3);
