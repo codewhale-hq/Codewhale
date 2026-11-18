@@ -16,6 +16,46 @@ pub(super) fn text_preview(value: &str, bytes: usize) -> String {
     format!("{}...", &value[..end])
 }
 
+pub(super) fn reasoning_override_note(route: &ChildRouteReceipt) -> Option<String> {
+    let requested = route.requested_reasoning.trim();
+    if matches!(requested, "" | "inherit" | "auto") {
+        return None;
+    }
+    let effective = route
+        .effective_reasoning
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty());
+    if effective.is_some_and(|effort| effort.eq_ignore_ascii_case(requested)) {
+        return None;
+    }
+    let route_context = match route.resolved_profile_id.as_deref() {
+        Some(profile) => format!(" (route ceiling; profile '{profile}')"),
+        None => " (route ceiling)".to_string(),
+    };
+    let no_tier_context = match route.resolved_profile_id.as_deref() {
+        Some(profile) => format!(" (profile '{profile}')"),
+        None => String::new(),
+    };
+    Some(text_preview(
+        &match effective {
+            Some(effort) => {
+                format!(
+                    "requested thinking '{requested}' runs as '{effort}' on {}/{}{route_context}",
+                    route.provider_id, route.model_id
+                )
+            }
+            None => {
+                format!(
+                    "requested thinking '{requested}' is not sent; {}/{}{no_tier_context} has no reasoning tier",
+                    route.provider_id, route.model_id
+                )
+            }
+        },
+        240,
+    ))
+}
+
 pub(super) fn page(input: &Value) -> Result<(usize, usize), ToolError> {
     let number = |key: &str, default| -> Result<usize, ToolError> {
         match input.get(key) {

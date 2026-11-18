@@ -872,3 +872,43 @@ async fn lifecycle_cleanup_keeps_source_identity_while_descendants_still_need_it
     assert!(manager.worker_records.is_empty());
     assert!(manager.resume_targets.is_empty());
 }
+
+#[test]
+fn reasoning_override_note_names_requested_and_effective_tiers() {
+    let mut route = ChildRouteReceipt {
+        requested_type: "explore".into(),
+        requested_profile: Some("scout".into()),
+        resolved_profile_id: Some("scout".into()),
+        profile_origin: Some("workspace".into()),
+        canonical_role: "explore".into(),
+        provider_id: "gemini".into(),
+        model_id: "gemini-4".into(),
+        route_source: "profile.model".into(),
+        fallback_note: None,
+        requested_reasoning: "xhigh".into(),
+        effective_reasoning: Some("high".into()),
+        runtime_version: "0.10.3".into(),
+        runtime_build_sha: "unknown".into(),
+    };
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some(
+            "requested thinking 'xhigh' runs as 'high' on gemini/gemini-4 (route ceiling; profile 'scout')"
+        )
+    );
+    route.resolved_profile_id = None;
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some("requested thinking 'xhigh' runs as 'high' on gemini/gemini-4 (route ceiling)")
+    );
+    route.effective_reasoning = None;
+    assert_eq!(
+        lifecycle::reasoning_override_note(&route).as_deref(),
+        Some("requested thinking 'xhigh' is not sent; gemini/gemini-4 has no reasoning tier")
+    );
+    route.effective_reasoning = Some("xhigh".into());
+    assert_eq!(lifecycle::reasoning_override_note(&route), None);
+    route.requested_reasoning = "inherit".into();
+    route.effective_reasoning = Some("low".into());
+    assert_eq!(lifecycle::reasoning_override_note(&route), None);
+}

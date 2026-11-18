@@ -15143,6 +15143,13 @@ impl ToolSpec for AgentTool {
         value["next"] =
             json!("Results arrive automatically; continue other work or end your turn.");
         compact_spawn_receipt(&mut value, verbose);
+        if let Some(note) = projection
+            .child_route
+            .as_ref()
+            .and_then(lifecycle::reasoning_override_note)
+        {
+            value["reasoning_note"] = json!(note);
+        }
         if !ignored_limits.is_empty() {
             value["ignored_limit_fields"] = json!(ignored_limits);
             value["limits_note"] = json!(
@@ -16089,11 +16096,13 @@ async fn spawn_subagent_from_input(
         model: Some(effective_model),
         model_route: Some(model_route),
         child_route: Some(child_route),
-        // A workflow child goes by its task label everywhere: the label is
-        // its explicit nickname, so every snapshot, event and host reads
-        // the same name (#6565).
+        // A workflow child goes by its task label, and a named child by its
+        // caller-supplied name, everywhere: that name is its explicit
+        // nickname, so every snapshot, event and host reads the same name
+        // (#6565).
         nickname: workflow_identity
             .and_then(|identity| identity.workflow_task_label.as_deref())
+            .or(spawn_request.session_name.as_deref())
             .map(str::trim)
             .filter(|label| !label.is_empty())
             .map(str::to_string),
@@ -18232,6 +18241,9 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool)
         payload["needs_input"] = json!(needs_input);
     }
     if let Some(child_route) = res.child_route.clone() {
+        if let Some(note) = lifecycle::reasoning_override_note(&child_route) {
+            payload["reasoning_note"] = json!(note);
+        }
         payload["child_route"] = json!(child_route);
     }
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
@@ -18266,7 +18278,7 @@ fn subagent_failure_class(status: &SubAgentStatus, error: &str) -> &'static str 
 /// line; this sentinel carries only bounded routing and recovery metadata.
 fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
     let transcript_handle = format!("agent:{}/full_transcript", res.agent_id);
-    let payload = json!({
+    let mut payload = json!({
         "event": "subagent.failed",
         "priority": "high",
         "agent_id": res.agent_id,
@@ -18280,6 +18292,13 @@ fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
         "error_location": "previous_line",
         "child_route": res.child_route,
     });
+    if let Some(note) = res
+        .child_route
+        .as_ref()
+        .and_then(lifecycle::reasoning_override_note)
+    {
+        payload["reasoning_note"] = json!(note);
+    }
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
 }
 
