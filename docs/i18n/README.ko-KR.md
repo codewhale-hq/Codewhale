@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>이 번역은 기계 번역 초안이며 원어민 검토를 아직 받지 않았습니다.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="데모 작업을 마친 터미널의 Codewhale. export.py에 --json 플래그를 추가했고, 로컬 테스트 3개가 모두 통과했으며, 위임한 리뷰에서 문제가 없었다고 보고합니다. 아래 작업 목록에는 완료된 세 단계가 있고, 상태 줄에는 Full Access와 로컬 website-demo 제공자가 표시됩니다.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, argparse로 ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 gemini-4-hydrogen이 표시됩니다.">
 
-<sub>스크립트로 만든 테스트 모델을 쓰는 0.10.3(아직 출시 전) 개발 빌드를 일회용 작업 공간에서 Full Access로 실행했습니다. 편집, 테스트 세 개, 서브 에이전트 리뷰는 실제로 실행되었습니다.</sub>
+<sub>0.10.3 개발 빌드에서의 실제 세션입니다. Google API를 통해 gemini-4-hydrogen이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
 
 </div>
 

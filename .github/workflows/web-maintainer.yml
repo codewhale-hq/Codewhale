@@ -81,7 +81,7 @@ jobs:
           node scripts/derive-facts.mjs
           node scripts/derive-changelog.mjs
           node scripts/derive-install.mjs
-          node scripts/render-terminal-capture.mjs
+          node scripts/render-released-capture.mjs
       - name: Check what changed
         id: drift
         run: |

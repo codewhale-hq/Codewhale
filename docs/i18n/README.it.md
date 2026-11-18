@@ -27,9 +27,9 @@ Questo installa l’ultima versione su macOS o Linux, e non richiede un account.
 
 <sub>Questa traduzione è una bozza automatica e non è ancora stata rivista da un madrelingua.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale in un terminale dopo un compito dimostrativo. Riferisce di aver aggiunto un’opzione --json a export.py, che tutti e 3 i test locali sono passati e che una revisione delegata non ha trovato problemi. L’elenco dei compiti sotto mostra tre passaggi completati, e la riga di stato mostra Full Access e il provider locale website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in un terminale dopo un vero compito con gemini-4-hydrogen. Ha eseguito python3 -m unittest -v test_ls.py, 2 test sono passati e riferisce di aver aggiunto l’opzione --json a ls.py con argparse. La riga di stato mostra accept edits e gemini-4-hydrogen.">
 
-<sub>Una build di sviluppo della 0.10.3, non ancora rilasciata, con un modello di test scriptato, in Full Access dentro un workspace usa e getta. La modifica, tre test e una revisione di un sub-agente sono stati eseguiti davvero.</sub>
+<sub>Una sessione reale su una build di sviluppo della 0.10.3: gemini-4-hydrogen, tramite l’API di Google, ha scritto la modifica, e hai consentito una volta l’esecuzione dei test.</sub>
 
 </div>
 

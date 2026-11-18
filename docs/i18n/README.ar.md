@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>هذه الترجمة مسودة آلية ولم يراجعها بعد متحدث أصلي.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale في الطرفية بعد مهمة تجريبية. يذكر أنه أضاف الخيار --json إلى export.py، وأن الاختبارات المحلية الثلاثة نجحت، وأن المراجعة المفوَّضة لم تجد مشكلات. تعرض قائمة المهام في الأسفل ثلاث خطوات مكتملة، ويعرض سطر الحالة Full Access والمزوّد المحلي website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale في الطرفية بعد مهمة حقيقية على gemini-4-hydrogen. شغّل python3 -m unittest -v test_ls.py فنجح اختباران، ويذكر أنه أضاف الخيار --json إلى ls.py باستخدام argparse. يعرض سطر الحالة accept edits و gemini-4-hydrogen.">
 
-<sub>بنية تطوير من الإصدار 0.10.3، الذي لم يصدر بعد، مع نموذج اختبار مكتوب مسبقًا، في وضع Full Access داخل مساحة عمل مؤقتة. التعديل والاختبارات الثلاثة ومراجعة الوكيل الفرعي جرت فعلًا.</sub>
+<sub>جلسة حقيقية على إصدار تطوير من 0.10.3: كتب gemini-4-hydrogen التعديل عبر واجهة Google البرمجية، وسمحتَ بتشغيل الاختبارات مرة واحدة.</sub>
 
 </div>
 

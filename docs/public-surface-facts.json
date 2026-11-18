@@ -270,24 +270,22 @@
     ]
   },
   "screenshot": {
-    "readme": "web/public/codewhale-tui-0102-demo.png",
-    "website": "web/public/codewhale-tui-0102-demo.png",
+    "readme": "web/public/codewhale-tui-latest.png",
+    "website": "web/public/codewhale-tui-latest.png",
     "sourceVersion": "0.10.3",
-    "sourceCommit": "e5279420647e15896150728ecf9a1f9fa80aadd1",
-    "sourceSha256": "89e30c3e2f31c0c189d8162bdc253f8e36b4bbf4ffc1f56271f88f8a48eff8cb",
-    "sourceDirty": true,
-    "sourceDiffSha256": "79a63eac14177de2ebf178ccd124ae46b3f37a0013a226d508306e2e933ae65f",
-    "binarySha256": "fffd1d3f3b679eac6ea2b83a33c5871935770c850755086dd15c1b633bbe9609",
-    "terminal": "real PTY cell capture; the product page renders native cells as selectable HTML text, and the README image is the same frame exported as SVG by web/scripts/render-terminal-capture.mjs and rasterized as PNG",
+    "sourceCommit": "9d7e4362f4378c3f78436b76c0dfe795c128fa8d",
+    "sourceSha256": "2d58ef8db325685c9ef1880866bafac14ccb4572ddf025629ebac8d50f6f1c01",
+    "sourceDirty": false,
+    "model": "gemini-4-hydrogen",
+    "provider": "Google Gemini (first-party API)",
+    "terminal": "real PTY capture under tmux; the site renders the released-capture cells as selectable HTML text, and the README image is the Result frame as the terminal window drew it",
     "theme": "Underwater (default)",
-    "capture": "Captured on 2026-11-10 from the development build of a dirty 0.10.3 candidate based on e5279420647e15896150728ecf9a1f9fa80aadd1 by the opt-in website_current_terminal_capture test using crates/tui/tests/support/qa_harness. Exact source diff and binary hashes are recorded here and in the capture manifest. A deterministic loopback provider drives the real Engine to edit a JSON exporter, run three passing local Python tests and delegate a source-grounded read-only review. Home (with the Tasks workbar), unsent composer, configured provider manager, help, Tasks and Fleet are actual application output with no retouched cells or fixture history. Sealed HOME and Full Access apply only to the isolated demo workspace. This is a local scripted demo, not published-release or external-provider qualification.",
+    "capture": "Captured on 2026-11-18 from a local macOS development build of Engine main 9d7e4362f4 (0.10.3, not published) in one live session on gemini-4-hydrogen through Google's API, default approval mode (accept edits), throwaway HOME and git repository. The model read ls.py and test_ls.py, edited ls.py, asked to run the tests, was allowed once, and 2 tests passed. No cell is edited.",
     "sources": [
-      "crates/tui/tests/support/qa_harness",
-      "crates/tui/tests/cucumber/launch_card_pty.rs",
-      "web/lib/terminal-captures/manifest.json",
-      "web/lib/terminal-captures/website-home-100x24.json",
-      "web/scripts/render-terminal-capture.mjs",
-      "web/public/codewhale-tui-0102-demo.png"
+      "web/lib/terminal-captures/released/provenance.json",
+      "web/lib/terminal-captures/released/cols100/05-task-result.ansi",
+      "web/scripts/render-released-capture.mjs",
+      "web/public/codewhale-tui-latest.png"
     ]
   }
 }

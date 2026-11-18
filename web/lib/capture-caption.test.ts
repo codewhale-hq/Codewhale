@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { captureCaption } from "./capture-caption";
 import { RELEASED_CAPTURE_FRAMES, RELEASED_CAPTURE_META, type ReleasedCaptureFrame } from "./released-capture.generated";
-import { TERMINAL_CAPTURE_FRAMES } from "./terminal-capture.generated";
 
 const released = RELEASED_CAPTURE_FRAMES as Record<string, ReleasedCaptureFrame>;
 const dir = new URL("./terminal-captures/released/", import.meta.url);
@@ -18,12 +17,6 @@ const stripped = (file: string) =>
     .split("\n");
 
 describe("capture caption", () => {
-  it("gives development frames the development caption and never the released one", () => {
-    const dev = Object.values(TERMINAL_CAPTURE_FRAMES);
-    expect(dev.every((frame) => frame.provenance === "development")).toBe(true);
-    expect(captureCaption(dev).caption).toBe("captionDevelopment");
-  });
-
   it("gives a released task sequence that shows the test run the released caption", () => {
     const sequence = ["02-task-prompt", "03-task-diff", "04-task-approval", "05-task-result"].map((n) => released[`cols56/${n}`]);
     expect(captureCaption(sequence)).toMatchObject({ caption: "captionReleased", reason: null });
@@ -39,8 +32,7 @@ describe("capture caption", () => {
     expect(captureCaption([released["cols100/06-receipt.crop"]]).caption).toBeNull();
   });
 
-  it("gives no caption to frames of both origins together or to none", () => {
-    expect(captureCaption([TERMINAL_CAPTURE_FRAMES.home, released["cols56/05-task-result"]]).caption).toBeNull();
+  it("gives no caption to no frames", () => {
     expect(captureCaption([]).caption).toBeNull();
   });
 

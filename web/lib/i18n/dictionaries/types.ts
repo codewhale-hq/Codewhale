@@ -161,7 +161,6 @@ export interface HomeDict {
   heroIntro: string;
   readTheCode: string;
   installNote: string;
-  captionDevelopment: string;
   captionReleased: string;
   captureFrameNoPosture: string;
   frameLabelPrompt: string;
@@ -181,8 +180,6 @@ export interface HomeDict {
   heroInstallAria: string;
   /** Accessible name for a terminal capture's region and for the frame tabs. */
   shotPreview: string;
-  /** Screenshot alt text for the current media manifest capture. */
-  screenshotAlt: string;
 
   copy: string;
   copied: string;
@@ -203,6 +200,16 @@ export interface HomeDict {
   sectionModelBody: string;
   sectionControlHeading: string;
   sectionControlBody: string;
+  sectionAgentsHeading: string;
+  sectionAgentsBody: string;
+  agentsRolesLabel: string;
+  agentRoleExplore: string;
+  agentRoleImplement: string;
+  agentRoleReviewer: string;
+  agentsLink: string;
+  directionShotAlt: string;
+  directionShotCaption: string;
+  directionShotLink: string;
   sectionDirectionHeading: string;
   sectionDirectionBody: string;
   sectionOpenHeading: string;

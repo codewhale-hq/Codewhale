@@ -27,9 +27,9 @@ Perintah ini memasang rilis terbaru di macOS atau Linux, dan tidak memerlukan ak
 
 <sub>Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale di terminal setelah tugas demo. Ia melaporkan telah menambahkan flag --json ke export.py, ketiga tes lokal lulus, dan tinjauan yang didelegasikan tidak menemukan masalah. Daftar tugas di bawahnya menampilkan tiga langkah selesai, dan baris status menampilkan Full Access serta penyedia lokal website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan gemini-4-hydrogen. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py dengan argparse. Baris status menampilkan accept edits dan gemini-4-hydrogen.">
 
-<sub>Build pengembangan 0.10.3, yang belum dirilis, dengan model uji berskrip, dalam Full Access di dalam ruang kerja sekali pakai. Pengeditan, tiga tes, dan tinjauan oleh sub-agen benar-benar dijalankan.</sub>
+<sub>Sesi nyata pada build pengembangan 0.10.3: gemini-4-hydrogen melalui API Google menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
 
 </div>
 

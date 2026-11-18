@@ -1,8 +1,8 @@
-export type CaptionKey = "captionDevelopment" | "captionReleased";
+export type CaptionKey = "captionReleased";
 
 export type CaptureFrameRef = {
   id?: string;
-  provenance: "development" | "released";
+  provenance: "released";
   shows?: {
     testRun: boolean;
     askPosture: boolean;
@@ -26,7 +26,7 @@ export type CaptureCaption = {
 };
 
 export function frameNote(frame: CaptureFrameRef): CaptureFrameNote {
-  const shows = frame.provenance === "released" ? frame.shows : undefined;
+  const shows = frame.shows;
   const lacksAskPosture = shows ? !shows.askPosture : false;
   const lacksModelName = shows ? shows.modelConnected && !shows.modelName : false;
   return {
@@ -41,9 +41,6 @@ export function captureCaption(frames: readonly CaptureFrameRef[]): CaptureCapti
   const notes = frames.map(frameNote);
   const none = (reason: string): CaptureCaption => ({ caption: null, reason, frames: notes });
   if (frames.length === 0) return none("no frames");
-  const development = frames.filter((frame) => frame.provenance === "development").length;
-  if (development === frames.length) return { caption: "captionDevelopment", reason: null, frames: notes };
-  if (development > 0) return none("frames from a development build and from the released version are shown together");
   const released = frames.map((frame) => frame.shows);
   if (released.some((shows) => !shows)) return none("a released frame carries no record of what it shows");
   if (released.some((shows) => !shows?.taskSession)) {

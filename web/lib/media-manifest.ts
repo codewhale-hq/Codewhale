@@ -29,23 +29,20 @@
 import type { LocalizedText } from "./content/vocabulary";
 
 /**
- * The homepage terminal. The site renders it as live text from the PTY cell
- * capture (`capture`, via scripts/render-terminal-capture.mjs and
- * components/terminal-capture.tsx); `src` is the same frame rasterized by
- * that script for the README, which cannot run the site's renderer. Captured
- * build identity is independent of the current source/release. This local
- * website-demo session exercises real Engine tools; it does not qualify an
- * inference provider. sourceCommit is the candidate's base; exact binary and
- * dirty-source hashes are recorded in terminal-captures/manifest.json.
+ * The README terminal image: the Result frame of the released-capture set
+ * (lib/terminal-captures/released, cols100/05-task-result), a real session on
+ * gemini-4-hydrogen, as the terminal window drew it. The site renders the
+ * same frames as live text; the README cannot run the site's renderer.
  */
 export const TERMINAL_SCREENSHOT = {
-  capture: "web/lib/terminal-captures/website-home-100x24.json",
-  src: "/codewhale-tui-0102-demo.png",
-  width: 1872,
-  height: 956,
+  frame: "cols100/05-task-result",
+  src: "/codewhale-tui-latest.png",
+  width: 1858,
+  height: 1176,
   version: "0.10.3",
-  sourceCommit: "e5279420647e15896150728ecf9a1f9fa80aadd1",
-  sha256: "89e30c3e2f31c0c189d8162bdc253f8e36b4bbf4ffc1f56271f88f8a48eff8cb",
+  model: "gemini-4-hydrogen",
+  sourceCommit: "9d7e4362f4378c3f78436b76c0dfe795c128fa8d",
+  sha256: "2d58ef8db325685c9ef1880866bafac14ccb4572ddf025629ebac8d50f6f1c01",
 } as const;
 
 /** Published-asset budgets; see the module contract for what tests inspect. */

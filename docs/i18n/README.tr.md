@@ -27,9 +27,9 @@ Bu komut, macOS veya Linux'a en son sürümü kurar ve hesap gerektirmez. [Windo
 
 <sub>Bu çeviri makine taslağıdır ve henüz anadili konuşan biri tarafından gözden geçirilmedi.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Bir demo görevinden sonra terminalde Codewhale. export.py dosyasına --json bayrağı eklediğini, 3 yerel testin de geçtiğini ve devredilen incelemenin sorun bulmadığını bildiriyor. Alttaki görev listesinde tamamlanmış üç adım var ve durum satırında Full Access ile yerel website-demo sağlayıcısı görünüyor.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen ile gerçek bir görevden sonra terminalde Codewhale. python3 -m unittest -v test_ls.py komutunu çalıştırdı, 2 test geçti ve argparse ile ls.py dosyasına --json seçeneğini eklediğini bildiriyor. Durum satırında accept edits ve gemini-4-hydrogen görünüyor.">
 
-<sub>Betiklenmiş bir test modeliyle, henüz yayınlanmamış 0.10.3'ün geliştirme derlemesi, tek kullanımlık bir çalışma alanında Full Access ile. Düzenleme, üç test ve bir alt ajan incelemesi gerçekten çalıştı.</sub>
+<sub>0.10.3 geliştirme sürümünde gerçek bir oturum: gemini-4-hydrogen, Google API üzerinden değişikliği yazdı ve testlerin çalışmasına bir kez siz izin verdiniz.</sub>
 
 </div>
 

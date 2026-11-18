@@ -27,9 +27,9 @@ Això instal·la l’última versió a macOS o Linux, i no necessita cap compte.
 
 <sub>Aquesta traducció és un esborrany automàtic que encara no ha revisat cap parlant nadiu.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale en un terminal després d’una tasca de demostració. Informa que ha afegit una opció --json a export.py, que han passat les 3 proves locals i que una revisió delegada no ha trobat cap problema. La llista de tasques de sota mostra tres passos completats, i la línia d’estat mostra Full Access i el proveïdor local website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale en un terminal després d’una tasca real amb gemini-4-hydrogen. Ha executat python3 -m unittest -v test_ls.py, han passat 2 proves i explica que ha afegit l’opció --json a ls.py amb argparse. La línia d’estat mostra accept edits i gemini-4-hydrogen.">
 
-<sub>Una compilació de desenvolupament de la 0.10.3, que encara no s’ha publicat, amb un model de prova amb guió, en Full Access dins d’un espai de treball d’un sol ús. L’edició, tres proves i una revisió d’un subagent es van executar de debò.</sub>
+<sub>Una sessió real amb una versió de desenvolupament de la 0.10.3: gemini-4-hydrogen, a través de l’API de Google, va escriure el canvi, i vas permetre una vegada l’execució de les proves.</sub>
 
 </div>
 
