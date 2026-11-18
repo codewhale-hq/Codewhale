@@ -15,8 +15,8 @@ Codewhale 说话像一件自带宪章的仪器：平静、准确，一切以回�
 - 多用短句和具体的名词，少用口号和庆功式的话。
 - `saved`、`reloaded`、`verified`、`failed` 这几个词，只有事情真的发生了才能说。
   界面上有可点的入口，不等于事情已经发生。
-- 产品术语必须一字不差：Codewhale；Plan / Work / Operate；Ask /
-  Auto-Review / Full Access；Fleet / Workflow / Lane / Runtime；Work。
+- 产品术语必须一字不差：Codewhale；Plan / Work；Ask / Accept Edits /
+  Auto-Review / Full Access；Fleet / Workflow / Lane / Runtime。
 - 命令、按键名、路径，以及提供商（provider）和模型名都照原样写。
   由代码把它们和本地化后的文字拼在一起。
 
@@ -38,7 +38,7 @@ Blue Stage 是默认的视觉语法，不是一种独立的产品模式。
 
 ## 字形
 
-终端自有的字形和窄版 ASCII 回退都由 `crates/tui/src/tui/glyphs.rs` 定义。
+终端自有的字形和窄版 ASCII 回退都由 `crates/tui-kit/src/glyphs.rs` 定义。
 渲染器按语义名称取用，不在本地自己挑符号。
 
 - `●` 是 Codewhale 反复使用的锚点：表示当前发言者，或当前由人做出的选择。
