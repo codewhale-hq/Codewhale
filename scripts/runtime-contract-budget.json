@@ -125,9 +125,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 88621,
-          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
-          "tokens_est": 22156,
+          "bytes": 92921,
+          "identity_sha256": "258e4a824b8b3395642deb39496ac0c0cb74d948269515fc672d7f723f1e4091",
+          "tokens_est": 23231,
           "tool_names": [
             "Git",
             "Run",
@@ -139,6 +139,12 @@
             "context_archive_get",
             "context_archive_search",
             "create_goal",
+            "design_comments",
+            "design_create_artboard",
+            "design_list",
+            "design_read_html",
+            "design_screenshot",
+            "design_write_html",
             "diagnostics",
             "edit",
             "execute_tools",
@@ -185,7 +191,7 @@
             "workflow",
             "write"
           ],
-          "tools": 55
+          "tools": 61
         }
       },
       "operate": {
@@ -214,9 +220,9 @@
           "tools": 16
         },
         "full": {
-          "bytes": 88621,
-          "identity_sha256": "039b381a0c854e739088c0d5432abfc7b8ca9f0e2260051dc507ac5e1354b6d0",
-          "tokens_est": 22156,
+          "bytes": 92921,
+          "identity_sha256": "258e4a824b8b3395642deb39496ac0c0cb74d948269515fc672d7f723f1e4091",
+          "tokens_est": 23231,
           "tool_names": [
             "Git",
             "Run",
@@ -228,6 +234,12 @@
             "context_archive_get",
             "context_archive_search",
             "create_goal",
+            "design_comments",
+            "design_create_artboard",
+            "design_list",
+            "design_read_html",
+            "design_screenshot",
+            "design_write_html",
             "diagnostics",
             "edit",
             "execute_tools",
@@ -274,7 +286,7 @@
             "workflow",
             "write"
           ],
-          "tools": 55
+          "tools": 61
         }
       },
       "plan": {
@@ -301,9 +313,9 @@
           "tools": 14
         },
         "full": {
-          "bytes": 58128,
-          "identity_sha256": "191267223f8667b24726e08d57e13acdc84e7a7e5507591a6212946f8026d15a",
-          "tokens_est": 14532,
+          "bytes": 62428,
+          "identity_sha256": "81ffefcb8fea04ef9ef2537f73313257f283536949488a52838feb82ff2b2ffd",
+          "tokens_est": 15607,
           "tool_names": [
             "Git",
             "Web",
@@ -313,6 +325,12 @@
             "context_archive_get",
             "context_archive_search",
             "create_goal",
+            "design_comments",
+            "design_create_artboard",
+            "design_list",
+            "design_read_html",
+            "design_screenshot",
+            "design_write_html",
             "diagnostics",
             "edit",
             "file_search",
@@ -340,7 +358,7 @@
             "workflow",
             "write"
           ],
-          "tools": 34
+          "tools": 40
         }
       }
     },
