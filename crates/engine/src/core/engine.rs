@@ -10128,6 +10128,32 @@ impl Engine {
             }
         };
 
+        let reloaded = pool.lock().await.reload_if_config_changed().await;
+        match reloaded {
+            Ok(true) => {
+                if let Some(previous) = self.mcp_boot_task.take() {
+                    previous.abort();
+                }
+                self.mcp_boot_in_flight = false;
+                self.mcp_boot_generation = None;
+                if let Err(error) = self
+                    .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+                    .await
+                {
+                    tracing::debug!(
+                        "MCP session boot after config change failed: {}",
+                        crate::mcp::format_mcp_error_for_display(&error)
+                    );
+                }
+                self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
+            }
+            Ok(false) => {}
+            Err(error) => tracing::debug!(
+                "MCP config reload failed: {}",
+                crate::mcp::format_mcp_error_for_display(&error)
+            ),
+        }
+
         if self.mcp_boot_in_flight {
             // Optional servers are still connecting in the background. Snapshot
             // currently-ready tools so the first LLM call is not serialized

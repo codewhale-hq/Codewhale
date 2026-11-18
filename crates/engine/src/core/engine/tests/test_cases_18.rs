@@ -1926,3 +1926,95 @@ async fn mcp_tool_search_cancel_aborts_handshake_and_clears_connecting() {
     );
     fixture_manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn turn_catalog_drops_an_mcp_tool_switched_off_after_the_server_connected() {
+    let Some(node) = codewhale_dependencies::resolve_node() else {
+        return;
+    };
+    let tmp = tempdir().expect("tempdir");
+    let fixture_manager = Arc::new(crate::extension_host::ExtensionHostManager::new(
+        crate::extension_host::ExtensionHostOptions {
+            root: Some(tmp.path().join("host-home")),
+            ..Default::default()
+        },
+    ));
+    let _fixture_manager_guard =
+        crate::extension_host::TestManagerGuard::install(Arc::clone(&fixture_manager));
+    let server = tmp.path().join("server.mjs");
+    fs::write(&server, r#"import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === 'initialize'
+    ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'issues', version: '1' } }
+    : { tools: ['list_issues', 'close_issue'].map(name => ({ name, inputSchema: { type: 'object' } })) };
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+});"#).expect("fixture");
+    let config_path = tmp.path().join("mcp.json");
+    let write_config = |disabled: &[&str], age: u64| {
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&json!({
+                "timeouts": { "connect_timeout": 120 },
+                "servers": {
+                    "issues": { "command": node, "args": [server], "required": true, "disabled_tools": disabled }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&config_path)
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(age))
+            })
+            .unwrap();
+    };
+    write_config(&[], 60);
+    let (mut engine, _handle) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            mcp_config_path: config_path.clone(),
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    engine
+        .start_mcp_session_boot(McpConnectRefresh::IfChanged)
+        .await
+        .expect("session boot starts");
+    let names = |tools: Vec<Tool>| {
+        tools
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !names(engine.mcp_tools().await).contains("mcp_issues_close_issue") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fixture server never connected"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    write_config(&["close_issue"], 0);
+    assert!(!names(engine.mcp_tools().await).contains("mcp_issues_close_issue"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let offered = names(engine.mcp_tools().await);
+        assert!(!offered.contains("mcp_issues_close_issue"), "{offered:?}");
+        if offered.contains("mcp_issues_list_issues") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "server never reconnected"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    fixture_manager.shutdown().await;
+}
