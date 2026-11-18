@@ -1066,6 +1066,29 @@ pub(crate) fn decorative_shell_motion_enabled(app: &App) -> bool {
         && app.view_stack.is_empty()
 }
 
+#[must_use]
+pub(crate) fn ambient_life_motion_enabled(app: &App) -> bool {
+    app.theme_id == codewhale_palette::ThemeId::Underwater
+        && app.motion_policy().allows_decorative()
+        && !app.attention_hold_active()
+        && app.onboarding == OnboardingState::None
+        && app.view_stack.is_empty()
+        && app.viewport.transcript_scroll.is_at_tail()
+        && crate::tui::notifications::terminal_focused()
+        && app.viewport.ocean_caps.is_none_or(|caps| {
+            matches!(
+                caps.depth,
+                codewhale_ratatui::color::ColorDepth::TrueColor
+                    | codewhale_ratatui::color::ColorDepth::Ansi256
+            )
+        })
+}
+
+#[must_use]
+pub(crate) fn ambient_motion_terminal_supported(app: &App) -> bool {
+    app.synchronized_output_enabled && !crate::tui::display_refresh::terminal_is_apple_terminal()
+}
+
 /// Shorten a workspace path to its trailing components, marked with a leading
 /// ellipsis so it reads as "somewhere above here" rather than as a real path.
 fn shorten_workspace(workspace: &str, keep: usize) -> String {

@@ -116,7 +116,7 @@ pub(super) fn paint(
             stats.marks_skipped_text += frame.marks;
             continue;
         }
-        let glow = (0.65 + 0.35 * (progress * std::f64::consts::PI).sin()) as f32;
+        let glow = (0.36 + 0.24 * (progress * std::f64::consts::PI).sin()) as f32;
         for (i, source) in marks() {
             let point = (area.x + x + i as u16 % WIDTH, area.y + y + i as u16 / WIDTH);
             let Some(cell) = buf.cell_mut(point) else {

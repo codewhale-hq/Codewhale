@@ -1,64 +1,48 @@
 //! Ambient ocean life for the underwater transcript field.
 //!
-//! One clear owner for the fish school, jellyfish, bubbles, and the rare
-//! whale cameo — nothing else lives in the water (2026-07-23 product
-//! decision: seaweed and bio-dust are gone). Motion stays inside the
-//! existing delta/interpolation path: this module never requests frames on
-//! its own.
+//! One owner for everything that lives in the water: a near fish school, a far
+//! shoal of minnows, one visiting jellyfish, marine snow, bubbles, a distant
+//! whale that crosses the deep every few minutes, and the completion whale
+//! cameo. Motion stays inside the existing delta/interpolation path: this
+//! module never requests frames on its own.
 //!
-//! Native silhouettes use the shared 2×4 braille cell: fish move in half
-//! columns with a one-dot bob; jellyfish rise in quarter rows. A bounded pose
-//! table owns no clock or simulation. ASCII-safe terminals retain the original
-//! silhouettes through the same habitat, population and collision path.
+//! Native silhouettes use the shared 2×4 braille cell, so every creature moves
+//! in half columns and quarter rows rather than whole cells. ASCII-safe
+//! terminals keep the original fish, jellyfish and bubble silhouettes and get
+//! no snow, minnows or distant whale.
 //!
-//! Motion language (shared with the rest of the shell): every mark can lerp
-//! between the water and its ink at a time-varying brightness. Fish carry a
-//! travelling sin² wave, jellyfish a slow band-bounded pulse that opens and
-//! closes the dome while the tentacles trail it by ~0.6 s, bubbles an
-//! occasional raised-cosine glint. Phases are wall-clock keyed and entity
-//! periods deliberately never match, so nothing strobes in sync.
+//! Every mark lerps from the water it sits in toward its ink at a
+//! time-varying brightness that stays well below transcript text. Phases are
+//! wall-clock keyed and entity periods never match, so nothing strobes in
+//! sync. Positions are pure functions of the ambient clock: activity changes
+//! ink and presence, never speed, so a state change never teleports a creature.
 //!
-//! The jellyfish is a *visitor*, not scenery: one at most, present for roughly
-//! a fifth of a ~5-minute cycle and dimmer than everything around it. See the
-//! `JELLY_VISIT_*` constants for the rarity knobs and why they are set where
-//! they are.
+//! Collision is one rule, [`is_open_water`]: a mark may only land in a
+//! horizontal span with no text on it, none within [`TEXT_CLEARANCE_ROWS`]
+//! rows and none within [`TEXT_CLEARANCE_COLS`] columns. Multi-row creatures
+//! (jellyfish, distant whale) are placed or withheld as one unit. Life
+//! therefore lives below the last transcript line and to the right of short
+//! lines, and the water closes wherever text is.
 //!
-//! Fish swim on a wrap-around path: they exit one edge and re-enter the
-//! other still facing their travel direction, so facing always equals
-//! velocity by construction. Direction may only change while the school is
-//! fully off-screen.
+//! The water's own colour never animates here: no caustic or background
+//! shimmer. A frame changes only the cells a creature enters or leaves, so the
+//! terminal diff stays a few dozen cells per tick.
 //!
-//! The aquarium has a habitat and it defers to whatever is composed above it.
-//! Collision is one rule — [`is_open_water`]: a mark may only land in a
-//! horizontal span that carries no text and has none within
-//! [`TEXT_CLEARANCE_ROWS`] of it, measured off the rendered lines rather than
-//! guessed from fractions of the field. Everything else follows from it. A
-//! short status line therefore leaves honest water beside it instead of
-//! claiming the whole row. The school rides a band off the
-//! floor ([`SCHOOL_FLOOR_GAP`]); bubbles rise a few rows from the floor and
-//! dissolve ([`BUBBLE_MAX_RISE_ROWS`]); the jellyfish only surfaces where
-//! [`deep_water_rows`] says the water is deep enough to hold it *and* the
-//! school; and the surface caustics stop at the first row of the composition.
-//! Light above, life below, words in between — and as a transcript fills the
-//! field the water closes row by row until nothing moves behind the text the
-//! reader is actually reading.
+//! The ambient clock is `App::sample_ambient_clock_ms`, which advances by real
+//! elapsed time clamped to `App::AMBIENT_MAX_STEP_MS` per draw. Whether life
+//! runs at all is decided by `underwater::ambient_life_motion_enabled`
+//! (Underwater theme, full motion, no attention hold, focused terminal,
+//! synchronized output, truecolor or 256 colours, not Terminal.app); under
+//! reduced motion `presence` is 0 and rendering exits before building marks.
 //!
-//! Two clocks feed this module and neither is a token counter. Positions ride
-//! `App::sample_ambient_clock_ms`, which advances by real elapsed time clamped
-//! to `App::AMBIENT_MAX_STEP_MS` per draw, so drift speed is identical at 16 ms
-//! and 33 ms frames and a stalled-then-resumed frame cannot jump a creature.
-//! Sideways *placement*, by contrast, is a function of the transcript text
-//! under the silhouette — which does change with token throughput — so it is
-//! bounded by [`JELLY_MAX_TEXT_DODGE_COLS`].
-//!
-//! Under reduced motion there is no ambient life at all: `ocean::life_presence`
-//! returns 0 and rendering exits before building marks or initializing pet
-//! tapes. Reduced motion spends no simulation work on invisible creatures.
+//! Known limits: creatures do not interact with each other beyond sharing the
+//! open-water rule, the distant whale is withheld for the whole frame when any
+//! part of it would touch text, and 16-colour and NO_COLOR terminals get no
+//! life.
 //!
 //! `render_ambient_life` returns per-frame budget counters
 //! ([`AmbientFrameStats`]): marks built always splits exactly into painted +
-//! text-skipped + clipped. Counting is a handful of `u32` increments — no
-//! allocation, no frame requests.
+//! text-skipped + clipped.
 
 use ratatui::{
     buffer::Buffer,
@@ -123,7 +107,7 @@ impl LifeDensity {
         match self {
             Self::Sparse => 3,
             Self::Normal => 5,
-            Self::Rich => 7,
+            Self::Rich => 6,
         }
     }
 
@@ -140,16 +124,29 @@ impl LifeDensity {
     }
 
     #[must_use]
-    fn bubble_streams(self) -> usize {
-        // Raised from 1/2/2 (founder, "screw the cap … more alive more
-        // ocean"). Bubbles are the cheapest life in the field: one mark
-        // each, no silhouette to degrade, and `water()` already refuses any
-        // column the composition has claimed, so a denser field thins itself
-        // automatically as a transcript fills.
+    fn shoal_size(self) -> usize {
         match self {
-            Self::Sparse => 2,
-            Self::Normal => 4,
-            Self::Rich => 6,
+            Self::Sparse => 0,
+            Self::Normal => 3,
+            Self::Rich => 5,
+        }
+    }
+
+    #[must_use]
+    fn snow_motes(self) -> usize {
+        match self {
+            Self::Sparse => 4,
+            Self::Normal => 7,
+            Self::Rich => 10,
+        }
+    }
+
+    #[must_use]
+    fn bubble_streams(self) -> usize {
+        match self {
+            Self::Sparse => 1,
+            Self::Normal => 2,
+            Self::Rich => 3,
         }
     }
 }
@@ -171,8 +168,8 @@ struct AmbientMark {
     y: u16,
     glyph: &'static str,
     /// Multi-row creature identity. Every part relocates or is withheld as one
-    /// unit so a jellyfish never degrades into a detached dome or tentacles.
-    jellyfish: Option<usize>,
+    /// unit so a jellyfish or whale never degrades into detached pieces.
+    group: Option<usize>,
     depth: Depth,
     style_mod: Option<Modifier>,
     /// Time-varying glow in `[0, 1]`: the mark's ink is lerped from the
@@ -194,11 +191,12 @@ pub struct AmbientFrameStats {
     pub cells_written: u32,
 }
 
-/// Bounded school (7), jellyfish (4), bubbles (6), plus at most three
-/// 18-by-6 dot-whale widgets including their labels. No particle allocations
+/// Bounded school (7), far shoal (5), jellyfish (3 rows), bubbles (3),
+/// marine snow (10), distant whale (3 rows), plus at most three 18-by-6
+/// dot-whale cameo widgets. No particle allocations
 /// or simulation steps occur per paint after the fixed cameo tapes are cached.
 #[cfg(test)]
-pub const MAX_FRAME_MARKS: u32 = 17 + pet_cameo::MAX_MARKS;
+pub const MAX_FRAME_MARKS: u32 = 7 + 5 + 3 + 3 + 10 + 3 + pet_cameo::MAX_MARKS;
 
 /// Optional pointer reaction for fish dart / bubble rise.
 #[derive(Debug, Clone, Copy, Default)]
@@ -400,7 +398,7 @@ fn build_frame_marks(
         } else {
             native_poses::fish(
                 swims_right,
-                ((t / 300 + m as u128) % 4) as usize,
+                ((cycle_dot_step.div_euclid(2) as u128 + m as u128) % 4) as usize,
                 x_dots.rem_euclid(2) as usize,
                 usize::from(bob),
             )
@@ -431,13 +429,13 @@ fn build_frame_marks(
             continue;
         }
         let brightness = FISH_BRIGHTNESS_FLOOR
-            + (1.0 - FISH_BRIGHTNESS_FLOOR)
+            + (FISH_BRIGHTNESS_CEIL - FISH_BRIGHTNESS_FLOOR)
                 * wave01(t, FISH_WAVE_MS, (m as u128).saturating_mul(320));
         marks.push(AmbientMark {
             x: x_i32 as u16,
             y,
             glyph: body,
-            jellyfish: None,
+            group: None,
             depth: if m == 0 {
                 Depth::Foreground
             } else {
@@ -462,7 +460,14 @@ fn build_frame_marks(
     // silhouette and a wedge of fish sharing four rows of a 24-row terminal
     // is the definition of not earning the space. Below the budget it simply
     // does not come up.
-    let jellyfish_count = density.jellyfish_count();
+    let whale_visit = (!ascii_safe)
+        .then(|| distant_whale_visit(area, t))
+        .flatten();
+    let jellyfish_count = if whale_visit.is_some() {
+        0
+    } else {
+        density.jellyfish_count()
+    };
     for j in 0..jellyfish_count {
         let phase = 3_100u128.saturating_add((j as u128) * 4_700);
         let lane_x = if j % 2 == 0 {
@@ -543,7 +548,8 @@ fn build_frame_marks(
             continue;
         }
         if !ascii_safe {
-            let pose = ((t.saturating_add(phase) % JELLY_PULSE_MS) * 16 / JELLY_PULSE_MS) as usize;
+            let pose =
+                ((t.saturating_add(phase) % JELLY_PULSE_MS) * 8 / JELLY_PULSE_MS) as usize * 2;
             for (row, glyph) in native_poses::jelly(
                 pose,
                 usize::from(wobble_dots % 2),
@@ -556,7 +562,7 @@ fn build_frame_marks(
                     x,
                     y: y + row as u16,
                     glyph,
-                    jellyfish: Some(j),
+                    group: Some(j),
                     depth: Depth::Background,
                     style_mod: None,
                     brightness: Some(if row == 0 {
@@ -576,7 +582,7 @@ fn build_frame_marks(
                 x,
                 y: row,
                 glyph,
-                jellyfish: Some(j),
+                group: Some(j),
                 // Background ink, same as the tentacles: the dome used to sit
                 // a layer nearer than everything else in the side lanes,
                 // which is most of why it drew the eye.
@@ -598,7 +604,7 @@ fn build_frame_marks(
                 x: x.saturating_add(dx),
                 y: tentacle_row,
                 glyph: sway,
-                jellyfish: Some(j),
+                group: Some(j),
                 depth: Depth::Background,
                 style_mod: None,
                 brightness: Some(tentacle_brightness),
@@ -644,20 +650,217 @@ fn build_frame_marks(
             600,
             BUBBLE_BRIGHTNESS_FLOOR,
             phase,
-        ) * bubble_dissolve(rise);
+        ) * BUBBLE_BRIGHTNESS_CEIL
+            * bubble_dissolve(rise);
         marks.push(AmbientMark {
             x: col,
             y,
             glyph,
-            jellyfish: None,
+            group: None,
             depth: Depth::Foreground,
             style_mod: None,
             brightness: Some(brightness),
         });
     }
 
+    if !ascii_safe {
+        push_far_shoal(&mut marks, area, t, density, &water);
+        push_marine_snow(&mut marks, area, t, density, &water);
+        if let Some(visit) = whale_visit {
+            push_distant_whale(&mut marks, area, t, visit);
+        }
+    }
+
     stats.marks_built = marks.len() as u32;
     FrameMarks { marks }
+}
+
+const SHOAL_CELL_MS: u128 = 1_150;
+const SHOAL_BRIGHTNESS_FLOOR: f32 = 0.16;
+const SHOAL_BRIGHTNESS_CEIL: f32 = 0.34;
+
+fn push_far_shoal(
+    marks: &mut Vec<AmbientMark>,
+    area: Rect,
+    t: u128,
+    density: LifeDensity,
+    water: &impl Fn(u16, u16, u16) -> bool,
+) {
+    let shoal = density.shoal_size();
+    if shoal == 0 {
+        return;
+    }
+    let span = (shoal as u16).saturating_mul(5).saturating_add(3);
+    let travel = u128::from(area.width.saturating_add(span).max(1));
+    let cycle_ms = travel.saturating_mul(SHOAL_CELL_MS);
+    let clock = t.saturating_add(cycle_ms / 3);
+    let right = !school_swims_right((clock / cycle_ms).wrapping_add(3));
+    let frac = (clock % cycle_ms) as f64 / cycle_ms as f64;
+    let dot_step = (frac * travel as f64 * 2.0).floor() as i32;
+    let band_half_rows = i32::from(area.height.saturating_mul(3) / 5) * 2;
+    for m in 0..shoal {
+        let lag = m as i32 * 10 + (entity_jitter(m as u128 + 211) % 4) as i32;
+        let x_dots = if right {
+            dot_step - lag - 6
+        } else {
+            i32::from(area.width) * 2 - dot_step + lag
+        };
+        let bob = i32::from(sine_bob(
+            t,
+            4_300 + entity_jitter(m as u128 + 97) % 2_900,
+            1,
+        ));
+        let y_half = band_half_rows + [0, 3, 1, 4, 2][m % 5] - 2 + bob;
+        let (x, y) = (x_dots.div_euclid(2), y_half.div_euclid(2));
+        if x < 0 || x + 3 > i32::from(area.width) || y < 0 || y >= i32::from(area.height) {
+            continue;
+        }
+        let (x, y) = (x as u16, y as u16);
+        if !water(x, y, 3) {
+            continue;
+        }
+        let pose = ((dot_step.div_euclid(2) as u128 + m as u128) % 2) as usize;
+        let brightness = SHOAL_BRIGHTNESS_FLOOR
+            + (SHOAL_BRIGHTNESS_CEIL - SHOAL_BRIGHTNESS_FLOOR)
+                * wave01(t, 3_100, (m as u128).saturating_mul(530));
+        marks.push(AmbientMark {
+            x,
+            y,
+            glyph: native_poses::minnow(
+                right,
+                pose,
+                x_dots.rem_euclid(2) as usize,
+                y_half.rem_euclid(2) as usize,
+            ),
+            group: None,
+            depth: Depth::Background,
+            style_mod: None,
+            brightness: Some(brightness),
+        });
+    }
+}
+
+const SNOW_DOT_MS: u128 = 1_700;
+const SNOW_BRIGHTNESS_FLOOR: f32 = 0.10;
+const SNOW_BRIGHTNESS_CEIL: f32 = 0.30;
+
+fn push_marine_snow(
+    marks: &mut Vec<AmbientMark>,
+    area: Rect,
+    t: u128,
+    density: LifeDensity,
+    water: &impl Fn(u16, u16, u16) -> bool,
+) {
+    let width_dots = i64::from(area.width) * 2;
+    let span = u128::from(area.height) * 4;
+    if width_dots == 0 || span == 0 {
+        return;
+    }
+    for k in 0..density.snow_motes() {
+        let seed = k as u128;
+        let fall_ms = SNOW_DOT_MS + entity_jitter(seed + 401) % 900;
+        let y_dots =
+            (t.saturating_add(entity_jitter(seed + 19) % (span * fall_ms)) / fall_ms) % span;
+        let drift_ms = 7_000 + entity_jitter(seed + 59) % 5_000;
+        let sway_ms = 5_600.0 + (entity_jitter(seed + 83) % 3_100) as f64;
+        let sway = ((t as f64 / sway_ms) * std::f64::consts::TAU).sin() * 1.4;
+        let base = (entity_jitter(seed + 733) % width_dots as u128) as i64;
+        let x_dots = (base + (t / drift_ms) as i64 + sway.round() as i64).rem_euclid(width_dots);
+        let (x, y) = ((x_dots / 2) as u16, (y_dots / 4) as u16);
+        if !water(x, y, 1) {
+            continue;
+        }
+        let brightness = SNOW_BRIGHTNESS_FLOOR
+            + (SNOW_BRIGHTNESS_CEIL - SNOW_BRIGHTNESS_FLOOR)
+                * wave01(t, 6_700 + entity_jitter(seed + 7) % 4_000, seed * 911);
+        marks.push(AmbientMark {
+            x,
+            y,
+            glyph: native_poses::mote((x_dots % 2) as usize, (y_dots % 4) as usize),
+            group: None,
+            depth: Depth::Background,
+            style_mod: None,
+            brightness: Some(brightness),
+        });
+    }
+}
+
+const WHALE_CELL_MS: u128 = 900;
+const WHALE_VISIT_CYCLE_MS: u128 = 210_000;
+const WHALE_FIRST_VISIT_MS: u128 = 12_000;
+const WHALE_COLS: i32 = 10;
+const WHALE_FLOOR_GAP: u16 = 8;
+const WHALE_GROUP: usize = 1;
+const WHALE_FLUKE_POSES: [usize; 6] = [0, 1, 3, 2, 3, 1];
+const WHALE_BRIGHTNESS_FLOOR: f32 = 0.16;
+const WHALE_BRIGHTNESS_CEIL: f32 = 0.28;
+
+#[derive(Clone, Copy)]
+struct WhaleVisit {
+    right: bool,
+    x_dots: i32,
+}
+
+fn distant_whale_visit(area: Rect, t: u128) -> Option<WhaleVisit> {
+    if area.height < WHALE_FLOOR_GAP + 2 {
+        return None;
+    }
+    let crossing_ms = (u128::from(area.width) + WHALE_COLS as u128 + 2) * WHALE_CELL_MS;
+    let cycle = WHALE_VISIT_CYCLE_MS.max(crossing_ms + 1);
+    let clock = t.saturating_add(cycle - WHALE_FIRST_VISIT_MS.min(cycle));
+    let pos = clock % cycle;
+    if pos >= crossing_ms {
+        return None;
+    }
+    let right = school_swims_right((clock / cycle).wrapping_add(7));
+    let step = (pos * 2 / WHALE_CELL_MS) as i32;
+    let x_dots = if right {
+        step - WHALE_COLS * 2
+    } else {
+        i32::from(area.width) * 2 - step
+    };
+    Some(WhaleVisit { right, x_dots })
+}
+
+fn push_distant_whale(marks: &mut Vec<AmbientMark>, area: Rect, t: u128, visit: WhaleVisit) {
+    let y_dots = i32::from(area.height - WHALE_FLOOR_GAP) * 4 + i32::from(sine_bob(t, 6_400, 3));
+    let pose = WHALE_FLUKE_POSES[((t / 1_100) % WHALE_FLUKE_POSES.len() as u128) as usize];
+    let rows = native_poses::whale(
+        visit.right,
+        pose,
+        visit.x_dots.rem_euclid(2) as usize,
+        y_dots.rem_euclid(4) as usize,
+    );
+    let left = visit.x_dots.div_euclid(2);
+    let skip = usize::try_from(-left).unwrap_or(0);
+    let x = left.max(0) as u16;
+    let visible = (i32::from(area.width) - i32::from(x)).clamp(0, WHALE_COLS) as usize;
+    let take = visible.min((WHALE_COLS as usize).saturating_sub(skip));
+    if take == 0 {
+        return;
+    }
+    let brightness = WHALE_BRIGHTNESS_FLOOR
+        + (WHALE_BRIGHTNESS_CEIL - WHALE_BRIGHTNESS_FLOOR) * wave01(t, 8_200, 0);
+    let top = y_dots.div_euclid(4) as u16;
+    for (row, glyph) in rows.iter().enumerate() {
+        let start = glyph
+            .char_indices()
+            .nth(skip)
+            .map_or(glyph.len(), |(i, _)| i);
+        let end = glyph
+            .char_indices()
+            .nth(skip + take)
+            .map_or(glyph.len(), |(i, _)| i);
+        marks.push(AmbientMark {
+            x,
+            y: top + row as u16,
+            glyph: &glyph[start..end],
+            group: Some(WHALE_GROUP),
+            depth: Depth::Background,
+            style_mod: None,
+            brightness: Some(brightness),
+        });
+    }
 }
 
 /// Loose diagonal wedge for the school: `(row_offset, columns_behind_lead)`.
@@ -681,12 +884,13 @@ pub fn school_band_row(area: Rect) -> u16 {
     area.height.saturating_sub(SCHOOL_FLOOR_GAP)
 }
 
-/// Wall-clock milliseconds per column of school travel (~2.6 cells/s).
-const SCHOOL_CELL_MS: u128 = 380;
+/// Wall-clock milliseconds per column of school travel (~1.3 cells/s).
+const SCHOOL_CELL_MS: u128 = 760;
 /// Travelling brightness-wave period through the wedge.
-const FISH_WAVE_MS: u128 = 2_200;
-/// Fish are small: never let one sink into the gradient.
-const FISH_BRIGHTNESS_FLOOR: f32 = 0.45;
+const FISH_WAVE_MS: u128 = 3_600;
+/// The school's glow band: legible against the water, quiet beside text.
+const FISH_BRIGHTNESS_FLOOR: f32 = 0.30;
+const FISH_BRIGHTNESS_CEIL: f32 = 0.62;
 
 /// Lead fish silhouettes (ASCII only — width == len). Members drop the eye.
 const LEAD_FISH_RIGHT: &str = "><o>";
@@ -763,12 +967,12 @@ const JELLY_FLOOR_GAP: u16 = 8;
 /// deepest row it touches.
 const JELLY_MIN_DEEP_ROWS: u16 = JELLY_FLOOR_GAP;
 /// Row-slots in one full visit cycle. Slots at or past [`JELLY_VISIT_ROWS`]
-/// are spent out of sight, and that gap is *the* rarity knob: at 32 slots the
-/// cycle is ~5 min and a jellyfish is present under a fifth of the time —
+/// are spent out of sight, and that gap is *the* rarity knob: at 20 slots the
+/// cycle is ~3 min and a jellyfish is present under a third of the time —
 /// occasionally noticed, never resident. Raise it to make them rarer; lower
 /// it to bring them back. It must stay `> JELLY_VISIT_ROWS` or the jelly
 /// becomes permanent again.
-const JELLY_VISIT_CYCLE_SLOTS: u128 = 32;
+const JELLY_VISIT_CYCLE_SLOTS: u128 = 20;
 
 // --- Jellyfish motion and glow ---------------------------------------------
 
@@ -785,11 +989,11 @@ const JELLY_TENTACLE_SWAY_MS: u128 = 2_600;
 /// Keep this a non-divisor of [`JELLY_TENTACLE_SWAY_MS`] or the pair strobes.
 const JELLY_TENTACLE_PHASE_STEP_MS: u128 = 700;
 /// Dimmest point of the pulse: still legible against the water, no lower.
-const JELLY_BRIGHTNESS_FLOOR: f32 = 0.28;
+const JELLY_BRIGHTNESS_FLOOR: f32 = 0.18;
 /// Brightest point of the pulse. Deliberately well short of full ink — the
 /// jellyfish used to swing floor-to-1.0, and that swing (not its presence)
 /// is what pulled the eye off the transcript.
-const JELLY_BRIGHTNESS_CEIL: f32 = 0.62;
+const JELLY_BRIGHTNESS_CEIL: f32 = 0.44;
 
 /// Map a `[0, 1]` pulse onto the jellyfish's shallow glow band.
 #[must_use]
@@ -798,12 +1002,14 @@ fn jelly_glow(pulse: f32) -> f32 {
 }
 
 /// Bubbles stay mostly steady with occasional glints, not a constant wave.
-const BUBBLE_BRIGHTNESS_FLOOR: f32 = 0.55;
+const BUBBLE_BRIGHTNESS_FLOOR: f32 = 0.34;
+/// Brightest a bubble glints.
+const BUBBLE_BRIGHTNESS_CEIL: f32 = 0.72;
 /// Rows a bubble climbs before it dissolves. Short on purpose: a bubble that
 /// crosses the whole field is a moving speck with no source and no end.
 const BUBBLE_MAX_RISE_ROWS: u16 = 5;
 /// Wall-clock milliseconds for one bubble to make that climb.
-const BUBBLE_RISE_MS: u128 = 3_200;
+const BUBBLE_RISE_MS: u128 = 5_200;
 /// Base period of the raised-cosine glint.
 const BUBBLE_GLINT_MS: u128 = 2_600;
 /// How much of its brightness a bubble keeps at the top of its rise.
@@ -869,11 +1075,15 @@ fn school_swims_right(cycle_index: u128) -> bool {
 /// invitation.
 const TEXT_CLEARANCE_ROWS: u16 = 1;
 
+/// Columns of clear water kept on each side of every line of text, so life
+/// never brushes the end of a sentence.
+const TEXT_CLEARANCE_COLS: usize = 2;
+
 /// True when the horizontal span at `(x, y)` — and the same span on every row
-/// within [`TEXT_CLEARANCE_ROWS`] — carries no rendered text. One column of
-/// horizontal air is reserved on both sides so a fish never touches the prose,
-/// while short left-aligned transcript lines still leave real water to their
-/// right.
+/// within [`TEXT_CLEARANCE_ROWS`] — carries no rendered text.
+/// [`TEXT_CLEARANCE_COLS`] of horizontal air is reserved on both sides so life
+/// never touches the prose, while short left-aligned transcript lines still
+/// leave real water to their right.
 #[must_use]
 fn is_open_water(lines: &[Line<'_>], x: u16, y: u16, width: u16) -> bool {
     let first = usize::from(y.saturating_sub(TEXT_CLEARANCE_ROWS));
@@ -888,8 +1098,9 @@ fn is_open_water(lines: &[Line<'_>], x: u16, y: u16, width: u16) -> bool {
 
 #[must_use]
 fn span_touches_text(x: u16, width: u16, start: usize, end: usize) -> bool {
-    usize::from(x) < end.saturating_add(1)
-        && usize::from(x).saturating_add(usize::from(width)) > start.saturating_sub(1)
+    usize::from(x) < end.saturating_add(TEXT_CLEARANCE_COLS)
+        && usize::from(x).saturating_add(usize::from(width))
+            > start.saturating_sub(TEXT_CLEARANCE_COLS)
 }
 
 /// Unbroken open-water rows measured up from the bottom of the field: how much
@@ -937,18 +1148,15 @@ fn paint_marks(
     let population_overflow = frame
         .marks
         .iter()
-        .filter_map(|mark| mark.jellyfish)
-        .any(|jellyfish| jellyfish >= placements.len());
-    debug_assert!(
-        !population_overflow,
-        "jellyfish population exceeded its bound"
-    );
-    for (jellyfish, placement) in placements.iter_mut().enumerate() {
+        .filter_map(|mark| mark.group)
+        .any(|group| group >= placements.len());
+    debug_assert!(!population_overflow, "creature groups exceeded their bound");
+    for (group, placement) in placements.iter_mut().enumerate() {
         let marks = || {
             frame
                 .marks
                 .iter()
-                .filter(move |mark| mark.jellyfish == Some(jellyfish))
+                .filter(move |mark| mark.group == Some(group))
         };
         let Some(original) = marks().map(|mark| mark.x).min() else {
             continue;
@@ -1003,11 +1211,12 @@ fn paint_marks(
             for (start, end) in
                 (first..=last).filter_map(|row| lines.get(row).and_then(occupied_text_bounds))
             {
+                let air = TEXT_CLEARANCE_COLS as i64;
                 if let Ok(start) = i64::try_from(start) {
-                    consider(start - 1 - i64::from(mark_end));
+                    consider(start - air - i64::from(mark_end));
                 }
                 if let Ok(end) = i64::try_from(end) {
-                    consider(end + 1 - i64::from(offset));
+                    consider(end + air - i64::from(offset));
                 }
             }
         }
@@ -1019,7 +1228,7 @@ fn paint_marks(
 
     for mark in &frame.marks {
         let mark_placement = mark
-            .jellyfish
+            .group
             .map(|index| placements.get(index).copied().flatten());
         let (mark_x, preflighted) = match mark_placement {
             Some(None) => {
@@ -1029,7 +1238,7 @@ fn paint_marks(
             Some(Some(Placement::Anchor { original, placed })) => (
                 placed
                     .checked_add(mark.x.saturating_sub(original))
-                    .expect("preflight accepted a clipped jellyfish"),
+                    .expect("preflight accepted a clipped creature"),
                 true,
             ),
             Some(Some(Placement::Skip(SkipReason::Text))) => {
@@ -1073,9 +1282,11 @@ fn paint_marks(
             // overall lerp is additionally scaled by life presence so marks
             // fade in/out with the animated/static boundary.
             let fg = match (mark.brightness, cell.style().bg) {
-                (Some(amount), Some(water)) => {
-                    ocean::mix_colors(water, ink, (amount * presence).clamp(0.0, 1.0))
-                }
+                (Some(amount), Some(water)) => ocean::mix_colors(
+                    water,
+                    ink,
+                    quantize_glow((amount * presence).clamp(0.0, 1.0)),
+                ),
                 (Some(amount), None) => ocean::scale_color(ink, amount.clamp(0.0, 1.0).max(0.4)),
                 (None, Some(water)) => ocean::mix_colors(water, ink, presence),
                 (None, None) => ocean::scale_color(ink, presence),
@@ -1089,6 +1300,12 @@ fn paint_marks(
             stats.cells_written += 1;
         }
     }
+}
+
+const GLOW_STEPS: f32 = 12.0;
+
+fn quantize_glow(amount: f32) -> f32 {
+    (amount * GLOW_STEPS).round() / GLOW_STEPS
 }
 
 /// Width-only occupied-text measurement (no per-line String allocation).
@@ -1197,69 +1414,6 @@ pub(crate) fn fish_silhouette_counts(text: &str) -> (usize, usize) {
     (ascii_right + native(true), ascii_left + native(false))
 }
 
-/// Subtle caustic shimmer applied to empty water cells when the field would
-/// otherwise read as a static ramp. Cheap: one phase lookup per cell, only
-/// when `animated` and density allows.
-pub fn apply_caustic_shimmer(
-    area: Rect,
-    buf: &mut Buffer,
-    column: &OceanColumn,
-    elapsed_ms: u128,
-    animated: bool,
-    lines: &[Line<'static>],
-) {
-    if !animated || area.width < AMBIENT_MIN_WIDTH || area.height < AMBIENT_MIN_HEIGHT {
-        return;
-    }
-    let ceiling = (0..area.height)
-        .find(|row| {
-            lines
-                .get(usize::from(*row))
-                .and_then(occupied_text_bounds)
-                .is_some()
-        })
-        .unwrap_or(area.height);
-    let band = (area.height / 3).max(2).min(ceiling);
-    let ramp = frame_ocean_ramp(
-        column,
-        area.height,
-        area.y,
-        elapsed_ms,
-        column.phase_tag(),
-        column.ramp_fingerprint(),
-    );
-    let protected = codewhale_ratatui::ocean::ocean_semantic_surfaces(
-        lines,
-        area,
-        codewhale_tui_kit::ui_text::grapheme_display_width,
-    );
-    let paint = codewhale_ratatui::ocean::OceanPaintFacts {
-        ground: ramp
-            .first()
-            .copied()
-            .unwrap_or_else(|| column.color_at_y(area.y)),
-        sample_top: area.y,
-        samples: &ramp,
-        protected: &protected,
-    };
-    let facts = codewhale_ratatui::ocean::OceanCausticFacts {
-        paint,
-        elapsed: std::time::Duration::from_millis((elapsed_ms % 960) as u64),
-        band_rows: band,
-    };
-    column.paint_caustics(area, buf, &facts);
-}
-
-#[cfg(test)]
-fn caustic_brightness(elapsed_ms: u128, local_x: u16, local_y: u16, depth_fade: f32) -> f32 {
-    codewhale_ratatui::ocean::ocean_caustic_brightness(
-        std::time::Duration::from_millis((elapsed_ms % 960) as u64),
-        local_x,
-        local_y,
-        depth_fade,
-    )
-}
-
 /// Cached ocean row colors invalidated only when phase/dimensions/palette/breath tick.
 /// Shared across widgets that paint the same [`OceanColumn`] within a frame.
 #[derive(Debug, Clone, Default)]
@@ -1324,8 +1478,8 @@ thread_local! {
         }) };
 }
 
-/// Process-local per-frame ocean ramp shared by chat field, caustics, and
-/// other widgets that paint the same column.
+/// Process-local per-frame ocean ramp shared by the chat field and other
+/// widgets that paint the same column.
 #[must_use]
 pub fn frame_ocean_ramp(
     column: &OceanColumn,
