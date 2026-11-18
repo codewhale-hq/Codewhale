@@ -1789,6 +1789,7 @@ impl ExploringCell {
 #[derive(Debug, Clone)]
 pub struct ExploringEntry {
     pub label: String,
+    pub search: bool,
     pub status: ToolStatus,
     pub error: Option<String>,
 }
@@ -2420,7 +2421,12 @@ impl GenericToolCell {
                     } else {
                         TOOL_OUTPUT_LINE_LIMIT
                     };
-                    let rendered = diff_render::render_diff_bounded(output, width, limit);
+                    let rendered = diff_render::render_diff_bounded(
+                        output,
+                        width,
+                        limit,
+                        &diff_summary_labels(locale),
+                    );
                     lines.extend(rendered.lines);
                     if rendered.omitted_rows > 0 {
                         let detail_hint =
@@ -2852,6 +2858,16 @@ fn command_header_summary(command: &str) -> String {
         .to_string()
 }
 
+pub(crate) fn diff_summary_labels(locale: Locale) -> diff_render::DiffSummaryLabels {
+    diff_render::DiffSummaryLabels {
+        summary: tr(locale, MessageId::DiffSummaryLine),
+        file_one: tr(locale, MessageId::ActivityFileOne),
+        file_many: tr(locale, MessageId::ActivityFileMany),
+        hunk_one: tr(locale, MessageId::DiffHunkOne),
+        hunk_many: tr(locale, MessageId::DiffHunkMany),
+    }
+}
+
 fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {
     match entries {
         [] => None,
@@ -2863,14 +2879,10 @@ fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {
 /// Choose the verb family for an exploring card's header. A card whose entries
 /// are all searches reads with the `find` verb so the completed action agrees
 /// with its `Searching for …` labels (#4145); every other exploration mix keeps
-/// the neutral `read` verb the Workspace card uses. The search signal is the
-/// English label prefix produced by `exploring_label` in `tool_routing`.
+/// the neutral `read` verb the Workspace card uses.
 fn exploring_card_family(entries: &[ExploringEntry]) -> crate::tui::widgets::tool_card::ToolFamily {
     use crate::tui::widgets::tool_card::ToolFamily;
-    let all_search = !entries.is_empty()
-        && entries
-            .iter()
-            .all(|entry| entry.label.starts_with("Searching"));
+    let all_search = !entries.is_empty() && entries.iter().all(|entry| entry.search);
     if all_search {
         ToolFamily::Find
     } else {

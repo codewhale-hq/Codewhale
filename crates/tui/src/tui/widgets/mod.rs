@@ -3655,13 +3655,16 @@ fn push_command_entry(
             info.description_for(locale).to_string()
         } else {
             format!(
-                "{}  (aliases: {})",
+                "{}  {}",
                 info.description_for(locale),
-                remaining_aliases
-                    .iter()
-                    .map(|a| format!("/{a}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                tr(locale, MessageId::HelpAliasesSuffix).replace(
+                    "{aliases}",
+                    &remaining_aliases
+                        .iter()
+                        .map(|a| format!("/{a}"))
+                        .collect::<Vec<_>>()
+                        .join(&tr(locale, MessageId::ListSeparator))
+                )
             )
         };
         (desc, hint)
