@@ -21,8 +21,8 @@ use codewhale_engine::runtime_threads::job_operations::{
 };
 use codewhale_engine::tools::shell::SharedShellManager;
 use codewhale_engine::tools::shell::{
-    PtyDimensions, ShellJobSnapshot, ShellLaunchNotStarted, ShellManager, ShellOutputChunk,
-    ShellOutputStream, ShellResult, ShellStatus,
+    PtyDimensions, ShellHoldError, ShellJobHold, ShellJobSnapshot, ShellLaunchNotStarted,
+    ShellManager, ShellOutputChunk, ShellOutputStream, ShellResult, ShellStatus,
 };
 
 use super::{ApiError, RuntimeApiState, map_thread_err};
@@ -41,6 +41,9 @@ const OUTPUT_CHUNK_MAX: usize = 512 * 1024;
 const OUTPUT_WAIT_MAX_MS: u64 = 30_000;
 const STDIN_MAX_BYTES: usize = 64 * 1024;
 const JOB_ID_MAX_BYTES: usize = 128;
+const OWNER_KEEPALIVE_MAX_SECONDS: u64 = 3_600;
+const JOB_DEADLINE_MAX_SECONDS: i64 = 24 * 3_600;
+const JOB_HOLD_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn api_job_scope(thread_id: &str) -> String {
     format!("{API_JOB_SCOPE_PREFIX}{thread_id}")
@@ -76,6 +79,10 @@ pub(super) struct JobView {
     /// Null for historical records whose original transport is not known.
     tty: Option<bool>,
     terminal_size: Option<PtyDimensions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_progress_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(flatten)]
+    hold: Option<ShellJobHold>,
 }
 
 impl JobView {
@@ -83,14 +90,54 @@ impl JobView {
         let owner = job_owner(&snapshot);
         let terminal_size = manager.job_terminal_size(&snapshot.job_id);
         let tty = (!snapshot.stale).then_some(terminal_size.is_some());
+        let last_progress_at = manager.job_last_progress_at(&snapshot.job_id);
+        let hold = manager.job_hold(&snapshot.job_id);
         Self {
             snapshot,
             thread_id,
             owner,
             tty,
             terminal_size,
+            last_progress_at,
+            hold,
         }
     }
+}
+
+fn map_hold_err(error: ShellHoldError) -> ApiError {
+    match error {
+        ShellHoldError::NotFound => ApiError::not_found("job not found"),
+        ShellHoldError::NotRunning => {
+            ApiError::conflict(error.to_string()).with_code("job_not_running")
+        }
+        ShellHoldError::NotHeld => ApiError::conflict(error.to_string()).with_code("job_not_held"),
+        ShellHoldError::Expired => {
+            ApiError::conflict(error.to_string()).with_code("job_keepalive_expired")
+        }
+    }
+}
+
+fn enforce_hold(manager: std::sync::Weak<std::sync::Mutex<ShellManager>>, job_id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(JOB_HOLD_CHECK_INTERVAL).await;
+            let manager = manager.clone();
+            let job_id = job_id.clone();
+            let holding = tokio::task::spawn_blocking(move || {
+                manager.upgrade().is_some_and(|manager| {
+                    manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .enforce_job_hold(&job_id)
+                })
+            })
+            .await
+            .unwrap_or(true);
+            if !holding {
+                break;
+            }
+        }
+    });
 }
 
 #[derive(Debug, Serialize)]
@@ -180,6 +227,8 @@ pub(super) struct CreateJobRequest {
     purpose: Option<String>,
     expected_store_id: Option<String>,
     expected_workspace: Option<String>,
+    owner_keepalive_seconds: Option<u64>,
+    deadline_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,6 +281,7 @@ pub(super) fn project_operation(
             if operation.status == "completed" {
                 operation.job_status = Some(format!("{:?}", witness.status));
                 operation.exit_code = witness.exit_code;
+                operation.stop_reason = witness.stop_reason;
                 operation.updated_at_ms = chrono::Utc::now()
                     .timestamp_millis()
                     .max(operation.created_at_ms);
@@ -553,6 +603,34 @@ pub(super) async fn create_thread_job(
             "TTY shell mode is not supported on HarmonyOS/OpenHarmony",
         ));
     }
+    if request
+        .owner_keepalive_seconds
+        .is_some_and(|seconds| !(1..=OWNER_KEEPALIVE_MAX_SECONDS).contains(&seconds))
+    {
+        return Err(ApiError::bad_request(format!(
+            "owner_keepalive_seconds must be between 1 and {OWNER_KEEPALIVE_MAX_SECONDS}"
+        )));
+    }
+    let deadline_at = request
+        .deadline_at
+        .as_deref()
+        .map(|raw| {
+            let deadline = chrono::DateTime::parse_from_rfc3339(raw)
+                .map_err(|_| ApiError::bad_request("deadline_at must be an RFC 3339 time"))?
+                .with_timezone(&chrono::Utc);
+            let ahead = (deadline - chrono::Utc::now()).num_seconds();
+            if !(1..=JOB_DEADLINE_MAX_SECONDS).contains(&ahead) {
+                return Err(ApiError::bad_request(format!(
+                    "deadline_at must be in the future and at most {JOB_DEADLINE_MAX_SECONDS} seconds ahead"
+                )));
+            }
+            Ok(deadline)
+        })
+        .transpose()?;
+    let keepalive = request
+        .owner_keepalive_seconds
+        .map(std::time::Duration::from_secs);
+    let held = keepalive.is_some() || deadline_at.is_some();
 
     let keyed = match (
         &request.operation_key,
@@ -591,17 +669,33 @@ pub(super) async fn create_thread_job(
     let fingerprint = if let Some(key) = request.operation_key.as_deref() {
         let env: BTreeMap<_, _> = request.env.iter().collect();
         let env: Vec<_> = env.into_iter().collect();
-        let payload = serde_json::to_vec(&(
-            2,
-            &thread_id,
-            &request.expected_workspace,
-            &command,
-            &request.cwd,
-            request.timeout_ms.unwrap_or(120_000),
-            request.tty,
-            env,
-            &request.purpose,
-        ))
+        let payload = if held {
+            serde_json::to_vec(&(
+                3,
+                &thread_id,
+                &request.expected_workspace,
+                &command,
+                &request.cwd,
+                request.timeout_ms.unwrap_or(120_000),
+                request.tty,
+                env,
+                &request.purpose,
+                request.owner_keepalive_seconds,
+                &request.deadline_at,
+            ))
+        } else {
+            serde_json::to_vec(&(
+                2,
+                &thread_id,
+                &request.expected_workspace,
+                &command,
+                &request.cwd,
+                request.timeout_ms.unwrap_or(120_000),
+                request.tty,
+                env,
+                &request.purpose,
+            ))
+        }
         .map_err(|_| ApiError::internal("job operation validation failed"))?;
         Some(
             request_fingerprint(key, &payload)
@@ -823,6 +917,7 @@ pub(super) async fn create_thread_job(
                             job_id: None,
                             job_status: None,
                             exit_code: None,
+                            stop_reason: None,
                             created_at_ms: now,
                             updated_at_ms: now,
                         },
@@ -882,6 +977,11 @@ pub(super) async fn create_thread_job(
                     ApiError::internal("job launch could not be confirmed")
                         .with_code("job_operation_unconfirmed")
                 })?;
+                if held && guard.hold_job(&task_id, keepalive, deadline_at).is_err() {
+                    let _ = guard.kill(&task_id);
+                    return Err(ApiError::internal("job launch could not be confirmed")
+                        .with_code("job_operation_unconfirmed"));
+                }
                 if record.is_some() {
                     guard.pin_job_receipt(&task_id).map_err(|_| {
                         ApiError::internal("job launch could not be confirmed")
@@ -896,6 +996,9 @@ pub(super) async fn create_thread_job(
                     })?
                     .snapshot;
                 let job = JobView::new(snapshot, thread_id.clone(), &guard);
+                if held {
+                    enforce_hold(std::sync::Arc::downgrade(&manager), task_id.clone());
+                }
                 if let Some(record) = &mut record {
                     record.operation.job_id = Some(task_id);
                     record.operation.status = "running".to_string();
@@ -1226,6 +1329,31 @@ pub(super) async fn kill_thread_job(
     })
     .await
     .map_err(|_| ApiError::internal("job kill failed"))?
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct KeepaliveJobResponse {
+    job: JobView,
+}
+
+pub(super) async fn keepalive_thread_job(
+    State(state): State<RuntimeApiState>,
+    Path((thread_id, job_id)): Path<(String, String)>,
+) -> Result<Json<KeepaliveJobResponse>, ApiError> {
+    if job_id.len() > JOB_ID_MAX_BYTES {
+        return Err(ApiError::not_found("job not found"));
+    }
+    let manager = thread_manager(&state, &thread_id, false).await?;
+    tokio::task::spawn_blocking(move || {
+        let mut guard = manager.lock().unwrap_or_else(|e| e.into_inner());
+        guard.keep_job_alive(&job_id).map_err(map_hold_err)?;
+        let snapshot = guard.inspect_job(&job_id).map_err(map_job_err)?.snapshot;
+        Ok(Json(KeepaliveJobResponse {
+            job: JobView::new(snapshot, thread_id, &guard),
+        }))
+    })
+    .await
+    .map_err(|_| ApiError::internal("job keepalive failed"))?
 }
 
 /// `POST /v1/threads/{id}/jobs/{job_id}/resize` — resize this existing PTY.

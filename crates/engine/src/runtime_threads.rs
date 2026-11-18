@@ -1702,6 +1702,7 @@ pub struct RuntimeThreadStore {
     /// whether a read is running by probing it. A writer never holds it, so a
     /// running turn's write is never behind a store-wide read.
     item_index_seed: Arc<parking_lot::Mutex<()>>,
+    thread_progress: Arc<parking_lot::Mutex<HashMap<String, DateTime<Utc>>>>,
     /// Files read by whole-directory turn scans (`list_all_turns`). Shared
     /// across store clones so a `spawn_blocking` snapshot still counts against
     /// the manager the test holds. Per-store so parallel tests do not collide.
@@ -1790,6 +1791,7 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -1847,6 +1849,7 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -4045,7 +4048,7 @@ impl RuntimeThreadStore {
         let turn_id = turn_id.map(ToString::to_string);
         let item_id = item_id.map(ToString::to_string);
         let event = event.into();
-        tokio::task::spawn_blocking(move || {
+        let record = tokio::task::spawn_blocking(move || {
             store.append_event_transaction(
                 thread_id,
                 turn_id,
@@ -4056,7 +4059,24 @@ impl RuntimeThreadStore {
             )
         })
         .await
-        .context("Runtime event transaction worker failed")?
+        .context("Runtime event transaction worker failed")??;
+        let mut progress = self.thread_progress.lock();
+        let newest = progress
+            .entry(record.thread_id.clone())
+            .or_insert(record.timestamp);
+        *newest = (*newest).max(record.timestamp);
+        drop(progress);
+        Ok(record)
+    }
+
+    pub fn thread_last_progress_at(&self, thread_id: &str) -> Option<DateTime<Utc>> {
+        self.thread_progress.lock().get(thread_id).copied()
+    }
+
+    pub fn forget_thread_progress(&self, keep: &std::collections::HashSet<String>) {
+        self.thread_progress
+            .lock()
+            .retain(|thread, _| keep.contains(thread));
     }
 
     fn append_event_transaction(

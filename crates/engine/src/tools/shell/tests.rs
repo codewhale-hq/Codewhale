@@ -4341,6 +4341,7 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
         last_lifecycle_bytes: 0,
         wait_failed: false,
         terminal_exit_confirmed: false,
+        hold: None,
     };
 
     let started = std::time::Instant::now();

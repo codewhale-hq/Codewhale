@@ -23171,6 +23171,105 @@ async fn jobs_api_lists_creates_streams_stdin_and_kills() -> Result<()> {
         .await?;
     assert_eq!(killed["job"]["status"], "Killed");
 
+    let status = client
+        .post(format!("{base}/v1/threads/{thread_id}/jobs"))
+        .bearer_auth("jobs-token")
+        .json(&json!({ "command": "sleep 60", "owner_keepalive_seconds": 0 }))
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let held: Value = client
+        .post(format!("{base}/v1/threads/{thread_id}/jobs"))
+        .bearer_auth("jobs-token")
+        .json(&json!({ "command": "sleep 60", "owner_keepalive_seconds": 2 }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let held_id = held["job"]["id"].as_str().unwrap().to_string();
+    assert_eq!(held["job"]["owner_keepalive_seconds"], 2);
+    assert!(held["job"]["last_progress_at"].is_string());
+    let running: Value = client
+        .get(format!("{base}/v1/threads/running"))
+        .bearer_auth("jobs-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let row = running
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["thread_id"] == thread_id.as_str())
+        .expect("a thread with an owner-held job is running work");
+    assert_eq!(row["active_turns"].as_array().unwrap().len(), 0);
+    assert!(row["last_progress_at"].is_string());
+    assert!(
+        row["active_jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["job_id"] == held_id.as_str() && job["owner_keepalive_seconds"] == 2)
+    );
+    let renewed: Value = client
+        .post(format!(
+            "{base}/v1/threads/{thread_id}/jobs/{held_id}/keepalive"
+        ))
+        .bearer_auth("jobs-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(renewed["job"]["status"], "Running");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let lapsed = loop {
+        let job: Value = client
+            .get(format!("{base}/v1/threads/{thread_id}/jobs/{held_id}"))
+            .bearer_auth("jobs-token")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if job["job"]["status"] != "Running" {
+            break job;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "held job outlived its keepalive: {job}"
+        );
+        sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(lapsed["job"]["status"], "Killed");
+    assert_eq!(lapsed["job"]["stop_reason"], "owner_lost");
+    let refused = client
+        .post(format!(
+            "{base}/v1/threads/{thread_id}/jobs/{held_id}/keepalive"
+        ))
+        .bearer_auth("jobs-token")
+        .send()
+        .await?;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let running: Value = client
+        .get(format!("{base}/v1/threads/running"))
+        .bearer_auth("jobs-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(
+        !running
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["thread_id"] == thread_id.as_str())
+    );
+
     // A job id from another thread's scope is a scoped 404, not a leak.
     let other: Value = client
         .post(format!("{base}/v1/threads"))

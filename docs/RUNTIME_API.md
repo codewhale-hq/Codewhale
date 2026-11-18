@@ -1656,8 +1656,13 @@ count until it does, and a notice added to a turn after it finished (such as a
 permissions change) does not count.
 
 `GET /v1/threads/running` is the running-work accounting surface
-(#6180): threads with at least one queued or in-progress turn, each with
-`thread_id`, `model`, `title`, and `active_turns` (`turn_id` + `status`).
+(#6180): threads with at least one queued or in-progress turn or one running
+owner-held job, each with `thread_id`, `model`, `title`, `active_turns`
+(`turn_id` + `status`), `active_jobs` (`job_id`, `background`,
+`last_progress_at`, and the hold fields above when held), and
+`last_progress_at`: the newest event or job output this process has seen on
+the thread, absent when it has seen neither since it started. A thread with
+only held jobs has an empty `active_turns`.
 Background-capable clients use it for quit/background decisions — one call,
 no inference from latest-turn status. Archive state is ignored (archiving
 has no quiescence gate); an empty array means no owned work is live.
@@ -2676,6 +2681,18 @@ wrapper yet — the raw routes are the contract for now.
 - `POST /v1/threads/{id}/jobs/{job_id}/kill` — bounded SIGTERM → SIGKILL
   escalation on the process group → `{ "job", "result" }` with the final
   snapshot
+- Owner-held jobs: the create body may add `owner_keepalive_seconds`
+  (1-3600) and `deadline_at` (RFC 3339, at most 24 h ahead). The Engine stops
+  the job with its whole process group when the owner misses a keepalive
+  (`stop_reason: "owner_lost"`) or the deadline passes
+  (`stop_reason: "deadline"`); a keyed operation's terminal record carries the
+  same `stop_reason`. `POST /v1/threads/{id}/jobs/{job_id}/keepalive` renews
+  the keepalive → `{ "job" }`; `409 job_keepalive_expired` once it lapsed
+  (final), `409 job_not_held` without one, `409 job_not_running` after exit.
+  Job views carry `owner_keepalive_seconds`, `keepalive_expires_at`,
+  `deadline_at`, `stop_reason`, and `last_progress_at` (newest output, or the
+  start) while running. An Engine without this support refuses the fields
+  with `422`.
 
 Reads are non-consuming: several clients may hold independent cursors, and
 polling never steals output from the engine's own delta consumer. The

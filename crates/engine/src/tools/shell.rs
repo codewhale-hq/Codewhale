@@ -208,6 +208,83 @@ pub enum ShellTerminationCause {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellJobStopReason {
+    OwnerLost,
+    Deadline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellJobHold {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_keepalive_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<ShellJobStopReason>,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ShellHoldError {
+    #[error("job not found")]
+    NotFound,
+    #[error("job is not running")]
+    NotRunning,
+    #[error("job has no owner keepalive")]
+    NotHeld,
+    #[error("job owner keepalive expired")]
+    Expired,
+}
+
+#[derive(Debug, Clone)]
+struct JobHoldState {
+    keepalive: Option<Duration>,
+    keepalive_until: Option<Instant>,
+    deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    stop_reason: Option<ShellJobStopReason>,
+}
+
+impl JobHoldState {
+    fn expired(
+        &self,
+        now: Instant,
+        now_utc: chrono::DateTime<chrono::Utc>,
+    ) -> Option<ShellJobStopReason> {
+        if self.deadline_at.is_some_and(|deadline| now_utc >= deadline) {
+            Some(ShellJobStopReason::Deadline)
+        } else if self.keepalive_until.is_some_and(|until| now >= until) {
+            Some(ShellJobStopReason::OwnerLost)
+        } else {
+            None
+        }
+    }
+
+    fn view(&self) -> ShellJobHold {
+        let now = Instant::now();
+        ShellJobHold {
+            owner_keepalive_seconds: self.keepalive.map(|keepalive| keepalive.as_secs()),
+            keepalive_expires_at: self.keepalive_until.and_then(|until| {
+                chrono::Duration::from_std(until.saturating_duration_since(now))
+                    .ok()
+                    .map(|left| chrono::Utc::now() + left)
+            }),
+            deadline_at: self.deadline_at,
+            stop_reason: self.stop_reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellRunningJob {
+    pub job_id: String,
+    pub background: bool,
+    pub last_progress_at: chrono::DateTime<chrono::Utc>,
+    pub hold: Option<ShellJobHold>,
+}
+
 /// Result from a shell command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellResult {
@@ -303,6 +380,7 @@ pub struct ShellReceiptWitness {
     pub owner_session_id: String,
     pub wait_failed: bool,
     pub terminal_confirmed: bool,
+    pub stop_reason: Option<ShellJobStopReason>,
 }
 
 impl ShellReceiptWitness {
@@ -317,6 +395,7 @@ impl ShellReceiptWitness {
             owner_session_id: shell.owner_session_id.clone(),
             wait_failed: shell.wait_failed,
             terminal_confirmed,
+            stop_reason: shell.hold.as_ref().and_then(|hold| hold.stop_reason),
         }
     }
 }
@@ -1224,6 +1303,7 @@ pub struct BackgroundShell {
     /// exit or signal. Such a run gets no execution receipt (#6689).
     wait_failed: bool,
     terminal_exit_confirmed: bool,
+    hold: Option<JobHoldState>,
 }
 
 #[derive(Clone)]
@@ -1799,6 +1879,14 @@ impl BackgroundShell {
             .transpose()
     }
 
+    fn last_progress_at(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Duration::from_std(self.last_output_at.elapsed())
+            .ok()
+            .and_then(|age| chrono::Utc::now().checked_sub_signed(age))
+            .unwrap_or(self.started_at_utc)
+            .max(self.started_at_utc)
+    }
+
     fn job_snapshot(&self) -> ShellJobSnapshot {
         // Use tail_from_buffer instead of full_output so we never clone the
         // entire accumulated stdout/stderr for display purposes.  full_output
@@ -2193,6 +2281,7 @@ impl ShellManager {
                 last_lifecycle_bytes: 0,
                 wait_failed: false,
                 terminal_exit_confirmed: false,
+                hold: None,
             },
         );
     }
@@ -3139,6 +3228,7 @@ impl ShellManager {
             last_lifecycle_bytes: 0,
             wait_failed: false,
             terminal_exit_confirmed: false,
+            hold: None,
         };
 
         #[cfg(unix)]
@@ -3373,6 +3463,104 @@ impl ShellManager {
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
         shell.heavy_permit = Some(permit);
         Ok(())
+    }
+
+    pub fn hold_job(
+        &mut self,
+        task_id: &str,
+        keepalive: Option<Duration>,
+        deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), ShellHoldError> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or(ShellHoldError::NotFound)?;
+        shell.hold = Some(JobHoldState {
+            keepalive,
+            keepalive_until: keepalive.map(|keepalive| Instant::now() + keepalive),
+            deadline_at,
+            stop_reason: None,
+        });
+        Ok(())
+    }
+
+    pub fn keep_job_alive(&mut self, task_id: &str) -> Result<ShellJobHold, ShellHoldError> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or(ShellHoldError::NotFound)?;
+        shell.poll();
+        let hold = shell
+            .hold
+            .as_mut()
+            .filter(|hold| hold.keepalive.is_some())
+            .ok_or(ShellHoldError::NotHeld)?;
+        if hold.stop_reason.is_some() {
+            return Err(ShellHoldError::Expired);
+        }
+        if shell.status != ShellStatus::Running {
+            return Err(ShellHoldError::NotRunning);
+        }
+        if hold.expired(Instant::now(), chrono::Utc::now()).is_some() {
+            return Err(ShellHoldError::Expired);
+        }
+        hold.keepalive_until = hold.keepalive.map(|keepalive| Instant::now() + keepalive);
+        Ok(hold.view())
+    }
+
+    pub fn job_hold(&self, task_id: &str) -> Option<ShellJobHold> {
+        self.processes
+            .get(task_id)?
+            .hold
+            .as_ref()
+            .map(JobHoldState::view)
+    }
+
+    pub fn job_last_progress_at(&self, task_id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.processes
+            .get(task_id)
+            .filter(|shell| shell.status == ShellStatus::Running)
+            .map(BackgroundShell::last_progress_at)
+    }
+
+    pub fn enforce_job_hold(&mut self, task_id: &str) -> bool {
+        let Some(shell) = self.processes.get_mut(task_id) else {
+            return false;
+        };
+        shell.poll();
+        if shell.status != ShellStatus::Running {
+            return false;
+        }
+        let Some(reason) = shell
+            .hold
+            .as_ref()
+            .and_then(|hold| hold.expired(Instant::now(), chrono::Utc::now()))
+        else {
+            return shell.hold.is_some();
+        };
+        if let Some(hold) = shell.hold.as_mut() {
+            hold.stop_reason = Some(reason);
+        }
+        if let Err(error) = shell.kill() {
+            tracing::warn!(shell_id = %task_id, ?reason, error = %error, "failed to stop held job");
+            return true;
+        }
+        shell.status == ShellStatus::Running
+    }
+
+    pub fn running_jobs(&mut self) -> Vec<ShellRunningJob> {
+        self.processes
+            .values_mut()
+            .filter_map(|shell| {
+                shell.poll();
+                (shell.status == ShellStatus::Running).then(|| ShellRunningJob {
+                    job_id: shell.id.clone(),
+                    background: shell.background,
+                    last_progress_at: shell.last_progress_at(),
+                    hold: shell.hold.as_ref().map(JobHoldState::view),
+                })
+            })
+            .collect()
     }
 
     pub fn last_output_age_ms(&self, task_id: &str) -> Option<u64> {

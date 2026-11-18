@@ -3220,6 +3220,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(jobs::kill_thread_job),
         )
         .route(
+            "/v1/threads/{id}/jobs/{job_id}/keepalive",
+            post(jobs::keepalive_thread_job),
+        )
+        .route(
             "/v1/threads/{id}/jobs/{job_id}/resize",
             post(jobs::resize_thread_job),
         )

@@ -2211,7 +2211,17 @@ pub struct ActiveTurn {
     pub status: RuntimeTurnStatus,
 }
 
-/// One thread with at least one [`ActiveTurn`]. Archive state is ignored:
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveJob {
+    pub job_id: String,
+    pub background: bool,
+    pub last_progress_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub hold: Option<crate::tools::shell::ShellJobHold>,
+}
+
+/// One thread with at least one [`ActiveTurn`] or one owner-held
+/// [`ActiveJob`]. Archive state is ignored:
 /// archiving is a plain flag with no quiescence gate, so an archived thread
 /// can still carry live work and quit-accounting must count it.
 #[derive(Debug, Clone, Serialize)]
@@ -2220,6 +2230,9 @@ pub struct RunningThread {
     pub model: String,
     pub title: Option<String>,
     pub active_turns: Vec<ActiveTurn>,
+    pub active_jobs: Vec<ActiveJob>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_progress_at: Option<DateTime<Utc>>,
 }
 
 /// The per-row facts `GET /v1/threads/summary` cannot read off a
@@ -8758,8 +8771,8 @@ impl RuntimeThreadManager {
         Ok(threads)
     }
 
-    /// Threads with at least one queued or in-progress turn, for
-    /// running-work accounting (#6180). One turns scan grouped by thread
+    /// Threads with at least one queued or in-progress turn or one running
+    /// owner-held job, for running-work accounting (#6180). One turns scan grouped by thread
     /// (never a scan per thread, #3757), joined against the thread rows in
     /// store order. Archive state is ignored: see [`RunningThread`].
     pub async fn running_threads(&self) -> Result<Vec<RunningThread>> {
@@ -8776,20 +8789,62 @@ impl RuntimeThreadManager {
                     });
             }
         }
-        if active_by_thread.is_empty() {
+        let managers = self.shell_managers_snapshot().await;
+        let mut jobs_by_thread = tokio::task::spawn_blocking(move || {
+            let mut jobs: std::collections::BTreeMap<String, Vec<ActiveJob>> =
+                std::collections::BTreeMap::new();
+            for (thread_id, manager) in managers {
+                let mut guard = manager.lock().unwrap_or_else(|e| e.into_inner());
+                let running: Vec<ActiveJob> = guard
+                    .running_jobs()
+                    .into_iter()
+                    .map(|job| ActiveJob {
+                        job_id: job.job_id,
+                        background: job.background,
+                        last_progress_at: job.last_progress_at,
+                        hold: job.hold,
+                    })
+                    .collect();
+                if !running.is_empty() {
+                    jobs.insert(thread_id, running);
+                }
+            }
+            jobs
+        })
+        .await
+        .context("running job scan failed")?;
+        if active_by_thread.is_empty()
+            && !jobs_by_thread
+                .values()
+                .flatten()
+                .any(|job| job.hold.is_some())
+        {
+            self.store.forget_thread_progress(&HashSet::new());
             return Ok(Vec::new());
         }
         let mut out = Vec::with_capacity(active_by_thread.len());
         for thread in self.store.list_threads()? {
-            if let Some(active_turns) = active_by_thread.remove(&thread.id) {
-                out.push(RunningThread {
-                    thread_id: thread.id.clone(),
-                    model: thread.model.clone(),
-                    title: thread.title.clone(),
-                    active_turns,
-                });
+            let active_turns = active_by_thread.remove(&thread.id).unwrap_or_default();
+            let active_jobs = jobs_by_thread.remove(&thread.id).unwrap_or_default();
+            if active_turns.is_empty() && !active_jobs.iter().any(|job| job.hold.is_some()) {
+                continue;
             }
+            let last_progress_at = active_jobs
+                .iter()
+                .map(|job| job.last_progress_at)
+                .chain(self.store.thread_last_progress_at(&thread.id))
+                .max();
+            out.push(RunningThread {
+                thread_id: thread.id.clone(),
+                model: thread.model.clone(),
+                title: thread.title.clone(),
+                active_turns,
+                active_jobs,
+                last_progress_at,
+            });
         }
+        self.store
+            .forget_thread_progress(&out.iter().map(|thread| thread.thread_id.clone()).collect());
         Ok(out)
     }
 
