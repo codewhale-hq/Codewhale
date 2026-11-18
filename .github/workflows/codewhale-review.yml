@@ -101,7 +101,7 @@ jobs:
           private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
           permission-contents: read
           permission-pull-requests: write
-      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@b0b2b9a335cc1d24abe8a087189bed080d1cc3db
+      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@43c87b459914d58e056e207b99b270ba5ddebe74
         id: publish
         with:
           findings: findings/findings.json
