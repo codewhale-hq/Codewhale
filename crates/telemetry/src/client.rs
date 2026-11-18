@@ -60,7 +60,7 @@ pub(crate) fn send_with_transport(
                 None => SendOutcome::Dropped,
             }
         }
-        Some(endpoint) => buffer::try_with_lock(root, || {
+        Some(endpoint) => buffer::try_with_lock_in_turn(root, || {
             if buffer::tombstone_present(root) {
                 return Ok(SendOutcome::Dropped);
             }

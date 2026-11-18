@@ -15,18 +15,22 @@
 //! | `disabled` | the tombstone: present ⇒ nothing is appended, drained, or sent |
 //!
 //! Appends, compaction, delivery, identity/state writes, startup arming, and
-//! wipe share one sibling lock. Runtime and exit paths take it with
-//! `try_write()`: on contention the event or batch is dropped. Only startup
-//! arming and the user-requested wipe may wait. That keeps the panic hook and
-//! SIGINT path non-blocking while also making opt-out an ordering boundary —
+//! wipe share one sibling lock. Threads of one process take turns on it;
+//! between processes, runtime and exit paths take it with `try_write()`, and on
+//! contention the event or batch is dropped. The panic hook and signal path
+//! never wait, not even for a sibling thread. Only startup arming and the
+//! user-requested wipe may wait for another process. That keeps the panic hook
+//! and SIGINT path non-blocking while also making opt-out an ordering boundary —
 //! after wipe returns, no pre-wipe writer or sender can still publish data.
 //!
 //! Appenders re-open per append, so a compaction rewrite cannot leave anyone
 //! writing to a stale inode.
 
+use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 
 use anyhow::{Context, Result};
 
@@ -163,7 +167,11 @@ fn secure(_file: &File) -> Result<()> {
 /// step fails. The lock acquisition is non-blocking, including on the panic and
 /// signal paths.
 pub fn append(root: &Path, path: &Path, line: &str) -> Option<()> {
-    append_with_limit(root, path, line, MAX_LINE_BYTES)
+    append_with_limit(root, path, line, MAX_LINE_BYTES, Turn::Never)
+}
+
+pub(crate) fn append_in_turn(root: &Path, path: &Path, line: &str) -> Option<()> {
+    append_with_limit(root, path, line, MAX_LINE_BYTES, Turn::Wait)
 }
 
 /// Append a line that is too large for one atomic `write(2)`, serialising
@@ -171,13 +179,14 @@ pub fn append(root: &Path, path: &Path, line: &str) -> Option<()> {
 ///
 /// Only the dry-run sink uses this: a whole batch does not fit under
 /// `PIPE_BUF`, and the flush path is neither the panic hook nor the signal
-/// handler, so a **non-blocking** `try_write` is safe there. On contention the
-/// batch is dropped, which is the same fail-open behavior as a failed POST.
+/// handler, so it may wait for a sibling thread. Another process holding the
+/// lock still drops the batch, which is the same fail-open behavior as a failed
+/// POST.
 pub fn append_locked(root: &Path, path: &Path, line: &str) -> Option<()> {
-    append_with_limit(root, path, line, MAX_BYTES as usize)
+    append_with_limit(root, path, line, MAX_BYTES as usize, Turn::Wait)
 }
 
-fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize) -> Option<()> {
+fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize, turn: Turn) -> Option<()> {
     let bytes = line.as_bytes();
     if bytes.is_empty() || bytes.len() + 1 > limit {
         return None;
@@ -187,10 +196,12 @@ fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize) -> Opti
     buf.extend_from_slice(bytes);
     buf.push(b'\n');
 
-    let wrote = try_with_lock(root, || append_under_lock(root, path, &buf))
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+    let operation = || append_under_lock(root, path, &buf);
+    let attempt = match turn {
+        Turn::Never => try_with_lock(root, operation),
+        Turn::Wait => try_with_lock_in_turn(root, operation),
+    };
+    let wrote = attempt.ok().flatten().unwrap_or(false);
     if !wrote {
         return None;
     }
@@ -371,11 +382,43 @@ fn open_lock(root: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[derive(Clone, Copy)]
+enum Turn {
+    Never,
+    Wait,
+}
+
+fn process_gate(root: &Path) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    GATES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(root.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+fn wait_turn(gate: &Mutex<()>) -> MutexGuard<'_, ()> {
+    gate.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
+    let file = open_lock(root)?;
+    let mut lock = fd_lock::RwLock::new(file);
+    match lock.try_write() {
+        Ok(_guard) => operation().map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Run `operation` holding the exclusive compaction lock, **blocking**.
 ///
-/// Only the opt-out wipe uses this. It is not an exit path, so blocking is
-/// fine there and nowhere else.
+/// Only startup arming and the opt-out wipe use this. They are not exit
+/// paths, so blocking is fine there and nowhere else.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
     let file = open_lock(root)?;
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.write().context("failed to take the telemetry lock")?;
@@ -384,14 +427,25 @@ pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Resul
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
 ///
-/// Returns `Ok(None)` when the lock is held elsewhere. Never blocks.
+/// Returns `Ok(None)` when the lock is held elsewhere, by this process or
+/// another. Never blocks.
 pub fn try_with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
-    let file = open_lock(root)?;
-    let mut lock = fd_lock::RwLock::new(file);
-    match lock.try_write() {
-        Ok(_guard) => operation().map(Some),
-        Err(_) => Ok(None),
-    }
+    let gate = process_gate(root);
+    let _turn = match gate.try_lock() {
+        Ok(turn) => turn,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return Ok(None),
+    };
+    try_flock(root, operation)
+}
+
+pub(crate) fn try_with_lock_in_turn<T>(
+    root: &Path,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
+    try_flock(root, operation)
 }
 
 /// Read the newest bounded tail from `path`, skipping invalid UTF-8 lines.

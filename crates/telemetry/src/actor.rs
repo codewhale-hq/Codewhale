@@ -223,7 +223,7 @@ fn append(context: &Context, event: &Event) {
     let Ok(line) = serde_json::to_string(event) else {
         return;
     };
-    let _ = buffer::append(&context.root, &context.spool, &line);
+    let _ = buffer::append_in_turn(&context.root, &context.spool, &line);
 }
 
 /// Seal every event queued before this message without reaching the network.
@@ -484,5 +484,49 @@ mod tests {
             FlushOutcome::TimedOut
         );
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_sibling_thread_holding_the_lock_delays_an_append_instead_of_dropping_it() {
+        let home = tempfile::tempdir().expect("temp home");
+        let root = home.path().join(crate::TELEMETRY_DIR);
+        buffer::ensure_dir(&root).expect("create root");
+        let context = Context {
+            root: root.clone(),
+            endpoint: None,
+            surface: Surface::Exec,
+            config_path: None,
+            app_version: "0.0.1".to_string(),
+            git_sha: None,
+            tty: false,
+            spool: root.join("own.jsonl"),
+            nonce: "0".repeat(32),
+        };
+        let held = Arc::new(std::sync::Barrier::new(2));
+        let holder = {
+            let root = root.clone();
+            let held = held.clone();
+            std::thread::spawn(move || {
+                buffer::with_lock(&root, || {
+                    held.wait();
+                    std::thread::sleep(Duration::from_millis(200));
+                    Ok(())
+                })
+            })
+        };
+        held.wait();
+        append(
+            &context,
+            &Event::SessionStart {
+                source: crate::SessionSource::Unknown,
+            },
+        );
+        holder.join().expect("holder thread").expect("holder lock");
+        assert!(
+            buffer::read_lines(&context.spool)
+                .iter()
+                .any(|line| line.contains("\"event\":\"session_start\"")),
+            "a sibling thread's lock hold dropped this session's own event"
+        );
     }
 }

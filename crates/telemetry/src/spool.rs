@@ -145,7 +145,7 @@ pub(crate) fn take_own(root: &Path, path: &Path) -> Vec<String> {
     if buffer::tombstone_present(root) {
         return Vec::new();
     }
-    buffer::try_with_lock(root, || {
+    buffer::try_with_lock_in_turn(root, || {
         if buffer::tombstone_present(root) {
             return Ok(Vec::new());
         }

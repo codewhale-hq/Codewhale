@@ -59,7 +59,7 @@ pub struct TelemetryState {
 /// always the safe direction — the cost is one rotation, and the docs already
 /// say no count derived from `install_id` is a user count.
 pub fn read_or_create_install_id(root: &Path) -> Result<InstallId> {
-    buffer::try_with_lock(root, || {
+    buffer::try_with_lock_in_turn(root, || {
         if buffer::tombstone_present(root) {
             anyhow::bail!("telemetry is disabled");
         }
@@ -122,7 +122,7 @@ pub fn read_state(root: &Path) -> TelemetryState {
 
 /// Write `state.json`.
 pub fn write_state(root: &Path, state: &TelemetryState) -> Result<()> {
-    buffer::try_with_lock(root, || {
+    buffer::try_with_lock_in_turn(root, || {
         if buffer::tombstone_present(root) {
             anyhow::bail!("telemetry is disabled");
         }
