@@ -406,7 +406,7 @@ fn status_window_source_row_follows_the_locale() {
     );
     let chinese = report_in(view, &mut ZhHans);
     assert!(
-        chinese.contains("目录: models.dev 实时 · 9070 个模型条目 · 2 分钟前获取 · 云端事实: 关闭"),
+        chinese.contains("目录: models.dev 实时 · 9070 个可用模型 · 2 分钟前获取 · 云端事实: 关闭"),
         "{chinese}"
     );
 }
