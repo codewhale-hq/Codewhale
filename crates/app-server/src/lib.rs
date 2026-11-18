@@ -137,6 +137,16 @@ pub struct RuntimeListenerSelection {
     pub insecure_no_auth: bool,
     pub mobile: bool,
     pub web: bool,
+    #[serde(default, skip_serializing)]
+    pub desktop_browser_owner: Option<String>,
+}
+
+pub fn is_valid_desktop_browser_owner_key(key: &str) -> bool {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    key.len() == 43
+        && URL_SAFE_NO_PAD
+            .decode(key)
+            .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(&bytes) == key)
 }
 
 impl std::fmt::Debug for RuntimeListenerSelection {
@@ -150,6 +160,10 @@ impl std::fmt::Debug for RuntimeListenerSelection {
             )
             .field("mobile", &self.mobile)
             .field("web", &self.web)
+            .field(
+                "desktop_browser_owner",
+                &self.desktop_browser_owner.as_ref().map(|_| "<present>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -172,7 +186,11 @@ impl RuntimeListenerSelection {
                 && self
                     .auth_token
                     .as_ref()
-                    .is_none_or(|token| token.len() <= 8192),
+                    .is_none_or(|token| token.len() <= 8192)
+                && self
+                    .desktop_browser_owner
+                    .as_deref()
+                    .is_none_or(is_valid_desktop_browser_owner_key),
             "selected frontend input exceeds its bounds"
         );
         Ok(())

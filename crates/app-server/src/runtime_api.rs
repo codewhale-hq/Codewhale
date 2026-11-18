@@ -175,6 +175,15 @@ struct RuntimeTokenEnvironment {
     legacy_alias_used: bool,
 }
 
+const DESKTOP_BROWSER_OWNER_ENV: &str = "CODEWHALE_BROWSER_OWNER_PUBLIC_KEY";
+
+fn desktop_browser_owner_env() -> Option<String> {
+    std::env::var(DESKTOP_BROWSER_OWNER_ENV)
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| crate::is_valid_desktop_browser_owner_key(key))
+}
+
 fn runtime_token_environment(lookup: &dyn Fn(&str) -> Option<String>) -> RuntimeTokenEnvironment {
     let nonblank = |name| {
         lookup(name)
@@ -225,6 +234,7 @@ pub struct RuntimeApiState {
     automations: SharedAutomationManager,
     sub_agent_manager: SharedSubAgentManager,
     runtime_token: Option<String>,
+    desktop_browser_owner: Option<String>,
     skill_state: Arc<Mutex<SkillStateStore>>,
     auth_required: bool,
     bind_host: String,
@@ -989,6 +999,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 "immutable ACP-base owner cannot admit ordinary listener turns"
             );
             let workspace = selection.workspace;
+            let selection_browser_owner = selection.desktop_browser_owner;
             let options = RuntimeApiOptions {
                 host: selection.host,
                 port: selection.port,
@@ -1030,6 +1041,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 && options.cors_origins == self.state.cors_origins
                 && workspace == self.state.workspace
                 && same_auth
+                && selection_browser_owner == self.state.desktop_browser_owner
             {
                 let ready = RuntimeFrontendReady {
                     endpoint: original_addr,
@@ -1055,6 +1067,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             state.workspace = workspace.clone();
             state.workspace_scope = workspace_scope;
             state.runtime_token = resolved.token.clone();
+            state.desktop_browser_owner = selection_browser_owner;
             state.auth_required = resolved.token.is_some();
             state.bind_host = options.host;
             state.bind_port = endpoint.port();
@@ -2358,6 +2371,7 @@ pub async fn run_http_server(
                     insecure_no_auth: options.insecure_no_auth,
                     mobile: options.mobile,
                     web: options.web,
+                    desktop_browser_owner: desktop_browser_owner_env(),
                 };
                 drop(control);
                 crate::daemon_client::connect_listener_if_published(
@@ -2494,6 +2508,7 @@ pub async fn run_http_server(
         automations,
         sub_agent_manager,
         runtime_token: runtime_token.clone(),
+        desktop_browser_owner: desktop_browser_owner_env(),
         skill_state: Arc::new(Mutex::new(skill_state)),
         auth_required: auth_enabled,
         bind_host: options.host.clone(),
@@ -8148,8 +8163,13 @@ async fn register_desktop_browser_config(
             "MCP configuration changed; reload it before registering desktop tools",
         ));
     }
-    pool.add_desktop_browser_server_config(name, config, proof)
-        .map_err(ApiError::bad_request)?;
+    pool.add_desktop_browser_server_config_for_owner(
+        name,
+        config,
+        proof,
+        state.desktop_browser_owner.as_deref(),
+    )
+    .map_err(ApiError::bad_request)?;
     Ok(())
 }
 
@@ -15905,6 +15925,7 @@ base_url = "http://127.0.0.1:9/v1"
             )?)),
             sub_agent_manager,
             runtime_token: None,
+            desktop_browser_owner: None,
             skill_state: Arc::new(Mutex::new(SkillStateStore::load_from(
                 root.join("skills_state.toml"),
             )?)),

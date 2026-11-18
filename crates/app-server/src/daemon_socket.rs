@@ -112,6 +112,8 @@ pub struct AttachParams {
     pub expect_daemon_version: Option<String>,
     #[serde(default)]
     pub expect_owner: Option<RuntimeOwnerReceipt>,
+    #[serde(default)]
+    pub desktop_browser_owner: Option<String>,
 }
 
 /// The typed refusal every non-unix entry point returns. Unused in the unix
@@ -346,7 +348,12 @@ async fn attach(
     context: &ConnectionContext,
     params: Value,
 ) -> Result<(Value, ConnectionGuard), DispatchError> {
-    let params: AttachParams = parse_params(params_or_object(params))?;
+    let mut params: AttachParams = parse_params(params_or_object(params))?;
+    if params.desktop_browser_owner.is_some() && params.frontend != AttachFrontend::Listener {
+        return Err(DispatchError::invalid_params(
+            "desktop browser owner requires listener frontend",
+        ));
+    }
     if params.frontend == AttachFrontend::Acp
         && (context.state.owner_frontend.is_none()
             || !context
@@ -364,7 +371,10 @@ async fn attach(
             "listener selection does not match frontend",
         ));
     }
-    if let Some(listener) = params.listener.as_ref() {
+    if let Some(listener) = params.listener.as_mut() {
+        if let Some(owner) = params.desktop_browser_owner.take() {
+            listener.desktop_browser_owner = Some(owner);
+        }
         listener.validate_bounds().map_err(|_| {
             DispatchError::invalid_params("selected frontend input exceeds its bounds")
         })?;

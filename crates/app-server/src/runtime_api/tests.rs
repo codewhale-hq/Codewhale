@@ -1532,6 +1532,7 @@ async fn build_test_server(
         automations,
         sub_agent_manager,
         runtime_token,
+        desktop_browser_owner: super::desktop_browser_owner_env(),
         skill_state: Arc::new(Mutex::new(
             SkillStateStore::load_from(root.join("skills_state.toml")).unwrap(),
         )),

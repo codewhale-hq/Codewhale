@@ -6975,8 +6975,19 @@ impl McpPool {
     pub fn add_desktop_browser_server_config(
         &mut self,
         name: String,
+        config: McpServerConfig,
+        proof: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let owner = self.auth_context.env("CODEWHALE_BROWSER_OWNER_PUBLIC_KEY");
+        self.add_desktop_browser_server_config_for_owner(name, config, proof, owner.as_deref())
+    }
+
+    pub fn add_desktop_browser_server_config_for_owner(
+        &mut self,
+        name: String,
         mut config: McpServerConfig,
         proof: Option<(&str, &str)>,
+        owner_public_key: Option<&str>,
     ) -> Result<(), String> {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         if !is_desktop_browser_server(&name, &config) {
@@ -6989,10 +7000,9 @@ impl McpPool {
             .ok_or_else(|| "Invalid desktop browser endpoint".to_string())?;
         match proof {
             Some((bearer, signature)) if url.path() != "/mcp" => {
-                let public_key = self
-                    .auth_context
-                    .env("CODEWHALE_BROWSER_OWNER_PUBLIC_KEY")
+                let public_key = owner_public_key
                     .and_then(|key| URL_SAFE_NO_PAD.decode(key).ok())
+                    .filter(|bytes| bytes.len() == 32)
                     .ok_or_else(|| "Desktop browser owner is unavailable".to_string())?;
                 let signature = URL_SAFE_NO_PAD
                     .decode(signature)
@@ -7831,6 +7841,40 @@ fn launches_computer_use_plugin(server: &McpServerConfig) -> Option<String> {
         let squashed = normalized.to_ascii_lowercase().replace([' ', '-', '_'], "");
         squashed.contains("computeruse").then(|| arg.clone())
     })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn generate_desktop_browser_owner_keypair_for_test() -> Vec<u8> {
+    ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .expect("ed25519 pkcs8")
+        .as_ref()
+        .to_vec()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn desktop_browser_owner_public_key_for_test(pkcs8: &[u8]) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use ring::signature::KeyPair as _;
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8).expect("ed25519 pair");
+    URL_SAFE_NO_PAD.encode(pair.public_key().as_ref())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn sign_desktop_browser_registration_for_test(
+    pkcs8: &[u8],
+    workspace: &Path,
+    url: &str,
+    bearer: &str,
+) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8).expect("ed25519 pair");
+    let raw_ws = workspace.to_str().expect("utf8 workspace");
+    let normalized_ws = raw_ws
+        .strip_prefix(r"\\?\UNC\")
+        .map(|tail| format!(r"\\{tail}"))
+        .unwrap_or_else(|| raw_ws.strip_prefix(r"\\?\").unwrap_or(raw_ws).to_owned());
+    let data = format!("codewhale-browser-v2\0{normalized_ws}\0{url}\0{bearer}");
+    URL_SAFE_NO_PAD.encode(pair.sign(data.as_bytes()).as_ref())
 }
 
 pub fn is_desktop_browser_server(name: &str, server: &McpServerConfig) -> bool {

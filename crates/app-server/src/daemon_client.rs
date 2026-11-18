@@ -707,13 +707,20 @@ mod platform {
         let (read, mut write) = tokio::io::split(transport);
         let mut replies = BoundedLines::new(BufReader::new(read));
         let attach_id = uuid::Uuid::new_v4().to_string();
+        let desktop_browser_owner = listener
+            .as_ref()
+            .and_then(|selection| selection.desktop_browser_owner.clone());
+        let mut attach_params = json!({
+            "client":{"name":"codewhale-stdio","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()},
+            "mode":"attach","frontend":frontend,"native_runtime":native,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
+        });
+        if let Some(owner) = desktop_browser_owner {
+            attach_params["desktop_browser_owner"] = json!(owner);
+        }
         let attach = json!(RpcCall {
             id: Some(RequestId::String(attach_id.clone())),
             method: "daemon/attach".into(),
-            params: json!({
-                "client":{"name":"codewhale-stdio","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()},
-                "mode":"attach","frontend":frontend,"native_runtime":native,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
-            }),
+            params: attach_params,
             trace: None
         });
         tokio::time::timeout(
