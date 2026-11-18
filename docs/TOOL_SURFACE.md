@@ -314,7 +314,7 @@ into the parent transcript.
 ## Parallel fan-out
 
 The sub-agent capacity source of truth is
-`crates/tui/src/config/subagent_limits.rs`:
+`crates/runtime/src/config/subagent_limits.rs`:
 
 - default configured concurrency: **64**;
 - maximum configured concurrency: **128**;

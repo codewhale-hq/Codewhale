@@ -241,7 +241,7 @@ SHA-256 摘要；更大的载荷保持不可用。提供商（provider）适配�
 
 ## 并行扇出
 
-智能体（子智能体）容量的唯一事实来源是 `crates/tui/src/config/subagent_limits.rs`：
+智能体（子智能体）容量的唯一事实来源是 `crates/runtime/src/config/subagent_limits.rs`：
 
 - 默认配置并发数：**64**；
 - 最大配置并发数：**128**；
