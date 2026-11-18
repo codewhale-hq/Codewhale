@@ -6080,6 +6080,58 @@ fn apply_provider_model_cutline(
     models
 }
 
+fn codewhale_row_pricing_to_cost(
+    pricing: &serde_json::Value,
+    fetched_at: u64,
+) -> Option<codewhale_config::models_dev::ModelsDevCost> {
+    let obj = pricing.as_object()?;
+    let currency = obj.get("currency")?.as_str()?.trim();
+    if !currency.eq_ignore_ascii_case("USD") {
+        return None;
+    }
+    if let Some(raw_expires) = obj.get("expiresAt").filter(|value| !value.is_null()) {
+        let expires_str = raw_expires.as_str()?;
+        let expires_unix = codewhale_config::cloud_facts::verify::parse_rfc3339_utc(expires_str)?;
+        let reference_unix = if fetched_at > 0 {
+            fetched_at
+        } else {
+            now_unix()
+        };
+        if expires_unix <= reference_unix {
+            return None;
+        }
+    }
+    let rates = obj.get("ratesMicrosPerMillion")?.as_object()?;
+    let parse_micros = |field: &str| -> Option<Option<f64>> {
+        let Some(raw) = rates.get(field).filter(|value| !value.is_null()) else {
+            return Some(None);
+        };
+        let micros = raw
+            .as_f64()
+            .filter(|value| value.is_finite() && *value >= 0.0)?;
+        let usd_per_million = micros / 1_000_000.0;
+        usd_per_million.is_finite().then_some(Some(usd_per_million))
+    };
+    let input = parse_micros("input")??;
+    let output = parse_micros("output")??;
+    let cached_input = parse_micros("cachedInput")?;
+    let cache_read_alias = parse_micros("cacheRead")?;
+    let cache_read = match (cached_input, cache_read_alias) {
+        (Some(a), Some(b)) if a != b => return None,
+        (Some(a), _) => Some(a),
+        (None, b) => b,
+    };
+    let cache_write = parse_micros("cacheWrite")?;
+    let cost = codewhale_config::models_dev::ModelsDevCost {
+        input: Some(input),
+        output: Some(output),
+        cache_read,
+        cache_write,
+        ..Default::default()
+    };
+    codewhale_config::pricing::catalog_cost_is_valid(&cost).then_some(cost)
+}
+
 /// Convert a named gateway's `/models` response into truthful provider-scoped
 /// catalog rows. Matching model ids on other providers prove no capabilities,
 /// limits, or prices; only an explicit same-provider bundled row may enrich a
@@ -6125,6 +6177,8 @@ fn codewhale_catalog_offerings_from_body(
         default: bool,
         #[serde(default)]
         limits: Option<RowLimits>,
+        #[serde(default)]
+        pricing: Option<serde_json::Value>,
     }
     #[derive(serde::Deserialize)]
     struct RowLimits {
@@ -6170,6 +6224,11 @@ fn codewhale_catalog_offerings_from_body(
                 output: limits.max_output_tokens.filter(|tokens| *tokens > 0),
             })
             .filter(|limit| *limit != codewhale_config::models_dev::ModelsDevLimit::default());
+        let cost = row
+            .codewhale
+            .as_ref()
+            .and_then(|meta| meta.pricing.as_ref())
+            .and_then(|pricing| codewhale_row_pricing_to_cost(pricing, fetched_at));
         offerings.push(CatalogOffering {
             cost_source: None,
             modalities_source: None,
@@ -6180,7 +6239,7 @@ fn codewhale_catalog_offerings_from_body(
             default_for_provider: row.codewhale.is_some_and(|meta| meta.default),
             family: None,
             limit,
-            cost: None,
+            cost,
             modalities: None,
             attachment: None,
             reasoning: None,
@@ -7628,5 +7687,321 @@ mod openrouter_vendor_tests {
                 .get("provider")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn codewhale_catalog_offerings_populates_valid_usd_managed_pricing_and_keeps_byok_unpriced() {
+        let fetched_at = chrono::DateTime::parse_from_rfc3339("2026-11-18T00:00:00Z")
+            .unwrap()
+            .timestamp() as u64;
+        let payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "object": "model",
+                    "owned_by": "deepseek",
+                    "codewhale": {
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-flash",
+                        "protocol": "chat-completions",
+                        "default": true,
+                        "usable": true,
+                        "pricing": {
+                            "currency": "USD",
+                            "pricingPolicy": "pass_through",
+                            "ratesMicrosPerMillion": {
+                                "input": 220_000,
+                                "cachedInput": 7_000,
+                                "output": 660_000
+                            },
+                            "serviceFeeBasisPoints": 0,
+                            "rateCardRevision": "card-rev-1",
+                            "checkedAt": "2026-11-17T00:00:00Z",
+                            "expiresAt": "2026-12-17T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "anthropic/claude-sonnet-5",
+                    "object": "model",
+                    "owned_by": "anthropic",
+                    "codewhale": {
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-5",
+                        "protocol": "anthropic-messages",
+                        "pricing": {
+                            "currency": "usd",
+                            "ratesMicrosPerMillion": {
+                                "input": 3_000_000,
+                                "cacheRead": 300_000,
+                                "cacheWrite": 3_750_000,
+                                "output": 15_000_000
+                            }
+                        }
+                    }
+                },
+                {
+                    "id": "openai/gpt-5.6",
+                    "object": "model",
+                    "owned_by": "openai",
+                    "codewhale": {
+                        "provider": "openai",
+                        "model": "gpt-5.6",
+                        "protocol": "responses",
+                        "billingMode": "byok_external"
+                    }
+                },
+                {
+                    "id": "xai/grok-4.6",
+                    "object": "model"
+                }
+            ]
+        })
+        .to_string();
+
+        let rows = codewhale_catalog_offerings_from_body(&payload, "codewhale", "fp", fetched_at)
+            .expect("managed and BYOK listing should parse");
+        assert_eq!(rows.len(), 4);
+
+        let flash = rows
+            .iter()
+            .find(|row| row.wire_model_id == "deepseek/deepseek-v4-flash")
+            .unwrap();
+        let flash_cost = flash.cost.as_ref().expect("managed USD pricing");
+        assert_eq!(flash_cost.input, Some(0.22));
+        assert_eq!(flash_cost.cache_read, Some(0.007));
+        assert_eq!(flash_cost.output, Some(0.66));
+        assert_eq!(flash_cost.cache_write, None);
+        assert_eq!(flash.cost_source, None);
+
+        let sonnet = rows
+            .iter()
+            .find(|row| row.wire_model_id == "anthropic/claude-sonnet-5")
+            .unwrap();
+        let sonnet_cost = sonnet.cost.as_ref().expect("case-insensitive USD pricing");
+        assert_eq!(sonnet_cost.input, Some(3.0));
+        assert_eq!(sonnet_cost.cache_read, Some(0.3));
+        assert_eq!(sonnet_cost.cache_write, Some(3.75));
+        assert_eq!(sonnet_cost.output, Some(15.0));
+
+        for byok_id in ["openai/gpt-5.6", "xai/grok-4.6"] {
+            let row = rows
+                .iter()
+                .find(|row| row.wire_model_id == byok_id)
+                .unwrap();
+            assert!(row.cost.is_none());
+        }
+
+        let invalid_payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "expired/past",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-11-17T23:59:59Z"
+                        }
+                    }
+                },
+                {
+                    "id": "expired/exact-boundary",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-11-18T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "expired/malformed-ts",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-12-01T00:00:00+08:00"
+                        }
+                    }
+                },
+                {
+                    "id": "currency/non-usd",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "CNY",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-12-18T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "rate/negative-input",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": -1, "output": 600_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/negative-cache",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "cachedInput": -5, "output": 600_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/missing-output",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/non-object",
+                    "codewhale": {
+                        "pricing": "not-an-object"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let invalid_rows =
+            codewhale_catalog_offerings_from_body(&invalid_payload, "codewhale", "fp", fetched_at)
+                .expect("invalid pricing must not fail the catalog refresh");
+        assert_eq!(invalid_rows.len(), 8);
+        assert!(invalid_rows.iter().all(|row| row.cost.is_none()));
+
+        let _env = crate::test_support::lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().expect("home");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let _base_override = crate::test_support::EnvVarGuard::remove("CODEWHALE_API_BASE");
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
+
+        let now = chrono::Utc::now();
+        let live_fetched_at = u64::try_from(now.timestamp()).unwrap();
+        let expires_at =
+            (now + chrono::Duration::hours(24)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let base = ProviderKind::Codewhale.provider().default_base_url();
+        let fingerprint = base_url_fingerprint(base);
+        let live_payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "object": "model",
+                    "codewhale": {
+                        "protocol": "chat-completions",
+                        "default": true,
+                        "pricing": {
+                            "currency": "USD",
+                            "pricingPolicy": "pass_through",
+                            "ratesMicrosPerMillion": {
+                                "input": 220_000,
+                                "cachedInput": 7_000,
+                                "output": 660_000
+                            },
+                            "expiresAt": expires_at
+                        }
+                    }
+                },
+                {
+                    "id": "openai/gpt-5.6",
+                    "object": "model",
+                    "codewhale": {
+                        "protocol": "responses",
+                        "billingMode": "byok_external"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let offerings = codewhale_catalog_offerings_from_body(
+            &live_payload,
+            "codewhale",
+            &fingerprint,
+            live_fetched_at,
+        )
+        .unwrap();
+        crate::provider_catalog_live::record_success(ProviderCatalogDelta {
+            provider: "codewhale".to_string(),
+            base_url_fingerprint: fingerprint.clone(),
+            fetched_at: live_fetched_at,
+            offerings,
+        });
+
+        let quote = crate::provider_catalog_live::fresh_dispatch_pricing_quote_at(
+            ProviderKind::Codewhale,
+            "codewhale",
+            "deepseek/deepseek-v4-flash",
+            base,
+            live_fetched_at,
+        )
+        .expect("managed row should freeze a live dispatch pricing quote");
+        assert_eq!(quote.input_per_million.as_deref(), Some("0.22"));
+        assert_eq!(quote.cache_read_per_million.as_deref(), Some("0.007"));
+        assert_eq!(quote.output_per_million.as_deref(), Some("0.66"));
+        assert_eq!(
+            quote.provenance,
+            codewhale_config::pricing::PricingProvenance::ProviderLive
+        );
+
+        let usage = codewhale_models::Usage {
+            input_tokens: 2_000_000,
+            prompt_cache_hit_tokens: Some(1_000_000),
+            output_tokens: 1_000_000,
+            ..codewhale_models::Usage::default()
+        };
+        let surface =
+            crate::pricing::billing_surface_for_route(ProviderKind::Codewhale, Some(base));
+        let priced_audit = crate::pricing::audit_turn_cost_for_route_on_endpoint_for_identity_at(
+            ProviderKind::Codewhale,
+            Some("codewhale"),
+            "deepseek/deepseek-v4-flash",
+            surface,
+            Some(&fingerprint),
+            Some(&quote),
+            &usage,
+            now,
+        );
+        let estimate = priced_audit
+            .estimate
+            .expect("managed turn should be priced");
+        assert!((estimate.usd - 0.887).abs() < 1e-12, "got {}", estimate.usd);
+
+        assert!(
+            crate::provider_catalog_live::fresh_dispatch_pricing_quote_at(
+                ProviderKind::Codewhale,
+                "codewhale",
+                "openai/gpt-5.6",
+                base,
+                live_fetched_at,
+            )
+            .is_none()
+        );
+        let byok_audit = crate::pricing::audit_turn_cost_for_route_on_endpoint_for_identity_at(
+            ProviderKind::Codewhale,
+            Some("codewhale"),
+            "openai/gpt-5.6",
+            surface,
+            Some(&fingerprint),
+            None,
+            &usage,
+            now,
+        );
+        assert!(byok_audit.estimate.is_none());
+
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
     }
 }
