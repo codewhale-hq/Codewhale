@@ -1613,7 +1613,6 @@ impl ToolRegistryBuilder {
             .with_file_tools()
             .with_present_tool()
             .with_show_data_tool()
-            .with_design_tools()
             .with_note_tool()
             .with_search_tools()
             .with_user_input_tool(user_input_limits)

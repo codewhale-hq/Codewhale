@@ -86,7 +86,8 @@ impl Engine {
                 self.agent_tool_surface_options(shell_policy),
                 todo_list,
                 plan_state,
-            );
+            )
+            .with_design_tools();
             if self.config.features.enabled(Feature::Mcp) {
                 builder = builder.with_registry_mcp_sync_tool();
             }
