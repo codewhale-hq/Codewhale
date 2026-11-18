@@ -25,6 +25,7 @@ use codewhale_util::path_identity::metadata_is_link_or_reparse;
 use codewhale_util::path_identity::windows_file_identity;
 
 pub mod gc;
+mod withdrawn;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const MAX_REVIEW_HISTORY: usize = 32;
