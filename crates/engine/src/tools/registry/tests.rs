@@ -170,6 +170,30 @@ fn mcp_image_result_uses_typed_block_without_base64_in_text() {
 }
 
 #[test]
+fn mcp_transport_metadata_is_dropped_from_the_result() {
+    let icon = format!("data:image/png;base64,{}", "A".repeat(2_048));
+    let payload = json!({
+        "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "github-mcp-server", "icons": [{"src": icon}]}},
+        "resultType": "complete",
+        "content": [{"type": "text", "text": "{\"total_count\":1}", "_meta": {"icon": icon}}]
+    });
+
+    let rich = mcp_result_to_bounded_rich_tool_result(payload);
+
+    assert!(rich.result.success);
+    assert!(
+        !rich.result.content.contains("base64"),
+        "{}",
+        rich.result.content
+    );
+    let sanitized: Value = serde_json::from_str(&rich.result.content).expect("MCP JSON");
+    assert_eq!(
+        sanitized,
+        json!({"content": [{"type": "text", "text": "{\"total_count\":1}"}]})
+    );
+}
+
+#[test]
 fn mcp_invalid_image_is_removed_with_a_visible_receipt() {
     let payload = json!({
         "content": [
