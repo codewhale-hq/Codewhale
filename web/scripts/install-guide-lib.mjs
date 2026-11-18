@@ -4,7 +4,7 @@ import GithubSlugger from "github-slugger";
 
 const DOCS_URL = "https://github.com/codewhale-hq/CodeWhale/blob/main/docs/";
 
-function docLink(href, sourcePath) {
+function docLink(href, sourcePath, resolveLink) {
   const documentUrl = new URL(sourcePath, DOCS_URL);
   const url = new URL(href, documentUrl);
   if (!["https:", "http:", "mailto:"].includes(url.protocol)) {
@@ -12,11 +12,15 @@ function docLink(href, sourcePath) {
   }
   if (href.startsWith("#")) return href;
   if (url.href.startsWith(`${documentUrl.href}#`)) return url.hash;
+  if (resolveLink && url.href.startsWith(DOCS_URL)) {
+    const sitePath = resolveLink(url.pathname.slice(new URL(DOCS_URL).pathname.length));
+    if (sitePath) return `${sitePath}${url.hash}`;
+  }
   return url.href;
 }
 
 /** Render the checked-in guide at build time; fenced commands stay copyable. */
-export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabel = "Installation table" } = {}) {
+export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabel = "Installation table", resolveLink } = {}) {
   const slugger = new GithubSlugger();
   const anchors = [];
   const fragments = [];
@@ -48,7 +52,7 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
     },
     walkTokens(token) {
       if (token.type === "link" || token.type === "image") {
-        token.href = docLink(token.href, sourcePath);
+        token.href = docLink(token.href, sourcePath, resolveLink);
         if (token.href.startsWith("#")) fragments.push(decodeURIComponent(token.href.slice(1)));
       }
     },
@@ -64,10 +68,13 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
     return token.text ?? "";
   };
   const searchSections = [];
+  const headings = [];
   let preamble = "";
   for (const token of tokens) {
     if (token.type === "heading") {
-      searchSections.push({ id: searchSlugger.slug(token.text), title: visibleText(token), text: "" });
+      const id = searchSlugger.slug(token.text);
+      headings.push({ id, depth: token.depth, title: visibleText(token) });
+      searchSections.push({ id, title: visibleText(token), text: "" });
     } else if (searchSections.length) {
       const section = searchSections[searchSections.length - 1];
       section.text = [section.text, visibleText(token)].filter(Boolean).join(" ");
@@ -86,7 +93,7 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
   for (const token of tokens) {
     if (token.type === "code") {
       flush();
-      chunks.push({ kind: "code", text: token.text });
+      chunks.push(token.lang ? { kind: "code", text: token.text, lang: token.lang } : { kind: "code", text: token.text });
     } else {
       htmlTokens.push(token);
     }
@@ -94,7 +101,7 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
   flush();
   const missing = fragments.filter((id) => !anchors.includes(id));
   if (missing.length) throw new Error(`Missing INSTALL.md anchors: ${missing.join(", ")}`);
-  return { sourceHash: createHash("sha256").update(source).digest("hex"), anchors, chunks, searchSections, preamble };
+  return { sourceHash: createHash("sha256").update(source).digest("hex"), anchors, chunks, searchSections, headings, preamble };
 }
 
 export function installAnchorErrors(text, anchors) {

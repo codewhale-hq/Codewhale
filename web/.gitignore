@@ -20,3 +20,5 @@ tsconfig.tsbuildinfo
 lib/changelog.generated.ts
 lib/release-notes.generated.ts
 lib/install-guide.generated.ts
+
+lib/docs-preview.generated.ts

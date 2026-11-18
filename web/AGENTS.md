@@ -9,7 +9,9 @@ site.
 - `lib/changelog.generated.ts`, `lib/release-notes.generated.ts` and
   `lib/install-guide.generated.ts` are not tracked. `npm run prebuild`,
   `npm run dev` and the vitest global setup derive them from `CHANGELOG.md`
-  and `docs/INSTALL.md`; never commit them.
+  and `docs/INSTALL.md`; never commit them. `lib/docs-preview.generated.ts` is
+  also untracked; `npm run prebuild` and `npm run dev` derive it from `docs/*.md`
+  and the Runtime API route table for the `/docs-preview` prototype.
 - Shared public copy lives in `lib/content/`. Keep product vocabulary aligned
   with `docs/public-surface-facts.json` and `docs/MODES.md`; extend locale data,
   not individual pages.
