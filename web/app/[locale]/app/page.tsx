@@ -1,9 +1,8 @@
-import Image from "next/image";
 import Link from "next/link";
-import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
 import { DesktopDownloadBlock } from "@/components/desktop-download";
+import { DesktopShot } from "@/components/desktop-shot";
 import { AVAILABILITY_ROWS, describeRow } from "@/lib/content/availability";
 import { APP_COPY } from "@/lib/content/app-page";
 import { pickText } from "@/lib/i18n/dictionaries";
@@ -52,10 +51,9 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
             <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
               {t(APP_COPY.actions.install)}
             </Link>
-            <a href={APP_COPY.guideUrl} className="btn btn-secondary btn-lg">
+            <Link href={`/${locale}${APP_COPY.guidePath}`} className="btn btn-secondary btn-lg">
               {t(APP_COPY.actions.guide)}
-              <Icon name="external" className="icon" />
-            </a>
+            </Link>
             <Link href={`/${locale}/docs/account`} className="btn btn-ghost btn-lg">
               {t(APP_COPY.actions.signIn)}
             </Link>
@@ -66,17 +64,10 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
       <div className="page-body">
         <Section id="app-shots" title={t(APP_COPY.shotsHeading)} scope={t(APP_COPY.shotsScope)}>
           <div className="app-shots">
-            {APP_COPY.shots.map((shot) => (
+            {APP_COPY.shots.map((shot, index) => (
               <figure className="figure" key={shot.file}>
                 <div className="figure-frame">
-                  <Image
-                    src={`/app/${shot.file}.webp`}
-                    alt={t(shot.alt)}
-                    width={shot.width}
-                    height={shot.height}
-                    sizes="(max-width: 900px) 100vw, 1100px"
-                    unoptimized
-                  />
+                  <DesktopShot id={shot.file} alt={t(shot.alt)} eager={index === 0} />
                 </div>
                 <figcaption className="figure-caption">{t(shot.caption)}</figcaption>
               </figure>
@@ -162,10 +153,9 @@ export default async function AppPage({ params }: { params: Promise<{ locale: st
             <p>{t(APP_COPY.closingBody)}</p>
             <div className="actions">
               <Link href={`/${locale}/install`} className="btn btn-primary">{t(APP_COPY.actions.install)}</Link>
-              <a href={APP_COPY.guideUrl} className="btn btn-secondary">
+              <Link href={`/${locale}${APP_COPY.guidePath}`} className="btn btn-secondary">
                 {t(APP_COPY.actions.guide)}
-                <Icon name="external" className="icon" />
-              </a>
+              </Link>
             </div>
           </div>
         </section>

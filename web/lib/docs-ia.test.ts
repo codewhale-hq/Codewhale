@@ -168,7 +168,7 @@ describe("navigation parity and accessibility", () => {
     expect(mobileMenu).toContain("signIn.href");
     expect(navLinks).toContain("links.map");
     // One generator feeds both surfaces — no per-locale hardcoded arrays.
-    expect(nav).toContain("navLinks(locale, chrome, surfaceState(\"desktop\") === \"released\")");
+    expect(nav).toContain("navLinks(locale, chrome)");
     expect(nav).not.toMatch(/const (EN|ZH)_LINKS/);
     // The primary strip replaces the compact menu at lg, with icon-only
     // controls leaving room for translated labels (see nav-hit-target.test).
@@ -205,8 +205,7 @@ describe("navigation parity and accessibility", () => {
     const reference = buildNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(reference).toEqual(["docs", "models", "changelog", "contribute"]);
-    expect(buildNavLinks("en", getChrome("en"), true).map((l) => l.href)).toContain("/en/app");
+    expect(reference).toEqual(["docs", "models", "plugins", "app", "contribute"]);
     for (const locale of locales) {
       const links = buildNavLinks(locale, getChrome(locale));
       expect(

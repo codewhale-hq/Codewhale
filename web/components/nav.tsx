@@ -5,7 +5,6 @@ import { navLinks, signInLink, REPO_URL } from "@/lib/i18n/links";
 import { formatStars, readRepoStatsSnapshot } from "@/lib/github";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { fill, pickText } from "@/lib/i18n/dictionaries";
-import { surfaceState } from "@/lib/surface-states";
 import { Icon } from "./icon";
 import { LocaleSwitcher } from "./locale-switcher";
 import { MobileMenu } from "./mobile-menu";
@@ -20,7 +19,7 @@ import { ArrowLabel } from "./arrow-label";
  */
 export function Nav({ locale = "en" }: { locale?: Locale }) {
   const chrome = getChrome(locale);
-  const links = navLinks(locale, chrome, surfaceState("desktop") === "released");
+  const links = navLinks(locale, chrome);
   const signIn = signInLink(locale, chrome);
   const stats = readRepoStatsSnapshot();
   const stars = stats.stars === null ? null : formatStars(stats.stars);

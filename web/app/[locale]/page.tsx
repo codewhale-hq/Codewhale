@@ -1,14 +1,17 @@
 import { Fragment } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { DesktopShot } from "@/components/desktop-shot";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { readAsOf } from "@/components/project-pulse";
 import { InlineCode } from "@/components/route/inline-code";
 import { RouteMap, type RoutePart } from "@/components/route/product-route";
 import { SessionFrames, type SessionFrame } from "@/components/route/session-frames";
+import { Status } from "@/components/status-badge";
 import { TerminalCapture } from "@/components/terminal-capture";
 import { releaseView, runtimeCapabilityContext } from "@/lib/capabilities";
+import { STATE_TONE, surfaceState } from "@/lib/surface-states";
 import { captureCaption, frameNote } from "@/lib/capture-caption";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { PROJECT_COPY } from "@/lib/content/project";
@@ -37,11 +40,16 @@ const SESSION_STEPS = [
   { key: "04-task-approval", name: "frameLabelApproval", summary: "frameSummaryApproval" },
   { key: "05-task-result", name: "frameLabelResult", summary: "frameSummaryResult" },
 ] as const satisfies readonly { key: string; name: keyof HomeDict; summary: keyof HomeDict }[];
-const SESSION_OPENS_ON = 2;
+const SESSION_OPENS_ON = 3;
 const PROVIDER_ROWS = [7, 17] as const;
 const RECEIPT_ROWS_WIDE = [6, 37] as const;
 const RECEIPT_ROWS_NARROW = [2, 34] as const;
 const MERGED_ROWS = 8;
+const AGENT_ROLES = [
+  { name: "explore", text: "agentRoleExplore" },
+  { name: "implement", text: "agentRoleImplement" },
+  { name: "reviewer", text: "agentRoleReviewer" },
+] as const satisfies readonly { name: string; text: keyof HomeDict }[];
 
 const avatar = (url: string, size: number) => `${url}${url.includes("?") ? "&" : "?"}s=${size}`;
 
@@ -107,8 +115,9 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
     narrow: frame(`cols48/${step.key}`, d[step.summary]),
     note: frameNote(sessionWide[index]).needsPostureNote,
   }));
-  const providerNote = frameNote(RELEASED_CAPTURE_FRAMES["cols56/01-model-picker"]).needsPostureNote;
 
+  const desktopState = surfaceState("desktop");
+  const desktopPart = parts.find((part) => part.id === "desktop");
   const released = releaseView(facts);
   const counted = (key: string, forms: HomeDict["factModels"], n: number, href: string): Fact => {
     const number = numbers.format(n);
@@ -205,14 +214,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           <figure className="home-figure">
             <div className="home-frame home-only-wide">{frame("cols56/01-model-picker", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
             <div className="home-frame home-only-narrow">{frame("cols48/01-model-picker", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
-            {providerNote ? <figcaption className="home-caption">{d.captureFrameNoPosture}</figcaption> : null}
           </figure>
         </section>
 
         {showPromo && (
           <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
             <div className="home-promo-bar-inner">
-              <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
+              <Image src={PARTNER_PROMO.thumb.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
               <p>
                 <strong>{PARTNER_PROMO.title}</strong>
                 <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
@@ -238,6 +246,24 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             <div className="home-frame home-only-narrow">{frame("cols48/06b-receipt-tall", d.frameSummaryReceipt, RECEIPT_ROWS_NARROW)}</div>
           </figure>
         </section>
+
+        <section className="home-section home-split" aria-labelledby="home-agents">
+          <div className="home-text">
+            <h2 id="home-agents" className="home-h2">{d.sectionAgentsHeading}</h2>
+            <p className="home-body"><InlineCode text={d.sectionAgentsBody} /></p>
+            <p className="home-more">
+              <Link href={`/${locale}/docs/subagents`} className="link">{d.agentsLink}</Link>
+            </p>
+          </div>
+          <dl className="home-figure home-roles" aria-label={d.agentsRolesLabel}>
+            {AGENT_ROLES.map((role) => (
+              <div key={role.name}>
+                <dt><code>{role.name}</code></dt>
+                <dd>{d[role.text]}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
       </div>
 
       <section className="home-direction" aria-labelledby="home-direction">
@@ -246,6 +272,16 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           <p className="home-body"><InlineCode text={d.sectionDirectionBody} /></p>
         </div>
         <RouteMap parts={parts} engine={d.mapHeading} label={d.sectionDirectionHeading} locale={locale} />
+        <figure className="home-desktop">
+          <div className="figure-frame home-desktop-frame">
+            <DesktopShot id="review" alt={d.directionShotAlt} sizes="(max-width: 64rem) 100vw, 64rem" />
+          </div>
+          <figcaption className="home-desktop-caption">
+            {desktopPart ? <Status tone={STATE_TONE[desktopState]}>{desktopPart.name}: {desktopPart.stateWord}</Status> : null}
+            <span className="home-caption">{d.directionShotCaption}</span>
+            <Link href={`/${locale}/app`} className="link">{d.directionShotLink}</Link>
+          </figcaption>
+        </figure>
       </section>
 
       <div className="home-sections">
