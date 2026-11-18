@@ -35992,44 +35992,6 @@ fn g3_real_height_resize_keeps_wrapped_rows_and_tool_projection() {
     assert_eq!(app.viewport.transcript_cache.total_lines(), lines);
 }
 
-#[test]
-fn transcript_keeps_clear_of_apple_terminal_scroller() {
-    use super::frame::clear_host_scroller;
-
-    let full = Rect::new(0, 1, 136, 30);
-    let cleared = clear_host_scroller(full, 136, true);
-    assert_eq!(cleared, Rect::new(0, 1, 134, 30));
-    assert_eq!(clear_host_scroller(full, 136, false), full);
-    let beside_rail = Rect::new(0, 1, 100, 30);
-    assert_eq!(clear_host_scroller(beside_rail, 136, true), beside_rail);
-    let narrow = Rect::new(0, 1, 30, 30);
-    assert_eq!(clear_host_scroller(narrow, 30, true), narrow);
-
-    let mut app = create_test_app();
-    app.viewport.last_transcript_area = Some(cleared);
-    app.viewport.last_transcript_total = 200;
-    app.viewport.last_transcript_visible = 30;
-    let on_scrollbar = MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 133,
-        row: 10,
-        modifiers: KeyModifiers::NONE,
-    };
-    assert!(crate::tui::mouse_ui::mouse_hits_transcript_scrollbar(
-        &app,
-        on_scrollbar
-    ));
-    for column in [134, 135] {
-        assert!(!crate::tui::mouse_ui::mouse_hits_transcript_scrollbar(
-            &app,
-            MouseEvent {
-                column,
-                ..on_scrollbar
-            }
-        ));
-    }
-}
-
 #[cfg(not(windows))]
 #[test]
 fn focus_recapture_repaints_cells_without_erasing_the_viewport() {

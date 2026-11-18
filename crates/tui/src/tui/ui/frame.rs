@@ -2012,7 +2012,6 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 app.file_tree_visible = false;
                 work_chat_area
             };
-        let chat_area = clear_host_scroller(chat_area, size.width, *HOST_SCROLLER_AT_RIGHT_EDGE);
         app.sidebar_hover_tooltip = None;
 
         if pet_main {
@@ -2264,6 +2263,23 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 &app.viewport.ocean_semantic_surfaces,
             );
         }
+        if top_work_strip_height > 0 {
+            column.paint_matching_native(
+                body_chunks[strip_slot],
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        } else if let Some(work_area) = side_work_area {
+            column.paint_matching_native(
+                work_area,
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        }
     }
     register_clickable_chrome_for_hover(app);
     crate::tui::hover_layer::apply_resolved_effects(
@@ -2320,24 +2336,6 @@ pub(super) fn finish_frame_cursor<B: ratatui::backend::Backend>(
         terminal.show_cursor()?;
     }
     Ok(())
-}
-
-const HOST_SCROLLER_CLEARANCE: u16 = 2;
-const HOST_SCROLLER_MIN_WIDTH: u16 = 40;
-
-static HOST_SCROLLER_AT_RIGHT_EDGE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    !cfg!(test)
-        && std::env::var("TERM_PROGRAM").is_ok_and(|program| program.trim() == "Apple_Terminal")
-});
-
-pub(super) fn clear_host_scroller(area: Rect, screen_width: u16, host_scroller: bool) -> Rect {
-    if !host_scroller || area.right() < screen_width || area.width < HOST_SCROLLER_MIN_WIDTH {
-        return area;
-    }
-    Rect {
-        width: area.width - HOST_SCROLLER_CLEARANCE,
-        ..area
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
