@@ -26628,14 +26628,11 @@ mod child_permission_gate {
     async fn pending_approval_longer_than_tool_timeout_is_answered_and_runs() {
         let (registry, mut rx, manager) = worker_registry(ApprovalMode::Suggest, false, true, None);
         let (receipt_store, session_id) = receipt_context(&registry);
-        // Wide margins: after approval the call spawns a real shell, which
-        // can take well over 200ms on a loaded Windows runner.
-        let tool_timeout = Duration::from_secs(2);
+        let tool_timeout = Duration::from_secs(6);
         let manager_for_answer = Arc::clone(&manager);
         let answerer = tokio::spawn(async move {
             let id = next_child_approval_id(&mut rx).await;
-            // The person takes several tool timeouts to decide.
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(8)).await;
             assert!({
                 let submitted = manager_for_answer.write().await.resolve_child_approval(
                     &id,
@@ -26649,11 +26646,21 @@ mod child_permission_gate {
                     .expect("actual child approval outcome")
             });
         });
+        let clock = PersonWaitClock::default();
+        let slow_check = tokio::spawn(async move {
+            run_tool_with_person_aware_timeout(
+                tool_timeout,
+                None,
+                &clock,
+                tokio::time::sleep(Duration::from_secs(7)),
+            )
+            .await
+        });
         let output = run_tool_with_person_aware_timeout(
             tool_timeout,
             None,
             &registry.person_wait,
-            registry.execute("agent_gate", "bash", json!({"command": "echo gated-ran"})),
+            Box::pin(registry.execute("agent_gate", "bash", json!({"command": "echo gated-ran"}))),
         )
         .await
         .expect("the approval wait never spends the tool timeout")
@@ -26661,16 +26668,7 @@ mod child_permission_gate {
         answerer.await.expect("answerer");
         assert!(output.contains("gated-ran"), "{output}");
         assert_completed_receipt(&receipt_store, &session_id, ApprovalOutcome::ApprovedOnce);
-
-        // Without a person wait the same bound still fires.
-        let clock = PersonWaitClock::default();
-        let slow = run_tool_with_person_aware_timeout(
-            tool_timeout,
-            None,
-            &clock,
-            tokio::time::sleep(Duration::from_secs(3)),
-        )
-        .await;
+        let slow = slow_check.await.expect("slow check");
         assert!(slow.is_none(), "ordinary tool work keeps its timeout");
     }
 
