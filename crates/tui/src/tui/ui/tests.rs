@@ -26766,9 +26766,6 @@ fn exploring_labels_follow_the_ui_locale() {
     assert_eq!(label("list_files", serde_json::json!({})), "正在列出文件");
 }
 
-// `running_status_label_with_elapsed` lives in `crate::tui::history` next to
-// the other tool-header helpers — its tests live there too.
-
 // ---- P2.4: auto-scroll churn regressions ----
 //
 // The contract: once the user scrolls away from the live tail mid-turn

@@ -172,6 +172,72 @@ fn working_clock_has_glow(app: &App) -> bool {
         )
 }
 
+pub(crate) fn activity_sweep_allowed(app: &App) -> bool {
+    app.motion_policy().should_request_animation_frames()
+        && !app.effective_low_motion_for_status()
+        && app
+            .viewport
+            .ocean_caps
+            .is_some_and(|caps| caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor)
+        && matches!(app.ui_theme.text_body, ratatui::style::Color::Rgb(..))
+}
+
+fn composer_border_lit(app: &App) -> bool {
+    app.turn_started_at.is_some()
+        && crate::tui::widgets::composer_enclosure_enabled(app)
+        && app.composer_display_input().trim().is_empty()
+}
+
+pub(crate) fn composer_border_breathes(app: &App) -> bool {
+    composer_border_lit(app)
+        && activity_sweep_allowed(app)
+        && !app.viewport.activity_sweep_visible
+        && !decision_prompt_waiting(app)
+        && matches!(app.ui_theme.border, ratatui::style::Color::Rgb(..))
+        && matches!(app.ui_theme.status_working, ratatui::style::Color::Rgb(..))
+}
+
+pub(crate) fn composer_live_border(app: &App) -> Option<ratatui::style::Color> {
+    use codewhale_ratatui::tokens::{MOTION_DURATION_PANEL_MS, MOTION_LOOP_BREATHE_MS};
+    let started = app.turn_started_at.filter(|_| composer_border_lit(app))?;
+    if decision_prompt_waiting(app) {
+        return Some(app.ui_theme.accent_action);
+    }
+    let (border, lit) = (app.ui_theme.border, app.ui_theme.status_working);
+    if !matches!(
+        (border, lit),
+        (
+            ratatui::style::Color::Rgb(..),
+            ratatui::style::Color::Rgb(..)
+        )
+    ) {
+        return Some(lit);
+    }
+    let elapsed = started.elapsed();
+    let mut level = 0.5;
+    if composer_border_breathes(app) {
+        let since = elapsed.saturating_sub(std::time::Duration::from_millis(
+            codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS,
+        ));
+        let phase =
+            (since.as_millis() % MOTION_LOOP_BREATHE_MS as u128) as f32 / MOTION_LOOP_BREATHE_MS;
+        let swing = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos();
+        level = 0.3 + (swing * 7.0).round() / 7.0 * 0.4;
+    }
+    if activity_sweep_allowed(app) {
+        let arrive = (elapsed.as_millis() as f32 / MOTION_DURATION_PANEL_MS).min(1.0);
+        level *= codewhale_ratatui::MotionEasing::EaseOut.apply(arrive);
+    }
+    Some(codewhale_ratatui::color::blend(lit, border, level))
+}
+
+fn activity_motion_visible(app: &App) -> bool {
+    activity_sweep_allowed(app)
+        && (app.viewport.activity_sweep_visible
+            || working_clock_has_glow(app)
+            || composer_border_breathes(app))
+}
+
 pub(crate) fn status_animation_interval_ms(app: &App) -> u64 {
     if app.effective_low_motion_for_status() {
         crate::tui::display_refresh::adaptive_animation_interval_ms(true)
@@ -183,6 +249,8 @@ pub(crate) fn status_animation_interval_ms(app: &App) -> u64 {
             || crate::tui::subagent_routing::running_agent_count(app) > 0)
     {
         UI_QUIET_STATUS_ANIMATION_MS
+    } else if activity_motion_visible(app) {
+        UI_ACTIVITY_ANIMATION_MS
     } else {
         // Keep the braille marker on its fixed 5 Hz table for width stability;
         // only atmosphere uses the measured display cadence.
@@ -268,6 +336,7 @@ pub(crate) fn should_tick_status_animation(
     !matches!(app.motion_policy().mode(), MotionMode::Still)
         && (app.is_loading
             || working_clock_has_glow(app)
+            || composer_border_breathes(app)
             || has_running_agents
             || app.is_compacting
             || app.is_purging

@@ -1645,6 +1645,7 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
     app.viewport.working_glow_visible = false;
+    app.viewport.activity_sweep_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
@@ -2353,6 +2354,7 @@ pub(crate) fn draw_app_frame_inner(
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     app.viewport.ocean_caps = Some(terminal.backend().native_ocean_caps());
+    app.viewport.detected_background = terminal.backend().detected_background();
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the

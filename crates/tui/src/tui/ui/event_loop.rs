@@ -2118,6 +2118,7 @@ pub(crate) async fn run_event_loop(
     let mut last_status_frame = Instant::now()
         .checked_sub(Duration::from_millis(UI_STATUS_ANIMATION_MS))
         .unwrap_or_else(Instant::now);
+    let mut last_live_motion_mark = last_status_frame;
     let mut idle_clock = IdleClock::new(Instant::now());
     let mut skill_registry_epoch = None;
     let mut skill_cache_refresh: Option<SkillCacheRefresh> = None;
@@ -5569,7 +5570,10 @@ pub(crate) async fn run_event_loop(
             );
             if !matches!(motion_policy.mode(), MotionMode::Still)
                 && (history_has_live_motion || active_cell_has_live_motion)
+                && last_live_motion_mark.elapsed()
+                    >= Duration::from_millis(UI_STATUS_ANIMATION_MS - UI_ACTIVITY_ANIMATION_MS / 2)
             {
+                last_live_motion_mark = Instant::now();
                 if translation_animated {
                     if history_has_live_motion {
                         app.mark_live_history_motion_updated();

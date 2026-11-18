@@ -632,6 +632,27 @@ impl ChatWidget {
             app.last_send_at = None;
         }
 
+        let sweep_entries: &[HistoryCell] = app
+            .active_cell
+            .as_ref()
+            .map_or(&[], |active| active.entries());
+        let activity_sweep_visible = crate::tui::ui::motion::activity_sweep_allowed(app)
+            && app.turn_started_at.is_some_and(|started| {
+                apply_activity_sweep(
+                    &mut lines,
+                    top,
+                    line_meta,
+                    &app.collapsed_cell_map,
+                    &app.history,
+                    sweep_entries,
+                    started.elapsed(),
+                    app.theme_id,
+                    &app.ui_theme,
+                    app.viewport.detected_background,
+                )
+            });
+        app.viewport.activity_sweep_visible = activity_sweep_visible;
+
         // No background "highlight" for the Alt+V detail target: it used to
         // paint the target cell's spans `Color::Reset`, which is invisible on
         // terminal-owned themes and a black hole on painted surfaces
@@ -1237,7 +1258,10 @@ impl<'a> ComposerWidget<'a> {
             Focus::Launch => self.app.launch.menu_selected.is_none(),
             _ => false,
         };
-        if editing {
+        let typing = editing && !self.app.composer_display_input().trim().is_empty();
+        if !typing && let Some(live) = crate::tui::ui::motion::composer_live_border(self.app) {
+            live
+        } else if editing {
             composer_chat_color(self.app).unwrap_or(self.app.ui_theme.accent_primary)
         } else {
             self.app.ui_theme.border
@@ -2830,6 +2854,142 @@ fn apply_send_flash(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_activity_sweep(
+    lines: &mut [Line<'static>],
+    top: usize,
+    line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
+    history: &[HistoryCell],
+    active_entries: &[HistoryCell],
+    elapsed: Duration,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    detected_background: Option<Color>,
+) -> bool {
+    let highlight = ui_theme.text_body;
+    if !matches!(highlight, Color::Rgb(..)) {
+        return false;
+    }
+    let effective_ground = palette::effective_surface(ui_theme.surface_bg, detected_background);
+    let mut visible = false;
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let Some(TranscriptLineMeta::CellLine {
+            cell_index,
+            line_in_cell,
+            ..
+        }) = line_meta.get(top + idx)
+        else {
+            continue;
+        };
+        if *line_in_cell > 1 {
+            continue;
+        }
+        let original = original_index_map
+            .get(*cell_index)
+            .copied()
+            .unwrap_or(*cell_index);
+        let cell = history.get(original).or_else(|| {
+            original
+                .checked_sub(history.len())
+                .and_then(|active| active_entries.get(active))
+        });
+        let Some(shape) = cell.and_then(HistoryCell::activity_sweep) else {
+            continue;
+        };
+        if let Some(extent) =
+            crate::tui::history::tool_header_sweep_extent(shape, line, *line_in_cell)
+            && sweep_span_extent(
+                line,
+                extent,
+                elapsed,
+                theme_id,
+                ui_theme,
+                highlight,
+                effective_ground,
+            )
+        {
+            visible = true;
+        }
+    }
+    visible
+}
+
+fn sweep_span_extent(
+    line: &mut Line<'static>,
+    extent: std::ops::Range<usize>,
+    elapsed: Duration,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    highlight: Color,
+    effective_ground: Option<Color>,
+) -> bool {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let width: usize = line.spans[extent.clone()].iter().map(Span::width).sum();
+    let mut sweepable = false;
+    let mut swept: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0usize;
+    for span in &line.spans[extent.clone()] {
+        let span_ground = span
+            .style
+            .bg
+            .map(|bg| {
+                palette::adapt_bg_for_palette_mode(
+                    palette::adapt_bg_for_theme(bg, theme_id, ui_theme),
+                    ui_theme.mode,
+                )
+            })
+            .filter(|bg| palette::resolvable_rgb(*bg).is_some())
+            .or(effective_ground);
+        for grapheme in span.content.graphemes(true) {
+            let cells = grapheme_display_width(grapheme);
+            let mut style = span.style;
+            if cells > 0
+                && !grapheme.chars().all(char::is_whitespace)
+                && let Some(fg) = span.style.fg
+                && let Some(ground) = span_ground
+            {
+                let mapped_fg = palette::adapt_fg_for_palette_mode(
+                    palette::adapt_fg_for_theme(fg, theme_id, ui_theme),
+                    ground,
+                    ui_theme.mode,
+                );
+                if codewhale_ratatui::activity_sweep_ink(
+                    mapped_fg,
+                    ground,
+                    highlight,
+                    codewhale_ratatui::ACTIVITY_SWEEP_PEAK,
+                ) != mapped_fg
+                {
+                    sweepable = true;
+                }
+                let strength = codewhale_ratatui::activity_sweep_strength(
+                    elapsed,
+                    width,
+                    offset as f32 + (cells.saturating_sub(1)) as f32 / 2.0,
+                );
+                if strength > 0.0 {
+                    let next = codewhale_ratatui::activity_sweep_ink(
+                        mapped_fg, ground, highlight, strength,
+                    );
+                    if next != mapped_fg {
+                        style = style.fg(next);
+                    }
+                }
+            }
+            offset += cells;
+            match swept.last_mut() {
+                Some(last) if last.style == style => last.content.to_mut().push_str(grapheme),
+                _ => swept.push(Span::styled(grapheme.to_string(), style)),
+            }
+        }
+    }
+    if sweepable {
+        line.spans.splice(extent, swept);
+    }
+    sweepable
+}
+
 #[cfg(test)]
 fn apply_selection_to_line(
     line: &Line<'static>,
@@ -3731,15 +3891,15 @@ mod tests {
     use super::{
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
         ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_composer_submit_rect,
-        active_entry_revision, apply_selection_to_line, apply_send_flash, approval_palette,
-        approval_truncation_hint, build_empty_state_lines, composer_content_geometry,
-        composer_empty_hint_text, composer_height, composer_inner_area, composer_max_height,
-        composer_submit_hint, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
-        enclosed_composer_panel_fits, fish_flee_offset, fish_heading, fish_mark,
-        history_entry_revision, layout_input, layout_input_with_scroll, placeholder_visual_lines,
-        push_command_entry, receipt_is_settling, revision_in_domain, should_render_empty_state,
-        slash_completion_hints, test_native_ocean_caps, tool_run_summary_revision,
-        wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        active_entry_revision, apply_activity_sweep, apply_selection_to_line, apply_send_flash,
+        approval_palette, approval_truncation_hint, build_empty_state_lines,
+        composer_content_geometry, composer_empty_hint_text, composer_height, composer_inner_area,
+        composer_max_height, composer_submit_hint, composer_top_padding, cursor_row_col,
+        empty_composer_visual_rows, enclosed_composer_panel_fits, fish_flee_offset, fish_heading,
+        fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
+        placeholder_visual_lines, push_command_entry, receipt_is_settling, revision_in_domain,
+        should_render_empty_state, slash_completion_hints, test_native_ocean_caps,
+        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -3761,6 +3921,7 @@ mod tests {
         style::{Color, Modifier, Style},
         text::{Line, Span},
     };
+    use std::time::Duration;
     use std::{path::PathBuf, time::Instant};
     use unicode_width::UnicodeWidthStr;
 
@@ -4028,6 +4189,365 @@ mod tests {
         assert_eq!(
             lines[0].spans[0].style.bg,
             Some(palette::SURFACE_TOOL_ACTIVE)
+        );
+    }
+
+    #[test]
+    fn activity_sweep_lights_verb_and_status_but_never_the_summary() {
+        let header = || {
+            Line::from(vec![
+                Span::styled("\u{28E4} ", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled("\u{2315} ", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled(
+                    "find",
+                    Style::default()
+                        .fg(palette::TEXT_SOFT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled("running", Style::default().fg(palette::WHALE_ACTION)),
+                Span::styled(" \u{00B7} ", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled("READINESS.md", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled("  12s", Style::default().fg(palette::TEXT_DIM)),
+            ])
+        };
+        let history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))];
+        let line_meta = vec![TranscriptLineMeta::CellLine {
+            cell_index: 0,
+            line_in_cell: 0,
+            copy_prefix_width: 0,
+            copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+        }];
+        let theme = palette::UNDERWATER_UI_THEME;
+        let earn = Duration::from_millis(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS);
+        let sweep = |elapsed: Duration| {
+            let mut lines = vec![header()];
+            let visible = apply_activity_sweep(
+                &mut lines,
+                0,
+                &line_meta,
+                &[0],
+                &history,
+                &[],
+                elapsed,
+                palette::ThemeId::Underwater,
+                &theme,
+                None,
+            );
+            assert!(visible);
+            lines.remove(0)
+        };
+        let cells = |line: &Line<'static>| -> Vec<(String, Option<Color>)> {
+            line.spans
+                .iter()
+                .flat_map(|span| {
+                    span.content
+                        .chars()
+                        .map(move |ch| (ch.to_string(), span.style.fg))
+                })
+                .collect()
+        };
+        let plain = cells(&header());
+        let resting = cells(&sweep(earn + Duration::from_millis(2_000)));
+        assert_eq!(resting, plain, "the rest phase paints nothing");
+        let midway = cells(&sweep(earn + Duration::from_millis(900)));
+        assert_eq!(midway.len(), plain.len());
+        let summary = plain
+            .iter()
+            .position(|(ch, _)| ch == "R")
+            .expect("summary present");
+        assert_eq!(
+            midway[summary..],
+            plain[summary..],
+            "summary and elapsed stay still"
+        );
+        assert!(
+            midway[..summary] != plain[..summary],
+            "the verb and status brighten mid-sweep"
+        );
+        assert_eq!(
+            midway[..4],
+            plain[..4],
+            "the spinner and glyph keep their ink"
+        );
+    }
+
+    #[test]
+    fn activity_sweep_and_breath_stop_under_reduced_motion() {
+        let mut app = create_test_app();
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+        assert!(crate::tui::ui::motion::activity_sweep_allowed(&app));
+        for (low_motion, fancy) in [(true, true), (false, false)] {
+            app.low_motion = low_motion;
+            app.fancy_animations = fancy;
+            assert!(!crate::tui::ui::motion::activity_sweep_allowed(&app));
+            assert!(!crate::tui::ui::motion::composer_border_breathes(&app));
+            let first = crate::tui::ui::motion::composer_live_border(&app);
+            std::thread::sleep(Duration::from_millis(30));
+            assert_eq!(crate::tui::ui::motion::composer_live_border(&app), first);
+        }
+    }
+
+    #[test]
+    fn activity_sweep_real_renders_whale_and_remapped_themes() {
+        let exec = HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: "cargo test -p codewhale-tui".to_string(),
+            description: None,
+            status: ToolStatus::Running,
+            output: None,
+            live_output: None,
+            shell_task_id: None,
+            owner_agent_id: None,
+            owner_agent_name: None,
+            started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+            duration_ms: None,
+            stale_elapsed_since_output_ms: None,
+            waiting: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+            output_summary: None,
+        }));
+        let generic = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("pattern: TODO, path: crates".to_string()),
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }));
+        let earn = Duration::from_millis(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS);
+        let mid_sweep = earn + Duration::from_millis(900);
+
+        let adapt_fg = |fg: Option<Color>,
+                        theme_id: palette::ThemeId,
+                        theme: &palette::UiTheme,
+                        detected_bg: Option<Color>| {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_symbol("a");
+            cell.fg = fg.unwrap_or(Color::Reset);
+            cell.bg = theme.surface_bg;
+            crate::tui::color_compat::adapt_cell_colors(
+                &mut cell,
+                palette::ColorDepth::TrueColor,
+                theme.mode,
+                theme_id,
+                theme,
+                detected_bg,
+            );
+            cell.fg
+        };
+        let cells_of = |line: &Line<'static>| -> Vec<(char, Option<Color>)> {
+            line.spans
+                .iter()
+                .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style.fg)))
+                .collect()
+        };
+        let sweep_cell = |cell: &HistoryCell,
+                          width: u16,
+                          options: crate::tui::history::TranscriptRenderOptions,
+                          theme_id: palette::ThemeId,
+                          theme: palette::UiTheme,
+                          detected_bg: Option<Color>| {
+            let rendered = cell.lines_with_options(width, options);
+            let meta: Vec<TranscriptLineMeta> = (0..rendered.len())
+                .map(|line_in_cell| TranscriptLineMeta::CellLine {
+                    cell_index: 0,
+                    line_in_cell,
+                    copy_prefix_width: 0,
+                    copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+                })
+                .collect();
+            let mut swept = rendered.clone();
+            let visible = apply_activity_sweep(
+                &mut swept,
+                0,
+                &meta,
+                &[0],
+                std::slice::from_ref(cell),
+                &[],
+                mid_sweep,
+                theme_id,
+                &theme,
+                detected_bg,
+            );
+            (rendered, swept, visible)
+        };
+        let assert_brighter_changes =
+            |before_line: &Line<'static>,
+             after_line: &Line<'static>,
+             theme_id: palette::ThemeId,
+             theme: &palette::UiTheme,
+             detected_bg: Option<Color>| {
+                let before = cells_of(before_line);
+                let after = cells_of(after_line);
+                assert_eq!(before.len(), after.len());
+                let mut changed_indices = Vec::new();
+                for (idx, ((ch, b_fg), (_, a_fg))) in before.iter().zip(after.iter()).enumerate() {
+                    if b_fg != a_fg {
+                        let drawn_before = adapt_fg(*b_fg, theme_id, theme, detected_bg);
+                        let drawn_after = adapt_fg(*a_fg, theme_id, theme, detected_bg);
+                        let l_before =
+                            palette::relative_luminance(drawn_before).expect("luma before");
+                        let l_after = palette::relative_luminance(drawn_after).expect("luma after");
+                        assert!(
+                            l_after > l_before,
+                            "{theme_id:?} cell {idx} ({ch}) dimmed: {drawn_before:?} ({l_before}) -> {drawn_after:?} ({l_after})"
+                        );
+                        changed_indices.push(idx);
+                    }
+                }
+                assert!(
+                    !changed_indices.is_empty(),
+                    "{theme_id:?} had no swept cells"
+                );
+                (before, changed_indices)
+            };
+
+        assert_eq!(palette::UI_THEME.surface_bg, Color::Reset);
+        for cell in [&generic, &exec] {
+            let opts = crate::tui::history::TranscriptRenderOptions {
+                show_tool_details: false,
+                calm_mode: false,
+                palette_mode: palette::UI_THEME.mode,
+                ..Default::default()
+            };
+            let (rendered, swept, visible) = sweep_cell(
+                cell,
+                120,
+                opts,
+                palette::ThemeId::Whale,
+                palette::UI_THEME,
+                None,
+            );
+            assert!(
+                !visible,
+                "Whale without detected background must not claim visible sweep"
+            );
+            assert_eq!(swept, rendered);
+
+            let detected = Some(Color::Rgb(16, 20, 28));
+            let (rendered, swept, visible) = sweep_cell(
+                cell,
+                120,
+                opts,
+                palette::ThemeId::Whale,
+                palette::UI_THEME,
+                detected,
+            );
+            assert!(visible, "Whale with detected dark background should sweep");
+            assert_brighter_changes(
+                &rendered[0],
+                &swept[0],
+                palette::ThemeId::Whale,
+                &palette::UI_THEME,
+                detected,
+            );
+        }
+
+        let shoreline = palette::SHORELINE_UI_THEME;
+        let calm_shoreline = crate::tui::history::TranscriptRenderOptions {
+            show_tool_details: false,
+            calm_mode: false,
+            palette_mode: shoreline.mode,
+            ..Default::default()
+        };
+        let (rendered, swept, visible) = sweep_cell(
+            &generic,
+            120,
+            calm_shoreline,
+            palette::ThemeId::Shoreline,
+            shoreline,
+            None,
+        );
+        assert!(visible);
+        let (before, changed) = assert_brighter_changes(
+            &rendered[0],
+            &swept[0],
+            palette::ThemeId::Shoreline,
+            &shoreline,
+            None,
+        );
+        let plain: String = before.iter().map(|(ch, _)| *ch).collect();
+        let dot = plain
+            .find('\u{00B7}')
+            .map(|idx| plain[..idx].chars().count())
+            .expect("separator present");
+        assert!(
+            changed.iter().all(|&idx| idx < dot),
+            "summary after separator must stay untouched in {plain:?}"
+        );
+
+        for (theme_id, theme) in [
+            (palette::ThemeId::Shoreline, shoreline),
+            (palette::ThemeId::Underwater, palette::UNDERWATER_UI_THEME),
+        ] {
+            let details_opts = crate::tui::history::TranscriptRenderOptions {
+                show_tool_details: true,
+                calm_mode: false,
+                palette_mode: theme.mode,
+                ..Default::default()
+            };
+            let (rendered, swept, visible) =
+                sweep_cell(&exec, 120, details_opts, theme_id, theme, None);
+            assert!(visible);
+            let (before, changed) =
+                assert_brighter_changes(&rendered[0], &swept[0], theme_id, &theme, None);
+            let plain: String = before.iter().map(|(ch, _)| *ch).collect();
+            let status_start = plain
+                .find("running")
+                .map(|idx| plain[..idx].chars().count())
+                .expect("status word present");
+            let status_end = status_start + "running".chars().count();
+            assert!(
+                changed
+                    .iter()
+                    .all(|&idx| idx >= status_start && idx < status_end),
+                "{theme_id:?} legacy header swept outside status in {plain:?}: {changed:?}"
+            );
+        }
+
+        let (rendered, swept, visible) = sweep_cell(
+            &exec,
+            24,
+            calm_shoreline,
+            palette::ThemeId::Shoreline,
+            shoreline,
+            None,
+        );
+        assert!(
+            rendered.len() >= 2,
+            "narrow shell header should wrap status to line 1"
+        );
+        assert!(visible);
+        assert_eq!(swept[0], rendered[0]);
+        let (before, changed) = assert_brighter_changes(
+            &rendered[1],
+            &swept[1],
+            palette::ThemeId::Shoreline,
+            &shoreline,
+            None,
+        );
+        let line1_plain: String = before.iter().map(|(ch, _)| *ch).collect();
+        let status_end = "running".len();
+        assert!(line1_plain.starts_with("running"), "{line1_plain:?}");
+        assert!(
+            changed.iter().all(|&idx| idx < status_end),
+            "narrow wrapped shell swept outside status in {line1_plain:?}: {changed:?}"
         );
     }
 
