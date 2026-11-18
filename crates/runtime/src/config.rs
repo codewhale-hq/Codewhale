@@ -621,6 +621,17 @@ pub struct StreamConfig {
 }
 
 /// UI configuration loaded from config files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouteProvenance {
+    pub provider_from_saved_selection: bool,
+    pub model_from_saved_selection: bool,
+    pub provider_from_profile: bool,
+    pub model_from_profile: bool,
+    pub provider_from_env: bool,
+    pub provider_from_managed: bool,
+    pub model_from_managed: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
     pub alternate_screen: Option<String>,
@@ -2205,6 +2216,9 @@ pub struct Config {
     /// defaults, including when it equals the previously saved model.
     #[serde(skip)]
     pub environment_model_applied: bool,
+
+    #[serde(skip)]
+    pub route_provenance: RouteProvenance,
 
     /// Atomic migration receipt: provider/model selections now belong to this
     /// config document. Settings route fields are legacy inputs only.
@@ -3868,6 +3882,7 @@ impl Config {
             if self.scope_to_provider_identity(&identity).is_err() {
                 return false;
             }
+            self.route_provenance.provider_from_saved_selection = true;
         }
         let mut choices = settings.provider_models.clone().unwrap_or_default();
         if let Some(model) = settings.default_model.as_ref() {
@@ -3941,9 +3956,13 @@ impl Config {
                 self.set_provider_model_override(&identity, Some(model))
                     .unwrap();
             }
-            active_changed |= self
+            let is_active = self
                 .active_provider_identity()
                 .is_ok_and(|active| active == identity);
+            if is_active {
+                self.route_provenance.model_from_saved_selection = true;
+            }
+            active_changed |= is_active;
         }
         active_changed
     }
@@ -5265,14 +5284,23 @@ impl Config {
 
     #[must_use]
     pub fn default_model(&self) -> String {
+        self.resolved_default_model_with_source().0
+    }
+
+    #[must_use]
+    pub fn default_model_uses_root_default_text_model(&self) -> bool {
+        self.resolved_default_model_with_source().1
+    }
+
+    fn resolved_default_model_with_source(&self) -> (String, bool) {
         let Ok(identity) = self.active_provider_identity() else {
-            return String::new();
+            return (String::new(), false);
         };
         let provider = identity.provider;
         if self.default_text_model.is_none() && self.legacy_model.is_some() {
             let mut config = self.clone();
             config.default_text_model.clone_from(&self.legacy_model);
-            return config.default_model();
+            return config.resolved_default_model_with_source();
         }
 
         let declared = |model: &str| {
@@ -5292,16 +5320,16 @@ impl Config {
             // Automatic selection is a saved choice on every route, including
             // DeepSeek. Resolve it before provider model-name normalization.
             if model.eq_ignore_ascii_case("auto") {
-                return "auto".to_string();
+                return ("auto".to_string(), false);
             }
             if declared(model)
                 || provider_passes_model_through(provider)
                 || self.active_provider_preserves_custom_base_url_model()
             {
-                return model.to_string();
+                return (model.to_string(), false);
             }
             if let Some(normalized) = normalize_model_for_provider(provider, model) {
-                return normalized;
+                return (normalized, false);
             }
             // An explicit provider-scoped model that is not a recognized
             // DeepSeek alias is a deliberate custom choice for a non-DeepSeek
@@ -5309,7 +5337,7 @@ impl Config {
             // It must pass through verbatim rather than fall back to a
             // DeepSeek/provider default (issue #1714).
             if !matches!(provider, ProviderKind::Deepseek) && !model.is_empty() {
-                return model.to_string();
+                return (model.to_string(), false);
             }
         }
         if let Some(model) = self
@@ -5317,7 +5345,7 @@ impl Config {
             .as_deref()
             .filter(|model| declared(model))
         {
-            return model.to_string();
+            return (model.to_string(), true);
         }
         let moonshot_config = (provider == ProviderKind::Moonshot)
             .then(|| self.provider_config())
@@ -5330,12 +5358,12 @@ impl Config {
                     .is_some_and(moonshot_base_url_uses_kimi_code)
         });
         if moonshot_uses_kimi_code {
-            return DEFAULT_KIMI_CODE_MODEL.to_string();
+            return (DEFAULT_KIMI_CODE_MODEL.to_string(), false);
         }
         if let Some(model) = self.default_text_model.as_deref()
             && model.trim().eq_ignore_ascii_case("auto")
         {
-            return "auto".to_string();
+            return ("auto".to_string(), true);
         }
         // A root DeepSeek-family default must not leak onto a vendor-locked
         // official endpoint that can never serve it (the provider then
@@ -5359,7 +5387,7 @@ impl Config {
             if let Some(canonical) =
                 codewhale_config::descriptors::provider_model_alias(ProviderKind::XiaomiMimo, model)
             {
-                return canonical.to_string();
+                return (canonical.to_string(), true);
             }
             // Non-empty root value that is not a known foreign DeepSeek id is
             // a deliberate custom MiMo choice — apply it. A stale DeepSeek id
@@ -5367,7 +5395,7 @@ impl Config {
             // being forwarded to Xiaomi's endpoint.
             let trimmed = model.trim();
             if !trimmed.is_empty() && normalize_model_name(trimmed).is_none() {
-                return trimmed.to_string();
+                return (trimmed.to_string(), true);
             }
         }
         if let Some(model) = self.default_text_model.as_deref()
@@ -5378,7 +5406,7 @@ impl Config {
             // pass through merely because the provider is pass-through.
             && provider != ProviderKind::XiaomiMimo
         {
-            return model.trim().to_string();
+            return (model.trim().to_string(), true);
         }
         if let Some(model) = self.default_text_model.as_deref()
             && provider != ProviderKind::XiaomiMimo
@@ -5388,14 +5416,14 @@ impl Config {
             // foreign default to a native model; an identity result does not.
             && (!foreign_root_default(model) || !normalized.eq_ignore_ascii_case(model.trim()))
         {
-            return normalized;
+            return (normalized, true);
         }
 
         if let Some((model, _)) = codewhale_config::cloud_facts::cloud_default_model_for_route(
             provider,
             &self.base_url_for_route(&identity),
         ) {
-            return model;
+            return (model, false);
         }
 
         // The account roster still owns a live Codex preference. All static
@@ -5404,12 +5432,15 @@ impl Config {
             && let Some(preferred) =
                 crate::codex_model_roster::cached_roster_for(self).preferred_model_id()
         {
-            return preferred.to_string();
+            return (preferred.to_string(), false);
         }
-        identity
-            .compatibility()
-            .map_or("", |row| row.default_model)
-            .to_string()
+        (
+            identity
+                .compatibility()
+                .map_or("", |row| row.default_model)
+                .to_string(),
+            false,
+        )
     }
 
     /// Return the configured API base URL (normalized) for the selected route.
@@ -8159,6 +8190,9 @@ fn apply_env_overrides(config: &mut Config, policy: ConfigEnvironmentPolicy) {
 fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPolicy) {
     if let Ok(value) = codewhale_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
+        config.route_provenance.provider_from_env = true;
+        config.route_provenance.provider_from_saved_selection = false;
+        config.route_provenance.provider_from_profile = false;
     }
     let Ok(identity) = config.active_provider_identity() else {
         return;
@@ -9841,6 +9875,17 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
             Some(override_cfg) => {
                 let mut merged = merge_config(*config.base, override_cfg.clone());
                 apply_layer_root_model(&mut merged, override_cfg);
+                merged.route_provenance.provider_from_profile = override_cfg.provider.is_some();
+                let merged_identity = merged.active_provider_identity().ok();
+                merged.route_provenance.model_from_profile =
+                    override_cfg.default_text_model.is_some()
+                        || override_cfg.legacy_model.is_some()
+                        || merged_identity.as_ref().is_some_and(|id| {
+                            override_cfg
+                                .provider_config_for(id)
+                                .and_then(|entry| entry.model.as_deref())
+                                .is_some()
+                        });
                 Ok(merged)
             }
             None => {
@@ -9903,6 +9948,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.route_preferences_version),
         environment_model_applied: override_cfg.environment_model_applied
             || base.environment_model_applied,
+        route_provenance: base.route_provenance,
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
         reasoning_effort_inferred_from_legacy_alias: override_cfg
@@ -10524,14 +10570,24 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     let merged_route = merged
         .active_provider_identity()
         .map_err(|error| managed_route_error(&merged, &path, error))?;
-    if managed.provider.is_some()
-        || managed.default_text_model.is_some()
+    if managed.provider.is_some() {
+        merged.route_provenance.provider_from_managed = true;
+        merged.route_provenance.provider_from_env = false;
+        merged.route_provenance.provider_from_saved_selection = false;
+        merged.route_provenance.provider_from_profile = false;
+    }
+    if managed.default_text_model.is_some()
         || managed.legacy_model.is_some()
         || managed
             .provider_config_for(&merged_route)
             .and_then(|entry| entry.model.as_ref())
             .is_some()
     {
+        merged.route_provenance.model_from_managed = true;
+        merged.route_provenance.model_from_saved_selection = false;
+        merged.route_provenance.model_from_profile = false;
+        merged.remembered_selection_scope = Some(false);
+    } else if managed.provider.is_some() {
         merged.remembered_selection_scope = Some(false);
     }
     if prior_route != merged_route || config_defines_base_url_for_effective_route(&managed, &merged)
@@ -11039,7 +11095,7 @@ impl SavedCredential {
 /// the ambient scoping, and callers that pass an explicit config path never
 /// consult this resolver; a per-workspace destination stays possible only as
 /// that kind of explicit opt-in.
-fn credential_config_path() -> anyhow::Result<PathBuf> {
+pub fn credential_config_path() -> anyhow::Result<PathBuf> {
     let resolved = try_default_config_path()?;
     if !codewhale_config::config_path_is_workspace_scoped(&resolved) {
         return Ok(resolved);

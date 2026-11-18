@@ -2800,14 +2800,15 @@ async fn run_async_main_dispatch(
                     )
                     .await;
                     if args.fix {
-                        let plan = crate::doctor_fix::plan_fixes(
+                        let plan = crate::doctor_fix::plan_fixes_for_config(
                             &config,
                             &workspace,
+                            cli.config.as_deref(),
                             plugin_registry.as_ref(),
                         );
                         crate::doctor_fix::print_fix_plan(&plan);
                         if !plan.is_empty() && (args.yes || crate::doctor_fix::confirm_fix(&plan)) {
-                            let results = crate::doctor_fix::apply_fixes(&plan);
+                            let results = crate::doctor_fix::apply_fixes(&plan, &config);
                             crate::doctor_fix::print_apply_results(&results);
                         }
                     }
@@ -5394,6 +5395,15 @@ async fn run_doctor(
     };
     // Presence and variable name only; the value is never held here.
     let env_key_source = codewhale_runtime::config::active_provider_env_api_key_source(config);
+    let route_record_stale = verdict_state
+        .steps
+        .get(&codewhale_config::SetupStep::ProviderModel)
+        .and_then(|entry| entry.result.as_deref())
+        .is_some_and(|result| {
+            doctor_setup_route_record_is_stale(result, &api_target.provider, &api_target.model)
+        });
+    let route_credential_unavailable =
+        resolve_credential_diagnostic(config).availability == CredentialAvailability::Unavailable;
     let verdict = doctor_verdict(
         &verdict_state,
         identity
@@ -5415,6 +5425,8 @@ async fn run_doctor(
                         true,
                     )
                 }),
+            route_record_stale,
+            route_credential_unavailable,
         },
     );
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
@@ -5469,7 +5481,7 @@ async fn run_doctor(
             let flagged = crate::doctor::config_credential_shaped_keys(&raw);
             if !flagged.is_empty() {
                 println!(
-                    "  {} credential-shaped value(s) in config.toml ({}): move them to the secret backend, then scrub the file — config.toml is plain text",
+                    "  {} credential-shaped value(s) in config.toml ({}): config.toml is plain text. `codewhale doctor --fix` moves provider `api_key` values into the secret store and removes them from the file; delete any other listed key by hand once it is unused",
                     "!".truecolor(sky_r, sky_g, sky_b),
                     flagged.join(", ")
                 );
@@ -5594,11 +5606,14 @@ async fn run_doctor(
     .await;
 
     let (setup_state, setup_source) = doctor_setup_state(config, workspace);
+    let route_source = doctor_route_source(config, profile, local_route.is_some());
     print_doctor_setup_report(
         config,
         workspace,
         &setup_state,
         setup_source,
+        &api_target,
+        &route_source,
         (aqua_r, aqua_g, aqua_b),
         (sky_r, sky_g, sky_b),
     );
@@ -5726,25 +5741,42 @@ async fn run_doctor(
     // API connectivity test
     println!();
     println!("{}", "API Connectivity:".bold());
-    // Configured-vs-active honesty (DGF-01): doctor describes the route a
-    // session launched NOW would resolve. It cannot see inside an already
-    // running session, which keeps the route it resolved at its own launch.
     println!(
-        "  · scope: configured route — what a session launched now would use; a running session keeps the route it resolved at launch (its TUI header shows the live route)"
+        "  · scope: configured default route, the one a session launched now uses; /provider and /model change only the running session, whose TUI header shows its route"
     );
-    println!("  · provider: {}", api_target.provider);
+    println!(
+        "  · provider: {} (from {})",
+        api_target.provider, route_source.provider
+    );
+    let latest_session_route = {
+        let sessions = doctor_paths.sessions.clone();
+        let provider = api_target.provider.clone();
+        let model = api_target.model.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::doctor::latest_session_route_line(&sessions, &provider, &model)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(line) = latest_session_route {
+        println!("  · {line}");
+    }
     println!(
         "  · base_url: {}",
         codewhale_config::structural_url_authority(&api_target.base_url)
     );
     match api_target.resolution {
         DoctorModelResolution::Resolved => {
-            println!("  · model: {} (resolved)", api_target.model);
+            println!(
+                "  · model: {} (resolved; from {})",
+                api_target.model, route_source.model
+            );
         }
         DoctorModelResolution::ConfiguredOnly => {
             println!(
-                "  · model: {} (configured; route resolution unavailable)",
-                api_target.model
+                "  · model: {} (from {}; route resolution unavailable)",
+                api_target.model, route_source.model
             );
         }
     }
@@ -6066,6 +6098,12 @@ async fn run_doctor(
         println!("  {}", status.summary());
         if !status.unknown.is_empty() {
             println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.retired.is_empty() {
+            println!(
+                "  · No longer bundled (kept in [skills.bundled]): {}",
+                status.retired.join(", ")
+            );
         }
         if !status.ignored.is_empty() {
             println!(
@@ -6641,6 +6679,8 @@ struct DoctorVerdictFacts {
     /// (#6889). A model the provider is still loading looks exactly like this.
     live_probe_timed_out: bool,
     local_discovery: bool,
+    route_record_stale: bool,
+    route_credential_unavailable: bool,
 }
 
 /// `set via <VAR> (value not shown; not checked offline)`.
@@ -6694,16 +6734,39 @@ fn doctor_verdict(
     // `first_run_ready` accepts NeedsAction (a failed key still reaches the
     // wizard's ready screen), so check the provider first.
     match state.status(codewhale_config::SetupStep::ProviderModel) {
-        StepStatus::Verified if state.first_run_ready() || facts.onboarded => {
+        StepStatus::Verified
+            if !facts.route_credential_unavailable
+                && !facts.route_record_stale
+                && (state.first_run_ready() || facts.onboarded) =>
+        {
             "Ready: setup is complete.".to_string()
         }
         StepStatus::Configured | StepStatus::Verified
-            if state.first_run_ready() || facts.onboarded =>
+            if !facts.route_credential_unavailable
+                && (state.first_run_ready() || facts.onboarded) =>
         {
-            format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            if facts.route_record_stale {
+                format!(
+                    "Ready: setup is complete (saved {provider} key not checked offline; {PROBE_HINT}; run /setup provider to refresh the recorded route)."
+                )
+            } else {
+                format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            }
         }
         StepStatus::Configured | StepStatus::Verified => env_ready.unwrap_or_else(|| {
-            "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            if facts.route_credential_unavailable {
+                if facts.local_discovery {
+                    format!(
+                        "Not confirmed: the {provider} route has no verified key, so Codewhale and `codewhale exec` use a local Ollama model if one is running → `codewhale doctor --probe-local` checks for one; or save a key with /provider in Codewhale or `codewhale auth set --provider {provider}`."
+                    )
+                } else {
+                    format!(
+                        "Not ready: the {provider} route has no verified key → save one with /provider in Codewhale or `codewhale auth set --provider {provider}`; `codewhale doctor --probe-api` checks a key already saved."
+                    )
+                }
+            } else {
+                "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            }
         }),
         StepStatus::NeedsAction => env_ready.unwrap_or_else(|| {
             // A derived NeedsAction only means offline doctor cannot see the
@@ -6813,6 +6876,8 @@ mod doctor_verdict_tests {
             live_probe,
             live_probe_timed_out: false,
             local_discovery: false,
+            route_record_stale: false,
+            route_credential_unavailable: false,
         }
     }
 
@@ -7650,11 +7715,14 @@ fn doctor_has_credentials_or_local_runtime(config: &Config) -> bool {
         .certifies_ready()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_doctor_setup_report(
     config: &Config,
     workspace: &Path,
     state: &codewhale_config::SetupState,
     source: &str,
+    api_target: &DoctorApiTarget,
+    route_source: &DoctorRouteSource,
     ok_rgb: (u8, u8, u8),
     warn_rgb: (u8, u8, u8),
 ) {
@@ -7687,6 +7755,10 @@ fn print_doctor_setup_report(
     println!();
     println!("{}", "Setup State:".bold());
     println!("  · source: {source}");
+    println!(
+        "  · configured default route: {} / {} (provider from {}, model from {}; API Connectivity checks this same route)",
+        api_target.provider, api_target.model, route_source.provider, route_source.model
+    );
     println!(
         "  · credential: source={}, availability={}",
         doctor_api_key_source_label(credential.source),
@@ -7750,7 +7822,22 @@ fn print_doctor_setup_report(
         let result = entry.and_then(|entry| entry.result.as_deref());
         let required_label = if required { "required" } else { "optional" };
         let version_label = version.unwrap_or("unversioned");
-        let result_label = result.unwrap_or("no result");
+        let result_label = match result {
+            Some(result)
+                if step == codewhale_config::SetupStep::ProviderModel
+                    && doctor_setup_route_record_is_stale(
+                        result,
+                        &api_target.provider,
+                        &api_target.model,
+                    ) =>
+            {
+                format!(
+                    "recorded at setup: {result}; the configured default route has changed since, run /setup provider to refresh this record"
+                )
+            }
+            Some(result) => format!("recorded at setup: {result}"),
+            None => "no result".to_string(),
+        };
         println!(
             "    · {}: {} ({required_label}, {version_label}, {result_label})",
             setup_step_id(step),
@@ -9057,14 +9144,114 @@ fn doctor_route_report(config: &Config) -> serde_json::Value {
 fn doctor_provider_config_table(identity: &codewhale_runtime::config::ProviderIdentity) -> String {
     format!(
         "providers.{}",
-        identity
+        identity.config_table_key().unwrap_or_else(|_| identity
             .compatibility()
-            .map_or(identity.key.as_str(), |row| row.config_key)
+            .map_or(identity.key.as_str(), |row| row.config_key))
     )
 }
 
+struct DoctorRouteSource {
+    provider: String,
+    model: String,
+}
+
+fn doctor_route_source(
+    config: &Config,
+    profile: Option<&str>,
+    local_adopted: bool,
+) -> DoctorRouteSource {
+    if local_adopted {
+        return DoctorRouteSource {
+            provider: "live local Ollama (--probe-local)".to_string(),
+            model: "live local Ollama (--probe-local)".to_string(),
+        };
+    }
+    let profile_note = profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(|profile| format!(" with profile `{profile}`"))
+        .unwrap_or_default();
+    let provider = if config.route_provenance.provider_from_managed {
+        "managed configuration".to_string()
+    } else if config.route_provenance.provider_from_env
+        || codewhale_runtime::config::explicit_launch_provider_override().is_some()
+    {
+        "environment CODEWHALE_PROVIDER".to_string()
+    } else if config.route_provenance.provider_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if config
+        .provider
+        .as_ref()
+        .is_some_and(|provider| !provider.trim().is_empty())
+    {
+        if config.route_provenance.provider_from_profile {
+            format!("config `provider`{profile_note}")
+        } else {
+            "config `provider`".to_string()
+        }
+    } else {
+        "the built-in default".to_string()
+    };
+    let model_profile_note = if config.route_provenance.model_from_profile {
+        profile_note.as_str()
+    } else {
+        ""
+    };
+    let provider_model_table = config.active_provider_identity().ok().filter(|identity| {
+        config
+            .provider_config_for(identity)
+            .and_then(|entry| entry.model.as_deref())
+            .is_some_and(|model| !model.trim().is_empty())
+    });
+    let model = if config.route_provenance.model_from_managed {
+        "managed configuration".to_string()
+    } else if codewhale_runtime::config::explicit_launch_model_override().is_some() {
+        "environment CODEWHALE_MODEL".to_string()
+    } else if config.environment_model_applied {
+        "environment model override".to_string()
+    } else if config.route_provenance.model_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if let Some(identity) = provider_model_table {
+        format!(
+            "config `[{}].model`{model_profile_note}",
+            doctor_provider_config_table(&identity)
+        )
+    } else if config.default_model_uses_root_default_text_model() {
+        format!("config `default_text_model`{model_profile_note}")
+    } else {
+        "the provider default".to_string()
+    };
+    DoctorRouteSource { provider, model }
+}
+
+fn doctor_setup_route_record_is_stale(record: &str, provider: &str, model: &str) -> bool {
+    let mut recorded_provider: Option<&str> = None;
+    let mut recorded_model: Option<&str> = None;
+    for segment in record.split([',', ';']) {
+        let part = segment.trim();
+        if let Some(value) = part.strip_prefix("provider=") {
+            recorded_provider = Some(value.split_whitespace().next().unwrap_or_default());
+        } else if let Some(value) = part.strip_prefix("model=") {
+            recorded_model = Some(value.trim());
+        }
+    }
+    let model = model.trim().trim_start_matches("models/");
+    let provider_stale = recorded_provider.is_some_and(|recorded| recorded != provider);
+    let model_stale = recorded_model.is_some_and(|recorded| {
+        if let Some(effective) = recorded.strip_prefix("auto:") {
+            !model.eq_ignore_ascii_case("auto")
+                && effective.trim().trim_start_matches("models/") != model
+        } else {
+            recorded.trim_start_matches("models/") != model
+        }
+    });
+    provider_stale || model_stale
+}
+
 fn doctor_provider_source(config: &Config) -> &'static str {
-    if config
+    if codewhale_runtime::config::explicit_launch_provider_override().is_some() {
+        "env"
+    } else if config
         .provider
         .as_ref()
         .is_some_and(|provider| !provider.trim().is_empty())
@@ -17215,6 +17402,103 @@ mod doctor_endpoint_tests {
     use super::*;
 
     #[test]
+    fn doctor_setup_route_record_flags_a_route_changed_after_setup() {
+        let record = "provider=google, model=gemini-4-carbon, context_window=1048576 (catalog) auth=key saved";
+        assert!(doctor_setup_route_record_is_stale(
+            record,
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            record,
+            "google",
+            "models/gemini-4-carbon"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=deepseek-flash; configured, not checked",
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "auto"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "deepseek-v4-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "bundled/default",
+            "deepseek",
+            "deepseek-flash"
+        ));
+    }
+
+    #[test]
+    fn doctor_route_source_respects_env_ignored_root_model_and_local_probe() {
+        let mut env_cfg = Config::default();
+        env_cfg.provider = Some("openai".to_string());
+        env_cfg
+            .providers
+            .get_or_insert_with(Default::default)
+            .openai
+            .model = Some("gpt-5".to_string());
+        env_cfg.environment_model_applied = true;
+        let env_src = doctor_route_source(&env_cfg, Some("sandbox-strict"), false);
+        assert_eq!(env_src.provider, "config `provider`");
+        assert_eq!(env_src.model, "environment model override");
+
+        let mut foreign_root = Config::default();
+        foreign_root.provider = Some("openai".to_string());
+        foreign_root.default_text_model = Some("deepseek-v4-pro".to_string());
+        let foreign_src = doctor_route_source(&foreign_root, None, false);
+        assert_eq!(foreign_src.model, "the provider default");
+
+        let local_src = doctor_route_source(&Config::default(), None, true);
+        assert_eq!(local_src.provider, "live local Ollama (--probe-local)");
+        assert_eq!(local_src.model, "live local Ollama (--probe-local)");
+    }
+
+    #[test]
+    fn doctor_verdict_does_not_certify_stale_route_without_credentials() {
+        use codewhale_config::{
+            ConstitutionChoice, RuntimePostureSource, SetupState, SetupStep, StepEntry, StepStatus,
+        };
+        let mut state = SetupState::default();
+        state.set_step(
+            SetupStep::Language,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2"),
+        );
+        state.set_step(
+            SetupStep::ProviderModel,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2")
+                .with_result("provider=google, model=gemini-4-carbon"),
+        );
+        state.runtime_posture_source = RuntimePostureSource::Confirmed;
+        state.constitution_choice = ConstitutionChoice::Bundled;
+        let unavailable = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: true,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict = doctor_verdict(&state, "openai", &unavailable);
+        assert!(verdict.starts_with("Not ready"), "{verdict}");
+
+        let stale_with_key = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: false,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict2 = doctor_verdict(&state, "openai", &stale_with_key);
+        assert!(verdict2.contains("not checked offline"), "{verdict2}");
+        assert!(verdict2.contains("/setup provider"), "{verdict2}");
+    }
+
+    #[test]
     fn doctor_api_target_reports_default_endpoint() {
         let config = Config::default();
 
@@ -21387,7 +21671,7 @@ mod setup_helper_tests {
         assert_eq!(doctor_auth_scheme(&cloud), "bearer");
         let report = doctor_route_report(&cloud);
         assert_eq!(report["provider"], "ollama-cloud");
-        assert_eq!(report["provider_config_table"], "providers.ollama_cloud");
+        assert_eq!(report["provider_config_table"], "providers.ollama");
 
         let custom_remote = ollama_config("https://ollama-gateway.example.test/v1");
         assert_eq!(
