@@ -170,7 +170,7 @@ async fn journey() -> Result<()> {
                 "result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}))
             .await?;
         let (done, after) = client.until_response(prompt_id).await?;
-        assert_eq!(done["result"]["stopReason"], "end_turn");
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
         assert_eq!(
             std::fs::read_to_string(workspace.join("allowed.txt"))?,
             "approved"
@@ -274,7 +274,7 @@ async fn journey() -> Result<()> {
                 json!({"sessionId":session,"prompt":"continue"}),
             )
             .await?;
-        assert_eq!(resumed["result"]["stopReason"], "end_turn");
+        assert_eq!(resumed["result"]["stopReason"], "end_turn", "{resumed}");
         assert_eq!(
             text_of(&frames, "agent_message_chunk"),
             "resumed in the real session"

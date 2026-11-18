@@ -69,6 +69,21 @@ fn sessions_archive_cli_keeps_legacy_listing_and_export_options() {
     assert!(
         matches!(export.command, Some(Commands::Sessions { command: Some(SessionsCommand::Export { ref id, output: Some(ref output), skip_artifacts: true, compression: 0, force: true }), .. }) if id == "abc123" && output == Path::new("session.tar.xz"))
     );
+    let migrate = parse_cli(&[
+        "codewhale",
+        "sessions",
+        "migrate",
+        "--old-path",
+        "/tmp/Project_A",
+        "--new-path",
+        "/tmp/Project_B",
+        "--session",
+        "abc123",
+        "--dry-run",
+    ]);
+    assert!(
+        matches!(migrate.command, Some(Commands::Sessions { command: Some(SessionsCommand::Migrate { ref old_path, ref new_path, session: Some(ref session), dry_run: true }), .. }) if old_path == Path::new("/tmp/Project_A") && new_path == Path::new("/tmp/Project_B") && session == "abc123")
+    );
 }
 
 #[test]

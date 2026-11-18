@@ -814,6 +814,16 @@ attached to the project you opened. Press `a` in the picker to show sessions
 from every workspace, or run `codewhale sessions` to list all saved sessions
 with last-updated timestamps before resuming a specific id.
 
+If you move or rename a project folder, update saved sessions, recovery
+checkpoints, and Runtime thread bindings together before resuming:
+
+```sh
+codewhale sessions migrate --old-path /path/to/old-project --new-path /path/to/new-project
+```
+
+Pass `--dry-run` to preview affected records, or `--session <id>` to migrate
+one session.
+
 To archive the durable record and its artifacts, run:
 
 ```sh

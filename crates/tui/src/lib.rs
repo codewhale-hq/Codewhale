@@ -421,6 +421,35 @@ enum SessionsCommand {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    #[command(
+        about = "Update saved sessions and Runtime stores after a workspace directory was renamed or moved"
+    )]
+    Migrate {
+        #[arg(
+            long = "old-path",
+            value_name = "PATH",
+            help = "Previous workspace directory path recorded on the sessions"
+        )]
+        old_path: PathBuf,
+        #[arg(
+            long = "new-path",
+            value_name = "PATH",
+            help = "New workspace directory path"
+        )]
+        new_path: PathBuf,
+        #[arg(
+            long,
+            value_name = "SESSION_ID",
+            help = "Only migrate this session id (or unique prefix)"
+        )]
+        session: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Report what would change without creating or modifying any files"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -2862,6 +2891,12 @@ async fn run_async_main_dispatch(
                 }) => {
                     run_sessions_export(&id, output.as_deref(), skip_artifacts, compression, force)
                 }
+                Some(SessionsCommand::Migrate {
+                    old_path,
+                    new_path,
+                    session,
+                    dry_run,
+                }) => run_sessions_migrate(old_path, new_path, session, dry_run).await,
             },
             Commands::Receipts {
                 id,
@@ -3392,10 +3427,23 @@ async fn run_async_main_dispatch(
     let mut startup_notice = None;
     let resume_session_id = if cli.continue_session {
         let workspace = resolve_workspace(&cli);
-        resolve_continue_session_id(
+        let resolved = resolve_continue_session_id(
             &workspace,
             io::stdin().is_terminal() && io::stdout().is_terminal(),
-        )
+        );
+        if resolved.is_none()
+            && let Ok(manager) = SessionManager::default_location()
+            && let Some(missing) = manager.missing_workspace_session_hint(&workspace)
+        {
+            startup_notice = Some(format!(
+                "No saved sessions found for {}. If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                workspace.display(),
+                missing.display(),
+                session_manager::shell_quote_path(&missing),
+                session_manager::shell_quote_path(&workspace),
+            ));
+        }
+        resolved
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -10456,6 +10504,95 @@ fn run_sessions_export(
     Ok(())
 }
 
+async fn run_sessions_migrate(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    #[cfg(test)]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        run_sessions_migrate_blocking(old_path, new_path, session_id, dry_run)
+    })
+    .await?
+}
+
+fn run_sessions_migrate_blocking(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let manager = SessionManager::default_location()?;
+    let session_arg = session_id
+        .as_deref()
+        .map(|id| {
+            format!(
+                " --session {}",
+                session_manager::shell_quote_path(Path::new(id))
+            )
+        })
+        .unwrap_or_default();
+    let report = manager.migrate_workspace(&session_manager::WorkspaceMigrationOptions {
+        old_path,
+        new_path,
+        session_id,
+        dry_run,
+    })?;
+    let total = report.migrated_sessions.len()
+        + report.migrated_checkpoints.len()
+        + report.migrated_threads.len();
+    if total == 0 && report.busy_sessions.is_empty() && report.unreadable.is_empty() {
+        println!(
+            "No saved sessions or Runtime threads matched workspace {}.",
+            report.old_path.display()
+        );
+        return Ok(());
+    }
+    let verb = if dry_run { "Would migrate" } else { "Migrated" };
+    println!(
+        "{verb} {} session(s), {} checkpoint(s), and {} Runtime thread(s) from {} to {}.",
+        report.migrated_sessions.len(),
+        report.migrated_checkpoints.len(),
+        report.migrated_threads.len(),
+        report.old_path.display(),
+        report.new_path.display(),
+    );
+    for id in &report.migrated_sessions {
+        println!("  session {id}");
+    }
+    if !report.busy_sessions.is_empty() {
+        println!(
+            "{} session(s) were skipped because another Codewhale process is using them (close open sessions and re-run):",
+            report.busy_sessions.len()
+        );
+        for id in &report.busy_sessions {
+            println!("  {id}");
+        }
+    }
+    if !report.unreadable.is_empty() {
+        println!("{} warning(s):", report.unreadable.len());
+        for err in &report.unreadable {
+            println!("  {err}");
+        }
+    }
+    if dry_run && total > 0 {
+        println!(
+            "Re-run without `--dry-run` to apply: `codewhale sessions migrate --old-path {} --new-path {}{session_arg}`.",
+            session_manager::shell_quote_path(&report.old_path),
+            session_manager::shell_quote_path(&report.new_path),
+        );
+    } else if !dry_run && total > 0 {
+        println!(
+            "Run `codewhale --continue` or `codewhale resume <SESSION_ID>` from the new workspace."
+        );
+    }
+    Ok(())
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     let bytes = bytes as f64;
@@ -10903,8 +11040,20 @@ fn run_orcarouter_revoke(config_path: Option<&Path>) -> Result<()> {
 fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
         return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            let hint = SessionManager::default_location()
+                .ok()
+                .and_then(|manager| manager.missing_workspace_session_hint(workspace))
+                .map(|missing| {
+                    format!(
+                        " If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                        missing.display(),
+                        session_manager::shell_quote_path(&missing),
+                        session_manager::shell_quote_path(workspace),
+                    )
+                })
+                .unwrap_or_default();
             anyhow!(
-                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.",
+                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.{hint}",
                 workspace.display()
             )
         });
@@ -10980,19 +11129,49 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
+        if let Err(err) = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace)) {
+            if err.kind() == std::io::ErrorKind::PermissionDenied
+                && let Some(old_ws) = manager
+                    .load_recovery_checkpoint(&id)
+                    .ok()
+                    .flatten()
+                    .filter(|ckpt| {
+                        !session_manager::paths_equivalent(&ckpt.metadata.workspace, &selection_workspace)
+                    })
+                    .map(|ckpt| ckpt.metadata.workspace)
+                    .or_else(|| {
+                        manager
+                            .load_session(&id)
+                            .ok()
+                            .filter(|saved| {
+                                !session_manager::paths_equivalent(&saved.metadata.workspace, &selection_workspace)
+                            })
+                            .map(|saved| saved.metadata.workspace)
+                    })
+            {
+                anyhow::bail!(
+                    "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+                    old_ws.display(),
+                    session_manager::shell_quote_path(&old_ws),
+                    session_manager::shell_quote_path(&selection_workspace),
+                    id,
+                    session_manager::shell_quote_path(&old_ws),
+                );
+            }
+            return Err(err.into());
+        }
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
-        // that snapshot to a different saved project. Match the same physical/
-        // config equality used by workspace overlays without changing either
-        // selected lexical path or merging a second project after the await.
-        let launch_scope = selection_workspace.canonicalize().unwrap_or_else(|_| selection_workspace.clone());
-        let saved_scope = saved.metadata.workspace.canonicalize().unwrap_or_else(|_| saved.metadata.workspace.clone());
+        // that snapshot to a different saved project.
         anyhow::ensure!(
-            paths_equal_for_config(&launch_scope, &saved_scope),
-            "selected session belongs to workspace {}; captured launch project differs; retry with --workspace {} before any canonical operation",
-            saved.metadata.workspace.display(), saved.metadata.workspace.display(),
+            session_manager::paths_equivalent(&selection_workspace, &saved.metadata.workspace),
+            "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+            saved.metadata.workspace.display(),
+            session_manager::shell_quote_path(&saved.metadata.workspace),
+            session_manager::shell_quote_path(&selection_workspace),
+            id,
+            session_manager::shell_quote_path(&saved.metadata.workspace),
         );
         let digest = saved_document_digest(&saved)?;
         if let Some(binding) = saved.metadata.runtime_store.as_ref() {
@@ -11256,7 +11435,10 @@ async fn prepare_mounted_session(
         anyhow::ensure!(
             committed.metadata.id == verify_id
                 && committed.metadata.runtime_store.as_ref() == Some(&binding)
-                && committed.metadata.workspace == selected_workspace,
+                && session_manager::paths_equivalent(
+                    &committed.metadata.workspace,
+                    &selected_workspace,
+                ),
             "committed saved session lost its exact owner binding; mounted handoff refused"
         );
         Ok(committed)
@@ -18679,6 +18861,108 @@ mod mounted_history_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].session_id.as_deref(), Some(id.as_str()));
         runtime.shutdown_and_wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mounted_resume_recovers_after_workspace_rename_via_migrate_and_symlinks() -> Result<()>
+    {
+        let _env = lock_test_env();
+        let _runtime_override = EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+        let _legacy_runtime_override = EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+        let project_a = root.join("Project_A");
+        let project_b = root.join("Project_B");
+        std::fs::create_dir(&project_a)?;
+        let manager = SessionManager::default_location()?;
+        let (original, _) = source(&manager, &project_a)?;
+        let cli_a = cli(&project_a);
+        let (_, id) = prepare_mounted_session(
+            &cli_a,
+            prepare_interactive_config(&cli_a, &config(), true)?,
+            original.metadata.id,
+            MountedHistoryIntent::Resume,
+            plugins(&project_a),
+        )
+        .await?;
+
+        std::fs::rename(&project_a, &project_b)?;
+        let cli_b = cli(&project_b);
+        let mismatch = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("renamed workspace must refuse before migration")?;
+        let mismatch_text = format!("{mismatch:#}");
+        assert!(
+            mismatch_text.contains("codewhale sessions migrate --old-path"),
+            "{mismatch_text}"
+        );
+
+        let mut half_edited = manager
+            .load_session_snapshot_bounded(&id, codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES)?;
+        half_edited.metadata.workspace = project_b.clone();
+        half_edited
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())?;
+        manager.publish_session(&half_edited)?;
+        let half_err = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("half-edited document must diagnose thread mismatch")?;
+        let half_text = format!("{half_err:#}");
+        assert!(
+            half_text.contains("saved history holder source workspace changed")
+                && half_text.contains("codewhale sessions migrate --old-path"),
+            "{half_text}"
+        );
+
+        let report = manager.migrate_workspace(
+            &codewhale_engine::session_manager::WorkspaceMigrationOptions {
+                old_path: project_a.clone(),
+                new_path: project_b.clone(),
+                session_id: None,
+                dry_run: false,
+            },
+        )?;
+        assert_eq!(report.migrated_threads.len(), 1);
+
+        let (_, resumed_id) = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await?;
+        assert_eq!(resumed_id, id);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&project_b, &project_a)?;
+            let cli_link = cli(&project_a);
+            let (_, link_resumed_id) = prepare_mounted_session(
+                &cli_link,
+                prepare_interactive_config(&cli_link, &config(), true)?,
+                id.clone(),
+                MountedHistoryIntent::Resume,
+                plugins(&project_a),
+            )
+            .await?;
+            assert_eq!(link_resumed_id, id);
+        }
         Ok(())
     }
 
