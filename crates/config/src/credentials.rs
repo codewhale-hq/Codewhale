@@ -72,6 +72,17 @@ pub const OPENAI_CODEX_API_KEY_REFUSAL: &str = "Sign in with ChatGPT via `codewh
 
 pub const CLAUDE_SIGN_IN_REMOVED: &str = "Claude subscription sign-in was removed in Codewhale 0.10.3: it used Claude Code's sign-in, which Anthropic doesn't allow other apps to use. Use an Anthropic API key instead: run `codewhale auth set --provider anthropic`, or set ANTHROPIC_API_KEY and remove `auth_mode = \"oauth\"` from `[providers.anthropic]`.";
 
+pub const CLAUDE_ORG_AUTH_MODE: &str = "claude-org";
+
+pub const CLAUDE_ORG_KEY_SOURCE: &str = "Claude organization link";
+
+pub const CLAUDE_ORG_LINK_COMMAND: &str = "codewhale account claude-org link";
+
+#[must_use]
+pub fn auth_mode_is_claude_org(auth_mode: Option<&str>) -> bool {
+    auth_mode.is_some_and(|mode| mode.trim().eq_ignore_ascii_case(CLAUDE_ORG_AUTH_MODE))
+}
+
 /// Persist a provider credential to the durable secret store without silently
 /// downgrading a backend failure to plaintext config storage.
 ///

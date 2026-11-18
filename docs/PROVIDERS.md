@@ -1632,3 +1632,43 @@ a saved Claude sign-in: its `claude-*.json` files stay in the `credentials`
 folder of your Codewhale home until you delete them or run `codewhale logout`,
 which removes every saved credential. End remote access in your Claude account
 settings.
+
+## Claude organization billing (`auth_mode = "claude-org"`)
+
+This is not the removed subscription sign-in. It links a Claude Platform (API)
+organization to your Codewhale account, and Anthropic then bills that
+organization directly for the requests Codewhale sends with it.
+
+1. Sign in to Codewhale: `codewhale login`.
+2. Link the organization: `codewhale account claude-org link`. Codewhale prints
+   an authorization URL, tries to open it in a browser and waits up to 10
+   minutes for the link to finish. `codewhale account claude-org status` and
+   `codewhale account claude-org unlink` show and remove the link.
+3. Select the mode:
+
+```toml
+[providers.anthropic]
+auth_mode = "claude-org"
+```
+
+In this mode each request fetches a short-lived connection token from the
+Codewhale control plane (`POST /api/claude-billing/token`, authenticated with
+your Codewhale session) and sends it to `https://api.anthropic.com` as
+`Authorization: Bearer`, with no `x-api-key` and with the `anthropic-version`
+the control plane returns instead of `2023-06-01`. The token is reused until it
+is within two minutes of expiry; a 401 from Anthropic refetches it and retries
+the request once. The token is sent only to the origin the control plane bound
+it to, and only on the official Anthropic endpoint: a custom `base_url` with
+this mode fails at load.
+
+Errors say what to do. Not signed in to Codewhale: run `codewhale login`. No
+organization linked, or the link ended: run `codewhale account claude-org link`.
+A 402 `linked_organization_spend_limit_reached` or
+`linked_organization_billing_unavailable`, or a 403 `user_profile_not_billable`,
+means your organization's spend cap or credit stopped the request: check Linked
+platforms and Billing in the Claude Console. Those are never retried.
+
+Known limits: readiness reports the mode as configured without checking that a
+link exists; the first request does that. The token cache lives in one client,
+so a new client fetches a fresh token. API-key users are unaffected, and the
+mode is never selected by default.

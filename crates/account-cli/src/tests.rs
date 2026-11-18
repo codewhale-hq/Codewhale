@@ -4988,3 +4988,85 @@ fn account_errors_stay_typed_so_callers_can_tell_refusals_from_unknown_outcomes(
         "Codewhale account request failed (HTTP 422)"
     );
 }
+
+#[test]
+fn claude_org_token_contract_parses_and_maps_errors() {
+    use claude_org::claude_org_token_from_response;
+
+    let token = claude_org_token_from_response(&response(
+        200,
+        json!({
+            "tokenType": "Bearer",
+            "accessToken": "org-token",
+            "expiresAt": "2030-01-01T00:00:00Z",
+            "baseUrl": "https://api.anthropic.com",
+            "anthropicVersion": "2026-10-21"
+        }),
+    ))
+    .expect("token parses");
+    assert_eq!(token.access_token, "org-token");
+    assert_eq!(token.base_url, "https://api.anthropic.com");
+    assert_eq!(token.anthropic_version, "2026-10-21");
+    let at = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    assert!(token.is_fresh_at(at("2029-12-31T23:57:00Z")));
+    assert!(!token.is_fresh_at(at("2029-12-31T23:58:30Z")));
+    assert!(!format!("{token:?}").contains("org-token"));
+
+    for (status, code, kind) in [
+        (409, "claude_not_linked", ClaudeOrgErrorKind::NotLinked),
+        (
+            409,
+            "claude_relink_required",
+            ClaudeOrgErrorKind::RelinkRequired,
+        ),
+        (404, "claude_billing_disabled", ClaudeOrgErrorKind::Disabled),
+        (
+            503,
+            "claude_temporarily_unavailable",
+            ClaudeOrgErrorKind::Unavailable,
+        ),
+        (
+            503,
+            "claude_billing_not_configured",
+            ClaudeOrgErrorKind::Unavailable,
+        ),
+        (401, "unauthorized", ClaudeOrgErrorKind::NotSignedIn),
+    ] {
+        let error = claude_org_token_from_response(&response(
+            status,
+            json!({"code": code, "message": "server text"}),
+        ))
+        .expect_err(code);
+        assert_eq!(error.kind, kind, "{code}");
+    }
+    let relink = claude_org_token_from_response(&response(
+        409,
+        json!({"code": "claude_relink_required", "message": "x"}),
+    ))
+    .expect_err("relink")
+    .to_string();
+    assert!(relink.contains("link ended"), "{relink}");
+    assert!(
+        relink.contains("codewhale account claude-org link"),
+        "{relink}"
+    );
+
+    for invalid in [
+        json!({"tokenType": "Basic", "accessToken": "t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "https://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+        json!({"tokenType": "Bearer", "accessToken": "t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "http://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+        json!({"tokenType": "Bearer", "accessToken": "t t", "expiresAt": "2030-01-01T00:00:00Z", "baseUrl": "https://api.anthropic.com", "anthropicVersion": "2026-10-21"}),
+    ] {
+        let error = claude_org_token_from_response(&response(200, invalid)).expect_err("invalid");
+        assert_eq!(error.kind, ClaudeOrgErrorKind::Invalid);
+    }
+
+    assert!(
+        Cli::try_parse_from(["codewhale", "account", "claude-org", "link", "--no-open"]).is_ok()
+    );
+    assert!(Cli::try_parse_from(["codewhale", "account", "claude-org", "status"]).is_ok());
+    assert!(Cli::try_parse_from(["codewhale", "account", "claude-org", "unlink"]).is_ok());
+}

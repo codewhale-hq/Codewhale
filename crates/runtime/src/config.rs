@@ -6222,6 +6222,18 @@ impl Config {
             return Ok((String::new(), "host-managed plugin OAuth".to_string()));
         }
 
+        if codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref()) {
+            anyhow::ensure!(
+                provider == ProviderKind::Anthropic
+                    && !self.provider_uses_custom_endpoint(&identity),
+                "auth_mode = \"claude-org\" works only for the anthropic provider on its official endpoint; remove base_url or the auth_mode from [providers.{}]",
+                identity.key.as_str()
+            );
+            return Ok((
+                String::new(),
+                codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE.to_string(),
+            ));
+        }
         if auth_mode_disables_api_key(auth_mode.as_deref()) {
             return Ok(keyless());
         }

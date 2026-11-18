@@ -790,6 +790,15 @@ surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"
 
 [[feature]]
+id = "claude-org-billing"
+name = "Claude organization billing"
+summary = "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\"."
+status = "experimental"
+surfaces = { tui = "preview" }
+docs = "docs/PROVIDERS.md"
+owner = "crates/account-cli/src/claude_org.rs"
+
+[[feature]]
 id = "account-computer-files"
 name = "Account computer files"
 summary = "Save computer files as account versions, restore with revision checks, and download verified bytes."

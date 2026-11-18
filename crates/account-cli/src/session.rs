@@ -58,7 +58,7 @@ pub struct AccountModels {
 
 #[derive(Clone)]
 pub struct AccountClient {
-    transport: ReqwestTransport,
+    pub(crate) transport: ReqwestTransport,
     store: AccountSessionStore,
     profile: String,
     api_base: String,

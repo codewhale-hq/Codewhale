@@ -1189,6 +1189,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "codewhale-account-cli",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
  "codewhale-build-support",

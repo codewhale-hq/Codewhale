@@ -231,6 +231,7 @@ pub struct CodewhaleClient {
     plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
     plugin_oauth_read_only: bool,
+    claude_org: Option<Arc<claude_org::ClaudeOrgAuth>>,
     session_provider_keys_only: bool,
     /// Exact configured credential values removed from model-bound tool
     /// results. Structural redaction handles config/JSON assignments, while
@@ -551,7 +552,9 @@ fn mark_recovery_probe_if_due(health: &mut ConnectionHealth, now: Instant) -> bo
 
 /// The one command that replaces a rejected key, by where it came from.
 fn auth_fix_hint(route: &str, key_source: &str) -> String {
-    if key_source.starts_with("--api-key") {
+    if key_source == codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE {
+        claude_org::relink_hint()
+    } else if key_source.starts_with("--api-key") {
         "pass a valid --api-key".to_string()
     } else if let Some(rest) = key_source.strip_prefix("env var ")
         && rest.contains("api_key_env")
@@ -576,6 +579,7 @@ impl Clone for CodewhaleClient {
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
+            claude_org: self.claude_org.clone(),
             session_provider_keys_only: self.session_provider_keys_only,
             model_bound_secret_values: Arc::clone(&self.model_bound_secret_values),
             catalog_error_secret_values: Arc::clone(&self.catalog_error_secret_values),
@@ -1918,9 +1922,17 @@ impl CodewhaleClient {
             || config.http_headers(),
             |entry| entry.http_headers.clone().unwrap_or_default(),
         );
-        let auth_disabled = auth_mode_disables_api_key(
-            config.auth_mode_for_provider(&admitted_identity).as_deref(),
-        );
+        let auth_mode = config.auth_mode_for_provider(&admitted_identity);
+        let claude_org = (api_provider == ProviderKind::Anthropic
+            && codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref()))
+        .then(|| {
+            Arc::new(claude_org::ClaudeOrgAuth::for_profile(
+                config.account_profile.clone(),
+                base_url.clone(),
+            ))
+        });
+        let auth_disabled =
+            auth_mode_disables_api_key(auth_mode.as_deref()) || claude_org.is_some();
         let insecure_skip_tls_verify = config.insecure_skip_tls_verify();
         let path_suffix = config
             .provider_config_for(&admitted_identity)
@@ -2034,6 +2046,7 @@ impl CodewhaleClient {
             subscription_limit_guidance,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
+            claude_org,
             session_provider_keys_only: config.session_provider_keys_only,
             model_bound_secret_values,
             catalog_error_secret_values,
@@ -2080,6 +2093,13 @@ impl CodewhaleClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder> {
+        if let Some(claude_org) = &self.claude_org {
+            return claude_org
+                .authorize(request, None)
+                .await
+                .map(|(request, _)| request)
+                .map_err(anyhow::Error::new);
+        }
         anyhow::ensure!(
             !self.session_provider_keys_only || self.plugin_provider.is_none(),
             "Stored OAuth authorization is unavailable under session-only provider key policy"
@@ -4832,32 +4852,7 @@ impl CodewhaleClient {
                 } else {
                     request.timeout(total)
                 };
-                async move {
-                    let request = self
-                        .authorize_plugin_request(request)
-                        .await
-                        .map_err(|error| LlmError::Other(error.to_string()))?;
-                    let (client, request) = request.build_split();
-                    let request = request
-                        .map_err(|error| LlmError::Other(error.without_url().to_string()))?;
-                    if operation == crate::llm_client::RetryOperation::ReadOnly
-                        && request.method() != reqwest::Method::GET
-                        && request.method() != reqwest::Method::HEAD
-                    {
-                        return Err(LlmError::Other(
-                            "Read-only retry requires GET or HEAD".to_string(),
-                        ));
-                    }
-                    let pending = crate::llm_client::begin_outbound_transmission(request.method());
-                    // Measure the attempt: from_reqwest cannot know the spent
-                    // budget (reqwest does not expose it).
-                    let started = std::time::Instant::now();
-                    let result = client.execute(request).await.map_err(|error| {
-                        LlmError::from_reqwest_measured(&error.without_url(), started)
-                    });
-                    crate::llm_client::settle_outbound_transmission(pending, &result);
-                    result
-                }
+                async move { self.dispatch_attempt(request, operation).await }
             },
             Some(total),
             disclosure,
@@ -4879,20 +4874,9 @@ impl CodewhaleClient {
                 stream_entry::open_sse_response(&open_req, |policy| {
                     let request = build(policy);
                     async move {
-                        let request = self.authorize_plugin_request(request).await?;
-                        let (client, request) = request.build_split();
-                        let request = request.map_err(|error| {
-                            anyhow::Error::new(LlmError::Other(error.without_url().to_string()))
-                        })?;
-                        let pending =
-                            crate::llm_client::begin_outbound_transmission(request.method());
-                        // Same as the retry loop: measure instead of "0ns".
-                        let started = std::time::Instant::now();
-                        let result = client.execute(request).await.map_err(|error| {
-                            LlmError::from_reqwest_measured(&error.without_url(), started)
-                        });
-                        crate::llm_client::settle_outbound_transmission(pending, &result);
-                        result.map_err(anyhow::Error::new)
+                        self.dispatch_attempt(request, crate::llm_client::RetryOperation::Inference)
+                            .await
+                            .map_err(anyhow::Error::new)
                     }
                 })
                 .await
@@ -4907,6 +4891,71 @@ impl CodewhaleClient {
             crate::llm_client::RetryOperation::Inference,
         )
         .await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn dispatch_attempt(
+        &self,
+        request: reqwest::RequestBuilder,
+        operation: crate::llm_client::RetryOperation,
+    ) -> std::result::Result<reqwest::Response, LlmError> {
+        let replay = self.claude_org.as_ref().and_then(|_| request.try_clone());
+        let (response, sent_token) = self.dispatch_authorized(request, operation, None).await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && let (Some(replay), Some(sent_token)) = (replay, sent_token)
+        {
+            drop(response);
+            return self
+                .dispatch_authorized(replay, operation, Some(&sent_token))
+                .await
+                .map(|(response, _)| response);
+        }
+        Ok(response)
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn dispatch_authorized(
+        &self,
+        request: reqwest::RequestBuilder,
+        operation: crate::llm_client::RetryOperation,
+        rejected_token: Option<&str>,
+    ) -> std::result::Result<(reqwest::Response, Option<String>), LlmError> {
+        let (request, sent_token) = match &self.claude_org {
+            Some(claude_org) => {
+                let (request, token) = claude_org.authorize(request, rejected_token).await?;
+                (request, Some(token))
+            }
+            None => (
+                self.authorize_plugin_request(request)
+                    .await
+                    .map_err(|error| {
+                        error
+                            .downcast::<LlmError>()
+                            .unwrap_or_else(|error| LlmError::Other(error.to_string()))
+                    })?,
+                None,
+            ),
+        };
+        let (client, request) = request.build_split();
+        let request = request.map_err(|error| LlmError::Other(error.without_url().to_string()))?;
+        if operation == crate::llm_client::RetryOperation::ReadOnly
+            && request.method() != reqwest::Method::GET
+            && request.method() != reqwest::Method::HEAD
+        {
+            return Err(LlmError::Other(
+                "Read-only retry requires GET or HEAD".to_string(),
+            ));
+        }
+        let pending = crate::llm_client::begin_outbound_transmission(request.method());
+        // Measure the attempt: from_reqwest cannot know the spent
+        // budget (reqwest does not expose it).
+        let started = std::time::Instant::now();
+        let result = client
+            .execute(request)
+            .await
+            .map_err(|error| LlmError::from_reqwest_measured(&error.without_url(), started));
+        crate::llm_client::settle_outbound_transmission(pending, &result);
+        result.map(|response| (response, sent_token))
     }
 
     async fn send_retry_loop<F, Fut>(
@@ -5024,13 +5073,18 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let error = match (provider_error, route_error) {
+                    let billing_stop = self.claude_org.as_ref().and_then(|_| {
+                        LlmError::from_linked_organization_billing_stop(status.as_u16(), &raw)
+                    });
+                    let error = match (billing_stop, provider_error, route_error) {
+                        (Some(stop), _, _) => stop,
                         (
+                            None,
                             Some(LlmError::QuotaExhausted(_)),
                             route @ LlmError::QuotaExhausted(_),
                         ) => route,
-                        (Some(native), _) => native,
-                        (None, route) => route,
+                        (None, Some(native), _) => native,
+                        (None, None, route) => route,
                     };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
@@ -5183,13 +5237,18 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let error = match (provider_error, route_error) {
+                    let billing_stop = self.claude_org.as_ref().and_then(|_| {
+                        LlmError::from_linked_organization_billing_stop(status.as_u16(), &raw)
+                    });
+                    let error = match (billing_stop, provider_error, route_error) {
+                        (Some(stop), _, _) => stop,
                         (
+                            None,
                             Some(LlmError::QuotaExhausted(_)),
                             route @ LlmError::QuotaExhausted(_),
                         ) => route,
-                        (Some(native), _) => native,
-                        (None, route) => route,
+                        (None, Some(native), _) => native,
+                        (None, None, route) => route,
                     };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
@@ -7242,6 +7301,7 @@ impl CodewhaleClient {
 
 mod anthropic;
 mod chat;
+mod claude_org;
 mod deepseek_effort;
 mod deepseek_tools;
 pub use deepseek_tools::{
