@@ -562,6 +562,11 @@ pub fn start_title_animation(original: &str) {
 /// Focus gain immediately restores the steady whale + verb. Focus loss emits
 /// the first animation frame immediately, then the worker advances it at the
 /// debounced whale cadence.
+#[must_use]
+pub(crate) fn terminal_focused() -> bool {
+    TERMINAL_FOCUSED.load(Ordering::SeqCst)
+}
+
 pub fn set_terminal_focused(focused: bool) {
     let was_focused = TERMINAL_FOCUSED.swap(focused, Ordering::SeqCst);
     if focused {
