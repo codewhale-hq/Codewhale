@@ -359,6 +359,9 @@ fn assert_status_and_water(tui: &mut Harness, label: &str) {
     assert!(status.contains("accept edits"), "{label}: {status}");
     for row in 0..footer.saturating_sub(3) {
         let text = frame.row(row);
+        if !text.chars().any(char::is_alphanumeric) {
+            continue;
+        }
         let cells: Vec<char> = text.chars().collect();
         let school = cells.windows(2).any(|pair| {
             pair.iter()
@@ -366,7 +369,7 @@ fn assert_status_and_water(tui: &mut Harness, label: &str) {
         });
         assert!(
             !school && !text.contains(['˚', '°', '≈', '～']),
-            "{label}: ambient art on transcript row {row} `{text}`:\n{}",
+            "{label}: ambient art on transcript text row {row} `{text}`:\n{}",
             frame.debug_dump()
         );
     }

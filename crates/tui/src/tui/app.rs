@@ -7249,7 +7249,7 @@ impl App {
     /// Ceiling on how far the ambient clock advances per sampled frame.
     /// Bursty draw schedules (fast token streams) slow the aquarium down
     /// instead of teleporting creatures across the gap.
-    pub const AMBIENT_MAX_STEP_MS: u128 = 160;
+    pub const AMBIENT_MAX_STEP_MS: u128 = 260;
     /// Gentle-motion grace before a fully idle aquarium settles still.
     pub const AMBIENT_IDLE_SETTLE_MS: u64 = 6_000;
 
