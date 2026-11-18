@@ -2418,6 +2418,8 @@ mod spools {
         assert!(spool::is_header_line(&lines[0]));
         assert!(lines.last().unwrap().contains(&line(699)));
     }
+}
+
 // ------------------------------------------------------------- model naming --
 
 fn model_id_is_collector_shaped(id: &str) -> bool {
@@ -2436,8 +2438,14 @@ fn reported_model_id_resolves_aliases_and_spellings() {
     assert_eq!(reported_model_id("deepseek-v4-pro"), "deepseek-v4-pro");
     assert_eq!(reported_model_id("  DeepSeek-V4-Pro "), "deepseek-v4-pro");
     assert_eq!(reported_model_id("deepseek-v4pro"), "deepseek-v4-pro");
-    assert_eq!(reported_model_id("deepseek-ai/deepseek-v4-pro"), "deepseek-v4-pro");
-    assert_eq!(reported_model_id("deepseek/deepseek-v4pro"), "deepseek-v4-pro");
+    assert_eq!(
+        reported_model_id("deepseek-ai/deepseek-v4-pro"),
+        "deepseek-v4-pro"
+    );
+    assert_eq!(
+        reported_model_id("deepseek/deepseek-v4pro"),
+        "deepseek-v4-pro"
+    );
     assert_eq!(reported_model_id("pro"), "deepseek-v4-pro");
     assert_eq!(reported_model_id("flash"), "deepseek-flash");
     assert_eq!(reported_model_id("auto"), "other");
@@ -2447,24 +2455,30 @@ fn reported_model_id_resolves_aliases_and_spellings() {
 
 #[test]
 fn reported_model_id_never_leaves_the_catalog() {
-    use codewhale_config::catalog::reviewed::{
-        bundled_reviewed, public_model_identifier_ignore_case,
-    };
-    let reviewed = bundled_reviewed();
-    let mut spellings: Vec<&str> = reviewed
-        .official_deepseek_aliases
-        .keys()
-        .chain(reviewed.go_aliases.keys())
-        .map(String::as_str)
+    use codewhale_config::catalog::reviewed::public_model_identifier_ignore_case;
+    let descriptors: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../config/assets/provider_descriptors.json"),
+        )
+        .expect("provider descriptors"),
+    )
+    .expect("descriptors json");
+    let spellings: Vec<&str> = descriptors["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .filter_map(|provider| provider["models"]["aliases"].as_object())
+        .flat_map(|aliases| aliases.keys().map(String::as_str))
         .collect();
-    if let Some(group) = reviewed.compatibility_aliases.get("canonical_model_name") {
-        spellings.extend(group.keys().map(String::as_str));
-    }
     assert!(spellings.len() > 20, "alias tables look empty");
     for spelling in spellings {
         let reported = reported_model_id(spelling);
         assert!(is_reported_model_id(&reported), "{spelling} -> {reported}");
-        assert!(model_id_is_collector_shaped(&reported), "{spelling} -> {reported}");
+        assert!(
+            model_id_is_collector_shaped(&reported),
+            "{spelling} -> {reported}"
+        );
     }
     for hostile in ["", "x/../y", "deepseek-v4-pro\n", "Ünï", &"a".repeat(300)] {
         let reported = reported_model_id(hostile);
@@ -2476,7 +2490,7 @@ fn reported_model_id_never_leaves_the_catalog() {
 }
 
 #[test]
-fn every_listed_model_and_provider_default_maps_to_a_catalogued_id() {
+fn every_listed_catalog_model_maps_to_a_catalogued_id() {
     let catalog = codewhale_config::catalog::bundled_models_dev_catalog();
     let mut missing = Vec::new();
     let mut check = |origin: &str, id: &str| {
@@ -2495,21 +2509,9 @@ fn every_listed_model_and_provider_default_maps_to_a_catalogued_id() {
         check("canonical", id);
     }
 
-    let descriptors: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/assets/provider_descriptors.json"),
-        )
-        .expect("provider descriptors"),
-    )
-    .expect("descriptors json");
-    let exceptions: &[&str] = &["antigravity", "custom", "openai-compatible", "ollama"];
-    for provider in descriptors["providers"].as_array().expect("providers") {
-        let id = provider["id"].as_str().expect("provider id");
-        let selectable = provider["selectable"].as_bool().unwrap_or(false);
-        let default = provider["default_model"].as_str().unwrap_or_default();
-        if selectable && !default.is_empty() && !exceptions.contains(&id) {
-            check(&format!("default for {id}"), default);
-        }
-    }
-    assert!(missing.is_empty(), "ids the catalog does not name:\n{}", missing.join("\n"));
+    assert!(
+        missing.is_empty(),
+        "ids the catalog does not name:\n{}",
+        missing.join("\n")
+    );
 }

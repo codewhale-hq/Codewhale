@@ -831,16 +831,15 @@ pub fn is_reported_tool_name(value: &str) -> bool {
 }
 
 /// The `model` value for a model id: the lowercased canonical id when the
-/// bundled model catalog lists it, otherwise `other`. Official aliases and
-/// compatibility spellings are resolved first. Custom, local and fine-tuned
-/// model names therefore never leave the machine.
+/// bundled model catalog lists it, otherwise `other`. Official DeepSeek aliases
+/// are resolved first. Custom, local and fine-tuned model names therefore never leave the machine.
 #[must_use]
 pub fn reported_model_id(model: &str) -> String {
-    use codewhale_config::catalog::reviewed::{compatibility_alias, official_deepseek_model_id};
+    use codewhale_config::{ProviderKind, route::resolve_model};
     let id = model.trim().to_ascii_lowercase();
-    let canonical = official_deepseek_model_id(&id)
-        .or_else(|| compatibility_alias("canonical_model_name", &id))
-        .map(str::to_ascii_lowercase);
+    let canonical = resolve_model(ProviderKind::Deepseek, &id, None)
+        .ok()
+        .map(|resolved| resolved.wire_id.to_ascii_lowercase());
     canonical
         .into_iter()
         .chain(std::iter::once(id))
