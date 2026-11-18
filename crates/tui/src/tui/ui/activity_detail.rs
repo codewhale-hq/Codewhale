@@ -417,6 +417,16 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
     let Some(cell_index) = detail_target_cell_index(app) else {
         return false;
     };
+    if let Some(turn) = app.folded_turn_at(cell_index) {
+        let Some(title) = crate::tui::history::turn_fold_changes(&turn, app.ui_locale) else {
+            return false;
+        };
+        let diff = crate::tui::history::turn_fold_diff(&turn, |index| {
+            app.cell_at_virtual_index(index).cloned()
+        });
+        super::overlays::open_diff_pager(app, title, &diff);
+        return true;
+    }
     let Some(cell) = app.cell_at_virtual_index(cell_index) else {
         return false;
     };

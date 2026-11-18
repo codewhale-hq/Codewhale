@@ -33,6 +33,7 @@ pub(crate) mod text;
 mod thinking;
 mod tool_output;
 mod tool_run;
+mod turn_fold;
 
 use archived_context::{parse_archived_context, render_archived_context};
 pub use automation::{AutomationCell, AutomationCellKind};
@@ -71,6 +72,8 @@ use tool_output::{
 #[cfg(test)]
 use agent_activity::extract_agent_id;
 pub use file_mutation::FileMutationReceipt;
+#[cfg(test)]
+pub use file_mutation::{FileMutationFile, FileMutationOutcome};
 pub use plan::PlanUpdateCell;
 #[cfg(test)]
 use thinking::extract_reasoning_summary;
@@ -79,6 +82,11 @@ use tool_run::ToolRunActivitySummary;
 #[cfg(test)]
 pub use tool_run::detect_tool_runs;
 pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
+pub(crate) use turn_fold::superseded_todo_write_indices;
+pub use turn_fold::{
+    TurnFold, TurnFoldProjection, detect_turn_folds, turn_fold_changes, turn_fold_diff,
+    turn_fold_headline,
+};
 
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
@@ -2238,8 +2246,15 @@ impl GenericToolCell {
         mode: RenderMode,
         locale: Locale,
     ) -> Vec<Line<'static>> {
-        if mode != RenderMode::Source && self.name == "activity_group" {
-            return agent_activity::render_activity_group(self, width, locale);
+        if mode != RenderMode::Source {
+            match self.name.as_str() {
+                "activity_group" => {
+                    return agent_activity::render_activity_group(self, width, locale);
+                }
+                "turn_work" => return agent_activity::render_turn_work(self, width),
+                "agent_line" => return agent_activity::render_agent_line(self, width),
+                _ => {}
+            }
         }
 
         // Issue #241: when the underlying tool is a checklist/todo update and

@@ -3523,6 +3523,19 @@ pub(crate) async fn run_event_loop(
                         let turn_elapsed =
                             app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
                         app.turn_started_at = None;
+                        let completed_user_index = if !newer_dispatch_owns_turn_state {
+                            app.active_turn_user_index.take()
+                        } else {
+                            None
+                        };
+                        if !newer_dispatch_owns_turn_state
+                            && !turn_elapsed.is_zero()
+                            && let Some(user_index) = completed_user_index
+                        {
+                            app.turn_work_durations.insert(user_index, turn_elapsed);
+                            app.turn_durations_revision =
+                                app.turn_durations_revision.wrapping_add(1);
+                        }
                         app.turn_last_activity_at = None;
                         app.streaming_output_token_estimate = 0;
                         // Roll the just-finished turn's elapsed time into the

@@ -233,6 +233,7 @@ pub(crate) struct UserDispatchSnapshot {
     pub(crate) history_revisions_len: usize,
     pub(crate) api_messages_len: usize,
     pub(crate) last_send_at: Option<Instant>,
+    pub(crate) active_turn_user_index: Option<usize>,
 }
 
 /// Data captured synchronously before the async dispatch phase. All values are

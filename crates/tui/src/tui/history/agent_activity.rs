@@ -96,6 +96,43 @@ pub(super) fn render_activity_group(
     ))]
 }
 
+pub(super) fn render_turn_work(cell: &GenericToolCell, width: u16) -> Vec<Line<'static>> {
+    let budget = usize::from(width).saturating_sub(2).max(1);
+    let headline = cell.input_summary.as_deref().unwrap_or_default();
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{} \u{203A}", truncate_text(headline, budget)),
+        Style::default().fg(palette::TEXT_MUTED),
+    ))];
+    if let Some(changes) = cell.output_summary.as_deref() {
+        lines.push(Line::from(Span::styled(
+            truncate_text(changes, usize::from(width).max(1)),
+            Style::default().fg(palette::TEXT_DIM),
+        )));
+    }
+    lines
+}
+
+pub(super) fn render_agent_line(cell: &GenericToolCell, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width).max(1);
+    let tag = truncate_text(cell.output_summary.as_deref().unwrap_or("agent"), width);
+    let tag_width = unicode_width::UnicodeWidthStr::width(tag.as_str());
+    let rest = cell.input_summary.as_deref().unwrap_or_default();
+    let rest_budget = width.saturating_sub(tag_width + 2);
+    let mut spans = vec![Span::styled(
+        tag,
+        Style::default()
+            .fg(palette::TEXT_MUTED)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    )];
+    if rest_budget > 0 {
+        spans.push(Span::styled(
+            format!("{} \u{203A}", truncate_text(rest, rest_budget)),
+            Style::default().fg(palette::TEXT_DIM),
+        ));
+    }
+    vec![Line::from(spans)]
+}
+
 fn delegate_identity_fallback(cell: &GenericToolCell) -> String {
     if let Some(summary) = cell.input_summary.as_deref() {
         let summary = summary.trim();

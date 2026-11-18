@@ -75,61 +75,6 @@ pub struct ChatWidget {
     jump_arrow: Color,
 }
 
-/// A `todo_write` result is a full replacement snapshot, not an incremental
-/// transcript event. Keep only the newest successful snapshot in the visible
-/// transcript while retaining every tool result in history for model context
-/// and persistence.
-fn superseded_todo_write_indices(
-    history: &[HistoryCell],
-    active_entries: &[HistoryCell],
-) -> HashSet<usize> {
-    let mut hidden = HashSet::new();
-    let mut latest = None;
-
-    for (index, cell) in history.iter().chain(active_entries).enumerate() {
-        let HistoryCell::Tool(ToolCell::Generic(tool)) = cell else {
-            continue;
-        };
-        if tool.name != "todo_write" || tool.status != ToolStatus::Success {
-            continue;
-        }
-
-        if let Some(previous) = latest.replace(index) {
-            hidden.insert(previous);
-        }
-    }
-
-    if let Some(index) = latest {
-        let cell = history
-            .get(index)
-            .or_else(|| active_entries.get(index.saturating_sub(history.len())));
-        if cell.is_some_and(todo_write_snapshot_is_empty) {
-            hidden.insert(index);
-        }
-    }
-
-    hidden
-}
-
-fn todo_write_snapshot_is_empty(cell: &HistoryCell) -> bool {
-    let HistoryCell::Tool(ToolCell::Generic(tool)) = cell else {
-        return false;
-    };
-    let Some(output) = tool.output.as_deref() else {
-        return false;
-    };
-    let Some(json_start) = output.find('{') else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&output[json_start..]) else {
-        return false;
-    };
-    value
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(Vec::is_empty)
-}
-
 fn resolve_transcript_viewport_after_layout(
     viewport: &mut ViewportState,
     visible_lines: usize,
@@ -352,6 +297,9 @@ impl ChatWidget {
         let history_len = app.history.len();
         // Cache the group projection, not the whole frame: filtered refs and
         // transcript bookkeeping below still walk the retained history.
+        let open_tail = app.turn_fold_open_tail();
+        let open_turn_user_index = app.active_turn_user_index;
+        let echoed_queued_users = app.echoed_queued_user_count();
         let cache_key_matches = app.tool_run_cache.history_version == app.history_version
             && app.tool_run_cache.history_len == history_len
             && app.tool_run_cache.active_cell_revision == app.active_cell_revision
@@ -360,9 +308,14 @@ impl ChatWidget {
             && app.tool_run_cache.mode == app.tool_collapse_mode
             && app.tool_run_cache.calm_mode == app.calm_mode
             && app.tool_run_cache.locale == app.ui_locale
-            && app.tool_run_cache.expanded_runs == app.expanded_tool_runs;
+            && app.tool_run_cache.expanded_runs == app.expanded_tool_runs
+            && app.tool_run_cache.open_tail == open_tail
+            && app.tool_run_cache.open_turn_user_index == open_turn_user_index
+            && app.tool_run_cache.echoed_queued_users == echoed_queued_users
+            && app.tool_run_cache.turn_durations_revision == app.turn_durations_revision;
         if !cache_key_matches {
-            let superseded_todos = superseded_todo_write_indices(&app.history, active_entries);
+            let superseded_todos =
+                crate::tui::history::superseded_todo_write_indices(&app.history, active_entries);
             let runs = if app.tool_collapse_active() {
                 crate::tui::history::detect_tool_runs_from_slices(
                     &app.history,
@@ -372,6 +325,68 @@ impl ChatWidget {
             } else {
                 Vec::new()
             };
+            let folds = if app.tool_collapse_active() {
+                crate::tui::history::detect_turn_folds(
+                    &app.history,
+                    active_entries,
+                    open_tail,
+                    open_turn_user_index,
+                    echoed_queued_users,
+                    &superseded_todos,
+                    &app.turn_work_durations,
+                )
+            } else {
+                crate::tui::history::TurnFoldProjection::default()
+            };
+            let cell_at = |index: usize| {
+                app.history
+                    .get(index)
+                    .or_else(|| active_entries.get(index.checked_sub(history_len)?))
+            };
+            let mut fold_summaries: Vec<(usize, HistoryCell, u64)> = Vec::new();
+            let mut fold_hidden: HashSet<usize> = HashSet::new();
+            let mut folded_members: HashSet<usize> = HashSet::new();
+            for turn in &folds.turns {
+                if app.expanded_tool_runs.contains(&turn.key) {
+                    continue;
+                }
+                let Some(host) = turn.host() else {
+                    continue;
+                };
+                folded_members.extend(turn.members.iter().copied());
+                fold_hidden.extend(turn.members.iter().copied().skip(1));
+                fold_summaries.push((
+                    host,
+                    turn_fold_summary_cell(turn, app.ui_locale),
+                    members_summary_revision(
+                        0x7E12_F01D_0000_2231 ^ ((turn.key as u64) << 24),
+                        turn.members.iter().copied(),
+                        turn.duration.map_or(0, |duration| duration.as_secs()),
+                        &app.history_revisions,
+                        history_len,
+                        app.active_cell_revision,
+                    ),
+                ));
+            }
+            for &index in &folds.agents {
+                if app.expanded_tool_runs.contains(&index) {
+                    continue;
+                }
+                if let Some(HistoryCell::SubAgent(agent)) = cell_at(index) {
+                    fold_summaries.push((
+                        index,
+                        agent_line_summary_cell(agent),
+                        members_summary_revision(
+                            0xA6E7_11FE_0000_2233,
+                            std::iter::once(index),
+                            0,
+                            &app.history_revisions,
+                            history_len,
+                            app.active_cell_revision,
+                        ),
+                    ));
+                }
+            }
             let cache = &mut app.tool_run_cache;
             #[cfg(test)]
             {
@@ -380,9 +395,14 @@ impl ChatWidget {
             cache.generation = cache.generation.wrapping_add(1);
             cache.summaries.clear();
             cache.hidden_indices.clear();
+            for (host, cell, revision) in fold_summaries {
+                cache.summaries.insert(host, (cell, revision));
+            }
+            cache.hidden_indices.extend(fold_hidden);
             for run in &runs {
                 // A hidden replacement snapshot cannot own a group summary.
                 if app.expanded_tool_runs.contains(&run.start)
+                    || folded_members.contains(&run.start)
                     || (run.start..run.start.saturating_add(run.count))
                         .any(|index| superseded_todos.contains(&index))
                 {
@@ -414,6 +434,10 @@ impl ChatWidget {
             cache.calm_mode = app.calm_mode;
             cache.locale = app.ui_locale;
             cache.expanded_runs.clone_from(&app.expanded_tool_runs);
+            cache.open_tail = open_tail;
+            cache.open_turn_user_index = open_turn_user_index;
+            cache.echoed_queued_users = echoed_queued_users;
+            cache.turn_durations_revision = app.turn_durations_revision;
         }
         // v0.9.1: do not collapse concurrent sub-agent cards into an Enter-
         // expand shelf. Count lives in header chrome; full cards stay visible;
@@ -789,14 +813,105 @@ fn tool_run_summary_cell(run: &ToolRun, locale: codewhale_localization::Locale) 
     }))
 }
 
+fn turn_fold_summary_cell(
+    turn: &crate::tui::history::TurnFold,
+    locale: codewhale_localization::Locale,
+) -> HistoryCell {
+    let changes = crate::tui::history::turn_fold_changes(turn, locale).map(|changes| {
+        format!(
+            "{changes} \u{00B7} {}",
+            codewhale_localization::tr(
+                locale,
+                codewhale_localization::MessageId::TurnReviewChanges
+            )
+        )
+    });
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "turn_work".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some(crate::tui::history::turn_fold_headline(turn, locale)),
+        output: None,
+        prompts: None,
+        spillover_path: None,
+        output_summary: changes,
+        is_diff: false,
+    }))
+}
+
+fn agent_line_summary_cell(agent: &crate::tui::history::SubAgentCell) -> HistoryCell {
+    use crate::tui::history::SubAgentCell;
+    let (tag, rest) = match agent {
+        SubAgentCell::Delegate(card) => {
+            let mut rest = format!(" \u{00B7} {}", card.status.label());
+            if let (Some(started), Some(finished)) = (card.started_at, card.finished_at) {
+                rest.push_str(" \u{00B7} ");
+                rest.push_str(&codewhale_command_contract::elapsed::format_elapsed_ms(
+                    finished.duration_since(started).as_millis() as u64,
+                ));
+            }
+            if let Some(summary) = card
+                .summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                rest.push_str(" \u{00B7} ");
+                rest.push_str(summary.lines().next().unwrap_or(summary));
+            }
+            (
+                codewhale_agent_contract::role::public_role_label(&card.agent_type),
+                rest,
+            )
+        }
+        SubAgentCell::Fanout(card) => (
+            card.kind.clone(),
+            format!(
+                " \u{00B7} {} \u{00B7} {}",
+                card.workers.len(),
+                card.aggregate_status_public().label()
+            ),
+        ),
+    };
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "agent_line".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some(rest),
+        output: None,
+        prompts: None,
+        spillover_path: None,
+        output_summary: Some(tag),
+        is_diff: false,
+    }))
+}
+
 fn tool_run_summary_revision(
     run: &ToolRun,
     revisions: &[u64],
     history_len: usize,
     active_rev: u64,
 ) -> u64 {
-    let mut revision = 0xA11C_EA5E_D00D_2692u64 ^ ((run.start as u64) << 32) ^ (run.count as u64);
-    for idx in run.start..run.start.saturating_add(run.count) {
+    members_summary_revision(
+        0xA11C_EA5E_D00D_2692u64 ^ ((run.start as u64) << 32) ^ (run.count as u64),
+        run.start..run.start.saturating_add(run.count),
+        0,
+        revisions,
+        history_len,
+        active_rev,
+    )
+}
+
+fn members_summary_revision(
+    seed: u64,
+    members: impl Iterator<Item = usize>,
+    salt: u64,
+    revisions: &[u64],
+    history_len: usize,
+    active_rev: u64,
+) -> u64 {
+    let mut revision = seed ^ salt.rotate_left(17);
+    let mut extends_into_active = false;
+    for idx in members {
+        extends_into_active |= idx >= history_len;
         let cell_revision = revisions
             .get(idx)
             .copied()
@@ -807,7 +922,6 @@ fn tool_run_summary_revision(
             });
         revision = revision.rotate_left(7) ^ cell_revision;
     }
-    let extends_into_active = run.start.saturating_add(run.count) > history_len;
     revision_in_domain(revision, extends_into_active)
 }
 
@@ -3926,6 +4040,7 @@ mod tests {
             app.low_motion = true;
             app.fancy_animations = false;
             app.transcript_spacing = TranscriptSpacing::Spacious;
+            app.tool_collapse_mode = ToolCollapseMode::Expanded;
 
             for turn in 0..4 {
                 app.add_message(HistoryCell::User {
@@ -4104,6 +4219,297 @@ mod tests {
         assert_eq!(history_key, 0x2692);
         assert_eq!(active_key, ACTIVE_REVISION_DOMAIN | 0x2692);
         assert_ne!(history_key, active_key);
+    }
+
+    fn patch_cell(path: &str, added: usize, deleted: usize) -> HistoryCell {
+        use crate::tui::history::{FileMutationFile, FileMutationOutcome, PatchSummaryCell};
+        HistoryCell::Tool(ToolCell::PatchSummary(PatchSummaryCell {
+            path: path.to_string(),
+            summary: format!("Updated {path}"),
+            status: ToolStatus::Success,
+            error: None,
+            receipt: Some(crate::tui::history::FileMutationReceipt {
+                exact_diff: format!("--- a/{path}\n+++ b/{path}\n+new\n"),
+                display_diff: format!("--- a/{path}\n+++ b/{path}\n+new\n"),
+                files: vec![FileMutationFile {
+                    path: path.to_string(),
+                    previous_path: None,
+                    outcome: FileMutationOutcome::Updated,
+                }],
+                added,
+                deleted,
+            }),
+        }))
+    }
+
+    #[test]
+    fn a_finished_turn_folds_its_steps_into_one_worked_for_line() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.tool_collapse_threshold = 3;
+        app.add_message(HistoryCell::User {
+            content: "fix the counter".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(success_tool_cell("grep_files"));
+        app.add_message(patch_cell("src/count.rs", 3, 1));
+        app.add_message(HistoryCell::Assistant {
+            content: "Fixed the counter.".to_string(),
+            streaming: false,
+        });
+        app.turn_work_durations
+            .insert(0, std::time::Duration::from_secs(72));
+        let area = Rect::new(0, 0, 80, 12);
+
+        app.is_loading = true;
+        let mut live = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut live);
+        assert!(!buffer_text(&live, area).contains("Worked for"));
+
+        app.is_loading = false;
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 4]);
+        assert!(
+            rendered.contains("Worked for 1m 12s \u{00B7} 3 steps \u{203A}"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("1 file changed +3 -1 \u{00B7} Enter to review"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("full output from"), "{rendered}");
+        assert!(rendered.contains("Fixed the counter."), "{rendered}");
+        let turn = app.folded_turn_at(1).expect("summary row hosts the fold");
+        assert!(
+            crate::tui::history::turn_fold_diff(&turn, |index| app
+                .cell_at_virtual_index(index)
+                .cloned())
+            .contains("+++ b/src/count.rs")
+        );
+
+        assert!(app.transcript_fold_header_at(1));
+        assert!(app.toggle_tool_run_expansion_at(1));
+        let _ = ChatWidget::new(&mut app, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2, 3, 4]);
+        assert!(app.folded_turn_at(1).is_none());
+        assert!(app.toggle_tool_run_expansion_at(3));
+        let _ = ChatWidget::new(&mut app, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn a_failed_step_stays_visible_beside_the_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "run it".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Generic(mut failed)) = success_tool_cell("run_tests")
+        else {
+            unreachable!()
+        };
+        failed.status = ToolStatus::Failed;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(failed)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
+        assert!(
+            rendered.contains("1 step \u{00B7} 1 failed \u{203A}"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn adv_superseded_todo_first_member_breaks_click_and_enter() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("todo_write"));
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(patch_cell("src/a.rs", 1, 0));
+        app.add_message(HistoryCell::User {
+            content: "b".to_string(),
+        });
+        app.add_message(success_tool_cell("todo_write"));
+        let area = Rect::new(0, 0, 80, 14);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(rendered.contains("2 steps"), "{rendered}");
+        let host = app.collapsed_cell_map[1];
+        assert!(
+            app.transcript_fold_header_at(host),
+            "click on the fold summary row must toggle it"
+        );
+        assert!(
+            app.folded_turn_at(host).is_some(),
+            "Enter on the fold summary row must find its turn"
+        );
+    }
+
+    #[test]
+    fn adv_queued_follow_up_folds_the_running_turn() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(success_tool_cell("grep_files"));
+        app.add_message(HistoryCell::User {
+            content: "queued follow-up".to_string(),
+        });
+        app.is_loading = true;
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            !rendered.contains("2 steps"),
+            "running turn folded: {rendered}"
+        );
+
+        app.active_turn_user_index = Some(0);
+        app.add_message(HistoryCell::Assistant {
+            content: "working on it".to_string(),
+            streaming: false,
+        });
+        app.history_version = app.history_version.wrapping_add(1);
+        let mut buf2 = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf2);
+        let rendered2 = buffer_text(&buf2, area);
+        assert!(
+            !rendered2.contains("2 steps"),
+            "active_turn_user_index must keep running turn open even after queued echo: {rendered2}"
+        );
+    }
+
+    #[test]
+    fn adv_warning_and_stopped_steps_hide_inside_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Generic(mut warn)) = success_tool_cell("run_tests") else {
+            unreachable!()
+        };
+        warn.status = ToolStatus::Warning;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(warn)));
+        let HistoryCell::Tool(ToolCell::Generic(mut stopped)) = success_tool_cell("long_task")
+        else {
+            unreachable!()
+        };
+        stopped.status = ToolStatus::Stopped;
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(stopped)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            app.collapsed_cell_map.contains(&2),
+            "warning step hidden: {rendered}"
+        );
+        assert!(
+            app.collapsed_cell_map.contains(&3),
+            "stopped step hidden: {rendered}"
+        );
+    }
+
+    #[test]
+    fn adv_exec_command_hidden_inside_fold() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        app.add_message(success_tool_cell("read_file"));
+        let HistoryCell::Tool(ToolCell::Exec(mut exec)) = running_user_shell_cell() else {
+            unreachable!()
+        };
+        exec.command = "git push --force origin main".to_string();
+        exec.status = ToolStatus::Success;
+        app.add_message(HistoryCell::Tool(ToolCell::Exec(exec)));
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(rendered.contains("git push"), "exec hidden: {rendered}");
+    }
+
+    #[test]
+    fn adv_failed_sub_agent_is_dimmed() {
+        use crate::tui::widgets::agent_card::{AgentLifecycle, DelegateCard};
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "a".to_string(),
+        });
+        let mut card = DelegateCard::new("agent_1", "reviewer");
+        card.status = AgentLifecycle::Failed;
+        card.summary = Some("crashed".to_string());
+        app.add_message(HistoryCell::SubAgent(
+            crate::tui::history::SubAgentCell::Delegate(card),
+        ));
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        assert!(
+            rendered.contains('\u{2570}'),
+            "failed sub-agent folded to dim line: {rendered}"
+        );
+    }
+
+    #[test]
+    fn main_agent_prose_has_no_author_label_and_sub_agents_carry_a_name_tag() {
+        use crate::tui::widgets::agent_card::{AgentLifecycle, DelegateCard};
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.add_message(HistoryCell::User {
+            content: "review the change".to_string(),
+        });
+        let mut card = DelegateCard::new("agent_1", "reviewer");
+        card.status = AgentLifecycle::Completed;
+        card.summary = Some("two findings".to_string());
+        app.add_message(HistoryCell::SubAgent(
+            crate::tui::history::SubAgentCell::Delegate(card),
+        ));
+        app.add_message(HistoryCell::Assistant {
+            content: "The review found two issues.".to_string(),
+            streaming: false,
+        });
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+        let role = codewhale_agent_contract::role::public_role_label("reviewer");
+        let agent_row = rendered
+            .lines()
+            .find(|line| line.contains(&role))
+            .unwrap_or_else(|| panic!("{rendered}"));
+        assert!(
+            agent_row.contains("\u{00B7} done \u{00B7} two findings \u{203A}"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains('\u{2570}'), "{rendered}");
+        let prose = rendered
+            .lines()
+            .find(|line| line.contains("The review found two issues."))
+            .unwrap();
+        assert!(!prose.to_lowercase().contains("whale"), "{prose}");
+        assert!(app.toggle_tool_run_expansion_at(1));
+        let mut opened = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut opened);
+        assert!(buffer_text(&opened, area).contains('\u{2570}'));
     }
 
     #[test]

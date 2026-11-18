@@ -47,7 +47,7 @@ pub enum AgentLifecycle {
 }
 
 impl AgentLifecycle {
-    fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(
             self,
             Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted

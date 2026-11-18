@@ -2083,6 +2083,9 @@ pub struct App {
     pub tool_collapse_threshold: usize,
     /// Tool runs the user explicitly expanded. Stores original history indices.
     pub expanded_tool_runs: HashSet<usize>,
+    pub turn_work_durations: HashMap<usize, Duration>,
+    pub turn_durations_revision: u64,
+    pub active_turn_user_index: Option<usize>,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
@@ -2812,6 +2815,10 @@ pub(crate) struct ToolRunCache {
     pub(crate) projection_builds: usize,
     pub(crate) history_len: usize,
     pub(crate) expanded_runs: HashSet<usize>,
+    pub(crate) open_tail: bool,
+    pub(crate) open_turn_user_index: Option<usize>,
+    pub(crate) echoed_queued_users: usize,
+    pub(crate) turn_durations_revision: u64,
     pub(crate) summaries: HashMap<usize, (HistoryCell, u64)>,
     pub(crate) hidden_indices: HashSet<usize>,
     pub(crate) superseded_todos: HashSet<usize>,
@@ -2881,6 +2888,10 @@ impl Default for ToolRunCache {
             projection_builds: 0,
             history_len: usize::MAX,
             expanded_runs: HashSet::new(),
+            open_tail: false,
+            open_turn_user_index: None,
+            echoed_queued_users: 0,
+            turn_durations_revision: u64::MAX,
             summaries: HashMap::new(),
             hidden_indices: HashSet::new(),
             superseded_todos: HashSet::new(),
@@ -5563,6 +5574,12 @@ impl App {
             .into_iter()
             .filter_map(remap)
             .collect();
+        self.turn_work_durations = std::mem::take(&mut self.turn_work_durations)
+            .into_iter()
+            .filter_map(|(idx, duration)| remap(idx).map(|idx| (idx, duration)))
+            .collect();
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        self.active_turn_user_index = self.active_turn_user_index.and_then(remap);
         self.collapsed_cell_map.clear();
         self.streaming_message_index = self.streaming_message_index.and_then(remap);
         self.streaming_source_receipt = None;
@@ -6126,6 +6143,11 @@ impl App {
         self.collapsed_cells.retain(|idx| *idx < len);
         self.cell_folds.retain(|idx, _| *idx < len);
         self.expanded_tool_runs.retain(|idx| *idx < len);
+        self.turn_work_durations.retain(|idx, _| *idx < len);
+        self.turn_durations_revision = self.turn_durations_revision.wrapping_add(1);
+        if self.active_turn_user_index.is_some_and(|idx| idx >= len) {
+            self.active_turn_user_index = None;
+        }
         self.collapsed_cell_map.clear();
     }
 
@@ -6275,6 +6297,50 @@ impl App {
     }
 
     #[must_use]
+    pub(crate) fn turn_fold_open_tail(&self) -> bool {
+        self.is_loading || self.active_cell.is_some()
+    }
+
+    #[must_use]
+    pub(crate) fn echoed_queued_user_count(&self) -> usize {
+        self.queued_messages
+            .iter()
+            .filter(|message| message.history_echoed && message.extension_command.is_none())
+            .count()
+    }
+
+    #[must_use]
+    pub(crate) fn turn_fold_projection(&self) -> crate::tui::history::TurnFoldProjection {
+        if !self.tool_collapse_active() {
+            return crate::tui::history::TurnFoldProjection::default();
+        }
+        let active_entries = self
+            .active_cell
+            .as_ref()
+            .map_or(&[][..], crate::tui::active_cell::ActiveCell::entries);
+        let superseded_todos =
+            crate::tui::history::superseded_todo_write_indices(&self.history, active_entries);
+        crate::tui::history::detect_turn_folds(
+            &self.history,
+            active_entries,
+            self.turn_fold_open_tail(),
+            self.active_turn_user_index,
+            self.echoed_queued_user_count(),
+            &superseded_todos,
+            &self.turn_work_durations,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn folded_turn_at(&self, index: usize) -> Option<crate::tui::history::TurnFold> {
+        self.turn_fold_projection()
+            .turns
+            .into_iter()
+            .find(|turn| turn.host() == Some(index))
+            .filter(|turn| !self.expanded_tool_runs.contains(&turn.key))
+    }
+
+    #[must_use]
     pub fn tool_run_start_for_history_index(&self, index: usize) -> Option<usize> {
         if !self.tool_collapse_active() {
             return None;
@@ -6286,6 +6352,14 @@ impl App {
         if index >= self.history.len().saturating_add(active_entries.len()) {
             return None;
         }
+        let folds = self.turn_fold_projection();
+        if folds.agents.contains(&index) {
+            return Some(index);
+        }
+        let turn = folds.turn_containing(index).map(|turn| turn.key);
+        if let Some(key) = turn.filter(|key| !self.expanded_tool_runs.contains(key)) {
+            return Some(key);
+        }
         crate::tui::history::detect_tool_runs_from_slices(
             &self.history,
             active_entries,
@@ -6294,6 +6368,20 @@ impl App {
         .into_iter()
         .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
         .map(|run| run.start)
+        .or(turn)
+    }
+
+    #[must_use]
+    pub(crate) fn transcript_fold_header_at(&self, index: usize) -> bool {
+        let Some(key) = self.tool_run_start_for_history_index(index) else {
+            return false;
+        };
+        key == index
+            || self
+                .turn_fold_projection()
+                .turns
+                .iter()
+                .any(|turn| turn.key == key && turn.host() == Some(index))
     }
 
     pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
