@@ -33,7 +33,7 @@ WALL = ROOT / "docs" / "assets" / "contributors.png"
 CACHE = ROOT / "target" / "contributor-avatars"
 NOREPLY = re.compile(r"^(?:(\d+)\+)?([A-Za-z0-9-]+)@users\.noreply\.github\.com$", re.I)
 NOT_PEOPLE = re.compile(
-    r"\[bot\]|^bot$|copilot|gemini|dependabot|github-actions|^claude|anthropic|codex|cursor|devin|jules|grok|deepseek-v4|"
+    r"\[bot\]|^bot$|copilot|^gemini|dependabot|github-actions|^claude|anthropic|codex|cursor|devin|jules|grok|deepseek-v4|"
     r"^codewhale|openclaw|autoghclaw|nanookclaw|agentmail\.to|happy\.engineering|codalume|g1 agent|^bot_|"
     r"^hmbown$|^hunter b(own)?$|^username$|^handle$|^host$", re.I)
 
