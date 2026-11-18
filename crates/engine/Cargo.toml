@@ -161,7 +161,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 jsonschema.workspace = true
 htmd = "0.5.4"
 # lru >= 0.18.2 fixes RUSTSEC-2026-0253 (panic-unsafe `pop()`).
-lru = "0.18"
+lru = "0.19"
 parking_lot = "0.12"
 tar = "0.4"
 # Vendored static liblzma keeps the full-fidelity session archive export
