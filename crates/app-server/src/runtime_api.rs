@@ -13751,6 +13751,7 @@ fn provider_entry_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
     last_check: Option<codewhale_engine::provider_readiness::LastProviderCheck>,
+    claude_org_available: bool,
 ) -> ProviderEntry {
     let writeability = secrets::credential_writeability(config, identity);
     ProviderEntry {
@@ -13769,7 +13770,10 @@ fn provider_entry_for_api(
         credential_source: writeability.source,
         credential_writable: writeability.writable,
         credential_writable_reason: writeability.reason,
-        browser_connect: identity.provider == ProviderKind::Orcarouter
+        browser_connect: (identity.provider == ProviderKind::Orcarouter
+            || (identity.provider == ProviderKind::Anthropic
+                && claude_org_available
+                && !config.provider_uses_custom_endpoint(identity)))
             && writeability.writable
             && !config.session_provider_keys_only,
         last_check: last_check.map(ProviderLastCheck::from),
@@ -13779,6 +13783,8 @@ fn provider_entry_for_api(
 async fn list_providers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<ProvidersResponse>, ApiError> {
+    secrets::refresh_claude_org_availability_if_stale(&state);
+    let claude_org_available = state.provider_connect.claude_org_available();
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
@@ -13789,7 +13795,7 @@ async fn list_providers(
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
         let current = active_identity.as_ref().map_or_else(|| config.provider.clone().unwrap_or_else(|| "unavailable".into()), |identity| identity.persisted_kind().to_string());
-        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity, state.runtime_threads.provider_last_check(identity))).collect::<Vec<_>>();
+        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity, state.runtime_threads.provider_last_check(identity), claude_org_available)).collect::<Vec<_>>();
         providers.extend(config.unadmitted_provider_keys().into_iter().map(|key| ProviderEntry {
             id: key.to_string(), model_provider_id: Some(key.to_string()), display_name: format!("{key} (unavailable)"),
             default_model: String::new(), has_model_catalog: false,

@@ -46,6 +46,7 @@ pub enum ClaudeOrgErrorKind {
     NotLinked,
     RelinkRequired,
     Disabled,
+    AlreadyLinkedElsewhere,
     Unavailable,
     Invalid,
 }
@@ -80,6 +81,10 @@ impl ClaudeOrgError {
             ),
             ClaudeOrgErrorKind::Disabled => {
                 "Claude organization billing is not available for this Codewhale account."
+                    .to_string()
+            }
+            ClaudeOrgErrorKind::AlreadyLinkedElsewhere => {
+                "This Claude organization is already linked to another Codewhale account."
                     .to_string()
             }
             ClaudeOrgErrorKind::Unavailable => {
@@ -147,12 +152,50 @@ struct LinkStart {
     authorization_url: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LinkStatus {
-    available: bool,
-    linked: bool,
-    linked_at: Option<String>,
+pub struct ClaudeOrgLinkStatus {
+    pub available: bool,
+    pub linked: bool,
+    pub linked_at: Option<String>,
+    #[serde(default)]
+    last_link_failure: Option<LinkFailureWire>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct LinkFailureWire {
+    code: String,
+    at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaudeOrgLinkFailure {
+    Declined,
+    AlreadyLinkedElsewhere,
+    Failed,
+}
+
+const LINK_FAILURE_CLOCK_SKEW_SECS: i64 = 60;
+
+impl ClaudeOrgLinkStatus {
+    #[must_use]
+    pub fn failure_since(&self, started: DateTime<Utc>) -> Option<ClaudeOrgLinkFailure> {
+        if self.linked {
+            return None;
+        }
+        let failure = self.last_link_failure.as_ref()?;
+        let at = DateTime::parse_from_rfc3339(&failure.at)
+            .ok()?
+            .with_timezone(&Utc);
+        if at.timestamp() < started.timestamp() - LINK_FAILURE_CLOCK_SKEW_SECS {
+            return None;
+        }
+        Some(match failure.code.as_str() {
+            "declined" => ClaudeOrgLinkFailure::Declined,
+            "already_linked_elsewhere" => ClaudeOrgLinkFailure::AlreadyLinkedElsewhere,
+            _ => ClaudeOrgLinkFailure::Failed,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -218,8 +261,10 @@ fn validate_link_start_url(value: &str, api_base: &str) -> Result<Url> {
     let unsafe_url = || anyhow!("The Codewhale service returned an unsafe Claude link URL");
     let url = Url::parse(value).map_err(|_| unsafe_url())?;
     let api = Url::parse(api_base).context("invalid Codewhale account API base URL")?;
+    let loopback_test_api = api.scheme() == "http" && api.host_str().is_some_and(is_loopback_host);
+    let scheme_ok = url.scheme() == "https" || (loopback_test_api && url.scheme() == "http");
     if value != url.as_str()
-        || url.scheme() != "https"
+        || !scheme_ok
         || url.host_str().is_none()
         || url.host_str() != api.host_str()
         || url.port_or_known_default() != api.port_or_known_default()
@@ -245,6 +290,7 @@ fn claude_org_error(response: &CloudResponse) -> ClaudeOrgError {
         (_, Some("claude_not_linked")) => ClaudeOrgErrorKind::NotLinked,
         (_, Some("claude_relink_required")) => ClaudeOrgErrorKind::RelinkRequired,
         (_, Some("claude_billing_disabled")) | (404, None) => ClaudeOrgErrorKind::Disabled,
+        (_, Some("claude_already_linked")) => ClaudeOrgErrorKind::AlreadyLinkedElsewhere,
         (_, Some("claude_refresh_busy")) => ClaudeOrgErrorKind::Unavailable,
         (500..=599, _) => ClaudeOrgErrorKind::Unavailable,
         _ => ClaudeOrgErrorKind::Invalid,
@@ -288,10 +334,55 @@ impl AccountClient {
             return claude_org_token_from_response(&response);
         }
     }
+
+    pub fn claude_org_link_status(
+        &self,
+    ) -> std::result::Result<ClaudeOrgLinkStatus, ClaudeOrgError> {
+        self.signed_in()?;
+        link_status(&self.client()).map_err(|error| self.classify(error))
+    }
+
+    pub fn claude_org_start_link(&self) -> std::result::Result<String, ClaudeOrgError> {
+        self.signed_in()?;
+        start_link(&self.client(), &self.api_base)
+            .map(|url| url.to_string())
+            .map_err(|error| self.classify(error))
+    }
+
+    fn signed_in(&self) -> std::result::Result<(), ClaudeOrgError> {
+        self.fresh_auth(None)
+            .map_err(|_| ClaudeOrgError::new(ClaudeOrgErrorKind::Unavailable))?
+            .map(|_| ())
+            .ok_or_else(|| ClaudeOrgError::new(ClaudeOrgErrorKind::NotSignedIn))
+    }
+
+    fn classify(&self, error: anyhow::Error) -> ClaudeOrgError {
+        if outcome_unknown(&error) {
+            return ClaudeOrgError::new(ClaudeOrgErrorKind::Unavailable);
+        }
+        match error.downcast::<ClaudeOrgError>() {
+            Ok(error) => error,
+            Err(_) if self.signed_in().is_err() => {
+                ClaudeOrgError::new(ClaudeOrgErrorKind::NotSignedIn)
+            }
+            Err(error) => {
+                ClaudeOrgError::with_message(ClaudeOrgErrorKind::Invalid, error.to_string())
+            }
+        }
+    }
 }
 
-fn link_status<T: CloudTransport>(client: &CloudClient<'_, T>) -> Result<LinkStatus> {
+fn link_status<T: CloudTransport>(client: &CloudClient<'_, T>) -> Result<ClaudeOrgLinkStatus> {
     expect_claude_org_json(client.execute_authenticated(HttpMethod::Get, STATUS_PATH, None)?)
+}
+
+fn start_link<T: CloudTransport>(client: &CloudClient<'_, T>, api_base: &str) -> Result<Url> {
+    let start: LinkStart = expect_claude_org_json(client.execute_authenticated(
+        HttpMethod::Post,
+        LINK_PATH,
+        Some(b"{}".to_vec()),
+    )?)?;
+    validate_link_start_url(&start.authorization_url, api_base)
 }
 
 fn transient_poll_error(error: &anyhow::Error) -> bool {
@@ -327,12 +418,8 @@ pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
                 )?;
                 return Ok(());
             }
-            let start: LinkStart = expect_claude_org_json(client.execute_authenticated(
-                HttpMethod::Post,
-                LINK_PATH,
-                Some(b"{}".to_vec()),
-            )?)?;
-            let url = validate_link_start_url(&start.authorization_url, api_base)?;
+            let started = Utc::now();
+            let url = start_link(client, api_base)?;
             writeln!(out, "Link a Claude Platform organization")?;
             writeln!(out, "Open: {url}")?;
             if !link.no_open && !opener(url.to_string()) {
@@ -345,6 +432,20 @@ pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
                 sleeper(LINK_POLL_INTERVAL);
                 match link_status(client) {
                     Ok(status) if !status.available => return Err(unavailable()),
+                    Ok(status) if status.failure_since(started).is_some() => {
+                        return Err(match status.failure_since(started) {
+                            Some(ClaudeOrgLinkFailure::Declined) => anyhow!(
+                                "The Claude organization link was declined in the browser. Run `{CLAUDE_ORG_LINK_COMMAND}` to try again."
+                            ),
+                            Some(ClaudeOrgLinkFailure::AlreadyLinkedElsewhere) => {
+                                ClaudeOrgError::new(ClaudeOrgErrorKind::AlreadyLinkedElsewhere)
+                                    .into()
+                            }
+                            _ => anyhow!(
+                                "The Claude organization link failed. Run `{CLAUDE_ORG_LINK_COMMAND}` to try again."
+                            ),
+                        });
+                    }
                     Ok(status) if status.linked => {
                         writeln!(
                             out,

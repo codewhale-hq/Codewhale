@@ -217,6 +217,15 @@ pub fn credential_state_for_provider(
     if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
         return CredentialState::MissingKey;
     }
+    if provider == ProviderKind::Anthropic
+        && codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref())
+    {
+        return if config.provider_uses_custom_endpoint(identity) {
+            CredentialState::MissingKey
+        } else {
+            CredentialState::Saved
+        };
+    }
     // Plugin OAuth takes precedence over local/keyless and legacy custom
     // classifications. Diagnostics only read the bound credential; they never
     // refresh, migrate storage or turn a missing login into API-key fallback.

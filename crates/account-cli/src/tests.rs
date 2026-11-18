@@ -5036,6 +5036,11 @@ fn claude_org_token_contract_parses_and_maps_errors() {
         ),
         (401, "unauthorized", ClaudeOrgErrorKind::NotSignedIn),
         (503, "claude_refresh_busy", ClaudeOrgErrorKind::Unavailable),
+        (
+            409,
+            "claude_already_linked",
+            ClaudeOrgErrorKind::AlreadyLinkedElsewhere,
+        ),
     ] {
         let error = claude_org_token_from_response(&response(
             status,
@@ -5217,4 +5222,24 @@ fn claude_org_link_pins_the_start_url_and_tolerates_one_poll_error() {
     let mut opened = Vec::new();
     let error = run_claude_org_link(&transport, &mut opened).expect_err("unavailable stops");
     assert!(error.to_string().contains("not available"), "{error}");
+
+    let transport = FakeTransport::new(vec![
+        unlinked(),
+        response(
+            200,
+            json!({"authorizationUrl": start, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ),
+        response(
+            200,
+            json!({
+                "available": true,
+                "linked": false,
+                "linkedAt": null,
+                "lastLinkFailure": {"code": "declined", "at": chrono::Utc::now().to_rfc3339()}
+            }),
+        ),
+    ]);
+    let mut opened = Vec::new();
+    let error = run_claude_org_link(&transport, &mut opened).expect_err("declined stops");
+    assert!(error.to_string().contains("declined"), "{error}");
 }
