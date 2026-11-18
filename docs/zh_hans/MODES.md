@@ -68,7 +68,7 @@ Workflow 通过同一个子智能体运行时执行命名步骤；Fleet 管理�
 
 工作流建立在同样的分离之上：目标可以让智能体持续工作，而 Workflow 为大规模扇出提供可重复的工作流和进度界面。在 UI 中，Workflow 运行应该作为主屏幕上的覆盖层显示，而不是作为 Plan 和 Work 旁边的另一个模式。
 
-应用服务器（App-server）客户端可以用 `thread/goal/set` 持久化线程范围的目标，用 `thread/goal/get` 读取，用 `thread/goal/clear` 清除。该持久化记录携带 `active`、`paused`、`blocked`、`usage_limited`、`budget_limited` 或 `complete` 状态，外加供需要线程恢复语义的客户端使用的 token/时间计量字段。
+应用服务器（App-server）客户端可以用 `thread/goal/get` 读取现有的线程范围目标，用 `thread/goal/clear` 清除。客户端不应调用 `thread/goal/set`：在 `goal_execution` 为 `false` 时，它不会出现在能力发现列表中，且会在修改目标前以类型化的 `interactive_execution_unsupported` 错误拒绝；启动目标请使用完整 Runtime HTTP API（`docs/zh_hans/RUNTIME_API.md`）。该持久化记录携带 `active`、`paused`、`blocked`、`usage_limited`、`budget_limited` 或 `complete` 状态，外加供需要线程恢复语义的客户端使用的 token/时间计量字段。
 
 ## 模式持久化
 

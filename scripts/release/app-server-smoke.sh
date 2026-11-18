@@ -168,7 +168,7 @@ PY
     probe_assert "$out" '"prompt/run"'         "capabilities advertise prompt/run"
     probe_assert "$out" '"transport":"stdio+http"' "app/capabilities reports transport"
     probe_assert "$out" '"prompt/request"'     "prompt/capabilities lists prompt/request"
-    probe_assert "$out" '"thread/goal/set"'    "thread/capabilities lists goal methods"
+    probe_assert "$out" '"thread/goal/get"'    "thread/capabilities lists goal read methods"
 }
 
 probe_assert() {

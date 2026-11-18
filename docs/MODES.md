@@ -156,11 +156,14 @@ working, while Workflow supplies the repeatable workflow/progress surface for
 large fanout. In the UI, a Workflow run should be shown as an overlay on the
 main screen, not as another mode beside Plan and Work.
 
-App-server clients can persist a thread-scoped goal with `thread/goal/set`, read
-it with `thread/goal/get`, and clear it with `thread/goal/clear`. That persisted
-record carries `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
-or `complete` status plus token/time accounting fields for clients that need
-thread resume semantics.
+App-server clients can read an existing thread-scoped goal with `thread/goal/get`
+and clear it with `thread/goal/clear`. Clients should not call `thread/goal/set`:
+it is omitted from capability discovery while `goal_execution` is `false` and is
+refused with a typed `interactive_execution_unsupported` error before changing
+the goal; starting goals uses the full Runtime HTTP API (`docs/RUNTIME_API.md`).
+That persisted record carries `active`, `paused`, `blocked`, `usage_limited`,
+`budget_limited`, or `complete` status plus token/time accounting fields for
+clients that need thread resume semantics.
 
 ## Mode Persistence
 
