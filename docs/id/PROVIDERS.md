@@ -1,5 +1,7 @@
 # Registri Penyedia (Provider Registry)
 
+> Dokumen referensi lengkap dalam bahasa Inggris: [PROVIDERS.md](../PROVIDERS.md). Aturan resolusi ID model, alias per penyedia, batas konteks/output, dan pembaruan `registry.json` bertanda tangan dikelola di satu dokumen pemilik: [MODELS_AND_PROVIDERS.md](../MODELS_AND_PROVIDERS.md).
+
 Registri ini menjelaskan perilaku penyedia (provider) yang terhubung ke dalam basis kode Codewhale saat ini. Registri ini sengaja dibuat konservatif: entri yang dirilis terbatas pada ID penyedia, kunci konfigurasi, jalur autentikasi, URL dasar, resolusi model, dan metadata kapabilitas yang sudah dikelola oleh sistem.
 
 DeepSeek tetap menjadi penyedia bawaan (default), tetapi setiap entri dalam `ProviderKind::ALL` dan `PROVIDER_REGISTRY` adalah rute penyedia yang dapat dipilih sebagai warga kelas satu. Rute ter-host, endpoint generik kompatibel-OpenAI, rute OpenAI Codex/ChatGPT, Anthropic native, dan runtime lokal semuanya menjalankan harness terminal yang sama terhadap penyedia/model/URL dasar terpilih.
@@ -25,7 +27,7 @@ Gunakan salah satu cara berikut untuk memilih penyedia:
 
 1. **DeepSeek (`deepseek`)**:
    - URL Dasar: `https://api.deepseek.com`
-   - Model bawaan: `deepseek-chat` / `deepseek-coder`
+   - Model bawaan: `deepseek-flash` (dengan `deepseek-v4-pro` untuk tugas berat)
    - Autentikasi: `DEEPSEEK_API_KEY` (Bearer auth)
 
 2. **OpenAI (`openai`)**:

@@ -13,7 +13,7 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 - [Pet mode](PET_MODE.md): a glanceable whale view per terminal, with replies and agents on demand
 - [Modes and permission postures](MODES.md)
 - [Configuration](CONFIGURATION.md)
-- [Providers and local models](PROVIDERS.md) and the [Model Lab roadmap](MODEL_LAB.md)
+- [Providers and local models](PROVIDERS.md), [models and providers](MODELS_AND_PROVIDERS.md), and the [Model Lab roadmap](MODEL_LAB.md)
 - Platform notes: [Docker](DOCKER.md), [Termux / Android](TERMUX.md),
   [HarmonyOS](HarmonyOS.md), [environment caveats](ENVIRONMENTS.md),
   [classroom and lab installs](CLASSROOM_INSTALL.md)

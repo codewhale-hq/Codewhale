@@ -5,7 +5,10 @@
 How Codewhale keeps model metadata current — what already auto-updates, what
 is hand-maintained, and what a scheduled catalog job should (and should not) do.
 
-Related docs: [`PROVIDERS.md`](./PROVIDERS.md), RFC
+Related docs: [`MODELS_AND_PROVIDERS.md`](./MODELS_AND_PROVIDERS.md) (single
+owner for model-ID resolution, per-provider `models` naming rules, signed
+`registry.json` updates, and the planned Platform registry cutover),
+[`PROVIDERS.md`](./PROVIDERS.md), RFC
 [`rfcs/UNIFIED_PROVIDER_LOGIN.md`](./rfcs/UNIFIED_PROVIDER_LOGIN.md).
 
 ---
@@ -276,7 +279,7 @@ hand: CI runs `seed render --check` and fails on any difference.
 | `scripts/catalog/models_dev_seed.toml` | Which upstream rows to carry, their Codewhale provider id, wire id, default, canonical join, and the few curated rows upstream does not list | Hand, reviewed |
 | `scripts/catalog/models_dev_seed.lock.json` | The referenced upstream rows, allowlisted, plus the source URL, fetch time and sha256 | `seed lock` only |
 | `crates/config/assets/catalog_corrections.json` | Deliberate holds: withheld prices, clamped limits, reasoning controls | Hand, reviewed; applies online too |
-| `crates/config/assets/catalog_corrections.json` `reviewed` | Source-preserved intrinsic facts, scoped aliases, completion references, public labels/source-support dates, pure route facts and reference prices | Hand, reviewed; source receipts retained |
+| `crates/config/assets/catalog_corrections.json` `reviewed` | Source-preserved intrinsic facts, completion references, public labels/source-support dates, pure route facts and reference prices (per-provider model naming rules live in `provider_descriptors.json`; see [`MODELS_AND_PROVIDERS.md`](./MODELS_AND_PROVIDERS.md)) | Hand, reviewed; source receipts retained |
 | `crates/config/assets/models_dev.bundled.json` | The rendered seed including the reviewed supplement | `seed render` only |
 
 The spec selects and maps; it cannot state a value that disagrees with

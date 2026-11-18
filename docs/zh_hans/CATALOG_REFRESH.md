@@ -8,7 +8,7 @@
 Codewhale 如何让模型元数据保持最新：哪些部分已经自动更新，哪些要人工维护，
 以及定时目录任务该做什么、不该做什么。
 
-相关文档：[`PROVIDERS.md`](./PROVIDERS.md)、
+相关文档：[`MODELS_AND_PROVIDERS.md`](../MODELS_AND_PROVIDERS.md)（模型 ID 解析、各提供商 `models` 命名规则与签名 `registry.json` 更新的唯一 owner 文档）、[`PROVIDERS.md`](./PROVIDERS.md)、
 RFC [`rfcs/UNIFIED_PROVIDER_LOGIN.md`](../rfcs/UNIFIED_PROVIDER_LOGIN.md)。
 
 ---

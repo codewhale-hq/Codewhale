@@ -13,7 +13,7 @@ entry matches the checked-in `web/data/latest-published-release.json` receipt.
 It is not a publication receipt. Public test fixtures establish local behavior
 only.
 
-Related: [catalog refresh](CATALOG_REFRESH.md) and [provider routes](PROVIDERS.md).
+Related: [models and providers](MODELS_AND_PROVIDERS.md), [catalog refresh](CATALOG_REFRESH.md), and [provider routes](PROVIDERS.md).
 
 ## Authority and configuration
 
@@ -231,82 +231,51 @@ endpoint contract; it is not consumed to migrate an execution endpoint.
 
 ## Model and provider registry (`registry.json`)
 
-The signed models-and-providers registry (`codewhale.registry.v1`)
-travels in the same `facts/v1` envelope on the `registry`
-channel and is verified by the same pinned-key code
-(`crates/config/src/cloud_facts/registry.rs`); the client is
-`crates/cloud-facts/src/registry.rs`. The envelope's `facts_version` carries
-the registry `revision` and `published_at` its `generated_at`.
+The signed models-and-providers registry (`codewhale.registry.v1`) travels in
+the same `facts/v1` Ed25519 envelope on the `registry` channel (up to 8 MiB
+payload), verified by `crates/config/src/cloud_facts/registry.rs` and fetched
+and cached by `crates/cloud-facts/src/registry.rs` at
+`$CODEWHALE_HOME/facts/registry-cache.json`. Full schema, resolver overlay
+precedence, and pulled-provider admission rules live in
+[Models and providers](MODELS_AND_PROVIDERS.md#4-signed-registryjson-codewhaleregistryv1-updates).
 
-A pulled registry is accepted when `schema` is `codewhale.registry.v1`, the
-payload parses (`dialects` is an object, as in CONTRACT §1), `generated_at` is
-not in the future, any `not_after` follows `generated_at` and has not expired,
-and `revision` is not below the highest revision this client already accepted:
+Envelope and transport rules shared with cloud facts:
 
-- A `founder` signature may authenticate both model/offering updates and newly
-  admitted OpenAI-compatible descriptor providers.
-- An `automation` signature is accepted only when the signed payload carries a
-  non-expired `not_after` at most seven days (`MAX_AUTOMATION_WINDOW_SECS`)
-  after `generated_at` (matching any outer `envelope.not_after`), and every
-  entry in `providers` names an existing bundled `provider_descriptors.json` id
-  without `admission.founder_signature` or any change to frozen trust fields
-  (`kind`, `base_url`, `wire_policy`, `wire`, `auth`, `api_key_env`,
-  `env_vars`, `secret_store_slot`). Adding a provider or touching a frozen
-  provider trust field under an automation key is rejected whole as outside the
-  key's scope.
-
-The payload may be up to 8 MiB. The floor check and the install run under the
-same overlay lock as facts publication, so overlapping pulls cannot install an
-older revision or lower the cached floor.
-
-Pulled provider rows (founder-signed only) are admitted only when they are new
-(no id or alias that names a built-in or bundled provider, including its config
-keys, catalog ids, selector and subagent aliases and the legacy TUI row, and no
-`kind`), use an `https` URL on a public host name with the default port and
-without credentials, query or fragment (IP literals, single-label names,
-`localhost`, `*.localhost`, `*.local` and `*.internal` are refused), and
-declare `wire_policy` `openai-compatible`. A row may only name its own id as
-`auth.secret_slot` and its own `<ID>_API_KEY` as `auth.env_vars`, and that
-variable may not belong to a built-in provider, `CODEWHALE_*`, `DEEPSEEK_*`, or
-another product/search credential. Built-in providers' addresses, keys and wire
-protocols come only from the release; only their model naming rules (`aliases`,
-`wire_slugs`, `strip_prefixes`, `accept`) and model defaults may update from a
-verified registry. Refused rows are kept with a reason and their offerings are
-dropped.
-
-Wired: the registry follows `[cloud_facts]` (`enabled = false` by default unless
-`CODEWHALE_CLOUD_FACTS=1` or config `enabled = true`, with
-`CODEWHALE_DISABLE_CLOUD_FACTS=1` as the hard disable). When neither
-`CODEWHALE_REGISTRY_URL` nor `CODEWHALE_REGISTRY_PATH` is set, the URL defaults
-to `https://codewhale.net/api/facts/v1/registry` (or substitutes `registry`
-into `CODEWHALE_CLOUD_FACTS_URL` when that template contains `{channel}`).
-Startup reads a verified `facts/registry-cache.json`; a background pull, and
-`/model refresh`, replace it. Verified models, offerings, aliases and admitted
-providers feed `resolve_model`, `RouteResolver`, catalog lookups and descriptor
-discovery (`/provider`), with pulled models, offerings and aliases taking
-precedence over bundled seed rows. A failed or rejected pull keeps the copy
-already in use, and a rejected cache is cleared while its revision floor is
-kept. Turning cloud facts off, expiry past `not_after`, an invalid facts
-source, or the hard disable drops the active registry immediately and reverts
-resolution and discovery to the bundled seed. CI suppresses the network pull.
-
-What this does not do yet:
-
-- Cloud facts remain off by default (`[cloud_facts].enabled = false`), and no
-  bundled `registry.json` sets an initial floor; the floor is the highest
-  revision this client cached.
-- The website relay (`web/app/api/facts/v1/registry`) and publisher
+- Follows `[cloud_facts]` opt-in (`enabled = false` by default) and
+  `CODEWHALE_DISABLE_CLOUD_FACTS=1` hard disable; CI suppresses network pulls.
+  When enabled, the source defaults to
+  `https://codewhale.net/api/facts/v1/registry` (or `CODEWHALE_CLOUD_FACTS_URL`
+  when templated with `{channel}`), overridable via `CODEWHALE_REGISTRY_URL` or
+  `CODEWHALE_REGISTRY_PATH`.
+- `envelope.facts_version` must equal `registry.revision` (`>= 1`),
+  `envelope.published_at` must equal `registry.generated_at` (not in the future
+  beyond clock tolerance), `sha256` must match, and `revision` must not fall
+  below the highest accepted revision. Floor checks and overlay installation
+  share the same lock and source-generation ticket as facts publication, and
+  disabling cloud facts clears the active registry overlay immediately.
+- Key-role boundary on `registry`: a `founder` key may sign model/offering
+  updates, naming-rule and default changes, and new public-HTTPS
+  OpenAI-compatible descriptor providers. An `automation` key is accepted only
+  with a valid bounded `not_after` window, and may change only models,
+  offerings and built-in providers' `models.aliases` / `models.wire_slugs`;
+  `accept`, `strip_prefixes`, `ids`, default models, offering default flags,
+  catalog headers, corrections and `pricing_withheld` need a founder signature
+  (exact rules in
+  [Models and providers](MODELS_AND_PROVIDERS.md#key-roles-automation-vs-founder)).
+  Built-in provider endpoints, auth modes and wire policies are never altered by
+  pulled data.
+- The admission `base_url` check is static. Model requests to a custom provider
+  whose host an active verified registry admitted resolve that host on every
+  connection and refuse private, loopback, link-local and cloud-metadata
+  answers; see
+  [Models and providers](MODELS_AND_PROVIDERS.md#pulled-provider-admission-ssrf-and-credential-isolation)
+  for what that guard does and does not cover.
+- The website relay (`web/app/api/facts/v1/[channel]/route.ts`) and publisher
   (`web/scripts/facts-publish.mjs`) verify and serve `codewhale.registry.v1`
-  envelopes up to 8 MiB (with `web/supabase/migrations/20261117000114_registry_channel_publication.sql`),
-  requiring a `founder` signature whenever any provider carries an `admission`
-  record and bounding `automation` signatures to `not_after <= 7 days` with
-  unchanged Engine providers; activating the public `registry` channel row in
-  Supabase and signing remain operator actions.
-- Responses `dialects` remain compiled wire behavior in `crates/config`; pulled
-  providers use OpenAI-compatible Chat Completions only.
-- The `base_url` check at admission is static. A public host name that resolves
-  to a private address is not caught at parse time; execution goes through the
-  runtime's network client when the user configures the provider.
+  envelopes (`CW-8253`); activating the public `registry` channel row in
+  Supabase and signing remain operator actions, and the Platform database
+  export cutover (`CW-8249`, `CW-8255`) remains planned; see
+  [Models and providers](MODELS_AND_PROVIDERS.md#6-planned-not-shipped-yet).
 - As for facts, an equal revision replaces the held copy, and a torn cache
   file loses the floor at the next start.
 
