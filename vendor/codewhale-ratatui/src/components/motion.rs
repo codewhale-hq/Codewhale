@@ -203,8 +203,13 @@ pub fn paint_working_glow(
         return;
     }
     let cycle = tokens::MOTION_LOOP_BREATHE_MS as u128;
+    let active = tokens::MOTION_SWEEP_ACTIVE_MS as u128;
     let phase = (elapsed - crate::spin::EARN_DELAY).as_millis() % cycle;
-    let center = phase as f32 / cycle as f32 * (width as f32 + 4.0) - 2.0;
+    if phase >= active {
+        return;
+    }
+    let half_width = tokens::MOTION_SWEEP_WIDTH_CELLS;
+    let center = phase as f32 / active as f32 * (width as f32 + half_width * 2.0) - half_width;
     let mut offset = 0usize;
     for grapheme in label.graphemes(true) {
         let cells = text::width(grapheme);
@@ -216,7 +221,9 @@ pub fn paint_working_glow(
         }
         let cell = &mut buf[(area.x + offset as u16, area.y)];
         let distance = (offset as f32 + (cells - 1) as f32 / 2.0 - center).abs();
-        let strength = (1.0 - distance / 2.5).max(0.0) * 0.45;
+        let norm = (distance / half_width).min(1.0);
+        let strength =
+            0.5 * (1.0 + (norm * std::f32::consts::PI).cos()) * tokens::MOTION_SWEEP_STRENGTH;
         if strength > 0.0
             && cell.symbol() == grapheme
             && !grapheme.chars().all(char::is_whitespace)

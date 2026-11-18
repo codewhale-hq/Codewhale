@@ -4,6 +4,7 @@ use ratatui::style::Color;
 
 use super::detect::PaletteMode;
 use super::ids::ThemeId;
+use super::rgb::*;
 use super::themes::{GRAYSCALE_UI_THEME, LIGHT_UI_THEME, SOLARIZED_LIGHT_UI_THEME, UiTheme};
 use super::tokens::*;
 
@@ -528,18 +529,33 @@ pub(crate) enum SemanticForegroundRole {
 
 impl SemanticForegroundRole {
     #[must_use]
-    const fn ansi16(self) -> Color {
-        match self {
-            Self::Action => Color::LightBlue,
-            Self::Live => Color::LightCyan,
-            Self::Human => Color::LightYellow,
-            Self::Warning => Color::Yellow,
-            Self::Danger => Color::LightRed,
-            Self::Success => Color::LightGreen,
-            Self::ModeAgent => Color::Blue,
-            Self::ModePlan => Color::Magenta,
-            Self::ModeOperate => Color::LightMagenta,
-            Self::ModeYolo => Color::Red,
+    const fn ansi16(self, mode: PaletteMode) -> Color {
+        if matches!(mode, PaletteMode::Light | PaletteMode::SolarizedLight) {
+            match self {
+                Self::Action => Color::Blue,
+                Self::Live => Color::Cyan,
+                Self::Human => Color::Yellow,
+                Self::Warning => Color::Yellow,
+                Self::Danger => Color::Red,
+                Self::Success => Color::Green,
+                Self::ModeAgent => Color::Blue,
+                Self::ModePlan => Color::Magenta,
+                Self::ModeOperate => Color::Magenta,
+                Self::ModeYolo => Color::Red,
+            }
+        } else {
+            match self {
+                Self::Action => Color::LightBlue,
+                Self::Live => Color::LightCyan,
+                Self::Human => Color::LightYellow,
+                Self::Warning => Color::Yellow,
+                Self::Danger => Color::LightRed,
+                Self::Success => Color::LightGreen,
+                Self::ModeAgent => Color::Blue,
+                Self::ModePlan => Color::Magenta,
+                Self::ModeOperate => Color::LightMagenta,
+                Self::ModeYolo => Color::Red,
+            }
         }
     }
 }
@@ -621,7 +637,7 @@ pub fn adapt_fg_for_depth(
         && let Some(role) = raw_semantic_foreground_role(source)
             .or_else(|| theme_semantic_foreground_role(source, ui))
     {
-        role.ansi16()
+        role.ansi16(ui.mode)
     } else {
         adapt_color(resolved, depth)
     }
@@ -711,6 +727,48 @@ pub fn adapt_color(color: Color, depth: ColorDepth) -> Color {
 pub fn adapt_bg(color: Color, depth: ColorDepth) -> Color {
     match (color, depth) {
         (_, ColorDepth::TrueColor) => color,
+        (c, ColorDepth::Ansi256)
+            if c == DIFF_ADDED_BG
+                || c == Color::Rgb(
+                    SHORELINE_DIFF_ADDED_BG_RGB.0,
+                    SHORELINE_DIFF_ADDED_BG_RGB.1,
+                    SHORELINE_DIFF_ADDED_BG_RGB.2,
+                ) =>
+        {
+            Color::Indexed(22)
+        }
+        (c, ColorDepth::Ansi256)
+            if c == DIFF_DELETED_BG
+                || c == Color::Rgb(
+                    SHORELINE_DIFF_DELETED_BG_RGB.0,
+                    SHORELINE_DIFF_DELETED_BG_RGB.1,
+                    SHORELINE_DIFF_DELETED_BG_RGB.2,
+                ) =>
+        {
+            Color::Indexed(52)
+        }
+        (c, ColorDepth::Ansi256)
+            if c == LIGHT_SUCCESS
+                || c == Color::Rgb(
+                    SHORELINE_LIGHT_DIFF_ADDED_BG_RGB.0,
+                    SHORELINE_LIGHT_DIFF_ADDED_BG_RGB.1,
+                    SHORELINE_LIGHT_DIFF_ADDED_BG_RGB.2,
+                )
+                || c == SOLARIZED_DIFF_ADDED_BG =>
+        {
+            Color::Indexed(158)
+        }
+        (c, ColorDepth::Ansi256)
+            if c == LIGHT_ERROR
+                || c == Color::Rgb(
+                    SHORELINE_LIGHT_DIFF_DELETED_BG_RGB.0,
+                    SHORELINE_LIGHT_DIFF_DELETED_BG_RGB.1,
+                    SHORELINE_LIGHT_DIFF_DELETED_BG_RGB.2,
+                )
+                || c == SOLARIZED_DIFF_DELETED_BG =>
+        {
+            Color::Indexed(224)
+        }
         (Color::Rgb(r, g, b), ColorDepth::Ansi256) => Color::Indexed(rgb_to_ansi256(r, g, b)),
         (_, ColorDepth::Ansi256) => color,
         (_, ColorDepth::Ansi16 | ColorDepth::Monochrome) => Color::Reset,
