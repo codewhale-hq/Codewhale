@@ -1745,6 +1745,7 @@
   "SnapshotsDisabledUnsafeLocation": "Les instantanés et /undo sont désactivés pour {workspace} : un répertoire personnel ou racine est trop vaste pour un instantané sûr. Démarrez dans un répertoire de projet pour les activer.",
   "SnapshotsHistoryRepaired": "L'historique d'annulation de {workspace} était endommagé (son dernier point de restauration manquait) et a été redémarré. Les points de restauration antérieurs ne peuvent plus être restaurés ; les nouveaux tours sont de nouveau protégés.",
   "SnapshotsFailing": "Les instantanés échouent pour {workspace}, donc /undo ne peut pas restaurer les tours récents : {limit}",
+  "SnapshotsResumed": "Les instantanés et /undo sont de nouveau actifs pour {workspace}.",
   "RuntimeStoreUnreadableNotice": "Magasin d'exécution de la session : impossible de lire {record} dans {path} ({reason}). Mettez ce fichier de côté (ou supprimez-le) et réessayez ; les autres enregistrements du fil restent en place.",
   "RuntimeStoreUnwritableNotice": "Magasin d'exécution de la session : impossible d'écrire {record} dans {path} ({reason}). Vérifiez l'espace libre et les permissions à cet endroit, puis réessayez ; rien n'a été écrasé.",
   "ProviderExternalSemanticsRevoke": "{semantics} | révocation : {revoke}",

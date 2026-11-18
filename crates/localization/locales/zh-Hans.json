@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "此工作区 {workspace} 的快照与 /undo 已关闭：主目录或根目录范围过大，无法安全快照。请在项目目录中启动即可开启。",
   "SnapshotsHistoryRepaired": "{workspace} 的撤销历史已损坏（缺少最新的恢复点），已重新开始记录。之前的恢复点无法再恢复；新的回合重新受到保护。",
   "SnapshotsFailing": "{workspace} 的快照持续失败，因此 /undo 无法恢复最近的回合：{limit}",
+  "SnapshotsResumed": "{workspace} 的快照和 /undo 已重新开启。",
   "RuntimeStoreUnreadableNotice": "会话运行时存储：无法读取 {path} 处的 {record}（{reason}）。请将该文件移开（或删除）后重试；线程的其他记录保持不变。",
   "RuntimeStoreUnwritableNotice": "会话运行时存储：无法写入 {path} 处的 {record}（{reason}）。请检查该位置的可用空间和权限后重试；没有任何内容被覆盖。",
   "ProviderExternalSemanticsRevoke": "{semantics} | 撤销：{revoke}",

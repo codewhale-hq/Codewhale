@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "Snapshots e /undo estão desligados para {workspace}: um diretório raiz ou pessoal é amplo demais para um snapshot seguro. Comece em um diretório de projeto para ligá-los.",
   "SnapshotsHistoryRepaired": "O histórico de desfazer de {workspace} estava danificado (faltava o ponto de restauração mais recente) e foi reiniciado. Os pontos de restauração anteriores não podem mais ser restaurados; os novos turnos voltam a ficar protegidos.",
   "SnapshotsFailing": "Os snapshots estão falhando em {workspace}, então /undo não consegue restaurar os turnos recentes: {limit}",
+  "SnapshotsResumed": "Snapshots e /undo estão ativos novamente para {workspace}.",
   "RuntimeStoreUnreadableNotice": "Armazenamento de execução da sessão: não foi possível ler {record} em {path} ({reason}). Afaste esse arquivo (ou exclua-o) e tente de novo; os demais registros da thread permanecem.",
   "RuntimeStoreUnwritableNotice": "Armazenamento de execução da sessão: não foi possível gravar {record} em {path} ({reason}). Verifique o espaço livre e as permissões nesse local e tente de novo; nada foi sobrescrito.",
   "ProviderExternalSemanticsRevoke": "{semantics} | revogar: {revoke}",

@@ -1745,6 +1745,7 @@
   "SnapshotsDisabledUnsafeLocation": "Snapshot dan /undo nonaktif untuk {workspace}: direktori home atau root terlalu luas untuk di-snapshot dengan aman. Mulailah di direktori proyek untuk mengaktifkannya.",
   "SnapshotsHistoryRepaired": "Riwayat undo untuk {workspace} rusak (titik pemulihan terakhirnya hilang) dan telah dimulai ulang. Titik pemulihan sebelumnya tidak dapat dipulihkan lagi; giliran baru kembali terlindungi.",
   "SnapshotsFailing": "Snapshot gagal untuk {workspace}, jadi /undo tidak dapat memulihkan giliran terbaru: {limit}",
+  "SnapshotsResumed": "Snapshot dan /undo aktif kembali untuk {workspace}.",
   "RuntimeStoreUnreadableNotice": "Penyimpanan runtime sesi: {record} di {path} tidak dapat dibaca ({reason}). Pindahkan berkas itu (atau hapus) lalu coba lagi; rekaman lain di thread ini tetap utuh.",
   "RuntimeStoreUnwritableNotice": "Penyimpanan runtime sesi: {record} di {path} tidak dapat ditulis ({reason}). Periksa ruang kosong dan izin di sana, lalu coba lagi; tidak ada yang ditimpa.",
   "ProviderExternalSemanticsRevoke": "{semantics} | cabut: {revoke}",

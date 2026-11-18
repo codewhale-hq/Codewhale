@@ -4186,8 +4186,6 @@ pub(crate) async fn run_event_loop(
                         app.push_status_toast(message, StatusToastLevel::Warning, Some(12_000));
                     }
                     EngineEvent::SnapshotsDisabled { reason, .. } => {
-                        // Undo is silently off otherwise: the engine's stderr
-                        // notice never reaches the alternate screen (#5930).
                         // The engine already rendered the one localized line;
                         // show it once as a toast and leave the durable copy
                         // to `/status` rather than pinning it in the
@@ -8102,6 +8100,9 @@ pub(crate) fn apply_mcp_session_boot_event(
     app.mcp_snapshot_generation_invalidated = false;
     app.mcp_configured_count = snapshot.servers.len();
     app.hotbar_actions.replace_mcp_tools(Some(&snapshot));
+    if finished {
+        announce_mcp_problem_changes(app, &snapshot);
+    }
     if finished && app.mcp_reload_in_flight {
         // One completion receipt for the explicit reload that started this
         // pass; session boot never sets the flag.
@@ -8115,6 +8116,38 @@ pub(crate) fn apply_mcp_session_boot_event(
     app.mcp_connecting = connecting;
     app.set_mcp_boot_initializing(!finished);
     app.needs_redraw = true;
+}
+
+fn announce_mcp_problem_changes(
+    app: &mut App,
+    snapshot: &codewhale_engine::mcp::McpManagerSnapshot,
+) {
+    use crate::tui::session_boot::{
+        PluginBootSummary, SessionBootActivityLevel, SessionBootSurface,
+    };
+    let surface = SessionBootSurface::from_parts(
+        Some(snapshot),
+        false,
+        &[],
+        snapshot.servers.len(),
+        PluginBootSummary::default(),
+    );
+    let Some((chip, fallbacks)) = surface
+        .announce_problem_changes_with_fallbacks(app.ui_locale, &mut app.mcp_announced_problems)
+    else {
+        return;
+    };
+    if app.launch.visible || app.mcp_reload_in_flight {
+        return;
+    }
+    let level = if chip.level == SessionBootActivityLevel::Active {
+        StatusToastLevel::Info
+    } else {
+        StatusToastLevel::Warning
+    };
+    app.push_status_toast_record(
+        crate::tui::app::StatusToast::new(chip.text, level, Some(12_000)).with_fallbacks(fallbacks),
+    );
 }
 
 pub(crate) async fn run_cache_warmup(app: &App, config: &Config) -> Result<CacheWarmupOutcome> {
@@ -8650,7 +8683,7 @@ mod session_boot_event_tests {
         assert_eq!(app.mcp_configured_count, 2);
         let surface = crate::tui::session_boot::SessionBootSurface::from_app(&app);
         let chip = surface
-            .activity_notice(codewhale_localization::Locale::En, 80)
+            .activity_notice(80)
             .map(|notice| notice.text)
             .expect("chip");
         assert!(chip.contains("alpha"), "{chip}");
@@ -8761,6 +8794,78 @@ mod session_boot_event_tests {
                 .map(|server| server.name.as_str()),
             Some("fresh")
         );
+    }
+
+    fn failed_server(name: &str, error: &str) -> McpServerSnapshot {
+        let mut s = server(name, false);
+        s.error = Some(error.to_string());
+        s
+    }
+
+    fn mcp_toasts(app: &App) -> Vec<String> {
+        app.status_toasts
+            .iter()
+            .filter(|toast| toast.text.starts_with("MCP"))
+            .map(|toast| toast.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn mcp_toasts_are_suppressed_while_launch_card_is_visible() {
+        let mut app = test_app();
+        app.launch.visible = true;
+        let snap = snapshot(vec![failed_server("alpha", "transport closed")]);
+        apply_mcp_session_boot_event(&mut app, 1, snap.clone(), Vec::new(), true);
+        assert!(mcp_toasts(&app).is_empty());
+        assert!(app.mcp_announced_problems.contains_key("alpha"));
+
+        app.launch.visible = false;
+        apply_mcp_session_boot_event(&mut app, 2, snap, Vec::new(), true);
+        assert!(mcp_toasts(&app).is_empty());
+
+        apply_mcp_session_boot_event(
+            &mut app,
+            3,
+            snapshot(vec![server("alpha", true)]),
+            Vec::new(),
+            true,
+        );
+        assert_eq!(mcp_toasts(&app), vec!["MCP · alpha connected"]);
+    }
+
+    #[test]
+    fn mcp_toasts_are_suppressed_during_mcp_reload() {
+        let mut app = test_app();
+        app.launch.visible = false;
+        app.mcp_reload_in_flight = true;
+        let snap = snapshot(vec![failed_server("alpha", "transport closed")]);
+        apply_mcp_session_boot_event(&mut app, 1, snap.clone(), Vec::new(), true);
+        assert!(mcp_toasts(&app).is_empty());
+        assert!(!app.mcp_reload_in_flight);
+        assert!(app.mcp_announced_problems.contains_key("alpha"));
+
+        apply_mcp_session_boot_event(&mut app, 2, snap, Vec::new(), true);
+        assert!(mcp_toasts(&app).is_empty());
+    }
+
+    #[test]
+    fn mcp_announced_problems_clear_on_session_change() {
+        let mut app = test_app();
+        app.launch.visible = false;
+        app.set_current_session_id(Some("session-1".to_string()));
+        let snap = snapshot(vec![failed_server("alpha", "transport closed")]);
+        apply_mcp_session_boot_event(&mut app, 1, snap.clone(), Vec::new(), true);
+        assert_eq!(mcp_toasts(&app), vec!["MCP · failed: alpha · /mcp"]);
+        app.status_toasts.clear();
+
+        app.set_current_session_id(Some("session-1".to_string()));
+        apply_mcp_session_boot_event(&mut app, 2, snap.clone(), Vec::new(), true);
+        assert!(mcp_toasts(&app).is_empty());
+
+        app.set_current_session_id(Some("session-2".to_string()));
+        assert!(app.mcp_announced_problems.is_empty());
+        apply_mcp_session_boot_event(&mut app, 3, snap, Vec::new(), true);
+        assert_eq!(mcp_toasts(&app), vec!["MCP · failed: alpha · /mcp"]);
     }
 
     fn translation_test_route() -> codewhale_engine::cost_status::EffectiveRouteEnvelope {

@@ -1722,6 +1722,16 @@ impl Engine {
                 })
                 .await;
         }
+        if crate::core::turn::take_snapshots_resumed_notice(
+            &self.session.workspace,
+            Some(&self.session.id),
+        ) {
+            let line = crate::core::turn::snapshots_resumed_line(
+                &self.session.workspace,
+                codewhale_localization::resolve_locale(&self.config.locale_tag),
+            );
+            let _ = self.send_event(Event::status(line)).await;
+        }
     }
 
     /// Replay the execution-boundary facts a conformance golden was recorded

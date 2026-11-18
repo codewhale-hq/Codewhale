@@ -1745,6 +1745,7 @@
   "SnapshotsDisabledUnsafeLocation": "Les instantànies i /undo estan desactivats per a {workspace}: un directori d'inici o l'arrel és massa ampli per fer-ne una instantània segura. Comença en un directori de projecte per activar-los.",
   "SnapshotsHistoryRepaired": "L'historial de desfer de {workspace} estava malmès (faltava el darrer punt de restauració) i s'ha reiniciat. Els punts de restauració anteriors ja no es poden restaurar; els torns nous tornen a estar protegits.",
   "SnapshotsFailing": "Les instantànies fallen per a {workspace}, així que /undo no pot restaurar els torns recents: {limit}",
+  "SnapshotsResumed": "Les instantànies i /undo tornen a estar actius per a {workspace}.",
   "RuntimeStoreUnreadableNotice": "Magatzem d'execució de la sessió: no s'ha pogut llegir {record} a {path} ({reason}). Aparta aquest fitxer (o suprimeix-lo) i torna-ho a provar; la resta de registres del fil es conserven.",
   "RuntimeStoreUnwritableNotice": "Magatzem d'execució de la sessió: no s'ha pogut escriure {record} a {path} ({reason}). Comprova l'espai lliure i els permisos allà i torna-ho a provar; no s'ha sobreescrit res.",
   "ProviderExternalSemanticsRevoke": "{semantics} | revoca: {revoke}",

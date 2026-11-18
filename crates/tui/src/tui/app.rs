@@ -2391,6 +2391,8 @@ pub struct App {
     pub mcp_snapshot_generation_invalidated: bool,
     /// Enabled servers that have not settled in the current boot pass.
     pub mcp_connecting: Vec<String>,
+    pub mcp_announced_problems:
+        std::collections::BTreeMap<String, crate::tui::session_boot::McpServerBootState>,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by the footer chip (#502) so a count is visible even before
     /// the user runs `/mcp` for the first time. `0` hides the chip.
@@ -5907,6 +5909,7 @@ impl App {
     pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
         if self.current_session_id != session_id {
             self.view_stack.remove_owned_evidence_pagers();
+            self.mcp_announced_problems.clear();
             self.session_write_receipt = None;
             self.session_write_owner = None;
         }

@@ -1745,6 +1745,7 @@
   "SnapshotsDisabledUnsafeLocation": "Snapshots und /undo sind für {workspace} aus: ein Home- oder Wurzelverzeichnis ist zu weit gefasst für einen sicheren Snapshot. Starte in einem Projektverzeichnis, um sie einzuschalten.",
   "SnapshotsHistoryRepaired": "Der Undo-Verlauf für {workspace} war beschädigt (der letzte Wiederherstellungspunkt fehlte) und wurde neu gestartet. Frühere Wiederherstellungspunkte lassen sich nicht mehr wiederherstellen; neue Züge sind wieder geschützt.",
   "SnapshotsFailing": "Snapshots für {workspace} schlagen fehl, daher kann /undo die letzten Züge nicht wiederherstellen: {limit}",
+  "SnapshotsResumed": "Snapshots und /undo sind für {workspace} wieder aktiv.",
   "RuntimeStoreUnreadableNotice": "Laufzeitspeicher der Sitzung: {record} unter {path} konnte nicht gelesen werden ({reason}). Verschiebe diese Datei beiseite (oder lösche sie) und versuche es erneut; die übrigen Datensätze des Threads bleiben erhalten.",
   "RuntimeStoreUnwritableNotice": "Laufzeitspeicher der Sitzung: {record} unter {path} konnte nicht geschrieben werden ({reason}). Prüfe dort freien Speicherplatz und Berechtigungen und versuche es erneut; nichts wurde überschrieben.",
   "ProviderExternalSemanticsRevoke": "{semantics} | Widerruf: {revoke}",

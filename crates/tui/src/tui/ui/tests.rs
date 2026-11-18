@@ -6533,7 +6533,7 @@ fn wide_underwater_shell_aligns_transcript_and_composer_on_the_shared_canvas() {
 }
 
 #[test]
-fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
+fn failed_mcp_reserves_no_rows_and_paints_no_standing_footer_chip() {
     fn app() -> App {
         let mut app = create_test_app();
         app.onboarding_workspace_trust_gate = false;
@@ -6582,20 +6582,13 @@ fn failed_mcp_is_a_footer_chip_not_multiline_chat_boot_output() {
         baseline_composer,
         "MCP diagnostics must not reserve chat/composer rows"
     );
-    assert!(
-        rendered.contains("MCP · 0 connected · 1 failed"),
-        "{rendered}"
-    );
+    assert!(!rendered.contains("1 failed"), "{rendered}");
     assert!(!rendered.contains("alpha · failed"), "{rendered}");
     assert!(!rendered.contains("/mcp retry alpha"), "{rendered}");
 }
 
-/// The founder's receipt (#5926): of the eight servers the footer called
-/// "failed", seven only needed a login. Rendered, the footer summary now
-/// keeps the three states apart — connected, ◆ auth required, failed — so
-/// an expired login never reads as a broken server.
 #[test]
-fn footer_summary_separates_connected_need_login_and_failed() {
+fn mcp_problems_are_announced_once_per_session_and_never_pinned_in_the_footer() {
     fn server(
         name: &str,
         connected: bool,
@@ -6625,7 +6618,7 @@ fn footer_summary_separates_connected_need_login_and_failed() {
     app.onboarding_workspace_trust_gate = false;
     app.onboarding = OnboardingState::None;
     app.launch.visible = false;
-    app.mcp_snapshot = Some(codewhale_engine::mcp::McpManagerSnapshot {
+    let snapshot = codewhale_engine::mcp::McpManagerSnapshot {
         config_path: PathBuf::from("mcp.json"),
         config_exists: true,
         reload_required: false,
@@ -6644,18 +6637,48 @@ fn footer_summary_separates_connected_need_login_and_failed() {
                 Some("OAuth token refresh failed: Failed to parse server response"),
             ),
         ],
-    });
-    let rendered = render_underwater_test_app(&mut app, 100, 30);
-
+    };
+    super::event_loop::apply_mcp_session_boot_event(
+        &mut app,
+        1,
+        snapshot.clone(),
+        Vec::new(),
+        true,
+    );
+    let announcements = app
+        .status_toasts
+        .iter()
+        .filter(|toast| toast.text.starts_with("MCP"))
+        .map(|toast| toast.text.clone())
+        .collect::<Vec<_>>();
     let expected = format!(
-        "MCP · 1 connected · 1 {} · 1 failed",
+        "MCP · {}: slack · failed: supabase · /mcp",
         crate::tui::session_boot::mcp_auth_required_state_label()
     );
+    assert_eq!(announcements, vec![expected]);
+    let rendered_80 = render_underwater_test_app(&mut app, 80, 30);
+    assert!(rendered_80.contains("/mcp"), "{rendered_80}");
+    assert!(!rendered_80.contains("slack · failed"), "{rendered_80}");
+    app.status_toasts.clear();
+    for generation in 2..=5 {
+        super::event_loop::apply_mcp_session_boot_event(
+            &mut app,
+            generation,
+            snapshot.clone(),
+            Vec::new(),
+            true,
+        );
+    }
     assert!(
-        rendered.contains(&expected),
-        "expected {expected:?} in:\n{rendered}"
+        app.status_toasts
+            .iter()
+            .all(|toast| !toast.text.starts_with("MCP")),
+        "cleared toasts must stay absent across repeated passes: {:?}",
+        app.status_toasts
     );
-    assert!(!rendered.contains("2 failed"), "{rendered}");
+    let rendered = render_underwater_test_app(&mut app, 100, 30);
+    assert!(!rendered.contains("1 failed"), "{rendered}");
+    assert!(!rendered.contains("supabase"), "{rendered}");
 }
 
 #[test]

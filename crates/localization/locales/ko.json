@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "{workspace}에서 스냅샷과 /undo가 꺼져 있습니다: 홈 디렉터리나 루트 디렉터리는 범위가 너무 넓어 안전하게 스냅샷할 수 없습니다. 프로젝트 디렉터리에서 시작하면 켜집니다.",
   "SnapshotsHistoryRepaired": "{workspace}의 실행 취소 기록이 손상되어(최신 복원 지점이 없음) 새로 시작했습니다. 이전 복원 지점은 더 이상 복원할 수 없지만, 새 턴은 다시 보호됩니다.",
   "SnapshotsFailing": "{workspace}의 스냅샷이 실패하고 있어 /undo로 최근 턴을 복원할 수 없습니다: {limit}",
+  "SnapshotsResumed": "{workspace}의 스냅샷과 /undo가 다시 켜졌습니다.",
   "RuntimeStoreUnreadableNotice": "세션 런타임 저장소: {path}의 {record}을(를) 읽을 수 없습니다({reason}). 해당 파일을 옮기거나 삭제한 뒤 다시 시도하세요. 스레드의 다른 레코드는 그대로 유지됩니다.",
   "RuntimeStoreUnwritableNotice": "세션 런타임 저장소: {path}의 {record}을(를) 쓸 수 없습니다({reason}). 해당 위치의 여유 공간과 권한을 확인한 뒤 다시 시도하세요. 아무것도 덮어쓰지 않았습니다.",
   "ProviderExternalSemanticsRevoke": "{semantics} | 취소: {revoke}",

@@ -570,9 +570,6 @@ impl SnapshotRepo {
     ) -> io::Result<TakenSnapshot> {
         // Guard against disk blowup (#1112): if the snapshot directory has
         // grown beyond the limit, prune aggressively before adding more.
-        // When the prune actually destroys restore points the user is told
-        // once per workspace — losing undo history to a log line is the S5
-        // failure mode (2026-08-04 snapshot hunt).
         if let Ok(removed) = self.prune_size_pressure(
             MAX_SNAPSHOT_SIZE_MB * BYTES_PER_MB,
             PRUNE_TARGET_MB * BYTES_PER_MB,
@@ -2334,13 +2331,8 @@ fn dir_size_bytes(root: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
-/// One prominent notice per workspace per process when the size-pressure
-/// prune destroys restore points — silent loss of undo history is the S5
-/// failure mode (2026-08-04 snapshot hunt). The stderr print is deliberate:
-/// headless/CLI stderr is the user surface for once-per-workspace snapshot
-/// warnings, matching `maybe_notify_snapshots_disabled_once` in
-/// `core/turn.rs`.
-#[allow(clippy::print_stderr)]
+/// Log once per workspace per process when the size-pressure prune destroys
+/// restore points.
 fn notify_snapshot_history_pruned_once(workspace: &Path, removed: usize) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -2354,7 +2346,14 @@ fn notify_snapshot_history_pruned_once(workspace: &Path, removed: usize) {
         return;
     }
     drop(guard);
-    eprint!("{}", snapshot_history_pruned_message(workspace, removed));
+    tracing::warn!(
+        target: "snapshot",
+        workspace = %workspace.display(),
+        removed,
+        cap_mb = MAX_SNAPSHOT_SIZE_MB,
+        "{}",
+        snapshot_history_pruned_message(workspace, removed).trim_end()
+    );
 }
 
 /// Build the user-visible notice for a size-pressure prune. Kept pure and

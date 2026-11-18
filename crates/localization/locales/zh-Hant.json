@@ -1762,6 +1762,7 @@
   "SnapshotsDisabledUnsafeLocation": "此工作區 {workspace} 的快照與 /undo 已關閉：主目錄或根目錄範圍過大，無法安全快照。請在專案目錄中啟動即可開啟。",
   "SnapshotsHistoryRepaired": "{workspace} 的復原歷史已損壞（缺少最新的還原點），已重新開始記錄。先前的還原點無法再還原；新的回合重新受到保護。",
   "SnapshotsFailing": "{workspace} 的快照持續失敗，因此 /undo 無法還原最近的回合：{limit}",
+  "SnapshotsResumed": "{workspace} 的快照和 /undo 已重新開啟。",
   "RuntimeStoreUnreadableNotice": "工作階段執行階段儲存區：無法讀取 {path} 的 {record}（{reason}）。請將該檔案移開（或刪除）後重試；執行緒的其他記錄保持不變。",
   "RuntimeStoreUnwritableNotice": "工作階段執行階段儲存區：無法寫入 {path} 的 {record}（{reason}）。請檢查該位置的可用空間與權限後重試；沒有任何內容被覆寫。",
   "ProviderExternalSemanticsRevoke": "{semantics} | 復原：{revoke}",

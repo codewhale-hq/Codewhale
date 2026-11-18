@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "Ảnh chụp nhanh và /undo đang tắt cho {workspace}: thư mục nhà hoặc thư mục gốc quá rộng để chụp an toàn. Hãy bắt đầu trong một thư mục dự án để bật lại.",
   "SnapshotsHistoryRepaired": "Lịch sử hoàn tác của {workspace} bị hỏng (thiếu điểm khôi phục mới nhất) và đã được bắt đầu lại. Các điểm khôi phục trước đó không thể khôi phục nữa; các lượt mới lại được bảo vệ.",
   "SnapshotsFailing": "Snapshot đang lỗi cho {workspace}, nên /undo không thể khôi phục các lượt gần đây: {limit}",
+  "SnapshotsResumed": "Ảnh chụp nhanh và /undo đã bật lại cho {workspace}.",
   "RuntimeStoreUnreadableNotice": "Kho lưu trữ runtime của phiên: không đọc được {record} tại {path} ({reason}). Hãy dời tệp đó sang chỗ khác (hoặc xóa) rồi thử lại; các bản ghi khác của luồng vẫn được giữ nguyên.",
   "RuntimeStoreUnwritableNotice": "Kho lưu trữ runtime của phiên: không ghi được {record} tại {path} ({reason}). Hãy kiểm tra dung lượng trống và quyền truy cập ở đó rồi thử lại; không có gì bị ghi đè.",
   "ProviderExternalSemanticsRevoke": "{semantics} | thu hồi: {revoke}",

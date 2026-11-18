@@ -32,6 +32,7 @@ impl StatusToastLevel {
 #[derive(Debug, Clone)]
 pub struct StatusToast {
     pub text: String,
+    pub(crate) fallback_texts: Vec<String>,
     pub level: StatusToastLevel,
     pub created_at: Instant,
     pub ttl_ms: Option<u64>,
@@ -60,12 +61,18 @@ impl StatusToast {
     pub fn new(text: impl Into<String>, level: StatusToastLevel, ttl_ms: Option<u64>) -> Self {
         Self {
             text: text.into(),
+            fallback_texts: Vec::new(),
             level,
             created_at: Instant::now(),
             ttl_ms,
             kind: StatusToastKind::Ordinary,
             event_id: None,
         }
+    }
+
+    pub(crate) fn with_fallbacks(mut self, fallbacks: Vec<String>) -> Self {
+        self.fallback_texts = fallbacks;
+        self
     }
 
     pub(crate) fn for_event(mut self, event_id: impl Into<String>) -> Self {
@@ -83,6 +90,7 @@ impl StatusToast {
     ) -> Self {
         Self {
             text: text.into(),
+            fallback_texts: Vec::new(),
             level,
             created_at: Instant::now(),
             ttl_ms: None,
@@ -114,6 +122,7 @@ impl StatusToast {
     ) -> Self {
         Self {
             text: text.into(),
+            fallback_texts: Vec::new(),
             level: StatusToastLevel::Warning,
             created_at: Instant::now(),
             ttl_ms: None,

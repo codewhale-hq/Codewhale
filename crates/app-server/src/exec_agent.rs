@@ -988,6 +988,9 @@ pub async fn run_exec_agent(
                     )
                 );
             }
+            Event::SnapshotsDisabled { reason, .. } => {
+                eprintln!("warning: {reason}");
+            }
             Event::RequestImageWindow {
                 provider,
                 model,

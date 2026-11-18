@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "Las instantáneas y /undo están desactivados para {workspace}: un directorio raíz o personal es demasiado amplio para una instantánea segura. Empieza en un directorio de proyecto para activarlos.",
   "SnapshotsHistoryRepaired": "El historial de deshacer de {workspace} estaba dañado (faltaba su último punto de restauración) y se reinició. Los puntos de restauración anteriores ya no se pueden restaurar; los turnos nuevos vuelven a estar protegidos.",
   "SnapshotsFailing": "Las instantáneas están fallando para {workspace}, así que /undo no puede restaurar los turnos recientes: {limit}",
+  "SnapshotsResumed": "Las instantáneas y /undo vuelven a estar activos para {workspace}.",
   "RuntimeStoreUnreadableNotice": "Almacén de ejecución de la sesión: no se pudo leer {record} en {path} ({reason}). Aparta ese archivo (o elimínalo) y vuelve a intentar; los demás registros del hilo se conservan.",
   "RuntimeStoreUnwritableNotice": "Almacén de ejecución de la sesión: no se pudo escribir {record} en {path} ({reason}). Revisa el espacio libre y los permisos allí y vuelve a intentar; no se sobrescribió nada.",
   "ProviderExternalSemanticsRevoke": "{semantics} | revocar: {revoke}",

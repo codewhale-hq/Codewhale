@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "Snapshots and /undo are off for {workspace}: a home or root directory is too broad to snapshot safely. Start in a project directory to turn them on.",
   "SnapshotsHistoryRepaired": "Undo history for {workspace} was damaged (its latest restore point was missing) and has been restarted. Earlier restore points can no longer be restored; new turns are protected again.",
   "SnapshotsFailing": "Snapshots are failing for {workspace}, so /undo cannot restore recent turns: {limit}",
+  "SnapshotsResumed": "Snapshots and /undo are back on for {workspace}.",
   "RuntimeStoreUnreadableNotice": "Session runtime store: {record} at {path} could not be read ({reason}). Move that file aside (or delete it) and retry; the thread's other records stay in place.",
   "RuntimeStoreUnwritableNotice": "Session runtime store: {record} at {path} could not be written ({reason}). Check free space and permissions there, then retry; nothing was overwritten.",
   "ProviderExternalSemanticsRevoke": "{semantics} | revoke: {revoke}",

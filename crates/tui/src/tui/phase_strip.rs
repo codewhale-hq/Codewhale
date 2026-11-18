@@ -286,10 +286,29 @@ fn boot_activity_ink(level: crate::tui::session_boot::SessionBootActivityLevel) 
 /// disagree about which toast is live. Completion may land in the same event
 /// drain as an approval denial: unresolved Warning/Error receipts stay
 /// visible after `done`, only routine informational copy yields.
+fn fit_notice_candidates(
+    text: &str,
+    fallbacks: &[String],
+    budget: usize,
+    urgent: bool,
+) -> Option<String> {
+    if text.trim().width() <= budget {
+        return fit_notice(text, budget, urgent);
+    }
+    if let Some(candidate) = fallbacks
+        .iter()
+        .map(|item| item.trim())
+        .find(|item| !item.is_empty() && item.width() <= budget)
+    {
+        return Some(candidate.to_string());
+    }
+    fit_notice(text, budget, urgent)
+}
+
 fn selected_notice(
     status_toast: Option<crate::tui::app::StatusToast>,
     phase_label: &str,
-) -> Option<(String, ChromeInk, bool)> {
+) -> Option<(String, Vec<String>, ChromeInk, bool)> {
     status_toast
         .filter(|toast| !toast.text.trim().is_empty() && toast.text.trim() != phase_label)
         .map(|toast| {
@@ -298,7 +317,12 @@ fn selected_notice(
                 crate::tui::app::StatusToastLevel::Warning
                     | crate::tui::app::StatusToastLevel::Error
             );
-            (toast.text.clone(), toast.level.ink(), urgent)
+            (
+                toast.text.clone(),
+                toast.fallback_texts.clone(),
+                toast.level.ink(),
+                urgent,
+            )
         })
 }
 
@@ -1127,9 +1151,10 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         .max(8)
         .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
-        .map(|(text, ink, urgent)| {
+        .map(|(text, fallbacks, ink, urgent)| {
             (
                 text,
+                fallbacks,
                 if ink == ChromeInk::Info {
                     ChromeInk::Metadata
                 } else {
@@ -1149,12 +1174,14 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             if app.launch.visible {
                 return None;
             }
-            let boot = crate::tui::session_boot::SessionBootSurface::from_app(app);
-            boot.activity_notice(app.ui_locale, notice_budget)
-                .map(|chip| (chip.text, boot_activity_ink(chip.level), false))
+            let boot = crate::tui::session_boot::SessionBootSurface::from_app(app)
+                .quiet_announced(&app.mcp_announced_problems);
+            boot.activity_notice(notice_budget)
+                .map(|chip| (chip.text, Vec::new(), boot_activity_ink(chip.level), false))
         })
-        .and_then(|(text, ink, urgent)| {
-            fit_notice(&text, notice_budget, urgent).map(|fitted| (fitted, ink))
+        .and_then(|(text, fallbacks, ink, urgent)| {
+            fit_notice_candidates(&text, &fallbacks, notice_budget, urgent)
+                .map(|fitted| (fitted, ink))
         })
         .or_else(|| {
             if app.remote_control.status() == codewhale_app_server::remote_control::Status::Failed {

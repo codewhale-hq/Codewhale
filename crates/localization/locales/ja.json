@@ -1764,6 +1764,7 @@
   "SnapshotsDisabledUnsafeLocation": "{workspace} ではスナップショットと /undo が無効です: ホームディレクトリやルートディレクトリは範囲が広すぎて安全にスナップショットできません。プロジェクトのディレクトリで開始すると有効になります。",
   "SnapshotsHistoryRepaired": "{workspace} の undo 履歴が破損していたため（最新の復元ポイントが見つかりませんでした）、履歴を新しく開始しました。以前の復元ポイントは復元できなくなりましたが、新しいターンは再び保護されます。",
   "SnapshotsFailing": "{workspace} のスナップショットが失敗しているため、/undo で最近のターンを復元できません: {limit}",
+  "SnapshotsResumed": "{workspace} のスナップショットと /undo が再び有効になりました。",
   "RuntimeStoreUnreadableNotice": "セッションのランタイムストア: {path} の {record} を読み取れませんでした（{reason}）。そのファイルを退避（または削除）して再試行してください。スレッドの他のレコードはそのまま残ります。",
   "RuntimeStoreUnwritableNotice": "セッションのランタイムストア: {path} の {record} を書き込めませんでした（{reason}）。その場所の空き容量と権限を確認して再試行してください。何も上書きされていません。",
   "ProviderExternalSemanticsRevoke": "{semantics} | 取消: {revoke}",

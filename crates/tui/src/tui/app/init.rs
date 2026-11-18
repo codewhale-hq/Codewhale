@@ -1125,6 +1125,7 @@ impl App {
             mcp_snapshot_generation: 0,
             mcp_snapshot_generation_invalidated: false,
             mcp_connecting,
+            mcp_announced_problems: std::collections::BTreeMap::new(),
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
             // no live snapshot is available (#502). Cheap (just reads
