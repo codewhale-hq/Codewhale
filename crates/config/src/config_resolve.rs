@@ -826,6 +826,18 @@ impl ConfigToml {
         self.resolve_runtime_options_with_secrets(cli, &no_keyring)
     }
 
+    pub fn validate_configured_model(&self) -> Result<()> {
+        let no_keyring = Secrets::new(std::sync::Arc::new(
+            codewhale_secrets::InMemoryKeyringStore::new(),
+        ));
+        self.resolve_runtime_options_inner(
+            &CliRuntimeOverrides::default(),
+            &EnvRuntimeOverrides::default(),
+            &no_keyring,
+        )
+        .ensure_valid_model()
+    }
+
     /// Resolve runtime options using an explicit secrets façade.
     ///
     /// API-key precedence is **CLI flag → config-file → secret store → environment**.
@@ -836,6 +848,15 @@ impl ConfigToml {
         secrets: &Secrets,
     ) -> ResolvedRuntimeOptions {
         let env = EnvRuntimeOverrides::load();
+        self.resolve_runtime_options_inner(cli, &env, secrets)
+    }
+
+    fn resolve_runtime_options_inner(
+        &self,
+        cli: &CliRuntimeOverrides,
+        env: &EnvRuntimeOverrides,
+        secrets: &Secrets,
+    ) -> ResolvedRuntimeOptions {
         let (provider, provider_source) = if let Some(provider) = cli.provider {
             (provider, ProviderSource::Cli)
         } else if let Some(provider) = env.provider {
@@ -852,9 +873,6 @@ impl ConfigToml {
         .then(|| self.named_custom_provider_id())
         .flatten();
         let mut provider_cfg = if let Some(provider_id) = named_custom_provider {
-            // A named route whose table became invalid after binding resolves
-            // to the fail-closed loopback placeholder, never to the legacy
-            // `[providers.custom]` endpoint, model and key.
             self.named_custom_provider_config_for(provider_id)
                 .unwrap_or_else(|err| {
                     tracing::warn!("{err:#}");
@@ -881,8 +899,6 @@ impl ConfigToml {
             .or_else(|| env.auth_mode.clone())
             .or_else(|| provider_cfg.auth_mode.clone())
             .or_else(|| self.auth_mode.clone());
-        // The legacy top-level key and endpoint were moved into their owning
-        // `[providers.<name>]` table when the file was parsed (#6394).
         let from_file = provider_cfg.api_key.clone();
         let cli_base_url = cli.base_url.clone();
         let env_base_url = env.base_url_for(provider);
@@ -940,23 +956,12 @@ impl ConfigToml {
             configured_base_url
                 .unwrap_or_else(|| descriptor_fallback_base_url(provider, auth_mode.as_deref()))
         };
-        // Released builds represented Ollama Cloud as the local `ollama`
-        // identity plus one exact hosted base URL. Upgrade only that tuple in
-        // memory: the parsed config and secret store are never rewritten, and
-        // neighboring/custom routes retain the local/custom identity.
         let legacy_ollama_cloud = provider::migrates_legacy_ollama_cloud_route(provider, &base_url);
         let provider = if legacy_ollama_cloud {
             ProviderKind::OllamaCloud
         } else {
             provider
         };
-        // `auth_mode = "none"` is an endpoint contract, so it suppresses every
-        // credential source (including explicit CLI/config values). Otherwise
-        // CLI and route-local config win outright. Ambient provider credentials
-        // are allowed only on the provider's official endpoint family: a saved
-        // OpenRouter key must never follow `provider = "openrouter"` to an
-        // unrelated custom gateway merely because the provider id stayed the
-        // same.
         let uses_kimi_imported_token = provider == ProviderKind::Moonshot
             && auth_mode
                 .as_deref()
@@ -1002,81 +1007,61 @@ impl ConfigToml {
             }
         };
 
-        let env_provider_model = env.model_for(provider, &base_url);
-        // Root `default_text_model` is the key `codewhale model set` writes and
-        // the setup wizard writes, for every provider. It used to enter this
-        // chain only when `provider == Deepseek`, which made this resolver
-        // disagree with `Config::default_model()` in the TUI — the chain that
-        // actually builds the request — for every non-DeepSeek provider
-        // (#4832, #4838). The user's model still shipped; only this resolver,
-        // and therefore `codewhale model resolve`, reported a provider default.
-        //
-        // It is honoured for any provider now, minus the one case the DeepSeek
-        // gate was accidentally covering: a stale DeepSeek id left behind by a
-        // provider switch must not be forwarded to an endpoint that cannot
-        // serve it.
-        let root_default_model = self
-            .default_text_model
-            .clone()
-            .filter(|model| !root_default_model_is_foreign_to_provider(provider, model, &base_url));
-        // Derived from the same chain as `model` below so the reported
-        // provenance cannot drift from the id that is actually used.
-        let model_source = if cli.model.is_some() {
-            ModelSource::Cli
-        } else if env.model.is_some() || env_provider_model.is_some() {
-            ModelSource::Env
-        } else if provider_cfg.model.is_some() {
-            ModelSource::ProviderConfig
-        } else if root_default_model.is_some() {
-            ModelSource::RootDefaultTextModel
-        } else if self.model.is_some() {
-            ModelSource::RootModel
-        } else {
-            ModelSource::ProviderDefault
-        };
-        let model = cli
-            .model
-            .clone()
-            .or_else(|| env.model.clone())
-            .or(env_provider_model)
-            .or_else(|| provider_cfg.model.clone())
-            .or(root_default_model)
-            .or_else(|| self.model.clone())
-            .unwrap_or_else(|| {
-                if provider == ProviderKind::Moonshot
-                    && (auth_mode
-                        .as_deref()
-                        .is_some_and(auth_mode_uses_kimi_imported_token)
-                        || moonshot_base_url_uses_kimi_code(&base_url))
-                {
-                    DEFAULT_KIMI_CODE_MODEL.to_string()
-                } else {
-                    cloud_facts::cloud_default_model_for_route(provider, &base_url)
-                        .map(|(model, _)| model)
-                        .unwrap_or_else(|| default_model_for_provider(provider).to_string())
-                }
-            });
-        let model = crate::route::resolve_model(provider, &model, Some(&base_url))
-            .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id);
-
-        // RouteResolver is the runtime path: the executable wire model,
-        // protocol, and endpoint come from a ReadyRouteCandidate. Auth/key
-        // resolution above is unchanged. A resolver error keeps the existing
-        // model string so this method stays total, and keeps the error itself
-        // so no caller can present the rejected model as a resolved route.
-        let route = crate::route::RouteResolver::new().resolve(&crate::route::RouteRequest {
-            explicit_provider: Some(provider),
-            model_selector: Some(crate::route::LogicalModelRef::from(model.as_str())),
-            saved_provider_model: None,
-            base_url_override: Some(base_url.clone()),
-            limit_overrides: Vec::new(),
-            wire_override: None,
-            responses_profile_override: None,
+        let provider_identity = named_custom_provider.unwrap_or_else(|| {
+            if matches!(provider_source, ProviderSource::Config) && !legacy_ollama_cloud {
+                self.provider_id()
+            } else {
+                provider.as_str()
+            }
         });
+        let env_provider_model = env.model_for(provider, &base_url);
+        let env_model = env.model.as_deref().or(env_provider_model.as_deref());
+        let selection = resolve_configured_model(&ConfiguredModelInputs {
+            provider,
+            provider_identity,
+            base_url: &base_url,
+            auth_mode: auth_mode.as_deref(),
+            cli_model: cli.model.as_deref(),
+            env_model,
+            provider_model: provider_cfg.model.as_deref(),
+            default_text_model: self.default_text_model.as_deref(),
+            legacy_root_model: self.model.as_deref(),
+            custom_models: self.custom_models.as_deref(),
+            codex_preferred_model: None,
+            descriptor_default: None,
+        });
+        let model_source = selection.source;
+        let (model, model_error, route) = match selection.resolved {
+            Ok(resolved) => {
+                let wire_id = resolved.wire_id;
+                let route_request = crate::route::RouteRequest {
+                    explicit_provider: Some(provider),
+                    model_selector: Some(crate::route::LogicalModelRef::from(wire_id.as_str())),
+                    saved_provider_model: None,
+                    base_url_override: Some(base_url.clone()),
+                    limit_overrides: Vec::new(),
+                    wire_override: None,
+                    responses_profile_override: None,
+                };
+                let route = match self.custom_models.as_deref() {
+                    Some(models) if !models.is_empty() => crate::route::RouteResolver::bundled()
+                        .clone()
+                        .with_configured_models(models, provider_identity, provider, &base_url)
+                        .resolve(&route_request),
+                    _ => crate::route::RouteResolver::bundled().resolve(&route_request),
+                };
+                (wire_id, None, route)
+            }
+            Err(error) => {
+                let message =
+                    format_configured_model_error(provider_identity, &selection.raw, &error);
+                (String::new(), Some(message), Err(error))
+            }
+        };
 
         let mut http_headers = self.http_headers.clone();
         http_headers.extend(provider_cfg.http_headers.clone());
-        if let Some(env_headers) = env.http_headers {
+        if let Some(env_headers) = env.http_headers.clone() {
             http_headers.extend(env_headers);
         }
         http_headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
@@ -1089,25 +1074,12 @@ impl ConfigToml {
             .clone()
             .or_else(|| env.log_level.clone())
             .or_else(|| self.log_level.clone());
-        // The telemetry preference resolves once in the shared core behind
-        // [`resolved_telemetry_consent`]. The telemetry owner also checks old
-        // durable declines and unreadable privacy state. The
-        // comments that matter live there: the
-        // environment/file/default chain, and why every kill switch is a
-        // floor (`telemetry = false` persisted in the file is the *persistent*
-        // off switch; an explicit env "off", an unreadable env value, or a
-        // dispatcher-declared floor forces off regardless of CLI flag or
-        // config file).
         let (telemetry_env_file, telemetry_source_env_file) = telemetry_consent_from_env(
             env.telemetry,
             env.telemetry_env_invalid,
             env.telemetry_floor,
             self.telemetry,
         );
-        // The CLI flag is a run-scoped term on top: `--telemetry false` stops
-        // this run; `--telemetry true` can never climb over a kill switch.
-        // The source names the CLI only when the CLI term actually decided
-        // the outcome — a flag that lost to a kill switch is not the provenance.
         let telemetry = telemetry_env_file && cli.telemetry != Some(false);
         let telemetry_source = if cli.telemetry == Some(false)
             || (cli.telemetry == Some(true) && telemetry_env_file)
@@ -1117,23 +1089,7 @@ impl ConfigToml {
             telemetry_source_env_file
         };
         let telemetry_persisted_off = self.telemetry == Some(false);
-        // Only a *persisted* off is an answer. `--telemetry false` and
-        // `CODEWHALE_TELEMETRY=0` are run-scoped kill switches: they must stop
-        // this run without deleting the identity and buffered events of a user
-        // who never revoked consent — the dispatcher forwards a resolved
-        // `false` on every ordinary run, so treating an environment "off" as an
-        // answer would also make the default state indistinguishable from a
-        // revocation.
         let telemetry_explicit_off = telemetry_persisted_off;
-        // The shipped default is [`DEFAULT_TELEMETRY_ENDPOINT`], and it is a
-        // default rather than a floor: an explicit value in the environment or
-        // the config file wins outright. An explicit *empty* value is not a
-        // missing value — it is the local dry-run sink, and it stays reachable
-        // by resolving to `None` instead of falling through to the default.
-        //
-        // None of this changes the user's opt-out. A session only reaches an
-        // endpoint after `telemetry` above resolved true; every persistent and
-        // run-scoped kill switch is upstream of this line.
         let telemetry_endpoint = match env
             .telemetry_endpoint
             .clone()
@@ -1165,6 +1121,7 @@ impl ConfigToml {
             provider_source,
             model,
             model_source,
+            model_error,
             api_key,
             api_key_source,
             base_url,
@@ -1182,6 +1139,185 @@ impl ConfigToml {
             http_headers,
             route,
         }
+    }
+}
+
+pub struct ConfiguredModelInputs<'a> {
+    pub provider: ProviderKind,
+    pub provider_identity: &'a str,
+    pub base_url: &'a str,
+    pub auth_mode: Option<&'a str>,
+    pub cli_model: Option<&'a str>,
+    pub env_model: Option<&'a str>,
+    pub provider_model: Option<&'a str>,
+    pub default_text_model: Option<&'a str>,
+    pub legacy_root_model: Option<&'a str>,
+    pub custom_models: Option<&'a [crate::catalog::configured::ConfiguredModel]>,
+    pub codex_preferred_model: Option<&'a dyn Fn() -> Option<String>>,
+    pub descriptor_default: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfiguredModelSelection {
+    pub raw: String,
+    pub source: ModelSource,
+    pub resolved: std::result::Result<crate::route::ResolvedModel, crate::route::RouteError>,
+}
+
+fn declared_configured_model<'a>(
+    provider: ProviderKind,
+    provider_identity: &str,
+    base_url: &str,
+    custom_models: Option<&'a [crate::catalog::configured::ConfiguredModel]>,
+    raw: &str,
+) -> Option<&'a crate::catalog::configured::ConfiguredModel> {
+    if provider == ProviderKind::OpenaiCodex
+        || crate::descriptors::model_rules_for(provider).ids
+            == crate::descriptors::ModelIdsPolicy::Roster
+    {
+        return None;
+    }
+    if crate::route::ProviderDescriptor::for_kind(provider).wire_policy()
+        == crate::provider::WirePolicy::ModelAware
+        && provider != ProviderKind::Deepseek
+        && crate::route::bundled_offering_wire_id(provider, raw.trim()).is_none()
+    {
+        return None;
+    }
+    let models = custom_models?;
+    crate::catalog::configured::validate_configured_models(models).ok()?;
+    let trimmed = raw.trim();
+    models
+        .iter()
+        .find(|row| row.id == trimmed && row.matches_route(provider_identity, base_url))
+}
+
+pub fn resolve_model_for_configured_route(
+    provider: ProviderKind,
+    provider_identity: &str,
+    base_url: &str,
+    custom_models: Option<&[crate::catalog::configured::ConfiguredModel]>,
+    raw: &str,
+) -> std::result::Result<crate::route::ResolvedModel, crate::route::RouteError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(crate::route::RouteError::EmptyModel);
+    }
+    if !trimmed.eq_ignore_ascii_case("auto")
+        && let Some(declared) = declared_configured_model(
+            provider,
+            provider_identity,
+            base_url,
+            custom_models,
+            trimmed,
+        )
+    {
+        let offering = declared.to_catalog_offering().to_offering();
+        return Ok(crate::route::ResolvedModel {
+            logical: offering
+                .canonical_model
+                .as_ref()
+                .map_or_else(|| trimmed.to_string(), |m| m.as_str().to_string()),
+            wire_id: offering.wire_model_id.as_str().to_string(),
+            model: offering.canonical_model.clone(),
+            offering: Some(offering),
+            alias_matched: false,
+            is_auto: false,
+        });
+    }
+    crate::route::resolve_model(provider, raw, Some(base_url))
+}
+
+#[must_use]
+pub fn format_configured_model_error(
+    provider_id: &str,
+    raw: &str,
+    error: &crate::route::RouteError,
+) -> String {
+    let trimmed = raw.trim();
+    match error {
+        crate::route::RouteError::EmptyModel if trimmed.is_empty() => {
+            format!("model selector was empty for provider '{provider_id}'")
+        }
+        crate::route::RouteError::EmptyModel => {
+            format!("model {trimmed:?} resolves to an empty id for provider '{provider_id}'")
+        }
+        _ => error.to_string(),
+    }
+}
+
+#[must_use]
+pub fn resolve_configured_model(inputs: &ConfiguredModelInputs<'_>) -> ConfiguredModelSelection {
+    let provider = inputs.provider;
+    let base_url = inputs.base_url;
+    let is_declared = |model: &str| {
+        declared_configured_model(
+            provider,
+            inputs.provider_identity,
+            base_url,
+            inputs.custom_models,
+            model,
+        )
+        .is_some()
+    };
+    let accepts_root_model = |model: &str| {
+        is_declared(model) || !root_default_model_is_foreign_to_provider(provider, model, base_url)
+    };
+    let moonshot_uses_kimi_code = provider == ProviderKind::Moonshot
+        && (inputs
+            .auth_mode
+            .is_some_and(auth_mode_uses_kimi_imported_token)
+            || moonshot_base_url_uses_kimi_code(base_url));
+
+    let (raw, source) = if let Some(model) = inputs.cli_model {
+        (model.to_string(), ModelSource::Cli)
+    } else if let Some(model) = inputs.env_model {
+        (model.to_string(), ModelSource::Env)
+    } else if let Some(model) = inputs.provider_model {
+        (model.to_string(), ModelSource::ProviderConfig)
+    } else if let Some(model) = inputs.default_text_model.filter(|m| is_declared(m)) {
+        (model.to_string(), ModelSource::RootDefaultTextModel)
+    } else if inputs.default_text_model.is_none()
+        && let Some(model) = inputs.legacy_root_model.filter(|m| is_declared(m))
+    {
+        (model.to_string(), ModelSource::RootModel)
+    } else if moonshot_uses_kimi_code {
+        (
+            DEFAULT_KIMI_CODE_MODEL.to_string(),
+            ModelSource::ProviderDefault,
+        )
+    } else if let Some(model) = inputs.default_text_model.filter(|m| accepts_root_model(m)) {
+        (model.to_string(), ModelSource::RootDefaultTextModel)
+    } else if inputs.default_text_model.is_none()
+        && let Some(model) = inputs.legacy_root_model.filter(|m| accepts_root_model(m))
+    {
+        (model.to_string(), ModelSource::RootModel)
+    } else if let Some((model, _)) = cloud_facts::cloud_default_model_for_route(provider, base_url)
+    {
+        (model, ModelSource::ProviderDefault)
+    } else if provider == ProviderKind::OpenaiCodex
+        && let Some(preferred) = inputs.codex_preferred_model.and_then(|load| load())
+    {
+        (preferred, ModelSource::ProviderDefault)
+    } else {
+        let fallback = match inputs.descriptor_default {
+            Some(model) => model.to_string(),
+            None => default_model_for_provider(provider),
+        };
+        (fallback, ModelSource::ProviderDefault)
+    };
+
+    let resolved = resolve_model_for_configured_route(
+        provider,
+        inputs.provider_identity,
+        base_url,
+        inputs.custom_models,
+        &raw,
+    );
+    ConfiguredModelSelection {
+        raw,
+        source,
+        resolved,
     }
 }
 

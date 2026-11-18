@@ -4021,12 +4021,30 @@ async fn refresh_local_default_catalog(
 }
 
 fn runtime_request_model(config: &Config, requested: Option<&str>) -> Result<String, ApiError> {
-    if let Some(model) = requested {
-        return Ok(model.to_string());
-    }
     let identity = config
         .active_provider_identity()
         .map_err(ApiError::bad_request)?;
+    if let Some(model) = requested {
+        let base_url = config.base_url_for_route(&identity);
+        return codewhale_config::resolve_model_for_configured_route(
+            identity.provider,
+            identity.key.as_str(),
+            &base_url,
+            config.custom_models.as_deref(),
+            model,
+        )
+        .map(|resolved| resolved.wire_id)
+        .map_err(|error| {
+            ApiError::bad_request(codewhale_config::format_configured_model_error(
+                identity.key.as_str(),
+                model,
+                &error,
+            ))
+        });
+    }
+    if let Some(error) = config.configured_model_error() {
+        return Err(ApiError::bad_request(error));
+    }
     let model = provider_default_model_for_api(config, &identity);
     if model.is_empty() {
         return Err(ApiError::bad_request(

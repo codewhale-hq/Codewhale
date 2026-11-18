@@ -244,6 +244,46 @@ fn runtime_request_model_uses_the_active_provider_default() {
     }
 }
 
+#[test]
+fn runtime_request_model_fails_loud_on_rejected_or_empty_models() {
+    let mut deepseek = Config::default();
+    deepseek.provider = Some("deepseek".to_string());
+    deepseek
+        .provider_config_for_mut(&deepseek.test_identity_for_kind(ProviderKind::Deepseek))
+        .unwrap()
+        .model = Some("totally-unknown-model-x".to_string());
+    let err = runtime_request_model(&deepseek, None).expect_err("strict deepseek rejects unknown");
+    assert!(
+        err.message.contains("deepseek") && err.message.contains("totally-unknown-model-x"),
+        "{}",
+        err.message
+    );
+
+    let mut opencode_go = Config::default();
+    opencode_go.provider = Some("opencode-go".to_string());
+    opencode_go
+        .provider_config_for_mut(&opencode_go.test_identity_for_kind(ProviderKind::OpencodeGo))
+        .unwrap()
+        .model = Some("totally-unknown-model-x".to_string());
+    let err =
+        runtime_request_model(&opencode_go, None).expect_err("roster opencode-go rejects unknown");
+    assert!(
+        err.message.contains("opencode-go") && err.message.contains("totally-unknown-model-x"),
+        "{}",
+        err.message
+    );
+
+    let mut google = Config::default();
+    google.provider = Some("google".to_string());
+    let err = runtime_request_model(&google, Some("models/"))
+        .expect_err("empty after prefix strip fails loud");
+    assert!(
+        err.message.contains("google") && err.message.contains("models/"),
+        "{}",
+        err.message
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_budgets() -> Result<()>
 {

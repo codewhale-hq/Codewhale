@@ -300,12 +300,16 @@ fn configured_chain_cells(target: &Target, input: &str, config_path: &Path) -> [
         Err(_) => "-!load".to_string(),
     };
     let cli = match codewhale_config::ConfigStore::load(Some(config_path.to_path_buf())) {
-        Ok(store) => optional_cell(Some(
-            store
+        Ok(store) => {
+            let resolved = store
                 .config
-                .resolve_runtime_options(&codewhale_config::CliRuntimeOverrides::default())
-                .model,
-        )),
+                .resolve_runtime_options(&codewhale_config::CliRuntimeOverrides::default());
+            if resolved.model_error.is_some() {
+                "-!load".to_string()
+            } else {
+                optional_cell(Some(resolved.model))
+            }
+        }
         Err(_) => "-!load".to_string(),
     };
     [tui, cli]

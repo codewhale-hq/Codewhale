@@ -2563,6 +2563,7 @@ fn run() -> Result<()> {
     match command {
         Some(Commands::Run(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, args.args)
         }
         Some(Commands::Doctor(args)) => {
@@ -2584,27 +2585,30 @@ fn run() -> Result<()> {
             run_tui_in_process(&cli, &resolved_runtime, tui_args("sessions", args))
         }
         Some(Commands::Receipts(args)) => {
-            // Read-only: resolve the runtime without first-run setup side effects.
             let resolved_runtime =
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("receipts", args))
         }
         Some(Commands::Resume(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_resume_command(&cli, &resolved_runtime, args)
         }
         Some(Commands::Rc(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             let mut passthrough = vec!["--remote-control".to_string()];
             passthrough.extend(args.args);
             run_tui_in_process(&cli, &resolved_runtime, passthrough)
         }
         Some(Commands::Fork(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("fork", args))
         }
         Some(Commands::Init(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("init", args))
         }
         Some(Commands::Install(args)) => {
@@ -2631,28 +2635,28 @@ fn run() -> Result<()> {
         }
         Some(Commands::Exec(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("exec", args))
         }
         Some(Commands::Fleet(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("fleet", args))
         }
         Some(Commands::WorkflowTool(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("workflow-tool", args))
         }
         Some(Commands::LaneLogProxy(_)) => unreachable!("lane log proxy dispatched above"),
         Some(Commands::Workflow(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             let config_path = store.path().to_path_buf();
             run_workflow_command(&cli, &resolved_runtime, &config_path, args)
         }
         Some(Commands::Lane(args)) => run_lane_command(args),
         Some(Commands::Review(args)) => {
-            // CI path: a machine token authenticates as the account with no
-            // local session and no browser. The account's own configured
-            // provider then disambiguates a model that maps to several
-            // configured routes, which review otherwise hard-errors on.
             let mut overrides = runtime_overrides.clone();
             if overrides.provider.is_none()
                 && let Some(provider) = codewhale_account_cli::machine_review_provider()?
@@ -2660,14 +2664,17 @@ fn run() -> Result<()> {
                 overrides.provider = Some(provider);
             }
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("review", args))
         }
         Some(Commands::Apply(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("apply", args))
         }
         Some(Commands::Eval(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_in_process(&cli, &resolved_runtime, tui_args("eval", args))
         }
         Some(Commands::SessionDiagnostics(args)) => {
@@ -2722,12 +2729,12 @@ fn run() -> Result<()> {
         }
         Some(Commands::Serve(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            // `serve` starts a long-running runtime API listener; supervise the
-            // delegated child so it is torn down with the dispatcher (#3259).
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_server_in_process(&cli, &resolved_runtime, tui_args("serve", args))
         }
         Some(Commands::Web(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_server_in_process(&cli, &resolved_runtime, web_serve_passthrough(&args))
         }
         Some(Commands::Login(args)) => {
@@ -2840,9 +2847,8 @@ fn run() -> Result<()> {
             codewhale_account_cli::dispatch::run(args, cli.profile.as_deref(), &mut store)
         }
         Some(Commands::McpServer) => {
-            // Keep the CLI spelling, with the same tool and permission authority
-            // as `serve --mcp`. The legacy child-server proxy is retired.
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_tui_server_in_process(
                 &cli,
                 &resolved_runtime,
@@ -2887,17 +2893,13 @@ fn run() -> Result<()> {
         }
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => {
-            // Every transport loads the same file: the subcommand's --config,
-            // else the global one. The HTTP/mobile runtime API is delegated to
-            // the `serve` path in the Engine library, which reads the captured
-            // --config, and runtime options (provider/keyring) resolve from it
-            // too, so bridge the choice there before resolving them.
             let config_path = app_server_config_path(&cli, &args);
             if config_path != cli.config {
                 cli.config = config_path;
                 store = ConfigStore::load(cli.config.clone())?;
             }
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             run_app_server_command(&cli, &resolved_runtime, args)
         }
         Some(Commands::Completion { shell }) => {
@@ -2943,10 +2945,18 @@ fn run() -> Result<()> {
         Some(Commands::Providers(args)) => run_providers_command(args),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             let forwarded = root_tui_passthrough(&cli)?;
             run_tui_in_process(&cli, &resolved_runtime, forwarded)
         }
     }
+}
+
+fn ensure_dispatch_model_valid(cli: &Cli, resolved: &ResolvedRuntimeOptions) -> Result<()> {
+    if cli.profile.is_none() || cli.model.is_some() {
+        resolved.ensure_valid_model()?;
+    }
+    Ok(())
 }
 
 fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
@@ -6061,21 +6071,12 @@ fn run_model_command(
             Ok(())
         }
         ModelCommand::Resolve { model, provider } => {
-            // Only `model resolve --provider X` is a hypothetical. The
-            // top-level `--provider` is the route this process is actually on,
-            // and it is already folded into `resolved_runtime` — treating it as
-            // a hypothetical made `codewhale --provider moonshot --model
-            // kimi-k3 model resolve` re-derive a registry default and report
-            // `kimi-k2.7-code` while the runtime used `kimi-k3` (v0.9.1 kimi-k3 dogfood report). The
-            // top-level `--model` was not consulted at all on that path.
             let subcommand_provider = provider;
-            let queried = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            let raw_query = model.as_deref();
+            let queried = raw_query.map(str::trim).filter(|m| !m.is_empty());
 
-            // With no explicit query, this reports the route the runtime would
-            // actually take — the same answer `doctor` gives — rather than
-            // re-deriving one from an empty flag set. Re-deriving is what made
-            // a Z.ai config report `provider: deepseek` (#4832).
-            if queried.is_none() && subcommand_provider.is_none() {
+            if raw_query.is_none() && subcommand_provider.is_none() {
+                resolved_runtime.ensure_valid_model()?;
                 let saved = if matches!(resolved_runtime.provider_source, ProviderSource::Config)
                     && !matches!(
                         resolved_runtime.model_source,
@@ -6100,10 +6101,6 @@ fn run_model_command(
                 let source = saved
                     .as_ref()
                     .map_or(resolved_runtime.model_source, |(_, _, source)| *source);
-                println!(
-                    "requested: {}",
-                    if source.is_explicit() { model } else { "" }
-                );
                 let kind = ProviderKind::parse(provider).unwrap_or(ProviderKind::Custom);
                 let identity = if kind == ProviderKind::Custom {
                     store.config.named_custom_provider_id().unwrap_or(provider)
@@ -6121,6 +6118,27 @@ fn run_model_command(
                         .clone()
                         .unwrap_or_else(|| kind.provider().default_base_url().into())
                 };
+                if !(kind == ProviderKind::Custom && !source.is_explicit() && model.is_empty()) {
+                    codewhale_config::resolve_model_for_configured_route(
+                        kind,
+                        identity,
+                        &base,
+                        store.config.custom_models.as_deref(),
+                        model,
+                    )
+                    .map_err(|error| {
+                        anyhow!(
+                            "{}",
+                            codewhale_config::format_configured_model_error(
+                                identity, model, &error
+                            )
+                        )
+                    })?;
+                }
+                println!(
+                    "requested: {}",
+                    if source.is_explicit() { model } else { "" }
+                );
                 let candidate = codewhale_engine::route_preferences::resolve_model(
                     store.path(),
                     identity,
@@ -6159,8 +6177,6 @@ fn run_model_command(
                     provider_source_label(resolved_runtime.provider_source)
                 );
                 println!("model_source: {}", source.as_str());
-                // The runtime refuses a route its resolver rejected; saying
-                // `resolved:` without the rejection would report it as usable.
                 if saved.is_none()
                     && let Err(error) = &resolved_runtime.route
                 {
@@ -6169,10 +6185,6 @@ fn run_model_command(
                 return Ok(());
             }
 
-            // An explicit model or provider makes this a hypothetical query
-            // inside a named route. The subcommand provider wins; otherwise
-            // the configured runtime provider remains authoritative. Model
-            // text never authorizes switching providers or credential slots.
             let provider = subcommand_provider.unwrap_or(resolved_runtime.provider);
             let identity = if provider == ProviderKind::Custom && subcommand_provider.is_none() {
                 store
@@ -6193,6 +6205,21 @@ fn run_model_command(
                     .clone()
                     .unwrap_or_else(|| provider.provider().default_base_url().into())
             };
+            if let Some(raw_arg) = raw_query {
+                codewhale_config::resolve_model_for_configured_route(
+                    provider,
+                    identity,
+                    &base,
+                    store.config.custom_models.as_deref(),
+                    raw_arg,
+                )
+                .map_err(|error| {
+                    anyhow!(
+                        "{}",
+                        codewhale_config::format_configured_model_error(identity, raw_arg, &error)
+                    )
+                })?;
+            }
             let candidate = codewhale_engine::route_preferences::resolve_model(
                 store.path(),
                 identity,
@@ -7099,6 +7126,7 @@ mod tests {
             provider_source,
             model: "test-model".to_string(),
             model_source: ModelSource::ProviderDefault,
+            model_error: None,
             api_key: None,
             api_key_source: None,
             base_url: "http://localhost:8000/v1".to_string(),
@@ -8259,6 +8287,53 @@ verbosity = "concise"
                 saved.contains(&format!("model = \"{expected}\"")),
                 "{provider:?}: {saved}"
             );
+        }
+    }
+
+    #[test]
+    fn model_resolve_fails_loud_when_provider_rejects_model() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().expect("isolated home");
+        let _home = ScopedEnvVar::set("CODEWHALE_HOME", &home.path().to_string_lossy());
+        let _config_path = ScopedEnvVar::remove("CODEWHALE_CONFIG_PATH");
+        let _legacy_config_path = ScopedEnvVar::remove("DEEPSEEK_CONFIG_PATH");
+        let path = home.path().join("config.toml");
+
+        for (body, expected_provider, expected_model) in [
+            (
+                "provider = \"deepseek\"\n\n[providers.deepseek]\napi_key = \"k\"\nmodel = \"totally-unknown-model-x\"\n",
+                "deepseek",
+                "totally-unknown-model-x",
+            ),
+            (
+                "provider = \"opencode-go\"\n\n[providers.opencode_go]\napi_key = \"k\"\nmodel = \"totally-unknown-model-x\"\n",
+                "opencode-go",
+                "totally-unknown-model-x",
+            ),
+            (
+                "provider = \"google\"\n\n[providers.google]\napi_key = \"k\"\nmodel = \"models/\"\n",
+                "google",
+                "models/",
+            ),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let mut store = ConfigStore::load(Some(path.clone())).unwrap();
+            let runtime = store
+                .config
+                .resolve_runtime_options(&CliRuntimeOverrides::default());
+            let err = run_model_command(
+                &mut store,
+                ModelCommand::Resolve {
+                    model: None,
+                    provider: None,
+                },
+                None,
+                &runtime,
+            )
+            .expect_err("rejected model must fail loud")
+            .to_string();
+            assert!(err.contains(expected_provider), "{err}");
+            assert!(err.contains(expected_model), "{err}");
         }
     }
 

@@ -11083,3 +11083,65 @@ model = "fixture-model"
     assert!(!shown.contains("client-s10-synthetic"));
     assert!(shown.contains("fixture-model"));
 }
+
+#[test]
+fn resolve_runtime_options_fails_loud_on_rejected_or_empty_models() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+    for (provider, raw, expected_provider, expected_model) in [
+        (
+            ProviderKind::Deepseek,
+            "totally-unknown-model-x",
+            "deepseek",
+            "totally-unknown-model-x",
+        ),
+        (
+            ProviderKind::OpencodeGo,
+            "totally-unknown-model-x",
+            "opencode-go",
+            "totally-unknown-model-x",
+        ),
+        (ProviderKind::Google, "models/", "google", "models/"),
+    ] {
+        let cli = CliRuntimeOverrides {
+            provider: Some(provider),
+            model: Some(raw.to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        assert!(resolved.model.is_empty(), "{provider:?} {raw}");
+        let err = resolved
+            .ensure_valid_model()
+            .expect_err("rejected model must fail loud")
+            .to_string();
+        assert!(err.contains(expected_provider), "{err}");
+        assert!(err.contains(expected_model), "{err}");
+    }
+
+    let xiaomi = ConfigToml {
+        provider: ProviderKind::XiaomiMimo,
+        default_text_model: Some(DEFAULT_OPENROUTER_MODEL.to_string()),
+        ..ConfigToml::default()
+    };
+    let resolved = xiaomi.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, DEFAULT_XIAOMI_MIMO_MODEL);
+    assert!(resolved.model_error.is_none());
+
+    let declared: ConfigToml = toml::from_str(
+        r#"provider = "deepseek"
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+model = "account-model"
+[[custom_models]]
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+id = "account-model"
+"#,
+    )
+    .expect("declared custom_models config");
+    let resolved = declared.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, "account-model");
+    assert!(resolved.model_error.is_none());
+    assert!(resolved.route.is_ok());
+}

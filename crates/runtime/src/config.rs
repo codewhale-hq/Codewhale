@@ -5263,153 +5263,61 @@ impl Config {
         (scoped.default_model() == value).then(|| (outgoing, value.to_string()))
     }
 
+    fn select_configured_model(
+        &self,
+        identity: &ProviderIdentity,
+    ) -> codewhale_config::ConfiguredModelSelection {
+        let provider = identity.provider;
+        let base_url = self.base_url_for_route(identity);
+        let auth_mode = self.auth_mode_for_provider(identity);
+        let provider_model = self
+            .provider_config_string_with_runtime_fallback(identity, |entry| entry.model.clone());
+        let codex_preferred = || {
+            crate::codex_model_roster::cached_roster_for(self)
+                .preferred_model_id()
+                .map(str::to_owned)
+        };
+        let descriptor_default = Some(identity.compatibility().map_or("", |row| row.default_model));
+        codewhale_config::resolve_configured_model(&codewhale_config::ConfiguredModelInputs {
+            provider,
+            provider_identity: identity.key.as_str(),
+            base_url: &base_url,
+            auth_mode: auth_mode.as_deref(),
+            cli_model: None,
+            env_model: None,
+            provider_model: provider_model.as_deref(),
+            default_text_model: self.default_text_model.as_deref(),
+            legacy_root_model: self.legacy_model.as_deref(),
+            custom_models: self.custom_models.as_deref(),
+            codex_preferred_model: (provider == ProviderKind::OpenaiCodex)
+                .then_some(&codex_preferred as &dyn Fn() -> Option<String>),
+            descriptor_default,
+        })
+    }
+
     #[must_use]
     pub fn default_model(&self) -> String {
         let Ok(identity) = self.active_provider_identity() else {
             return String::new();
         };
-        let provider = identity.provider;
-        if self.default_text_model.is_none() && self.legacy_model.is_some() {
-            let mut config = self.clone();
-            config.default_text_model.clone_from(&self.legacy_model);
-            return config.default_model();
-        }
+        self.select_configured_model(&identity)
+            .resolved
+            .map_or_else(|_| String::new(), |resolved| resolved.wire_id)
+    }
 
-        let declared = |model: &str| {
-            configured_model_for_route(
-                self,
-                provider,
+    #[must_use]
+    pub fn configured_model_error(&self) -> Option<String> {
+        let identity = self.active_provider_identity().ok()?;
+        let selection = self.select_configured_model(&identity);
+        match selection.resolved {
+            Ok(_) => None,
+            Err(_) if !selection.source.is_explicit() && selection.raw.is_empty() => None,
+            Err(error) => Some(codewhale_config::format_configured_model_error(
                 identity.key.as_str(),
-                &self.active_route_base_url(),
-                model,
-            )
-            .is_some()
-        };
-        if let Some(model) = self
-            .provider_config_string_with_runtime_fallback(&identity, |entry| entry.model.clone())
-        {
-            let model = model.trim();
-            // Automatic selection is a saved choice on every route, including
-            // DeepSeek. Resolve it before provider model-name normalization.
-            if model.eq_ignore_ascii_case("auto") {
-                return "auto".to_string();
-            }
-            if declared(model)
-                || provider_passes_model_through(provider)
-                || self.active_provider_preserves_custom_base_url_model()
-            {
-                return model.to_string();
-            }
-            if let Some(normalized) = normalize_model_for_provider(provider, model) {
-                return normalized;
-            }
-            // An explicit provider-scoped model that is not a recognized
-            // DeepSeek alias is a deliberate custom choice for a non-DeepSeek
-            // provider (e.g. `MiniMax-M2.7` on an OpenAI-compatible endpoint).
-            // It must pass through verbatim rather than fall back to a
-            // DeepSeek/provider default (issue #1714).
-            if !matches!(provider, ProviderKind::Deepseek) && !model.is_empty() {
-                return model.to_string();
-            }
+                &selection.raw,
+                &error,
+            )),
         }
-        if let Some(model) = self
-            .default_text_model
-            .as_deref()
-            .filter(|model| declared(model))
-        {
-            return model.to_string();
-        }
-        let moonshot_config = (provider == ProviderKind::Moonshot)
-            .then(|| self.provider_config())
-            .flatten();
-        let moonshot_uses_kimi_code = moonshot_config.is_some_and(|config| {
-            provider_config_uses_kimi_imported_token(config)
-                || config
-                    .base_url
-                    .as_deref()
-                    .is_some_and(moonshot_base_url_uses_kimi_code)
-        });
-        if moonshot_uses_kimi_code {
-            return DEFAULT_KIMI_CODE_MODEL.to_string();
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && model.trim().eq_ignore_ascii_case("auto")
-        {
-            return "auto".to_string();
-        }
-        // A root DeepSeek-family default must not leak onto a vendor-locked
-        // official endpoint that can never serve it (the provider then
-        // rejects every request, e.g. `deepseek-v4-pro` on api.x.ai). Custom
-        // base URLs keep full pass-through: a compatible proxy may
-        // legitimately serve any model id.
-        let foreign_root_default = |model: &str| {
-            !self.active_provider_preserves_custom_base_url_model()
-                && matches!(
-                    provider,
-                    ProviderKind::Xai | ProviderKind::Openai | ProviderKind::Moonshot
-                )
-                && normalize_model_name(model).is_some()
-        };
-        // Xiaomi MiMo: honour a root `default_text_model` that names a MiMo id
-        // (canonical aliases or a custom account id). Do not silently drop it
-        // for the provider seed default.
-        if provider == ProviderKind::XiaomiMimo
-            && let Some(model) = self.default_text_model.as_deref()
-        {
-            if let Some(canonical) =
-                codewhale_config::descriptors::provider_model_alias(ProviderKind::XiaomiMimo, model)
-            {
-                return canonical.to_string();
-            }
-            // Non-empty root value that is not a known foreign DeepSeek id is
-            // a deliberate custom MiMo choice — apply it. A stale DeepSeek id
-            // still falls through to the provider default below rather than
-            // being forwarded to Xiaomi's endpoint.
-            let trimmed = model.trim();
-            if !trimmed.is_empty() && normalize_model_name(trimmed).is_none() {
-                return trimmed.to_string();
-            }
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && (provider_passes_model_through(provider)
-                || self.active_provider_preserves_custom_base_url_model())
-            && !foreign_root_default(model)
-            // Xiaomi was handled above so a stale DeepSeek root id does not
-            // pass through merely because the provider is pass-through.
-            && provider != ProviderKind::XiaomiMimo
-        {
-            return model.trim().to_string();
-        }
-        if let Some(model) = self.default_text_model.as_deref()
-            && provider != ProviderKind::XiaomiMimo
-            && !root_deepseek_model_is_foreign_to_direct_provider(provider, model)
-            && let Some(normalized) = normalize_model_name_for_provider(provider, model)
-            // A wire-slug translation (e.g. the Moonshot map) resolves the
-            // foreign default to a native model; an identity result does not.
-            && (!foreign_root_default(model) || !normalized.eq_ignore_ascii_case(model.trim()))
-        {
-            return normalized;
-        }
-
-        if let Some((model, _)) = codewhale_config::cloud_facts::cloud_default_model_for_route(
-            provider,
-            &self.base_url_for_route(&identity),
-        ) {
-            return model;
-        }
-
-        // The account roster still owns a live Codex preference. All static
-        // seeds come from the shared descriptor; no provider default table here.
-        if provider == ProviderKind::OpenaiCodex
-            && let Some(preferred) =
-                crate::codex_model_roster::cached_roster_for(self).preferred_model_id()
-        {
-            return preferred.to_string();
-        }
-        identity
-            .compatibility()
-            .map_or("", |row| row.default_model)
-            .to_string()
     }
 
     /// Return the configured API base URL (normalized) for the selected route.
@@ -9215,13 +9123,6 @@ pub fn provider_route_is_keyless_self_hosted(provider: ProviderKind, base_url: &
         provider,
         ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm
     )
-}
-
-fn moonshot_base_url_uses_kimi_code(base_url: &str) -> bool {
-    let normalized = normalize_base_url(base_url).to_ascii_lowercase();
-    normalized == DEFAULT_KIMI_CODE_BASE_URL
-        || normalized == "https://api.kimi.com/coding"
-        || normalized.starts_with("https://api.kimi.com/coding/")
 }
 
 /// The Kimi Code API endpoint, normalized only for insignificant trailing

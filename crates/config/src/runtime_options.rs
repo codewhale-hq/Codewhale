@@ -117,6 +117,7 @@ pub struct ResolvedRuntimeOptions {
     pub provider_source: ProviderSource,
     pub model: String,
     pub model_source: ModelSource,
+    pub model_error: Option<String>,
     pub api_key: Option<String>,
     pub api_key_source: Option<RuntimeApiKeySource>,
     pub base_url: String,
@@ -152,12 +153,14 @@ pub struct ResolvedRuntimeOptions {
     pub verbosity: Option<String>,
     pub http_headers: BTreeMap<String, String>,
     /// Executable route minted by [`crate::route::RouteResolver`].
-    ///
-    /// `Err` carries the resolver's rejection (foreign model on a strict
-    /// direct provider, empty model, unsupported protocol). `model` and
-    /// `base_url` above are still the requested values in that case, so a
-    /// caller that reports them as a resolved route must check this first.
-    /// Auth/key fields above are independent: the resolver never inspects
-    /// credentials.
     pub route: Result<crate::route::ReadyRouteCandidate, crate::route::RouteError>,
+}
+
+impl ResolvedRuntimeOptions {
+    pub fn ensure_valid_model(&self) -> Result<()> {
+        if let Some(error) = self.model_error.as_deref() {
+            anyhow::bail!("{error}");
+        }
+        Ok(())
+    }
 }
