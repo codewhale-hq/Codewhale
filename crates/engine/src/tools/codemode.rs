@@ -31,11 +31,12 @@
 //! program that hits its deadline still reports what finished, what was
 //! refused, and what was in flight. Oversized nested results keep the
 //! `{content, metadata, truncated}` keys, and the cut is never silent:
-//! `truncated` names the original size and the spillover file holding the
-//! full output, and `content` becomes the leading text of the raw output
-//! (a JSON result cannot stay parsed once cut), so a script checks
-//! `truncated` before reading fields. A failed call's text is bounded and
-//! spilled the same way.
+//! `truncated` names the original size, the spillover file holding the
+//! full output and the `ref` that `retrieve_tool_result` pages it by. A JSON
+//! `content` stays valid JSON of the same shape with trailing array
+//! elements, object members and string tails cut; text `content` becomes its
+//! leading text, so a script checks `truncated` before trusting counts. A
+//! failed call's text is bounded and spilled the same way.
 //!
 //! KV-cache effect: `[features] code_mode` (on by default) makes
 //! `execute_tools` eager from the first request of a session; with the flag
@@ -138,9 +139,10 @@ pub fn execute_tools_tool_definition() -> Tool {
              throws (catch to continue). tools.call('tool_search', {query}) returns names \
              with input schemas without loading them. Results are {content, metadata, \
              truncated}; a bare MCP JSON text block parses into content; check truncated \
-             before reading fields (when set, content is raw leading text, not parsed \
-             JSON). Not available in programs: agent, workflow, request_user_input, \
-             nested execute_tools, interactive shells, sandbox escalation, Computer Use, \
+             before trusting counts (when set, JSON content keeps only its leading \
+             elements; page the rest with retrieve_tool_result {ref: truncated.ref, \
+             mode: 'json'}). Not available in programs: agent, workflow, \
+             request_user_input, nested execute_tools, interactive shells, sandbox escalation, Computer Use, \
              MCP sign-in; inline images need a direct call. Max 50 nested calls, 4 \
              concurrent; return capped at 16 KiB."
             .to_string(),
@@ -559,6 +561,8 @@ struct Truncation {
     original_bytes: usize,
     kept_bytes: usize,
     spill_path: Option<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    retrieve_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1031,6 +1035,7 @@ impl CodemodeInvoker {
                         result.content,
                         PER_CALL_RESULT_CAP_BYTES,
                         &self.spill_id(seq, name),
+                        &self.context.state_namespace,
                     );
                     (text, raw_len, truncated)
                 };
@@ -1080,6 +1085,7 @@ impl CodemodeInvoker {
                             message,
                             PER_CALL_RESULT_CAP_BYTES,
                             &self.spill_id(seq, name),
+                            &self.context.state_namespace,
                         );
                         self.finish(seq, |receipt| {
                             receipt.decision = Some(decision);
@@ -1105,9 +1111,10 @@ impl CodemodeInvoker {
 
     /// Stable envelope: the tool's text content (parsed as JSON when it is
     /// JSON), its structured metadata, and `truncated` (null unless cut).
-    /// An oversized result keeps the same keys: `content` becomes the head
-    /// of the raw text (no longer parsed JSON) and `truncated` says how much
-    /// there was and where the whole output was saved.
+    /// An oversized result keeps the same keys: JSON `content` keeps its
+    /// shape with trailing elements and string tails cut, text `content`
+    /// becomes its head, and `truncated` says how much there was, where the
+    /// whole output was saved, and the `ref` that pages it.
     fn bounded_envelope(
         &self,
         seq: usize,
@@ -1115,48 +1122,60 @@ impl CodemodeInvoker {
         result: &ToolResult,
     ) -> (Value, usize, Option<Truncation>) {
         let metadata = result.metadata.clone().unwrap_or(Value::Null);
-        let content = serde_json::from_str(&result.content)
+        let mut content = serde_json::from_str(&result.content)
             .unwrap_or_else(|_| Value::String(result.content.clone()));
+        if McpPool::is_mcp_tool(name)
+            && let Some(envelope) = content.as_object()
+            && envelope
+                .keys()
+                .all(|key| key == "content" || key == "isError")
+            && envelope
+                .get("isError")
+                .is_none_or(|value| value == &Value::Bool(false))
+            && let Some(blocks) = envelope.get("content").and_then(Value::as_array)
+            && let [block] = blocks.as_slice()
+            && let Some(fields) = block.as_object()
+            && fields.keys().all(|key| key == "type" || key == "text")
+            && block.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(text) = block.get("text").and_then(Value::as_str)
+            && let Ok(parsed) = serde_json::from_str::<Value>(text)
+        {
+            content = parsed;
+        }
         let mut payload =
             json!({ "content": content, "metadata": metadata, "truncated": Value::Null });
         let raw = payload.to_string();
         if raw.len() <= PER_CALL_RESULT_CAP_BYTES {
-            if McpPool::is_mcp_tool(name)
-                && let Some(envelope) = payload["content"].as_object()
-                && envelope
-                    .keys()
-                    .all(|key| key == "content" || key == "isError")
-                && envelope
-                    .get("isError")
-                    .is_none_or(|value| value == &Value::Bool(false))
-                && let Some(blocks) = envelope.get("content").and_then(Value::as_array)
-                && let [block] = blocks.as_slice()
-                && let Some(fields) = block.as_object()
-                && fields.keys().all(|key| key == "type" || key == "text")
-                && block.get("type").and_then(Value::as_str) == Some("text")
-                && let Some(text) = block.get("text").and_then(Value::as_str)
-                && let Ok(content) = serde_json::from_str::<Value>(text)
-            {
-                payload["content"] = content;
-            }
             return (payload, raw.len(), None);
         }
-        let spill_path = spill(&self.spill_id(seq, name), &raw);
+        let (spill_path, retrieve_ref) = spill(
+            &self.spill_id(seq, name),
+            &raw,
+            &self.context.state_namespace,
+        );
         let metadata_len = metadata.to_string().len();
         let metadata = if metadata_len <= PER_CALL_RESULT_CAP_BYTES / 4 {
             metadata
         } else {
             Value::Null
         };
-        let head = char_prefix(&result.content, PER_CALL_RESULT_CAP_BYTES / 2);
+        let content = match payload["content"].take() {
+            Value::String(text) => Value::String(char_prefix(&text, PER_CALL_RESULT_CAP_BYTES / 2)),
+            value => crate::tools::truncate::shrink_json(value, PER_CALL_RESULT_CAP_BYTES / 2).0,
+        };
+        let kept_bytes = match &content {
+            Value::String(text) => text.len(),
+            value => crate::tools::truncate::json_len(value),
+        };
         let truncation = Truncation {
             original_bytes: raw.len(),
-            kept_bytes: head.len(),
+            kept_bytes,
             spill_path,
+            retrieve_ref,
         };
         (
             json!({
-                "content": head,
+                "content": content,
                 "metadata": metadata,
                 "truncated": truncation,
             }),
@@ -1444,38 +1463,74 @@ fn char_prefix(text: &str, max_bytes: usize) -> String {
     text[..cut].to_string()
 }
 
-/// Save a full value through the session spillover store; `None` when the
-/// store is unavailable (the truncation is still reported).
-fn spill(id: &str, content: &str) -> Option<String> {
-    crate::tools::truncate::write_spillover(id, content)
-        .map(|path| path.display().to_string())
-        .map_err(|error| {
+/// Save a full value through the session spillover store and record which
+/// session owns it, so `retrieve_tool_result` can page it by `ref`. The path
+/// is `None` when the store is unavailable (the truncation is still
+/// reported); the ref is `None` when ownership could not be recorded.
+fn spill(id: &str, content: &str, session: &str) -> (Option<String>, Option<String>) {
+    let path = match crate::tools::truncate::write_spillover(id, content) {
+        Ok(path) => path,
+        Err(error) => {
             tracing::warn!(target: "codemode", %error, "nested result spillover failed");
-        })
-        .ok()
+            return (None, None);
+        }
+    };
+    let retrieve_ref = crate::tools::truncate::publish_legacy_spillover_ownership(
+        &path,
+        session,
+        content.as_bytes(),
+    )
+    .ok()
+    .and_then(|_| path.file_stem())
+    .map(|stem| stem.to_string_lossy().into_owned());
+    (Some(path.display().to_string()), retrieve_ref)
 }
 
 /// Bound the program's return value to `cap` serialized bytes. An oversized
-/// value becomes the head of its JSON text, and the truncation record says so.
-fn bound_json(value: Value, cap: usize, spill_id: &str) -> (Value, Option<Truncation>) {
+/// value keeps its JSON shape with trailing elements and string tails cut,
+/// and the truncation record says so.
+fn bound_json(
+    value: Value,
+    cap: usize,
+    spill_id: &str,
+    session: &str,
+) -> (Value, Option<Truncation>) {
     let raw = value.to_string();
     if raw.len() <= cap {
         return (value, None);
     }
-    bound_text(raw, cap, spill_id)
+    if let Value::String(text) = value {
+        return bound_text(text, cap, spill_id, session);
+    }
+    let (spill_path, retrieve_ref) = spill(spill_id, &raw, session);
+    let (kept, _) = crate::tools::truncate::shrink_json(value, cap / 2);
+    let truncation = Truncation {
+        original_bytes: raw.len(),
+        kept_bytes: crate::tools::truncate::json_len(&kept),
+        spill_path,
+        retrieve_ref,
+    };
+    (kept, Some(truncation))
 }
 
 /// Bound `text` to `cap` bytes: an oversized text becomes its head, the
 /// whole text is saved, and the truncation record says so.
-fn bound_text(text: String, cap: usize, spill_id: &str) -> (Value, Option<Truncation>) {
+fn bound_text(
+    text: String,
+    cap: usize,
+    spill_id: &str,
+    session: &str,
+) -> (Value, Option<Truncation>) {
     if text.len() <= cap {
         return (Value::String(text), None);
     }
     let head = char_prefix(&text, cap / 2);
+    let (spill_path, retrieve_ref) = spill(spill_id, &text, session);
     let truncation = Truncation {
         original_bytes: text.len(),
         kept_bytes: head.len(),
-        spill_path: spill(spill_id, &text),
+        spill_path,
+        retrieve_ref,
     };
     (Value::String(head), Some(truncation))
 }
@@ -1602,7 +1657,12 @@ pub async fn execute_tools_tool(
         Ok(Ok(value)) => value,
     };
     let spill_id = format!("{}-return", invoker.spill_prefix);
-    let (bounded, truncated) = bound_json(program_result, RETURN_CAP_BYTES, &spill_id);
+    let (bounded, truncated) = bound_json(
+        program_result,
+        RETURN_CAP_BYTES,
+        &spill_id,
+        &invoker.context.state_namespace,
+    );
     Ok(receipt_payload(
         true,
         json!({ "return": bounded, "return_truncated": truncated }),
@@ -1668,7 +1728,7 @@ mod tests {
 
     #[test]
     fn bound_json_keeps_small_values_verbatim() {
-        let (value, truncated) = bound_json(json!({"a": 1}), 1024, "bound-small");
+        let (value, truncated) = bound_json(json!({"a": 1}), 1024, "bound-small", "");
         assert!(truncated.is_none());
         assert_eq!(value, json!({"a": 1}));
     }
@@ -1682,18 +1742,26 @@ mod tests {
         let previous =
             crate::tools::truncate::set_test_spillover_root(Some(spill_root.path().to_path_buf()));
         let big = "x".repeat(100);
-        let (value, truncated) = bound_json(json!({ "blob": big }), 64, "bound-big");
+        let (value, truncated) = bound_json(
+            json!({ "id": 7, "blob": big }),
+            64,
+            "bound-big",
+            "session-bound",
+        );
         crate::tools::truncate::set_test_spillover_root(previous);
         let truncated = truncated.expect("oversized value is reported");
-        assert_eq!(truncated.original_bytes, 111);
-        assert_eq!(truncated.kept_bytes, 32);
+        assert_eq!(truncated.original_bytes, 118);
+        assert_eq!(value["id"], 7, "a cut JSON value stays parsed: {value}");
         assert!(
-            value
+            value["blob"]
                 .as_str()
-                .is_some_and(|head| head.starts_with("{\"blob\""))
+                .is_some_and(|blob| blob.starts_with("xx"))
         );
+        assert_eq!(truncated.kept_bytes, value.to_string().len());
+        assert!(truncated.kept_bytes <= 32);
+        assert_eq!(truncated.retrieve_ref.as_deref(), Some("bound-big"));
         let saved = truncated.spill_path.expect("full value saved");
-        assert_eq!(std::fs::read_to_string(saved).unwrap().len(), 111);
+        assert_eq!(std::fs::read_to_string(saved).unwrap().len(), 118);
     }
 
     use crate::core::engine::tool_catalog::ToolMode;
