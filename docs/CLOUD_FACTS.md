@@ -269,11 +269,16 @@ the registry in the same step. CI suppresses the network pull.
 
 What this does not do yet:
 
-- There is no default URL and no published registry, so nothing is fetched by
-  default and no bundled `registry.json` sets a floor; the floor is the
+- There is no default URL and no published registry yet, so nothing is fetched
+  by default and no bundled `registry.json` sets a floor; the floor is the
   highest revision this client cached.
-- The website relay (`web/app/api/facts/v1/[channel]`) validates facts
-  payloads only and does not serve the `registry` channel.
+- The website relay (`web/app/api/facts/v1/registry`) and publisher
+  (`web/scripts/facts-publish.mjs`) verify and serve `codewhale.registry.v1`
+  envelopes up to 8 MiB (with `web/supabase/migrations/20261117000114_registry_channel_publication.sql`),
+  requiring a `founder` signature whenever any provider carries an `admission`
+  record and bounding `automation` signatures to `not_after <= 7 days` with
+  unchanged Engine providers; activating the public `registry` channel row in
+  Supabase and signing remain operator actions.
 - Admitted providers are inert: they are held in memory with the credential
   slot and variable they may use, but the route resolver, picker and status
   surface do not read them yet.

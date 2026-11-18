@@ -27,6 +27,10 @@ export const DOMAIN = "codewhale-facts/v1\0";
 export const ENVELOPE_VERSION = 1;
 export const SUPPORTED_SCHEMA_VERSION = 1;
 export const MAX_PAYLOAD_BYTES = 512 * 1024;
+export const REGISTRY_CHANNEL = "registry";
+export const REGISTRY_SCHEMA = "codewhale.registry.v1";
+export const MAX_REGISTRY_PAYLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_REGISTRY_ENVELOPE_BYTES = Math.floor(MAX_REGISTRY_PAYLOAD_BYTES / 3) * 4 + 64 * 1024;
 
 export const TRUSTED_KEYS: readonly TrustedKey[] = [
   {

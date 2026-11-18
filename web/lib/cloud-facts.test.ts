@@ -9,9 +9,20 @@ import {
   etagFor, resolveCloudFacts, verifyEnvelope, signingMessage, responseFor,
   MAX_ENVELOPE_BYTES, type CloudFactsEnvelope, type FactsCurrentRow, type CloudFactsResult,
 } from "./cloud-facts";
-import { TRUSTED_KEYS, type TrustedKey } from "./cloud-facts/keys";
+import bundledRegistryTrust from "./cloud-facts/bundled-providers.json";
+import { MAX_REGISTRY_ENVELOPE_BYTES, TRUSTED_KEYS, type TrustedKey } from "./cloud-facts/keys";
 import { GET, HEAD } from "../app/api/facts/v1/[channel]/route";
-import { activePublishingKey, emitSql, publishRelease, readBoundedFile, readBoundedResponse, revokeRelease, verifyEnvelope as verifyForPublisher } from "../scripts/facts-publish.mjs";
+import {
+  activePublishingKey,
+  buildEnvelope,
+  buildRegistryPayload,
+  emitSql,
+  publishRelease,
+  readBoundedFile,
+  readBoundedResponse,
+  revokeRelease,
+  verifyEnvelope as verifyForPublisher,
+} from "../scripts/facts-publish.mjs";
 import { parseRustKeys, parseTsKeys } from "../scripts/check-cloud-facts.mjs";
 
 const fixturePath = new URL("../../docs/cloud-facts/fixtures/envelope-stable-v7.json", import.meta.url);
@@ -326,12 +337,12 @@ describe("facts publisher boundaries", () => {
       calls.push(`${init.method ?? "GET"} ${path}`);
       if (path.startsWith("facts_channel")) return [{ id: "c1", max_facts_version: head }];
       if (path === "facts_key") return null;
-      if (path === "facts_release") {
+      if (path === "facts_release?select=id,payload_sha256" && init.method === "POST") {
         if (Number(init.body?.facts_version) <= head) throw Object.assign(new Error("PostgREST request failed (HTTP 409)"), { status: 409 });
         head = Number(init.body?.facts_version);
-        const stored = { id: "r-new", facts_version: head, status: "published", payload_sha256: fixture.sha256 };
+        const stored = { id: "r-new", facts_version: head, status: "published", payload_sha256: String(init.body?.payload_sha256 ?? fixture.sha256) };
         releases.push(stored);
-        return [stored];
+        return [{ id: stored.id, payload_sha256: stored.payload_sha256 }];
       }
       const version = Number(/facts_version=eq\.(\d+)/.exec(path)?.[1]);
       const matches = releases.filter((r) => r.facts_version === version && (!path.includes("status=eq.published") || r.status === "published"));
@@ -513,5 +524,210 @@ describe("automation key scope", () => {
     const entry = (id: string, role: string) => `{ keyId: "${id}", publicKey: "${TEST_KEY.publicKey}", status: "active", role: "${role}" }`;
     expect(() => parseTsKeys(`export const TRUSTED_KEYS: readonly TrustedKey[] = [${entry("cwf-a", "founder")}, ${entry("cwf-b", "automation")}];`)).toThrow();
     expect(await verifyEnvelope(sealed(fixture.cases[0].payload), [EPHEMERAL_KEY, { ...AUTOMATION_KEY, keyId: "cwf-dup-key" }], { channel: "stable-models", now })).toEqual({ ok: false, reason: "no-active-keys" });
+  });
+});
+
+describe("registry channel relay and publisher", () => {
+  const AUTOMATION_KEY: TrustedKey = { ...EPHEMERAL_KEY, role: "automation" };
+  const REG_NOW = Date.parse("2026-11-17T19:00:00Z");
+
+  function bundledProvidersList(): Record<string, unknown>[] {
+    return Object.entries(bundledRegistryTrust.providers).map(([id, trust], position) => ({
+      id,
+      ...trust,
+      position,
+      label: id,
+    }));
+  }
+
+  function sampleRegistry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const providers = bundledProvidersList();
+    return {
+      schema: "codewhale.registry.v1",
+      revision: 12,
+      content_hash: `sha256:${"a".repeat(64)}`,
+      generated_at: "2026-11-17T18:00:00Z",
+      source: { engine: { repository: "codewhale", commit: "b".repeat(40) }, revision_seq: 12, revision_kind: "engine_import" },
+      counts: { providers: providers.length, models: 1, offerings: 1 },
+      providers,
+      models: [{ id: "deepseek/deepseek-v4-flash", catalog: { name: "DeepSeek Flash" } }],
+      offerings: [{ provider: "deepseek", id: "deepseek-flash", model: "deepseek/deepseek-v4-flash" }],
+      dialects: { default_profile: "standard", custom_allowed_profiles: ["standard"], profiles: [], bindings: [] },
+      engine_compat: { provider_descriptors: bundledRegistryTrust.providerDescriptorsCompat },
+      ...overrides,
+    };
+  }
+
+  it("verifies and serves founder-signed registry envelopes, including >512 KiB payloads and admitted providers", async () => {
+    expect(MAX_REGISTRY_ENVELOPE_BYTES).toBe(11_250_344);
+    const largePadding = "x".repeat(540 * 1024);
+    const payload = buildRegistryPayload(sampleRegistry({
+      generated_at: "2026-11-17T18:00:00.000Z",
+      providers: [
+        ...bundledProvidersList(),
+        {
+          id: "acme",
+          origin: "descriptor",
+          position: 99,
+          label: "Acme",
+          wire_policy: "openai-compatible",
+          base_url: "https://api.acme.example/v1",
+          auth: { secret_slot: "acme", env_vars: ["ACME_API_KEY"] },
+          admission: { id: "radm_1", reviewed_by: "founder", reviewed_at: "2026-11-17T18:00:00Z", founder_signature: "required" },
+        },
+      ],
+      engine_compat: { provider_descriptors: bundledRegistryTrust.providerDescriptorsCompat, pad: largePadding },
+    }));
+    expect(payload.generated_at).toBe("2026-11-17T18:00:00Z");
+    const envelope = buildEnvelope({ privateKey: ephemeral.privateKey, keyId: EPHEMERAL_KEY.keyId, payload });
+    expect(envelope.channel).toBe("registry");
+    expect(envelope.facts_version).toBe(12);
+    expect(envelope.published_at).toBe("2026-11-17T18:00:00Z");
+
+    expect(await verifyEnvelope(envelope, [EPHEMERAL_KEY], { channel: "registry", now: REG_NOW })).toEqual({
+      ok: true,
+      keyId: EPHEMERAL_KEY.keyId,
+      mode: "verified",
+    });
+    expect(verifyForPublisher(envelope, EPHEMERAL_KEY.publicKey).ok).toBe(true);
+    expect(activePublishingKey(envelope, [EPHEMERAL_KEY], REG_NOW).key.keyId).toBe(EPHEMERAL_KEY.keyId);
+    expect(emitSql(envelope, { publishedBy: "founder", publicKeyB64: EPHEMERAL_KEY.publicKey })).toContain("and c.slug = 'registry'");
+
+    const releaseRow = {
+      facts_version: envelope.facts_version,
+      schema_version: envelope.schema_version,
+      envelope_version: envelope.envelope,
+      applies_to: envelope.applies_to,
+      key_id: envelope.key_id,
+      payload_b64: envelope.payload_b64,
+      sig_b64: envelope.sig_b64,
+      sigs: envelope.sigs,
+      payload,
+      published_at: envelope.published_at,
+      not_after: envelope.not_after ?? null,
+    };
+    expect(Buffer.byteLength(JSON.stringify(releaseRow))).toBeGreaterThan(MAX_ENVELOPE_BYTES);
+    const seenPaths: string[] = [];
+    const postgrestOverHttp = async (path: string, init: { method?: string; body?: Record<string, unknown>; prefer?: string } = {}) => {
+      seenPaths.push(`${init.method ?? "GET"} ${path}`);
+      let bodyObj: unknown = null;
+      if (path.startsWith("facts_channel")) bodyObj = [{ id: "c-reg" }];
+      else if (path === "facts_key") bodyObj = null;
+      else if (path === "facts_release?select=id,payload_sha256") bodyObj = [{ id: "r-reg-12", payload_sha256: envelope.sha256 }];
+      else if (path === "facts_release") bodyObj = [{ id: "r-reg-12", payload_sha256: envelope.sha256, ...releaseRow }];
+      const res = new Response(bodyObj === null ? "" : JSON.stringify(bodyObj));
+      const text = await readBoundedResponse(res);
+      return text ? JSON.parse(text) : null;
+    };
+    const published = await publishRelease(postgrestOverHttp, envelope, releaseRow, EPHEMERAL_KEY.publicKey);
+    expect(published).toEqual({
+      published: true,
+      channel: "registry",
+      facts_version: 12,
+      release_id: "r-reg-12",
+      payload_sha256: envelope.sha256,
+    });
+    expect(seenPaths).toContain("POST facts_release?select=id,payload_sha256");
+
+    const kv = new MemKV();
+    const resolved = await resolveCloudFacts("registry", { ...env, CURATED_KV: kv }, {
+      keys: [EPHEMERAL_KEY],
+      now: () => REG_NOW,
+      fetchImpl: supabaseFetch([rowFrom(envelope, { published_at: "2026-11-17T18:00:00+00:00" })]),
+    });
+    expect(resolved).toMatchObject({ kind: "ok", keyId: EPHEMERAL_KEY.keyId, envelope: { channel: "registry", facts_version: 12, published_at: "2026-11-17T18:00:00Z" } });
+    const httpRes = responseFor(resolved, new Request("https://codewhale.dev/api/facts/v1/registry"), "registry", "GET");
+    expect(httpRes.status).toBe(200);
+    expect(httpRes.headers.get("X-Facts-Channel")).toBe("registry");
+    expect(httpRes.headers.get("X-Facts-Version")).toBe("12");
+  });
+
+  it("permits automation-signed model/offering registry updates with bounded not_after and refuses unbundled or mutated providers", async () => {
+    const providersWithNamingUpdate = bundledProvidersList().map((row) =>
+      row.id === "deepseek" ? { ...row, models: { ids: "strict", aliases: { "deepseek-next": "deepseek-chat" } } } : row,
+    );
+    const modelOnlyPayload = buildRegistryPayload(sampleRegistry({ providers: providersWithNamingUpdate }), {
+      notAfter: "2026-11-20T18:00:00Z",
+    });
+    const modelOnlyEnvelope = buildEnvelope({ privateKey: ephemeral.privateKey, keyId: EPHEMERAL_KEY.keyId, payload: modelOnlyPayload });
+    expect(await verifyEnvelope(modelOnlyEnvelope, [AUTOMATION_KEY], { channel: "registry", now: REG_NOW })).toEqual({
+      ok: true,
+      keyId: AUTOMATION_KEY.keyId,
+      mode: "verified",
+    });
+    expect(activePublishingKey(modelOnlyEnvelope, [AUTOMATION_KEY], REG_NOW).key.keyId).toBe(AUTOMATION_KEY.keyId);
+
+    const noExpiry = buildEnvelope({ privateKey: ephemeral.privateKey, keyId: EPHEMERAL_KEY.keyId, payload: buildRegistryPayload(sampleRegistry()) });
+    expect(await verifyEnvelope(noExpiry, [AUTOMATION_KEY], { channel: "registry", now: REG_NOW })).toEqual({ ok: false, reason: "out-of-scope" });
+    expect(() => activePublishingKey(noExpiry, [AUTOMATION_KEY], REG_NOW)).toThrow(/no not_after/);
+
+    const tooLong = buildEnvelope({
+      privateKey: ephemeral.privateKey,
+      keyId: EPHEMERAL_KEY.keyId,
+      payload: buildRegistryPayload(sampleRegistry(), { notAfter: "2026-12-01T18:00:00Z" }),
+    });
+    expect(await verifyEnvelope(tooLong, [AUTOMATION_KEY], { channel: "registry", now: REG_NOW })).toEqual({ ok: false, reason: "out-of-scope" });
+
+    for (const badRegistry of [
+      sampleRegistry({
+        providers: [
+          ...bundledProvidersList(),
+          {
+            id: "acme",
+            origin: "descriptor",
+            position: 99,
+            label: "Acme",
+            wire_policy: "openai-compatible",
+            base_url: "https://api.acme.example/v1",
+            auth: { secret_slot: "acme", env_vars: ["ACME_API_KEY"] },
+          },
+        ],
+      }),
+      sampleRegistry({
+        providers: bundledProvidersList().map((row) =>
+          row.id === "openai" ? { ...row, base_url: "https://evil.example/v1" } : row,
+        ),
+      }),
+      sampleRegistry({
+        providers: bundledProvidersList().slice(1),
+      }),
+      sampleRegistry({
+        engine_compat: { provider_descriptors: { ...bundledRegistryTrust.providerDescriptorsCompat, injected: true } },
+      }),
+    ]) {
+      const badEnvelope = buildEnvelope({
+        privateKey: ephemeral.privateKey,
+        keyId: EPHEMERAL_KEY.keyId,
+        payload: buildRegistryPayload(badRegistry, { notAfter: "2026-11-20T18:00:00Z" }),
+      });
+      expect(await verifyEnvelope(badEnvelope, [AUTOMATION_KEY], { channel: "registry", now: REG_NOW })).toEqual({
+        ok: false,
+        reason: "out-of-scope",
+      });
+      expect(() => activePublishingKey(badEnvelope, [AUTOMATION_KEY], REG_NOW)).toThrow(/founder signature/);
+    }
+  });
+
+  it("rejects tampered outer metadata, channel confusion, and oversized stable payloads", async () => {
+    const payload = buildRegistryPayload(sampleRegistry(), { notAfter: "2026-11-20T18:00:00Z", appliesTo: ">=0.10.3" });
+    const envelope = buildEnvelope({ privateKey: ephemeral.privateKey, keyId: EPHEMERAL_KEY.keyId, payload });
+    expect(envelope.applies_to).toBe(">=0.10.3");
+    expect(await verifyEnvelope(envelope, [EPHEMERAL_KEY], { channel: "registry", now: REG_NOW })).toEqual({
+      ok: true,
+      keyId: EPHEMERAL_KEY.keyId,
+      mode: "verified",
+    });
+    expect(await verifyEnvelope(envelope, [EPHEMERAL_KEY], { channel: "stable", now: REG_NOW })).toEqual({ ok: false, reason: "wrong-channel" });
+    for (const tampered of [
+      { facts_version: 13 },
+      { published_at: "2026-11-17T18:00:01Z" },
+      { applies_to: "*" },
+      { applies_to: ">=99.0.0" },
+      { not_after: null },
+      { not_after: "2026-11-21T18:00:00Z" },
+    ]) {
+      expect((await verifyEnvelope({ ...envelope, ...tampered }, [EPHEMERAL_KEY], { channel: "registry", now: REG_NOW })).ok).toBe(false);
+      expect(verifyForPublisher({ ...envelope, ...tampered }, EPHEMERAL_KEY.publicKey).ok).toBe(false);
+    }
   });
 });

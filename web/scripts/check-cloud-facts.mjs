@@ -2,7 +2,7 @@
 /** Local source, release, pinned-key parity and public-fixture gate. */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateSource, verifyEnvelope, parseTsKeys, validateTrustedKeys, readBoundedFile } from "./facts-publish.mjs";
+import { validateSource, verifyEnvelope, parseTsKeys, validateTrustedKeys, deriveBundledRegistryTrust, readBoundedFile } from "./facts-publish.mjs";
 
 const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = resolve(WEB_ROOT, "..");
@@ -42,6 +42,11 @@ export function checkCloudFacts() {
   const rustKeys = parseRustKeys(text(resolve(REPO_ROOT, "crates/config/src/cloud_facts/keys.rs")));
   const tsKeys = parseTsKeys(text(resolve(WEB_ROOT, "lib/cloud-facts/keys.ts")));
   if (JSON.stringify(rustKeys) !== JSON.stringify(tsKeys)) failures.push("Rust and web pinned key tables diverge");
+  const expectedBundled = deriveBundledRegistryTrust(json(resolve(REPO_ROOT, "crates/config/assets/provider_descriptors.json")));
+  const committedBundled = json(resolve(WEB_ROOT, "lib/cloud-facts/bundled-providers.json"));
+  if (JSON.stringify(expectedBundled) !== JSON.stringify(committedBundled)) {
+    failures.push("crates/config/assets/provider_descriptors.json and web/lib/cloud-facts/bundled-providers.json diverge");
+  }
   const testOnlyPub = text(resolve(REPO_ROOT, "docs/cloud-facts/fixtures/test-only.pub")).trim();
   for (const name of ["envelope-stable-v7.json", "envelope-future-only-v8.json"]) {
     const result = verifyEnvelope(json(resolve(REPO_ROOT, "docs/cloud-facts/fixtures", name)), testOnlyPub);

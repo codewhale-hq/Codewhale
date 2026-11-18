@@ -1,0 +1,2556 @@
+{
+  "providerDescriptorsCompat": {
+    "compatibility_constants": {
+      "CODEWHALE_API_BASE_ENV": "CODEWHALE_API_BASE",
+      "DEFAULT_DEEPINFRA_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_DEEPSEEKCN_BASE_URL": "https://api.deepseek.com/beta",
+      "DEFAULT_HUGGINGFACE_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_KIMI_CODE_BASE_URL": "https://api.kimi.com/coding/v1",
+      "DEFAULT_KIMI_CODE_MODEL": "kimi-for-coding",
+      "DEFAULT_NOVITA_FLASH_MODEL": "deepseek/deepseek-v4-flash",
+      "DEFAULT_NVIDIA_NIM_FLASH_MODEL": "deepseek-ai/deepseek-v4-flash",
+      "DEFAULT_OPENROUTER_FLASH_MODEL": "deepseek/deepseek-v4-flash",
+      "DEFAULT_ORCAROUTER_FLASH_MODEL": "deepseek/deepseek-v4-flash",
+      "DEFAULT_SGLANG_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_SILICONFLOW_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_STEPFUN_PLAN_BASE_URL": "https://api.stepfun.ai/step_plan/v1",
+      "DEFAULT_TOGETHER_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_VLLM_FLASH_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+      "DEFAULT_VOLCENGINE_FLASH_MODEL": "DeepSeek-V4-Flash",
+      "DS4_BASE_URL": "http://127.0.0.1:8000/v1",
+      "DS4_DEFAULT_MODEL": "deepseek-v4-flash",
+      "KIMI_CODE_MEMBERSHIP_PLAN_CONSOLE_URL": "https://www.kimi.com/code/console",
+      "LM_STUDIO_BASE_URL": "http://127.0.0.1:1234/v1"
+    },
+    "constant_refs": {
+      "CODEWHALE_API_KEY_URL": {
+        "field": "credential_url",
+        "provider": "codewhale"
+      },
+      "DEFAULT_ANTHROPIC_BASE_URL": {
+        "field": "base_url",
+        "provider": "anthropic"
+      },
+      "DEFAULT_ANTHROPIC_MODEL": {
+        "field": "default_model",
+        "provider": "anthropic"
+      },
+      "DEFAULT_ANTIGRAVITY_BASE_URL": {
+        "field": "base_url",
+        "provider": "antigravity"
+      },
+      "DEFAULT_ANTIGRAVITY_MODEL": {
+        "field": "default_model",
+        "provider": "antigravity"
+      },
+      "DEFAULT_ARCEE_BASE_URL": {
+        "field": "base_url",
+        "provider": "arcee"
+      },
+      "DEFAULT_ARCEE_MODEL": {
+        "field": "default_model",
+        "provider": "arcee"
+      },
+      "DEFAULT_ATLASCLOUD_BASE_URL": {
+        "field": "base_url",
+        "provider": "atlascloud"
+      },
+      "DEFAULT_ATLASCLOUD_MODEL": {
+        "field": "default_model",
+        "provider": "atlascloud"
+      },
+      "DEFAULT_CODEWHALE_BASE_URL": {
+        "field": "base_url",
+        "provider": "codewhale"
+      },
+      "DEFAULT_CODEWHALE_MODEL": {
+        "field": "default_model",
+        "provider": "codewhale"
+      },
+      "DEFAULT_CONCENTRATE_BASE_URL": {
+        "field": "base_url",
+        "provider": "concentrate"
+      },
+      "DEFAULT_CONCENTRATE_MODEL": {
+        "field": "default_model",
+        "provider": "concentrate"
+      },
+      "DEFAULT_CSDN_BASE_URL": {
+        "field": "base_url",
+        "provider": "csdn"
+      },
+      "DEFAULT_CSDN_MODEL": {
+        "field": "default_model",
+        "provider": "csdn"
+      },
+      "DEFAULT_DEEPINFRA_BASE_URL": {
+        "field": "base_url",
+        "provider": "deepinfra"
+      },
+      "DEFAULT_DEEPINFRA_MODEL": {
+        "field": "default_model",
+        "provider": "deepinfra"
+      },
+      "DEFAULT_DEEPSEEK_ANTHROPIC_BASE_URL": {
+        "field": "base_url",
+        "provider": "deepseek-anthropic"
+      },
+      "DEFAULT_DEEPSEEK_ANTHROPIC_MODEL": {
+        "field": "default_model",
+        "provider": "deepseek-anthropic"
+      },
+      "DEFAULT_DEEPSEEK_BASE_URL": {
+        "field": "base_url",
+        "provider": "deepseek"
+      },
+      "DEFAULT_DEEPSEEK_MODEL": {
+        "field": "default_model",
+        "provider": "deepseek"
+      },
+      "DEFAULT_EDENAI_BASE_URL": {
+        "field": "base_url",
+        "provider": "edenai"
+      },
+      "DEFAULT_EDENAI_MODEL": {
+        "field": "default_model",
+        "provider": "edenai"
+      },
+      "DEFAULT_FIREWORKS_BASE_URL": {
+        "field": "base_url",
+        "provider": "fireworks"
+      },
+      "DEFAULT_FIREWORKS_MODEL": {
+        "field": "default_model",
+        "provider": "fireworks"
+      },
+      "DEFAULT_GOOGLE_BASE_URL": {
+        "field": "base_url",
+        "provider": "google"
+      },
+      "DEFAULT_GOOGLE_MODEL": {
+        "field": "default_model",
+        "provider": "google"
+      },
+      "DEFAULT_HUGGINGFACE_BASE_URL": {
+        "field": "base_url",
+        "provider": "huggingface"
+      },
+      "DEFAULT_HUGGINGFACE_MODEL": {
+        "field": "default_model",
+        "provider": "huggingface"
+      },
+      "DEFAULT_LONGCAT_BASE_URL": {
+        "field": "base_url",
+        "provider": "longcat"
+      },
+      "DEFAULT_LONGCAT_MODEL": {
+        "field": "default_model",
+        "provider": "longcat"
+      },
+      "DEFAULT_META_BASE_URL": {
+        "field": "base_url",
+        "provider": "meta"
+      },
+      "DEFAULT_META_MODEL": {
+        "field": "default_model",
+        "provider": "meta"
+      },
+      "DEFAULT_MINIMAX_ANTHROPIC_BASE_URL": {
+        "field": "base_url",
+        "provider": "minimax-anthropic"
+      },
+      "DEFAULT_MINIMAX_BASE_URL": {
+        "field": "base_url",
+        "provider": "minimax"
+      },
+      "DEFAULT_MINIMAX_MODEL": {
+        "field": "default_model",
+        "provider": "minimax"
+      },
+      "DEFAULT_MISTRAL_BASE_URL": {
+        "field": "base_url",
+        "provider": "mistral"
+      },
+      "DEFAULT_MISTRAL_MODEL": {
+        "field": "default_model",
+        "provider": "mistral"
+      },
+      "DEFAULT_MODELSCOPE_BASE_URL": {
+        "field": "base_url",
+        "provider": "modelscope"
+      },
+      "DEFAULT_MODELSCOPE_MODEL": {
+        "field": "default_model",
+        "provider": "modelscope"
+      },
+      "DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL": {
+        "field": "base_url",
+        "provider": "modelstudio-coding-plan"
+      },
+      "DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL": {
+        "field": "base_url",
+        "provider": "modelstudio-token-plan"
+      },
+      "DEFAULT_MODELSTUDIO_TOKEN_PLAN_MODEL": {
+        "field": "default_model",
+        "provider": "modelstudio-token-plan"
+      },
+      "DEFAULT_MOONSHOT_BASE_URL": {
+        "field": "base_url",
+        "provider": "moonshot"
+      },
+      "DEFAULT_MOONSHOT_MODEL": {
+        "field": "default_model",
+        "provider": "moonshot"
+      },
+      "DEFAULT_NOVITA_BASE_URL": {
+        "field": "base_url",
+        "provider": "novita"
+      },
+      "DEFAULT_NOVITA_MODEL": {
+        "field": "default_model",
+        "provider": "novita"
+      },
+      "DEFAULT_NVIDIA_NIM_BASE_URL": {
+        "field": "base_url",
+        "provider": "nvidia-nim"
+      },
+      "DEFAULT_NVIDIA_NIM_MODEL": {
+        "field": "default_model",
+        "provider": "nvidia-nim"
+      },
+      "DEFAULT_OLLAMA_BASE_URL": {
+        "field": "base_url",
+        "provider": "ollama"
+      },
+      "DEFAULT_OLLAMA_CLOUD_BASE_URL": {
+        "field": "base_url",
+        "provider": "ollama-cloud"
+      },
+      "DEFAULT_OLLAMA_CLOUD_MODEL": {
+        "field": "default_model",
+        "provider": "ollama-cloud"
+      },
+      "DEFAULT_OLLAMA_MODEL": {
+        "field": "default_model",
+        "provider": "ollama"
+      },
+      "DEFAULT_OPENAI_BASE_URL": {
+        "field": "base_url",
+        "provider": "openai"
+      },
+      "DEFAULT_OPENAI_CODEX_BASE_URL": {
+        "field": "base_url",
+        "provider": "openai-codex"
+      },
+      "DEFAULT_OPENAI_CODEX_MODEL": {
+        "field": "default_model",
+        "provider": "openai-codex"
+      },
+      "DEFAULT_OPENAI_MODEL": {
+        "field": "default_model",
+        "provider": "openai"
+      },
+      "DEFAULT_OPENCODE_GO_BASE_URL": {
+        "field": "base_url",
+        "provider": "opencode-go"
+      },
+      "DEFAULT_OPENCODE_GO_MODEL": {
+        "field": "default_model",
+        "provider": "opencode-go"
+      },
+      "DEFAULT_OPENCODE_ZEN_BASE_URL": {
+        "field": "base_url",
+        "provider": "opencode-zen"
+      },
+      "DEFAULT_OPENCODE_ZEN_MODEL": {
+        "field": "default_model",
+        "provider": "opencode-zen"
+      },
+      "DEFAULT_OPENMODEL_BASE_URL": {
+        "field": "base_url",
+        "provider": "openmodel"
+      },
+      "DEFAULT_OPENMODEL_MODEL": {
+        "field": "default_model",
+        "provider": "openmodel"
+      },
+      "DEFAULT_OPENROUTER_BASE_URL": {
+        "field": "base_url",
+        "provider": "openrouter"
+      },
+      "DEFAULT_OPENROUTER_MODEL": {
+        "field": "default_model",
+        "provider": "openrouter"
+      },
+      "DEFAULT_ORCAROUTER_BASE_URL": {
+        "field": "base_url",
+        "provider": "orcarouter"
+      },
+      "DEFAULT_ORCAROUTER_MODEL": {
+        "field": "default_model",
+        "provider": "orcarouter"
+      },
+      "DEFAULT_QIANFAN_BASE_URL": {
+        "field": "base_url",
+        "provider": "qianfan"
+      },
+      "DEFAULT_QIANFAN_MODEL": {
+        "field": "default_model",
+        "provider": "qianfan"
+      },
+      "DEFAULT_SAKANA_BASE_URL": {
+        "field": "base_url",
+        "provider": "sakana"
+      },
+      "DEFAULT_SAKANA_MODEL": {
+        "field": "default_model",
+        "provider": "sakana"
+      },
+      "DEFAULT_SGLANG_BASE_URL": {
+        "field": "base_url",
+        "provider": "sglang"
+      },
+      "DEFAULT_SGLANG_MODEL": {
+        "field": "default_model",
+        "provider": "sglang"
+      },
+      "DEFAULT_SILICONFLOW_BASE_URL": {
+        "field": "base_url",
+        "provider": "siliconflow"
+      },
+      "DEFAULT_SILICONFLOW_CN_BASE_URL": {
+        "field": "base_url",
+        "provider": "siliconflow-CN"
+      },
+      "DEFAULT_SILICONFLOW_MODEL": {
+        "field": "default_model",
+        "provider": "siliconflow"
+      },
+      "DEFAULT_STEPFUN_BASE_URL": {
+        "field": "base_url",
+        "provider": "stepfun"
+      },
+      "DEFAULT_STEPFUN_MODEL": {
+        "field": "default_model",
+        "provider": "stepfun"
+      },
+      "DEFAULT_TELECOMJS_BASE_URL": {
+        "field": "base_url",
+        "provider": "telecomjs"
+      },
+      "DEFAULT_TELECOMJS_MODEL": {
+        "field": "default_model",
+        "provider": "telecomjs"
+      },
+      "DEFAULT_TEXT_MODEL": {
+        "field": "default_model",
+        "provider": "deepseek"
+      },
+      "DEFAULT_TOGETHER_BASE_URL": {
+        "field": "base_url",
+        "provider": "together"
+      },
+      "DEFAULT_TOGETHER_MODEL": {
+        "field": "default_model",
+        "provider": "together"
+      },
+      "DEFAULT_VLLM_BASE_URL": {
+        "field": "base_url",
+        "provider": "vllm"
+      },
+      "DEFAULT_VLLM_MODEL": {
+        "field": "default_model",
+        "provider": "vllm"
+      },
+      "DEFAULT_VOLCENGINE_BASE_URL": {
+        "field": "base_url",
+        "provider": "volcengine"
+      },
+      "DEFAULT_VOLCENGINE_MODEL": {
+        "field": "default_model",
+        "provider": "volcengine"
+      },
+      "DEFAULT_WANJIE_ARK_BASE_URL": {
+        "field": "base_url",
+        "provider": "wanjie-ark"
+      },
+      "DEFAULT_WANJIE_ARK_MODEL": {
+        "field": "default_model",
+        "provider": "wanjie-ark"
+      },
+      "DEFAULT_XAI_BASE_URL": {
+        "field": "base_url",
+        "provider": "xai"
+      },
+      "DEFAULT_XAI_MODEL": {
+        "field": "default_model",
+        "provider": "xai"
+      },
+      "DEFAULT_XIAOMI_MIMO_BASE_URL": {
+        "field": "base_url",
+        "provider": "xiaomi-mimo"
+      },
+      "DEFAULT_XIAOMI_MIMO_MODEL": {
+        "field": "default_model",
+        "provider": "xiaomi-mimo"
+      },
+      "DEFAULT_ZAI_BASE_URL": {
+        "field": "base_url",
+        "provider": "zai"
+      },
+      "DEFAULT_ZAI_MODEL": {
+        "field": "default_model",
+        "provider": "zai"
+      },
+      "DEFAULT_ZENMUX_BASE_URL": {
+        "field": "base_url",
+        "provider": "zenmux"
+      },
+      "DEFAULT_ZENMUX_MODEL": {
+        "field": "default_model",
+        "provider": "zenmux"
+      },
+      "MODELSTUDIO_CODING_PLAN_ANTHROPIC_BASE_URL": {
+        "field": "base_url",
+        "provider": "modelstudio-coding-plan-anthropic"
+      },
+      "MODELSTUDIO_TOKEN_PLAN_ANTHROPIC_BASE_URL": {
+        "field": "base_url",
+        "provider": "modelstudio-token-plan-anthropic"
+      },
+      "OLLAMA_CLOUD_API_KEY_URL": {
+        "field": "credential_url",
+        "provider": "ollama-cloud"
+      },
+      "OLLAMA_CLOUD_BASE_URL": {
+        "field": "base_url",
+        "provider": "ollama-cloud"
+      },
+      "OPENAI_DEFAULT_MODEL": {
+        "field": "default_model",
+        "provider": "openai"
+      }
+    },
+    "legacy_tui": {
+      "aliases": [
+        "deepseek-cn",
+        "deepseek_china",
+        "deepseekcn",
+        "deepseek-china"
+      ],
+      "base_url": "https://api.deepseek.com/beta",
+      "base_url_config_key": "deepseek",
+      "catalog_id": "deepseek-cn",
+      "catalog_source_id": "deepseek",
+      "config_key": "deepseek_cn",
+      "default_model": "deepseek-flash",
+      "id": "deepseek-cn",
+      "kind": "Deepseek",
+      "label": "DeepSeek (legacy alias)",
+      "models": {
+        "accept": [
+          "deepseek*",
+          "*/deepseek*"
+        ],
+        "aliases": {
+          "deepseek-ai/deepseek-flash": "deepseek-flash",
+          "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek-ai/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek-chat": "deepseek-flash",
+          "deepseek-reasoner": "deepseek-flash",
+          "deepseek-v4flash": "deepseek-flash",
+          "deepseek-v4flashvisionexp": "deepseek-flash",
+          "deepseek-v4pro": "deepseek-v4-pro",
+          "deepseek/deepseek-flash": "deepseek-flash",
+          "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
+          "deepseek/deepseek-v4flash": "deepseek-v4-flash",
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "flash-vision": "deepseek-flash",
+          "pro": "deepseek-v4-pro"
+        },
+        "ids": "strict",
+        "strip_prefixes": [],
+        "wire_slugs": {}
+      },
+      "secret_store_slot": "deepseek",
+      "selector_aliases": [
+        "deepseek-cn",
+        "deepseek_china",
+        "deepseekcn",
+        "deepseek-china"
+      ],
+      "subagent_aliases": [
+        "deepseek_cn",
+        "deepseek_china",
+        "deepseekcn"
+      ],
+      "table_field": "deepseek_cn",
+      "tui_order": 1,
+      "tui_wire_tag": "deepseek_c_n"
+    },
+    "note": "One built-in and compatible-host metadata owner. Defaults are bootstrap hints; model offerings and route/auth behavior retain their existing Rust and live-catalog authorities.",
+    "route_credential_help": {
+      "kimi-code": {
+        "acquisition": "api_key",
+        "credential_url": "https://www.kimi.com/code/console",
+        "docs_url": null,
+        "guidance": "Create a Kimi Code membership-plan API key in the Kimi Code console. This route uses api.kimi.com/coding/v1; Codewhale does not import Kimi CLI credentials."
+      },
+      "ollama-cloud": {
+        "acquisition": "api_key",
+        "credential_url": "https://ollama.com/settings/keys",
+        "docs_url": "https://docs.ollama.com/api/authentication",
+        "guidance": "Ollama Cloud requires an API key. Create one in Ollama account settings, then save it for the ollama-cloud provider, set OLLAMA_CLOUD_API_KEY for Pi compatibility, or set Ollama's official OLLAMA_API_KEY."
+      }
+    },
+    "schema": "codewhale.provider_descriptors.v2",
+    "schema_version": 3
+  },
+  "providers": {
+    "aicraft": {
+      "aliases": [
+        "ai-craft",
+        "ai_craft"
+      ],
+      "api_key_env": "AICRAFT_API_KEY",
+      "auth": {
+        "env_vars": [
+          "AICRAFT_API_KEY"
+        ],
+        "secret_slot": "aicraft"
+      },
+      "base_url": "https://aicraftapi.com/v1",
+      "credential_url": "https://aicraftapi.com/dashboard.html",
+      "discovery": "models_endpoint",
+      "docs_url": "https://aicraftapi.com/docs.html#codewhale",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "anthropic": {
+      "aliases": [
+        "claude"
+      ],
+      "base_url": "https://api.anthropic.com",
+      "catalog_id": "anthropic",
+      "catalog_source_id": "anthropic",
+      "config_key": "anthropic",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://console.anthropic.com/settings/keys",
+        "docs_url": "https://docs.anthropic.com/en/api/overview",
+        "guidance": "Create an Anthropic API key in the Anthropic Console."
+      },
+      "env_vars": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "kind": "Anthropic",
+      "origin": "builtin",
+      "secret_store_slot": "anthropic",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "anthropic",
+        "claude",
+        "anthropic_api"
+      ],
+      "table_field": "anthropic",
+      "tui_wire_tag": "anthropic",
+      "web": {
+        "order": 24
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "antigravity": {
+      "aliases": [
+        "agy"
+      ],
+      "base_url": "https://legacy-antigravity.invalid",
+      "catalog_id": "antigravity",
+      "catalog_source_id": "antigravity",
+      "config_key": "antigravity",
+      "credential_help": {
+        "acquisition": "configuration",
+        "credential_url": null,
+        "docs_url": null,
+        "guidance": "Legacy configuration only; this route is disabled. Run `codewhale auth clear --provider antigravity` to clear only Codewhale-owned legacy state, then use provider `google` with `GEMINI_API_KEY` for Gemini."
+      },
+      "env_vars": [],
+      "kind": "Antigravity",
+      "origin": "builtin",
+      "secret_store_slot": "antigravity",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "antigravity",
+      "tui_wire_tag": "antigravity",
+      "wire_policy": "chat_completions"
+    },
+    "arcee": {
+      "aliases": [
+        "arcee-ai",
+        "arcee_ai"
+      ],
+      "base_url": "https://api.arcee.ai/api/v1",
+      "catalog_id": "arcee",
+      "catalog_source_id": "arcee",
+      "config_key": "arcee",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://docs.arcee.ai/other/create-your-first-api-key",
+        "docs_url": "https://docs.arcee.ai/other/create-your-first-api-key",
+        "guidance": "Follow Arcee's API key guide to create a credential."
+      },
+      "env_vars": [
+        "ARCEE_API_KEY"
+      ],
+      "kind": "Arcee",
+      "origin": "builtin",
+      "secret_store_slot": "arcee",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "arcee",
+      "tui_wire_tag": "arcee",
+      "web": {
+        "order": 14
+      },
+      "wire_policy": "chat_completions"
+    },
+    "atlascloud": {
+      "aliases": [
+        "atlas-cloud",
+        "atlas_cloud",
+        "atlas"
+      ],
+      "base_url": "https://api.atlascloud.ai/v1",
+      "catalog_id": "atlascloud",
+      "catalog_source_id": "atlascloud",
+      "config_key": "atlascloud",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://atlascloud.ai/docs/en/api-keys",
+        "docs_url": "https://atlascloud.ai/docs/en/api-keys",
+        "guidance": "Follow Atlas Cloud's API Keys guide to create a credential."
+      },
+      "env_vars": [
+        "ATLASCLOUD_API_KEY"
+      ],
+      "kind": "Atlascloud",
+      "origin": "builtin",
+      "secret_store_slot": "atlascloud",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "atlascloud",
+      "tui_wire_tag": "atlascloud",
+      "web": {
+        "order": 4
+      },
+      "wire_policy": "chat_completions"
+    },
+    "baseten": {
+      "aliases": [
+        "base-ten",
+        "base_ten"
+      ],
+      "api_key_env": "BASETEN_API_KEY",
+      "auth": {
+        "env_vars": [
+          "BASETEN_API_KEY"
+        ],
+        "secret_slot": "baseten"
+      },
+      "base_url": "https://inference.baseten.co/v1",
+      "credential_url": "https://app.baseten.co/settings/api_keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://docs.baseten.co/inference/model-apis/overview",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "cerebras": {
+      "api_key_env": "CEREBRAS_API_KEY",
+      "auth": {
+        "env_vars": [
+          "CEREBRAS_API_KEY"
+        ],
+        "secret_slot": "cerebras"
+      },
+      "base_url": "https://api.cerebras.ai/v1",
+      "credential_url": "https://cloud.cerebras.ai",
+      "discovery": "models_endpoint",
+      "docs_url": "https://inference-docs.cerebras.ai/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "cheaperinference": {
+      "aliases": [
+        "cheaper-inference"
+      ],
+      "api_key_env": "CHEAPER_INFERENCE_API_KEY",
+      "auth": {
+        "env_vars": [
+          "CHEAPER_INFERENCE_API_KEY"
+        ],
+        "secret_slot": "cheaperinference"
+      },
+      "base_url": "https://api.cheaperinference.com/v1",
+      "credential_url": "https://cheaperinference.com/signup",
+      "discovery": "models_endpoint",
+      "docs_url": "https://cheaperinference.com/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "codewhale": {
+      "aliases": [
+        "codewhale-api",
+        "codewhale_api",
+        "cw-api",
+        "codewhale-cloud"
+      ],
+      "base_url": "https://api.codewhale.net/v1",
+      "catalog_id": "codewhale",
+      "catalog_source_id": "codewhale",
+      "config_key": "codewhale",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://app.codewhale.net/settings?section=api",
+        "docs_url": "https://app.codewhale.net/settings?section=api",
+        "guidance": "Create an API key with the models:infer scope at https://app.codewhale.net/settings?section=api"
+      },
+      "env_vars": [
+        "CODEWHALE_API_KEY"
+      ],
+      "kind": "Codewhale",
+      "origin": "builtin",
+      "secret_store_slot": "codewhale",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "codewhale",
+        "codewhale_api",
+        "cw_api",
+        "codewhale_cloud"
+      ],
+      "table_field": "codewhale",
+      "tui_wire_tag": "codewhale",
+      "web": {
+        "order": 45
+      },
+      "wire_policy": "model_aware"
+    },
+    "command-code": {
+      "aliases": [
+        "commandcode",
+        "cmd-code"
+      ],
+      "api_key_env": "COMMAND_CODE_API_KEY",
+      "auth": {
+        "env_vars": [
+          "COMMAND_CODE_API_KEY"
+        ],
+        "secret_slot": "command-code"
+      },
+      "base_url": "https://api.commandcode.ai/provider/v1",
+      "credential_url": "https://commandcode.ai/provider",
+      "discovery": "models_endpoint",
+      "docs_url": "https://commandcode.ai/docs/provider",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "concentrate": {
+      "aliases": [
+        "concentrate-ai",
+        "concentrate_ai",
+        "concentrateai"
+      ],
+      "base_url": "https://api.concentrate.ai/v1",
+      "catalog_id": "concentrate",
+      "catalog_source_id": "concentrate",
+      "config_key": "concentrate",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://concentrate.ai/",
+        "docs_url": "https://concentrate.ai/docs/api-reference/introduction",
+        "guidance": "Create a Universal API key in the Concentrate dashboard (API Keys → Create API Key). Codewhale sends it only to the Concentrate base URL and never stores or forwards it elsewhere."
+      },
+      "env_vars": [
+        "CONCENTRATE_API_KEY"
+      ],
+      "kind": "Concentrate",
+      "origin": "builtin",
+      "secret_store_slot": "concentrate",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "concentrate",
+        "concentrate_ai",
+        "concentrateai"
+      ],
+      "table_field": "concentrate",
+      "tui_wire_tag": "concentrate",
+      "web": {
+        "order": 44
+      },
+      "wire_policy": "responses"
+    },
+    "csdn": {
+      "aliases": [
+        "csdn-ai",
+        "csdn_ai",
+        "csdn-coding-plan",
+        "csdn_coding_plan",
+        "starmap"
+      ],
+      "base_url": "https://ai.csdn.net/api/model/v1",
+      "catalog_id": "csdn",
+      "catalog_source_id": "csdn",
+      "config_key": "csdn",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://ai.csdn.net/workbench/api-key",
+        "docs_url": "https://ai.csdn.net/coding-plan",
+        "guidance": "Create an API key in the CSDN console — choose the Coding Plan key type so glm_for_coding calls bill against plan quota; a general key bills metered."
+      },
+      "env_vars": [
+        "CSDN_API_KEY"
+      ],
+      "kind": "Csdn",
+      "origin": "builtin",
+      "secret_store_slot": "csdn",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "csdn",
+        "csdn_ai",
+        "csdn_coding_plan",
+        "starmap"
+      ],
+      "table_field": "csdn",
+      "tui_wire_tag": "csdn",
+      "web": {
+        "label": "CSDN 星图 (Starmap)",
+        "order": 43
+      },
+      "wire_policy": "chat_completions"
+    },
+    "custom": {
+      "aliases": [],
+      "base_url": "http://localhost/v1",
+      "catalog_id": "custom",
+      "catalog_source_id": "custom",
+      "config_key": "custom",
+      "credential_help": {
+        "acquisition": "configuration",
+        "credential_url": null,
+        "docs_url": null,
+        "guidance": "Set this custom provider's base_url and api_key_env or api_key in configuration; no canonical vendor credential page exists."
+      },
+      "env_vars": [],
+      "kind": "Custom",
+      "origin": "builtin",
+      "secret_store_slot": "custom",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "custom",
+      "tui_wire_tag": "custom",
+      "wire_policy": "chat_completions"
+    },
+    "dashscope": {
+      "aliases": [
+        "dashscope-intl",
+        "alibaba-model-studio",
+        "model-studio",
+        "qwen"
+      ],
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "auth": {
+        "env_vars": [
+          "DASHSCOPE_API_KEY"
+        ],
+        "secret_slot": "dashscope"
+      },
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "credential_url": "https://bailian.console.alibabacloud.com/",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.alibabacloud.com/help/en/model-studio/getting-started/models",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "deepinfra": {
+      "aliases": [
+        "deep-infra",
+        "deep_infra"
+      ],
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "catalog_id": "deepinfra",
+      "catalog_source_id": "deepinfra",
+      "config_key": "deepinfra",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://deepinfra.com/dash/api_keys",
+        "docs_url": "https://docs.deepinfra.com/quickstart",
+        "guidance": "Create a DeepInfra API key from the dashboard."
+      },
+      "env_vars": [
+        "DEEPINFRA_API_KEY",
+        "DEEPINFRA_TOKEN"
+      ],
+      "kind": "Deepinfra",
+      "origin": "builtin",
+      "secret_store_slot": "deepinfra",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "deepinfra",
+      "tui_wire_tag": "deepinfra",
+      "web": {
+        "order": 30
+      },
+      "wire_policy": "chat_completions"
+    },
+    "deepseek": {
+      "aliases": [
+        "deep-seek",
+        "deepseek-cn",
+        "deepseek_china",
+        "deepseekcn",
+        "deepseek-china",
+        "deepseek-anthropic",
+        "deepseek_anthropic",
+        "deepseek-claude",
+        "deepseek_claude"
+      ],
+      "base_url": "https://api.deepseek.com/beta",
+      "catalog_id": "deepseek",
+      "catalog_source_id": "deepseek",
+      "config_key": "deepseek",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.deepseek.com/api_keys",
+        "docs_url": "https://api-docs.deepseek.com/",
+        "guidance": "Create an API key in the DeepSeek platform console."
+      },
+      "env_vars": [
+        "DEEPSEEK_API_KEY"
+      ],
+      "kind": "Deepseek",
+      "origin": "builtin",
+      "secret_store_slot": "deepseek",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "deepseek",
+        "deepseek_api",
+        "deepseek_official"
+      ],
+      "table_field": "deepseek",
+      "tui_wire_tag": "deepseek",
+      "web": {
+        "order": 0
+      },
+      "wire_policy": "model_aware"
+    },
+    "deepseek-anthropic": {
+      "aliases": [],
+      "base_url": "https://api.deepseek.com/anthropic",
+      "catalog_id": "deepseek",
+      "catalog_source_id": "deepseek",
+      "config_key": "deepseek_anthropic",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.deepseek.com/api_keys",
+        "docs_url": "https://api-docs.deepseek.com/",
+        "guidance": "Create an API key in the DeepSeek platform console."
+      },
+      "env_vars": [
+        "DEEPSEEK_API_KEY"
+      ],
+      "kind": "DeepseekAnthropic",
+      "origin": "builtin",
+      "secret_store_slot": "deepseek-anthropic",
+      "selector_aliases": [
+        "deepseek-anthropic",
+        "deepseek_anthropic",
+        "deepseek-claude",
+        "deepseek_claude"
+      ],
+      "subagent_aliases": [
+        "deepseek_anthropic",
+        "deepseek_claude",
+        "deepseek_anthropic_api"
+      ],
+      "table_field": "deepseek_anthropic",
+      "tui_wire_tag": "deepseek_anthropic",
+      "web": {
+        "env": "DEEPSEEK_API_KEY / ANTHROPIC_API_KEY",
+        "label": "DeepSeek Anthropic",
+        "order": 1
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "edenai": {
+      "aliases": [
+        "eden-ai",
+        "eden_ai"
+      ],
+      "base_url": "https://api.edenai.run/v3",
+      "catalog_id": "edenai",
+      "catalog_source_id": "edenai",
+      "config_key": "edenai",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://app.edenai.run/settings/api-keys",
+        "docs_url": "https://www.edenai.co/docs",
+        "guidance": "Create an Eden AI API key from the Eden AI dashboard, then select models by their provider/model namespaced id."
+      },
+      "env_vars": [
+        "EDENAI_API_KEY"
+      ],
+      "kind": "Edenai",
+      "origin": "builtin",
+      "secret_store_slot": "edenai",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "edenai",
+        "eden_ai"
+      ],
+      "table_field": "edenai",
+      "tui_wire_tag": "edenai",
+      "web": {
+        "order": 41
+      },
+      "wire_policy": "chat_completions"
+    },
+    "fireworks": {
+      "aliases": [
+        "fireworks-ai"
+      ],
+      "base_url": "https://api.fireworks.ai/inference/v1",
+      "catalog_id": "fireworks",
+      "catalog_source_id": "fireworks",
+      "config_key": "fireworks",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://fireworks.ai/api-keys",
+        "docs_url": "https://docs.fireworks.ai/getting-started/quickstart",
+        "guidance": "Create a Fireworks API key before configuring the provider."
+      },
+      "env_vars": [
+        "FIREWORKS_API_KEY"
+      ],
+      "kind": "Fireworks",
+      "origin": "builtin",
+      "secret_store_slot": "fireworks",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "fireworks",
+      "tui_wire_tag": "fireworks",
+      "web": {
+        "order": 11
+      },
+      "wire_policy": "chat_completions"
+    },
+    "google": {
+      "aliases": [
+        "google-gemini",
+        "google_gemini",
+        "gemini",
+        "google-ai",
+        "google_ai",
+        "ai-studio",
+        "aistudio"
+      ],
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "catalog_id": "google",
+      "catalog_source_id": "google",
+      "config_key": "google",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://aistudio.google.com/apikey",
+        "docs_url": "https://ai.google.dev/gemini-api/docs/openai",
+        "guidance": "Create a Google AI Studio API key. Codewhale uses the official Gemini OpenAI-compatible endpoint and never reads Google OAuth files."
+      },
+      "env_vars": [
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY"
+      ],
+      "kind": "Google",
+      "origin": "builtin",
+      "secret_store_slot": "google",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "google",
+      "tui_wire_tag": "google",
+      "web": {
+        "order": 38
+      },
+      "wire_policy": "chat_completions"
+    },
+    "groq": {
+      "api_key_env": "GROQ_API_KEY",
+      "auth": {
+        "env_vars": [
+          "GROQ_API_KEY"
+        ],
+        "secret_slot": "groq"
+      },
+      "base_url": "https://api.groq.com/openai/v1",
+      "credential_url": "https://console.groq.com/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://console.groq.com/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "huggingface": {
+      "aliases": [
+        "hugging-face",
+        "hugging_face",
+        "hf"
+      ],
+      "base_url": "https://router.huggingface.co/v1",
+      "catalog_id": "huggingface",
+      "catalog_source_id": "huggingface",
+      "config_key": "huggingface",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://huggingface.co/settings/tokens",
+        "docs_url": "https://huggingface.co/docs/hub/en/security-tokens",
+        "guidance": "Create a scoped Hugging Face access token."
+      },
+      "env_vars": [
+        "HUGGINGFACE_API_KEY",
+        "HF_TOKEN"
+      ],
+      "kind": "Huggingface",
+      "origin": "builtin",
+      "secret_store_slot": "huggingface",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "huggingface",
+      "tui_wire_tag": "huggingface",
+      "web": {
+        "order": 20
+      },
+      "wire_policy": "chat_completions"
+    },
+    "longcat": {
+      "aliases": [
+        "long-cat",
+        "meituan-longcat",
+        "meituan"
+      ],
+      "base_url": "https://api.longcat.chat/openai/v1",
+      "catalog_id": "longcat",
+      "catalog_source_id": "longcat",
+      "config_key": "longcat",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://longcat.chat/platform",
+        "docs_url": "https://longcat.chat/platform",
+        "guidance": "Sign up on the LongCat platform and create an API key."
+      },
+      "env_vars": [
+        "LONGCAT_API_KEY"
+      ],
+      "kind": "LongCat",
+      "origin": "builtin",
+      "secret_store_slot": "longcat",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "longcat",
+        "long_cat",
+        "meituan_longcat",
+        "meituan"
+      ],
+      "table_field": "longcat",
+      "tui_wire_tag": "long_cat",
+      "web": {
+        "order": 32
+      },
+      "wire_policy": "chat_completions"
+    },
+    "meta": {
+      "aliases": [
+        "meta-ai",
+        "meta_ai",
+        "meta-model-api",
+        "meta_model_api",
+        "muse",
+        "muse-spark"
+      ],
+      "base_url": "https://api.meta.ai/v1",
+      "catalog_id": "meta",
+      "catalog_source_id": "meta",
+      "config_key": "meta",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://developer.meta.com/ai/",
+        "docs_url": "https://developer.meta.com/ai/resources/blog/build-with-muse-spark/",
+        "guidance": "Use the Meta developer portal to obtain Model API access and a key."
+      },
+      "env_vars": [
+        "META_MODEL_API_KEY",
+        "MODEL_API_KEY"
+      ],
+      "kind": "Meta",
+      "origin": "builtin",
+      "secret_store_slot": "meta",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "meta",
+        "meta_ai",
+        "meta_model_api",
+        "muse",
+        "muse_spark"
+      ],
+      "table_field": "meta",
+      "tui_wire_tag": "meta",
+      "web": {
+        "order": 35
+      },
+      "wire_policy": "chat_completions"
+    },
+    "minimax": {
+      "aliases": [
+        "mini-max",
+        "mini_max",
+        "minimax-anthropic",
+        "minimax_anthropic",
+        "mini-max-anthropic",
+        "mini_max_anthropic"
+      ],
+      "base_url": "https://api.minimax.io/v1",
+      "catalog_id": "minimax",
+      "catalog_source_id": "minimax",
+      "config_key": "minimax",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.minimax.io/user-center/basic-information/interface-key",
+        "docs_url": "https://platform.minimax.io/docs/api-reference/api-overview",
+        "guidance": "Create a MiniMax API key or subscription-plan key in the user center."
+      },
+      "env_vars": [
+        "MINIMAX_API_KEY"
+      ],
+      "kind": "Minimax",
+      "origin": "builtin",
+      "secret_store_slot": "minimax",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "minimax",
+      "tui_wire_tag": "minimax",
+      "web": {
+        "order": 28
+      },
+      "wire_policy": "chat_completions"
+    },
+    "minimax-anthropic": {
+      "aliases": [],
+      "base_url": "https://api.minimax.io/anthropic",
+      "catalog_id": "minimax",
+      "catalog_source_id": "minimax-anthropic",
+      "config_key": "minimax_anthropic",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.minimax.io/user-center/basic-information/interface-key",
+        "docs_url": "https://platform.minimax.io/docs/api-reference/api-overview",
+        "guidance": "Create a MiniMax API key or subscription-plan key in the user center."
+      },
+      "env_vars": [
+        "MINIMAX_API_KEY"
+      ],
+      "kind": "MinimaxAnthropic",
+      "origin": "builtin",
+      "secret_store_slot": "minimax-anthropic",
+      "selector_aliases": [
+        "minimax-anthropic",
+        "minimax_anthropic",
+        "mini-max-anthropic",
+        "mini_max_anthropic"
+      ],
+      "subagent_aliases": [],
+      "table_field": "minimax_anthropic",
+      "tui_wire_tag": "minimax_anthropic",
+      "web": {
+        "label": "MiniMax (Anthropic-compatible)",
+        "order": 29
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "mistral": {
+      "aliases": [
+        "mistral-ai",
+        "mistral_ai",
+        "mistralai",
+        "la-plateforme",
+        "la_plateforme"
+      ],
+      "base_url": "https://api.mistral.ai/v1",
+      "catalog_id": "mistral",
+      "catalog_source_id": "mistral",
+      "config_key": "mistral",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://chat.mistral.ai/code/extensions",
+        "docs_url": "https://docs.mistral.ai/vibe/code/cli/api-keys-profiles",
+        "guidance": "Use a Vibe Code API key or a Mistral Studio API key. Plan allowances and pay-as-you-go depend on your organization."
+      },
+      "env_vars": [
+        "MISTRAL_API_KEY"
+      ],
+      "kind": "Mistral",
+      "origin": "builtin",
+      "secret_store_slot": "mistral",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "mistral",
+      "tui_wire_tag": "mistral",
+      "web": {
+        "order": 37
+      },
+      "wire_policy": "chat_completions"
+    },
+    "modelscope": {
+      "aliases": [
+        "model-scope",
+        "model_scope",
+        "modelscope-cn",
+        "modelscope_cn"
+      ],
+      "base_url": "https://api-inference.modelscope.cn/v1",
+      "catalog_id": "modelscope",
+      "catalog_source_id": "modelscope",
+      "config_key": "modelscope",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://modelscope.cn/my/settings/token",
+        "docs_url": null,
+        "guidance": "Create an SDK token in ModelScope account settings."
+      },
+      "env_vars": [
+        "MODELSCOPE_API_KEY"
+      ],
+      "kind": "Modelscope",
+      "origin": "builtin",
+      "secret_store_slot": "modelscope",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "modelscope",
+      "tui_wire_tag": "modelscope",
+      "web": {
+        "order": 39
+      },
+      "wire_policy": "chat_completions"
+    },
+    "modelstudio-coding-plan": {
+      "aliases": [],
+      "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+      "catalog_id": "modelstudio-token-plan",
+      "catalog_source_id": "modelstudio-coding-plan",
+      "config_key": "modelstudio_coding_plan",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://bailian.console.aliyun.com/",
+        "docs_url": "https://www.alibabacloud.com/help/en/model-studio/",
+        "guidance": "Sign in to Alibaba Cloud Model Studio (Bailian console), create or copy an API key, and select the plan endpoint matching your subscription (Token Plan or Coding Plan)."
+      },
+      "env_vars": [
+        "MODELSTUDIO_API_KEY",
+        "DASHSCOPE_API_KEY"
+      ],
+      "kind": "ModelstudioCodingPlan",
+      "origin": "builtin",
+      "secret_store_slot": "modelstudio-token-plan",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "modelstudio_coding_plan",
+      "tui_wire_tag": "modelstudio_coding_plan",
+      "web": {
+        "env": "MODELSTUDIO_API_KEY",
+        "label": "Model Studio Coding Plan",
+        "order": 48
+      },
+      "wire_policy": "chat_completions"
+    },
+    "modelstudio-coding-plan-anthropic": {
+      "aliases": [],
+      "base_url": "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic",
+      "catalog_id": "modelstudio-token-plan",
+      "catalog_source_id": "modelstudio-coding-plan-anthropic",
+      "config_key": "modelstudio_coding_plan_anthropic",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://bailian.console.aliyun.com/",
+        "docs_url": "https://www.alibabacloud.com/help/en/model-studio/",
+        "guidance": "Sign in to Alibaba Cloud Model Studio (Bailian console), create or copy an API key, and select the plan endpoint matching your subscription (Token Plan or Coding Plan)."
+      },
+      "env_vars": [
+        "MODELSTUDIO_API_KEY",
+        "DASHSCOPE_API_KEY"
+      ],
+      "kind": "ModelstudioCodingPlanAnthropic",
+      "origin": "builtin",
+      "secret_store_slot": "modelstudio-token-plan",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "modelstudio_coding_plan_anthropic",
+      "tui_wire_tag": "modelstudio_coding_plan_anthropic",
+      "web": {
+        "env": "MODELSTUDIO_API_KEY",
+        "label": "Model Studio Coding Plan (Anthropic-compatible)",
+        "order": 49
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "modelstudio-token-plan": {
+      "aliases": [
+        "modelstudio-token-plan",
+        "modelstudio_token_plan",
+        "modelstudio",
+        "alibaba-token-plan",
+        "dashscope-token-plan",
+        "alibaba",
+        "dashscope",
+        "modelstudio-coding-plan",
+        "modelstudio_coding_plan",
+        "alibaba-coding-plan",
+        "dashscope-coding-plan",
+        "modelstudio-token-plan-anthropic",
+        "modelstudio_token_plan_anthropic",
+        "alibaba-token-plan-anthropic",
+        "modelstudio-coding-plan-anthropic",
+        "modelstudio_coding_plan_anthropic",
+        "alibaba-coding-plan-anthropic"
+      ],
+      "base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "catalog_id": "modelstudio-token-plan",
+      "catalog_source_id": "modelstudio-token-plan",
+      "config_key": "modelstudio_token_plan",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://bailian.console.aliyun.com/",
+        "docs_url": "https://www.alibabacloud.com/help/en/model-studio/",
+        "guidance": "Sign in to Alibaba Cloud Model Studio (Bailian console), create or copy an API key, and select the plan endpoint matching your subscription (Token Plan or Coding Plan)."
+      },
+      "env_vars": [
+        "MODELSTUDIO_API_KEY",
+        "DASHSCOPE_API_KEY"
+      ],
+      "kind": "ModelstudioTokenPlan",
+      "origin": "builtin",
+      "secret_store_slot": "modelstudio-token-plan",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "modelstudio_token_plan",
+      "tui_wire_tag": "modelstudio_token_plan",
+      "web": {
+        "env": "MODELSTUDIO_API_KEY",
+        "label": "Model Studio Token Plan",
+        "order": 46
+      },
+      "wire_policy": "chat_completions"
+    },
+    "modelstudio-token-plan-anthropic": {
+      "aliases": [],
+      "base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+      "catalog_id": "modelstudio-token-plan",
+      "catalog_source_id": "modelstudio-token-plan-anthropic",
+      "config_key": "modelstudio_token_plan_anthropic",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://bailian.console.aliyun.com/",
+        "docs_url": "https://www.alibabacloud.com/help/en/model-studio/",
+        "guidance": "Sign in to Alibaba Cloud Model Studio (Bailian console), create or copy an API key, and select the plan endpoint matching your subscription (Token Plan or Coding Plan)."
+      },
+      "env_vars": [
+        "MODELSTUDIO_API_KEY",
+        "DASHSCOPE_API_KEY"
+      ],
+      "kind": "ModelstudioTokenPlanAnthropic",
+      "origin": "builtin",
+      "secret_store_slot": "modelstudio-token-plan",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "modelstudio_token_plan_anthropic",
+      "tui_wire_tag": "modelstudio_token_plan_anthropic",
+      "web": {
+        "env": "MODELSTUDIO_API_KEY",
+        "label": "Model Studio Token Plan (Anthropic-compatible)",
+        "order": 47
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "moonshot": {
+      "aliases": [
+        "moonshot-ai",
+        "moonshotai",
+        "moonshot_ai",
+        "kimi",
+        "kimi-k2"
+      ],
+      "base_url": "https://api.moonshot.ai/v1",
+      "catalog_id": "moonshot",
+      "catalog_source_id": "moonshot",
+      "config_key": "moonshot",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.kimi.ai/console/api-keys",
+        "docs_url": "https://platform.kimi.ai/docs/overview",
+        "guidance": "For Moonshot's default direct API route, sign in to Kimi API Platform and create and copy an API key. A configured Kimi Code route uses a separate membership-plan console and never imports Kimi CLI credentials; first-class Kimi OAuth is not available."
+      },
+      "env_vars": [
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY"
+      ],
+      "kind": "Moonshot",
+      "origin": "builtin",
+      "secret_store_slot": "moonshot",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "moonshot",
+      "tui_wire_tag": "moonshot",
+      "web": {
+        "order": 15
+      },
+      "wire_policy": "chat_completions"
+    },
+    "novita": {
+      "aliases": [
+        "novita-ai",
+        "novita_ai"
+      ],
+      "base_url": "https://api.novita.ai/openai/v1",
+      "catalog_id": "novita",
+      "catalog_source_id": "novita",
+      "config_key": "novita",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://novita.ai/en/settings/key-management",
+        "docs_url": "https://novita.ai/docs/guides/quickstart",
+        "guidance": "Create a Novita key in account Key Management."
+      },
+      "env_vars": [
+        "NOVITA_API_KEY"
+      ],
+      "kind": "Novita",
+      "origin": "builtin",
+      "secret_store_slot": "novita",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "novita",
+      "tui_wire_tag": "novita",
+      "web": {
+        "order": 10
+      },
+      "wire_policy": "chat_completions"
+    },
+    "nvidia-nim": {
+      "aliases": [
+        "nvidia",
+        "nvidia_nim",
+        "nim"
+      ],
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "catalog_id": "nvidia-nim",
+      "catalog_source_id": "nvidia-nim",
+      "config_key": "nvidia_nim",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://build.nvidia.com/settings/api-keys",
+        "docs_url": "https://build.nvidia.com/explore/discover",
+        "guidance": "Create an NVIDIA NIM key in the NVIDIA build console."
+      },
+      "env_vars": [
+        "NVIDIA_API_KEY",
+        "NVIDIA_NIM_API_KEY"
+      ],
+      "kind": "NvidiaNim",
+      "origin": "builtin",
+      "secret_store_slot": "nvidia-nim",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "nvidia_nim",
+      "tui_wire_tag": "nvidia_nim",
+      "web": {
+        "order": 2
+      },
+      "wire_policy": "chat_completions"
+    },
+    "ollama": {
+      "aliases": [
+        "ollama-local"
+      ],
+      "base_url": "http://localhost:11434/v1",
+      "catalog_id": "ollama",
+      "catalog_source_id": "ollama",
+      "config_key": "ollama",
+      "credential_help": {
+        "acquisition": "local_optional",
+        "credential_url": null,
+        "docs_url": "https://docs.ollama.com/api",
+        "guidance": "Local Ollama is keyless by default; configure a key only if your server requires one."
+      },
+      "env_vars": [
+        "OLLAMA_API_KEY"
+      ],
+      "kind": "Ollama",
+      "origin": "builtin",
+      "secret_store_slot": "ollama",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "ollama",
+      "tui_wire_tag": "ollama",
+      "web": {
+        "order": 18
+      },
+      "wire_policy": "chat_completions"
+    },
+    "ollama-cloud": {
+      "aliases": [
+        "ollama_cloud"
+      ],
+      "base_url": "https://ollama.com/v1",
+      "catalog_id": "ollama-cloud",
+      "catalog_source_id": "ollama-cloud",
+      "config_key": "ollama_cloud",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://ollama.com/settings/keys",
+        "docs_url": "https://docs.ollama.com/api/authentication",
+        "guidance": "Ollama Cloud requires an API key. Save it for the ollama-cloud provider, set OLLAMA_CLOUD_API_KEY for Pi compatibility, or set Ollama's official OLLAMA_API_KEY."
+      },
+      "env_vars": [
+        "OLLAMA_CLOUD_API_KEY",
+        "OLLAMA_API_KEY"
+      ],
+      "kind": "OllamaCloud",
+      "origin": "builtin",
+      "secret_store_slot": "ollama-cloud",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "ollama_cloud",
+      "tui_wire_tag": "ollama_cloud",
+      "web": {
+        "order": 19
+      },
+      "wire_policy": "chat_completions"
+    },
+    "openai": {
+      "aliases": [
+        "open-ai"
+      ],
+      "base_url": "https://api.openai.com/v1",
+      "catalog_id": "openai",
+      "catalog_source_id": "openai",
+      "config_key": "openai",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.openai.com/api-keys",
+        "docs_url": "https://platform.openai.com/docs/api-reference",
+        "guidance": "Create an OpenAI API key, or configure the credential for your compatible endpoint."
+      },
+      "env_vars": [
+        "OPENAI_API_KEY"
+      ],
+      "kind": "Openai",
+      "origin": "builtin",
+      "secret_store_slot": "openai",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "openai",
+      "tui_wire_tag": "openai",
+      "web": {
+        "order": 3
+      },
+      "wire_policy": "chat_completions"
+    },
+    "openai-codex": {
+      "aliases": [
+        "openai_codex",
+        "openaicodex",
+        "codex",
+        "chatgpt",
+        "chatgpt-codex",
+        "chatgpt_codex",
+        "chatgptcodex"
+      ],
+      "base_url": "https://api.openai.com/v1",
+      "catalog_id": "openai-codex",
+      "catalog_source_id": "openai-codex",
+      "config_key": "openai_codex",
+      "credential_help": {
+        "acquisition": "oauth",
+        "credential_url": null,
+        "docs_url": "https://developers.openai.com/siwc/quickstart",
+        "guidance": "Sign in with ChatGPT via `codewhale auth chatgpt` to use your plan allowance with Codewhale-owned credentials. The openai API-key route has separate usage billing."
+      },
+      "env_vars": [
+        "OPENAI_CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN"
+      ],
+      "kind": "OpenaiCodex",
+      "origin": "builtin",
+      "secret_store_slot": "openai-codex",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "openai_codex",
+        "codex",
+        "chatgpt",
+        "openai_chatgpt"
+      ],
+      "table_field": "openai_codex",
+      "tui_wire_tag": "openai_codex",
+      "web": {
+        "env": "ChatGPT OAuth via `codewhale auth chatgpt`; optional consented Codex CLI credentials (OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN override)",
+        "label": "OpenAI Codex",
+        "order": 23
+      },
+      "wire_policy": "responses"
+    },
+    "opencode-go": {
+      "aliases": [
+        "opencode_go",
+        "opencodego"
+      ],
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "catalog_id": "opencode-go",
+      "catalog_source_id": "opencode-go",
+      "config_key": "opencode_go",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://opencode.ai/zen/",
+        "docs_url": "https://opencode.ai/docs/go/",
+        "guidance": "Create or copy an OpenCode Go subscription key from OpenCode Zen."
+      },
+      "env_vars": [
+        "OPENCODE_GO_API_KEY"
+      ],
+      "kind": "OpencodeGo",
+      "origin": "builtin",
+      "secret_store_slot": "opencode-go",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "opencode_go",
+        "opencodego"
+      ],
+      "table_field": "opencode_go",
+      "tui_wire_tag": "opencode_go",
+      "web": {
+        "order": 33
+      },
+      "wire_policy": "model_aware"
+    },
+    "opencode-zen": {
+      "aliases": [
+        "opencode_zen",
+        "opencodezen",
+        "zen",
+        "opencode"
+      ],
+      "base_url": "https://opencode.ai/zen/v1",
+      "catalog_id": "opencode-zen",
+      "catalog_source_id": "opencode-zen",
+      "config_key": "opencode_zen",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://opencode.ai/zen/",
+        "docs_url": "https://opencode.ai/docs/zen/",
+        "guidance": "Create or copy an OpenCode Zen API key from OpenCode Zen."
+      },
+      "env_vars": [
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_API_KEY"
+      ],
+      "kind": "OpencodeZen",
+      "origin": "builtin",
+      "secret_store_slot": "opencode-zen",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "opencode_zen",
+        "opencodezen",
+        "zen",
+        "opencode"
+      ],
+      "table_field": "opencode_zen",
+      "tui_wire_tag": "opencode_zen",
+      "web": {
+        "order": 34
+      },
+      "wire_policy": "model_aware"
+    },
+    "openmodel": {
+      "aliases": [
+        "open-model",
+        "open_model"
+      ],
+      "base_url": "https://api.openmodel.ai",
+      "catalog_id": "openmodel",
+      "catalog_source_id": "openmodel",
+      "config_key": "openmodel",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://console.openmodel.ai/",
+        "docs_url": "https://docs.openmodel.ai/en/docs/getting-started/authentication",
+        "guidance": "Create an API key in the OpenModel console, then follow the authentication guide."
+      },
+      "env_vars": [
+        "OPENMODEL_API_KEY"
+      ],
+      "kind": "Openmodel",
+      "origin": "builtin",
+      "secret_store_slot": "openmodel",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "openmodel",
+      "tui_wire_tag": "openmodel",
+      "web": {
+        "order": 25
+      },
+      "wire_policy": "anthropic_messages"
+    },
+    "openrouter": {
+      "aliases": [
+        "open_router"
+      ],
+      "base_url": "https://openrouter.ai/api/v1",
+      "catalog_id": "openrouter",
+      "catalog_source_id": "openrouter",
+      "config_key": "openrouter",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://openrouter.ai/settings/keys",
+        "docs_url": "https://openrouter.ai/docs/api/reference/authentication",
+        "guidance": "Create an OpenRouter key from account settings."
+      },
+      "env_vars": [
+        "OPENROUTER_API_KEY"
+      ],
+      "kind": "Openrouter",
+      "origin": "builtin",
+      "secret_store_slot": "openrouter",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "openrouter",
+        "open_router"
+      ],
+      "table_field": "openrouter",
+      "tui_wire_tag": "openrouter",
+      "web": {
+        "order": 7
+      },
+      "wire_policy": "chat_completions"
+    },
+    "opper": {
+      "aliases": [
+        "opper-ai"
+      ],
+      "api_key_env": "OPPER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "OPPER_API_KEY"
+        ],
+        "secret_slot": "opper"
+      },
+      "base_url": "https://api.opper.ai/v3/compat",
+      "credential_url": "https://platform.opper.ai",
+      "discovery": "models_endpoint",
+      "docs_url": "https://docs.opper.ai/build/gateway/drop-in-sdks",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "orcarouter": {
+      "aliases": [
+        "orca_router"
+      ],
+      "base_url": "https://api.orcarouter.ai/v1",
+      "catalog_id": "orcarouter",
+      "catalog_source_id": "orcarouter",
+      "config_key": "orcarouter",
+      "credential_help": {
+        "acquisition": "api_key_or_oauth",
+        "credential_url": "https://www.orcarouter.ai",
+        "docs_url": "https://www.orcarouter.ai",
+        "guidance": "Create an OrcaRouter API key from the OrcaRouter dashboard."
+      },
+      "env_vars": [
+        "ORCAROUTER_API_KEY"
+      ],
+      "kind": "Orcarouter",
+      "origin": "builtin",
+      "secret_store_slot": "orcarouter",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "orcarouter",
+        "orca_router"
+      ],
+      "table_field": "orcarouter",
+      "tui_wire_tag": "orcarouter",
+      "web": {
+        "order": 8
+      },
+      "wire_policy": "chat_completions"
+    },
+    "qianfan": {
+      "aliases": [
+        "baidu-qianfan",
+        "baidu_qianfan",
+        "baidu"
+      ],
+      "base_url": "https://api.baiduqianfan.ai/v1",
+      "catalog_id": "qianfan",
+      "catalog_source_id": "qianfan",
+      "config_key": "qianfan",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://console.bce.baidu.com/iam/#/iam/accesslist",
+        "docs_url": "https://cloud.baidu.com/doc/qianfan/index.html",
+        "guidance": "Create Baidu Qianfan credentials in the Baidu Cloud console."
+      },
+      "env_vars": [
+        "QIANFAN_API_KEY",
+        "BAIDU_QIANFAN_API_KEY"
+      ],
+      "kind": "Qianfan",
+      "origin": "builtin",
+      "secret_store_slot": "qianfan",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "qianfan",
+      "tui_wire_tag": "qianfan",
+      "web": {
+        "order": 22
+      },
+      "wire_policy": "chat_completions"
+    },
+    "runcrate": {
+      "api_key_env": "RUNCRATE_API_KEY",
+      "auth": {
+        "env_vars": [
+          "RUNCRATE_API_KEY"
+        ],
+        "secret_slot": "runcrate"
+      },
+      "base_url": "https://api.runcrate.ai/v1",
+      "credential_url": "https://www.runcrate.ai/dashboard",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://www.runcrate.ai/docs/getting-started/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "sakana": {
+      "aliases": [
+        "sakana-ai",
+        "sakana_ai",
+        "fugu"
+      ],
+      "base_url": "https://api.sakana.ai/v1",
+      "catalog_id": "sakana",
+      "catalog_source_id": "sakana",
+      "config_key": "sakana",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://console.sakana.ai/api-keys",
+        "docs_url": "https://console.sakana.ai/get-started",
+        "guidance": "Create a Sakana AI key in the console and copy it when shown."
+      },
+      "env_vars": [
+        "FUGU_API_KEY",
+        "SAKANA_API_KEY"
+      ],
+      "kind": "Sakana",
+      "origin": "builtin",
+      "secret_store_slot": "sakana",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "sakana",
+      "tui_wire_tag": "sakana",
+      "web": {
+        "label": "Sakana AI",
+        "order": 31
+      },
+      "wire_policy": "chat_completions"
+    },
+    "sensenova": {
+      "aliases": [
+        "sense-nova",
+        "meituan-sensenova",
+        "meituan-sensenova-cn"
+      ],
+      "api_key_env": "SENSENOVA_API_KEY",
+      "auth": {
+        "env_vars": [
+          "SENSENOVA_API_KEY"
+        ],
+        "secret_slot": "sensenova"
+      },
+      "base_url": "https://token.sensenova.cn/v1",
+      "discovery": "models_endpoint",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "sglang": {
+      "aliases": [
+        "sg-lang"
+      ],
+      "base_url": "http://localhost:30000/v1",
+      "catalog_id": "sglang",
+      "catalog_source_id": "sglang",
+      "config_key": "sglang",
+      "credential_help": {
+        "acquisition": "local_optional",
+        "credential_url": null,
+        "docs_url": "https://docs.sglang.ai/",
+        "guidance": "Self-hosted SGLang is keyless by default; configure a key only if your server requires one."
+      },
+      "env_vars": [
+        "SGLANG_API_KEY"
+      ],
+      "kind": "Sglang",
+      "origin": "builtin",
+      "secret_store_slot": "sglang",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "sglang",
+      "tui_wire_tag": "sglang",
+      "web": {
+        "order": 16
+      },
+      "wire_policy": "chat_completions"
+    },
+    "siliconflow": {
+      "aliases": [
+        "silicon-flow",
+        "silicon_flow"
+      ],
+      "base_url": "https://api.siliconflow.com/v1",
+      "catalog_id": "siliconflow",
+      "catalog_source_id": "siliconflow",
+      "config_key": "siliconflow",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://cloud.siliconflow.com/account/ak",
+        "docs_url": "https://docs.siliconflow.com/en/userguide/quickstart",
+        "guidance": "Use the global SiliconFlow console for the global endpoint."
+      },
+      "env_vars": [
+        "SILICONFLOW_API_KEY"
+      ],
+      "kind": "Siliconflow",
+      "origin": "builtin",
+      "secret_store_slot": "siliconflow",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "siliconflow",
+      "tui_wire_tag": "siliconflow",
+      "web": {
+        "order": 12
+      },
+      "wire_policy": "chat_completions"
+    },
+    "siliconflow-CN": {
+      "aliases": [
+        "silicon-flow-cn",
+        "silicon-flow-CN",
+        "silicon_flow_cn",
+        "silicon_flow_CN",
+        "siliconflow-china"
+      ],
+      "base_url": "https://api.siliconflow.cn/v1",
+      "base_url_config_key": "siliconflow",
+      "catalog_id": "siliconflow-CN",
+      "catalog_source_id": "siliconflow",
+      "config_key": "siliconflow_cn",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://cloud.siliconflow.cn/account/ak",
+        "docs_url": "https://docs.siliconflow.cn/en/userguide/quickstart",
+        "guidance": "Use the China SiliconFlow console for the China endpoint."
+      },
+      "env_vars": [
+        "SILICONFLOW_API_KEY"
+      ],
+      "kind": "SiliconflowCN",
+      "origin": "builtin",
+      "secret_store_slot": "siliconflow",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "siliconflow_cn",
+      "tui_wire_tag": "siliconflow_cn",
+      "web": {
+        "label": "SiliconFlow CN",
+        "order": 13
+      },
+      "wire_policy": "chat_completions"
+    },
+    "standardcompute": {
+      "aliases": [
+        "standard-compute"
+      ],
+      "api_key_env": "STANDARDCOMPUTE_API_KEY",
+      "auth": {
+        "env_vars": [
+          "STANDARDCOMPUTE_API_KEY"
+        ],
+        "secret_slot": "standardcompute"
+      },
+      "base_url": "https://api.stdcmpt.com/v1",
+      "credential_url": "https://standardcompute.com/dashboard/api-keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://docs.standardcompute.com/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "stepfun": {
+      "aliases": [
+        "step-fun",
+        "step_fun",
+        "stepflash",
+        "step-flash",
+        "step_flash"
+      ],
+      "base_url": "https://api.stepfun.ai/v1",
+      "catalog_id": "stepfun",
+      "catalog_source_id": "stepfun",
+      "config_key": "stepfun",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.stepfun.ai/",
+        "docs_url": "https://platform.stepfun.ai/docs/en/quickstart/overview",
+        "guidance": "Open Account Management, then Interface Keys, in the StepFun console."
+      },
+      "env_vars": [
+        "STEPFUN_API_KEY",
+        "STEP_API_KEY"
+      ],
+      "kind": "Stepfun",
+      "origin": "builtin",
+      "secret_store_slot": "stepfun",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "stepfun",
+      "tui_wire_tag": "stepfun",
+      "web": {
+        "label": "StepFun",
+        "order": 27
+      },
+      "wire_policy": "chat_completions"
+    },
+    "telecomjs": {
+      "aliases": [
+        "telecom-js",
+        "telecom_js",
+        "telecomjs-cn",
+        "tokenhub"
+      ],
+      "base_url": "https://aigw.telecomjs.com/v1",
+      "catalog_id": "telecomjs",
+      "catalog_source_id": "telecomjs",
+      "config_key": "telecomjs",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://aigw.telecomjs.com/",
+        "docs_url": null,
+        "guidance": "Create a TelecomJS TokenHub API key, then use the provider's live model catalog to discover the models available to that key."
+      },
+      "env_vars": [
+        "TELECOMJS_API_KEY"
+      ],
+      "kind": "Telecomjs",
+      "origin": "builtin",
+      "secret_store_slot": "telecomjs",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "telecomjs",
+      "tui_wire_tag": "telecomjs",
+      "web": {
+        "order": 40
+      },
+      "wire_policy": "chat_completions"
+    },
+    "tencent": {
+      "aliases": [
+        "tencent-tokenhub",
+        "tokenhub",
+        "hunyuan"
+      ],
+      "api_key_env": "TENCENT_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TENCENT_API_KEY"
+        ],
+        "secret_slot": "tencent"
+      },
+      "base_url": "https://tokenhub-intl.tencentcloudmaas.com/v1",
+      "credential_url": "https://console.tencentcloud.com/tokenhub/apikey",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.tencentcloud.com/document/product/1300/80695",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "tinker": {
+      "aliases": [
+        "thinking-machines",
+        "thinkingmachines"
+      ],
+      "api_key_env": "TINKER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TINKER_API_KEY"
+        ],
+        "secret_slot": "tinker"
+      },
+      "base_url": "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1",
+      "credential_url": "https://tinker-docs.thinkingmachines.ai/tinker/quickstart/",
+      "discovery": "none",
+      "docs_url": "https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "together": {
+      "aliases": [
+        "together-ai",
+        "together_ai",
+        "togetherai"
+      ],
+      "base_url": "https://api.together.xyz/v1",
+      "catalog_id": "together",
+      "catalog_source_id": "together",
+      "config_key": "together",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://api.together.ai/settings/api-keys",
+        "docs_url": "https://docs.together.ai/docs/api-keys-authentication",
+        "guidance": "Create a Together API key from account settings."
+      },
+      "env_vars": [
+        "TOGETHER_API_KEY"
+      ],
+      "kind": "Together",
+      "origin": "builtin",
+      "secret_store_slot": "together",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "together",
+      "tui_wire_tag": "together",
+      "web": {
+        "order": 21
+      },
+      "wire_policy": "chat_completions"
+    },
+    "tsubasa": {
+      "api_key_env": "TSUBASA_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TSUBASA_API_KEY"
+        ],
+        "secret_slot": "tsubasa"
+      },
+      "base_url": "https://api.tsubasa.sh/v1",
+      "discovery": "models_endpoint",
+      "docs_url": "https://tsubasa.sh/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "vllm": {
+      "aliases": [
+        "v-llm"
+      ],
+      "base_url": "http://localhost:8000/v1",
+      "catalog_id": "vllm",
+      "catalog_source_id": "vllm",
+      "config_key": "vllm",
+      "credential_help": {
+        "acquisition": "local_optional",
+        "credential_url": null,
+        "docs_url": "https://docs.vllm.ai/en/stable/serving/openai_compatible_server/",
+        "guidance": "Self-hosted vLLM is keyless by default; configure a key only if your server requires one."
+      },
+      "env_vars": [
+        "VLLM_API_KEY"
+      ],
+      "kind": "Vllm",
+      "origin": "builtin",
+      "secret_store_slot": "vllm",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "vllm",
+      "tui_wire_tag": "vllm",
+      "web": {
+        "order": 17
+      },
+      "wire_policy": "chat_completions"
+    },
+    "volcengine": {
+      "aliases": [
+        "volcengine-ark",
+        "volcengine_ark",
+        "ark",
+        "volc-ark",
+        "volcengineark"
+      ],
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "catalog_id": "volcengine",
+      "catalog_source_id": "volcengine",
+      "config_key": "volcengine",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://console.volcengine.com/ark/apiKey",
+        "docs_url": "https://www.volcengine.com/docs/82379/1541594",
+        "guidance": "Create a Volcengine Ark API key in the Ark console."
+      },
+      "env_vars": [
+        "VOLCENGINE_API_KEY",
+        "VOLCENGINE_ARK_API_KEY",
+        "ARK_API_KEY"
+      ],
+      "kind": "Volcengine",
+      "origin": "builtin",
+      "secret_store_slot": "volcengine",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "volcengine",
+      "tui_wire_tag": "volcengine",
+      "web": {
+        "order": 6
+      },
+      "wire_policy": "chat_completions"
+    },
+    "wafer": {
+      "api_key_env": "WAFER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "WAFER_API_KEY"
+        ],
+        "secret_slot": "wafer"
+      },
+      "base_url": "https://pass.wafer.ai/v1",
+      "credential_url": "https://app.wafer.ai",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://docs.wafer.ai/serverless",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "wanjie-ark": {
+      "aliases": [
+        "wanjie",
+        "wanjie_ark",
+        "ark-wanjie",
+        "ark_wanjie",
+        "wanjieark",
+        "wanjie-maas",
+        "wanjie_maas",
+        "wanjiemaas"
+      ],
+      "base_url": "https://maas-openapi.wanjiedata.com/api/v1",
+      "catalog_id": "wanjie-ark",
+      "catalog_source_id": "wanjie-ark",
+      "config_key": "wanjie_ark",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://docs.wanjiedata.com/maas/maas-openapi-v1.html",
+        "docs_url": "https://docs.wanjiedata.com/maas/maas-openapi-v1.html",
+        "guidance": "Follow Wanjie MaaS's APIKEY guide to create a credential."
+      },
+      "env_vars": [
+        "WANJIE_ARK_API_KEY",
+        "WANJIE_API_KEY",
+        "WANJIE_MAAS_API_KEY"
+      ],
+      "kind": "WanjieArk",
+      "origin": "builtin",
+      "secret_store_slot": "wanjie-ark",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "wanjie_ark",
+      "tui_wire_tag": "wanjie_ark",
+      "web": {
+        "order": 5
+      },
+      "wire_policy": "chat_completions"
+    },
+    "xai": {
+      "aliases": [
+        "x-ai",
+        "x_ai",
+        "grok"
+      ],
+      "base_url": "https://api.x.ai/v1",
+      "catalog_id": "xai",
+      "catalog_source_id": "xai",
+      "config_key": "xai",
+      "credential_help": {
+        "acquisition": "api_key_or_oauth",
+        "credential_url": "https://console.x.ai/",
+        "docs_url": null,
+        "guidance": "Use an xAI Console API key or Codewhale's native device login. Reading an existing Grok CLI file requires explicit provider-scoped read-only consent."
+      },
+      "env_vars": [
+        "XAI_API_KEY"
+      ],
+      "kind": "Xai",
+      "origin": "builtin",
+      "secret_store_slot": "xai",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "xai",
+        "x_ai",
+        "grok"
+      ],
+      "table_field": "xai",
+      "tui_wire_tag": "xai",
+      "web": {
+        "order": 36
+      },
+      "wire_policy": "chat_completions"
+    },
+    "xiaomi-mimo": {
+      "aliases": [
+        "xiaomi_mimo",
+        "xiaomimimo",
+        "mimo",
+        "xiaomi"
+      ],
+      "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+      "catalog_id": "xiaomi-mimo",
+      "catalog_source_id": "xiaomi-mimo",
+      "config_key": "xiaomi_mimo",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://platform.xiaomimimo.com/token-plan",
+        "docs_url": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+        "guidance": "Create a Xiaomi MiMo Token Plan or pay-as-you-go key and keep its matching base URL."
+      },
+      "env_vars": [
+        "XIAOMI_MIMO_TOKEN_PLAN_API_KEY",
+        "MIMO_TOKEN_PLAN_API_KEY",
+        "XIAOMI_MIMO_API_KEY",
+        "XIAOMI_API_KEY",
+        "MIMO_API_KEY"
+      ],
+      "kind": "XiaomiMimo",
+      "origin": "builtin",
+      "secret_store_slot": "xiaomi-mimo",
+      "selector_aliases": [],
+      "subagent_aliases": [],
+      "table_field": "xiaomi_mimo",
+      "tui_wire_tag": "xiaomi_mimo",
+      "web": {
+        "order": 9
+      },
+      "wire_policy": "chat_completions"
+    },
+    "yolo-auto": {
+      "aliases": [
+        "yolo"
+      ],
+      "api_key_env": "YOLO_AUTO_API_KEY",
+      "auth": {
+        "env_vars": [
+          "YOLO_AUTO_API_KEY"
+        ],
+        "secret_slot": "yolo-auto"
+      },
+      "base_url": "https://yolo-auto.com/v1",
+      "discovery": "models_endpoint",
+      "docs_url": "https://yolo-auto.com/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
+    "zai": {
+      "aliases": [
+        "z-ai",
+        "z_ai",
+        "z.ai",
+        "zhipu",
+        "zhipuai",
+        "bigmodel",
+        "big-model"
+      ],
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "catalog_id": "zai",
+      "catalog_source_id": "zai",
+      "config_key": "zai",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://z.ai/model-api",
+        "docs_url": "https://docs.z.ai/api-reference/introduction",
+        "guidance": "Create or manage a Z.ai API key from the Model API page."
+      },
+      "env_vars": [
+        "ZAI_API_KEY",
+        "Z_AI_API_KEY",
+        "ZHIPU_API_KEY",
+        "GLM_API_KEY"
+      ],
+      "kind": "Zai",
+      "origin": "builtin",
+      "secret_store_slot": "zai",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "zai",
+        "z_ai",
+        "glm",
+        "zai_glm",
+        "z_glm",
+        "zhipu",
+        "zhipuai",
+        "bigmodel",
+        "big_model",
+        "zhipu_glm"
+      ],
+      "table_field": "zai",
+      "tui_wire_tag": "zai",
+      "web": {
+        "env": "ZAI_API_KEY / Z_AI_API_KEY",
+        "label": "Z.ai",
+        "order": 26
+      },
+      "wire_policy": "chat_completions"
+    },
+    "zenmux": {
+      "aliases": [
+        "zen-mux",
+        "zen_mux"
+      ],
+      "base_url": "https://zenmux.ai/api/v1",
+      "catalog_id": "zenmux",
+      "catalog_source_id": "zenmux",
+      "config_key": "zenmux",
+      "credential_help": {
+        "acquisition": "api_key",
+        "credential_url": "https://zenmux.ai/platform/pay-as-you-go",
+        "docs_url": "https://zenmux.ai/docs/",
+        "guidance": "Create a ZenMux API key from the Pay As You Go management page, then select models by their provider/model namespaced id. The catalog at https://zenmux.ai/api/v1/models is keyless-readable."
+      },
+      "env_vars": [
+        "ZENMUX_API_KEY"
+      ],
+      "kind": "Zenmux",
+      "origin": "builtin",
+      "secret_store_slot": "zenmux",
+      "selector_aliases": [],
+      "subagent_aliases": [
+        "zenmux",
+        "zen_mux"
+      ],
+      "table_field": "zenmux",
+      "tui_wire_tag": "zenmux",
+      "web": {
+        "order": 42
+      },
+      "wire_policy": "chat_completions"
+    }
+  }
+}
