@@ -1083,13 +1083,20 @@ impl Settings {
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
             s.theme = normalize_settings_theme(&s.theme);
             s.default_model = s.default_model.as_deref().and_then(|value| {
+                let trimmed = value.trim();
                 codewhale_config::route::resolve_model(
                     codewhale_config::ProviderKind::Deepseek,
-                    value,
+                    trimmed,
                     None,
                 )
                 .ok()
-                .map(|resolved| resolved.logical)
+                .map(|_| {
+                    if trimmed.eq_ignore_ascii_case("auto") {
+                        "auto".to_string()
+                    } else {
+                        trimmed.to_string()
+                    }
+                })
             });
             s.reasoning_effort = s
                 .reasoning_effort
@@ -4568,6 +4575,46 @@ mod tests {
                 "archived value shown as current: {display}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_default_model_keeps_its_spelling_for_custom_deepseek_endpoints() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        for (value, expected) in [
+            ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro"),
+            (" deepseek-reasoner ", "deepseek-reasoner"),
+            ("AUTO", "auto"),
+        ] {
+            std::fs::write(&path, format!("default_model = '{value}'\n")).unwrap();
+            let settings = Settings::load_persisted_from_candidates_with_migration(
+                Some(path.clone()),
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+            assert_eq!(settings.default_model.as_deref(), Some(expected));
+        }
+
+        std::fs::write(&path, "default_model = 'deepseek-ai/DeepSeek-V4-Pro'\n").unwrap();
+        let settings =
+            Settings::load_persisted_from_candidates_with_migration(Some(path), None, None, false)
+                .unwrap();
+        let mut config: crate::config::Config = toml::from_str(
+            "provider = \"deepseek\"\n[providers.deepseek]\nbase_url = \"https://models.example/v1\"\n",
+        )
+        .unwrap();
+        config.apply_saved_selection(&settings);
+        let model = config.default_model();
+        let wire = codewhale_config::route::resolve_model(
+            codewhale_config::ProviderKind::Deepseek,
+            &model,
+            Some(&config.active_route_base_url()),
+        )
+        .expect("custom endpoint id resolves")
+        .wire_id;
+        assert_eq!(wire, "deepseek-ai/DeepSeek-V4-Pro");
     }
 
     #[test]
