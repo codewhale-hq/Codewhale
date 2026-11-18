@@ -63,7 +63,7 @@ impl ApprovalOption {
         }
     }
 
-    fn from_index_for(request: &ApprovalRequest, idx: usize) -> ApprovalOption {
+    pub(crate) fn from_index_for(request: &ApprovalRequest, idx: usize) -> ApprovalOption {
         Self::order_for(request)
             .get(idx)
             .copied()
@@ -94,7 +94,11 @@ impl ApprovalOption {
 pub struct ApprovalView {
     request: ApprovalRequest,
     pub(super) selected: usize,
+    pub(crate) scope_selected: ApprovalOption,
     pub(super) row_hitboxes: RefCell<Vec<Rect>>,
+    pub(super) scopes_toggle_hitbox: RefCell<Option<Rect>>,
+    pub(super) details_toggle_hitbox: RefCell<Option<Rect>>,
+    pub(super) scope_menu_hitboxes: RefCell<Vec<(ApprovalOption, Rect)>>,
     /// Whether the last paint showed the persistent-rule save preview. The
     /// save offer (`[2 / p]`) only works while it is on screen, so a
     /// person never saves a rule without seeing what it covers. Starts
@@ -104,8 +108,8 @@ pub struct ApprovalView {
     locale: Locale,
     pub(super) timeout: Option<Duration>,
     pub(super) requested_at: Instant,
-    /// Whether the approval card is collapsed to a single-line banner.
-    pub(crate) collapsed: bool,
+    pub(crate) scopes_open: bool,
+    pub(crate) details_expanded: bool,
 }
 
 impl ApprovalView {
@@ -137,13 +141,18 @@ impl ApprovalView {
         Self {
             request,
             selected,
+            scope_selected: ApprovalOption::ApproveOnce,
             row_hitboxes: RefCell::new(Vec::new()),
+            scopes_toggle_hitbox: RefCell::new(None),
+            details_toggle_hitbox: RefCell::new(None),
+            scope_menu_hitboxes: RefCell::new(Vec::new()),
             save_preview_shown: Cell::new(false),
             details_shown: Cell::new(false),
             locale,
             timeout: None,
             requested_at: Instant::now(),
-            collapsed: false,
+            scopes_open: false,
+            details_expanded: false,
         }
     }
 
@@ -165,8 +174,60 @@ impl ApprovalView {
         self.step_selection(1);
     }
 
+    fn scope_options(&self) -> Vec<ApprovalOption> {
+        if self.is_workflow_plan_approval() {
+            return ApprovalOption::WORKFLOW_ORDER.to_vec();
+        }
+        let mut options = vec![ApprovalOption::ApproveOnce, ApprovalOption::ApproveAlways];
+        if self.request.owner.is_none() && self.request.can_save_allow_rule() {
+            options.push(ApprovalOption::AllowExactRepo);
+        }
+        options
+    }
+
+    fn toggle_scopes(&mut self) {
+        self.scopes_open = !self.scopes_open;
+        if self.scopes_open {
+            self.details_expanded = false;
+            self.scope_selected = ApprovalOption::ApproveOnce;
+        }
+    }
+
+    fn toggle_details(&mut self) {
+        self.details_expanded = !self.details_expanded;
+        if self.details_expanded {
+            self.scopes_open = false;
+            self.details_shown.set(true);
+        }
+    }
+
     /// Move the selection, skipping options the card is not offering.
     fn step_selection(&mut self, delta: isize) {
+        if self.scopes_open {
+            let options = self.scope_options();
+            let current = options
+                .iter()
+                .position(|opt| *opt == self.scope_selected)
+                .unwrap_or(0);
+            let mut next = current;
+            for _ in 0..options.len() {
+                next = codewhale_tui_kit::list_nav::wrap_index(next, options.len(), delta);
+                if self.offers(options[next]) {
+                    self.scope_selected = options[next];
+                    break;
+                }
+            }
+            return;
+        }
+        if !self.is_workflow_plan_approval() {
+            let next = if self.current_option() == ApprovalOption::ApproveOnce {
+                ApprovalOption::Deny
+            } else {
+                ApprovalOption::ApproveOnce
+            };
+            self.selected = next.index_for(&self.request);
+            return;
+        }
         let order = ApprovalOption::order_for(&self.request);
         let mut selected = self.selected;
         for _ in 0..order.len() {
@@ -186,6 +247,7 @@ impl ApprovalView {
             ApprovalOption::ApproveAlways => {
                 ApprovalOption::order_for(&self.request).contains(&option)
                     || self.details_shown.get()
+                    || self.scopes_open
             }
             _ => true,
         }
@@ -197,7 +259,11 @@ impl ApprovalView {
     }
 
     pub(super) fn current_option(&self) -> ApprovalOption {
-        ApprovalOption::from_index_for(&self.request, self.selected)
+        if self.scopes_open {
+            self.scope_selected
+        } else {
+            ApprovalOption::from_index_for(&self.request, self.selected)
+        }
     }
 
     /// The agent that owns this card, when it is a child's request.
@@ -226,6 +292,18 @@ impl ApprovalView {
 
     pub(crate) fn set_mouse_hitboxes(&self, hitboxes: Vec<Rect>) {
         *self.row_hitboxes.borrow_mut() = hitboxes;
+    }
+
+    pub(crate) fn set_scopes_toggle_hitbox(&self, hitbox: Option<Rect>) {
+        *self.scopes_toggle_hitbox.borrow_mut() = hitbox;
+    }
+
+    pub(crate) fn set_details_toggle_hitbox(&self, hitbox: Option<Rect>) {
+        *self.details_toggle_hitbox.borrow_mut() = hitbox;
+    }
+
+    pub(crate) fn set_scope_menu_hitboxes(&self, hitboxes: Vec<(ApprovalOption, Rect)>) {
+        *self.scope_menu_hitboxes.borrow_mut() = hitboxes;
     }
 
     /// Risk level for the renderer's accent picking.
@@ -275,6 +353,7 @@ impl ApprovalView {
             approval_key: self.request.approval_key.clone(),
             approval_grouping_key: self.request.approval_grouping_key.clone(),
             persistent_rules,
+            subject: Some(self.request.receipt_subject()),
         })
     }
 
@@ -385,15 +464,19 @@ impl ModalView for ApprovalView {
             return ViewAction::None;
         }
         match key.code {
-            KeyCode::Tab => {
-                self.collapsed = !self.collapsed;
+            KeyCode::Tab | KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.toggle_details();
                 ViewAction::None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                self.toggle_scopes();
+                ViewAction::None
+            }
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k') => {
                 self.select_prev();
                 ViewAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j') => {
                 self.select_next();
                 ViewAction::None
             }
@@ -403,16 +486,20 @@ impl ModalView for ApprovalView {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1') => {
                 self.commit_option(ApprovalOption::ApproveOnce)
             }
-            KeyCode::Char('p') | KeyCode::Char('P') | KeyCode::Char('2')
+            KeyCode::Char('2') if self.scopes_open && !self.is_workflow_plan_approval() => {
+                self.commit_option(ApprovalOption::ApproveAlways)
+            }
+            KeyCode::Char('3') if self.scopes_open && !self.is_workflow_plan_approval() => {
+                self.commit_option(ApprovalOption::AllowExactRepo)
+            }
+            KeyCode::Char('p') | KeyCode::Char('P')
                 if !self.is_workflow_plan_approval()
                     && ApprovalOption::order_for(&self.request)
                         .contains(&ApprovalOption::AllowExactRepo) =>
             {
                 self.commit_option(ApprovalOption::AllowExactRepo)
             }
-            KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('2')
-                if !self.is_workflow_plan_approval() =>
-            {
+            KeyCode::Char('a') | KeyCode::Char('A') if !self.is_workflow_plan_approval() => {
                 self.commit_option(ApprovalOption::ApproveAlways)
             }
             // Workflow plan card (#4126): [2/e] Edit plan, [3/n/d] Cancel.
@@ -430,17 +517,19 @@ impl ModalView for ApprovalView {
                     self.request.persistent_ask_rules.clone(),
                 )
             }
-            KeyCode::Char('n')
-            | KeyCode::Char('N')
-            | KeyCode::Char('d')
-            | KeyCode::Char('D')
-            | KeyCode::Char('3') => {
+            KeyCode::Char('n') | KeyCode::Char('N') => {
                 if self.is_workflow_plan_approval() {
-                    // Cancel (abort turn) rather than session-deny.
                     self.commit_option(ApprovalOption::Abort)
                 } else {
                     self.commit_option(ApprovalOption::Deny)
                 }
+            }
+            KeyCode::Char('3') if self.is_workflow_plan_approval() => {
+                self.commit_option(ApprovalOption::Abort)
+            }
+            KeyCode::Esc if self.scopes_open => {
+                self.scopes_open = false;
+                ViewAction::None
             }
             // A child's card hides on Esc: the request stays pending (footer
             // row, `/agents`) and the parent's turn is never cancelled.
@@ -467,9 +556,38 @@ impl ModalView for ApprovalView {
                 ViewAction::None
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let clicked = self.row_hitboxes.borrow().iter().position(|rect| {
-                    rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                });
+                let pos = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if self
+                    .scopes_toggle_hitbox
+                    .borrow()
+                    .is_some_and(|rect| rect.contains(pos))
+                {
+                    self.toggle_scopes();
+                    return ViewAction::None;
+                }
+                if self
+                    .details_toggle_hitbox
+                    .borrow()
+                    .is_some_and(|rect| rect.contains(pos))
+                {
+                    self.toggle_details();
+                    return ViewAction::None;
+                }
+                if self.scopes_open {
+                    let clicked_scope = self
+                        .scope_menu_hitboxes
+                        .borrow()
+                        .iter()
+                        .find_map(|(option, rect)| rect.contains(pos).then_some(*option));
+                    if let Some(option) = clicked_scope {
+                        return self.commit_option(option);
+                    }
+                }
+                let clicked = self
+                    .row_hitboxes
+                    .borrow()
+                    .iter()
+                    .position(|rect| rect.contains(pos));
                 if let Some(index) = clicked {
                     return self
                         .commit_option(ApprovalOption::from_index_for(&self.request, index));
@@ -490,6 +608,10 @@ impl ModalView for ApprovalView {
         // a band at the bottom of the frame so the backdrop dims that band and
         // the transcript above stays visible. Must match what `render` paints.
         ApprovalWidget::new(&self.request, self).inline_region(area)
+    }
+
+    fn docked_height(&self, width: u16) -> u16 {
+        ApprovalWidget::new(&self.request, self).docked_height(width)
     }
 
     fn tick(&mut self) -> ViewAction {

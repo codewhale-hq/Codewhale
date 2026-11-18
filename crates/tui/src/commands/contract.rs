@@ -2089,6 +2089,10 @@ fn project_history_cell(cell: &HistoryCell) -> HistoryEntry {
             role: "automation".to_string(),
             body: flatten_history_lines(cell.render(120)),
         },
+        HistoryCell::ApprovalReceipt(cell) => HistoryEntry::Sanitized {
+            role: "approval".to_string(),
+            body: cell.plain_summary(),
+        },
         HistoryCell::ArchivedContext {
             level,
             range,

@@ -1151,6 +1151,7 @@ pub(crate) struct ApprovalDecisionEvent {
     approval_key: String,
     approval_grouping_key: String,
     persistent_rules: Vec<codewhale_config::ToolAskRule>,
+    subject: Option<String>,
 }
 
 fn mark_active_turn_cancelled_locally(app: &mut App) {

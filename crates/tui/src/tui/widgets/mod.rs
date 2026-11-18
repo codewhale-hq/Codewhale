@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use crate::commands;
 use crate::tui::app::{App, ComposerDensity, ViewportState};
-use crate::tui::approval::{ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest};
+use crate::tui::approval::{
+    ApprovalOption, ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest,
+};
+use crate::tui::color_compat::ascii_safe_enabled;
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
 use crate::tui::underwater::ShellPhase;
 #[cfg(test)]
@@ -25,10 +28,7 @@ use codewhale_engine::core::authority::{RiskLevel, ToolCategory};
 use codewhale_engine::provider_lake::all_catalog_models_for_provider;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
-use codewhale_ratatui::{
-    DecisionBand, DecisionBandAction, DecisionBandSave,
-    decision_wrapped_rows as measure_wrapped_rows,
-};
+use codewhale_ratatui::{decision_wrapped_rows as measure_wrapped_rows, visible_text};
 use codewhale_tui_kit::menu_style;
 use codewhale_tui_kit::scrolling::TranscriptLineMeta;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
@@ -1614,150 +1614,189 @@ pub struct ApprovalWidget<'a> {
     view: &'a ApprovalView,
 }
 
+struct ScopeMenuRow {
+    option: Option<ApprovalOption>,
+    is_save_preview: bool,
+    line: Line<'static>,
+}
+
 impl<'a> ApprovalWidget<'a> {
     pub fn new(request: &'a ApprovalRequest, view: &'a ApprovalView) -> Self {
         Self { request, view }
     }
 
-    fn kit(&self, area: Rect) -> DecisionBand {
-        let stakes = self.request.stakes();
-        let repo_law = self.request.is_repo_law_prompt();
-        let colors = if repo_law {
-            repo_law_approval_palette()
-        } else {
-            approval_palette(stakes)
-        };
-        let (question, actions, footer, save_hint) = approval_control_facts(
-            self.request,
-            self.view,
-            self.request.risk,
-            self.view.locale(),
-            colors.accent,
-            colors.shortcut,
-        );
-        let saves = if self.view.collapsed {
-            Vec::new()
-        } else {
-            self.request
-                .allow_rule_save_preview()
-                .into_iter()
-                .map(|preview| DecisionBandSave {
-                    summary: preview.summary(self.view.locale()),
-                    entries: preview.entries,
-                    omitted: preview.omitted,
-                    label: tr(self.view.locale(), MessageId::ApprovalFieldSave).into_owned(),
-                    separator: " · ".into(),
-                    compact_more: format!(
-                        " +{}",
-                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
-                    ),
-                    full_more: format!(
-                        "... {}",
-                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
-                    ),
-                    label_style: Style::default()
-                        .fg(colors.shortcut)
-                        .add_modifier(Modifier::BOLD),
-                    summary_style: Style::default().fg(palette::TEXT_BODY),
-                    entries_style: Style::default().fg(palette::TEXT_SECONDARY),
-                    more_style: Style::default().fg(palette::TEXT_HINT),
-                })
-                .collect()
-        };
-        DecisionBand {
-            body: if self.view.collapsed {
-                Vec::new()
-            } else {
-                self.body_facts(area)
-            },
-            saves,
-            question,
-            actions,
-            footer,
-            save_hint,
-            background: Style::default().bg(palette::WHALE_BG),
-            rule: Span::styled(
-                if repo_law { "═" } else { "─" },
-                Style::default().fg(colors.border),
-            ),
-            truncation_hint: Span::styled(
-                approval_truncation_hint(self.view.locale()),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-            collapsed: self.view.collapsed.then(|| {
-                Line::from(Span::styled(
-                    format!(
-                        " {} — {}  [Tab to expand] ",
-                        if repo_law {
-                            tr(self.view.locale(), MessageId::ApprovalRepoLawTitle)
-                        } else {
-                            Cow::Owned(approval_heading(self.request, self.view.locale()))
-                        },
-                        if repo_law {
-                            tr(self.view.locale(), MessageId::ApprovalRepoLawBadge)
-                        } else {
-                            effect_badge_text(self.request, stakes, self.view.locale())
-                        },
-                    ),
-                    Style::default()
-                        .fg(palette::WHALE_BG)
-                        .bg(colors.accent)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            }),
-        }
+    pub(crate) fn docked_height(&self, _width: u16) -> u16 {
+        1
     }
 
-    /// Project request semantics and localized dossiers. The kit owns the
-    /// final word-wrap, band fit, persistent coverage and interactive geometry.
-    fn body_facts(&self, area: Rect) -> Vec<Line<'static>> {
+    fn edge_style(&self) -> (Color, Color, Color) {
         let stakes = self.request.stakes();
-        let locale = self.view.locale();
-        let repo_law = self.request.is_repo_law_prompt();
-        let palette_colors = if repo_law {
+        let colors = if self.request.is_repo_law_prompt() {
             repo_law_approval_palette()
         } else {
             approval_palette(stakes)
         };
-        let critical = matches!(stakes, crate::tui::approval::ApprovalStakes::Critical);
+        (colors.border, colors.accent, colors.shortcut)
+    }
 
-        let mut body: Vec<Line<'static>> = Vec::with_capacity(16);
-        // Header: effect badge + the plain summary of the call (E6). The raw
-        // tool name stays one details chord away in the pager.
-        body.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!(
-                    " {} ",
-                    if repo_law {
-                        tr(locale, MessageId::ApprovalRepoLawBadge)
-                    } else {
-                        effect_badge_text(self.request, stakes, locale)
-                    }
+    fn edge_glyph(&self, ascii: bool) -> &'static str {
+        if ascii { "| * " } else { "┃ ⛯ " }
+    }
+
+    fn drawer_edge_glyph(&self, ascii: bool) -> &'static str {
+        if ascii { "| " } else { "┃ " }
+    }
+
+    fn scope_menu_rows(&self, width: u16) -> Vec<ScopeMenuRow> {
+        if !self.view.scopes_open || self.view.is_workflow_plan_approval() {
+            return Vec::new();
+        }
+        let locale = self.view.locale();
+        let ascii = ascii_safe_enabled();
+        let (border_color, edge_color, shortcut_color) = self.edge_style();
+        let drawer_edge = self.drawer_edge_glyph(ascii);
+        let mut rows = Vec::with_capacity(6);
+        rows.push(ScopeMenuRow {
+            option: None,
+            is_save_preview: false,
+            line: Line::from(vec![
+                Span::styled(
+                    drawer_edge,
+                    Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
                 ),
-                Style::default()
-                    .fg(palette::WHALE_BG)
-                    .bg(palette_colors.accent)
-                    .add_modifier(Modifier::BOLD),
+                Span::styled("─ Scope ─", Style::default().fg(border_color)),
+            ]),
+        });
+
+        let mut items: Vec<(ApprovalOption, &str, String)> = vec![
+            (ApprovalOption::ApproveOnce, "[1]", "Allow once".to_string()),
+            (
+                ApprovalOption::ApproveAlways,
+                "[2]",
+                "Allow in this conversation".to_string(),
             ),
-            Span::raw("  "),
+        ];
+        if self.request.owner.is_none() && self.request.can_save_allow_rule() {
+            items.push((
+                ApprovalOption::AllowExactRepo,
+                "[3]",
+                "Always allow in this repo".to_string(),
+            ));
+        }
+
+        for (option, key_hint, label) in items {
+            let is_selected = self.view.scope_selected == option;
+            let row_style = if is_selected {
+                menu_style::selected_row_style()
+            } else {
+                Style::default().fg(palette::TEXT_PRIMARY)
+            };
+            let hint_style = if is_selected {
+                menu_style::selected_row_style()
+            } else {
+                Style::default().fg(shortcut_color)
+            };
+            let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+            rows.push(ScopeMenuRow {
+                option: Some(option),
+                is_save_preview: false,
+                line: Line::from(vec![
+                    Span::styled(
+                        drawer_edge,
+                        Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!(" {marker} "), row_style),
+                    Span::styled(
+                        format!("{key_hint} "),
+                        hint_style.add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(label, row_style),
+                ]),
+            });
+
+            if option == ApprovalOption::AllowExactRepo
+                && let Some(preview) = self.request.allow_rule_save_preview()
+            {
+                let arrow = if ascii { "-> " } else { "↳ " };
+                let indent = "      ";
+                let prefix_width = drawer_edge.width() + indent.width() + arrow.width();
+                let avail = usize::from(width).saturating_sub(prefix_width);
+                if avail > 0 {
+                    let pattern = preview.pattern_text();
+                    let full_preview = if preview.rule_count > 1 && preview.entries.len() > 1 {
+                        format!(
+                            "{pattern} (.codewhale/permissions.toml · {})",
+                            preview.summary(locale)
+                        )
+                    } else {
+                        format!("{pattern} (.codewhale/permissions.toml)")
+                    };
+                    let wrapped = wrap_text(&full_preview, avail);
+                    let continuation_pad = " ".repeat(indent.width() + arrow.width());
+                    for (line_idx, chunk) in wrapped.into_iter().enumerate() {
+                        let mut detail_spans = vec![Span::styled(
+                            drawer_edge,
+                            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                        )];
+                        if line_idx == 0 {
+                            detail_spans.push(Span::raw(indent));
+                            detail_spans.push(Span::styled(
+                                arrow,
+                                Style::default().fg(palette::TEXT_MUTED),
+                            ));
+                        } else {
+                            detail_spans.push(Span::raw(continuation_pad.clone()));
+                        }
+                        detail_spans.push(Span::styled(
+                            chunk,
+                            Style::default().fg(palette::WHALE_HUMAN),
+                        ));
+                        rows.push(ScopeMenuRow {
+                            option: None,
+                            is_save_preview: true,
+                            line: Line::from(detail_spans),
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn details_lines(&self, area: Rect) -> Vec<Line<'static>> {
+        let stakes = self.request.stakes();
+        let locale = self.view.locale();
+        let ascii = ascii_safe_enabled();
+        let (border_color, edge_color, shortcut_color) = self.edge_style();
+        let drawer_edge = self.drawer_edge_glyph(ascii);
+        let critical = matches!(stakes, crate::tui::approval::ApprovalStakes::Critical);
+        let repo_law = self.request.is_repo_law_prompt();
+        let mut body: Vec<Line<'static>> = Vec::with_capacity(16);
+
+        let chord = crate::tui::shell_key_routing::tool_details_chord();
+        body.push(Line::from(vec![
             Span::styled(
-                if repo_law {
-                    format!(
-                        "{} · {}",
-                        tr(locale, MessageId::ApprovalRepoLawTitle),
-                        approval_heading(self.request, locale)
-                    )
-                } else {
-                    approval_heading(self.request, locale)
-                },
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
+                drawer_edge,
+                Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("─ Details (Tab/d close · {chord} pager) ─"),
+                Style::default().fg(border_color),
             ),
         ]));
+        let summary_text = self.request.summary_for_locale(locale);
+        if !summary_text.trim().is_empty() {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    summary_text,
+                    Style::default()
+                        .fg(palette::WHALE_ACTION)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
 
-        // A child's card names the agent that is waiting (approvals C1).
         if let Some(owner) = self.request.owner.as_ref() {
             body.push(Line::from(vec![
                 Span::raw("  "),
@@ -1799,10 +1838,16 @@ impl<'a> ApprovalWidget<'a> {
             ]));
         }
 
-        // Command / change preview FIRST — for an approval the thing being run
-        // is the load-bearing content, so on a short terminal it is the
-        // secondary context (about/impacts/category) that scrolls away, never
-        // the command.
+        if self.request.asks_without_git {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    tr(locale, MessageId::ApprovalAsksWithoutGit),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+            ]));
+        }
+
         let details = self.request.prominent_detail_items(locale);
         if details.is_empty() {
             push_params_detail_line(&mut body, self.request, locale, area.width);
@@ -1811,20 +1856,12 @@ impl<'a> ApprovalWidget<'a> {
             for detail in details.iter().take(4) {
                 let is_change_preview = detail.is_preview;
                 if let Some(shell_lines) = detail.shell_lines.as_deref() {
-                    let command_width = area.width.saturating_sub(10) as usize;
-                    // A short approval band has room for only one detail row
-                    // before its truncation hint. Project the most useful
-                    // command/change into that row instead of spending it on
-                    // setup (`cd`, `set`) or diff metadata. The complete,
-                    // original-order value remains available in the details
-                    // pager.
+                    let command_width = area.width.saturating_sub(12) as usize;
                     let inline_shell_lines = prioritize_inline_shell_lines(
                         shell_lines,
                         is_change_preview,
                         area.height <= 24,
                     );
-                    // Bound every multi-line preview so one huge command cannot
-                    // grow the band without limit; the details chord opens the rest.
                     let max_rows = if is_change_preview {
                         if self.request.intent_summary.is_some() {
                             Some(3)
@@ -1851,9 +1888,8 @@ impl<'a> ApprovalWidget<'a> {
             }
         }
 
-        // Intent summary ("why this change is needed", #2381).
         if let Some(ref summary) = self.request.intent_summary {
-            let max_width = area.width.saturating_sub(14) as usize;
+            let max_width = area.width.saturating_sub(16) as usize;
             if max_width > 0 {
                 let intent_label = tr(locale, MessageId::ApprovalIntentLabel);
                 let summary_lines: Vec<&str> = summary.lines().collect();
@@ -1889,20 +1925,10 @@ impl<'a> ApprovalWidget<'a> {
             }
         }
 
-        // Destructive policy / cancel semantics — critical stakes only. For
-        // routine and elevated work the controls speak for themselves; the
-        // extra policy prose was noise that made every edit read like an
-        // emergency.
-        // The semantics prose says Esc stops the turn; a child's card hides
-        // on Esc instead, so it never shows that line.
         if critical && self.request.owner.is_none() {
             push_destructive_approval_semantics(&mut body, locale, false);
         }
 
-        // Secondary context: what it is and what it touches. Only critical
-        // prompts carry the full about/impact/category dossier by default —
-        // everything stays one details chord away in the pager. Keep a single
-        // About line as fallback context when nothing else was rendered.
         if critical || details.is_empty() {
             body.push(Line::from(vec![
                 Span::raw("  "),
@@ -1924,7 +1950,6 @@ impl<'a> ApprovalWidget<'a> {
                     Span::styled(impact, Style::default().fg(palette::TEXT_BODY)),
                 ]));
             }
-            // Category line — localized risk category.
             let (cat_label, cat_color) = category_label_for(self.request, locale);
             body.push(Line::from(vec![
                 Span::raw("  "),
@@ -1936,114 +1961,424 @@ impl<'a> ApprovalWidget<'a> {
             ]));
         }
 
+        if self.request.can_save_ask_rule() {
+            body.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "[s] ",
+                    Style::default()
+                        .fg(shortcut_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Ask again next time (.codewhale/permissions.toml)",
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+            ]));
+        }
+
+        for line in body.iter_mut().skip(1) {
+            line.spans.insert(
+                0,
+                Span::styled(
+                    drawer_edge,
+                    Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                ),
+            );
+        }
         body
     }
 
+    fn drawer_height(&self, area: Rect) -> u16 {
+        let max_drawer = area.height.saturating_sub(1);
+        if max_drawer == 0 {
+            return 0;
+        }
+        if self.view.scopes_open && !self.view.is_workflow_plan_approval() {
+            return u16::try_from(self.scope_menu_rows(area.width).len())
+                .unwrap_or(u16::MAX)
+                .min(max_drawer);
+        }
+        if self.view.details_expanded {
+            let lines = self.details_lines(area);
+            let max_expanded = max_drawer.min(18);
+            return u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .min(max_expanded);
+        }
+        0
+    }
+
     pub(crate) fn inline_region(&self, area: Rect) -> Rect {
-        self.kit(area).plan(area).region
+        if area.width == 0 || area.height == 0 {
+            return Rect::new(area.x, area.y, area.width, 0);
+        }
+        let total_height = 1u16
+            .saturating_add(self.drawer_height(area))
+            .min(area.height);
+        let y = area.bottom().saturating_sub(total_height);
+        Rect::new(area.x, y, area.width, total_height)
+    }
+
+    fn render_bar(
+        &self,
+        bar_area: Rect,
+        buf: &mut Buffer,
+    ) -> (Vec<Rect>, Option<Rect>, Option<Rect>) {
+        let ascii = ascii_safe_enabled();
+        let locale = self.view.locale();
+        let (_, edge_color, _) = self.edge_style();
+        let workflow_plan = self.view.is_workflow_plan_approval();
+        let selected_option = if self.view.scopes_open {
+            None
+        } else {
+            Some(ApprovalOption::from_index_for(
+                self.request,
+                self.view.selected(),
+            ))
+        };
+
+        let selected_pill = menu_style::selected_row_style().add_modifier(Modifier::REVERSED);
+        let allow_text = if workflow_plan {
+            "Approve"
+        } else if bar_area.width >= 56 {
+            if ascii { "v Allow" } else { "✓ Allow" }
+        } else {
+            "Allow"
+        };
+        let deny_text = if workflow_plan {
+            "Edit"
+        } else if bar_area.width >= 56 {
+            if ascii { "x Deny" } else { "✕ Deny" }
+        } else {
+            "Deny"
+        };
+
+        let allow_label = format!(" {allow_text} ");
+        let deny_label = format!(" {deny_text} ");
+        let m_label = if workflow_plan {
+            String::new()
+        } else if self.view.scopes_open {
+            if ascii { "[^ m]" } else { "[▴ m]" }.to_string()
+        } else {
+            if ascii { "[v m]" } else { "[▾ m]" }.to_string()
+        };
+        let d_label = if self.view.details_expanded {
+            if ascii { "[^ d]" } else { "[▴ d]" }
+        } else {
+            "[d]"
+        };
+        let cancel_label = if workflow_plan { " Cancel " } else { "" };
+
+        struct ControlSpec {
+            text: String,
+            style: Style,
+            kind: ControlKind,
+        }
+        #[derive(Clone, Copy)]
+        enum ControlKind {
+            OptionIndex(usize),
+            Scopes,
+            Details,
+        }
+
+        let mut controls: Vec<ControlSpec> = Vec::with_capacity(5);
+        let allow_color = if self.request.risk == RiskLevel::Destructive {
+            palette::WHALE_HUMAN
+        } else {
+            palette::WHALE_ACTION
+        };
+        controls.push(ControlSpec {
+            text: allow_label,
+            style: if selected_option == Some(ApprovalOption::ApproveOnce) {
+                selected_pill
+            } else {
+                Style::default()
+                    .fg(allow_color)
+                    .add_modifier(Modifier::BOLD)
+            },
+            kind: ControlKind::OptionIndex(0),
+        });
+        if !workflow_plan {
+            controls.push(ControlSpec {
+                text: m_label,
+                style: if self.view.scopes_open {
+                    Style::default()
+                        .fg(palette::WHALE_HUMAN)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                },
+                kind: ControlKind::Scopes,
+            });
+        }
+        let deny_index = if workflow_plan { 1 } else { 2 };
+        controls.push(ControlSpec {
+            text: deny_label,
+            style: if selected_option == Some(ApprovalOption::Deny) {
+                selected_pill
+            } else {
+                Style::default().fg(palette::TEXT_SECONDARY)
+            },
+            kind: ControlKind::OptionIndex(deny_index),
+        });
+        if workflow_plan {
+            controls.push(ControlSpec {
+                text: cancel_label.to_string(),
+                style: if selected_option == Some(ApprovalOption::Abort) {
+                    selected_pill
+                } else {
+                    Style::default().fg(palette::TEXT_MUTED)
+                },
+                kind: ControlKind::OptionIndex(2),
+            });
+        }
+        controls.push(ControlSpec {
+            text: d_label.to_string(),
+            style: if self.view.details_expanded {
+                Style::default()
+                    .fg(palette::WHALE_HUMAN)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            },
+            kind: ControlKind::Details,
+        });
+
+        let controls_width: usize = controls
+            .iter()
+            .map(|c| c.text.width())
+            .sum::<usize>()
+            .saturating_add(controls.len().saturating_sub(1));
+
+        let mut left_spans: Vec<Span<'static>> = Vec::with_capacity(6);
+        let mut left_used: usize = 0;
+
+        let edge = self.edge_glyph(ascii);
+        left_used = left_used.saturating_add(edge.width());
+        left_spans.push(Span::styled(
+            edge,
+            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+        ));
+
+        if let Some(owner) = self.request.owner.as_ref() {
+            let tag = format!("[{}] ", visible_text(&owner.label, ascii));
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::TEXT_SECONDARY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if self.request.is_repo_law_prompt() {
+            let tag = if ascii {
+                "Repo rule - "
+            } else {
+                "Repo rule · "
+            };
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::STATUS_WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if self.request.stakes() == crate::tui::approval::ApprovalStakes::Critical {
+            let tag_text = tr(locale, MessageId::ApprovalRiskDestructive);
+            let sep = if ascii { " - " } else { " · " };
+            let tag = format!("{tag_text}{sep}");
+            left_used = left_used.saturating_add(tag.width());
+            left_spans.push(Span::styled(
+                tag,
+                Style::default()
+                    .fg(palette::WHALE_ERROR)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let (raw_verb, raw_subject, outside_workspace) = self.request.docked_parts();
+        let verb = visible_text(&raw_verb, ascii);
+        let subject = visible_text(&raw_subject, ascii);
+
+        let total_width = usize::from(bar_area.width);
+        let reserved_right = if total_width > controls_width + 2 {
+            controls_width + 2
+        } else {
+            controls_width.min(total_width)
+        };
+        let left_budget = total_width.saturating_sub(reserved_right);
+
+        if left_used < left_budget && !verb.is_empty() {
+            let verb_with_space = format!("{verb} ");
+            let verb_trunc =
+                truncate_line_to_width(&verb_with_space, left_budget.saturating_sub(left_used));
+            left_used = left_used.saturating_add(verb_trunc.width());
+            let verb_color = if outside_workspace {
+                edge_color
+            } else {
+                palette::TEXT_SECONDARY
+            };
+            left_spans.push(Span::styled(
+                verb_trunc,
+                Style::default().fg(verb_color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if left_used < left_budget && !subject.is_empty() {
+            let subj_budget = left_budget.saturating_sub(left_used);
+            let subj_trunc = truncate_line_to_width(&subject, subj_budget);
+            left_spans.push(Span::styled(
+                subj_trunc,
+                Style::default().fg(palette::TEXT_PRIMARY),
+            ));
+        }
+
+        Paragraph::new(Line::from(left_spans)).render(bar_area, buf);
+
+        let mut action_rects = vec![Rect::default(); 3];
+        let mut scopes_hitbox = None;
+        let mut details_hitbox = None;
+
+        let controls_x = bar_area
+            .right()
+            .saturating_sub(u16::try_from(controls_width).unwrap_or(bar_area.width))
+            .max(bar_area.x);
+        let mut cursor_x = controls_x;
+        for (i, control) in controls.into_iter().enumerate() {
+            if i > 0 {
+                cursor_x = cursor_x.saturating_add(1);
+            }
+            let w = u16::try_from(control.text.width()).unwrap_or(0);
+            if cursor_x >= bar_area.right() || w == 0 {
+                continue;
+            }
+            let avail = bar_area.right().saturating_sub(cursor_x);
+            let render_w = w.min(avail);
+            let rect = Rect::new(cursor_x, bar_area.y, render_w, 1);
+            Span::styled(control.text, control.style).render(rect, buf);
+            match control.kind {
+                ControlKind::OptionIndex(idx) => {
+                    if idx < action_rects.len() {
+                        action_rects[idx] = rect;
+                    }
+                }
+                ControlKind::Scopes => scopes_hitbox = Some(rect),
+                ControlKind::Details => details_hitbox = Some(rect),
+            }
+            cursor_x = cursor_x.saturating_add(render_w);
+        }
+
+        (action_rects, scopes_hitbox, details_hitbox)
     }
 }
 
 impl Renderable for ApprovalWidget<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let plan = self.kit(area).render(area, buf);
-        // Publish only the painted contract, even for empty/collapsed frames.
-        self.view.set_save_preview_shown(plan.save_shown);
-        self.view.set_mouse_hitboxes(plan.action_rects);
-    }
-
-    fn desired_height(&self, _width: u16) -> u16 {
-        1
-    }
-}
-
-/// Build the always-visible approval controls: a "proceed?" prompt, the
-/// numbered/selectable options, and the selection hint. Rendered into a region
-/// reserved off the bottom of the band so it can never be clipped (#3799).
-fn approval_control_facts(
-    request: &ApprovalRequest,
-    view: &ApprovalView,
-    risk: RiskLevel,
-    locale: Locale,
-    accent: Color,
-    shortcut: Color,
-) -> (
-    Line<'static>,
-    Vec<DecisionBandAction>,
-    Line<'static>,
-    Option<Span<'static>>,
-) {
-    let mut question = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            approval_proceed_question(locale),
-            Style::default()
-                .fg(palette::TEXT_BODY)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    // On the question row, which is never cut, so the reason costs the
-    // change preview no rows.
-    if request.asks_without_git {
-        question.spans.push(Span::styled(
-            format!("  ·  {}", tr(locale, MessageId::ApprovalAsksWithoutGit)),
-            Style::default().fg(palette::TEXT_HINT),
-        ));
-    }
-    let mut actions = Vec::new();
-    let options = approval_options_for_request(request, risk, locale);
-    for (i, opt) in options.iter().enumerate() {
-        let is_selected = i == view.selected();
-        let label_color = if opt.dangerous {
-            accent
-        } else {
-            palette::TEXT_BODY
-        };
-        let option_style = approval_option_style(is_selected, label_color);
-        let shortcut_style = approval_option_style(is_selected, shortcut);
-        // Leading caret marks the row Enter will fire — selection is not
-        // signalled by background alone.
-        let lead = if is_selected {
-            Span::styled("\u{276f} ", approval_selected_style())
-        } else {
-            Span::raw("  ")
-        };
-        let mut spans = vec![
-            lead,
-            Span::styled(
-                format!("[{}] ", opt.key_hint),
-                shortcut_style.add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(opt.label.to_string(), option_style),
-        ];
-        // Deny is highlighted by default (#5293), so say on the row itself
-        // what Enter will do: a reflexive Enter is otherwise a silent refusal.
-        if is_selected {
-            spans.push(Span::styled(APPROVAL_ENTER_TAG, shortcut_style));
+        let region = self.inline_region(area);
+        if region.width == 0 || region.height == 0 {
+            self.view.set_save_preview_shown(false);
+            self.view.set_mouse_hitboxes(Vec::new());
+            self.view.set_scopes_toggle_hitbox(None);
+            self.view.set_details_toggle_hitbox(None);
+            self.view.set_scope_menu_hitboxes(Vec::new());
+            return;
         }
-        actions.push(DecisionBandAction {
-            persistent: opt.persistent,
-            line: Line::from(spans),
-        });
-    }
-    let footer = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            if request.owner.is_some() {
-                child_footer_controls(locale)
-            } else {
-                footer_controls(locale)
-            },
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
-    ]);
-    (question, actions, footer, None)
-}
-/// Key name appended to the highlighted option row, like `Esc` on its own row.
-const APPROVAL_ENTER_TAG: &str = " (Enter)";
 
-fn approval_proceed_question(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalProceedQuestion)
+        for y in region.top()..region.bottom() {
+            for x in region.left()..region.right() {
+                buf[(x, y)]
+                    .set_symbol(" ")
+                    .set_style(Style::default().bg(palette::WHALE_BG));
+            }
+        }
+
+        let bar_area = Rect::new(region.x, region.bottom().saturating_sub(1), region.width, 1);
+        let (action_rects, scopes_hitbox, details_hitbox) = self.render_bar(bar_area, buf);
+
+        let mut save_shown = false;
+        let mut scope_hitboxes = Vec::new();
+        if region.height > 1 {
+            let drawer_area = Rect::new(region.x, region.y, region.width, region.height - 1);
+            if self.view.scopes_open && !self.view.is_workflow_plan_approval() {
+                let rows = self.scope_menu_rows(drawer_area.width);
+                let total_preview_rows = rows.iter().filter(|row| row.is_save_preview).count();
+                let mut drawn_preview_rows = 0usize;
+                for (row_idx, row) in rows
+                    .into_iter()
+                    .take(usize::from(drawer_area.height))
+                    .enumerate()
+                {
+                    let y = drawer_area
+                        .y
+                        .saturating_add(u16::try_from(row_idx).unwrap_or(0));
+                    let row_rect = Rect::new(drawer_area.x, y, drawer_area.width, 1);
+                    if let Some(option) = row.option {
+                        if self.view.scope_selected == option {
+                            let bg = menu_style::selected_row_bg_style();
+                            for x in row_rect.left()..row_rect.right() {
+                                buf[(x, y)].set_style(bg);
+                            }
+                        }
+                        scope_hitboxes.push((option, row_rect));
+                    } else if row.is_save_preview
+                        && row.line.width() <= usize::from(drawer_area.width)
+                    {
+                        drawn_preview_rows += 1;
+                    }
+                    Paragraph::new(row.line).render(row_rect, buf);
+                }
+                save_shown = total_preview_rows > 0 && drawn_preview_rows == total_preview_rows;
+            } else if self.view.details_expanded {
+                let lines = self.details_lines(area);
+                let cap = usize::from(drawer_area.height);
+                let total = lines.len();
+                if total > cap && cap > 1 {
+                    for (idx, line) in lines.into_iter().take(cap - 1).enumerate() {
+                        let y = drawer_area
+                            .y
+                            .saturating_add(u16::try_from(idx).unwrap_or(0));
+                        Paragraph::new(line)
+                            .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                    }
+                    let y = drawer_area.y.saturating_add(drawer_area.height - 1);
+                    let ascii = ascii_safe_enabled();
+                    let (_, edge_color, _) = self.edge_style();
+                    let hint = Line::from(vec![
+                        Span::styled(
+                            self.drawer_edge_glyph(ascii),
+                            Style::default().fg(edge_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(
+                            approval_truncation_hint(self.view.locale()),
+                            Style::default().fg(palette::TEXT_HINT),
+                        ),
+                    ]);
+                    Paragraph::new(hint)
+                        .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                } else {
+                    for (idx, line) in lines.into_iter().take(cap).enumerate() {
+                        let y = drawer_area
+                            .y
+                            .saturating_add(u16::try_from(idx).unwrap_or(0));
+                        Paragraph::new(line)
+                            .render(Rect::new(drawer_area.x, y, drawer_area.width, 1), buf);
+                    }
+                }
+            }
+        }
+
+        self.view.set_save_preview_shown(save_shown);
+        self.view.set_mouse_hitboxes(action_rects);
+        self.view.set_scopes_toggle_hitbox(scopes_hitbox);
+        self.view.set_details_toggle_hitbox(details_hitbox);
+        self.view.set_scope_menu_hitboxes(scope_hitboxes);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.docked_height(width)
+    }
 }
 
 fn approval_truncation_hint(locale: Locale) -> Cow<'static, str> {
@@ -2086,56 +2421,6 @@ fn repo_law_approval_palette() -> ApprovalColors {
         accent: palette::WHALE_ERROR,
         shortcut: palette::STATUS_WARNING,
     }
-}
-
-fn approval_selected_style() -> Style {
-    menu_style::selected_row_style()
-}
-
-fn approval_option_style(is_selected: bool, color: Color) -> Style {
-    if is_selected {
-        approval_selected_style()
-    } else {
-        Style::default().fg(color)
-    }
-}
-
-/// The approval card's heading: the plain summary of the call (E6), in the
-/// card's language, falling back to the tool name only when no summary was
-/// derived.
-fn approval_heading(request: &ApprovalRequest, locale: Locale) -> String {
-    if request.summary.trim().is_empty() {
-        return request.tool_name.clone();
-    }
-    let summary = request.summary_for_locale(locale);
-    if summary.trim().is_empty() {
-        request.tool_name.clone()
-    } else {
-        summary
-    }
-}
-
-/// Badge naming what the call does, not a risk tier: "Reads only", "Changes
-/// files", "Runs a command", "Uses the network". Anything the stakes
-/// classifier calls destructive or publishing reads "Can't be undone".
-fn effect_badge_text(
-    request: &ApprovalRequest,
-    stakes: crate::tui::approval::ApprovalStakes,
-    locale: Locale,
-) -> Cow<'static, str> {
-    if stakes == crate::tui::approval::ApprovalStakes::Critical {
-        return tr(locale, MessageId::ApprovalRiskDestructive);
-    }
-    let id = match request.category {
-        ToolCategory::Safe | ToolCategory::McpRead => MessageId::ApprovalEffectReadsOnly,
-        ToolCategory::FileWrite => MessageId::ApprovalEffectChangesFiles,
-        ToolCategory::Shell => MessageId::ApprovalEffectRunsCommand,
-        ToolCategory::Network => MessageId::ApprovalEffectUsesNetwork,
-        ToolCategory::McpAction => MessageId::ApprovalEffectConnectedApp,
-        ToolCategory::Agent => MessageId::ApprovalEffectStartsAgent,
-        ToolCategory::Unknown => MessageId::ApprovalEffectUnclassified,
-    };
-    tr(locale, id)
 }
 
 fn category_label_for(request: &ApprovalRequest, locale: Locale) -> (Cow<'static, str>, Color) {
@@ -2424,25 +2709,6 @@ fn destructive_approval_semantics(locale: Locale) -> [(Cow<'static, str>, Cow<'s
     ]
 }
 
-fn footer_controls(locale: Locale) -> Cow<'static, str> {
-    // Platform-aware details chord (⌥V on macOS, Alt+V elsewhere). Bare `v`
-    // is never advertised as a details shortcut (TUI-DOG-002).
-    let details = crate::tui::shell_key_routing::tool_details_chord();
-    Cow::Owned(tr(locale, MessageId::ApprovalControlsHint).replace("{details}", details.as_ref()))
-}
-
-/// Controls hint for a child's card: Esc hides it, `g` opens the agent.
-fn child_footer_controls(locale: Locale) -> Cow<'static, str> {
-    let details = crate::tui::shell_key_routing::tool_details_chord();
-    Cow::Owned(format!(
-        "{}  ·  {}",
-        tr(locale, MessageId::ApprovalControlsHintChild).replace("{details}", details.as_ref()),
-        tr(locale, MessageId::ApprovalGoToAgent)
-    ))
-}
-
-/// "Agent: {agent} · {role}", dropping the role segment when the roster does
-/// not know the agent's role yet.
 fn approval_owner_header(owner: &crate::tui::approval::ApprovalOwner, locale: Locale) -> String {
     let template = tr(locale, MessageId::ApprovalOwnerHeader);
     let with_agent = template.replace("{agent}", &owner.label);
@@ -2454,109 +2720,6 @@ fn approval_owner_header(owner: &crate::tui::approval::ApprovalOwner, locale: Lo
             .trim_end()
             .to_string(),
     }
-}
-
-#[derive(Clone)]
-struct ApprovalOptionRow {
-    label: Cow<'static, str>,
-    key_hint: &'static str,
-    dangerous: bool,
-    /// Saves a persistent rule: offered only beside its save preview.
-    persistent: bool,
-}
-
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: option_approve_once(locale),
-            key_hint: "1 / y",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: option_approve_always(locale),
-            key_hint: "2 / a",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: option_deny(locale),
-            key_hint: "3 / d / n",
-            dangerous: false,
-            persistent: false,
-        },
-    ]
-}
-
-/// Workflow elevated-plan card options (#4126): Approve / Edit plan / Cancel.
-fn workflow_approval_options(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: workflow_option_approve(locale),
-            key_hint: "1 / y",
-            dangerous,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_edit_plan(locale),
-            key_hint: "2 / e",
-            dangerous: false,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_cancel(locale),
-            key_hint: "3 / Esc",
-            dangerous: false,
-            persistent: false,
-        },
-    ]
-}
-
-fn approval_options_for_request(
-    request: &ApprovalRequest,
-    risk: RiskLevel,
-    locale: Locale,
-) -> Vec<ApprovalOptionRow> {
-    if request.tool_name == "workflow" {
-        workflow_approval_options(risk, locale).to_vec()
-    } else {
-        let mut options = approval_options_for(risk, locale).to_vec();
-        if request.owner.is_none() && request.can_save_allow_rule() {
-            options[1] = ApprovalOptionRow {
-                label: tr(locale, MessageId::ApprovalOptionAllowExactRepo),
-                key_hint: "2 / p",
-                dangerous: false,
-                persistent: true,
-            };
-        }
-        options
-    }
-}
-
-fn workflow_option_approve(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowApprove)
-}
-
-fn workflow_option_edit_plan(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowEditPlan)
-}
-
-fn workflow_option_cancel(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalWorkflowCancel)
-}
-
-fn option_approve_once(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveOnce)
-}
-
-fn option_approve_always(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveAlways)
-}
-
-fn option_deny(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionDeny)
 }
 
 pub struct ElevationWidget<'a> {
@@ -3863,12 +4026,15 @@ mod tests {
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
     };
+    use crate::tui::views::ModalView;
     use codewhale_config::ProviderKind;
     use codewhale_localization::Locale;
     use codewhale_palette as palette;
     use codewhale_runtime::config::Config;
     use codewhale_tui_kit::scrolling::{TranscriptLineMeta, TranscriptScroll};
-    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -8498,20 +8664,28 @@ mod tests {
             &serde_json::json!({ "command": command }),
             "exec_shell:long",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
         let area = Rect::new(0, 0, 100, 30);
         let region = widget.inline_region(area);
 
         assert_eq!(region.bottom(), area.bottom());
-        assert!(region.height <= area.height.div_ceil(2), "{region:?}");
+        assert_eq!(region.height, 1, "{region:?}");
 
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
+
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let expanded_widget = ApprovalWidget::new(&request, &view);
+        let expanded_region = expanded_widget.inline_region(area);
+        assert!(expanded_region.height > 1 && expanded_region.height < area.height);
+        let mut expanded_buf = Buffer::empty(area);
+        expanded_widget.render(area, &mut expanded_buf);
+        let expanded_rendered = buffer_text(&expanded_buf, area);
+        assert!(expanded_rendered.contains("..."), "{expanded_rendered}");
     }
 
     #[test]
@@ -8523,7 +8697,8 @@ mod tests {
             &serde_json::json!({ "command": "printf '安全確認'" }),
             "exec_shell:printf",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let widget = ApprovalWidget::new(&request, &view);
 
         for area in [Rect::new(0, 0, 80, 24), Rect::new(0, 0, 60, 16)] {
@@ -8538,16 +8713,16 @@ mod tests {
             for marker in ['安', '全', '確', '認'] {
                 assert!(rendered.contains(marker), "{area:?}: {rendered}");
             }
-            assert!(rendered.contains("[1 / y]"), "{area:?}: {rendered}");
-            assert!(rendered.contains("[3 / d / n]"), "{area:?}: {rendered}");
+            assert!(rendered.contains("Allow"), "{area:?}: {rendered}");
+            assert!(rendered.contains("Deny"), "{area:?}: {rendered}");
         }
 
         let tiny = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(tiny);
         widget.render(tiny, &mut buf);
         let rendered = buffer_text(&buf, tiny);
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
         assert!(
             rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
             "{rendered}"
@@ -8574,28 +8749,25 @@ mod tests {
             "edit_file:Cargo.toml",
         );
         assert!(request.is_repo_law_prompt());
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 120, 30);
-        let mut buf = Buffer::empty(area);
+        let mut bar_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut bar_buf);
+        let bar_rendered = buffer_text(&bar_buf, area);
+        assert!(bar_rendered.contains("Repo rule"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Cargo.toml"), "{bar_rendered}");
 
-        widget.render(area, &mut buf);
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        assert!(rendered.contains("Repo rule"), "{rendered}");
-        assert!(rendered.contains("Repository constitution"), "{rendered}");
         assert!(
             rendered.contains("This repo's constitution asks you to confirm this change."),
             "{rendered}"
         );
-        // §19: the card says constitution and permissions, never law/posture.
         for retired in ["REPO LAW", "Repository law", "posture"] {
             assert!(!rendered.contains(retired), "{retired}: {rendered}");
         }
-        assert!(rendered.contains("Cargo.toml"), "{rendered}");
-        assert!((0..area.height).any(|y| {
-            let cell = &buf[(1, y)];
-            cell.symbol() == "═" && cell.fg == palette::STATUS_WARNING
-        }));
     }
 
     #[test]
@@ -8644,31 +8816,23 @@ mod tests {
             &serde_json::json!({ "command": "git commit -m fix" }),
             "exec_shell:git commit",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let bar = buffer_text(&buf, area);
+        assert!(bar.contains("┃ ⛯"), "{bar}");
 
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-
-        assert!(
-            rendered.contains('\u{276f}'),
-            "selected option row should show a caret:\n{rendered}"
-        );
-        assert!(
-            rendered.contains('\u{2500}'),
-            "inline prompt should show a top separator rule:\n{rendered}"
-        );
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let mut menu_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut menu_buf);
+        let rendered = buffer_text(&menu_buf, area);
+        assert!(rendered.contains('\u{25b8}'), "{rendered}");
+        assert!(rendered.contains('\u{2500}'), "{rendered}");
     }
 
     #[test]
     fn approval_inline_keeps_action_row_and_leaves_transcript_visible() {
-        // The #3799 repro: a destructive approval with a long multi-line command
-        // and long intent text. Across narrow, normal, and short terminals the
-        // action row must stay visible, the band must never address cells
-        // outside the frame, and on a tall terminal the band must not fill the
-        // whole frame (transcript stays visible — no full-screen takeover).
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",
@@ -8691,39 +8855,23 @@ mod tests {
             widget.render(area, &mut buf);
             let rendered = buffer_text(&buf, area);
 
-            // Action row is always present (reserved off the bottom of the band).
             assert!(
-                rendered.contains("[1 / y]") && rendered.contains("[3 / d / n]"),
+                rendered.contains("Allow") && rendered.contains("Deny"),
                 "action row must stay visible at {w}x{h}:\n{rendered}"
             );
 
-            // Band stays inside the frame and is anchored to the bottom.
             let region = widget.inline_region(area);
             assert!(region.right() <= area.right() && region.bottom() <= area.bottom());
-            assert_eq!(
-                region.bottom(),
-                area.bottom(),
-                "band must be bottom-anchored at {w}x{h}"
-            );
-
-            // Tall terminal with content that fits: transcript above stays
-            // visible — the prompt is not a full-screen takeover.
+            assert_eq!(region.bottom(), area.bottom());
+            assert_eq!(region.height, 1);
             if h >= 40 {
-                assert!(
-                    region.y > area.y,
-                    "tall frame must leave transcript visible above the band at {w}x{h}"
-                );
+                assert!(region.y > area.y);
             }
         }
     }
 
     #[test]
     fn approval_option_two_reads_as_session_scoped_not_always() {
-        // #3766: option 2 / `a` maps to ReviewDecision::ApprovedForSession, so
-        // neither the full option rows nor the compact controls may tell the
-        // user that particular option is "always"/permanent. The distinct
-        // `[2 / p]` row offered with a persistent rule may use that word for
-        // an exact repo-scoped grant.
         let mut request = crate::tui::approval::ApprovalRequest::new(
             "approval-1",
             "exec_shell",
@@ -8733,33 +8881,37 @@ mod tests {
         );
         request.persistent_allow_rules.clear();
 
-        // Full card (tall): full option rows render the session-scoped label.
-        let full = render_approval_request(&request, Rect::new(0, 0, 100, 30));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+
+        let mut full_buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 100, 30), &mut full_buf);
+        let full = buffer_text(&full_buf, Rect::new(0, 0, 100, 30));
         let full_session_option = full
             .lines()
-            .find(|line| line.contains("[2 / a]"))
-            .expect("full approval card should render the session option");
+            .find(|line| line.contains("[2]"))
+            .expect("scope menu should render option 2");
         assert!(
             full_session_option
                 .to_lowercase()
                 .contains("this conversation")
                 && !full_session_option.to_lowercase().contains("always"),
-            "full approval option must state session scope without saying always:\n{full}"
+            "{full}"
         );
 
-        // Short terminal: the reserved controls still render the session-scoped
-        // option `[2 / a]` without calling that option "always".
-        let compact = render_approval_request(&request, Rect::new(0, 0, 60, 17));
+        let mut compact_buf = Buffer::empty(Rect::new(0, 0, 60, 17));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 60, 17), &mut compact_buf);
+        let compact = buffer_text(&compact_buf, Rect::new(0, 0, 60, 17));
         let compact_session_option = compact
             .lines()
-            .find(|line| line.contains("[2 / a]"))
-            .expect("short approval card should render the session option");
+            .find(|line| line.contains("[2]"))
+            .expect("compact scope menu should render option 2");
         assert!(
             compact_session_option
                 .to_lowercase()
                 .contains("conversation")
                 && !compact_session_option.to_lowercase().contains("always"),
-            "short-terminal controls must label [2 / a] as session-scoped:\n{compact}"
+            "{compact}"
         );
     }
 
@@ -8775,12 +8927,12 @@ mod tests {
             }),
             "exec_shell:printf",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 110, 32);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Command:"), "{rendered}");
@@ -8804,19 +8956,29 @@ mod tests {
             "exec_shell:cargo-test",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
+        let default_rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
         assert!(
-            !rendered.contains("s allow now, and always ask before this again"),
-            "{rendered}"
+            !default_rendered.contains(".codewhale/permissions.toml"),
+            "{default_rendered}"
         );
-        assert!(rendered.contains("Always for this command"), "{rendered}");
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(!rendered.contains("always ask first"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("run exactly cargo test"), "{rendered}");
-        assert!(rendered.contains("in /workspace"), "{rendered}");
-        assert!(!rendered.contains("tool="), "{rendered}");
+
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 40));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 120, 40), &mut buf);
+        let menu_rendered = buffer_text(&buf, Rect::new(0, 0, 120, 40));
+        assert!(
+            menu_rendered.contains("Always allow in this repo"),
+            "{menu_rendered}"
+        );
+        assert!(
+            menu_rendered.contains("cargo test --workspace"),
+            "{menu_rendered}"
+        );
+        assert!(
+            menu_rendered.contains(".codewhale/permissions.toml"),
+            "{menu_rendered}"
+        );
 
         let mut view = crate::tui::approval::ApprovalView::new(request);
         let crate::tui::views::ViewAction::Emit(crate::tui::views::ViewEvent::OpenTextPager {
@@ -8851,7 +9013,7 @@ mod tests {
                     "path": "src/main.rs",
                     "content": "fn main() {}\n",
                 }),
-                "write src/main.rs",
+                "src/main.rs",
             ),
             (
                 "edit_file",
@@ -8860,7 +9022,7 @@ mod tests {
                     "old_string": "old",
                     "new_string": "new",
                 }),
-                "edit src/lib.rs",
+                "src/lib.rs",
             ),
         ];
 
@@ -8873,20 +9035,24 @@ mod tests {
                 &format!("{tool_name}:src"),
             );
 
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+            let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+            view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+            let area = Rect::new(0, 0, 120, 40);
+            let mut buf = Buffer::empty(area);
+            ApprovalWidget::new(&request, &view).render(area, &mut buf);
+            let rendered = buffer_text(&buf, area);
 
-            assert!(rendered.contains("Save:"), "{tool_name}:\n{rendered}");
             assert!(
-                !rendered.contains("always ask first"),
-                "{tool_name}:\n{rendered}"
-            );
-            assert!(
-                rendered.contains("always allow"),
+                rendered.contains("Always allow in this repo"),
                 "{tool_name}:\n{rendered}"
             );
             assert!(
                 rendered.contains(expected_rule),
                 "{tool_name} should preview {expected_rule}:\n{rendered}"
+            );
+            assert!(
+                rendered.contains(".codewhale/permissions.toml"),
+                "{tool_name}:\n{rendered}"
             );
         }
     }
@@ -8913,17 +9079,17 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:multi",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 120, 40);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(!rendered.contains("always ask first"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("change src/a.rs"), "{rendered}");
-        assert!(rendered.contains("change src/b.rs"), "{rendered}");
+        assert!(rendered.contains("Always allow in this repo"), "{rendered}");
+        assert!(rendered.contains("src/a.rs, src/b.rs"), "{rendered}");
     }
 
-    /// Lesson 1, plain folder, 110x32: the card read "edit 1 / replace this
-    /// / … truncated" and never showed the change it asked about.
     #[test]
     fn approval_card_shows_a_one_line_edit_and_why_a_plain_folder_asks() {
         let old = "export function formatDuration(totalMinutes) {\n  const hours = Math.floor(totalMinutes / 60);\n  return `${hours}h ${totalMinutes}m`;\n}";
@@ -8939,7 +9105,12 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "tool:edit_file",
         );
 
-        let in_repo = render_approval_request(&request, Rect::new(0, 0, 110, 32));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 110, 32);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let in_repo = buffer_text(&buf, area);
         assert!(
             in_repo.contains("-   return `${hours}h ${totalMinutes}m`;"),
             "{in_repo}"
@@ -8948,22 +9119,22 @@ diff --git a/src/b.rs b/src/b.rs\n\
             in_repo.contains("+   return `${hours}h ${totalMinutes % 60}m`;"),
             "{in_repo}"
         );
-        assert!(!in_repo.contains("truncated"), "{in_repo}");
-        assert!(!in_repo.contains("replace this"), "{in_repo}");
         assert!(!in_repo.contains("No Git repository"), "{in_repo}");
 
         request.asks_without_git = true;
-        let plain = render_approval_request(&request, Rect::new(0, 0, 110, 32));
+        let mut plain_view = crate::tui::approval::ApprovalView::new(request.clone());
+        plain_view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut plain_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &plain_view).render(area, &mut plain_buf);
+        let plain = buffer_text(&plain_buf, area);
         assert!(
-            plain.contains("proceed?  ·  No Git repository here, so edits ask first."),
+            plain.contains("No Git repository here, so edits ask first."),
             "{plain}"
         );
-        // The reason sits on the question row and takes nothing from the change.
         assert!(
             plain.contains("+   return `${hours}h ${totalMinutes % 60}m`;"),
             "{plain}"
         );
-        assert!(!plain.contains("truncated"), "{plain}");
     }
 
     #[test]
@@ -8984,22 +9155,23 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:many",
         );
 
-        // Tall enough for the optional save preview: a band that cannot fit
-        // it drops the preview rather than calling the request truncated.
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 80));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        let area = Rect::new(0, 0, 120, 80);
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("change src/a.rs"), "{rendered}");
-        assert!(rendered.contains("... 1 more"), "{rendered}");
-        assert!(
-            !rendered.contains("change src/e.rs"),
-            "truncated rule should not render directly:\n{rendered}"
-        );
+        assert!(rendered.contains("Always allow in this repo"), "{rendered}");
+        let rule_line = rendered
+            .lines()
+            .find(|line| line.contains(".codewhale/permissions.toml"))
+            .expect("rule preview line");
+        assert!(rule_line.contains("src/a.rs"), "{rule_line}");
+        assert!(rule_line.contains("+1 more"), "{rule_line}");
+        assert!(!rule_line.contains("src/e.rs"), "{rule_line}");
     }
 
-    /// #6566: when the full save preview does not fit, the card shows one
-    /// line per rule. What a saved rule covers stays on screen next to the
-    /// controls that save it, and the request is not called truncated.
     #[test]
     fn approval_card_keeps_a_one_line_save_preview_when_the_full_one_does_not_fit() {
         let request = crate::tui::approval::ApprovalRequest::new(
@@ -9018,40 +9190,33 @@ diff --git a/src/b.rs b/src/b.rs\n\
             "apply_patch:many",
         );
 
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
 
-        assert!(rendered.contains("src/a.rs"), "{rendered}");
-        assert!(rendered.contains("always allow"), "{rendered}");
-        assert!(rendered.contains("1 more"), "{rendered}");
-        assert!(!rendered.contains("truncated"), "{rendered}");
-
-        // Short bands cut the request detail, never the preview: what a
-        // saved rule covers stays pinned above the controls that save it.
-        for height in [10, 11, 12, 14, 16, 20] {
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, height));
+        for height in [10, 12, 16, 20] {
+            let area = Rect::new(0, 0, 120, height);
+            let mut buf = Buffer::empty(area);
+            ApprovalWidget::new(&request, &view).render(area, &mut buf);
+            let rendered = buffer_text(&buf, area);
+            assert!(rendered.contains("src/a.rs"), "height {height}: {rendered}");
             assert!(
-                rendered.contains("always allow · change src/a.rs"),
+                rendered.contains(".codewhale/permissions.toml"),
                 "height {height}: {rendered}"
             );
         }
 
-        // A band with no room for the preview (short or narrow) fails
-        // closed: no save offer without the rule it would save on screen.
-        for width in [40, 60, 120] {
-            for height in 6..=20 {
-                let rendered = render_approval_request(&request, Rect::new(0, 0, width, height));
-                let offers = rendered.contains("[2 / p]");
-                let previews = rendered.contains("always allow");
-                assert!(
-                    !offers || previews,
-                    "{width}x{height} offers a save it does not preview:\n{rendered}"
-                );
-                assert!(
-                    rendered.contains("[1 / y]") && rendered.contains("[3 / d / n]"),
-                    "{width}x{height} keeps the one-off decisions:\n{rendered}"
-                );
-            }
-        }
+        let bar_only = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(bar_only);
+        ApprovalWidget::new(&request, &view).render(bar_only, &mut buf);
+        let rendered = buffer_text(&buf, bar_only);
+        assert!(
+            !rendered.contains(".codewhale/permissions.toml"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Allow") && rendered.contains("Deny"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -9104,20 +9269,17 @@ diff --git a/src/b.rs b/src/b.rs\n\
             }),
             "write_file:src/main.rs",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 120, 34);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Preview:"), "{rendered}");
         assert!(rendered.contains("+ fn main() {"), "{rendered}");
-        assert!(
-            rendered.contains("visible before approval"),
-            "approval modal should show proposed file content before approval:\n{rendered}"
-        );
+        assert!(rendered.contains("visible before approval"), "{rendered}");
     }
 
     #[test]
@@ -9131,25 +9293,18 @@ diff --git a/src/b.rs b/src/b.rs\n\
             }),
             "apply_patch:src/lib.rs",
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
-        // At 20 rows the compact band preserves both a load-bearing preview
-        // row and the complete action set.
         assert!(rendered.contains("Preview:"), "{rendered}");
         assert!(rendered.contains("+new"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
-        assert!(
-            rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
-            "{rendered}"
-        );
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
     }
 
     #[test]
@@ -9166,12 +9321,12 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some("Need to verify the fallback build path before editing files."),
             std::path::Path::new("/tmp/project"),
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         let area = Rect::new(0, 0, 120, 34);
         let mut buf = Buffer::empty(area);
 
-        widget.render(area, &mut buf);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Intent:"), "{rendered}");
@@ -9194,7 +9349,11 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some(&intent),
             std::path::Path::new("/tmp/project"),
         );
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 100, 34)).replace(' ', "");
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 34));
+        ApprovalWidget::new(&request, &view).render(Rect::new(0, 0, 100, 34), &mut buf);
+        let rendered = buffer_text(&buf, Rect::new(0, 0, 100, 34)).replace(' ', "");
 
         assert!(rendered.contains(&intent), "{rendered}");
         assert!(rendered.contains(&note), "{rendered}");
@@ -9214,35 +9373,29 @@ diff --git a/src/b.rs b/src/b.rs\n\
             Some("Confirmed - passes in isolation, so this is the documentation gate."),
             std::path::Path::new("/Volumes/VIXinSSD/codewhale"),
         );
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
         let area = Rect::new(0, 0, 80, 20);
-        let mut buf = Buffer::empty(area);
+        let mut bar_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut bar_buf);
+        let bar_rendered = buffer_text(&bar_buf, area);
+        assert!(bar_rendered.contains("cargo"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Allow"), "{bar_rendered}");
+        assert!(bar_rendered.contains("Deny"), "{bar_rendered}");
 
-        widget.render(area, &mut buf);
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
         assert!(
             !rendered.contains("Built-in safety gate requires approval"),
-            "policy internals should not be the modal summary:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("Impact: Command"),
-            "command should only render in the command block:\n{rendered}"
-        );
-        // The compact band keeps the transcript visible without hiding the
-        // load-bearing command; full content remains one details chord away.
-        assert!(rendered.contains("Command:"), "{rendered}");
-        assert!(rendered.contains("cargo clippy"), "{rendered}");
-        assert!(rendered.contains("truncated"), "{rendered}");
-        assert!(
-            rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
             "{rendered}"
         );
-        // Action row is reserved off the bottom and always visible (#3799).
-        assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[2 / a]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(!rendered.contains("Impact: Command"), "{rendered}");
+        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("cargo clippy"), "{rendered}");
+        assert!(rendered.contains("Allow"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget

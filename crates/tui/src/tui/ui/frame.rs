@@ -1838,13 +1838,15 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     } else {
         app.plugin_cta_row_height()
     };
+    let approval_height = app.view_stack.top_docked_height(body_area.width);
     let auxiliary_budget = body_height.saturating_sub(
         top_work_strip_height
             .saturating_add(MIN_CHAT_HEIGHT)
             .saturating_add(composer_height)
             .saturating_add(footer_height)
             .saturating_add(info_height)
-            .saturating_add(plugin_cta_height),
+            .saturating_add(plugin_cta_height)
+            .saturating_add(approval_height),
     );
     // Queued-only previews author the direct controls in row two (and fall
     // back to controls-only when just one row remains). Mixed previews retain
@@ -1909,6 +1911,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(preview_height),     // Pending input preview (0 if empty)
             Constraint::Length(attachment_preview_height), // Image thumbnail (0 if none)
             Constraint::Length(plugin_cta_height),  // Live plugin CTA (0 unless matched)
+            Constraint::Length(approval_height),
             Constraint::Length(composer_height),    // Composer
             Constraint::Length(footer_height),      // Posture bar
             Constraint::Length(workbar_height),     // Workbar: one row per workflow run
@@ -1916,15 +1919,28 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_below_height), // Roster + To-do under the chrome (`bottom`)
         ])
         .split(body_area);
-    let strip_slot = if strip_below { 9 } else { 0 };
+    let strip_slot = if strip_below { 10 } else { 0 };
     let preview_slot = 2;
     let attachment_preview_slot = 3;
     let plugin_cta_slot = 4;
-    let composer_slot = 5;
-    let footer_slot = 6;
-    let workbar_slot = 7;
-    let info_slot = 8;
+    let approval_slot = 5;
+    let composer_slot = 6;
+    let footer_slot = 7;
+    let workbar_slot = 8;
+    let info_slot = 9;
 
+    if approval_height > 0 {
+        let dock_area = body_chunks[approval_slot];
+        let dock_canvas = Rect::new(
+            dock_area.x,
+            body_area.y,
+            dock_area.width,
+            dock_area.bottom().saturating_sub(body_area.y),
+        );
+        app.view_stack.set_approval_dock_canvas(Some(dock_canvas));
+    } else {
+        app.view_stack.set_approval_dock_canvas(None);
+    }
     if matches!(
         app.view_stack.top_kind(),
         Some(ModalKind::Approval | ModalKind::UserInput)
