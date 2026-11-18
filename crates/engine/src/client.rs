@@ -44,9 +44,7 @@ use crate::llm_client::{
     sanitize_http_error_body, with_retry,
 };
 use codewhale_config::ProviderKind;
-use codewhale_runtime::config::{
-    Config, ProviderIdentity, RetryPolicy, validate_route, wire_model_for_provider_route,
-};
+use codewhale_runtime::config::{Config, ProviderIdentity, RetryPolicy, validate_route};
 #[cfg(test)]
 #[path = "client/catalog_tests.rs"]
 mod catalog_tests;
@@ -2387,7 +2385,12 @@ impl CodewhaleClient {
         self.declared_wire_model(model)
             .map(str::to_string)
             .unwrap_or_else(|| {
-                wire_model_for_provider_route(self.api_provider, &self.base_url, model)
+                codewhale_config::route::resolve_model(
+                    self.api_provider,
+                    model,
+                    Some(&self.base_url),
+                )
+                .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id)
             })
     }
 
@@ -3395,10 +3398,14 @@ impl CodewhaleClient {
                     let wire_effort = if matches!(self.wire_format, WireFormat::ChatCompletions) {
                         request.reasoning_effort.as_deref().and_then(|effort| {
                             let provider = self.chat_shape_provider(&request.model);
-                            let model = codewhale_runtime::config::wire_model_for_provider_route(
+                            let model = codewhale_config::route::resolve_model(
                                 provider,
-                                &self.base_url,
                                 &request.model,
+                                Some(&self.base_url),
+                            )
+                            .map_or_else(
+                                |_| request.model.trim().to_string(),
+                                |resolved| resolved.wire_id,
                             );
                             let mut body = json!({ "model": model });
                             chat::apply_route_reasoning_controls(

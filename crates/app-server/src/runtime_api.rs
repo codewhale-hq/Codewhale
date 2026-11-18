@@ -84,7 +84,7 @@ use codewhale_engine::runtime_threads::{
     manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
     manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
 };
-use codewhale_runtime::config::{Config, normalize_model_name_for_provider, validate_route};
+use codewhale_runtime::config::{Config, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
 // its rows from `ThreadListFacts` instead of walking item records here.
 #[cfg(test)]
@@ -15150,15 +15150,14 @@ fn normalize_runtime_config_model(
         .map_err(ApiError::bad_request);
     }
     validate_route(provider, value).map_err(ApiError::bad_request)?;
-    if value.eq_ignore_ascii_case("auto") {
-        return Ok("auto".to_string());
-    }
-    normalize_model_name_for_provider(provider, value).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "Invalid model '{value}' for provider '{}'.",
-            provider.as_str()
-        ))
-    })
+    codewhale_config::route::resolve_model(provider, value, None)
+        .map(|resolved| resolved.wire_id)
+        .map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid model '{value}' for provider '{}'.",
+                provider.as_str()
+            ))
+        })
 }
 
 async fn reload_config(

@@ -15,15 +15,6 @@
 //! 3. `auto` => the [`LogicalModelRef::is_auto`] sentinel, never a literal
 //!    model.
 //!
-//! It encodes its OWN minimal direct/aggregator/local classification because
-//! the tui helpers (`provider_passes_model_through` /
-//! `accepts_custom_model_ids`) are not reachable from `crates/config`. The
-//! classification here is deliberately NARROWER than tui's `validate_route`:
-//! it only rejects [`RouteError::ForeignModelForDirectProvider`] for a small
-//! set of strict direct providers given a clearly-foreign selector;
-//! aggregators, local, and custom endpoints pass through `Ok` with
-//! `validation.ok == true`.
-//!
 //! There is deliberately no prompt-text / freeform field on [`RouteRequest`],
 //! which structurally bars prompt-content routing.
 
@@ -82,6 +73,18 @@ pub fn resolve_model(
     base_url: Option<&str>,
 ) -> Result<ResolvedModel, RouteError> {
     resolve_model_against_offerings(provider, raw, base_url, default_offerings_slice(), &[])
+}
+
+#[must_use]
+pub fn aliases_for_wire_model(provider: ProviderKind, wire_id: &str) -> Vec<String> {
+    model_rules_for(provider)
+        .aliases
+        .iter()
+        .filter_map(|(alias, _)| {
+            let resolved = resolve_model(provider, alias, None).ok()?;
+            (resolved.wire_id == wire_id && *alias != wire_id).then(|| (*alias).to_string())
+        })
+        .collect()
 }
 
 fn find_offering<'a>(
@@ -168,7 +171,7 @@ fn resolve_model_against_offerings(
     configured_offerings: &[(String, ProviderModelOffering)],
 ) -> Result<ResolvedModel, RouteError> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
         return Err(RouteError::EmptyModel);
     }
     if trimmed.eq_ignore_ascii_case(AUTO_SENTINEL) {

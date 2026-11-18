@@ -73,7 +73,9 @@
           "deepseek/deepseek-v4pro": "deepseek-v4-pro",
           "flash": "deepseek-flash",
           "flash-vision": "deepseek-flash",
-          "pro": "deepseek-v4-pro"
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {}
       }
@@ -147,7 +149,9 @@
           "deepseek/deepseek-v4pro": "deepseek-v4-pro",
           "flash": "deepseek-flash",
           "flash-vision": "deepseek-flash",
-          "pro": "deepseek-v4-pro"
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {}
       }
@@ -206,7 +210,15 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "nim-deepseek-v4-flash": "deepseek-v4-flash",
+          "nim-deepseek-v4-pro": "deepseek-v4-pro",
+          "nvidia-deepseek-v4-flash": "deepseek-v4-flash",
+          "nvidia-deepseek-v4-pro": "deepseek-v4-pro",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/deepseek-v4-flash",
@@ -352,6 +364,7 @@
         "accept": [],
         "strip_prefixes": [],
         "aliases": {
+          "ark-wanjie-deepseek-reasoner": "deepseek-reasoner",
           "deepseek-ai/deepseek-flash": "deepseek-flash",
           "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
@@ -363,7 +376,12 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro",
+          "wanjie-deepseek-reasoner": "deepseek-reasoner"
         },
         "wire_slugs": {}
       }
@@ -414,6 +432,8 @@
         "accept": [],
         "strip_prefixes": [],
         "aliases": {
+          "ark-deepseek-v4-flash": "DeepSeek-V4-Flash",
+          "ark-deepseek-v4-pro": "DeepSeek-V4-Pro",
           "deepseek-ai/deepseek-flash": "deepseek-flash",
           "deepseek-ai/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek-ai/deepseek-v4-pro": "deepseek-v4-pro",
@@ -425,7 +445,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro",
+          "volcengine-deepseek-v4-flash": "DeepSeek-V4-Flash",
+          "volcengine-deepseek-v4-pro": "DeepSeek-V4-Pro"
         },
         "wire_slugs": {}
       }
@@ -478,6 +504,7 @@
           "arcee-trinity-large-thinking": "arcee-ai/trinity-large-thinking",
           "deepseek-v4flash": "deepseek-flash",
           "deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
           "gemma-4-26b-a4b": "google/gemma-4-26b-a4b-it",
           "gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
           "gemma-4-31b": "google/gemma-4-31b-it",
@@ -536,7 +563,17 @@
           "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
           "nvidia/nemotron-3-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
           "nvidia/nemotron-3-ultra-550b-a55b": "nvidia/nemotron-3-ultra-550b-a55b",
+          "openrouter-deepseek-v4-flash": "deepseek-v4-flash",
+          "openrouter-deepseek-v4-pro": "deepseek-v4-pro",
+          "openrouter-kimi-k2.6": "moonshotai/kimi-k2.6",
           "openrouter-kimi-k2.7-code": "moonshotai/kimi-k2.7-code",
+          "openrouter-mimo-v2.5": "xiaomi/mimo-v2.5",
+          "openrouter-mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+          "openrouter-minimax-2.7": "minimax/minimax-m2.7",
+          "openrouter-minimax-m3": "minimax/minimax-m3",
+          "openrouter-xiaomi-mimo-v2.5": "xiaomi/mimo-v2.5",
+          "openrouter-xiaomi-mimo-v2.5-pro": "xiaomi/mimo-v2.5-pro",
+          "pro": "deepseek-v4-pro",
           "qwen-3.6-27b": "qwen/qwen3.6-27b",
           "qwen-3.6-35b-a3b": "qwen/qwen3.6-35b-a3b",
           "qwen-3.6-flash": "qwen/qwen3.6-flash",
@@ -571,6 +608,8 @@
           "tencent/hy4": "tencent/hy4",
           "trinity": "arcee-ai/trinity-large-thinking",
           "trinity-large-thinking": "arcee-ai/trinity-large-thinking",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro",
           "xiaomi-mimo-v2-5": "xiaomi/mimo-v2.5",
           "xiaomi-mimo-v2-5-pro": "xiaomi/mimo-v2.5-pro",
           "xiaomi-mimo-v2.5": "xiaomi/mimo-v2.5",
@@ -644,8 +683,14 @@
         "aliases": {
           "deepseek-v4flash": "deepseek-flash",
           "deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
           "orca-auto": "orcarouter/auto",
-          "orcarouter-auto": "orcarouter/auto"
+          "orcarouter-auto": "orcarouter/auto",
+          "orcarouter-deepseek-v4-flash": "deepseek-v4-flash",
+          "orcarouter-deepseek-v4-pro": "deepseek-v4-pro",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek/deepseek-v4-flash",
@@ -714,6 +759,7 @@
           "mimo-v2-5-pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
           "mimo-v2-6-flash": "mimo-v2.6-flash",
           "mimo-v2-6-pro": "mimo-v2.6-pro",
+          "mimo-v2-speech": "mimo-v2-tts",
           "mimo-v2-tts": "mimo-v2-tts",
           "mimo-v2.5": "mimo-v2.6-flash",
           "mimo-v2.5-asr": "mimo-v2.5-asr",
@@ -733,9 +779,11 @@
           "mimo-voice-clone": "mimo-v2.5-tts-voiceclone",
           "mimo-voice-design": "mimo-v2.5-tts-voicedesign",
           "omni": "mimo-v2.6-flash",
+          "pro": "mimo-v2.6-pro",
           "pro-ultraspeed": "mimo-v2.5-pro-ultraspeed",
           "speech": "mimo-v2.5-tts",
           "speech-to-text": "mimo-v2.5-asr",
+          "text": "mimo-v2.6-flash",
           "transcribe": "mimo-v2.5-asr",
           "tts": "mimo-v2.5-tts",
           "ultraspeed": "mimo-v2.5-pro-ultraspeed",
@@ -813,7 +861,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "novita-deepseek-v4-flash": "deepseek-v4-flash",
+          "novita-deepseek-v4-pro": "deepseek-v4-pro",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek/deepseek-v4-flash",
@@ -873,7 +927,12 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "fireworks-deepseek-v4-pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-v4-flash",
@@ -937,7 +996,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "siliconflow-deepseek-v4-flash": "deepseek-v4-flash",
+          "siliconflow-deepseek-v4-pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1060,7 +1125,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "siliconflow-deepseek-v4-flash": "deepseek-v4-flash",
+          "siliconflow-deepseek-v4-pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1116,6 +1187,7 @@
         "aliases": {
           "kimi": "kimi-k2.7-code",
           "kimi-code": "kimi-k2.7-code",
+          "kimi-code-k3": "k3",
           "kimi-k2": "kimi-k2.7-code",
           "kimi-k2-6": "kimi-k2.6",
           "kimi-k2-7": "kimi-k2.7-code",
@@ -1124,7 +1196,8 @@
           "kimi-k2.7": "kimi-k2.7-code",
           "kimi-k2.7-code": "kimi-k2.7-code",
           "moonshot-kimi-k2.6": "kimi-k2.6",
-          "moonshot-kimi-k2.7-code": "kimi-k2.7-code"
+          "moonshot-kimi-k2.7-code": "kimi-k2.7-code",
+          "moonshot-kimi-k3": "kimi-k3"
         },
         "wire_slugs": {}
       }
@@ -1180,7 +1253,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "sglang-deepseek-v4-flash": "deepseek-v4-flash",
+          "sglang-deepseek-v4-pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1240,7 +1319,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro",
+          "vllm-deepseek-v4-flash": "deepseek-v4-flash",
+          "vllm-deepseek-v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1390,7 +1475,13 @@
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-flash",
+          "hf-deepseek-v4-flash": "deepseek-v4-flash",
+          "hf-deepseek-v4-pro": "deepseek-v4-pro",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1501,7 +1592,13 @@
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4pro": "deepseek-v4-pro",
-          "together-inkling": "inkling"
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "together-deepseek-v4-flash": "deepseek-v4-flash",
+          "together-deepseek-v4-pro": "deepseek-v4-pro",
+          "together-inkling": "inkling",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -1610,7 +1707,10 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "chatgpt-gpt-5.5": "gpt-5.5",
+          "codex-gpt-5.5": "gpt-5.5"
+        },
         "wire_slugs": {}
       }
     },
@@ -1657,7 +1757,26 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "claude-haiku": "claude-haiku-4-5",
+          "claude-opus": "claude-opus-4-8",
+          "claude-sonnet": "claude-sonnet-4-6",
+          "fable": "claude-fable-5",
+          "fable-5": "claude-fable-5",
+          "fable-5-1": "claude-fable-5-1",
+          "fable-5.1": "claude-fable-5-1",
+          "haiku": "claude-haiku-4-5",
+          "haiku-5-5": "claude-haiku-5-5",
+          "haiku-5.5": "claude-haiku-5-5",
+          "opus": "claude-opus-4-8",
+          "opus-5": "claude-opus-5",
+          "opus-5-5": "claude-opus-5-5",
+          "opus-5.5": "claude-opus-5-5",
+          "sonnet": "claude-sonnet-4-6",
+          "sonnet-5": "claude-sonnet-5",
+          "sonnet-5-5": "claude-sonnet-5-5",
+          "sonnet-5.5": "claude-sonnet-5-5"
+        },
         "wire_slugs": {}
       }
     },
@@ -1835,7 +1954,10 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "stepflash": "step-3.7-flash",
+          "stepfun": "step-3.7-flash"
+        },
         "wire_slugs": {}
       }
     },
@@ -1963,6 +2085,10 @@
         "strip_prefixes": [],
         "aliases": {
           "minimax": "MiniMax-M3",
+          "minimax-anthropic": "MiniMax-M3",
+          "minimax-anthropic-m2-7": "MiniMax-M2.7",
+          "minimax-anthropic-m2.7": "MiniMax-M2.7",
+          "minimax-anthropic-m3": "MiniMax-M3",
           "minimax-m-2": "MiniMax-M2",
           "minimax-m-2-1": "MiniMax-M2.1",
           "minimax-m-2-1-highspeed": "MiniMax-M2.1-highspeed",
@@ -2045,13 +2171,25 @@
           "deepseek-ai/deepseek-v4pro": "deepseek-v4-pro",
           "deepseek-chat": "deepseek-v4-flash",
           "deepseek-reasoner": "deepseek-v4-flash",
+          "deepseek-v4-pro-0813": "deepseek-ai/DeepSeek-V4-Pro-0813",
+          "deepseek-v4.1-flash": "deepseek-ai/DeepSeek-V4.1-Flash",
           "deepseek-v4flash": "deepseek-flash",
           "deepseek-v4pro": "deepseek-v4-pro",
           "deepseek/deepseek-flash": "deepseek-flash",
           "deepseek/deepseek-v4-flash": "deepseek-v4-flash",
           "deepseek/deepseek-v4-pro": "deepseek-v4-pro",
           "deepseek/deepseek-v4flash": "deepseek-v4-flash",
-          "deepseek/deepseek-v4pro": "deepseek-v4-pro"
+          "deepseek/deepseek-v4pro": "deepseek-v4-pro",
+          "di-deepseek-v4-flash": "deepseek-v4-flash",
+          "di-deepseek-v4-flash-0731": "deepseek-ai/DeepSeek-V4-Flash-0731",
+          "di-deepseek-v4-pro": "deepseek-v4-pro",
+          "di-deepseek-v4-pro-0813": "deepseek-ai/DeepSeek-V4-Pro-0813",
+          "di-deepseek-v4.1-flash": "deepseek-ai/DeepSeek-V4.1-Flash",
+          "di-deepseek-v4.1-flash-1017": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "flash": "deepseek-flash",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {
           "deepseek-flash": "deepseek-ai/DeepSeek-V4-Flash",
@@ -2103,7 +2241,12 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "fugu-ultra": "fugu-ultra-20260615",
+          "sakana-fugu": "fugu",
+          "sakana-fugu-ultra": "fugu-ultra-20260615",
+          "sakana/fugu": "fugu"
+        },
         "wire_slugs": {}
       }
     },
@@ -2153,7 +2296,10 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "longcat": "LongCat-2.0",
+          "longcat-2.0": "LongCat-2.0"
+        },
         "wire_slugs": {}
       }
     },
@@ -2206,13 +2352,17 @@
           "deepseek-flash": "deepseek-v4.1-flash",
           "deepseek-v4flash": "deepseek-v4-flash",
           "deepseek-v4pro": "deepseek-v4-pro",
+          "flash": "deepseek-v4.1-flash",
           "glm-5-1": "glm-5.1",
           "glm-5-2": "glm-5.2",
           "grok-4-5": "grok-4.5",
           "kimi-k2-6": "kimi-k2.6",
           "kimi-k2-7-code": "kimi-k2.7-code",
           "mimo-v2-5": "mimo-v2.5",
-          "mimo-v2-5-pro": "mimo-v2.5-pro"
+          "mimo-v2-5-pro": "mimo-v2.5-pro",
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-v4-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "wire_slugs": {}
       }
@@ -2419,7 +2569,18 @@
         "ids": "catalog",
         "accept": [],
         "strip_prefixes": [],
-        "aliases": {},
+        "aliases": {
+          "codestral": "mistral-code-latest",
+          "codestral-latest": "mistral-code-latest",
+          "magistral": "magistral-small-latest",
+          "magistral-small": "magistral-small-latest",
+          "mistral-code": "mistral-code-latest",
+          "mistral-large": "mistral-large-latest",
+          "mistral-medium": "mistral-medium-latest",
+          "mistral-medium-3-5": "mistral-medium-latest",
+          "mistral-small": "mistral-small-latest",
+          "mistral-small-2603": "mistral-small-latest"
+        },
         "wire_slugs": {}
       }
     },
@@ -2960,7 +3121,11 @@
         "strip_prefixes": [
           "models/"
         ],
-        "aliases": {},
+        "aliases": {
+          "gemini-3.1-pro": "gemini-3.1-pro-preview",
+          "gemini-3.5-flash": "gemini-3.6-flash",
+          "gemini-3.7-flash": "gemini-3.8-flash"
+        },
         "wire_slugs": {}
       }
     },
@@ -3884,7 +4049,9 @@
         "deepseek/deepseek-v4pro": "deepseek-v4-pro",
         "flash": "deepseek-flash",
         "flash-vision": "deepseek-flash",
-        "pro": "deepseek-v4-pro"
+        "pro": "deepseek-v4-pro",
+        "v4-flash": "deepseek-flash",
+        "v4-pro": "deepseek-v4-pro"
       },
       "wire_slugs": {}
     }

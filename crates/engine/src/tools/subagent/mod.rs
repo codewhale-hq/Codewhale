@@ -21059,11 +21059,9 @@ pub fn normalize_requested_subagent_model(
     if trimmed.is_empty() {
         return Err(ToolError::invalid_input(format!("{field} cannot be blank")));
     }
-    // #3018: Use provider-aware validation so non-DeepSeek providers can
-    // accept their own model IDs instead of failing with "Expected a
-    // DeepSeek model id".
-    let normalized = codewhale_runtime::config::requested_model_for_provider(provider, trimmed)
-        .ok_or_else(|| {
+    let normalized = codewhale_config::route::resolve_model(provider, trimmed, None)
+        .map(|resolved| resolved.logical)
+        .map_err(|_| {
             let valid_names = crate::provider_lake::all_catalog_models_for_provider(provider);
             let valid_hint = if valid_names.is_empty() {
                 String::new()

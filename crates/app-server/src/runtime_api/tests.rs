@@ -16924,11 +16924,13 @@ async fn set_config_model_follows_persisted_provider_before_reload() -> Result<(
     );
     // The persisted value is the normalized wire id (lowercase), not the
     // display spelling of DEFAULT_VOLCENGINE_FLASH_MODEL.
-    let expected_wire = codewhale_runtime::config::normalize_model_name_for_provider(
+    let expected_wire = codewhale_config::route::resolve_model(
         codewhale_config::ProviderKind::Volcengine,
         target_model,
+        None,
     )
-    .expect("volcengine flash model should normalize");
+    .expect("volcengine flash model should normalize")
+    .wire_id;
     assert!(
         config_body.contains(&format!("model = \"{expected_wire}\"")),
         "volcengine model should be written to the provider table as its wire id"

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{expand_path, normalize_model_name};
+use crate::config::expand_path;
 use codewhale_config::resolve::Layer;
 use codewhale_localization::normalize_configured_locale;
 use codewhale_palette::{normalize_hex_rgb_color, normalize_theme_setting};
@@ -1082,7 +1082,15 @@ impl Settings {
                 .to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
             s.theme = normalize_settings_theme(&s.theme);
-            s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
+            s.default_model = s.default_model.as_deref().and_then(|value| {
+                codewhale_config::route::resolve_model(
+                    codewhale_config::ProviderKind::Deepseek,
+                    value,
+                    None,
+                )
+                .ok()
+                .map(|resolved| resolved.logical)
+            });
             s.reasoning_effort = s
                 .reasoning_effort
                 .as_deref()
@@ -2911,15 +2919,6 @@ fn migrate_settings_file_to_primary_if_needed(primary: &Path, active_read_path: 
             active_read_path.display(),
             primary.display()
         );
-    }
-}
-
-fn normalize_default_model(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("auto") {
-        Some("auto".to_string())
-    } else {
-        normalize_model_name(trimmed)
     }
 }
 

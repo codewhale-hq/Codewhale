@@ -75,14 +75,11 @@ pub struct IntrinsicModel {
     pub source: String,
 }
 
-/// Exact provider-scoped selector aliases. Their order preserves the released
-/// first-match contract. These rows do not assert live account availability.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
     pub provider: String,
     pub id: String,
-    pub aliases: Vec<String>,
     pub supports_tools: bool,
     pub supports_reasoning: bool,
 }
@@ -223,7 +220,6 @@ impl ReviewedCatalog {
                 || provider.is_none_or(|p| {
                     p.as_str() != row.provider || p == crate::ProviderKind::Antigravity
                 })
-                || row.aliases.iter().any(|s| !identifier(s))
             {
                 return Err(format!(
                     "malformed provider selector {}/{}",
@@ -655,7 +651,6 @@ mod tests {
             selections: vec![ModelSelection {
                 provider: "minimax-anthropic".into(),
                 id: "MiniMax-M3".into(),
-                aliases: vec![],
                 supports_tools: true,
                 supports_reasoning: true,
             }],

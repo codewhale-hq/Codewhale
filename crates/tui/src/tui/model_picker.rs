@@ -1192,11 +1192,7 @@ impl ModelPickerView {
                 && self
                     .route_config
                     .model_ids_pass_through_for_provider(identity))
-            || codewhale_runtime::config::normalize_model_name_for_provider(
-                identity.provider,
-                model,
-            )
-            .is_some()
+            || codewhale_config::route::resolve_model(identity.provider, model, None).is_ok()
     }
 
     fn clamp_model_selection(&mut self) {

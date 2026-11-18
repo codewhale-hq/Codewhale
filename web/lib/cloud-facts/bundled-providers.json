@@ -471,7 +471,9 @@
           "deepseek/deepseek-v4pro": "deepseek-v4-pro",
           "flash": "deepseek-flash",
           "flash-vision": "deepseek-flash",
-          "pro": "deepseek-v4-pro"
+          "pro": "deepseek-v4-pro",
+          "v4-flash": "deepseek-flash",
+          "v4-pro": "deepseek-v4-pro"
         },
         "ids": "strict",
         "strip_prefixes": [],

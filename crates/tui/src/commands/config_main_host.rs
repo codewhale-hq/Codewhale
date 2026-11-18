@@ -19,8 +19,7 @@ use codewhale_runtime::config::{
     MAX_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENTS,
     MIN_STREAM_CHUNK_TIMEOUT_SECS, MIN_SUBAGENT_API_TIMEOUT_SECS,
     MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, SearchProvider, SearchProviderSource, SubagentsConfig,
-    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id,
-    normalize_model_name_for_provider, validate_route,
+    XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, normalize_custom_model_id, validate_route,
 };
 use codewhale_runtime::config_persistence::{
     persist_root_bool_key, persist_root_string_key, persist_subagents_bool_key,
@@ -1893,11 +1892,12 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 {
                     value.trim().to_string()
                 } else {
-                    let Some(model) =
-                        normalize_model_name_for_provider(ProviderKind::Deepseek, value)
+                    let Ok(resolved) =
+                        codewhale_config::route::resolve_model(ProviderKind::Deepseek, value, None)
                     else {
                         return ConfigReply::error(format!("Invalid DeepSeek model '{value}'."));
                     };
+                    let model = resolved.wire_id;
                     if let Err(error) = validate_route(ProviderKind::Deepseek, &model) {
                         return ConfigReply::error(error);
                     }
@@ -1927,12 +1927,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             let model = if auto_select {
                 "auto".to_string()
             } else if app.api_provider == ProviderKind::OpencodeGo {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }
@@ -1955,12 +1958,15 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 };
                 model
             } else {
-                let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let Ok(resolved) =
+                    codewhale_config::route::resolve_model(app.api_provider, value, None)
+                else {
                     return ConfigReply::error(format!(
                         "Invalid model '{value}' for provider {}.",
                         app.api_provider.as_str()
                     ));
                 };
+                let model = resolved.wire_id;
                 if let Err(reason) = validate_route(app.api_provider, &model) {
                     return ConfigReply::error(reason);
                 }

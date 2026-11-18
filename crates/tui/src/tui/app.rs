@@ -8015,7 +8015,7 @@ impl App {
 
     pub fn accepts_custom_model_ids(&self) -> bool {
         self.model_ids_passthrough
-            || codewhale_runtime::config::provider_passes_model_through(self.api_provider)
+            || codewhale_config::descriptors::provider_passes_model_through(self.api_provider)
     }
 
     pub(crate) fn apply_provider_switch_reasoning_effort(

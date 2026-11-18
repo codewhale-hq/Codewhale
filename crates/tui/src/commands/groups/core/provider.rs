@@ -8,7 +8,6 @@ use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::tui::app::{App, AppAction};
 use codewhale_config::ProviderKind;
 use codewhale_localization::MessageId;
-use codewhale_runtime::config::{canonical_model_id_for_provider, provider_passes_model_through};
 
 use super::CommandResult;
 
@@ -79,25 +78,13 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
     let model = match model_arg {
         None => None,
         Some(raw) => {
-            // Expand provider shorthands (flash/pro, Xiaomi MiMo tts/omni, …)
-            // uniformly, then either keep the id verbatim for providers that take
-            // opaque/custom model tags, or resolve it to the canonical family id.
-            // Families are treated equally: each resolves through its own
-            // canonical map (DeepSeek, GLM via Z.ai/Zhipu, Kimi, MiniMax, …) and
-            // an id matching none passes through unchanged — the upstream API is
-            // the authority. Wire-id translation is deferred to the route
-            // resolver at request time. DeepSeek's two retiring aliases are
-            // also deferred because this command does not own the target base
-            // URL: a custom endpoint may still use either id natively.
-            let expanded = expand_model_alias_for_provider(target, raw);
-            if provider_passes_model_through(target)
-                || is_route_ambiguous_deepseek_alias(target, &expanded)
-            {
-                Some(expanded)
+            let trimmed = raw.trim();
+            if is_route_ambiguous_deepseek_alias(target, trimmed) {
+                Some(trimmed.to_string())
             } else {
-                match canonical_model_id_for_provider(target, &expanded) {
-                    Some(canonical) => Some(canonical),
-                    None => {
+                match codewhale_config::route::resolve_model(target, trimmed, None) {
+                    Ok(resolved) => Some(resolved.logical),
+                    Err(_) => {
                         return CommandResult::error(format!(
                             "Invalid model '{raw}'. Provide a non-empty model id."
                         ));
@@ -204,36 +191,6 @@ fn provider_fallback(app: &mut App, subcommand: Option<&str>) -> CommandResult {
             lines.push("Use `/provider fallback reset` to return to the primary provider.".into());
             CommandResult::message(lines.join("\n"))
         }
-    }
-}
-
-fn expand_model_alias_for_provider(provider: ProviderKind, name: &str) -> String {
-    let trimmed = name.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if matches!(provider, ProviderKind::XiaomiMimo) {
-        return match lower.as_str() {
-            "pro" | "mimo" => "mimo-v2.6-pro".to_string(),
-            "ultraspeed" | "pro-ultraspeed" => "mimo-v2.5-pro-ultraspeed".to_string(),
-            "text" | "omni" | "v2.5-omni" => "mimo-v2.6-flash".to_string(),
-            "tts" | "speech" | "mimo-tts" => "mimo-v2.5-tts".to_string(),
-            "voicedesign" | "voice-design" | "mimo-voice-design" => {
-                "mimo-v2.5-tts-voicedesign".to_string()
-            }
-            "voiceclone" | "voice-clone" | "mimo-voice-clone" => {
-                "mimo-v2.5-tts-voiceclone".to_string()
-            }
-            // Not a shorthand: keep the id as typed (case preserved for custom
-            // token-plan model ids).
-            _ => trimmed.to_string(),
-        };
-    }
-
-    match lower.as_str() {
-        "pro" | "v4-pro" => "deepseek-v4-pro".to_string(),
-        "flash" | "v4-flash" => "deepseek-flash".to_string(),
-        // Not a shorthand: keep the id as typed (case preserved for opaque
-        // model tags on passthrough providers like Ollama/HuggingFace).
-        _ => trimmed.to_string(),
     }
 }
 
@@ -732,11 +689,13 @@ mod tests {
                         let official_base_url = row.base_url;
                         let intrinsic = row.kind;
                         assert_eq!(
-                            codewhale_runtime::config::wire_model_for_provider_route(
+                            codewhale_config::route::resolve_model(
                                 intrinsic,
-                                official_base_url,
                                 model.as_deref().expect("command model"),
-                            ),
+                                Some(official_base_url),
+                            )
+                            .unwrap()
+                            .wire_id,
                             codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT
                         );
                         app.reasoning_effort =
@@ -786,11 +745,13 @@ mod tests {
         assert_eq!(provider.as_str(), ProviderKind::Deepseek.as_str());
         assert_eq!(model, "deepseek-reasoner");
         assert_eq!(
-            codewhale_runtime::config::wire_model_for_provider_route(
+            codewhale_config::route::resolve_model(
                 ProviderKind::Deepseek,
-                "https://models.example/v1",
                 &model,
-            ),
+                Some("https://models.example/v1"),
+            )
+            .unwrap()
+            .wire_id,
             "deepseek-reasoner"
         );
         app.reasoning_effort = codewhale_engine::reasoning_preference::ReasoningEffort::Max;

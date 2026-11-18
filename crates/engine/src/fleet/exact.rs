@@ -516,14 +516,14 @@ pub fn preflight_route(
 
     // The canonical wire model, resolved once. The receipt and the child spawn
     // both read this value, so they cannot disagree about what actually ran.
-    let wire_model =
-        codewhale_runtime::config::requested_model_for_provider(identity.provider, model.trim())
-            .ok_or_else(|| PreflightError::ModelUnresolved {
-                member: member_id.to_string(),
-                provider: identity.key.to_string(),
-                model: model.to_string(),
-                detail: "not a known model for this provider".to_string(),
-            })?;
+    let wire_model = codewhale_config::route::resolve_model(identity.provider, model.trim(), None)
+        .map(|resolved| resolved.logical)
+        .map_err(|_| PreflightError::ModelUnresolved {
+            member: member_id.to_string(),
+            provider: identity.key.to_string(),
+            model: model.to_string(),
+            detail: "not a known model for this provider".to_string(),
+        })?;
     codewhale_runtime::config::validate_route(identity.provider, &wire_model).map_err(
         |detail| PreflightError::ModelUnresolved {
             member: member_id.to_string(),
@@ -3707,11 +3707,13 @@ mod saved_fleet_tests {
         assert_eq!(reviewer.route.frozen().model, reviewer.route.wire_model);
         assert_eq!(
             reviewer.route.wire_model,
-            codewhale_runtime::config::requested_model_for_provider(
+            codewhale_config::route::resolve_model(
                 config.active_provider_identity().unwrap().provider,
-                &config.default_model()
+                &config.default_model(),
+                None,
             )
             .expect("session model is a known route")
+            .logical
         );
     }
 }

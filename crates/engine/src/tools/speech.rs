@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use crate::client::{CodewhaleClient, SpeechSynthesisRequest};
 use codewhale_config::ProviderKind;
 use codewhale_net::network_policy::{Decision, host_from_url};
-use codewhale_runtime::config::normalize_model_name_for_provider;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -454,8 +453,8 @@ pub async fn prepare_speech_options(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| {
-            normalize_model_name_for_provider(ProviderKind::XiaomiMimo, value)
-                .unwrap_or_else(|| value.into())
+            codewhale_config::route::resolve_model(ProviderKind::XiaomiMimo, value, None)
+                .map_or_else(|_| value.into(), |resolved| resolved.wire_id)
         });
     let voice_is_data_uri = voice
         .map(str::trim)
@@ -575,8 +574,10 @@ pub fn infer_speech_model(
     has_voice_prompt: bool,
 ) -> String {
     match model.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) => normalize_model_name_for_provider(ProviderKind::XiaomiMimo, value)
-            .unwrap_or_else(|| value.into()),
+        Some(value) => {
+            codewhale_config::route::resolve_model(ProviderKind::XiaomiMimo, value, None)
+                .map_or_else(|_| value.into(), |resolved| resolved.wire_id)
+        }
         None if has_clone_voice => "mimo-v2.5-tts-voiceclone".to_string(),
         None if has_voice_prompt => "mimo-v2.5-tts-voicedesign".to_string(),
         None => "mimo-v2.5-tts".to_string(),

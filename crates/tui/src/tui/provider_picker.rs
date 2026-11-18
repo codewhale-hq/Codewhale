@@ -2866,7 +2866,8 @@ impl ProviderPickerView {
         // the id the route actually sends whenever that id is also listed.
         let base_url = self.rows[self.selected_idx].base_url.clone();
         let wire = |model: &str| {
-            codewhale_runtime::config::wire_model_for_provider_route(provider, &base_url, model)
+            codewhale_config::route::resolve_model(provider, model, Some(&base_url))
+                .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id)
         };
         let listed: Vec<String> = models.clone();
         models.retain(|model| {

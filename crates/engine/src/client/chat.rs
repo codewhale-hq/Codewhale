@@ -19,7 +19,7 @@ use codewhale_runtime::config::{
     is_exact_direct_moonshot_k3_route, is_exact_kimi_code_k3_route, is_exact_zai_chat_route,
     is_exact_zai_forced_thinking_route, is_exact_zai_tiered_effort_route,
     is_kimi_code_membership_model, minimax_m3_route_uses_max_completion_tokens,
-    moonshot_base_url_is_exact_kimi_code, wire_model_for_provider_route,
+    moonshot_base_url_is_exact_kimi_code,
 };
 
 use crate::llm_client::StreamEventBox;
@@ -1224,7 +1224,11 @@ pub fn build_chat_wire_body_with_window(
         effective_window,
     );
     let model = {
-        let wire = wire_model_for_provider_route(provider, base_url, &request.model);
+        let wire = codewhale_config::route::resolve_model(provider, &request.model, Some(base_url))
+            .map_or_else(
+                |_| request.model.trim().to_string(),
+                |resolved| resolved.wire_id,
+            );
         codewhale_models::effective_muse_wire_id(&wire).to_string()
     };
     validate_google_thought_signature_replay(base_url, &model, &messages)?;

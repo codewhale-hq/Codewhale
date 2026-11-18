@@ -165,11 +165,13 @@
         assert_eq!(response.route.provider, ProviderKind::Deepseek);
         assert_eq!(
             response.route.model,
-            wire_model_for_provider_route(
+            codewhale_config::route::resolve_model(
                 ProviderKind::Deepseek,
-                "https://api.deepseek.com/v1",
-                "deepseek-chat"
+                "deepseek-chat",
+                Some("https://api.deepseek.com/v1"),
             )
+            .unwrap()
+            .wire_id
         );
     }
 

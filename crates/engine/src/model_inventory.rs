@@ -11,9 +11,7 @@ use crate::provider_lake::models_for_provider;
 use crate::provider_lake::provider_capability;
 use crate::provider_readiness::has_api_key_for;
 use codewhale_config::ProviderKind;
-use codewhale_runtime::config::{
-    AutoRouterKind, Config, ProviderIdentity, normalize_model_name_for_provider,
-};
+use codewhale_runtime::config::{AutoRouterKind, Config, ProviderIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -645,7 +643,9 @@ fn push_model(models: &mut Vec<String>, provider: ProviderKind, model: &str) {
     {
         return;
     }
-    let Some(model) = normalize_model_name_for_provider(provider, model)
+    let Some(model) = codewhale_config::route::resolve_model(provider, model, None)
+        .ok()
+        .map(|resolved| resolved.wire_id)
         .or_else(|| codewhale_runtime::config::normalize_custom_model_id(model))
     else {
         return;

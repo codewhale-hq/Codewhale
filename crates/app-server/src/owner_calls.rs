@@ -111,14 +111,6 @@ pub(crate) async fn runtime_app_models(state: &AppState) -> Result<Vec<Value>> {
         providers.len() <= 256,
         "Runtime provider catalog exceeds its limit"
     );
-    let aliases = codewhale_config::catalog::reviewed::bundled_reviewed()
-        .selections
-        .iter()
-        .filter_map(|row| {
-            codewhale_config::ProviderKind::parse_config_identity(&row.provider)
-                .map(|provider| (provider, row))
-        })
-        .collect::<Vec<_>>();
     let mut models = Vec::new();
     let mut routes = std::collections::HashSet::new();
     for provider in providers {
@@ -154,16 +146,13 @@ pub(crate) async fn runtime_app_models(state: &AppState) -> Result<Vec<Value>> {
                 .get("id")
                 .and_then(Value::as_str)
                 .context("Runtime model identity is invalid")?;
-            let compatibility_aliases = aliases
-                .iter()
-                .find(|(provider, row)| {
-                    parsed != codewhale_config::ProviderKind::Custom
-                        && provider_id.is_none_or(|identity| identity == kind)
-                        && *provider == parsed
-                        && row.id == id
-                })
-                .map(|(_, row)| row.aliases.clone())
-                .unwrap_or_default();
+            let compatibility_aliases = if parsed != codewhale_config::ProviderKind::Custom
+                && provider_id.is_none_or(|identity| identity == kind)
+            {
+                codewhale_config::route::aliases_for_wire_model(parsed, id)
+            } else {
+                Vec::new()
+            };
             let capabilities: codewhale_config::route::RouteCapabilities =
                 match model.pointer("/facts/capabilities") {
                     None | Some(Value::Null) => Default::default(),

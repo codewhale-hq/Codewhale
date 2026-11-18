@@ -3023,8 +3023,8 @@ mod tests {
     /// supersedes stale entries in the legacy placeholder table (e.g.
     /// OpenRouter/MiniMax revisions), the facade is not a strict superset of
     /// every legacy id. That divergence does not affect subagent model
-    /// *acceptance*, which is gated by `validate_route` /
-    /// `requested_model_for_provider`, not by this list.
+    /// *acceptance*, which is gated by `validate_route` and the route
+    /// resolver, not by this list.
     #[test]
     fn catalog_facade_covers_every_provider_with_a_legacy_table() {
         let _env = crate::test_support::lock_test_env();

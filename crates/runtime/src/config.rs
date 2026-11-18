@@ -243,36 +243,6 @@ pub fn deepseek_alias_deprecation(model_lower: &str) -> Option<ModelAliasDepreca
 }
 
 #[must_use]
-pub fn canonical_model_name(model: &str) -> Option<&'static str> {
-    if model.contains('/') || legacy_deepseek_alias_reasoning_effort(model).is_some() {
-        return None;
-    }
-    codewhale_config::descriptors::provider_model_alias(ProviderKind::Deepseek, model)
-}
-
-#[must_use]
-pub fn normalize_model_name(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(canonical) = canonical_model_name(trimmed) {
-        return Some(canonical.to_string());
-    }
-    let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
-        return None;
-    }
-    if trimmed
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
-    {
-        return Some(trimmed.to_string());
-    }
-    None
-}
-
-#[must_use]
 pub fn normalize_custom_model_id(model: &str) -> Option<String> {
     let trimmed = model.trim();
     if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
@@ -282,35 +252,6 @@ pub fn normalize_custom_model_id(model: &str) -> Option<String> {
     }
 }
 
-#[must_use]
-pub fn requested_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    canonical_model_id_for_provider(provider, model)
-}
-
-/// Reject a provider/model tuple that we can be confident is invalid *before*
-/// it reaches the network (#3227).
-///
-/// The route-isolation bug paired a model picked under one provider with a
-/// different provider's route (model chip `deepseek-v4-pro`, provider badge
-/// `Z.ai`), producing a `400 Unknown Model` from the upstream. This guard
-/// catches that locally and names the incompatible pair instead.
-///
-/// We only reject tuples that are *known* to be wrong so legitimate custom
-/// routing (self-hosted endpoints, OpenAI-compatible aggregators that proxy
-/// DeepSeek weights, etc.) keeps working:
-///
-/// 1. A DeepSeek-native provider (`deepseek` / `deepseek-cn`) accepts only
-///    DeepSeek model IDs or `auto` — same gate as [`normalize_model_name`].
-/// 2. A non-DeepSeek *native* provider (e.g. Z.ai, which serves GLM) must not
-///    be handed a DeepSeek-only model ID. This reuses the same
-///    "foreign to a direct provider" classification the model resolver uses,
-///    so DeepSeek aggregators (NVIDIA NIM, OpenRouter, Fireworks, …) stay
-///    permissive.
-/// 3. OpenCode Go accepts models with a documented Chat, Responses, or
-///    Messages protocol; unknown wire contracts are rejected.
-///
-/// Returns `Ok(())` for any tuple we cannot confidently reject (the provider
-/// API remains the final authority for those).
 pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String> {
     let trimmed = model.trim();
     if trimmed.is_empty() {
@@ -335,14 +276,12 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
         };
     }
 
-    // Providers whose model id is passed through verbatim (OpenAI-compatible,
-    // Ollama tags, custom base URLs, …) are validated by the upstream service.
-    if provider_passes_model_through(provider) {
+    if codewhale_config::descriptors::provider_passes_model_through(provider) {
         return Ok(());
     }
 
     if matches!(provider, ProviderKind::Deepseek) {
-        if normalize_model_name(trimmed).is_some() {
+        if codewhale_config::route::resolve_model(ProviderKind::Deepseek, trimmed, None).is_ok() {
             return Ok(());
         }
         return Err(format!(
@@ -353,8 +292,6 @@ pub fn validate_route(provider: ProviderKind, model: &str) -> Result<(), String>
         ));
     }
 
-    // A non-DeepSeek native provider was handed a DeepSeek-only model id: this
-    // is the exact contamination from #3227 (Z.ai + deepseek-v4-pro).
     if root_deepseek_model_is_foreign_to_direct_provider(provider, trimmed) {
         return Err(format!(
             "Model '{trimmed}' is a DeepSeek model and is not compatible with provider '{}'. \
@@ -372,50 +309,6 @@ fn legacy_deepseek_alias_reasoning_effort(model: &str) -> Option<&'static str> {
 
 pub fn opencode_go_model_id(model: &str) -> Option<&'static str> {
     codewhale_config::opencode_go_model_id(model)
-}
-
-#[must_use]
-pub fn canonical_model_id_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    if model.trim().chars().any(char::is_control) {
-        return None;
-    }
-    codewhale_config::route::resolve_model(provider, model, None)
-        .ok()
-        .map(|resolved| resolved.logical)
-}
-
-#[must_use]
-pub fn normalize_model_name_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    if model.trim().chars().any(char::is_control) {
-        return None;
-    }
-    codewhale_config::route::resolve_model(provider, model, None)
-        .ok()
-        .map(|resolved| resolved.wire_id)
-}
-
-#[must_use]
-pub fn wire_model_for_provider(provider: ProviderKind, model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    codewhale_config::route::resolve_model(provider, trimmed, None)
-        .map_or_else(|_| trimmed.to_string(), |resolved| resolved.wire_id)
-}
-
-#[must_use]
-pub fn wire_model_for_provider_route(
-    provider: ProviderKind,
-    base_url: &str,
-    model: &str,
-) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    codewhale_config::route::resolve_model(provider, trimmed, Some(base_url))
-        .map_or_else(|_| trimmed.to_string(), |resolved| resolved.wire_id)
 }
 
 /// Reconcile a remembered `/model` pick with the model the config file names.
@@ -455,7 +348,9 @@ pub fn legacy_deepseek_alias_effort_for_route(
         return None;
     }
     let effort = legacy_deepseek_alias_reasoning_effort(model)?;
-    (wire_model_for_provider_route(provider, base_url, model) != model.trim()).then_some(effort)
+    codewhale_config::route::resolve_model(provider, model, Some(base_url))
+        .is_ok_and(|resolved| resolved.wire_id != model.trim())
+        .then_some(effort)
 }
 
 /// Reviewed per-provider model id projection used **only as a compatibility
@@ -4025,22 +3920,12 @@ impl Config {
                 }
             }
         }
-        // Validate the model against the *active provider's* name space, not
-        // against DeepSeek's. `canonical_model_id_for_provider` is the
-        // equal-treatment resolver: it applies each family's own canonical map
-        // (GLM via Z.ai, Kimi, MiniMax, …) and passes unknown ids through, so
-        // it rejects only what the provider genuinely cannot serve. Validating
-        // with the DeepSeek-only `normalize_model_name` bricked every config
-        // whose provider owns a non-DeepSeek family — including ones our own
-        // setup wizard writes (`provider = "zai"`, `GLM-5.2`). (#4829)
-        // Provider-scoped choices own the active route. A retained root
-        // fallback can belong to a different provider after a saved switch.
         let configured_model = self
             .provider_config_string_with_runtime_fallback(&identity, |entry| entry.model.clone())
             .or_else(|| self.default_text_model.clone());
         if let Some(model) = configured_model.as_deref()
             && !model.trim().eq_ignore_ascii_case("auto")
-            && !provider_passes_model_through(active_provider)
+            && !codewhale_config::descriptors::provider_passes_model_through(active_provider)
             && !self.active_provider_preserves_custom_base_url_model()
             && configured_model_for_route(
                 self,
@@ -4050,7 +3935,7 @@ impl Config {
                 model,
             )
             .is_none()
-            && canonical_model_id_for_provider(active_provider, model).is_none()
+            && codewhale_config::route::resolve_model(active_provider, model, None).is_err()
         {
             let provider = active_provider;
             let known = model_completion_names_for_provider(provider);
@@ -5548,7 +5433,8 @@ impl Config {
     /// longer risks attributing the session's endpoint to another provider.
     pub fn model_ids_pass_through_for_provider(&self, identity: &ProviderIdentity) -> bool {
         let provider = identity.provider;
-        provider_passes_model_through(provider) || self.provider_uses_custom_endpoint(identity)
+        codewhale_config::descriptors::provider_passes_model_through(provider)
+            || self.provider_uses_custom_endpoint(identity)
     }
 
     pub fn model_ids_pass_through(&self) -> bool {
@@ -7634,7 +7520,7 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ProviderKind, mod
     if matches!(
         provider,
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    ) || provider_passes_model_through(provider)
+    ) || codewhale_config::descriptors::provider_passes_model_through(provider)
     {
         return false;
     }
@@ -7661,7 +7547,8 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ProviderKind, mod
     ) {
         return false;
     }
-    normalize_model_name(model).is_some()
+    codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
+        .is_ok_and(|resolved| !resolved.is_auto)
 }
 
 // === Defaults ===
@@ -8820,16 +8707,13 @@ fn normalize_model_config(config: &mut Config) {
             .map(str::to_ascii_lowercase)
             .filter(|model| deepseek_alias_deprecation(model).is_some())
             .filter(|model| {
-                wire_model_for_provider_route(provider, &base_url, model) != model.as_str()
+                codewhale_config::route::resolve_model(provider, model, Some(&base_url))
+                    .is_ok_and(|resolved| resolved.wire_id != model.as_str())
             })
     } else {
         None
     };
 
-    // Preserve the behavioral half of DeepSeek's retired aliases while
-    // migrating their model id to V4 Flash. An explicit reasoning setting is
-    // authoritative; this compatibility default only fills an omitted value.
-    // Custom endpoints retain both their model id and their own semantics.
     if config.reasoning_effort.is_none() {
         let alias_effort = config
             .migrated_deepseek_model_alias
@@ -8843,27 +8727,29 @@ fn normalize_model_config(config: &mut Config) {
 
     if let Some(model) = config.default_text_model.as_deref()
         && !is_declared(identity.key.as_str(), model)
-        && !provider_passes_model_through(provider)
+        && !codewhale_config::descriptors::provider_passes_model_through(provider)
         && !config.active_provider_preserves_custom_base_url_model()
-        && let Some(normalized) = normalize_model_for_provider(provider, model)
+        && let Ok(resolved) = codewhale_config::route::resolve_model(provider, model, None)
     {
-        config.default_text_model = Some(normalized);
+        config.default_text_model = Some(resolved.wire_id);
     }
 
     if let Some(providers) = config.providers.as_mut() {
         if let Some(model) = providers.deepseek.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepseek, &providers.deepseek)
             && !is_declared(ProviderKind::Deepseek.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepseek, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
         {
-            providers.deepseek.model = Some(normalized);
+            providers.deepseek.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepseek_cn.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepseek, &providers.deepseek_cn)
             && !is_declared(codewhale_config::descriptors::LEGACY_DEEPSEEK_CN.id, model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepseek, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepseek, model, None)
         {
-            providers.deepseek_cn.model = Some(normalized);
+            providers.deepseek_cn.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepseek_anthropic.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -8871,38 +8757,42 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.deepseek_anthropic,
             )
             && !is_declared(ProviderKind::DeepseekAnthropic.as_str(), model)
-            && let Some(normalized) =
-                normalize_model_for_provider(ProviderKind::DeepseekAnthropic, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::DeepseekAnthropic, model, None)
         {
-            providers.deepseek_anthropic.model = Some(normalized);
+            providers.deepseek_anthropic.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.nvidia_nim.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::NvidiaNim, &providers.nvidia_nim)
             && !is_declared(ProviderKind::NvidiaNim.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::NvidiaNim, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::NvidiaNim, model, None)
         {
-            providers.nvidia_nim.model = Some(normalized);
+            providers.nvidia_nim.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.openrouter.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Openrouter, &providers.openrouter)
             && !is_declared(ProviderKind::Openrouter.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Openrouter, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Openrouter, model, None)
         {
-            providers.openrouter.model = Some(normalized);
+            providers.openrouter.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.novita.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Novita, &providers.novita)
             && !is_declared(ProviderKind::Novita.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Novita, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Novita, model, None)
         {
-            providers.novita.model = Some(normalized);
+            providers.novita.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.fireworks.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Fireworks, &providers.fireworks)
             && !is_declared(ProviderKind::Fireworks.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Fireworks, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Fireworks, model, None)
         {
-            providers.fireworks.model = Some(normalized);
+            providers.fireworks.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.siliconflow.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -8910,9 +8800,10 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.siliconflow,
             )
             && !is_declared(ProviderKind::Siliconflow.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Siliconflow, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Siliconflow, model, None)
         {
-            providers.siliconflow.model = Some(normalized);
+            providers.siliconflow.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.siliconflow_cn.model.as_deref()
             && !provider_entry_uses_custom_base_url(
@@ -8920,38 +8811,42 @@ fn normalize_model_config(config: &mut Config) {
                 &providers.siliconflow_cn,
             )
             && !is_declared(ProviderKind::SiliconflowCN.as_str(), model)
-            && let Some(normalized) =
-                normalize_model_for_provider(ProviderKind::SiliconflowCN, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::SiliconflowCN, model, None)
         {
-            providers.siliconflow_cn.model = Some(normalized);
+            providers.siliconflow_cn.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.moonshot.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Moonshot, &providers.moonshot)
             && !is_declared(ProviderKind::Moonshot.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Moonshot, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Moonshot, model, None)
         {
-            providers.moonshot.model = Some(normalized);
+            providers.moonshot.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.sglang.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Sglang, &providers.sglang)
             && !is_declared(ProviderKind::Sglang.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Sglang, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Sglang, model, None)
         {
-            providers.sglang.model = Some(normalized);
+            providers.sglang.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.vllm.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Vllm, &providers.vllm)
             && !is_declared(ProviderKind::Vllm.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Vllm, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Vllm, model, None)
         {
-            providers.vllm.model = Some(normalized);
+            providers.vllm.model = Some(resolved.wire_id);
         }
         if let Some(model) = providers.deepinfra.model.as_deref()
             && !provider_entry_uses_custom_base_url(ProviderKind::Deepinfra, &providers.deepinfra)
             && !is_declared(ProviderKind::Deepinfra.as_str(), model)
-            && let Some(normalized) = normalize_model_for_provider(ProviderKind::Deepinfra, model)
+            && let Ok(resolved) =
+                codewhale_config::route::resolve_model(ProviderKind::Deepinfra, model, None)
         {
-            providers.deepinfra.model = Some(normalized);
+            providers.deepinfra.model = Some(resolved.wire_id);
         }
     }
 }
@@ -8959,17 +8854,6 @@ fn normalize_model_config(config: &mut Config) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn normalize_model_config_for_test(config: &mut Config) {
     normalize_model_config(config);
-}
-
-fn normalize_model_for_provider(provider: ProviderKind, model: &str) -> Option<String> {
-    if provider_passes_model_through(provider) {
-        return None;
-    }
-    normalize_model_name_for_provider(provider, model)
-}
-
-pub fn provider_passes_model_through(provider: ProviderKind) -> bool {
-    codewhale_config::descriptors::provider_passes_model_through(provider)
 }
 
 fn provider_entry_uses_custom_base_url(provider: ProviderKind, entry: &ProviderConfig) -> bool {
