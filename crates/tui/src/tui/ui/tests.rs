@@ -26731,9 +26731,6 @@ fn exploring_label_for_list_files_uses_progressive() {
     assert_eq!(label, "Listing files");
 }
 
-// `running_status_label_with_elapsed` lives in `crate::tui::history` next to
-// the other tool-header helpers — its tests live there too.
-
 // ---- P2.4: auto-scroll churn regressions ----
 //
 // The contract: once the user scrolls away from the live tail mid-turn

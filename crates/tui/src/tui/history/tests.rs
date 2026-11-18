@@ -25,7 +25,7 @@ use super::{
     REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, RenderMode, ToolCell, ToolStatus,
     TranscriptFold, TranscriptRenderOptions, WebSearchCell, assistant_label_style_for,
     extract_reasoning_summary, render_spillover_annotation, render_thinking,
-    render_thinking_with_analysis, running_status_label_with_elapsed,
+    render_thinking_with_analysis, render_tool_header_with_summary,
 };
 use crate::tui::motion::MotionMode;
 use codewhale_engine::session_manager::{SessionManager, create_saved_session};
@@ -2864,19 +2864,31 @@ fn the_card_helpers_accept_their_documented_forms_and_decline_the_rest() {
         );
     }
 
-    // The elapsed badge appears at three seconds and not before, so quick
-    // reads and greps do not visually churn.
-    for secs in [0, 1, 2] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            "running"
-        );
-    }
-    for secs in [3u64, 7, 120] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            format!("running ({secs}s)")
-        );
+    let summary_column = |secs: u64| {
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(secs))
+            .expect("monotonic clock covers the test offset");
+        let header = line_to_plain(&render_tool_header_with_summary(
+            "read_file",
+            Some("READINESS.md"),
+            None,
+            ToolStatus::Running,
+            Some(started),
+            true,
+            codewhale_localization::Locale::En,
+        ));
+        let column = header
+            .find("READINESS.md")
+            .expect("summary is shown on a running header");
+        (column, header)
+    };
+    let (still, quick) = summary_column(0);
+    assert!(quick.trim_end().ends_with("READINESS.md"), "{quick:?}");
+    for secs in [5u64, 65] {
+        let (column, header) = summary_column(secs);
+        assert_eq!(column, still, "summary moved at {secs}s: {header:?}");
+        let elapsed = codewhale_command_contract::elapsed::format_elapsed_secs(secs);
+        assert!(header.trim_end().ends_with(&elapsed), "{header:?}");
     }
 
     // A reasoning summary prefers an explicit Summary block, and otherwise is

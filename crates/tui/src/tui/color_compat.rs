@@ -145,6 +145,10 @@ impl<W: Write> ColorCompatBackend<W> {
         self.detected_background = color;
     }
 
+    pub(crate) fn detected_background(&self) -> Option<ratatui::style::Color> {
+        self.detected_background
+    }
+
     pub(crate) fn force_size(&mut self, size: Size) {
         self.forced_size = Some(size);
     }
