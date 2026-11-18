@@ -182,9 +182,14 @@ fn reconcile_sets_aside_only_stores_no_document_binds() {
     fx.document("conversation-a", Some(&host_store));
     fx.document("conversation-b", Some(&host_store));
     let orphan = fx.empty_store("crashed-anchor");
+    let task_runtime = fx.home.path().join("tasks").join("runtime");
+    fs::create_dir_all(&task_runtime).unwrap();
+    fs::write(task_runtime.join("state.json"), b"{}").unwrap();
+    fs::write(task_runtime.join("events.lock"), b"").unwrap();
 
     let summary = fx.run();
 
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
     assert_eq!(summary.stores_set_aside, 1, "{summary:?}");
     assert!(host_store.is_dir(), "a bound store must never move");
     assert!(!orphan.exists());
@@ -549,6 +554,7 @@ fn summary_notice_and_doctor_line_name_what_changed() {
         stores_set_aside: 140,
         stores_in_use: 1,
         set_aside_path: Some(PathBuf::from("/tmp/set-aside")),
+        errors: vec!["big.json: too large".into(), "other: unreadable".into()],
         ..ReconcileSummary::default()
     };
     let notice = changed.notice().unwrap();
@@ -558,9 +564,15 @@ fn summary_notice_and_doctor_line_name_what_changed() {
     let detail = changed.doctor_detail();
     assert!(detail.contains("140 stores"), "{detail}");
     assert!(detail.contains("1 unbound stores in use"), "{detail}");
+    assert!(
+        detail.contains("2 item(s) could not be inspected and were left unchanged, first: big.json: too large (+1 more)"),
+        "{detail}"
+    );
+    assert!(detail.contains("--repair-sessions --dry-run"), "{detail}");
 
     let dry = ReconcileSummary {
         dry_run: true,
+        errors: Vec::new(),
         ..changed
     };
     assert_eq!(dry.notice(), None, "a dry run changed nothing");
