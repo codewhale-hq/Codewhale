@@ -2264,6 +2264,23 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 &app.viewport.ocean_semantic_surfaces,
             );
         }
+        if top_work_strip_height > 0 {
+            column.paint_matching_native(
+                body_chunks[strip_slot],
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        } else if let Some(work_area) = side_work_area {
+            column.paint_matching_native(
+                work_area,
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        }
     }
     register_clickable_chrome_for_hover(app);
     crate::tui::hover_layer::apply_resolved_effects(
