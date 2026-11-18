@@ -223,6 +223,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Website terminal frames recorded with a real model:** the home page's session, model and receipt frames are now real captures of Codewhale 0.10.3 (development build) working with `gemini-4-hydrogen` through Google's API on a small `ls.py --json` task, replacing frames recorded against a scripted local model. The provider frame is now the model picker, the captions and frame descriptions in all 19 site languages name the real model, and the provenance file records how the frames were grabbed.
 - The cost label shows an exact cost, an estimate or unknown.
 - **Docs for agents match the release:** `/llms-full.txt` and `/docs-markdown/*` now serve the documents as they were at the published release tag, from a committed snapshot that is checked against the published release.
 - **Extension host (experimental): trusted plugins ask for review once more.** With `extension_host` turned on, plugins you already trusted are shown for review again after this update, because the capability table they were reviewed against gained the `remote` service. No plugin can use that service yet: none is granted it.

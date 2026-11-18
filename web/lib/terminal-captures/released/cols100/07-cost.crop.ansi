@@ -5,7 +5,11 @@
 [38;5;103m▏    [3m[38;5;109mNo turn has an authoritative price in the selected currency.[0m[48;5;234m                                  [38;5;239m│
 [38;5;103m▏    [39m                                                                                              [38;5;239m│
 [38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is computed locally from provider-reported token usage[0m[48;5;234m    [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mand published rates, and can differ from your invoice.[0m[48;5;234m                                        [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mCovered: 0 of 1 money-metered turn(s) priced.[0m[48;5;234m                                                 [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mExcluded: 1 money-metered turn(s) had no authoritative price (billing basis unknown); their[0m[48;5;234m   [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mspend is missing from the total above.[0m[48;5;234m                                                        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mand published rates, and can differ from your invoice.[0m[48;5;234m                                        [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mCovered: 0 of 5 money-metered turn(s) priced.[0m[48;5;234m                                                 [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mExcluded: 5 money-metered turn(s) had no authoritative price (token usage breakdown[0m[48;5;234m           [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109munavailable); their spend is missing from the total above.[0m[48;5;234m                                    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                                                                    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mprovider=google identity=google model=gemini-4-hydrogen surface=first-party-payg endpoint_[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mfp=e42d6fd4c65855c2fd634d70207d1830e6d41fe8b212622c006d89e8fc42c89f billing_mode=metered[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mcurrency=unpriced[0m[48;5;234m                                                                             [38;5;80m┃

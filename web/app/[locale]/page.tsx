@@ -38,8 +38,9 @@ const SESSION_STEPS = [
   { key: "05-task-result", name: "frameLabelResult", summary: "frameSummaryResult" },
 ] as const satisfies readonly { key: string; name: keyof HomeDict; summary: keyof HomeDict }[];
 const SESSION_OPENS_ON = 2;
-const PROVIDER_ROWS = [9, 21] as const;
-const RECEIPT_ROWS_NARROW = [18, 60] as const;
+const PROVIDER_ROWS = [7, 17] as const;
+const RECEIPT_ROWS_WIDE = [6, 37] as const;
+const RECEIPT_ROWS_NARROW = [2, 34] as const;
 const MERGED_ROWS = 8;
 
 const avatar = (url: string, size: number) => `${url}${url.includes("?") ? "&" : "?"}s=${size}`;
@@ -106,7 +107,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
     narrow: frame(`cols48/${step.key}`, d[step.summary]),
     note: frameNote(sessionWide[index]).needsPostureNote,
   }));
-  const providerNote = frameNote(RELEASED_CAPTURE_FRAMES["cols56/01-custom-form"]).needsPostureNote;
+  const providerNote = frameNote(RELEASED_CAPTURE_FRAMES["cols56/01-model-picker"]).needsPostureNote;
 
   const released = releaseView(facts);
   const counted = (key: string, forms: HomeDict["factModels"], n: number, href: string): Fact => {
@@ -202,8 +203,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             <p className="home-body"><InlineCode text={d.sectionModelBody} /></p>
           </div>
           <figure className="home-figure">
-            <div className="home-frame home-only-wide">{frame("cols56/01-custom-form", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
-            <div className="home-frame home-only-narrow">{frame("cols48/01-custom-form", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
+            <div className="home-frame home-only-wide">{frame("cols56/01-model-picker", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
+            <div className="home-frame home-only-narrow">{frame("cols48/01-model-picker", d.frameSummaryProvider, PROVIDER_ROWS)}</div>
             {providerNote ? <figcaption className="home-caption">{d.captureFrameNoPosture}</figcaption> : null}
           </figure>
         </section>
@@ -233,7 +234,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             <p className="home-body"><InlineCode text={d.sectionControlBody} /></p>
           </div>
           <figure className="home-figure">
-            <div className="home-frame home-only-wide">{frame("cols56/06-receipt", d.frameSummaryReceipt)}</div>
+            <div className="home-frame home-only-wide">{frame("cols56/06b-receipt-tall", d.frameSummaryReceipt, RECEIPT_ROWS_WIDE)}</div>
             <div className="home-frame home-only-narrow">{frame("cols48/06b-receipt-tall", d.frameSummaryReceipt, RECEIPT_ROWS_NARROW)}</div>
           </figure>
         </section>

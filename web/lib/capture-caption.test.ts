@@ -30,9 +30,9 @@ describe("capture caption", () => {
   });
 
   it("gives no caption under a frame that is not about the task or shows no test run", () => {
-    expect(captureCaption([released["cols100/01-custom-form"]])).toMatchObject({ caption: null });
+    expect(captureCaption([released["cols100/01-model-picker"]])).toMatchObject({ caption: null });
     expect(captureCaption([released["cols100/00-launch"]]).caption).toBeNull();
-    expect(captureCaption([released["cols56/05-task-result"], released["cols56/01-custom-form"]]).caption).toBeNull();
+    expect(captureCaption([released["cols56/05-task-result"], released["cols56/01-model-picker"]]).caption).toBeNull();
     const reason = captureCaption([released["cols100/03-task-diff"], released["cols100/04-task-approval"]]);
     expect(reason.caption).toBeNull();
     expect(reason.reason).toContain("tests ran");
@@ -45,7 +45,7 @@ describe("capture caption", () => {
   });
 
   it("flags frames that lack the model name or the Ask marker", () => {
-    const notes = captureCaption([released["cols100/01-custom-form"], released["cols100/05-task-result"], released["cols100/00-launch"]]).frames;
+    const notes = captureCaption([released["cols100/01-model-picker"], released["cols100/05-task-result"], released["cols100/00-launch"]]).frames;
     expect(notes.map((n) => n.needsPostureNote)).toEqual([true, false, false]);
     expect(notes[0]).toMatchObject({ lacksAskPosture: true, lacksModelName: false });
   });
@@ -74,8 +74,8 @@ describe("released capture", () => {
   it("records what each frame shows to match its own text", () => {
     for (const frame of Object.values(released)) {
       const text = visibleText(frame).join("\n");
-      expect(frame.shows.askPosture, frame.id).toBe(text.includes("● ask"));
-      expect(frame.shows.modelName, frame.id).toBe(text.includes("scripted-demo"));
+      expect(frame.shows.askPosture, frame.id).toBe(text.includes("● accept edits"));
+      expect(frame.shows.modelName, frame.id).toBe(text.includes("gemini-4-hydrogen"));
       expect(frame.shows.testRun, frame.id).toBe(/Ran \d+ tests? in [0-9.]+s/.test(text) && /\bOK\b/.test(text));
     }
   });
