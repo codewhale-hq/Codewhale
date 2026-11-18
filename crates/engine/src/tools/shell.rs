@@ -1198,6 +1198,7 @@ pub struct BackgroundShell {
     /// small-contract-compatible accumulator while persisting the complete output.
     bounded_output: Option<Arc<Mutex<BoundedOutputAccumulator>>>,
     heavy_permit: Option<HeavyCommandPermit>,
+    scratch: Option<tempfile::TempDir>,
     stdout_cursor: usize,
     stderr_cursor: usize,
     completion_reported: bool,
@@ -1395,6 +1396,7 @@ impl BackgroundShell {
                         ShellStatus::Failed
                     };
                     self.heavy_permit.take();
+                    self.scratch.take();
                     self.collect_output();
                     true
                 }
@@ -1403,6 +1405,7 @@ impl BackgroundShell {
                     self.status = ShellStatus::Failed;
                     self.wait_failed = true;
                     self.heavy_permit.take();
+                    self.scratch.take();
                     self.collect_output();
                     true
                 }
@@ -1728,6 +1731,7 @@ impl BackgroundShell {
         self.status = ShellStatus::Killed;
         self.mark_finished();
         self.heavy_permit.take();
+        self.scratch.take();
         self.collect_output();
         self.publish_lifecycle_best_effort();
         Ok(())
@@ -2173,6 +2177,7 @@ impl ShellManager {
                 stderr_buffer: Some(new_shared_raw_output()),
                 bounded_output: None,
                 heavy_permit: None,
+                scratch: None,
                 stdout_cursor: 0,
                 stderr_cursor: 0,
                 completion_reported: false,
@@ -2522,7 +2527,12 @@ impl ShellManager {
             CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
         };
         let spec = spec.with_policy(policy).with_env(extra_env);
-        let exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
+        let spec = if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
+            spec.with_private_tmp()
+        } else {
+            spec
+        };
+        let mut exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
             anyhow::Error::msg(message.clone())
                 .context(ShellLaunchNotStarted)
                 .context(message)
@@ -2543,7 +2553,7 @@ impl ShellManager {
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
-                &exec_env,
+                &mut exec_env,
                 None,
                 stdin_data,
                 tty,
@@ -2876,7 +2886,7 @@ impl ShellManager {
         &mut self,
         original_command: &str,
         working_dir: &std::path::Path,
-        exec_env: &ExecEnv,
+        exec_env: &mut ExecEnv,
         heavy_permit: Option<HeavyCommandPermit>,
         stdin_data: Option<&str>,
         tty: bool,
@@ -3119,6 +3129,7 @@ impl ShellManager {
             stderr_buffer,
             bounded_output,
             heavy_permit,
+            scratch: exec_env.scratch.take(),
             stdout_cursor: 0,
             stderr_cursor: 0,
             completion_reported: false,
@@ -4336,12 +4347,47 @@ fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
         "couldn't connect",
         "connection timed out",
         "connection reset",
+        "error connecting to",
+        "token in keyring is invalid",
     ]
     .iter()
     .any(|pattern| output.contains(pattern))
 }
 
-const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files outside its private TMPDIR. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+
+const READONLY_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. A command that must write (git fetch writes .git/FETCH_HEAD; git ls-remote reads remote refs without writing) has to run without read_only.";
+
+const READONLY_MACOS_MKTEMP_HINT: &str = "macOS mktemp ignores TMPDIR unless told otherwise and writes to the per-user temporary directory, which read_only cannot write. Use `mktemp -p \"$TMPDIR\"` or `mktemp \"$TMPDIR/name.XXXXXX\"`; heredocs and other tools already use the private TMPDIR.";
+
+const READONLY_SETUID_DENIED_HINT: &str = "macOS Seatbelt never starts a setuid program such as ps or top inside a sandbox. List processes with `pgrep -lf <pattern>` or `lsof -nP -iTCP -sTCP:LISTEN` instead.";
+
+fn readonly_denied_hint(command: &str, result: &ShellResult) -> Option<&'static str> {
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if !output.contains("operation not permitted") && !output.contains("read-only file system") {
+        return None;
+    }
+    let runs = |names: &[&str]| {
+        cfg!(target_os = "macos")
+            && command
+                .split(|c: char| c.is_whitespace() || ";|&()`$".contains(c))
+                .any(|word| {
+                    word.rsplit('/')
+                        .next()
+                        .is_some_and(|name| names.contains(&name))
+                })
+    };
+    if runs(&["ps", "top"]) {
+        return Some(READONLY_SETUID_DENIED_HINT);
+    }
+    if runs(&["mktemp"]) && (output.contains("mkstemp failed") || output.contains("mkdtemp failed"))
+    {
+        return Some(READONLY_MACOS_MKTEMP_HINT);
+    }
+    let failed = !matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
+        && result.exit_code != Some(0);
+    failed.then_some(READONLY_WRITE_DENIED_HINT)
+}
 
 fn readonly_offline_network_hint(command: &str, result: &ShellResult) -> Option<&'static str> {
     if result.sandbox_denied && codewhale_sandbox::bwrap_setup_failure(&result.stderr).is_some() {
@@ -6907,7 +6953,12 @@ impl ToolSpec for BashTool {
                 });
                 let readonly_offline_hint = (enforced_readonly && !readonly_network)
                     .then(|| readonly_offline_network_hint(command, &result))
-                    .flatten();
+                    .flatten()
+                    .or_else(|| {
+                        enforced_readonly
+                            .then(|| readonly_denied_hint(command, &result))
+                            .flatten()
+                    });
                 if self.optional_timeout {
                     let network_restricted_hint = readonly_offline_hint
                         .or_else(|| shell_network_restricted_hint(context, command, &result));

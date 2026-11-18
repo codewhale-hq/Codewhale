@@ -100,6 +100,8 @@ pub struct CommandSpec {
     /// `-File` scripts). Authoritative for display; `None` for specs built
     /// directly from a program + args.
     pub requested_command: Option<String>,
+
+    pub private_tmp: bool,
 }
 
 impl CommandSpec {
@@ -146,6 +148,7 @@ impl CommandSpec {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: Some(command.to_string()),
+            private_tmp: false,
         }
     }
 
@@ -160,12 +163,18 @@ impl CommandSpec {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: None,
+            private_tmp: false,
         }
     }
 
     /// Set the sandbox policy for this command.
     pub fn with_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = policy;
+        self
+    }
+
+    pub fn with_private_tmp(mut self) -> Self {
+        self.private_tmp = true;
         self
     }
 
@@ -315,6 +324,34 @@ pub struct ExecEnv {
 
     /// The original policy (for reference).
     pub policy: SandboxPolicy,
+
+    pub scratch: Option<tempfile::TempDir>,
+}
+
+#[cfg(target_os = "macos")]
+fn read_only_scratch(spec: &CommandSpec) -> Option<tempfile::TempDir> {
+    if !spec.private_tmp || !matches!(spec.sandbox_policy, SandboxPolicy::ReadOnly { .. }) {
+        return None;
+    }
+    tempfile::Builder::new()
+        .prefix("codewhale-ro-")
+        .tempdir()
+        .inspect_err(|error| {
+            tracing::warn!("read-only command runs without a private TMPDIR: {error}");
+        })
+        .ok()
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
+fn insert_private_tmp_env(env: &mut HashMap<String, String>, dir: &std::path::Path) {
+    let dir = dir.to_string_lossy().into_owned();
+    env.insert("TMPPREFIX".to_string(), format!("{dir}/zsh"));
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        env.insert(key.to_string(), dir.clone());
+    }
 }
 
 impl ExecEnv {
@@ -925,6 +962,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::None,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -940,6 +978,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::None,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -949,6 +988,17 @@ impl SandboxManager {
         // Build the original command
         let mut original_command = vec![spec.program.clone()];
         original_command.extend(spec.args.clone());
+
+        let scratch = if self.readable_paths.is_none() {
+            read_only_scratch(spec)
+        } else {
+            None
+        };
+        let scratch_path = scratch.as_ref().map(|dir| {
+            dir.path()
+                .canonicalize()
+                .unwrap_or_else(|_| dir.path().to_path_buf())
+        });
 
         // Generate sandbox-exec arguments
         let seatbelt_args = if let Some(paths) = &self.readable_paths {
@@ -964,6 +1014,7 @@ impl SandboxManager {
                 &spec.sandbox_policy,
                 &spec.cwd,
                 &self.denied_read_subpaths,
+                scratch_path.as_deref(),
             )
         };
 
@@ -975,6 +1026,9 @@ impl SandboxManager {
         let mut env = spec.env.clone();
         env.insert("CODEWHALE_SANDBOX".to_string(), "seatbelt".to_string());
         env.insert("DEEPSEEK_SANDBOX".to_string(), "seatbelt".to_string());
+        if let Some(path) = &scratch_path {
+            insert_private_tmp_env(&mut env, path);
+        }
 
         ExecEnv {
             command,
@@ -983,6 +1037,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::MacosSeatbelt,
             policy: spec.sandbox_policy.clone(),
+            scratch,
         }
     }
 
@@ -1049,6 +1104,9 @@ impl SandboxManager {
         let mut env = spec.env.clone();
         env.insert("CODEWHALE_SANDBOX".to_string(), "bwrap".to_string());
         env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
+        if matches!(spec.sandbox_policy, SandboxPolicy::ReadOnly { .. }) {
+            insert_private_tmp_env(&mut env, std::path::Path::new("/tmp"));
+        }
 
         ExecEnv {
             command,
@@ -1057,6 +1115,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::LinuxBubblewrap,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -1093,6 +1152,7 @@ impl SandboxManager {
             timeout: spec.timeout,
             sandbox_type: SandboxType::Windows,
             policy: spec.sandbox_policy.clone(),
+            scratch: None,
         }
     }
 
@@ -1275,6 +1335,7 @@ mod tests {
             sandbox_policy: SandboxPolicy::default(),
             justification: None,
             requested_command: None,
+            private_tmp: false,
         };
 
         assert_eq!(spec.display_command(), "echo hello");
@@ -1427,6 +1488,7 @@ mod tests {
             timeout: Duration::from_secs(30),
             sandbox_type: SandboxType::None,
             policy: SandboxPolicy::default(),
+            scratch: None,
         };
 
         assert_eq!(env.program(), "sandbox-exec");

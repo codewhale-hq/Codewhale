@@ -60,7 +60,13 @@ fn file_provider_extensions_intersect_each_workspace_root_and_exclusions() {
     assert_eq!(read_only.matches(read_write_extension).count(), 1);
     assert!(!read_only.contains("WRITABLE_ROOT"));
 
-    let args = create_seatbelt_args(vec!["/usr/bin/true".to_string()], &policy, &workspace, &[]);
+    let args = create_seatbelt_args(
+        vec!["/usr/bin/true".to_string()],
+        &policy,
+        &workspace,
+        &[],
+        None,
+    );
     let output = Command::new(SANDBOX_EXEC_PATH)
         .args(args)
         .current_dir(&workspace)
@@ -152,7 +158,7 @@ fn file_provider_synthetic_operations_are_independent_under_seatbelt() {
             }
         };
 
-        let args = create_seatbelt_args(command, &SandboxPolicy::default(), &workspace, &[]);
+        let args = create_seatbelt_args(command, &SandboxPolicy::default(), &workspace, &[], None);
         let output = Command::new(SANDBOX_EXEC_PATH)
             .args(args)
             .current_dir(&workspace)
@@ -205,7 +211,8 @@ fn denied_read_subpaths_block_reads_under_every_sandboxed_posture() {
 
     for policy in [SandboxPolicy::read_only(), SandboxPolicy::default()] {
         // Without the deny-list the read succeeds (full-disk read posture).
-        let open_args = create_seatbelt_args(read_cmd.clone(), &policy, workspace.path(), &[]);
+        let open_args =
+            create_seatbelt_args(read_cmd.clone(), &policy, workspace.path(), &[], None);
         let open = Command::new(SANDBOX_EXEC_PATH)
             .args(open_args)
             .current_dir(workspace.path())
@@ -229,6 +236,7 @@ fn denied_read_subpaths_block_reads_under_every_sandboxed_posture() {
             &policy,
             workspace.path(),
             manager.denied_read_subpaths_for_test(),
+            None,
         );
         let denied = Command::new(SANDBOX_EXEC_PATH)
             .args(denied_args)

@@ -156,9 +156,16 @@ pub fn create_seatbelt_args(
     policy: &SandboxPolicy,
     sandbox_cwd: &Path,
     denied_read_subpaths: &[std::path::PathBuf],
+    scratch: Option<&Path>,
 ) -> Vec<String> {
-    let full_policy = generate_policy(policy, sandbox_cwd, denied_read_subpaths);
-    let params = generate_params(policy, sandbox_cwd);
+    let mut full_policy = generate_policy(policy, sandbox_cwd, denied_read_subpaths);
+    let mut params = generate_params(policy, sandbox_cwd);
+    if let Some(scratch) = scratch {
+        full_policy.push_str(
+            "\n\n; Private per-command TMPDIR, removed after the command\n(allow file-write* (subpath (param \"PRIVATE_TMPDIR\")))\n",
+        );
+        params.push(("PRIVATE_TMPDIR".to_string(), scratch.to_path_buf()));
+    }
 
     let mut args = vec!["-p".to_string(), full_policy];
 
@@ -896,7 +903,7 @@ mod existing_tests {
         let cwd = Path::new("/tmp/test");
         let command = vec!["echo".to_string(), "hello".to_string()];
 
-        let args = create_seatbelt_args(command, &policy, cwd, &[]);
+        let args = create_seatbelt_args(command, &policy, cwd, &[], None);
 
         // Should start with -p and the policy
         assert_eq!(args[0], "-p");
@@ -984,6 +991,7 @@ mod existing_tests {
             &SandboxPolicy::DangerFullAccess,
             &cwd,
             &[],
+            None,
         );
         let output = Command::new(SANDBOX_EXEC_PATH)
             .args(args)

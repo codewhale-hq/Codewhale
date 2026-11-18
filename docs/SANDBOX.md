@@ -44,6 +44,20 @@ The profile can provide:
   `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, and other local sockets stay
   denied.
 
+A shell command under the `read-only` policy (for example the agent
+`read_only: true` mode) gets one private, empty, writable temporary directory as
+`TMPDIR` (also `TMP`, `TEMP` and zsh's `TMPPREFIX`), created under the host
+temporary directory and deleted when the command ends, so shell heredocs,
+`mktemp -p "$TMPDIR"` and tools that honor `TMPDIR` work. A bare `mktemp`
+on macOS ignores `TMPDIR` for the per-user temporary directory and is refused. Nothing else is writable: the workspace, home, Git metadata and
+caches stay read-only, so `git fetch` (which writes `.git/FETCH_HEAD`) is
+refused; `git ls-remote` reads remote refs without writing. Keychain reads
+through the system security service are not blocked, so `gh` finds its stored
+token when the run has network. Seatbelt never starts a setuid program in any
+sandbox, so `ps` and `top` fail with `Operation not permitted`; `pgrep -lf` and
+`lsof` list processes instead. Signals reach only processes in the same
+sandbox.
+
 If the probe fails or `sandbox-exec` is unavailable, Codewhale reports no OS
 sandbox and launches the command without a Seatbelt wrapper. It does not set a
 Seatbelt marker on that fallback.
@@ -99,7 +113,9 @@ remounted read-only after their writable parent. Missing paths, non-directory
 paths, and `/` are not promoted to writable mounts.
 
 For `read-only`, there are no writable binds, so the working directory remains
-inside the read-only root view. `--unshare-all` isolates the network namespace
+inside the read-only root view; `TMPDIR` (with `TMP`, `TEMP` and `TMPPREFIX`)
+points at the private tmpfs `/tmp`, which disappears with the sandbox. The PID
+namespace is private too, so `ps` lists only the command's own processes. `--unshare-all` isolates the network namespace
 by default. Codewhale adds `--share-net` only when the policy's
 `network_access` is true. The agent `read_only: true` shell mode turns it on
 only in Full Access (see [Subagents](SUBAGENTS.md)); it then shares the host
