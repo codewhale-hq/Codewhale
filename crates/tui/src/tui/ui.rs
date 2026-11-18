@@ -223,6 +223,8 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 // braille pattern reads as continuous motion instead of teleport-frames.
 const UI_STATUS_ANIMATION_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 const UI_QUIET_STATUS_ANIMATION_MS: u64 = 1_000;
+const UI_ACTIVITY_ANIMATION_MS: u64 =
+    (1_000.0 / codewhale_ratatui::tokens::MOTION_LOOP_FPS_CAP) as u64;
 /// Ambient fish, the idle-mark caustic, and the completion wake use a modest
 /// ~12.5fps clock by default. On measured high-Hz displays the adaptive probe
 /// may raise this (still bounded); low_motion always freezes the cadence.
@@ -989,7 +991,7 @@ pub(crate) mod fatal_signal_guard;
 // rebuild on continue. Sits next to the fatal guard because both write the same
 // teardown table.
 pub(crate) mod job_control_guard;
-mod motion;
+pub(crate) mod motion;
 mod observer_hooks;
 mod provider_setup;
 mod release_check;

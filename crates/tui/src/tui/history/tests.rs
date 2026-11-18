@@ -25,7 +25,7 @@ use super::{
     REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, RenderMode, ToolCell, ToolStatus,
     TranscriptFold, TranscriptRenderOptions, WebSearchCell, assistant_label_style_for,
     extract_reasoning_summary, render_spillover_annotation, render_thinking,
-    render_thinking_with_analysis, running_status_label_with_elapsed,
+    render_thinking_with_analysis, render_tool_header_with_summary,
 };
 use crate::tui::motion::MotionMode;
 use codewhale_engine::session_manager::{SessionManager, create_saved_session};
@@ -1348,7 +1348,6 @@ fn disabling_the_reasoning_highlight_leaves_no_span_with_a_background() {
 /// filled, legible bubble rather than the blank the spinner starts on.
 #[test]
 fn reduced_and_still_motion_render_a_frame_that_does_not_move() {
-    let frame_symbols = super::TOOL_RUNNING_SYMBOLS.len() as u64;
     let frame_at = |elapsed_ms: u64, low_motion: bool, motion: MotionMode| {
         let mut exec = exec_tool("echo hi", ToolStatus::Running);
         exec.started_at = Some(Instant::now() - Duration::from_millis(elapsed_ms));
@@ -1363,13 +1362,12 @@ fn reduced_and_still_motion_render_a_frame_that_does_not_move() {
         ))
     };
 
-    // Half a spinner cycle apart, and both well under the 3s elapsed-badge
-    // threshold so the badge itself cannot be the thing that differs.
-    let early = codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS;
-    let late = early + super::TOOL_STATUS_SYMBOL_MS * (frame_symbols / 2);
+    let frame_symbols = super::TOOL_RUNNING_SYMBOLS.len() as u64;
+    let early = 1_250;
+    let late = early + super::TOOL_STATUS_SYMBOL_MS * (frame_symbols / 8);
     assert!(
-        late < 3_000,
-        "both samples must stay under the elapsed badge"
+        early >= 1_000 && late < 2_000,
+        "both samples must stay in the same elapsed-second bucket"
     );
 
     // Two independent mechanisms are supposed to produce stillness — the
@@ -2869,19 +2867,31 @@ fn the_card_helpers_accept_their_documented_forms_and_decline_the_rest() {
         );
     }
 
-    // The elapsed badge appears at three seconds and not before, so quick
-    // reads and greps do not visually churn.
-    for secs in [0, 1, 2] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            "running"
-        );
-    }
-    for secs in [3u64, 7, 120] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            format!("running ({secs}s)")
-        );
+    let summary_column = |secs: u64| {
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(secs))
+            .expect("monotonic clock covers the test offset");
+        let header = line_to_plain(&render_tool_header_with_summary(
+            "read_file",
+            Some("READINESS.md"),
+            None,
+            ToolStatus::Running,
+            Some(started),
+            true,
+            codewhale_localization::Locale::En,
+        ));
+        let column = header
+            .find("READINESS.md")
+            .expect("summary is shown on a running header");
+        (column, header)
+    };
+    let (still, quick) = summary_column(0);
+    assert!(quick.trim_end().ends_with("READINESS.md"), "{quick:?}");
+    for secs in [5u64, 65] {
+        let (column, header) = summary_column(secs);
+        assert_eq!(column, still, "summary moved at {secs}s: {header:?}");
+        let elapsed = codewhale_command_contract::elapsed::format_elapsed_secs(secs);
+        assert!(header.trim_end().ends_with(&elapsed), "{header:?}");
     }
 
     // A reasoning summary prefers an explicit Summary block, and otherwise is
