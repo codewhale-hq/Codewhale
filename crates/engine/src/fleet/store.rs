@@ -1269,9 +1269,7 @@ mod tests {
     fn sealed_home() -> &'static Path {
         static HOME: OnceLock<PathBuf> = OnceLock::new();
         HOME.get_or_init(|| {
-            let dir = tempfile::TempDir::new()
-                .expect("temp dir for sealed home")
-                .keep();
+            let dir = crate::test_support::test_scratch_dir("codewhale-fleet-sealed-home");
             std::fs::create_dir_all(dir.join("fleets")).expect("fleets dir");
             dir
         })

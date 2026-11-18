@@ -25689,14 +25689,14 @@ mod child_permission_gate {
         tokio::sync::mpsc::Receiver<Event>,
         SharedSubAgentManager,
     ) {
-        let tmp = tempdir().expect("tempdir");
+        let workspace = crate::test_support::test_scratch_dir("codewhale-child-gate-tests");
+        std::fs::create_dir_all(&workspace).expect("child gate workspace");
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let mut runtime = stub_runtime();
         if let Some((client, config)) = client {
             runtime.client = client;
             runtime.api_config = Some(Arc::new(config));
         }
-        let workspace = tmp.path().to_path_buf();
         runtime.manager = new_shared_subagent_manager(workspace.clone(), 5);
         let session_id = format!("child_gate_{}", uuid::Uuid::new_v4().simple());
         runtime.context = ToolContext::new(workspace.clone()).with_state_namespace(session_id);
@@ -25704,7 +25704,7 @@ mod child_permission_gate {
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
         runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
-        let sessions = crate::session_manager::SessionManager::new(tmp.path().join("accounting"))
+        let sessions = crate::session_manager::SessionManager::new(workspace.join("accounting"))
             .expect("guardian accounting session store");
         sessions
             .save_session(
@@ -25727,7 +25727,7 @@ mod child_permission_gate {
         runtime.allow_shell = true;
         runtime.event_tx = Some(tx);
         runtime = runtime.with_approval_receipt_store(Ok(
-            crate::approval_log::ApprovalReceiptStore::new(tmp.path().join("sessions")),
+            crate::approval_log::ApprovalReceiptStore::new(workspace.join("sessions")),
         ));
         runtime = runtime.with_permission_posture(
             std::sync::Arc::new(crate::core::authority::auto_review::AutoReviewPolicy::default()),
@@ -25744,9 +25744,6 @@ mod child_permission_gate {
                 None,
             );
         }
-        // Keep the tempdir alive for the registry's lifetime by leaking it
-        // into the workspace path (tests are short-lived).
-        std::mem::forget(tmp);
         let registry = ChildCoreProbe::new(
             runtime,
             FleetRole::Worker,

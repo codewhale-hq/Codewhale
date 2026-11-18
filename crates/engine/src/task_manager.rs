@@ -7071,7 +7071,8 @@ mod tests {
     }
 
     async fn test_runtime_manager() -> Result<RuntimeThreadManager> {
-        let root = tempfile::tempdir()?.keep();
+        let root = crate::test_support::test_scratch_dir("deepseek-task-test");
+        std::fs::create_dir_all(&root)?;
         RuntimeThreadManager::open(
             Config::default(),
             PathBuf::from("."),

@@ -36,7 +36,8 @@ impl Drop for HomeGuard {
 fn sealed_home() -> &'static Path {
     static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     HOME.get_or_init(|| {
-        let dir = tempfile::TempDir::new().expect("temp home").keep();
+        let dir = crate::test_support::test_scratch_dir("codewhale-config-stay-home");
+        std::fs::create_dir_all(&dir).expect("temp home");
         // Seed the user-global config: DeepSeek is the authorized provider.
         // The config lives at $CODEWHALE_HOME/config.toml (the primary path
         // when CODEWHALE_HOME is explicit).

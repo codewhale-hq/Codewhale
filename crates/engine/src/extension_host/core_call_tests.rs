@@ -678,9 +678,8 @@ fn fixture(uses_server: bool) -> Fixture {
     let owner = begin(&mut registry, "a");
     let other = begin(&mut registry, "b");
     drop(registry);
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    std::mem::forget(dir);
+    let workspace = crate::test_support::test_scratch_dir("codewhale-core-call-tests");
+    std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("x"), "x").unwrap();
     let mut registry = crate::tools::registry::ToolRegistryBuilder::new()
         .with_file_tools()
