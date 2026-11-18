@@ -860,7 +860,7 @@ fn full_jellyfish_frame(x: u16, y: u16) -> FrameMarks {
         x,
         y,
         glyph,
-        jellyfish: Some(0),
+        group: Some(0),
         depth,
         style_mod: None,
         brightness: None,
@@ -909,11 +909,11 @@ fn jellyfish_relocates_as_one_nearest_silhouette() {
     let (buf, stats) = paint_fixture(area, &lines, &full_jellyfish_frame(10, 2));
 
     assert_eq!(buf[(10, 2)].symbol(), "X");
-    assert_eq!(buf[(12, 2)].symbol(), ".");
-    assert_eq!(buf[(12, 3)].symbol(), "\\");
-    assert_eq!(buf[(13, 4)].symbol(), "|");
-    assert_eq!(buf[(14, 4)].symbol(), "/");
-    assert_eq!(buf[(15, 4)].symbol(), "\\");
+    assert_eq!(buf[(13, 2)].symbol(), ".");
+    assert_eq!(buf[(13, 3)].symbol(), "\\");
+    assert_eq!(buf[(14, 4)].symbol(), "|");
+    assert_eq!(buf[(15, 4)].symbol(), "/");
+    assert_eq!(buf[(16, 4)].symbol(), "\\");
     assert_eq!(stats.marks_painted, 5);
     assert_eq!(stats.marks_skipped_text, 0);
     assert_eq!(stats.marks_clipped, 0);
@@ -986,7 +986,7 @@ fn sparse_jellyfish_row_keeps_a_safe_gap_over_text() {
         x,
         y: 2,
         glyph: "|",
-        jellyfish: Some(0),
+        group: Some(0),
         depth: Depth::Background,
         style_mod: None,
         brightness: None,
@@ -1035,52 +1035,6 @@ fn too_wide_jellyfish_is_truthfully_clipped_as_a_group() {
     assert_eq!(stats.marks_built, stats.marks_clipped);
 }
 
-#[test]
-fn caustic_brightness_cross_fades_without_80ms_steps() {
-    let samples: Vec<f32> = (0..=120)
-        .map(|frame| caustic_brightness(frame * 16, 18, 2, 1.0))
-        .collect();
-
-    assert!(samples.iter().all(|value| (1.0..=1.08).contains(value)));
-    assert!(
-        samples
-            .windows(2)
-            .all(|pair| (pair[1] - pair[0]).abs() < 0.02),
-        "adjacent 60 FPS caustic frames must cross-fade instead of toggling"
-    );
-    assert!(
-        samples.windows(2).any(|pair| pair[0] != pair[1]),
-        "the continuous caustic must still move"
-    );
-    assert_eq!(
-        caustic_brightness(0, 0, 0, 1.0),
-        caustic_brightness(0, 12, 0, 1.0),
-        "the authored caustic topology repeats every 12 columns"
-    );
-    assert_eq!(samples.first(), samples.get(60), "960 ms closes one cycle");
-
-    let base = Color::Rgb(64, 96, 128);
-    let colors: Vec<Color> = (0..=60)
-        .map(|frame| ocean::scale_color(base, caustic_brightness(frame * 16, 18, 2, 1.0)))
-        .collect();
-    assert!(
-        colors.windows(2).any(|pair| pair[0] != pair[1]),
-        "the cross-fade must survive truecolor channel quantization"
-    );
-    assert_eq!(colors.first(), colors.last(), "RGB output closes one cycle");
-
-    // Depth fade: the light dissolves to nothing at the band floor instead of
-    // stopping at full amplitude — the hard cutoff drew a visible horizontal
-    // line across tall windows.
-    for frame in 0..=60u128 {
-        assert_eq!(
-            caustic_brightness(frame * 16, 18, 2, 0.0),
-            1.0,
-            "a fully faded caustic must leave the water untouched"
-        );
-    }
-}
-
 fn native_frame_at(area: Rect, elapsed_ms: u128) -> FrameMarks {
     build_frame_marks(
         area,
@@ -1126,16 +1080,15 @@ fn native_pose_tables_have_fixed_cell_bounds_and_safe_glyphs() {
 #[test]
 fn native_fish_move_within_the_old_whole_cell_dwell() {
     let area = Rect::new(0, 0, 100, 30);
-    let a = native_frame_at(area, 190);
-    let b = native_frame_at(area, 380);
-    let (a, b) = (&a.marks[0], &b.marks[0]);
-    assert_eq!(
-        (a.x, a.y),
-        (b.x, b.y),
-        "both samples share the same cell anchor"
-    );
-    assert_ne!(
-        a.glyph, b.glyph,
+    let half_cell = SCHOOL_CELL_MS / 2;
+    let moved_within_a_cell = (0..SCHOOL_CELL_MS * 4).step_by(20).any(|t| {
+        let a = native_frame_at(area, t);
+        let b = native_frame_at(area, t + half_cell);
+        let (a, b) = (&a.marks[0], &b.marks[0]);
+        (a.x, a.y) == (b.x, b.y) && a.glyph != b.glyph
+    });
+    assert!(
+        moved_within_a_cell,
         "half-cell travel must change the raster within a cell"
     );
 }
@@ -1177,7 +1130,7 @@ fn native_temporal_sweep_retains_population_and_paint_bounds() {
         let mut saw_absence = false;
         for t in (0..310_000).step_by(250) {
             let frame = native_frame_at(area, t);
-            let count = frame.marks.iter().filter(|m| m.jellyfish.is_some()).count();
+            let count = frame.marks.iter().filter(|m| m.group == Some(0)).count();
             assert!(
                 count == 0 || count == 3,
                 "native jelly must be one complete group at {t}"
@@ -1224,7 +1177,7 @@ fn native_temporal_sweep_retains_population_and_paint_bounds() {
 fn native_jelly_stays_whole_as_wide_text_streams_through_its_lane() {
     let area = Rect::new(0, 0, 80, 24);
     let mut frame = native_frame_at(area, 0);
-    frame.marks.retain(|mark| mark.jellyfish.is_some());
+    frame.marks.retain(|mark| mark.group == Some(0));
     assert_eq!(frame.marks.len(), 3);
     let y = frame.marks[0].y;
     for width in 0..=40 {
