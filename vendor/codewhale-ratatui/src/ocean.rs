@@ -67,6 +67,7 @@ pub struct OceanRamp {
     ambient: Color,
     attention: Color,
     failure: Color,
+    quiet: [Option<Color>; 2],
 }
 
 impl OceanRamp {
@@ -100,6 +101,30 @@ impl OceanRamp {
             ambient,
             attention,
             failure,
+            quiet: [None; 2],
+        }
+    }
+
+    fn holding_quiet_inks(mut self, theme: &Theme) -> Self {
+        self.quiet = [theme.color(Role::Hint), theme.color(Role::Dim)];
+        self
+    }
+
+    fn warm(self, base: Color, toward: Color, amount: f32) -> Color {
+        let floors = [(self.quiet[0], 4.5), (self.quiet[1], 3.0)].map(|(ink, floor)| {
+            let ink = ink?;
+            Some((ink, contrast_ratio(ink, base)?.min(floor)))
+        });
+        let mut amount = amount;
+        loop {
+            let tinted = mix_toward(base, toward, amount);
+            let holds = floors.iter().flatten().all(|(ink, floor)| {
+                contrast_ratio(*ink, tinted).is_some_and(|ratio| ratio + 1e-5 >= *floor)
+            });
+            if holds || amount <= 0.0 {
+                return tinted;
+            }
+            amount = (amount - 0.005).max(0.0);
         }
     }
 
@@ -125,14 +150,17 @@ impl OceanRamp {
                 .native_palette()
                 .is_none_or(|palette| palette == crate::TuiPalette::Underwater)
         {
-            return Some(Self::new(
-                Self::SURFACE,
-                Self::MIDDLE,
-                Self::DEEP,
-                Self::AMBIENT,
-                attention,
-                failure,
-            ));
+            return Some(
+                Self::new(
+                    Self::SURFACE,
+                    Self::MIDDLE,
+                    Self::DEEP,
+                    Self::AMBIENT,
+                    attention,
+                    failure,
+                )
+                .holding_quiet_inks(theme),
+            );
         }
         let mut brightest = background;
         let mut darkest = background;
@@ -155,14 +183,17 @@ impl OceanRamp {
         }
         let light = theme.caps().appearance == Appearance::Light;
         let surface = mix_toward(background, brightest, if light { 0.45 } else { 0.35 });
-        Some(Self::new(
-            surface,
-            background,
-            mix_toward(background, darkest, if light { 0.45 } else { 0.65 }),
-            mix_toward(surface, theme.color(Role::Accent)?, 0.20),
-            attention,
-            failure,
-        ))
+        Some(
+            Self::new(
+                surface,
+                background,
+                mix_toward(background, darkest, if light { 0.45 } else { 0.65 }),
+                mix_toward(surface, theme.color(Role::Accent)?, 0.20),
+                attention,
+                failure,
+            )
+            .holding_quiet_inks(theme),
+        )
     }
 
     /// The native quadratic surface → middle → deep curve. Explicit context
@@ -220,12 +251,12 @@ impl OceanRamp {
     ) -> Color {
         let base = self.color_at_context(row, height, context_percent);
         match phase {
-            OceanPhase::Waiting | OceanPhase::Approval => mix_toward(
+            OceanPhase::Waiting | OceanPhase::Approval => self.warm(
                 base,
                 self.attention,
                 0.10 * (0.6 + 0.4 * (1.0 - depth_at(row, height, context_percent))),
             ),
-            OceanPhase::Failed => mix_toward(base, self.failure, 0.09),
+            OceanPhase::Failed => self.warm(base, self.failure, 0.09),
             _ => base,
         }
     }

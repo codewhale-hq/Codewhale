@@ -80,7 +80,7 @@ impl PolicyRule {
 }
 
 /// Single-`*` wildcard match. `*` does not cross `/`.
-fn wildcard_match(pattern: &str, value: &str) -> bool {
+pub(crate) fn wildcard_match(pattern: &str, value: &str) -> bool {
     wildcard_match_parts(pattern.as_bytes(), value.as_bytes())
 }
 

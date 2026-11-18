@@ -99,7 +99,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
     // value for the pass-through incoming route.
     fs::write(
             &path,
-            "route_preferences_version = 1\nprovider = 'openai'\nmodel = 'deepseek-v4-flash'\ndefault_text_model = 'gpui-fixture'\n",
+            "route_preferences_version = 1\nprovider = 'openai'\nmodel = 'deepseek-v4-flash'\ndefault_text_model = 'fixture-model'\n",
         )
         .unwrap();
     persist_provider_selection(Some(&path), &selection_identity(&path, "openrouter"), None)
@@ -109,7 +109,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
     assert!(doc.get("model").is_none(), "{doc:?}");
     assert_eq!(
         doc["providers"]["openai"]["model"].as_str(),
-        Some("gpui-fixture")
+        Some("fixture-model")
     );
     let switched = codewhale_plugins::providers::load_config(Some(path.clone()), None).unwrap();
     assert_eq!(
@@ -122,7 +122,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
         "{}",
         switched.default_model()
     );
-    assert_ne!(switched.default_model(), "gpui-fixture");
+    assert_ne!(switched.default_model(), "fixture-model");
 
     persist_provider_selection(Some(&path), &selection_identity(&path, "openai"), None).unwrap();
     let returned = codewhale_plugins::providers::load_config(Some(path.clone()), None).unwrap();
@@ -130,7 +130,7 @@ fn moving_root_default_off_the_root_does_not_resurrect_a_shadowed_legacy_model()
         returned.active_provider_identity().unwrap().provider,
         ProviderKind::Openai
     );
-    assert_eq!(returned.default_model(), "gpui-fixture");
+    assert_eq!(returned.default_model(), "fixture-model");
 }
 
 #[test]

@@ -15,7 +15,7 @@ jobs:
   refresh:
     name: Refresh the model catalog
     if: github.repository == 'codewhale-hq/Codewhale'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read

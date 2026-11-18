@@ -2236,7 +2236,7 @@ fn explicit_launch_provider_overrides_saved_startup_provider() {
     let app = App::new(options, &config);
 
     assert_eq!(app.api_provider, ProviderKind::XiaomiMimo);
-    assert_eq!(app.model, "mimo-v2.5-pro");
+    assert_eq!(app.model, "mimo-v2.6-pro");
 }
 
 #[test]
@@ -2400,6 +2400,96 @@ fn subscription_route_hides_stale_session_dollars_in_footer() {
     .unwrap_or_default();
     assert!(!rendered.contains('$'), "{rendered}");
     assert!(rendered.contains("Codex OAuth quota"), "{rendered}");
+}
+
+#[test]
+fn session_cost_label_renders_money_or_unknown_without_plan_names_or_local() {
+    let unknown = codewhale_localization::tr(
+        codewhale_localization::Locale::En,
+        codewhale_localization::MessageId::CmdCostUnknownValue,
+    )
+    .into_owned();
+
+    let mut sub = App::new(test_options(false), &Config::default());
+    sub.billing_presentation =
+        codewhale_engine::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
+    assert_eq!(sub.session_cost_label(), unknown);
+    assert_eq!(sub.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut local = App::new(test_options(false), &Config::default());
+    local.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Local;
+    assert_eq!(local.session_cost_label(), unknown);
+    assert_eq!(local.status_cost_label().as_deref(), Some(unknown.as_str()));
+
+    let mut metered = App::new(test_options(false), &Config::default());
+    metered.api_provider = ProviderKind::Deepseek;
+    metered.model = "deepseek-v4-flash".to_string();
+    metered.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
+    assert_eq!(metered.session_cost_label(), "$0.00");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_priced_turns = 1;
+    metered.accrue_session_cost_estimate(CostEstimate::usd_only(0.42));
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label(), None);
+
+    metered.session.cost_unpriced_turns = 1;
+    assert_eq!(metered.session_cost_label(), "$0.42");
+    assert_eq!(metered.status_cost_label().as_deref(), Some("$0.42"));
+}
+
+#[test]
+fn late_reported_usage_prunes_stale_request_outcome_unknown_reason() {
+    let mut app = App::new(test_options(false), &Config::default());
+    let route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        None,
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    let drop_pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+        &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+            reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            source_id: "cw-7882-late-source".to_string(),
+            route: route.clone(),
+        },
+    );
+    app.absorb_pending_background_cost(&drop_pool);
+    assert_eq!(app.session.cost_unpriced_turns, 1);
+    assert!(
+        app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+
+    let settled = codewhale_engine::cost_status::NativeUsageSource::capture(
+        "cw-7882-late-source",
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+    )
+    .reported(
+        &route,
+        &codewhale_models::Usage {
+            input_tokens: 1_000,
+            output_tokens: 200,
+            ..Default::default()
+        },
+    );
+    let settled_pool = codewhale_engine::cost_status::background_cost_for_runtime_usage(&settled);
+    app.absorb_pending_background_cost(&settled_pool);
+    assert_eq!(app.session.cost_priced_turns, 1);
+    assert_eq!(app.session.cost_unpriced_turns, 0);
+    assert!(
+        !app.session
+            .cost_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
+    assert!(
+        !app.session
+            .cost_cny_unpriced_reasons
+            .contains("request_outcome_unknown")
+    );
 }
 
 #[test]
@@ -8590,4 +8680,216 @@ async fn pet_view_save_failure_keeps_the_live_view_and_reports_without_overwriti
         app.pet_watch.enabled,
         "a failed save does not undo the live view"
     );
+}
+
+#[test]
+fn a_session_start_notice_names_active_agent_approved_plugins() {
+    use codewhale_plugins::host_services::{
+        AgentApproval, AgentPosture, PersonVia, PluginApprover, ReviewApproval,
+    };
+
+    let _lock = lock_test_env();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let home = tmp.path().join("home");
+    let workspace = tmp.path().join("project");
+    let other_project = tmp.path().join("otherproject");
+    for dir in [&home, &workspace, &other_project] {
+        std::fs::create_dir_all(dir).expect("dir");
+    }
+    let _env = sealed_settings_home(&home);
+
+    let ctx = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
+    for (dir_root, name) in [
+        (workspace.join(".codewhale/plugins"), "agent-one"),
+        (workspace.join(".codewhale/plugins"), "agent-two"),
+        (workspace.join(".codewhale/plugins"), "agent-off"),
+        (workspace.join(".codewhale/plugins"), "person-ok"),
+        (ctx.user_plugins_dir().to_path_buf(), "agent-other"),
+    ] {
+        let skill = dir_root.join(name).join("skills/hello");
+        std::fs::create_dir_all(&skill).expect("skill dir");
+        std::fs::write(
+            dir_root.join(name).join("plugin.toml"),
+            format!(
+                "schema_version = 1\n[plugin]\nname = {name:?}\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n"
+            ),
+        )
+        .expect("manifest");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: hello\ndescription: hi\n---\nbody\n",
+        )
+        .expect("skill");
+    }
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        ctx.user_plugins_dir(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("private user plugin dir");
+
+    {
+        let mut other_registry = ctx.registry_for_workspace(&other_project);
+        let other_ws_str = other_registry.workspace().to_string_lossy().into_owned();
+        let agent_elsewhere = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: other_ws_str,
+            thread_id: Some("th-other-1".to_string()),
+            turn_id: Some("turn-other-1".to_string()),
+            tool_call_id: Some("call-other-1".to_string()),
+        });
+        let other_hs = other_registry
+            .host_service_review_for("agent-other", &agent_elsewhere)
+            .map(|review| review.token);
+        std::sync::Arc::make_mut(&mut other_registry)
+            .trust_and_enable_by(
+                "agent-other",
+                ReviewApproval {
+                    approved_by: agent_elsewhere.clone(),
+                    host_services: other_hs,
+                },
+                agent_elsewhere,
+            )
+            .expect("agent-other");
+    }
+
+    let mut clean_registry = ctx.registry_for_workspace(&workspace);
+    let ws_str = clean_registry.workspace().to_string_lossy().into_owned();
+    assert!(!clean_registry.get("agent-other").unwrap().active());
+    assert!(clean_registry.get("agent-other").unwrap().outside_reach);
+    {
+        let agent_off = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::FullAccess,
+            workspace: ws_str.clone(),
+            thread_id: Some("th-off-1".to_string()),
+            turn_id: Some("turn-off-1".to_string()),
+            tool_call_id: Some("call-off-1".to_string()),
+        });
+        let off_hs = clean_registry
+            .host_service_review_for("agent-off", &agent_off)
+            .map(|review| review.token);
+        let reg = std::sync::Arc::make_mut(&mut clean_registry);
+        let person = PluginApprover::person(PersonVia::Terminal);
+        reg.trust_and_enable_by(
+            "person-ok",
+            ReviewApproval {
+                approved_by: person.clone(),
+                host_services: None,
+            },
+            person,
+        )
+        .expect("person-ok");
+        reg.trust_reviewed(
+            "agent-off",
+            ReviewApproval {
+                approved_by: agent_off,
+                host_services: off_hs,
+            },
+        )
+        .expect("agent-off");
+    }
+
+    let clean_app = App::new_with_plugin_registry(
+        crate::tui::test_support::test_tui_options(&workspace),
+        &Config::default(),
+        clean_registry.clone(),
+    );
+    assert!(clean_app.launch.visible);
+    assert!(clean_app.history.is_empty());
+    assert!(
+        !clean_app.status_toasts.iter().any(|toast| toast
+            .text
+            .contains("Agent-approved plugins active in this project")),
+        "{:?}",
+        clean_app.status_toasts
+    );
+
+    let mut registry = clean_registry;
+    {
+        let agent_full = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::FullAccess,
+            workspace: ws_str.clone(),
+            thread_id: Some("th-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            tool_call_id: Some("call-1".to_string()),
+        });
+        let full_hs = registry
+            .host_service_review_for("agent-one", &agent_full)
+            .map(|review| review.token);
+        let agent_auto = PluginApprover::Agent(AgentApproval {
+            posture: AgentPosture::AutoReview,
+            workspace: ws_str,
+            thread_id: Some("th-2".to_string()),
+            turn_id: Some("turn-2".to_string()),
+            tool_call_id: Some("call-2".to_string()),
+        });
+        let auto_hs = registry
+            .host_service_review_for("agent-two", &agent_auto)
+            .map(|review| review.token);
+        let reg = std::sync::Arc::make_mut(&mut registry);
+        reg.trust_and_enable_by(
+            "agent-one",
+            ReviewApproval {
+                approved_by: agent_full.clone(),
+                host_services: full_hs,
+            },
+            agent_full,
+        )
+        .expect("agent-one");
+        reg.trust_and_enable_by(
+            "agent-two",
+            ReviewApproval {
+                approved_by: agent_auto.clone(),
+                host_services: auto_hs,
+            },
+            agent_auto,
+        )
+        .expect("agent-two");
+    }
+
+    let mut app = App::new_with_plugin_registry(
+        crate::tui::test_support::test_tui_options(&workspace),
+        &Config::default(),
+        registry,
+    );
+    assert!(app.launch.visible);
+    assert!(app.history.is_empty());
+    fn notices(app: &App) -> Vec<&StatusToast> {
+        app.status_toasts
+            .iter()
+            .filter(|toast| {
+                toast
+                    .text
+                    .contains("Agent-approved plugins active in this project")
+            })
+            .collect()
+    }
+    let initial = notices(&app);
+    assert_eq!(initial.len(), 1, "{initial:?}");
+    let text = initial[0].text.clone();
+    assert_eq!(initial[0].level, StatusToastLevel::Warning);
+    assert!(initial[0].ttl_ms.is_none());
+    assert!(text.contains("agent-one"), "{text}");
+    assert!(text.contains("agent-two"), "{text}");
+    assert!(!text.contains("agent-off"), "{text}");
+    assert!(!text.contains("agent-other"), "{text}");
+    assert!(!text.contains("person-ok"), "{text}");
+
+    app.refresh_agent_approved_plugins_notice();
+    assert_eq!(notices(&app).len(), 1);
+
+    std::sync::Arc::make_mut(&mut app.plugin_registry)
+        .trust("agent-one")
+        .expect("person trust agent-one");
+    app.refresh_agent_approved_plugins_notice();
+    let after_one = notices(&app);
+    assert_eq!(after_one.len(), 1);
+    assert!(!after_one[0].text.contains("agent-one"), "{after_one:?}");
+    assert!(after_one[0].text.contains("agent-two"), "{after_one:?}");
+
+    std::sync::Arc::make_mut(&mut app.plugin_registry)
+        .trust("agent-two")
+        .expect("person trust agent-two");
+    app.refresh_agent_approved_plugins_notice();
+    assert!(notices(&app).is_empty(), "{:?}", notices(&app));
 }

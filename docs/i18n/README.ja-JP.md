@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>この翻訳は機械翻訳による下書きで、ネイティブによるレビューはまだありません。</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="デモタスクを終えたターミナルの Codewhale。export.py に --json フラグを追加し、ローカルテスト 3 件がすべて通り、委任したレビューで問題が見つからなかったと報告しています。下のタスク一覧には完了した 3 つのステップが並び、ステータス行には Full Access とローカルの website-demo プロバイダーが表示されています。">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen で実際のタスクを終えたターミナルの Codewhale。python3 -m unittest -v test_ls.py を実行して 2 件のテストが通り、argparse を使って ls.py に --json オプションを追加したと報告しています。ステータス行には accept edits と gemini-4-hydrogen が表示されています。">
 
-<sub>スクリプト化したテストモデルを使う 0.10.3（未リリース）の開発ビルドを、使い捨てのワークスペースで Full Access で動かしたものです。編集、3 件のテスト、サブエージェントによるレビューは実際に実行されました。</sub>
+<sub>0.10.3 の開発ビルドでの実際のセッションです。Google の API 経由で gemini-4-hydrogen が変更を書き、あなたがテストの実行を一度だけ許可しました。</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Anthropic、OpenAI、DeepSeek、Google、Mistral、Moonshot、OpenRouter、xAI �
 
 `/goal` はターンをまたいで続く目標を設定します。Codewhale は作業を[サブエージェント](../SUBAGENTS.md)に分け、それぞれの役割とモデルを持つエージェントの [Fleet](../FLEET.md) を動かし、リポジトリにコミットされた[ワークフロー](../WORKFLOW_AUTHORING.md)に従うこともできます。
 
-### 拡張
+### プラグイン
 
 [MCP サーバー](../MCP.md)を接続し、[スキル](../SKILLS.md)と[プラグイン](../PLUGINS.md)を追加し、セッションやツールのイベントで[フック](../HOOKS.md)を実行できます。コードモード（実験的、既定で有効）では、モデルが複数の MCP ツールやプラグインツールを呼び出す `execute_tools` プログラムを 1 つ書けます。各呼び出しはあなたの承認ルールに従い、レシートも残ります。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) は独立してリリースされる別のプラグイン（実験的、macOS のみ）で、アクセス権を確認して有効にするまでオフのままです。
 

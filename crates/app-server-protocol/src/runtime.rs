@@ -134,6 +134,8 @@ pub struct RuntimeCapabilities {
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
     pub thread_shell_consent: bool,
+    #[serde(default)]
+    pub thread_standing_context: bool,
     pub turns: bool,
     /// `POST /v1/threads/{id}/turns` accepts a durable, thread-scoped
     /// `operation_key` and returns the original turn for exact retries.
@@ -224,6 +226,19 @@ pub struct RuntimeCapabilities {
     /// browser `EventSource` reconnects without a cursor in the query string.
     #[serde(default)]
     pub event_stream_resume: bool,
+    /// `GET /v1/permissions/rules` lists the user `permissions.toml` rules
+    /// with per-rule removal tokens, and `POST /v1/permissions/rules/remove`
+    /// removes one for an owner caller.
+    #[serde(default)]
+    pub permission_rules: bool,
+    /// `POST /v1/approvals/{id}` accepts `remember_scope: "workspace"`, which
+    /// saves the exact repo-scoped allow rule to `permissions.toml`.
+    #[serde(default)]
+    pub approval_remember_workspace: bool,
+    /// `GET /v1/approval-grants` lists active and suspended grants across
+    /// threads.
+    #[serde(default)]
+    pub approval_grants_list: bool,
 }
 
 /// Experimental opt-in flags advertised by `GET /v1/runtime/info`.
@@ -538,6 +553,7 @@ mod tests {
             worktrees: true,
             job_operations: true,
             thread_shell_consent: true,
+            thread_standing_context: true,
             turns: true,
             turn_operation_idempotency: true,
             turn_operation_lookup: true,
@@ -567,6 +583,9 @@ mod tests {
             plugin_management: false,
             agent_mail: true,
             event_stream_resume: true,
+            permission_rules: true,
+            approval_remember_workspace: true,
+            approval_grants_list: true,
         };
         let value = serde_json::to_value(&caps).unwrap();
         let obj = value.as_object().unwrap();

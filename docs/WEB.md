@@ -35,6 +35,13 @@ session facts, transcript and tool receipts, and a composer. It can create,
 select, rename, and archive threads; start or steer turns; interrupt work;
 resolve approvals; and answer Runtime user-input requests.
 
+New threads use the configured provider and model by default. Named custom
+routes retain their exact `[providers.<name>]` identity when loading models
+and creating threads, including when several routes share the `custom` kind.
+Selecting a route for a new thread does not change the Runtime defaults.
+Provider endpoints and credentials are configured on the server; this dialog
+only selects an existing route and model.
+
 The browser is another view of the same local Runtime. It does not create a
 second cloud account, copy provider credentials into browser storage, or
 weaken the configured approval and sandbox policies.

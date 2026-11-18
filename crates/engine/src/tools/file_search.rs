@@ -2,11 +2,13 @@
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::{GlobBuilder, GlobMatcher, GlobSetBuilder};
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -19,6 +21,14 @@ use super::spec::{
 use codewhale_tools::param_alias::{PATH_ALIASES, apply_param_aliases};
 
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+const FILE_SEARCH_BUDGET: Duration = Duration::from_secs(20);
+const SHALLOW_PASS_DEPTH: usize = 4;
+
+#[derive(Debug, Default)]
+struct FileSearchOutcome {
+    matches: Vec<FileSearchMatch>,
+    stopped_after: Option<Duration>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct FileSearchMatch {
@@ -114,7 +124,7 @@ impl ToolSpec for FileSearchTool {
 
         let extensions = parse_extensions(&input);
         let exclude_patterns = parse_exclude_patterns(&input);
-        let matches = search_files_async(
+        let outcome = search_files_async(
             query.to_string(),
             base_path,
             context.workspace.clone(),
@@ -123,11 +133,28 @@ impl ToolSpec for FileSearchTool {
             limit,
             context.cancel_token.clone(),
             FILE_SEARCH_TIMEOUT,
+            FILE_SEARCH_BUDGET,
             context.follow_symlinks,
         )
         .await?;
-        ToolResult::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
+        file_search_result(outcome).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+fn file_search_result(outcome: FileSearchOutcome) -> Result<ToolResult, serde_json::Error> {
+    let Some(stopped_after) = outcome.stopped_after else {
+        return ToolResult::json(&outcome.matches);
+    };
+    let seconds = stopped_after.as_secs().max(1);
+    let note = format!(
+        "partial: stopped after {seconds}s before the whole tree was searched; these are the best matches found so far. Narrow `path` or the query for complete results."
+    );
+    Ok(ToolResult::json(&json!({
+        "matches": outcome.matches,
+        "partial": true,
+        "note": note,
+    }))?
+    .with_metadata(json!({ "partial": true, "stopped_after_secs": seconds })))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,8 +167,9 @@ async fn search_files_async(
     limit: usize,
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
+    budget: Duration,
     follow_symlinks: bool,
-) -> Result<Vec<FileSearchMatch>, ToolError> {
+) -> Result<FileSearchOutcome, ToolError> {
     let workspace_canonical = tokio::fs::canonicalize(&workspace).await.ok();
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
         search_files(
@@ -153,6 +181,7 @@ async fn search_files_async(
             exclude_patterns,
             limit,
             Some(&worker_cancel_token),
+            budget,
             follow_symlinks,
         )
     })
@@ -163,9 +192,9 @@ async fn run_blocking_file_search<F>(
     timeout: Duration,
     cancel_token: Option<CancellationToken>,
     search: F,
-) -> Result<Vec<FileSearchMatch>, ToolError>
+) -> Result<FileSearchOutcome, ToolError>
 where
-    F: FnOnce(CancellationToken) -> Result<Vec<FileSearchMatch>, ToolError> + Send + 'static,
+    F: FnOnce(CancellationToken) -> Result<FileSearchOutcome, ToolError> + Send + 'static,
 {
     if cancel_token
         .as_ref()
@@ -250,6 +279,11 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
         "**/DerivedData/**",
         "**/dist/**",
         "**/build/**",
+        "**/.venv/**",
+        "**/__pycache__/**",
+        "**/.next/**",
+        "**/.turbo/**",
+        "**/.gradle/**",
         "*.lock",
         "*.plist",
     ]
@@ -268,8 +302,11 @@ fn search_files(
     exclude_patterns: Vec<String>,
     limit: usize,
     cancel_token: Option<&CancellationToken>,
+    budget: Duration,
     follow_symlinks: bool,
-) -> Result<Vec<FileSearchMatch>, ToolError> {
+) -> Result<FileSearchOutcome, ToolError> {
+    let started = Instant::now();
+    let deadline = started + budget;
     check_cancelled(cancel_token)?;
 
     if !base_path.exists() {
@@ -329,9 +366,10 @@ fn search_files(
     let exclusions = exclusions
         .build()
         .map_err(|err| ToolError::invalid_input(format!("Invalid exclude globs: {err}")))?;
-    let mut results: Vec<FileSearchMatch> = Vec::with_capacity(limit);
     let walk_root = base_path.to_path_buf();
     let walk_cancel_token = cancel_token.cloned();
+    let deadline_hit = Arc::new(AtomicBool::new(false));
+    let walk_deadline_hit = Arc::clone(&deadline_hit);
 
     let mut builder = WalkBuilder::new(base_path);
     builder
@@ -339,6 +377,10 @@ fn search_files(
         .follow_links(follow_symlinks)
         .require_git(false)
         .filter_entry(move |entry| {
+            if Instant::now() >= deadline {
+                walk_deadline_hit.store(true, AtomicOrdering::Relaxed);
+                return false;
+            }
             let rel_path = entry
                 .path()
                 .strip_prefix(&walk_root)
@@ -364,42 +406,23 @@ fn search_files(
             }
             true
         });
-    let walker = builder.build();
-
-    for entry in walker {
-        check_cancelled(cancel_token)?;
-
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-
-        let path = entry.path();
+    let match_path = |path: &Path| -> Option<FileSearchMatch> {
         let rel_path = path
             .strip_prefix(base_path)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
         if !extensions.is_empty() && !extension_matches(path, &extensions) {
-            continue;
+            return None;
         }
-
         let name = file_name(path);
-
-        let score = match score_match(
+        let score = score_match(
             query_norm,
             &query_terms,
             query_glob.as_ref(),
             &rel_path,
             &name,
-        ) {
-            Some(score) => score,
-            None => continue,
-        };
-
+        )?;
         let shown_path = path
             .strip_prefix(workspace)
             .ok()
@@ -411,29 +434,93 @@ fn search_files(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let found = FileSearchMatch {
+        Some(FileSearchMatch {
             path: shown_path,
             name,
             score,
-        };
-        if results.len() == limit
-            && results
-                .last()
-                .is_some_and(|worst| compare_match(&found, worst) != Ordering::Less)
-        {
-            continue;
-        }
-        let index = results
-            .binary_search_by(|existing| compare_match(existing, &found))
-            .unwrap_or_else(|index| index);
-        if index < limit {
-            results.insert(index, found);
-            results.truncate(limit);
-        }
+        })
+    };
+    let run_pass = |builder: &WalkBuilder, max_depth: Option<usize>| {
+        let ranked = Mutex::new(Vec::with_capacity(limit));
+        let deeper = AtomicBool::new(false);
+        builder.build_parallel().run(|| {
+            let match_path = &match_path;
+            let ranked = &ranked;
+            let deadline_hit = &deadline_hit;
+            let deeper = &deeper;
+            Box::new(move |entry| {
+                if cancel_token.is_some_and(CancellationToken::is_cancelled) {
+                    return WalkState::Quit;
+                }
+                if Instant::now() >= deadline {
+                    deadline_hit.store(true, AtomicOrdering::Relaxed);
+                    return WalkState::Quit;
+                }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                let Some(file_type) = entry.file_type() else {
+                    return WalkState::Continue;
+                };
+                if file_type.is_dir() && max_depth.is_some_and(|depth| entry.depth() >= depth) {
+                    deeper.store(true, AtomicOrdering::Relaxed);
+                }
+                if !file_type.is_file() {
+                    return WalkState::Continue;
+                }
+                if let Some(found) = match_path(entry.path()) {
+                    let mut results = ranked.lock().unwrap_or_else(PoisonError::into_inner);
+                    insert_ranked(&mut results, found, limit);
+                }
+                WalkState::Continue
+            })
+        });
+        (
+            ranked.into_inner().unwrap_or_else(PoisonError::into_inner),
+            deadline_hit.load(AtomicOrdering::Relaxed),
+            deeper.into_inner(),
+        )
+    };
+    let outcome = |matches, stopped: bool| FileSearchOutcome {
+        matches,
+        stopped_after: stopped.then(|| started.elapsed()),
+    };
+
+    builder.max_depth(Some(SHALLOW_PASS_DEPTH));
+    let (shallow, stopped, deeper) = run_pass(&builder, Some(SHALLOW_PASS_DEPTH));
+    check_cancelled(cancel_token)?;
+    if stopped || !deeper {
+        return Ok(outcome(shallow, stopped));
     }
 
+    builder.max_depth(None);
+    let (mut full, stopped, _) = run_pass(&builder, None);
     check_cancelled(cancel_token)?;
-    Ok(results)
+    if stopped {
+        for found in shallow {
+            if !full.iter().any(|existing| existing.path == found.path) {
+                insert_ranked(&mut full, found, limit);
+            }
+        }
+    }
+    Ok(outcome(full, stopped))
+}
+
+fn insert_ranked(results: &mut Vec<FileSearchMatch>, found: FileSearchMatch, limit: usize) {
+    if results.len() == limit
+        && results
+            .last()
+            .is_some_and(|worst| compare_match(&found, worst) != Ordering::Less)
+    {
+        return;
+    }
+    let index = results
+        .binary_search_by(|existing| compare_match(existing, &found))
+        .unwrap_or_else(|index| index);
+    if index < limit {
+        results.insert(index, found);
+        results.truncate(limit);
+    }
 }
 
 fn check_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolError> {
@@ -865,5 +952,74 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("needle.txt"));
         assert!(!result.content.contains("needle-secret.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_file_search_large_non_git_tree_skips_heavy_dirs_and_returns_partial_on_budget() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for dir in 0..40 {
+            let shard = root.join("artifacts").join(format!("run-{dir}"));
+            std::fs::create_dir_all(&shard).expect("mkdir shard");
+            for file in 0..50 {
+                std::fs::write(shard.join(format!("log-{file}.txt")), "x\n").expect("write");
+            }
+            let heavy = root.join("worktrees").join(format!("wt-{dir}"));
+            for skipped in ["target/debug", "node_modules/pkg", ".git/objects"] {
+                std::fs::create_dir_all(heavy.join(skipped)).expect("mkdir heavy");
+                std::fs::write(heavy.join(skipped).join("READINESS.md"), "no\n").expect("write");
+            }
+            std::fs::write(heavy.join(".gitignore"), "scratch/\n").expect("write ignore");
+            std::fs::create_dir_all(heavy.join("scratch")).expect("mkdir scratch");
+            std::fs::write(heavy.join("scratch").join("READINESS.md"), "no\n").expect("write");
+        }
+        let wanted = root.join("ops").join("releases").join("launch");
+        std::fs::create_dir_all(&wanted).expect("mkdir wanted");
+        std::fs::write(wanted.join("READINESS.md"), "yes\n").expect("write wanted");
+        let deep = root.join("deep").join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&deep).expect("mkdir deep");
+        std::fs::write(deep.join("READINESS.md"), "yes\n").expect("write deep");
+
+        let search = |budget| {
+            search_files_async(
+                "READINESS.md".to_string(),
+                root.to_path_buf(),
+                root.to_path_buf(),
+                Vec::new(),
+                parse_exclude_patterns(&json!({})),
+                20,
+                None,
+                FILE_SEARCH_TIMEOUT,
+                budget,
+                false,
+            )
+        };
+
+        let complete = search(FILE_SEARCH_BUDGET).await.expect("complete search");
+        assert!(complete.stopped_after.is_none());
+        let mut paths: Vec<&str> = complete.matches.iter().map(|m| m.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "deep/a/b/c/d/READINESS.md",
+                "ops/releases/launch/READINESS.md"
+            ]
+        );
+
+        let partial = search(Duration::ZERO)
+            .await
+            .expect("budget stop is not a failure");
+        assert!(partial.stopped_after.is_some());
+        let result = file_search_result(partial).expect("partial result");
+        assert!(result.success);
+        let body: Value = serde_json::from_str(&result.content).expect("partial json");
+        assert_eq!(body["partial"], json!(true));
+        assert!(body["matches"].is_array());
+        assert!(
+            body["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("Narrow `path`"))
+        );
     }
 }

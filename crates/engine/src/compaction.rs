@@ -2019,35 +2019,37 @@ async fn create_summary(
             max_tokens,
         );
 
-        // Capture the session scope before awaiting so a late response cannot
-        // accrue into a subsequently loaded/new session.
-        let accounting_origin = notice_sink
-            .map(CompactionNoticeSink::accounting_origin)
-            .transpose()?
-            .flatten();
+        let accounting_origin = notice_sink.and_then(|sink| match sink.accounting_origin() {
+            Ok(origin) => origin,
+            Err(error) => {
+                tracing::warn!(%error, "compaction accounting origin failed; continuing with unknown cost");
+                None
+            }
+        });
         let cost_scope = accounting_origin.as_ref().map_or_else(
             crate::cost_status::scope_token,
             crate::cost_status::NativeUsageOrigin::scope,
         );
         let native_origin = if accounting_origin.is_some() {
             accounting_origin
-        } else if let Some(owner) = config.runtime_cost_owner.as_deref() {
-            Some(crate::cost_status::NativeUsageOrigin::runtime(
-                cost_scope, owner,
-            )?)
         } else if let Some(session_id) = prepared.session_id.as_ref() {
             let session_id = session_id.clone();
-            Some(
-                codewhale_runtime::runtime_control::owner_work(move || {
-                    let manager = crate::session_manager::SessionManager::default_location()?;
-                    Ok(crate::cost_status::NativeUsageOrigin::session(
-                        cost_scope,
-                        manager.sessions_dir().to_path_buf(),
-                        session_id,
-                    ))
-                })
-                .await?,
-            )
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    cost_scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
+            })
+            .await
+            {
+                Ok(origin) => Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "compaction session accounting origin failed; continuing with unknown cost");
+                    None
+                }
+            }
         } else {
             None
         };
@@ -2063,33 +2065,26 @@ async fn create_summary(
                     sink.notice(format!("Making room: {message}"));
                     Box::pin(async {})
                 });
-                source.bind_dispatch(&cost_route, &observation)?;
                 observation
             }
-            None => source.observe_route(&cost_route)?,
+            None => source.observation(),
         };
-        if let Some(record) = source.admit_dispatch(&cost_route).await?
-            && let Some(sink) = notice_sink
-        {
-            sink.settled_usage(&record).await?;
-        }
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
             client.create_message(request),
         )
         .await;
-        let record = source.response_record(&cost_route, &response, &wire.drain())?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                cost_scope,
-                config.runtime_cost_owner.as_deref(),
-                &record,
-            )
-            .await?;
+        let wire = wire.drain();
+        let record = source.response_record(&cost_route, &response, &wire);
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
         }
-        if let Some(sink) = notice_sink {
-            sink.settled_usage(&record).await?;
+        if let Some(sink) = notice_sink
+            && let Err(error) = sink.settled_usage(&record).await
+        {
+            tracing::warn!(%error, "compaction final usage notice failed; continuing");
         }
         let response = match response {
             Ok(response) => response,

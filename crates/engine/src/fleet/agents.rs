@@ -200,6 +200,19 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_binary: None,
         adapter_cli_env: None,
     },
+    ExternalAgent {
+        id: "copilot",
+        name: "GitHub Copilot CLI",
+        binary: "copilot",
+        acp_args: Some(&["--acp", "--stdio"]),
+        website: "https://docs.github.com/copilot/reference/copilot-cli-reference/acp-server",
+        min_version: None,
+        upgrade: Some("copilot update"),
+        login: Some("copilot login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
 ];
 
 const FIXTURE_AGENT: ExternalAgent = ExternalAgent {
@@ -393,6 +406,7 @@ pub fn version_token(text: &str) -> Option<String> {
                 .take(MAX_VERSION_CHARS)
                 .collect::<String>()
                 .trim()
+                .trim_end_matches('.')
                 .to_string()
         })
 }
@@ -779,6 +793,8 @@ mod tests {
             "echo \"agent v1.5.2 (build)\"; echo noise >&2",
         );
         assert_eq!(cli_version(&good).await.as_deref(), Some("1.5.2"));
+        let sentence = script(&dir, "sentence", "echo \"GitHub Copilot CLI 1.0.82.\"");
+        assert_eq!(cli_version(&sentence).await.as_deref(), Some("1.0.82"));
         let flood = script(
             &dir,
             "flood",

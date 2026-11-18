@@ -446,6 +446,8 @@ fn load_plugin(
         enabled_by: None,
         host_services: Vec::new(),
         outside_reach: false,
+        reviewed_at: None,
+        review_history: Vec::new(),
         install_nonce,
         skill_snapshots,
         diagnostics,

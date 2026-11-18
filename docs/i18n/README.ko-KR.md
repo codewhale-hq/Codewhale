@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>이 번역은 기계 번역 초안이며 원어민 검토를 아직 받지 않았습니다.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="데모 작업을 마친 터미널의 Codewhale. export.py에 --json 플래그를 추가했고, 로컬 테스트 3개가 모두 통과했으며, 위임한 리뷰에서 문제가 없었다고 보고합니다. 아래 작업 목록에는 완료된 세 단계가 있고, 상태 줄에는 Full Access와 로컬 website-demo 제공자가 표시됩니다.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, argparse로 ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 gemini-4-hydrogen이 표시됩니다.">
 
-<sub>스크립트로 만든 테스트 모델을 쓰는 0.10.3(아직 출시 전) 개발 빌드를 일회용 작업 공간에서 Full Access로 실행했습니다. 편집, 테스트 세 개, 서브 에이전트 리뷰는 실제로 실행되었습니다.</sub>
+<sub>0.10.3 개발 빌드에서의 실제 세션입니다. Google API를 통해 gemini-4-hydrogen이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Anthropic, OpenAI, DeepSeek, Google, Mistral, Moonshot, OpenRouter, xAI를 비�
 
 `/goal`은 여러 턴에 걸쳐 이어지는 목표를 정합니다. Codewhale은 작업을 [서브 에이전트](../SUBAGENTS.md)에게 나누거나, 각자의 역할과 모델을 가진 에이전트 [Fleet](../FLEET.md)를 실행하거나, 저장소에 커밋된 [워크플로](../WORKFLOW_AUTHORING.md)를 따를 수 있습니다.
 
-### 확장
+### 플러그인
 
 [MCP 서버](../MCP.md)를 연결하고, [스킬](../SKILLS.md)과 [플러그인](../PLUGINS.md)을 추가하고, 세션과 도구 이벤트에서 [훅](../HOOKS.md)을 실행하세요. 코드 모드(실험적, 기본 사용)는 모델이 여러 MCP 도구와 플러그인 도구를 호출하는 `execute_tools` 프로그램 하나를 작성하게 합니다. 각 호출은 여전히 승인 규칙을 따르고 영수증을 남깁니다. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin)는 별도로 릴리스되는 독립 플러그인(실험적, macOS 전용)이며, 접근 권한을 검토하고 켜기 전까지는 꺼져 있습니다.
 

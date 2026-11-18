@@ -1,5 +1,7 @@
 //! Diff rendering helpers for TUI previews.
 
+use std::borrow::Cow;
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::{ChangeTag, TextDiff};
@@ -44,6 +46,42 @@ pub struct DiffTotals {
     pub hunks: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffSummaryLabels {
+    pub summary: Cow<'static, str>,
+    pub file_one: Cow<'static, str>,
+    pub file_many: Cow<'static, str>,
+    pub hunk_one: Cow<'static, str>,
+    pub hunk_many: Cow<'static, str>,
+}
+
+impl Default for DiffSummaryLabels {
+    fn default() -> Self {
+        Self {
+            summary: Cow::Borrowed("summary: {files}, +{added} -{deleted}, {hunks}"),
+            file_one: Cow::Borrowed("{count} file"),
+            file_many: Cow::Borrowed("{count} files"),
+            hunk_one: Cow::Borrowed("{count} hunk"),
+            hunk_many: Cow::Borrowed("{count} hunks"),
+        }
+    }
+}
+
+impl DiffSummaryLabels {
+    fn files(&self, count: usize) -> String {
+        counted(count, &self.file_one, &self.file_many)
+    }
+
+    fn hunks(&self, count: usize) -> String {
+        counted(count, &self.hunk_one, &self.hunk_many)
+    }
+}
+
+fn counted(count: usize, one: &str, many: &str) -> String {
+    let template = if count == 1 { one } else { many };
+    template.replace("{count}", &count.to_string())
+}
+
 /// A rendered diff preview with an exact count of rows not retained.
 ///
 /// The renderer scans the complete diff so summaries and omission counts stay
@@ -68,7 +106,12 @@ pub struct DiffSearchResult {
 }
 
 pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
-    let mut rendered = render_diff_bounded(diff, width, MAX_RETAINED_ROWS);
+    let mut rendered = render_diff_bounded(
+        diff,
+        width,
+        MAX_RETAINED_ROWS,
+        &DiffSummaryLabels::default(),
+    );
     if rendered.omitted_rows > 0 {
         rendered.lines.pop();
         let notice = format!("+{} …", rendered.omitted_rows.saturating_add(1));
@@ -87,8 +130,13 @@ pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
 
 /// Render a diff summary and body within one finite total row budget.
 #[must_use]
-pub fn render_diff_bounded(diff: &str, width: u16, max_rows: usize) -> BoundedDiffRender {
-    render_diff_window(diff, width, 0, max_rows)
+pub fn render_diff_bounded(
+    diff: &str,
+    width: u16,
+    max_rows: usize,
+    labels: &DiffSummaryLabels,
+) -> BoundedDiffRender {
+    render_diff_window(diff, width, 0, max_rows, labels)
 }
 
 #[must_use]
@@ -97,9 +145,10 @@ pub fn render_diff_window(
     width: u16,
     start_row: usize,
     max_rows: usize,
+    labels: &DiffSummaryLabels,
 ) -> BoundedDiffRender {
     let mut collector = BoundedLineCollector::new(start_row, max_rows);
-    render_diff_into(diff, width, true, &mut collector);
+    render_diff_into(diff, width, Some(labels), &mut collector);
     collector.finish()
 }
 
@@ -111,19 +160,25 @@ pub fn render_diff_window(
 #[must_use]
 pub fn render_diff_body_bounded(diff: &str, width: u16, max_rows: usize) -> BoundedDiffRender {
     let mut collector = BoundedLineCollector::new(0, max_rows);
-    render_diff_into(diff, width, false, &mut collector);
+    render_diff_into(diff, width, None, &mut collector);
     collector.finish()
 }
 
 #[must_use]
-pub fn search_diff(diff: &str, width: u16, query: &str, match_index: usize) -> DiffSearchResult {
+pub fn search_diff(
+    diff: &str,
+    width: u16,
+    query: &str,
+    match_index: usize,
+    labels: &DiffSummaryLabels,
+) -> DiffSearchResult {
     let query = query.trim();
     if query.is_empty() {
         return DiffSearchResult::default();
     }
     let mut collector = BoundedLineCollector::new(0, 0);
     collector.search = Some((query.to_ascii_lowercase(), match_index));
-    render_diff_into(diff, width, true, &mut collector);
+    render_diff_into(diff, width, Some(labels), &mut collector);
     collector.search_result
 }
 
@@ -133,6 +188,7 @@ pub fn search_diff_from_origin(
     width: u16,
     query: &str,
     origin: usize,
+    labels: &DiffSummaryLabels,
 ) -> DiffSearchResult {
     let query = query.trim();
     if query.is_empty() {
@@ -141,29 +197,41 @@ pub fn search_diff_from_origin(
     let mut collector = BoundedLineCollector::new(0, 0);
     collector.search = Some((query.to_ascii_lowercase(), 0));
     collector.search_origin = Some(origin);
-    render_diff_into(diff, width, true, &mut collector);
+    render_diff_into(diff, width, Some(labels), &mut collector);
     collector.search_result
 }
 
 #[must_use]
-pub fn diff_row_for_origin(diff: &str, width: u16, origin: usize) -> usize {
+pub fn diff_row_for_origin(
+    diff: &str,
+    width: u16,
+    origin: usize,
+    labels: &DiffSummaryLabels,
+) -> usize {
     let mut collector = BoundedLineCollector::new(0, 0);
     collector.anchor_origin = Some(origin);
-    render_diff_into(diff, width, true, &mut collector);
+    render_diff_into(diff, width, Some(labels), &mut collector);
     collector
         .anchor_row
         .unwrap_or_else(|| collector.total_rows.saturating_sub(1))
 }
 
-fn render_diff_into(diff: &str, width: u16, summary: bool, collector: &mut BoundedLineCollector) {
-    let totals = if summary {
+fn render_diff_into(
+    diff: &str,
+    width: u16,
+    summary: Option<&DiffSummaryLabels>,
+    collector: &mut BoundedLineCollector,
+) {
+    let totals = if summary.is_some() {
         diff_totals(diff)
     } else {
         DiffTotals::default()
     };
     let origin_offset = usize::from(totals.files > 0);
-    if totals.files > 0 {
-        render_diff_summary(diff, totals, width, collector);
+    if let Some(labels) = summary
+        && totals.files > 0
+    {
+        render_diff_summary(diff, totals, labels, width, collector);
         collector.summary_rows = collector.total_rows;
         collector.summary_retained = collector.lines.len();
     }
@@ -618,19 +686,17 @@ fn parse_diff_git_path(line: &str) -> Option<&str> {
 fn render_diff_summary(
     diff: &str,
     totals: DiffTotals,
+    labels: &DiffSummaryLabels,
     width: u16,
     collector: &mut BoundedLineCollector,
 ) {
     render_styled_text(
-        &[&format!(
-            "summary: {} file{}, +{} -{}, {} hunk{}",
-            totals.files,
-            if totals.files == 1 { "" } else { "s" },
-            totals.added,
-            totals.deleted,
-            totals.hunks,
-            if totals.hunks == 1 { "" } else { "s" },
-        )],
+        &[&labels
+            .summary
+            .replace("{files}", &labels.files(totals.files))
+            .replace("{added}", &totals.added.to_string())
+            .replace("{deleted}", &totals.deleted.to_string())
+            .replace("{hunks}", &labels.hunks(totals.hunks))],
         Style::default()
             .fg(palette::TEXT_PRIMARY)
             .add_modifier(Modifier::BOLD),
@@ -640,11 +706,10 @@ fn render_diff_summary(
     );
     for summary in summarize_diff(diff) {
         let counts = format!(
-            "  +{} -{}  {} hunk{}",
+            "  +{} -{}  {}",
             summary.added,
             summary.deleted,
-            summary.hunks,
-            if summary.hunks == 1 { "" } else { "s" }
+            labels.hunks(summary.hunks)
         );
         render_styled_text(
             &["  ", summary.path, &counts],

@@ -8,8 +8,8 @@ use super::observer_hooks::{
     turn_end_observer_metadata,
 };
 use super::task_projection::{
-    ShellExecLiveUpdate, active_rlm_task_entries, newly_terminal, refresh_shell_exec_live_output,
-    shell_exec_live_update,
+    LiveRefresh, ShellExecLiveUpdate, active_rlm_task_entries, apply_shell_job_snapshots,
+    newly_terminal, refresh_shell_exec_live_output, shell_exec_live_update,
 };
 use super::*;
 use crate::tui::active_cell::ActiveCell;
@@ -850,16 +850,13 @@ fn settled_child_fixture_record(
         codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
         Some(origin),
     );
-    let record = source
-        .prepare(
-            route,
-            usage,
-            codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
-            codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-        )
-        .expect("native fixture record");
-    codewhale_engine::cost_status::report_runtime_usage_record(scope, None, &record)
-        .expect("durable fixture publication");
+    let record = source.prepare(
+        route,
+        usage,
+        codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
+        codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+    );
+    codewhale_engine::cost_status::record_runtime_usage(scope, None, &record);
     record
 }
 
@@ -1117,7 +1114,6 @@ fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
         ShellBindingId::PetCopyReply => KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         ShellBindingId::PetSound => KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE),
         ShellBindingId::PetBrowser => KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
-        ShellBindingId::PetWindow => KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE),
 
         ShellBindingId::RedactionGateConfirm => {
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)
@@ -10041,15 +10037,11 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
     assert!(codewhale_engine::cost_status::usage_source_seen(
         "subagent:agent-reload:step:1:response:late"
     ));
-    let replay_owner = "interactive:reloaded-session:turn-replay";
-    codewhale_engine::cost_status::register_interactive_runtime_usage_sink(
-        replay_owner,
-        codewhale_engine::cost_status::scope_token(),
-    );
-    codewhale_engine::cost_status::report_effective_route_for_runtime(
-        codewhale_engine::cost_status::scope_token(),
-        Some(replay_owner),
+    let replay_source = codewhale_engine::cost_status::NativeUsageSource::capture(
         "subagent:agent-reload:step:1:response:late",
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+    );
+    let replay_record = replay_source.reported(
         &codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
             None,
             ProviderKind::Anthropic,
@@ -10064,7 +10056,11 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
             ..Usage::default()
         },
     );
-    codewhale_engine::cost_status::finish_runtime_usage_owner(replay_owner);
+    codewhale_engine::cost_status::record_runtime_usage(
+        codewhale_engine::cost_status::scope_token(),
+        None,
+        &replay_record,
+    );
     assert!(
         codewhale_engine::cost_status::drain().is_empty(),
         "a re-delivered provider response must remain deduped after reload"
@@ -10176,14 +10172,18 @@ fn shell_live_output_refresh_does_not_block_on_contended_lock() {
 
     let guard = shell_mgr.lock().expect("hold shell lock");
     let changed = refresh_shell_exec_live_output(&mut app);
-    assert!(
-        !changed,
+    assert_eq!(
+        changed,
+        LiveRefresh::Unchanged,
         "contended live-output refresh should skip this frame, not block or update"
     );
     drop(guard);
 
     // With the lock free again the path runs normally (no jobs → no change).
-    assert!(!refresh_shell_exec_live_output(&mut app));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::Unchanged
+    );
 }
 
 #[test]
@@ -10279,7 +10279,11 @@ fn refresh_shell_exec_live_output_finalizes_restored_missing_shell_job() {
 
     let changed = refresh_shell_exec_live_output(&mut app);
 
-    assert!(changed, "detached shell exec should be finalized");
+    assert_eq!(
+        changed,
+        LiveRefresh::Changed,
+        "detached shell exec should be finalized"
+    );
     let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
         panic!("expected exec cell");
     };
@@ -11230,32 +11234,32 @@ fn first_run_route_starts_with_configured_provider_and_model() {
         let route = if from_env {
             ""
         } else {
-            "provider = 'openai'\ndefault_text_model = 'gpui-fixture'\n"
+            "provider = 'openai'\ndefault_text_model = 'fixture-model'\n"
         };
         std::fs::write(&path, format!("{route}[providers.openai]\napi_key = 'fixture-key'\nbase_url = 'http://127.0.0.1:9/v1'\n")).unwrap();
         let _provider = from_env.then(|| EnvVarGuard::set("CODEWHALE_PROVIDER", "openai"));
-        let _model = from_env.then(|| EnvVarGuard::set("CODEWHALE_MODEL", "gpui-fixture"));
+        let _model = from_env.then(|| EnvVarGuard::set("CODEWHALE_MODEL", "fixture-model"));
         let config =
             codewhale_plugins::providers::load_config(None, None).expect("load fresh home config");
         assert_eq!(
             config.active_provider_identity().unwrap().provider,
             ProviderKind::Openai
         );
-        assert_eq!(config.default_model(), "gpui-fixture");
+        assert_eq!(config.default_model(), "fixture-model");
 
         // An options default must not replace the resolved config's model.
         let mut options = create_test_options();
         options.model = DEFAULT_TEXT_MODEL.to_string();
         let mut app = App::new(options, &config);
         assert_eq!(app.api_provider, ProviderKind::Openai);
-        assert_eq!(app.model, "gpui-fixture");
+        assert_eq!(app.model, "fixture-model");
         assert!(!app.should_adopt_live_local_ollama());
         assert!(codewhale_config::SetupState::load().unwrap().is_none());
         assert_eq!(
             codewhale_plugins::providers::load_config(None, None)
                 .unwrap()
                 .default_model(),
-            "gpui-fixture"
+            "fixture-model"
         );
     }
 }
@@ -11264,7 +11268,7 @@ fn first_run_route_starts_with_configured_provider_and_model() {
 async fn first_run_route_keeps_explicit_choice_when_credentials_are_missing() {
     let _home = SettingsHomeGuard::new();
     for document in [
-        "provider = 'openai'\ndefault_text_model = 'gpui-fixture'\n",
+        "provider = 'openai'\ndefault_text_model = 'fixture-model'\n",
         "provider = 'openai'\n",
         "default_text_model = 'deepseek-v4-flash'\n",
         "[providers.deepseek]\nmodel = 'deepseek-v4-flash'\n",
@@ -11498,7 +11502,7 @@ async fn first_run_switch_to_keyed_route_clears_launch_missing_key_state() {
     std::fs::write(
         &path,
         "provider = \"openai\"\n\
-         default_text_model = \"gpui-fixture\"\n\
+         default_text_model = \"fixture-model\"\n\
          [providers.openai]\n\
          api_key = \"sk-fixture-0000000000000000000000000000\"\n\
          base_url = \"http://127.0.0.1:4880/v1\"\n",
@@ -12071,7 +12075,7 @@ api_key = "arcee-key"
     // The save decision is pending for the route-save prompt.
     let pending = app.pending_route_save.as_ref().expect("pending save");
     assert_eq!(pending.provider_identity, "xiaomi-mimo");
-    assert_eq!(pending.model, "mimo-v2.5-pro");
+    assert_eq!(pending.model, "mimo-v2.6-pro");
 }
 
 /// The first-run Ollama probe answers in the background. Once the person has
@@ -18050,14 +18054,6 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
         .expect("native origin read")
         .write_receipt;
     let origin_scope = codewhale_engine::cost_status::scope_token();
-    let owner = "interactive:active-deleted-origin:origin-turn";
-    codewhale_engine::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        owner,
-        origin_scope,
-        &session.metadata.id,
-        "origin-turn",
-        &manager,
-    );
     let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
     let usage = codewhale_models::Usage {
         input_tokens: 10_000,
@@ -18071,18 +18067,18 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
             .is_some_and(|cost| cost.usd > 0.0)
     );
     let source_id = "subagent:deleted-origin:response";
+    let origin = app
+        .session_write_receipt
+        .as_ref()
+        .expect("native source")
+        .usage_origin(origin_scope)
+        .expect("native origin");
     let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
         source_id,
         codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
-        Some(
-            app.session_write_receipt
-                .as_ref()
-                .expect("native source")
-                .usage_origin(origin_scope)
-                .expect("native origin"),
-        ),
+        Some(origin.clone()),
     );
-    let record = source.reported(&route, &usage).expect("native receipt");
+    let record = source.reported(&route, &usage);
     let mailbox = codewhale_engine::tools::subagent::MailboxMessage::usage_record(
         "agent-deleted-origin",
         record.clone(),
@@ -18094,16 +18090,10 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     // an active-origin callback, not the already-covered stale-scope path.
     assert_eq!(codewhale_engine::cost_status::scope_token(), origin_scope);
     for seq in 1..=2 {
-        codewhale_engine::cost_status::report_runtime_usage_record(origin_scope, None, &record)
-            .expect("handled retired receipt");
+        codewhale_engine::cost_status::record_runtime_usage(origin_scope, Some(&origin), &record);
         handle_subagent_mailbox_for_turn(&mut app, "origin-turn", seq, &mailbox);
     }
     assert!(codewhale_engine::cost_status::drain().is_empty());
-    let fallback = codewhale_engine::cost_status::take_runtime_usage(owner);
-    assert!(fallback.records.is_empty());
-    assert!(fallback.drop_records.is_empty());
-    assert_eq!(fallback.dropped_records, 0);
-    codewhale_engine::cost_status::finish_runtime_usage_owner(owner);
     assert_eq!(app.session.subagent_cost, 0.0);
     assert_eq!(app.session.subagent_cost_cny, 0.0);
     assert_eq!(app.session.cost_priced_turns, 0);
@@ -26701,6 +26691,7 @@ fn exploring_label_uses_progressive_for_read_file() {
         "read_file",
         &serde_json::json!({"path": "src/foo.rs"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Reading src/foo.rs");
 }
@@ -26711,13 +26702,19 @@ fn exploring_label_uses_progressive_for_list_dir() {
         "list_dir",
         &serde_json::json!({"path": "crates/tui/src/"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Listing crates/tui/src/");
 }
 
 #[test]
 fn exploring_label_uses_progressive_for_list_dir_no_path() {
-    let label = exploring_label("list_dir", &serde_json::json!({}), std::path::Path::new(""));
+    let label = exploring_label(
+        "list_dir",
+        &serde_json::json!({}),
+        std::path::Path::new(""),
+        codewhale_localization::Locale::En,
+    );
     assert_eq!(label, "Listing directory");
 }
 
@@ -26727,6 +26724,7 @@ fn exploring_label_for_grep_quotes_pattern_with_searching_for() {
         "grep_files",
         &serde_json::json!({"pattern": "TranscriptScroll"}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Searching for `TranscriptScroll`");
 }
@@ -26737,8 +26735,35 @@ fn exploring_label_for_list_files_uses_progressive() {
         "list_files",
         &serde_json::json!({}),
         std::path::Path::new(""),
+        codewhale_localization::Locale::En,
     );
     assert_eq!(label, "Listing files");
+}
+
+#[test]
+fn exploring_labels_follow_the_ui_locale() {
+    let label = |name: &str, input: serde_json::Value| {
+        exploring_label(
+            name,
+            &input,
+            std::path::Path::new(""),
+            codewhale_localization::Locale::ZhHans,
+        )
+    };
+    assert_eq!(
+        label("read_file", serde_json::json!({"path": "src/foo.rs"})),
+        "正在读取 src/foo.rs"
+    );
+    assert_eq!(
+        label("list_dir", serde_json::json!({"path": "src/"})),
+        "正在列出 src/"
+    );
+    assert_eq!(label("list_dir", serde_json::json!({})), "正在列出目录");
+    assert_eq!(
+        label("grep_files", serde_json::json!({"pattern": "foo"})),
+        "正在搜索 `foo`"
+    );
+    assert_eq!(label("list_files", serde_json::json!({})), "正在列出文件");
 }
 
 // `running_status_label_with_elapsed` lives in `crate::tui::history` next to
@@ -34062,14 +34087,14 @@ fn a_resize_burst_keeps_following_input_in_order() {
 /// is withdrawn once a later save of that session lands.
 #[test]
 fn a_failing_session_save_shows_an_error_until_a_save_lands() {
-    use crate::tui::persistence_actor::SaveHealthReading;
+    use crate::tui::persistence_actor::{SaveHealthFailure, SaveHealthReading};
     let mut app = create_test_app();
     let mut seen = 0;
     let failing = SaveHealthReading {
         generation: 1,
         failing: Some((
             "toast-probe".to_string(),
-            std::io::ErrorKind::PermissionDenied,
+            SaveHealthFailure::Io(std::io::ErrorKind::PermissionDenied),
         )),
     };
     let save_errors = |app: &App| {
@@ -34121,7 +34146,7 @@ fn a_failing_session_save_shows_an_error_until_a_save_lands() {
 
 #[test]
 fn shutdown_reports_only_a_save_that_is_still_failing() {
-    use crate::tui::persistence_actor::SaveHealthReading;
+    use crate::tui::persistence_actor::{SaveHealthFailure, SaveHealthReading};
     let locale = codewhale_localization::Locale::En;
     let healthy = SaveHealthReading {
         generation: 4,
@@ -34134,7 +34159,10 @@ fn shutdown_reports_only_a_save_that_is_still_failing() {
     );
     let failing = SaveHealthReading {
         generation: 5,
-        failing: Some(("session-a".to_string(), std::io::ErrorKind::StorageFull)),
+        failing: Some((
+            "session-a".to_string(),
+            SaveHealthFailure::Io(std::io::ErrorKind::StorageFull),
+        )),
     };
     let notice = super::event_loop::shutdown_persistence_notice(locale, &failing)
         .expect("a failing save produces an exit notice");
@@ -35083,11 +35111,17 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
     let queue = root.path().join("queue.json");
     let saved = std::fs::read(&queue)?;
     std::fs::write(&queue, b"{corrupt")?;
-    assert!(super::task_projection::refresh_active_task_panel(&mut app, &tasks).await);
+    assert_eq!(
+        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        LiveRefresh::Changed
+    );
     assert!(app.task_panel_unavailable);
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     app.current_session_id = Some("session-b".into());
-    assert!(super::task_projection::refresh_active_task_panel(&mut app, &tasks).await);
+    assert_eq!(
+        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        LiveRefresh::Changed
+    );
     assert!(app.task_panel_unavailable);
     assert!(
         app.task_panel.is_empty(),
@@ -35570,11 +35604,11 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
     let _home = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.api_provider = ProviderKind::Openai;
-    app.model = "gpui-fixture".to_string();
+    app.model = "fixture-model".to_string();
     let mut engine = mock_engine_handle();
     let mut config = {
         let __cw_config_init_72_0 = Some("openai".to_string());
-        let __cw_config_init_72_1 = Some("gpui-fixture".to_string());
+        let __cw_config_init_72_1 = Some("fixture-model".to_string());
         let __cw_config_init_72_2 = Some(ProvidersConfig {
             openai: ProviderConfig {
                 api_key: Some("sk-test".to_string()),
@@ -35605,7 +35639,7 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
         .await
     );
     assert_eq!(app.api_provider, ProviderKind::Deepseek);
-    assert_ne!(app.model, "gpui-fixture");
+    assert_ne!(app.model, "fixture-model");
 
     assert!(
         {
@@ -35621,7 +35655,7 @@ async fn provider_switch_back_lands_on_root_default_owned_by_that_provider() {
         .await
     );
     assert_eq!(app.api_provider, ProviderKind::Openai);
-    assert_eq!(app.model, "gpui-fixture");
+    assert_eq!(app.model, "fixture-model");
 }
 
 #[test]
@@ -35843,6 +35877,112 @@ fn g3_real_height_resize_keeps_wrapped_rows_and_tool_projection() {
     assert_eq!(app.viewport.pending_terminal_size, Some(Size::new(80, 30)));
     let _ = crate::tui::widgets::ChatWidget::new(&mut app, Rect::new(0, 0, 80, 30));
     assert_eq!(app.viewport.transcript_cache.total_lines(), lines);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn focus_recapture_repaints_cells_without_erasing_the_viewport() {
+    use super::frame::{FrameRepaint, draw_frame_with_repaint, synchronized_frame};
+    use ratatui::buffer::CellDiffOption;
+
+    #[derive(Clone, Default)]
+    struct Capture(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[allow(deprecated)]
+    fn render_fixture(frame: &mut ratatui::Frame<'_>) {
+        let buffer = frame.buffer_mut();
+        buffer.set_string(0, 0, "A界Z☀️E", ratatui::style::Style::default());
+        buffer[(8, 0)].set_symbol("L").set_skip(true);
+        buffer[(10, 0)]
+            .set_symbol("S")
+            .set_diff_option(CellDiffOption::Skip);
+        buffer[(12, 0)]
+            .set_symbol("W")
+            .set_diff_option(CellDiffOption::ForcedWidth(
+                std::num::NonZeroU16::new(2).unwrap(),
+            ));
+    }
+
+    assert!(FrameRepaint::Clear.max(FrameRepaint::Recapture) == FrameRepaint::Clear);
+    for (width, height) in [(80, 24), (120, 40)] {
+        for synchronized in [false, true] {
+            let capture = Capture::default();
+            let mut backend = crate::tui::color_compat::ColorCompatBackend::new(
+                capture.clone(),
+                codewhale_palette::ColorDepth::TrueColor,
+                codewhale_palette::PaletteMode::Dark,
+            );
+            backend.force_size(Size::new(width, height));
+            let mut terminal = Terminal::new(backend).unwrap();
+            let draw = |terminal: &mut Terminal<_>, repaint| {
+                synchronized_frame(terminal, synchronized, |terminal| {
+                    draw_frame_with_repaint(terminal, repaint, render_fixture)
+                })
+                .unwrap();
+            };
+
+            draw(&mut terminal, FrameRepaint::Diff);
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Recapture);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            assert!(!text.contains("\x1b[2J"), "{text:?}");
+            assert!(
+                output
+                    .windows(TERMINAL_ORIGIN_RESET.len())
+                    .any(|bytes| bytes == TERMINAL_ORIGIN_RESET),
+                "{text:?}"
+            );
+            assert!(text.contains("界\x1b[1;4HZ"), "{text:?}");
+            assert!(text.contains("☀️\x1b[1;7HE"), "{text:?}");
+            assert!(
+                output
+                    .windows(usize::from(width))
+                    .any(|bytes| bytes.iter().all(|byte| *byte == b' ')),
+                "default blank cells must be repainted: {text:?}"
+            );
+            for skipped in ['L', 'S', 'W'] {
+                assert!(!text.contains(skipped), "{text:?}");
+            }
+            if synchronized {
+                assert!(output.starts_with(BEGIN_SYNC_UPDATE), "{text:?}");
+                assert!(output.ends_with(END_SYNC_UPDATE), "{text:?}");
+            } else {
+                assert!(!text.contains("\x1b[?2026h"), "{text:?}");
+                assert!(!text.contains("\x1b[?2026l"), "{text:?}");
+            }
+
+            draw(&mut terminal, FrameRepaint::Diff);
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Diff);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            for repainted in ['A', '界', '☀', 'E', ' '] {
+                assert!(
+                    !text.contains(repainted),
+                    "unchanged frame must settle: {text:?}"
+                );
+            }
+
+            capture.0.borrow_mut().clear();
+            draw(&mut terminal, FrameRepaint::Clear);
+            let output = capture.0.borrow().clone();
+            let text = String::from_utf8_lossy(&output);
+            assert!(
+                text.contains("\x1b[2J"),
+                "explicit clear must be preserved: {text:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -36687,4 +36827,272 @@ fn child_auto_review_block_receipt_stays_non_approvable() {
     assert!(!entry.approvable);
     assert!(app.latest_approvable_auto_review_block().is_none());
     assert!(!super::event_loop::queue_auto_review_retry_from_r(&mut app));
+}
+
+#[test]
+fn the_terminal_sends_with_auto_routing_and_no_usage_origin() {
+    let mut app = create_test_app();
+    app.auto_model = true;
+    app.session_write_receipt = None;
+    let message = QueuedMessage::new("send under auto routing without origin".to_string(), None);
+    let prepared = prepare_user_dispatch(&mut app, &Config::default(), message).expect(
+        "terminal send with Auto routing must succeed when session accounting origin is absent",
+    );
+    assert!(prepared.should_auto_resolve);
+    assert!(prepared.accounting_origin.is_none());
+}
+
+#[test]
+fn a_running_background_shell_job_ticking_its_elapsed_time_lets_the_loop_go_quiet() {
+    let mut app = create_test_app();
+    app.current_session_id = Some("quiet-session".to_string());
+    let manager = app
+        .runtime_services
+        .shell_manager
+        .clone()
+        .expect("shell manager");
+    let task_id = manager
+        .lock()
+        .unwrap()
+        .execute_with_options_env_for_session(
+            "sleep 60",
+            None,
+            1_000,
+            true,
+            None,
+            false,
+            None,
+            std::collections::HashMap::new(),
+            "quiet-session",
+        )
+        .expect("spawn background sleep")
+        .task_id
+        .expect("background task id");
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "sleep 60".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some(task_id.clone()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::ElapsedOnly
+    );
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::ElapsedOnly,
+        "elapsed time alone must not count as UI activity"
+    );
+    let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
+        panic!("expected exec cell");
+    };
+    assert!(exec.duration_ms.is_some_and(|ms| ms >= 30));
+
+    manager.lock().unwrap().kill(&task_id).expect("kill sleep");
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::Changed,
+        "the job finishing is a real change"
+    );
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SilentJobWindow {
+    wakes: u32,
+    redraws: u32,
+    changes: u32,
+    shortest_idle_poll: Option<Duration>,
+}
+
+fn simulate_silent_background_job(
+    fancy_animations: bool,
+    windows: &[(u64, u64)],
+) -> Vec<SilentJobWindow> {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::None;
+    app.low_motion = false;
+    app.fancy_animations = fancy_animations;
+    app.current_session_id = Some("quiet-session".to_string());
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "sleep 600".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_quiet".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    app.needs_redraw = false;
+    let job_at = |elapsed: Duration| {
+        let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let mut jobs = std::collections::HashMap::new();
+        jobs.insert(
+            "shell_quiet".to_string(),
+            ShellJobSnapshot {
+                id: "shell_quiet".to_string(),
+                job_id: "shell_quiet".to_string(),
+                command: "sleep 600".to_string(),
+                description: None,
+                cwd: PathBuf::from("/tmp/repo"),
+                status: ShellStatus::Running,
+                exit_code: None,
+                elapsed_ms: ms,
+                started_at: Some(chrono::Utc::now()),
+                cause: None,
+                producer_reported: false,
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+                stdout_len: 0,
+                stderr_len: 0,
+                stdin_available: false,
+                stale: false,
+                elapsed_since_output_ms: Some(ms),
+                linked_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                origin_tool_call_id: None,
+                origin_turn_id: None,
+                owner_session_id: "quiet-session".to_string(),
+                background: true,
+                finished_at: None,
+            },
+        );
+        jobs
+    };
+
+    let start = Instant::now();
+    let end = Duration::from_secs(windows.iter().map(|(_, to)| *to).max().unwrap_or(0));
+    let mut clock = IdleClock::new(start);
+    let mut stats = vec![SilentJobWindow::default(); windows.len()];
+    let mut last_task_refresh: Option<Duration> = None;
+    let mut last_status_frame: Option<Duration> = None;
+    let mut t = Duration::ZERO;
+    while t < end {
+        let now = start + t;
+        let in_windows: Vec<usize> = windows
+            .iter()
+            .enumerate()
+            .filter(|(_, (from, to))| {
+                t >= Duration::from_secs(*from) && t < Duration::from_secs(*to)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if last_task_refresh
+            .is_none_or(|last| t.saturating_sub(last) >= Duration::from_millis(2500))
+        {
+            let jobs = job_at(t);
+            let snapshots = jobs.values().cloned().collect::<Vec<_>>();
+            let mut rows = Vec::new();
+            let finished =
+                super::task_projection::project_shell_jobs(&mut app, &mut rows, &snapshots);
+            let panel = super::task_projection::fold_task_panel(&mut app, rows, finished);
+            match apply_shell_job_snapshots(&mut app, &jobs).max(panel) {
+                LiveRefresh::Changed => {
+                    app.needs_redraw = true;
+                    for &index in &in_windows {
+                        stats[index].changes += 1;
+                    }
+                }
+                LiveRefresh::ElapsedOnly => clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
+            }
+            last_task_refresh = Some(t);
+        }
+        let status_motion = super::motion::should_tick_status_animation(
+            &app,
+            false,
+            super::motion::history_has_live_motion(&app.history),
+            false,
+            false,
+        );
+        let animation_interval =
+            Duration::from_millis(super::motion::status_animation_interval_ms(&app));
+        let facts = IdleFacts {
+            animation_active: status_motion
+                && animation_interval < Duration::from_millis(UI_QUIESCENT_POLL_MS),
+            ..IdleFacts::default()
+        };
+        clock.settle(&mut app, &facts, now, false, status_motion);
+        if status_motion
+            && last_status_frame.is_none_or(|last| t.saturating_sub(last) >= animation_interval)
+        {
+            app.needs_redraw = true;
+            last_status_frame = Some(t);
+        }
+        if std::mem::take(&mut app.needs_redraw) {
+            for &index in &in_windows {
+                stats[index].redraws += 1;
+            }
+        }
+        let idle_poll = clock.poll(&app, &facts, now);
+        let mut poll = idle_poll;
+        if status_motion && let Some(last) = last_status_frame {
+            poll = poll.min((last + animation_interval).saturating_sub(t));
+        }
+        for &index in &in_windows {
+            stats[index].wakes += 1;
+            let shortest = stats[index].shortest_idle_poll.get_or_insert(idle_poll);
+            *shortest = (*shortest).min(idle_poll);
+        }
+        t += poll.max(Duration::from_millis(1));
+    }
+    stats
+}
+
+#[test]
+fn a_silent_background_shell_job_keeps_the_quiet_poll_for_its_whole_life() {
+    let windows = [(0, 10), (59, 69), (61, 71), (300, 310), (600, 610)];
+    let quiet = Duration::from_millis(UI_QUIESCENT_POLL_MS);
+    for fancy_animations in [true, false] {
+        let stats = simulate_silent_background_job(fancy_animations, &windows);
+        let settle = stats[0];
+        assert_eq!(
+            settle.changes, 1,
+            "fancy={fancy_animations}: only the job's row appearing in the jobs panel is a change: {settle:?}"
+        );
+        assert!(
+            settle.wakes <= 5_000 / 48 + 5_000 / 250 + 12,
+            "fancy={fancy_animations}: the first 10 s is 5 s on the idle poll, then quiet: {settle:?}"
+        );
+        for ((from, _), window) in windows.iter().zip(&stats).skip(1) {
+            assert_eq!(
+                window.changes, 0,
+                "fancy={fancy_animations} t={from}s: elapsed and no-output labels are not changes: {window:?}"
+            );
+            assert_eq!(
+                window.shortest_idle_poll,
+                Some(quiet),
+                "fancy={fancy_animations} t={from}s: the idle poll stays quiet: {window:?}"
+            );
+            assert!(
+                window.wakes <= 10_000 / 250 + 10,
+                "fancy={fancy_animations} t={from}s: at most the quiet poll plus one label tick a second: {window:?}"
+            );
+            assert!(
+                (1..=10).contains(&window.redraws),
+                "fancy={fancy_animations} t={from}s: the label repaints at most once a second: {window:?}"
+            );
+        }
+    }
 }

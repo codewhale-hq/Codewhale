@@ -183,7 +183,10 @@
             .mount(&server)
             .await;
 
-        let client = deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
+        let mut client =
+            deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
+        client.retry.enabled = false;
+        client.retry.max_retries = 0;
         let error = match client
             .translate_with_usage(
                 "Hello",

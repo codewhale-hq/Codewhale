@@ -16,32 +16,6 @@ impl BodyStyle {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub enum TextLanguage {
-    #[default]
-    #[serde(rename = "auto")]
-    Auto,
-    #[serde(rename = "en")]
-    En,
-    #[serde(rename = "zh-Hans")]
-    ZhHans,
-    #[serde(rename = "zh-Hant")]
-    ZhHant,
-    #[serde(rename = "ja")]
-    Ja,
-}
-impl TextLanguage {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "en" => Some(Self::En),
-            "zh-hans" => Some(Self::ZhHans),
-            "zh-hant" => Some(Self::ZhHant),
-            "ja" => Some(Self::Ja),
-            _ => None,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Appearance {
@@ -55,8 +29,8 @@ pub struct Appearance {
     pub environment: bool,
     #[serde(default)]
     pub body_style: BodyStyle,
-    #[serde(default)]
-    pub text_language: TextLanguage,
+    #[serde(default, rename = "textLanguage", skip_serializing)]
+    legacy_text_language: serde::de::IgnoredAny,
 }
 impl Default for Appearance {
     fn default() -> Self {
@@ -70,7 +44,7 @@ impl Default for Appearance {
             glow: 0.5,
             environment: true,
             body_style: BodyStyle::default(),
-            text_language: TextLanguage::default(),
+            legacy_text_language: serde::de::IgnoredAny,
         }
     }
 }
@@ -82,5 +56,27 @@ impl Appearance {
             && (0.65..=1.8).contains(&self.dot_scale)
             && self.glow.is_finite()
             && (0.0..=1.0).contains(&self.glow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appearance_saved_with_a_text_language_still_loads_and_drops_it() {
+        let mut saved = serde_json::to_value(Appearance::default()).unwrap();
+        saved["textLanguage"] = serde_json::json!("ja");
+        let loaded: Appearance = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded, Appearance::default());
+        assert!(
+            serde_json::to_value(&loaded)
+                .unwrap()
+                .get("textLanguage")
+                .is_none()
+        );
+        let mut unknown = serde_json::to_value(Appearance::default()).unwrap();
+        unknown["fontSize"] = serde_json::json!(3);
+        assert!(serde_json::from_value::<Appearance>(unknown).is_err());
     }
 }

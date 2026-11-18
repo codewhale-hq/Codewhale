@@ -9,18 +9,28 @@
  * own public fixture keys; those keys never belong in this table.
  */
 export type KeyStatus = "active" | "retired";
+export type KeyRole = "founder" | "automation";
 
 export interface TrustedKey {
   keyId: string;
   /** Standard base64 of the raw 32-byte Ed25519 public key. */
   publicKey: string;
   status: KeyStatus;
+  role: KeyRole;
 }
+
+export const AUTOMATION_CHANNEL_SUFFIX = "-models";
+export const AUTOMATION_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+export const AUTOMATION_MAX_MODELS = 256;
 
 export const DOMAIN = "codewhale-facts/v1\0";
 export const ENVELOPE_VERSION = 1;
 export const SUPPORTED_SCHEMA_VERSION = 1;
 export const MAX_PAYLOAD_BYTES = 512 * 1024;
+export const REGISTRY_CHANNEL = "registry";
+export const REGISTRY_SCHEMA = "codewhale.registry.v1";
+export const MAX_REGISTRY_PAYLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_REGISTRY_ENVELOPE_BYTES = Math.floor(MAX_REGISTRY_PAYLOAD_BYTES / 3) * 4 + 64 * 1024;
 
 export const TRUSTED_KEYS: readonly TrustedKey[] = [
   {
@@ -29,6 +39,7 @@ export const TRUSTED_KEYS: readonly TrustedKey[] = [
     keyId: "cwf-2026-09",
     publicKey: "5d1syIWzufnSTlVrfFVb7CePHL6B3Ol92IhS15QaBoU=",
     status: "active",
+    role: "founder",
   },
 ];
 

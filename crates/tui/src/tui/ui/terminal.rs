@@ -887,6 +887,77 @@ pub(crate) fn idle_poll_duration(
     }
 }
 
+/// The event loop's idle clocks (#6728). `last_ui_activity` is the last
+/// moment anything happened that wanted a prompt reaction: a terminal event,
+/// an engine event, or any non-quiescent UI state. The idle poll and the
+/// automation scan back off from it. The git probe backs off from
+/// `last_input_or_engine_event` instead, which a ticking label or an open
+/// card does not move.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdleClock {
+    last_ui_activity: Instant,
+    last_input_or_engine_event: Instant,
+    elapsed_redraw_pending: bool,
+    ui_quiet: bool,
+}
+
+impl IdleClock {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            last_ui_activity: now,
+            last_input_or_engine_event: now,
+            elapsed_redraw_pending: false,
+            ui_quiet: false,
+        }
+    }
+
+    pub(crate) fn ui_quiet(&self) -> bool {
+        self.ui_quiet
+    }
+
+    pub(crate) fn note_input(&mut self, now: Instant) {
+        self.last_ui_activity = now;
+        self.last_input_or_engine_event = now;
+    }
+
+    pub(crate) fn note_elapsed_only_change(&mut self) {
+        self.elapsed_redraw_pending = true;
+    }
+
+    pub(crate) fn settle(
+        &mut self,
+        app: &mut App,
+        facts: &IdleFacts,
+        now: Instant,
+        engine_event_seen: bool,
+        status_tick_repaints: bool,
+    ) {
+        if engine_event_seen {
+            self.last_input_or_engine_event = now;
+        }
+        let quiescent = ui_state_is_quiescent(app, facts, now);
+        if engine_event_seen || !quiescent {
+            self.last_ui_activity = now;
+        }
+        self.ui_quiet = quiescent && self.ui_quiet_for(now) >= UI_QUIESCENT_AFTER;
+        if std::mem::take(&mut self.elapsed_redraw_pending) && !status_tick_repaints {
+            app.needs_redraw = true;
+        }
+    }
+
+    pub(crate) fn ui_quiet_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_ui_activity)
+    }
+
+    pub(crate) fn input_quiet_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_input_or_engine_event)
+    }
+
+    pub(crate) fn poll(&self, app: &App, facts: &IdleFacts, now: Instant) -> Duration {
+        idle_poll_duration(app, facts, now, self.ui_quiet_for(now))
+    }
+}
+
 #[cfg(test)]
 mod idle_poll_tests {
     use super::*;

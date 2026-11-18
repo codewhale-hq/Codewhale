@@ -5,26 +5,32 @@
 //!
 //! | file | role |
 //! |---|---|
-//! | `buffer.jsonl` | one JSON event per line, awaiting a flush |
-//! | `buffer.jsonl.lock` | a **sibling** lock file; never the data file |
+//! | `spool/<nonce>.jsonl` | one process's header line, then one JSON event per line, awaiting its flush |
+//! | `spool/<nonce>.lock` | held exclusively by that process while it lives |
+//! | `buffer.jsonl` | the pre-spool sink, only ever truncated now |
+//! | `buffer.jsonl.lock` | the **privacy** lock, a sibling file; never a data file |
 //! | `dryrun.jsonl` | the sink when the endpoint resolves empty, same ring policy |
 //! | `state.json` | last version seen and last flush attempt |
 //! | `install_id.json` | the random install id |
 //! | `disabled` | the tombstone: present ⇒ nothing is appended, drained, or sent |
 //!
 //! Appends, compaction, delivery, identity/state writes, startup arming, and
-//! wipe share one sibling lock. Runtime and exit paths take it with
-//! `try_write()`: on contention the event or batch is dropped. Only startup
-//! arming and the user-requested wipe may wait. That keeps the panic hook and
-//! SIGINT path non-blocking while also making opt-out an ordering boundary —
+//! wipe share one sibling lock. Threads of one process take turns on it;
+//! between processes, runtime and exit paths take it with `try_write()`, and on
+//! contention the event or batch is dropped. The panic hook and signal path
+//! never wait, not even for a sibling thread. Only startup arming and the
+//! user-requested wipe may wait for another process. That keeps the panic hook
+//! and SIGINT path non-blocking while also making opt-out an ordering boundary —
 //! after wipe returns, no pre-wipe writer or sender can still publish data.
 //!
 //! Appenders re-open per append, so a compaction rewrite cannot leave anyone
 //! writing to a stale inode.
 
+use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 
 use anyhow::{Context, Result};
 
@@ -161,7 +167,11 @@ fn secure(_file: &File) -> Result<()> {
 /// step fails. The lock acquisition is non-blocking, including on the panic and
 /// signal paths.
 pub fn append(root: &Path, path: &Path, line: &str) -> Option<()> {
-    append_with_limit(root, path, line, MAX_LINE_BYTES)
+    append_with_limit(root, path, line, MAX_LINE_BYTES, Turn::Never)
+}
+
+pub(crate) fn append_in_turn(root: &Path, path: &Path, line: &str) -> Option<()> {
+    append_with_limit(root, path, line, MAX_LINE_BYTES, Turn::Wait)
 }
 
 /// Append a line that is too large for one atomic `write(2)`, serialising
@@ -169,13 +179,14 @@ pub fn append(root: &Path, path: &Path, line: &str) -> Option<()> {
 ///
 /// Only the dry-run sink uses this: a whole batch does not fit under
 /// `PIPE_BUF`, and the flush path is neither the panic hook nor the signal
-/// handler, so a **non-blocking** `try_write` is safe there. On contention the
-/// batch is dropped, which is the same fail-open behavior as a failed POST.
+/// handler, so it may wait for a sibling thread. Another process holding the
+/// lock still drops the batch, which is the same fail-open behavior as a failed
+/// POST.
 pub fn append_locked(root: &Path, path: &Path, line: &str) -> Option<()> {
-    append_with_limit(root, path, line, MAX_BYTES as usize)
+    append_with_limit(root, path, line, MAX_BYTES as usize, Turn::Wait)
 }
 
-fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize) -> Option<()> {
+fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize, turn: Turn) -> Option<()> {
     let bytes = line.as_bytes();
     if bytes.is_empty() || bytes.len() + 1 > limit {
         return None;
@@ -185,10 +196,12 @@ fn append_with_limit(root: &Path, path: &Path, line: &str, limit: usize) -> Opti
     buf.extend_from_slice(bytes);
     buf.push(b'\n');
 
-    let wrote = try_with_lock(root, || append_under_lock(root, path, &buf))
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+    let operation = || append_under_lock(root, path, &buf);
+    let attempt = match turn {
+        Turn::Never => try_with_lock(root, operation),
+        Turn::Wait => try_with_lock_in_turn(root, operation),
+    };
+    let wrote = attempt.ok().flatten().unwrap_or(false);
     if !wrote {
         return None;
     }
@@ -218,6 +231,37 @@ fn append_under_lock(root: &Path, path: &Path, buf: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
+pub(crate) fn append_header(root: &Path, path: &Path, line: &str) -> Result<bool> {
+    let mut buf = Vec::with_capacity(line.len() + 1);
+    buf.extend_from_slice(line.as_bytes());
+    buf.push(b'\n');
+    append_under_lock(root, path, &buf)
+}
+
+fn keep_spool_header(path: &Path, mut lines: Vec<String>) -> Vec<String> {
+    use std::io::BufRead as _;
+    let Ok(file) = File::open(path) else {
+        return lines;
+    };
+    let mut first = String::new();
+    if std::io::BufReader::new(file.take(MAX_LINE_BYTES as u64 + 2))
+        .read_line(&mut first)
+        .is_err()
+    {
+        return lines;
+    }
+    let first = first.trim_end().to_string();
+    if first.is_empty() || !crate::spool::is_header_line(&first) || lines.first() == Some(&first) {
+        return lines;
+    }
+    lines.insert(0, first);
+    let size = |lines: &[String]| lines.iter().map(|l| l.len() as u64 + 1).sum::<u64>();
+    while lines.len() > 1 && (lines.len() > MAX_EVENTS || size(&lines) > MAX_BYTES) {
+        lines.remove(1);
+    }
+    lines
+}
+
 /// Keep the newest [`MAX_EVENTS`] lines and at most [`MAX_BYTES`], under the
 /// compaction lock. On lock contention this cycle is skipped: the next append
 /// tries again, and the cap is a ceiling on disk footprint, not an invariant
@@ -243,7 +287,7 @@ fn enforce_ring(root: &Path, path: &Path) {
         if len < PROBE_BYTES {
             return Ok(());
         }
-        let lines = read_ring_tail(path)?;
+        let lines = keep_spool_header(path, read_ring_tail(path)?);
         let mut body = lines.join("\n");
         if !body.is_empty() {
             body.push('\n');
@@ -338,11 +382,43 @@ fn open_lock(root: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[derive(Clone, Copy)]
+enum Turn {
+    Never,
+    Wait,
+}
+
+fn process_gate(root: &Path) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    GATES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(root.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+fn wait_turn(gate: &Mutex<()>) -> MutexGuard<'_, ()> {
+    gate.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
+    let file = open_lock(root)?;
+    let mut lock = fd_lock::RwLock::new(file);
+    match lock.try_write() {
+        Ok(_guard) => operation().map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Run `operation` holding the exclusive compaction lock, **blocking**.
 ///
-/// Only the opt-out wipe uses this. It is not an exit path, so blocking is
-/// fine there and nowhere else.
+/// Only startup arming and the opt-out wipe use this. They are not exit
+/// paths, so blocking is fine there and nowhere else.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
     let file = open_lock(root)?;
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.write().context("failed to take the telemetry lock")?;
@@ -351,14 +427,25 @@ pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Resul
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
 ///
-/// Returns `Ok(None)` when the lock is held elsewhere. Never blocks.
+/// Returns `Ok(None)` when the lock is held elsewhere, by this process or
+/// another. Never blocks.
 pub fn try_with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Option<T>> {
-    let file = open_lock(root)?;
-    let mut lock = fd_lock::RwLock::new(file);
-    match lock.try_write() {
-        Ok(_guard) => operation().map(Some),
-        Err(_) => Ok(None),
-    }
+    let gate = process_gate(root);
+    let _turn = match gate.try_lock() {
+        Ok(turn) => turn,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return Ok(None),
+    };
+    try_flock(root, operation)
+}
+
+pub(crate) fn try_with_lock_in_turn<T>(
+    root: &Path,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
+    try_flock(root, operation)
 }
 
 /// Read the newest bounded tail from `path`, skipping invalid UTF-8 lines.
@@ -369,33 +456,6 @@ pub fn try_with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> R
 #[must_use]
 pub fn read_lines(path: &Path) -> Vec<String> {
     read_ring_tail(path).unwrap_or_default()
-}
-
-/// Take every buffered line and truncate the buffer, under the compaction lock.
-///
-/// Returns an empty vector when the tombstone is present or the lock is held
-/// elsewhere. Truncates rather than unlinks — `crates/engine/src/fleet/ledger.rs`
-/// documents the rule: replacing the file leaves appenders holding the old
-/// inode.
-#[must_use]
-pub fn drain(root: &Path) -> Vec<String> {
-    if tombstone_present(root) {
-        return Vec::new();
-    }
-    let path = buffer_path(root);
-    let drained = try_with_lock(root, || {
-        // Re-check under the lock: a wipe may have landed between the check
-        // above and the acquisition.
-        if tombstone_present(root) {
-            return Ok(Vec::new());
-        }
-        let lines = read_lines(&path);
-        if !lines.is_empty() {
-            truncate(&path)?;
-        }
-        Ok(lines)
-    });
-    drained.ok().flatten().unwrap_or_default()
 }
 
 /// Truncate a file to zero length, leaving the inode in place. A missing file
@@ -420,7 +480,7 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// 1. take the blocking lock — this is not an exit path;
 /// 2. write the tombstone **first**, and never remove it here;
 /// 3. truncate `buffer.jsonl` and `dryrun.jsonl` — do **not** unlink them, and
-///    never unlink the lock file;
+///    never unlink the privacy lock file — and delete every spool;
 /// 4. remove `install_id.json` and `state.json`.
 ///
 /// If any step after the tombstone fails, the error is returned and the caller
@@ -466,6 +526,11 @@ pub fn wipe(root: &Path) -> Result<()> {
                 );
             }
         }
+        if let Err(error) = fs::remove_dir_all(crate::spool::dir(root))
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            failure.get_or_insert(anyhow::Error::new(error).context("failed to remove the spools"));
+        }
         match failure {
             Some(error) => Err(error),
             None => Ok(()),
@@ -473,8 +538,8 @@ pub fn wipe(root: &Path) -> Result<()> {
     })
 }
 
-/// Clear the tombstone and drop anything buffered before this process was
-/// permitted.
+/// Clear the tombstone, deleting every spool when there was one, and truncate
+/// the pre-spool buffer.
 ///
 /// Called by `init` on every arming. Both the exact tombstone generation and a
 /// fresh durable permission check must still match while the wipe lock is held.
@@ -496,6 +561,7 @@ pub(crate) fn arm(
         }
         let tombstone = tombstone_path(root);
         if tombstone.exists() {
+            let _ = fs::remove_dir_all(crate::spool::dir(root));
             fs::remove_file(&tombstone)
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
         }

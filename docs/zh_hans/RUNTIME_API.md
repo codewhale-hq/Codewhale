@@ -8,6 +8,7 @@
 > 2026-11-02 补齐控制帧大小、写入背压、ACP 拒绝恢复与当前 HTTP 监听器边界。
 > 2026-11-07 补齐线程作用域的终端会话标识、重新连接与重启语义。
 > 2026-11-07 补齐桌面侧边浏览器调用的过渡性账号约束及其已知限制。
+> 2026-11-14 补齐 `/v1/apps/plugins` 审计归属、队列隔离、作用域与宿主服务字段，以及回执中的插件变更契约。
 
 `codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
@@ -1122,12 +1123,12 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
   "default": "standard",
   "modes": [
     {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
-    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": true}
   ]
 }
 ```
 
-仅当 `available` 为 `false` 时才有 `reason`；客户端应将该行显示为禁用并展示原因。
+仅当 `available` 为 `false` 时才有 `reason`（例如在 `[features]` 中关闭了 `plugin_creator`，或未找到受支持的 Node.js / Bun 插件运行时）；客户端应将该行显示为禁用并展示原因。
 线程的模式是其 `agent_preset` 字符串，可在 `POST /v1/threads` 时设置，或在线程尚无
 任何回合时通过 `PATCH /v1/threads/{id}` 修改。没有 `agent_preset` 的线程记录即
 `standard`（线程记录对 `standard` 省略该字段；`GET /v1/threads/summary` 的每一行总是
@@ -1216,6 +1217,8 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 
 有效权限发生变化时，会在线程最新回合追加一个已完成的 `status` 条目，并发布
 `thread.permissions_changed` 事件（`from`、`to`、`source`）。
+
+当运行中的回合安装、启用、停用或移除插件时，引擎会等待扩展宿主完成激活或停用（针对包含原生代码的插件），并在当前回合立即刷新插件工具目录以供下一次模型请求使用（无需重启线程），同时向该回合追加一个已完成的 `status` 条目并发布 `thread.plugin_changed` 事件（`plugin`、`action`、`content_hash`、`decided_by`、`services`、`tools_added`、`tools_removed`）。
 
 **回合**（线程内的）
 - `POST /v1/threads/{id}/turns`
@@ -2028,6 +2031,24 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
   任何会修改会话的操作仍是终端侧命令。
 
+**插件**
+- `GET /v1/apps/plugins` — `{workspace, plugins: [...], registry_diagnostics: [...],
+  validation_clean}`：当前工作区发现的已安装与工作区插件。除 `state`、`enabled`、
+  `trust_status` 与 `active` 外，每条记录还携带审计归属、队列隔离与宿主服务可达性字段：
+  - `approved_by`（`PluginApprover | null`）：当前信任审查的记录者——未审查时为
+    `null`，否则为 `{"kind": "person", "via": "terminal" | "app" |
+    "approval_card"}`、`{"kind": "agent", "posture", "workspace", "thread_id"?,
+    "turn_id"?, "tool_call_id"?}` 或 `{"kind": "command_line"}`（命令行/非交互式
+    审查，绝不会显示为由人审查）。
+  - `enabled_by`（`PluginApprover | null`）：最近一次开启该插件的主体（禁用或未记录时为 `null`）。
+  - `cohort`：`{"kind": "reviewed"}` 或 `{"kind": "agent", "workspace": "<normalized-path>"}`。
+    由智能体批准的插件留在限定于单个项目工作区的隔离队列中，不会与人审查的插件混入同一队列。
+  - `outside_reach`（`bool`）：当智能体批准的插件属于其他项目工作区时为 `true`，此时在当前工作区保持 `active: false`。
+  - `host_services`：`{"service", "state": "can_use" | "not_offered", "withheld_by"?:
+    [{ "id", "name" }]}` 的数组。`withheld_by` 为空时省略；非空时表示该服务当前因这些已开启的对等插件未在其自身审查中包含该宿主服务而被暂时禁用（off for now）。
+- `GET /v1/apps/plugins/{selector}` — 展平上述摘要条目，并附带插件包元数据
+  （`repository`、`license`、`keywords`、`staged`）、`review`（确认 `token`、能力清单，以及交互式人工审查可选的 `host_services` 预览）、`reviewed_at`（`string | null`，最近一次记录审查的 RFC 3339 时间戳，区别于开启时间）以及 `review_history`（按时间倒序的 `{"reviewed_at": "<rfc3339>", "approved_by"?: PluginApprover}` 历史列表）。通过 `POST /v1/apps/plugins/{selector}/trust` 由人重新审查后，`approved_by` 更新为人、`cohort` 切回 `{"kind": "reviewed"}`，原有智能体审查记录仍保留在 `review_history` 中。
+
 **插件索引**
 - `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
   problems: [...]}`：跨所有插件、技能、连接器、钩子和手写命令的统一列表。它只是投影：每个条目的
@@ -2080,7 +2101,9 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   （`{path, index, worktree, staged, status, old_path?, rev}`）、`branches`、
   `remotes`。`files[].path` 与 `old_path` 是工作区相对路径，与写入路由使用同一坐标系；
   当工作区是其仓库的一个子目录时，工作区之外的行不会列出（计数仍是整个仓库的）。
-  移出工作区的重命名显示为其来源的删除。普通 Git 过滤器和未跟踪设置照常生效。
+  移出工作区的重命名显示为其来源的删除。重命名可能由变更的任一侧报出，因此该行在只有工作树移动时是
+  工作树侧删除（`index` 为空格，`worktree` 为 `D`），在移动已暂存时是索引侧删除（`index` 为 `D`）。
+  复制会保留来源，永不这样显示。普通 Git 过滤器和未跟踪设置照常生效。
   未跟踪目录保持折叠；只有指名工作区本身的那一行会展开为可逐个寻址的文件。
   前置条件令牌是不透明的：
   - `head_oid` — 完整的 HEAD commit id；在未出生分支上或无法读取 HEAD 时为 `null`
@@ -2868,7 +2891,7 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 
 运行时 API 自带一份内置的开发源站允许名单：
 `http://localhost:3000`、`http://127.0.0.1:3000`、`http://localhost:1420`、
-`http://127.0.0.1:1420`、`tauri://localhost`。要添加更多源站（例如
+`http://127.0.0.1:1420`。要添加更多源站（例如
 在 Vite 默认的 `:5173` 上开发 UI 时），可用以下任一方式：
 
 - CLI 标志（可重复）：`codewhale serve --http --cors-origin http://localhost:5173`

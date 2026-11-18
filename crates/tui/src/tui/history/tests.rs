@@ -1540,6 +1540,7 @@ fn a_card_verb_agrees_with_its_own_label_in_every_locale() {
         let cell = super::ExploringCell {
             entries: vec![super::ExploringEntry {
                 label: label.to_string(),
+                search: label.starts_with("Searching"),
                 status: ToolStatus::Success,
                 error: None,
             }],
@@ -2805,6 +2806,10 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
         assert!(!text.contains("Explored"), "{text}");
         assert!(text.contains("read file"), "{text}");
     }
+    assert_eq!(
+        super::tool_run_summary(&sample, codewhale_localization::Locale::ZhHans),
+        "浏览了2个文件、1次搜索：read file、search"
+    );
 }
 
 /// The small pure helpers behind the cards, as one table each. Every row is a
@@ -2984,6 +2989,7 @@ fn exploring_cell_status_keeps_the_loudest_terminal_state() {
             .iter()
             .map(|status| ExploringEntry {
                 label: "Reading src/foo.rs".to_string(),
+                search: false,
                 status: *status,
                 error: None,
             })

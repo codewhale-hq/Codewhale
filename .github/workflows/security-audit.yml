@@ -12,7 +12,7 @@ env:
 jobs:
   self-audit:
     name: cargo-audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -20,13 +20,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.100.0
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit@0.23.0 --locked
       - name: Run cargo audit
         run: cargo audit
 
   npm-audit:
     name: npm-audit (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -38,6 +38,7 @@ jobs:
           - { name: root, directory: . }
           - { name: web, directory: web }
           - { name: telemetry-ingest, directory: telemetry-ingest }
+          - { name: telemetry-stats, directory: telemetry-stats }
           - { name: extension-host, directory: crates/engine/extension-host }
           - { name: vscode, directory: extensions/vscode }
           - { name: feishu-bridge, directory: integrations/feishu-bridge }

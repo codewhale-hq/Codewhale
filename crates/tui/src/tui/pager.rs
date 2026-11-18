@@ -37,6 +37,7 @@ use crate::tui::views::{
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::diff_render::DiffSummaryLabels;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
 
 #[derive(Debug, Clone)]
@@ -256,7 +257,7 @@ enum PagerSource {
     Text(String),
     /// Pre-styled lines, wrapped with their styles intact.
     Lines(Vec<Line<'static>>),
-    Diff(String),
+    Diff(String, DiffSummaryLabels),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -464,12 +465,13 @@ impl PagerPage {
         let scan = |start| match &self.source {
             PagerSource::Text(source) => PagerRows::wrap_text(source, width, start),
             PagerSource::Lines(lines) => PagerRows::wrap_lines_window(lines, width, start),
-            PagerSource::Diff(diff) => {
+            PagerSource::Diff(diff, labels) => {
                 let rendered = codewhale_tui_kit::diff_render::render_diff_window(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
                     start,
                     PAGER_RETAINED_ROWS,
+                    labels,
                 );
                 let total = rendered.lines.len().saturating_add(rendered.omitted_rows);
                 let plain = rendered.lines.iter().map(line_to_string).collect();
@@ -507,10 +509,11 @@ impl PagerPage {
                 rows
             }
             PagerSource::Lines(lines) => PagerRows::line_range(lines, width, origin, origin).0,
-            PagerSource::Diff(diff) => codewhale_tui_kit::diff_render::diff_row_for_origin(
+            PagerSource::Diff(diff, labels) => codewhale_tui_kit::diff_render::diff_row_for_origin(
                 diff,
                 u16::try_from(width).unwrap_or(u16::MAX),
                 origin,
+                labels,
             ),
         }
     }
@@ -532,13 +535,14 @@ impl PagerPage {
         if query.is_empty() {
             return result;
         }
-        if let PagerSource::Diff(diff) = &self.source {
+        if let PagerSource::Diff(diff, labels) = &self.source {
             let found = if let Some(origin) = anchor {
                 codewhale_tui_kit::diff_render::search_diff_from_origin(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
                     &query,
                     origin,
+                    labels,
                 )
             } else {
                 codewhale_tui_kit::diff_render::search_diff(
@@ -546,6 +550,7 @@ impl PagerPage {
                     u16::try_from(width).unwrap_or(u16::MAX),
                     &query,
                     selected,
+                    labels,
                 )
             };
             result.total = found.total_matches;
@@ -591,7 +596,7 @@ impl PagerPage {
                     );
                 }
             }
-            PagerSource::Diff(_) => unreachable!(),
+            PagerSource::Diff(..) => unreachable!(),
         }
         if result.row.is_none() && result.total > 0 {
             return self.search(width, &query, 0, None);
@@ -614,7 +619,7 @@ impl PagerPage {
     /// display wrapping.
     fn source_text(&self) -> String {
         match &self.source {
-            PagerSource::Text(source) | PagerSource::Diff(source) => source.clone(),
+            PagerSource::Text(source) | PagerSource::Diff(source, _) => source.clone(),
             PagerSource::Lines(lines) => lines
                 .iter()
                 .map(line_to_string)
@@ -881,7 +886,11 @@ impl PagerView {
     }
 
     pub(crate) fn from_diff(title: impl Into<String>, diff: String, width: u16) -> Self {
-        let page = PagerPage::new(title, PagerSource::Diff(diff), usize::from(width));
+        let page = PagerPage::new(
+            title,
+            PagerSource::Diff(diff, DiffSummaryLabels::default()),
+            usize::from(width),
+        );
         Self::from_pages(vec![page], 0)
     }
 
@@ -1114,6 +1123,12 @@ impl ModalView for PagerView {
             return;
         }
         self.locale = locale;
+        for page in &mut self.pages {
+            if let PagerSource::Diff(_, labels) = &mut page.source {
+                *labels = crate::tui::history::diff_summary_labels(locale);
+                page.rows = RefCell::default();
+            }
+        }
         self.localize_evidence_page();
         if !self.search_input.trim().is_empty() {
             self.update_search_matches();
@@ -1597,7 +1612,7 @@ impl ModalView for PagerView {
 
         // `content` already excludes the border, padding, and footer rows.
         let mut visible_height = usize::from(content.height).min(PAGER_RETAINED_ROWS);
-        let diff_status = matches!(&page.source, PagerSource::Diff(_));
+        let diff_status = matches!(&page.source, PagerSource::Diff(..));
         let display_notice = page.rows.borrow().display_notice(self.locale, false);
         if diff_status || display_notice.is_some() {
             visible_height = visible_height.saturating_sub(1);
@@ -1898,6 +1913,26 @@ mod tests {
 
     fn key_mod(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn diff_summary_follows_the_ui_locale() {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n line\n+new\n-old\n";
+        let mut view = PagerView::from_diff("diff", diff.to_string(), 80);
+        let english = view.body_text();
+        assert!(
+            english.starts_with("summary: 1 file, +1 -1, 1 hunk\n"),
+            "{english}"
+        );
+        assert!(english.contains("src/a.rs +1 -1 1 hunk"), "{english}");
+
+        view.set_locale(Locale::ZhHans);
+        let chinese = view.body_text();
+        assert!(
+            chinese.starts_with("摘要：1个文件，+1 -1，1处改动\n"),
+            "{chinese}"
+        );
+        assert!(chinese.contains("src/a.rs +1 -1 1处改动"), "{chinese}");
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {

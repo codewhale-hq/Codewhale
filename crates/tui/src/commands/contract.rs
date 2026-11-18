@@ -60,19 +60,19 @@ use codewhale_command_contract::facets::{
     MediaAttachmentReceipt, MemoryDelete, MemoryDeleteScope, MemoryExport, MemoryGetOutcome,
     MemoryHit, MemoryImportOutcome, MemoryReindex, MemoryRememberTarget, MemoryRemembered,
     MemoryStatus, PlanProjection, PlanSections, PlanStep, PlanStepStatus, PluginDetail,
-    PluginDiagnostic, PluginDiagnosticLevel, PluginExportReceipt, PluginLegacyScan,
-    PluginLegacyTool, PluginManagedCandidate, PluginManagedScan, PluginMarketplaceAddReceipt,
-    PluginMarketplaceCandidate, PluginMarketplaceCatalog, PluginMarketplaceInstallPlan,
-    PluginMarketplaceState, PluginMcpServerDetail, PluginMcpTransport, PluginMutationOutcome,
-    PluginMutationReceipt, PluginSuggestion, PluginSummary, ProjectGoalState, ProjectGoalStatus,
-    RelayProjection, RemoteLink, RemoteOpenOutcome, RemoteRegistryOutcome, RemoteSkillEntry,
-    RemoteStartInfo, ResumeImportReceipt, ResumeSource, ReviewOutcome, SessionArchiveReceipt,
-    SessionBranchOutcome, SessionForkFromReceipt, SessionForkReceipt, SessionNewReceipt,
-    SessionSaveReceipt, SessionSyncPayload, SessionTitleReceipt, SkillActivationError,
-    SkillActivationOutcome, SkillBundledTier, SkillEntry, SkillMutationOutcome,
-    SkillMutationReceipt, SkillRecommendation, SkillRegistryProjection, SkillSourceKind,
-    SkillSyncEntry, SkillSyncOutcome, SkillTargetScope, SnapshotEntry, TitleReport, TitleSource,
-    TodoProjection, TreeBodyProjection,
+    PluginDiagnostic, PluginDiagnosticLevel, PluginEarlierReview, PluginExportReceipt,
+    PluginHostServiceDetail, PluginLegacyScan, PluginLegacyTool, PluginManagedCandidate,
+    PluginManagedScan, PluginMarketplaceAddReceipt, PluginMarketplaceCandidate,
+    PluginMarketplaceCatalog, PluginMarketplaceInstallPlan, PluginMarketplaceState,
+    PluginMcpServerDetail, PluginMcpTransport, PluginMutationOutcome, PluginMutationReceipt,
+    PluginSuggestion, PluginSummary, ProjectGoalState, ProjectGoalStatus, RelayProjection,
+    RemoteLink, RemoteOpenOutcome, RemoteRegistryOutcome, RemoteSkillEntry, RemoteStartInfo,
+    ResumeImportReceipt, ResumeSource, ReviewOutcome, SessionArchiveReceipt, SessionBranchOutcome,
+    SessionForkFromReceipt, SessionForkReceipt, SessionNewReceipt, SessionSaveReceipt,
+    SessionSyncPayload, SessionTitleReceipt, SkillActivationError, SkillActivationOutcome,
+    SkillBundledTier, SkillEntry, SkillMutationOutcome, SkillMutationReceipt, SkillRecommendation,
+    SkillRegistryProjection, SkillSourceKind, SkillSyncEntry, SkillSyncOutcome, SkillTargetScope,
+    SnapshotEntry, TitleReport, TitleSource, TodoProjection, TreeBodyProjection,
 };
 use codewhale_command_contract::facets::{
     CommandSessionExportContext, ConversationExportProjection, ExportBlock, ExportMessage,
@@ -95,7 +95,7 @@ use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 use codewhale_config::pricing::CostCurrency;
 use codewhale_dependencies::ExternalTool as _;
-use codewhale_localization::{MessageId, tr};
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_net::network_policy::NetworkPolicy;
 
 // ---------------------------------------------------------------------------
@@ -2587,6 +2587,15 @@ pub(crate) fn key_to_session_message_id(key: &str) -> Option<MessageId> {
 pub(crate) fn key_to_plugin_message_id(key: &str) -> Option<MessageId> {
     Some(match key {
         "cmd_plugin_action_failed" => MessageId::CmdPluginActionFailed,
+        "cmd_plugin_audit_agent_process_note" => MessageId::CmdPluginAuditAgentProcessNote,
+        "cmd_plugin_audit_approved_date" => MessageId::CmdPluginAuditApprovedDate,
+        "cmd_plugin_audit_reach_here" => MessageId::CmdPluginAuditReachHere,
+        "cmd_plugin_audit_reach_only_in" => MessageId::CmdPluginAuditReachOnlyIn,
+        "cmd_plugin_audit_service_can_use" => MessageId::CmdPluginAuditServiceCanUse,
+        "cmd_plugin_audit_service_not_offered" => MessageId::CmdPluginAuditServiceNotOffered,
+        "cmd_plugin_audit_service_withheld_many" => MessageId::CmdPluginAuditServiceWithheldMany,
+        "cmd_plugin_audit_service_withheld_one" => MessageId::CmdPluginAuditServiceWithheldOne,
+        "extensions_trust_not_reviewed" => MessageId::ExtensionsTrustNotReviewed,
         "cmd_plugin_bundle_detail" => MessageId::CmdPluginBundleDetail,
         "cmd_plugin_owner_report" => MessageId::CmdPluginOwnerReport,
         "cmd_plugin_owner_activating" => MessageId::CmdPluginOwnerActivating,
@@ -3850,20 +3859,170 @@ fn portable_marketplace_diagnostic(
     }
 }
 
+/// Localize who approved a plugin using the same English phrases as
+/// `codewhale_plugins::host_services::approver_label`.
+pub(crate) fn localized_approver_label(
+    locale: Locale,
+    approver: Option<&codewhale_plugins::host_services::PluginApprover>,
+) -> String {
+    use codewhale_plugins::host_services::{AgentPosture, PluginApprover};
+    let id = match approver {
+        Some(PluginApprover::Person { .. }) => MessageId::CmdPluginAuditApprovedByYou,
+        Some(PluginApprover::Agent(agent)) => match agent.posture {
+            AgentPosture::FullAccess => MessageId::CmdPluginAuditApprovedByAgentFullAccess,
+            AgentPosture::AutoReview => MessageId::CmdPluginAuditApprovedByAgentAutoReview,
+            AgentPosture::CommandLine => MessageId::CmdPluginAuditApprovedByAgentShell,
+        },
+        Some(PluginApprover::CommandLine) => MessageId::CmdPluginAuditApprovedByCommandLine,
+        None => MessageId::CmdPluginAuditApprovedByUnknown,
+    };
+    tr(locale, id).into_owned()
+}
+
+/// Localize who turned a plugin on.
+pub(crate) fn localized_turned_on_by_label(
+    locale: Locale,
+    approver: Option<&codewhale_plugins::host_services::PluginApprover>,
+) -> String {
+    use codewhale_plugins::host_services::{AgentPosture, PluginApprover};
+    let id = match approver {
+        Some(PluginApprover::Person { .. }) => MessageId::CmdPluginAuditTurnedOnByYou,
+        Some(PluginApprover::Agent(agent)) => match agent.posture {
+            AgentPosture::FullAccess => MessageId::CmdPluginAuditTurnedOnByAgentFullAccess,
+            AgentPosture::AutoReview => MessageId::CmdPluginAuditTurnedOnByAgentAutoReview,
+            AgentPosture::CommandLine => MessageId::CmdPluginAuditTurnedOnByAgentShell,
+        },
+        Some(PluginApprover::CommandLine) => MessageId::CmdPluginAuditTurnedOnByCommandLine,
+        None => MessageId::CmdPluginAuditTurnedOnByUnknown,
+    };
+    tr(locale, id).into_owned()
+}
+
 /// Convert a TUI-owned loaded plugin into the portable list summary.
-fn portable_summary(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginSummary {
+fn portable_summary(
+    plugin: &codewhale_plugins::types::LoadedPlugin,
+    locale: Locale,
+) -> PluginSummary {
+    use codewhale_plugins::host_services::{
+        PluginApprover, PluginCohort, cohort_of, short_review_date, workspace_folder_name,
+    };
+    let review_display = if plugin.trusted()
+        && matches!(
+            plugin.approved_by,
+            Some(PluginApprover::Agent(_) | PluginApprover::CommandLine)
+        ) {
+        Some(tr(locale, MessageId::ExtensionsTrustNotReviewed).into_owned())
+    } else {
+        None
+    };
+    let approver = if plugin.trusted() || plugin.approved_by.is_some() {
+        Some(localized_approver_label(
+            locale,
+            plugin.approved_by.as_ref(),
+        ))
+    } else {
+        None
+    };
+    let reviewed_date = plugin
+        .reviewed_at
+        .as_deref()
+        .map(|ts| short_review_date(ts).to_string());
+    let enabled_by = plugin
+        .enabled
+        .then(|| localized_turned_on_by_label(locale, plugin.enabled_by.as_ref()));
+    let reach_folder = plugin
+        .approved_by
+        .as_ref()
+        .and_then(PluginApprover::agent_workspace)
+        .map(|ws| workspace_folder_name(ws).to_string());
+    let process_note = matches!(
+        cohort_of(plugin.approved_by.as_ref()),
+        PluginCohort::Agent { .. }
+    )
+    .then(|| tr(locale, MessageId::CmdPluginAuditAgentProcessNote).into_owned());
     PluginSummary {
         name: plugin.name().to_string(),
         id: plugin.id.as_str().to_string(),
         state_label: plugin.state_label().to_string(),
         scope: plugin.scope.as_str().to_string(),
         trust_status: plugin.trust_status.as_str().to_string(),
+        review_display,
+        approver,
+        reviewed_date,
+        enabled_by,
+        reach_folder,
+        outside_reach: plugin.outside_reach,
+        process_note,
         compatibility: plugin.compatibility().as_str().to_string(),
         inventory: plugin.inventory.summary(),
         active: plugin.active(),
         trusted: plugin.trusted(),
         enabled: plugin.enabled,
     }
+}
+
+fn plugin_command_names(plugin: &codewhale_plugins::types::LoadedPlugin) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for path in &plugin.components.commands {
+        let entries = crate::commands::user_commands::load_command_entries_from_component(path);
+        if !entries.is_empty() {
+            for (stem, content, file_path) in entries {
+                let resolved = crate::commands::user_registry::resolved_command_name(
+                    stem, &content, &file_path,
+                );
+                if !resolved.is_empty() {
+                    names.insert(format!("/{resolved}"));
+                }
+            }
+            continue;
+        }
+        if path.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            let lower = stem.to_lowercase();
+            if !lower.is_empty() {
+                names.insert(format!("/{lower}"));
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn plugin_profile_names(plugin: &codewhale_plugins::types::LoadedPlugin) -> Vec<String> {
+    let authority = codewhale_config::PluginAuthority {
+        plugin_id: plugin.id.clone(),
+        plugin_name: plugin.name().to_string(),
+        workspace: plugin.canonical_root.clone(),
+        state_path: plugin.canonical_root.clone(),
+        managed_policy_path: None,
+        managed_policy_source: None,
+        source_manifest: plugin.canonical_root.clone(),
+        staged_manifest: plugin.canonical_root.clone(),
+        content_hash: plugin.content_hash.clone(),
+        capability_hash: plugin.capability_hash.clone(),
+        state_generation: plugin.state_generation,
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for path in &plugin.components.agents {
+        if let Ok((profiles, issues)) =
+            codewhale_engine::fleet::profile::load_plugin_agent_profiles_from_component(
+                path, &authority,
+            )
+        {
+            for profile in profiles {
+                names.insert(profile.id);
+            }
+            for issue in issues {
+                names.insert(issue.id);
+            }
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+        {
+            names.insert(stem.to_string());
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// Convert one TUI MCP server config into the portable review detail.
@@ -3911,7 +4070,14 @@ fn portable_mcp_server(
 }
 
 /// Convert a TUI-owned loaded plugin into the portable full detail.
-pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginDetail {
+pub(crate) fn portable_detail(
+    plugin: &codewhale_plugins::types::LoadedPlugin,
+    registry: Option<&codewhale_plugins::PluginRegistry>,
+    locale: Locale,
+) -> PluginDetail {
+    use codewhale_plugins::host_services::{
+        PluginApprover, PluginCohort, cohort_of, offered, short_review_date, workspace_folder_name,
+    };
     let mcp_servers = plugin
         .manifest
         .mcp_servers
@@ -3925,6 +4091,89 @@ pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -
             list
         })
         .unwrap_or_default();
+    let trust_display = if plugin.trusted()
+        && matches!(
+            plugin.approved_by,
+            Some(PluginApprover::Agent(_) | PluginApprover::CommandLine)
+        ) {
+        Some(tr(locale, MessageId::ExtensionsTrustNotReviewed).into_owned())
+    } else {
+        None
+    };
+    let approver = if plugin.trusted() || plugin.approved_by.is_some() {
+        Some(localized_approver_label(
+            locale,
+            plugin.approved_by.as_ref(),
+        ))
+    } else {
+        None
+    };
+    let reviewed_date = plugin
+        .reviewed_at
+        .as_deref()
+        .map(|ts| short_review_date(ts).to_string());
+    let enabled_by = plugin
+        .enabled
+        .then(|| localized_turned_on_by_label(locale, plugin.enabled_by.as_ref()));
+    let agent_thread_id = match plugin.approved_by.as_ref() {
+        Some(PluginApprover::Agent(agent)) => agent.thread_id.clone(),
+        _ => None,
+    };
+    let agent_workspace_path = plugin
+        .approved_by
+        .as_ref()
+        .and_then(PluginApprover::agent_workspace)
+        .map(str::to_string);
+    let reach_folder = agent_workspace_path
+        .as_deref()
+        .map(|ws| workspace_folder_name(ws).to_string());
+    let process_note = matches!(
+        cohort_of(plugin.approved_by.as_ref()),
+        PluginCohort::Agent { .. }
+    )
+    .then(|| tr(locale, MessageId::CmdPluginAuditAgentProcessNote).into_owned());
+    let host_service_review = registry.and_then(|reg| match plugin.approved_by.as_ref() {
+        Some(approver) => reg.host_service_review_for(plugin.id.as_str(), approver),
+        None => reg.host_service_review(plugin.id.as_str()),
+    });
+    let host_services = match host_service_review {
+        Some(review) => review
+            .lines
+            .into_iter()
+            .map(|line| {
+                let can_use = line.offered && plugin.host_services.contains(&line.service);
+                let withheld_by = if can_use {
+                    line.withheld_by.into_iter().map(|peer| peer.name).collect()
+                } else {
+                    Vec::new()
+                };
+                PluginHostServiceDetail {
+                    service: format!("{} ({})", line.service.name(), line.service.label()),
+                    can_use,
+                    withheld_by,
+                }
+            })
+            .collect(),
+        None => plugin
+            .inventory
+            .host_services
+            .iter()
+            .copied()
+            .map(|service| PluginHostServiceDetail {
+                service: format!("{} ({})", service.name(), service.label()),
+                can_use: offered(service) && plugin.host_services.contains(&service),
+                withheld_by: Vec::new(),
+            })
+            .collect(),
+    };
+    let earlier_reviews = plugin
+        .earlier_review_history()
+        .iter()
+        .map(|entry| PluginEarlierReview {
+            reviewed_at: short_review_date(&entry.reviewed_at).to_string(),
+            approver: localized_approver_label(locale, entry.approved_by.as_ref()),
+        })
+        .collect();
     PluginDetail {
         name: plugin.name().to_string(),
         id: plugin.id.as_str().to_string(),
@@ -3934,6 +4183,17 @@ pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -
         scope: plugin.scope.as_str().to_string(),
         state_label: plugin.state_label().to_string(),
         trust_status: plugin.trust_status.as_str().to_string(),
+        trust_display,
+        approver,
+        reviewed_date,
+        enabled_by,
+        agent_thread_id,
+        agent_workspace_path,
+        reach_folder,
+        outside_reach: plugin.outside_reach,
+        process_note,
+        host_services,
+        earlier_reviews,
         compatibility: plugin.compatibility().as_str().to_string(),
         content_hash: plugin.content_hash.clone(),
         capability_hash: plugin.capability_hash.clone(),
@@ -3958,6 +4218,8 @@ pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -
             .iter()
             .map(|skill| format!("{}:{}", plugin.name(), skill.name))
             .collect(),
+        commands: plugin_command_names(plugin),
+        profiles: plugin_profile_names(plugin),
         filesystem_roots: plugin.inventory.filesystem_roots.clone(),
         network_hosts: plugin.inventory.network_hosts.clone(),
         stdio_mcp_servers: plugin.inventory.stdio_mcp_servers,
@@ -4387,21 +4649,48 @@ fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
 impl CommandPluginContext for PluginAdapter<'_> {
     fn summaries(&self) -> Result<Vec<PluginSummary>, String> {
         let app = self.host.app.borrow();
+        let locale = app.ui_locale;
         Ok(app
             .plugin_registry
             .list()
             .iter()
-            .map(|plugin| portable_summary(plugin))
+            .map(|plugin| portable_summary(plugin, locale))
             .collect())
     }
 
     fn detail(&self, selector: &str) -> Result<PluginDetail, String> {
         let app = self.host.app.borrow();
+        let locale = app.ui_locale;
         let plugin = app
             .plugin_registry
             .get(selector)
             .ok_or_else(|| format!("no plugin named {selector}"))?;
-        Ok(portable_detail(plugin))
+        let mut detail = portable_detail(plugin, Some(&app.plugin_registry), locale);
+        let mut commands: std::collections::BTreeSet<String> =
+            detail.commands.into_iter().collect();
+        for entry in
+            codewhale_engine::extension_host::live_commands_for_plugins(&app.plugin_registry)
+        {
+            if entry.authority.plugin_id == plugin.id {
+                commands.insert(format!("/{}", entry.registration.name.to_ascii_lowercase()));
+            }
+        }
+        detail.commands = commands.into_iter().collect();
+        let mut profiles: std::collections::BTreeSet<String> =
+            detail.profiles.into_iter().collect();
+        for (preset, authority) in
+            codewhale_engine::extension_host::native_presets_for_plugins(&app.plugin_registry)
+        {
+            if authority.plugin_id == plugin.id {
+                let label =
+                    codewhale_plugins::native_presets::metadata(&app.plugin_registry, &preset)
+                        .map(|data| data.name.unwrap_or(data.id))
+                        .unwrap_or_else(|| preset.entry.path.clone());
+                profiles.insert(label);
+            }
+        }
+        detail.profiles = profiles.into_iter().collect();
+        Ok(detail)
     }
 
     fn registry_diagnostics(&self) -> Vec<PluginDiagnostic> {
@@ -4432,6 +4721,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let workspace = app.workspace.clone();
         app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
         app.refresh_skill_cache();
+        app.refresh_agent_approved_plugins_notice();
         Ok(app.plugin_registry.len())
     }
 
@@ -4530,6 +4820,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
             let mut app = self.host.app.borrow_mut();
             std::sync::Arc::make_mut(&mut app.plugin_registry).trust(selector)?;
             app.refresh_skill_cache();
+            app.refresh_agent_approved_plugins_notice();
         }
         Ok(())
     }
@@ -4555,6 +4846,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let workspace = app.workspace.clone();
         app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
         app.refresh_skill_cache();
+        app.refresh_agent_approved_plugins_notice();
         Ok(())
     }
 
@@ -4564,6 +4856,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let workspace = app.workspace.clone();
         app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
         app.refresh_skill_cache();
+        app.refresh_agent_approved_plugins_notice();
         Ok(())
     }
 
@@ -4571,6 +4864,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let mut app = self.host.app.borrow_mut();
         std::sync::Arc::make_mut(&mut app.plugin_registry).disable(selector)?;
         app.refresh_skill_cache();
+        app.refresh_agent_approved_plugins_notice();
         app.active_skill = None;
         app.active_skill_provenance = None;
         Ok(())
@@ -4580,6 +4874,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
         let mut app = self.host.app.borrow_mut();
         std::sync::Arc::make_mut(&mut app.plugin_registry).revoke_trust(selector)?;
         app.refresh_skill_cache();
+        app.refresh_agent_approved_plugins_notice();
         app.active_skill = None;
         app.active_skill_provenance = None;
         Ok(())
@@ -4630,6 +4925,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     let workspace = app.workspace.clone();
                     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
                     app.refresh_skill_cache();
+                    app.refresh_agent_approved_plugins_notice();
                 }
                 Ok(portable)
             }
@@ -4666,6 +4962,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     let workspace = app.workspace.clone();
                     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
                     app.refresh_skill_cache();
+                    app.refresh_agent_approved_plugins_notice();
                 }
                 Ok(portable)
             }
@@ -4702,6 +4999,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     let workspace = app.workspace.clone();
                     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
                     app.refresh_skill_cache();
+                    app.refresh_agent_approved_plugins_notice();
                     app.active_skill = None;
                     app.active_skill_provenance = None;
                 }
@@ -4896,6 +5194,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     let workspace = app.workspace.clone();
                     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
                     app.refresh_skill_cache();
+                    app.refresh_agent_approved_plugins_notice();
                 }
                 Ok(portable)
             }

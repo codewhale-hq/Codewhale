@@ -7632,12 +7632,8 @@ mod tests {
     }
 
     fn create_test_app() -> App {
-        static NEXT_CONFIG_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let config_id = NEXT_CONFIG_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let isolated_config_path = std::env::temp_dir().join(format!(
-            "codewhale-config-view-test-{}-{config_id}.toml",
-            std::process::id()
-        ));
+        let isolated_config_path =
+            crate::test_support::test_scratch_dir("codewhale-config-view-test").join("config.toml");
         let options = TuiOptions {
             // ConfigView consults the app's persisted config. Point generic
             // tests at a unique absent file so developer or concurrent test

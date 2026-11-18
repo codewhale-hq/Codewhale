@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -9,8 +11,6 @@ pub const STANDARD: &str = "standard";
 pub const CREATOR: &str = "creator";
 pub const SOURCE_BUILTIN: &str = "builtin";
 
-pub const CREATOR_LOADS_ITS_OWN_TOOLS: bool = false;
-pub const CREATOR_NOT_READY_REASON: &str = "Creator mode is not ready in this build.";
 pub const CREATOR_KEY_OFF_REASON: &str =
     "Plugin creator is off in [features] (plugin_creator = false).";
 
@@ -146,9 +146,26 @@ pub fn table(creator_unavailable: Option<String>) -> ConversationModeTable {
     }
 }
 
-type Cached = Option<(Instant, Option<String>)>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CreatorProbeKey {
+    runtime: &'static str,
+    node_override: Option<PathBuf>,
+    bun_override: Option<PathBuf>,
+}
 
-static CREATOR_PROBE: Mutex<Cached> = Mutex::new(None);
+impl CreatorProbeKey {
+    fn from_options(options: &ExtensionHostOptions) -> Self {
+        Self {
+            runtime: options.runtime.as_str(),
+            node_override: options.node_override.clone(),
+            bun_override: options.bun_override.clone(),
+        }
+    }
+}
+
+type ProbeCache = HashMap<CreatorProbeKey, (Instant, Option<String>)>;
+
+static CREATOR_PROBE: Mutex<Option<ProbeCache>> = Mutex::new(None);
 
 #[cfg(any(test, feature = "test-support"))]
 static CREATOR_PROBE_OVERRIDE: Mutex<Option<Option<String>>> = Mutex::new(None);
@@ -183,6 +200,13 @@ impl CreatorAvailabilityGuard {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn clear_probe_cache_for_tests() {
+    *CREATOR_PROBE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for CreatorAvailabilityGuard {
     fn drop(&mut self) {
         *CREATOR_PROBE_OVERRIDE
@@ -212,19 +236,6 @@ pub async fn creator_unavailable_reason(
     options: ExtensionHostOptions,
     plugin_creator_enabled: bool,
 ) -> Option<String> {
-    creator_unavailable_reason_with_ready(
-        options,
-        plugin_creator_enabled,
-        CREATOR_LOADS_ITS_OWN_TOOLS,
-    )
-    .await
-}
-
-async fn creator_unavailable_reason_with_ready(
-    options: ExtensionHostOptions,
-    plugin_creator_enabled: bool,
-    creator_ready: bool,
-) -> Option<String> {
     if !plugin_creator_enabled {
         return Some(CREATOR_KEY_OFF_REASON.to_string());
     }
@@ -236,10 +247,12 @@ async fn creator_unavailable_reason_with_ready(
     {
         return forced;
     }
-    if !creator_ready {
-        return Some(CREATOR_NOT_READY_REASON.to_string());
-    }
-    if let Some((at, reason)) = CREATOR_PROBE.lock().expect("probe cache").clone()
+    let key = CreatorProbeKey::from_options(&options);
+    if let Some((at, reason)) = CREATOR_PROBE
+        .lock()
+        .expect("probe cache")
+        .as_ref()
+        .and_then(|cache| cache.get(&key).cloned())
         && at.elapsed() < AVAILABILITY_TTL
     {
         return reason;
@@ -247,7 +260,11 @@ async fn creator_unavailable_reason_with_ready(
     let reason = tokio::task::spawn_blocking(move || probe_host_runtime(&options))
         .await
         .unwrap_or_else(|_| Some("Creator mode could not check for a plugin runtime.".to_string()));
-    *CREATOR_PROBE.lock().expect("probe cache") = Some((Instant::now(), reason.clone()));
+    CREATOR_PROBE
+        .lock()
+        .expect("probe cache")
+        .get_or_insert_with(HashMap::new)
+        .insert(key, (Instant::now(), reason.clone()));
     reason
 }
 
@@ -304,19 +321,16 @@ pub async fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[tokio::test]
     async fn creator_unavailable_reasons_and_key_off_beats_probe_cache() {
         let _unforced = CreatorAvailabilityGuard::unforced();
+        clear_probe_cache_for_tests();
         let options = ExtensionHostOptions::default();
+        let key = CreatorProbeKey::from_options(&options);
         assert_eq!(
             creator_unavailable_reason(options.clone(), false).await,
             Some(CREATOR_KEY_OFF_REASON.to_string())
-        );
-        assert_eq!(
-            creator_unavailable_reason(options.clone(), true).await,
-            Some(CREATOR_NOT_READY_REASON.to_string())
         );
 
         let missing_runtime = ExtensionHostOptions {
@@ -326,23 +340,47 @@ mod tests {
         };
         let reason = probe_host_runtime(&missing_runtime).expect("missing runtime reason");
         assert!(reason.contains("Node.js or Bun"), "{reason}");
+        let uncached_missing = creator_unavailable_reason(missing_runtime.clone(), true)
+            .await
+            .expect("missing runtime reason");
+        assert!(
+            uncached_missing.contains("Node.js or Bun"),
+            "{uncached_missing}"
+        );
 
         {
             let mut cache = CREATOR_PROBE.lock().expect("probe cache");
-            *cache = Some((Instant::now(), None));
+            cache
+                .get_or_insert_with(HashMap::new)
+                .insert(key.clone(), (Instant::now(), None));
         }
         assert_eq!(
-            creator_unavailable_reason_with_ready(options.clone(), true, true).await,
+            creator_unavailable_reason(options.clone(), true).await,
             None
         );
         assert_eq!(
-            creator_unavailable_reason_with_ready(options.clone(), false, true).await,
+            creator_unavailable_reason(missing_runtime, true).await,
+            Some(uncached_missing)
+        );
+        assert_eq!(
+            creator_unavailable_reason(options.clone(), false).await,
             Some(CREATOR_KEY_OFF_REASON.to_string())
+        );
+
+        {
+            let mut cache = CREATOR_PROBE.lock().expect("probe cache");
+            cache
+                .get_or_insert_with(HashMap::new)
+                .insert(key, (Instant::now(), Some("stale probe".to_string())));
+        }
+        assert_eq!(
+            creator_unavailable_reason(options.clone(), true).await,
+            Some("stale probe".to_string())
         );
         assert_eq!(
             creator_unavailable_reason(options, false).await,
             Some(CREATOR_KEY_OFF_REASON.to_string())
         );
-        *CREATOR_PROBE.lock().expect("probe cache") = None;
+        clear_probe_cache_for_tests();
     }
 }

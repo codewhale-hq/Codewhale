@@ -18,7 +18,7 @@ export const docsPet: DocsPetDict = {
       id: "turn-on",
       title: "Turn it on",
       blocks: [
-        { note: "Pet mode has been available since 0.9.13. Version 0.10.2 added the animated whale, the persistent message box, /pet style, /pet language and the views selected with Ctrl+]." },
+        { note: "Pet mode has been available since 0.9.13. Version 0.10.2 added the animated whale, the persistent message box, /pet style and the views selected with Ctrl+]. The whale's dots now become the thing the work is, such as a wrench, a pencil or a book, then return to the whale; the large activity words and /pet language are gone." },
         {
           code: "/pet on        # pet mode becomes the main view\n/pet off       # back to the standard view\n/pet status    # on or off, and the companion's identity",
           lang: "Codewhale",
@@ -92,7 +92,6 @@ export const docsPet: DocsPetDict = {
             ["/pet status", "Show the mode, the companion's identity, and the source session."],
             ["/pet source", "Make this terminal's session the source."],
             ["/pet appearance", "Open the appearance studio in your browser, on this machine only."],
-            ["/pet window", "Open the native Codewhale Pet window, if the macOS app is installed."],
             ["/pet sound on, /pet sound off", "Turn the companion's sound on or off. Sound is off by default and needs ffplay."],
             ["/pet avatar", "List the avatars, or choose one."],
             ["/pet export", "Save a replay to this saved session's artifacts."],
@@ -121,7 +120,7 @@ export const docsPet: DocsPetDict = {
           note: "While agents run, the agents list in the inspector refreshes when the turn ends. The agent count in the status bar and the work bar are live.",
         },
         {
-          note: "`/pet window` needs the macOS Codewhale Pet app, and sound needs ffplay.",
+          note: "Sound needs ffplay.",
         },
       ],
     },

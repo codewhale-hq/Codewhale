@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DesktopShot } from "@/components/desktop-shot";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { buildPageMetadata } from "@/lib/page-meta";
@@ -78,6 +79,15 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
               <Icon name="external" className="icon" />
             </Link>
           </div>
+        </Section>
+
+        <Section id="plugins-desktop" title={t(PLUGINS_COPY.desktopTitle)} scope={t(PLUGINS_COPY.desktopLead)}>
+          <figure className="figure">
+            <div className="figure-frame">
+              <DesktopShot id="plugins" alt={t(PLUGINS_COPY.desktopAlt)} />
+            </div>
+            <figcaption className="figure-caption">{t(PLUGINS_COPY.desktopCaption)}</figcaption>
+          </figure>
         </Section>
 
         {showComing ? (

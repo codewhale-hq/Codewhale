@@ -1258,7 +1258,7 @@ fn new_with_an_unknown_mode_is_refused_with_the_mode_list_and_changes_nothing() 
 
     drop(_available);
     let _unavailable = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(Some(
-        codewhale_engine::conversation_modes::CREATOR_NOT_READY_REASON,
+        codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON,
     ));
     let result = new_session(&mut app, Some("creator"));
     assert!(result.is_error);
@@ -1267,7 +1267,7 @@ fn new_with_an_unknown_mode_is_refused_with_the_mode_list_and_changes_nothing() 
             .message
             .as_deref()
             .unwrap_or_default()
-            .contains("Not ready yet in this version."),
+            .contains(codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON),
         "{:?}",
         result.message
     );

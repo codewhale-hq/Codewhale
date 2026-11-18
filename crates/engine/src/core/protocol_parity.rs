@@ -1129,6 +1129,25 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             reason: reason.clone(),
             refusal: refusal.clone(),
         },
+        Event::PluginChanged {
+            plugin,
+            action,
+            content_hash,
+            decided_by,
+            services,
+            tools_added,
+            tools_removed,
+        } => wire::EventMsg::PluginChanged {
+            thread_id,
+            session_id,
+            plugin: plugin.clone(),
+            action: action.clone(),
+            content_hash: content_hash.clone(),
+            decided_by: decided_by.clone(),
+            services: services.clone(),
+            tools_added: tools_added.clone(),
+            tools_removed: tools_removed.clone(),
+        },
     }
 }
 
@@ -1768,6 +1787,32 @@ mod tests {
         let error = serde_json::to_value(error.to_protocol(&ids)).unwrap();
         assert_eq!(error["category"], "rate_limit");
         assert_eq!(error["severity"], "warning");
+    }
+
+    #[test]
+    fn plugin_changed_projection_round_trips_and_preserves_fields() {
+        let ids = ids();
+        let event = Event::PluginChanged {
+            plugin: "alpha".into(),
+            action: "installed".into(),
+            content_hash: Some("sha256:abc".into()),
+            decided_by: Some("approved by you".into()),
+            services: vec!["workspace".into()],
+            tools_added: vec!["alpha_tool".into()],
+            tools_removed: vec!["legacy_tool".into()],
+        };
+        let wire_msg = event.to_protocol(&ids);
+        let value = serde_json::to_value(&wire_msg).unwrap();
+        assert_eq!(value["event"], "plugin_changed");
+        assert_eq!(value["plugin"], "alpha");
+        assert_eq!(value["action"], "installed");
+        assert_eq!(value["content_hash"], "sha256:abc");
+        assert_eq!(value["decided_by"], "approved by you");
+        assert_eq!(value["services"], json!(["workspace"]));
+        assert_eq!(value["tools_added"], json!(["alpha_tool"]));
+        assert_eq!(value["tools_removed"], json!(["legacy_tool"]));
+        let back: wire::EventMsg = serde_json::from_value(value).unwrap();
+        assert_eq!(back, wire_msg);
     }
 
     #[test]

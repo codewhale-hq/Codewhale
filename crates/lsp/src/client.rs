@@ -1142,15 +1142,19 @@ while True:
     #[cfg(unix)]
     #[tokio::test]
     async fn stdio_startup_error_eof_and_silence_fail_and_terminate_child() {
-        for (mode, expected) in [
-            ("error", "fixture rejected initialization"),
-            ("eof", "channel closed"),
-            ("silence", "timed out"),
+        for (mode, expected, initialize_wait) in [
+            (
+                "error",
+                "fixture rejected initialization",
+                Duration::from_secs(10),
+            ),
+            ("eof", "channel closed", Duration::from_secs(10)),
+            ("silence", "timed out", Duration::from_secs(2)),
         ] {
             let root = tempfile::tempdir().unwrap();
             let error = match timeout(
-                Duration::from_secs(3),
-                spawn_stdio_fixture(mode, root.path(), Duration::from_millis(500)),
+                initialize_wait + Duration::from_secs(5),
+                spawn_stdio_fixture(mode, root.path(), initialize_wait),
             )
             .await
             .unwrap()

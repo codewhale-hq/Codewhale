@@ -138,14 +138,10 @@ pub struct View {
 }
 #[derive(Clone)]
 pub enum Command {
-    Appearance {
-        body: Option<super::BodyStyle>,
-        language: Option<super::TextLanguage>,
-    },
+    Appearance { body: super::BodyStyle },
     Observe(String),
     Select,
     Browser,
-    Window,
     Export,
     Wake,
 }
@@ -366,37 +362,6 @@ impl Client {
             webbrowser::open(&url).map_err(io::Error::other)
         }
     }
-    pub fn open_window(&self) -> io::Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            use std::process::{Command as Process, Stdio};
-            // The system launcher by absolute path: a bare `open` resolves
-            // through `PATH`, where a workspace entry could shadow it.
-            let mut process = Process::new("/usr/bin/open");
-            if let Some(path) = std::env::var_os("CODEWHALE_PET_APP") {
-                process.arg(path);
-            } else {
-                process.args(["-a", "Codewhale Pet"]);
-            }
-            process
-                .args(["--args", "--companion"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            if process.status()?.success() {
-                return Ok(());
-            }
-            Err(io::Error::other(
-                "Build or install the Codewhale Pet app to open its companion window",
-            ))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(io::Error::other(
-                "The native companion window is currently available on macOS",
-            ))
-        }
-    }
 }
 impl Worker {
     pub fn start(session: Option<String>) -> io::Result<Self> {
@@ -457,8 +422,7 @@ fn run(
     let mut sequence = 0u64;
     let mut acknowledged = 0u64;
     let mut action: Option<Value> = None;
-    let mut appearance_patch: Option<(Option<super::BodyStyle>, Option<super::TextLanguage>)> =
-        None;
+    let mut appearance_patch: Option<super::BodyStyle> = None;
     let mut last_action = Instant::now() - Duration::from_secs(1);
     let mut last_produce = Instant::now();
     let mut last_audio = Instant::now();
@@ -503,14 +467,10 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Vec::new(),
         };
-        let (mut browser, mut window) = (false, false);
+        let mut browser = false;
         for command in commands {
             match command {
-                Command::Appearance { body, language } => {
-                    let patch = appearance_patch.get_or_insert((None, None));
-                    patch.0 = body.or(patch.0);
-                    patch.1 = language.or(patch.1);
-                }
+                Command::Appearance { body } => appearance_patch = Some(body),
                 Command::Observe(text) => {
                     if !events.push(&text)? {
                         // Overflow is a coverage gap, never a truncated batch:
@@ -533,7 +493,6 @@ fn run(
                     }
                 }
                 Command::Browser => browser = true,
-                Command::Window => window = true,
                 Command::Export => {
                     let result = client.get("/v1/export").and_then(|r| {
                         super::persistence::export(
@@ -551,14 +510,8 @@ fn run(
                 Command::Wake => {}
             }
         }
-        for launched in [
-            browser.then(|| client.open_browser()),
-            window.then(|| client.open_window()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let _ = notices.try_send(match launched {
+        if browser {
+            let _ = notices.try_send(match client.open_browser() {
                 Ok(()) => Notice::Opened,
                 Err(e) => Notice::Message(e.to_string()),
             });
@@ -617,18 +570,13 @@ fn run(
         }
         let Some(s) = &scene else { continue };
         if action.is_none()
-            && let Some((body, language)) = appearance_patch.take()
+            && let Some(body) = appearance_patch.take()
         {
             if s.display_language.is_none() {
                 let _ = notices.try_send(Notice::AppearanceLegacy);
             } else {
                 let mut appearance = s.appearance.clone();
-                if let Some(body) = body {
-                    appearance.body_style = body;
-                }
-                if let Some(language) = language {
-                    appearance.text_language = language;
-                }
+                appearance.body_style = body;
                 action = Some(
                     json!({"identity":s.identity,"client":id,"seq":sequence+1,"source_revision":s.source_revision,"action":{"kind":"appearance","appearance":appearance}}),
                 );

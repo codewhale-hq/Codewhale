@@ -28,11 +28,13 @@ use codewhale_secrets::account::{
 use reqwest::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+mod claude_org;
 mod computer;
 pub mod dispatch;
 pub mod machine;
 mod session;
 
+pub use claude_org::{ClaudeOrgError, ClaudeOrgErrorKind, ClaudeOrgToken};
 pub use session::{
     AccountAuthLease, AccountClient, AccountLogin, AccountLoginCancellation, AccountLoginPoll,
     AccountLoginPrompt, AccountModel, AccountModels, AccountStatus, account_api_base,
@@ -90,6 +92,9 @@ enum CloudCommand {
     Whoami,
     /// Check the account's agent-model precondition for machine work.
     Agent,
+    /// Link a Claude Platform organization so Anthropic bills it directly.
+    #[command(name = "claude-org")]
+    ClaudeOrg(claude_org::ClaudeOrgArgs),
     /// Inspect the account document; local settings import is not available yet.
     Pull(CloudPullArgs),
     /// Push local settings to the account document (never automatic, --dry-run required).
@@ -3262,6 +3267,9 @@ fn run_with<T: CloudTransport, W: Write>(
                 config.config.provider.as_str()
             )?;
             Ok(())
+        }
+        CloudCommand::ClaudeOrg(args) => {
+            claude_org::run_claude_org(args, &client, api_base, out, opener, sleeper)
         }
         CloudCommand::Status => match client.load_auth()? {
             Some(_) => {

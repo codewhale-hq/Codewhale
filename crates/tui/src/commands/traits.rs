@@ -292,7 +292,14 @@ impl CommandInfo {
         if self.aliases.is_empty() {
             desc.to_string()
         } else {
-            format!("{}  aliases: {}", desc, self.aliases.join(", "))
+            format!(
+                "{}  {}",
+                desc,
+                tr(locale, MessageId::PaletteAliasesSuffix).replace(
+                    "{aliases}",
+                    &self.aliases.join(&tr(locale, MessageId::ListSeparator))
+                )
+            )
         }
     }
 

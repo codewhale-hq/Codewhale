@@ -1,63 +1,89 @@
 import type { LocalizedText } from "./vocabulary";
 import { pickText } from "@/lib/i18n/dictionaries";
 
-/** Labels describe the captured application views; terminal contents stay verbatim. */
-export const NATIVE_TERMINAL_VIEWS = {
-  home: {
-    label: { en: "Home", zh: "首页" },
+type Rows = readonly [number, number];
+
+export const NATIVE_TERMINAL_VIEWS = [
+  {
+    id: "launch",
+    wide: "cols100/00-launch",
+    narrow: "cols48/00-launch",
+    wideRows: [5, 30] as Rows,
+    label: { en: "First launch", zh: "首次启动" },
     description: {
-      en: "The conversation, composer and model status in one view.",
-      zh: "在同一界面查看对话、输入框和模型状态。",
+      en: "Run codewhale in a git repository. On first launch no model is connected yet, and nothing asks you to sign in.",
+      zh: "在 git 仓库中运行 codewhale。首次启动时尚未连接模型，也不会要求你登录。",
     },
   },
-  composer: {
-    label: { en: "Composer", zh: "输入框" },
+  {
+    id: "model",
+    wide: "cols100/01-model-picker",
+    narrow: "cols48/01-model-picker",
+    label: { en: "Model", zh: "模型" },
     description: {
-      en: "A follow-up message in the composer, ready to send.",
-      zh: "输入框中准备发送的后续消息。",
+      en: "The model picker, searched for hydrogen, lists the same model from several providers.",
+      zh: "在模型选择器中搜索 hydrogen，会列出多个提供商提供的同一个模型。",
     },
   },
-  workbar: {
-    label: { en: "Workbar", zh: "工作栏" },
+  {
+    id: "edit",
+    wide: "cols100/03-task-diff",
+    narrow: "cols48/03-task-diff",
+    label: { en: "Edit", zh: "编辑" },
     description: {
-      en: "Task progress and session details in the workbar.",
-      zh: "在工作栏中查看任务进度与会话详情。",
+      en: "gemini-4-hydrogen read two files and edited ls.py. Accept Edits applied the edit and shows the diff.",
+      zh: "gemini-4-hydrogen 读取了两个文件并编辑了 ls.py。Accept Edits 模式直接应用了修改，并显示差异。",
     },
   },
-  "workbar-fleet": {
-    label: { en: "Fleet", zh: "智能体团队" },
+  {
+    id: "approval",
+    wide: "cols100/04-task-approval",
+    narrow: "cols48/04-task-approval",
+    label: { en: "Approval", zh: "审批" },
     description: {
-      en: "A delegated reviewer and its completed task in the Fleet workbar.",
-      zh: "团队工作栏中受委派的审阅智能体及其已完成任务。",
+      en: "The test command waits for your answer before it runs.",
+      zh: "测试命令在运行前等待你的回答。",
     },
   },
-  "provider-picker": {
-    label: { en: "Providers", zh: "提供商" },
+  {
+    id: "result",
+    wide: "cols100/05-task-result",
+    narrow: "cols48/05-task-result",
+    label: { en: "Result", zh: "结果" },
     description: {
-      en: "The provider list and connection details, captured with a local demo model.",
-      zh: "使用本地演示模型实录的提供商列表和连接详情。",
+      en: "After you allowed it once, the tests ran and passed, and the model summarized what it changed.",
+      zh: "你允许一次后，测试运行并通过，模型总结了它所做的修改。",
     },
   },
-  help: {
-    label: { en: "Help", zh: "帮助" },
+  {
+    id: "receipt",
+    wide: "cols56/06b-receipt-tall",
+    narrow: "cols48/06b-receipt-tall",
+    wideRows: [6, 37] as Rows,
+    narrowRows: [2, 34] as Rows,
+    label: { en: "Receipt", zh: "回执" },
     description: {
-      en: "Commands and keyboard shortcuts.",
-      zh: "命令与键盘快捷键。",
+      en: "/receipts lists the file it changed, the command it ran, who approved it and the tokens it used.",
+      zh: "/receipts 列出它修改的文件、运行的命令、由谁批准以及使用的 token。",
     },
   },
-} satisfies Record<string, { label: LocalizedText; description: LocalizedText }>;
+] as const satisfies readonly {
+  id: string;
+  wide: string;
+  narrow: string;
+  wideRows?: Rows;
+  narrowRows?: Rows;
+  label: LocalizedText;
+  description: LocalizedText;
+}[];
 
 export const NATIVE_TERMINAL_COPY = {
   title: { en: "Explore the terminal", zh: "探索终端界面" },
   description: {
-    en: "Captured views from a local Codewhale demo.",
-    zh: "Codewhale 本地演示的实录画面。",
+    en: "These views come from one real session on a development build of 0.10.3, which is not released yet: gemini-4-hydrogen through Google's API, in Accept Edits.",
+    zh: "这些画面来自一次真实会话，运行在尚未发布的 0.10.3 开发版本上：通过 Google API 使用 gemini-4-hydrogen，处于 Accept Edits 模式。",
   },
   viewsLabel: { en: "Terminal views", zh: "终端视图" },
-  showFull: { en: "Show full terminal", zh: "查看完整终端" },
-  showDetail: { en: "Focus on this panel", zh: "聚焦此面板" },
-  detailLabel: { en: "Panel detail from the captured terminal", zh: "终端实录中的面板详情" },
-  scrollHint: { en: "Scroll sideways to see the full terminal.", zh: "左右滚动，查看完整终端。" },
 } satisfies Record<string, LocalizedText>;
 
 export function getNativeTerminalCopy(locale: string) {
@@ -65,13 +91,10 @@ export function getNativeTerminalCopy(locale: string) {
     title: pickText(NATIVE_TERMINAL_COPY.title, locale),
     description: pickText(NATIVE_TERMINAL_COPY.description, locale),
     viewsLabel: pickText(NATIVE_TERMINAL_COPY.viewsLabel, locale),
-    showFull: pickText(NATIVE_TERMINAL_COPY.showFull, locale),
-    showDetail: pickText(NATIVE_TERMINAL_COPY.showDetail, locale),
-    detailLabel: pickText(NATIVE_TERMINAL_COPY.detailLabel, locale),
-    scrollHint: pickText(NATIVE_TERMINAL_COPY.scrollHint, locale),
-    views: Object.fromEntries(Object.entries(NATIVE_TERMINAL_VIEWS).map(([id, view]) => [id, {
+    views: NATIVE_TERMINAL_VIEWS.map((view) => ({
+      ...view,
       label: pickText(view.label, locale),
       description: pickText(view.description, locale),
-    }])),
+    })),
   };
 }

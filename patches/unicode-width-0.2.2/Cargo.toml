@@ -30,7 +30,6 @@ Determine displayed width of `char` and `str` types
 according to Unicode Standard Annex #11 rules.
 """
 homepage = "https://github.com/unicode-rs/unicode-width"
-readme = "README.md"
 keywords = [
     "text",
     "width",
@@ -57,14 +56,6 @@ rustc-dep-of-std = [
 [lib]
 name = "unicode_width"
 path = "src/lib.rs"
-
-[[test]]
-name = "tests"
-path = "tests/tests.rs"
-
-[[bench]]
-name = "benches"
-path = "benches/benches.rs"
 
 [dependencies.core]
 version = "1.0"

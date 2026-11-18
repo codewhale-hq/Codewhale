@@ -61,7 +61,6 @@ pub(crate) fn apply_agent_spawned_status_and_observer(
     prompt_summary: &str,
 ) {
     let label = app.ensure_agent_label(agent_id);
-    codewhale_telemetry::session_counters().bump(codewhale_telemetry::Counter::SubagentSpawn);
     app.push_status_toast_record(
         StatusToast::new(
             format!(
@@ -1536,7 +1535,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    draw_app_frame_inner(terminal, app, config, false)?;
+    draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff)?;
     let input = commands::undo_range_input(app, cut)?;
     #[cfg(test)]
     let env_scope = crate::test_support::env_scope_ticket();
@@ -1556,7 +1555,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    draw_app_frame_inner(terminal, app, config, false)?;
+    draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff)?;
     #[cfg(test)]
     let env_scope = crate::test_support::env_scope_ticket();
     let (restored, _restore_guard) = tokio::task::spawn_blocking(move || {
@@ -1583,7 +1582,7 @@ pub(super) async fn apply_range_undo(
     app.push_status_toast_record(
         StatusToast::new(progress, StatusToastLevel::Info, Some(4_000)).for_command_receipt(),
     );
-    let _ = draw_app_frame_inner(terminal, app, config, false);
+    let _ = draw_app_frame_inner(terminal, app, config, FrameRepaint::Diff);
     match apply_conversation_undo(app, engine, ConversationRewind::FileRange(depth)).await {
         Ok(None) => {
             let message = format!("Undid {} request(s). {summary}", depth + 1);
@@ -3474,6 +3473,7 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
     app.retire_event_notices(COORDINATION_LOCK_NOTICE);
     app.coordination_detail = None;
     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
+    app.refresh_agent_approved_plugins_notice();
     for error in crate::commands::user_registry::install_plugin_registry(
         &workspace,
         app.plugin_registry.as_ref(),
@@ -4923,18 +4923,9 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.session.displayed_cost_high_water_cny = 0.0;
     app.last_billed_input_tokens = None;
     app.restore_cost_snapshot(&session.metadata.cost);
-    codewhale_engine::cost_status::restore_usage_source_ledger(
-        session
-            .metadata
-            .cost
-            .usage_source_fingerprints
-            .iter()
-            .cloned(),
-        &session.metadata.cost.missing_usage_sources,
-        session.metadata.cost.missing_usage_overflowed,
-    );
     codewhale_engine::cost_status::restore_accounted_usage_sources(
         &session.metadata.cost.accounted_usage_sources,
+        &session.metadata.cost.usage_source_fingerprints,
     );
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
@@ -5004,6 +4995,7 @@ pub(crate) fn apply_loaded_session_with_goal(
             ),
         });
     }
+    app.refresh_agent_approved_plugins_notice();
     app.scroll_to_bottom();
     Ok(())
 }

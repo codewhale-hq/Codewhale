@@ -95,9 +95,13 @@ pub trait DynamicToolExecutor: Send + Sync {
 /// contexts keep working. Tools that need durable task/automation state fail
 /// closed with a clear "not available" error when the relevant service is not
 /// attached.
+pub type OwnerAccountingOriginLookup =
+    Arc<dyn Fn(&str) -> Option<crate::cost_status::NativeUsageOrigin> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub owner_accounting_origin: Option<OwnerAccountingOriginLookup>,
     pub runtime_mcp_servers: Option<(PathBuf, crate::mcp::SharedRuntimeMcpServers)>,
     pub shell_manager: Option<SharedShellManager>,
     /// True only for the real headless exec host after it has established the
@@ -131,6 +135,7 @@ impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
             accounting_origin: None,
+            owner_accounting_origin: None,
             runtime_mcp_servers: None,
             shell_manager: None,
             persist_services_enabled: false,
@@ -596,6 +601,8 @@ pub struct ToolExecutionState {
     pub child_host: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
     /// Set only on the context of one call a person approved on a card.
     pub human_decision: Option<crate::core::engine::HumanDecision>,
+    /// Carried authorization for a changing `plugin_manager` call.
+    pub creator_decision: Option<crate::extension_host::creator_policy::CreatorDecisionCarrier>,
     pub mcp_always_binding: Option<u64>,
     pub account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Shared shell manager for background tasks and streaming IO.
@@ -799,6 +806,7 @@ impl ToolContext {
                 acp_host: None,
                 child_host: None,
                 human_decision: None,
+                creator_decision: None,
                 mcp_always_binding: None,
                 account_fence: None,
                 shell_manager,
@@ -1429,6 +1437,16 @@ impl ToolContext {
     #[must_use]
     pub fn with_human_decision(mut self, decision: crate::core::engine::HumanDecision) -> Self {
         self.human_decision = Some(decision);
+        self
+    }
+
+    /// Carry the turn loop's `plugin_manager` admission decision onto the tool context.
+    #[must_use]
+    pub fn with_creator_decision(
+        mut self,
+        decision: crate::extension_host::creator_policy::CreatorDecisionCarrier,
+    ) -> Self {
+        self.creator_decision = Some(decision);
         self
     }
 

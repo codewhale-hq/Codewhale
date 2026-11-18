@@ -55,7 +55,7 @@ extension-host = { max-threads = 1 }
 # integration filters before binary(integration) so they are not stolen
 # by the three-thread group.
 [[profile.default.overrides]]
-filter = 'binary(integration) & test(/^telemetry_contract::/)'
+filter = 'package(codewhale-tui) & binary(integration) & test(/^telemetry_contract::/)'
 test-group = 'telemetry-contract'
 
 # Same hazard, different binary. `telemetry_kill_switch_dispatch` is a
@@ -80,16 +80,16 @@ test-group = 'fleet-manager-lifecycle'
 # DSH preparation also launches the isolated host against the shared hermetic
 # home. OCR/PDF consumers also launch real hosts outside extension_host's
 # namespace. Keep their process lifecycle checks in this existing serial lane.
-filter = '(package(codewhale-engine) | package(codewhale-tui)) & kind(lib) & (test(/^extension_host::/) | test(/^tools::image_ocr::host_tests::/) | test(/^tools::pdf::host_tests::/) | test(/^core::engine::.*extension/) | test(/^plugins::install::dsh::/) | test(/^plugins::tests::dsh_/) | test(/^runtime_api::tests::dsh_package_preview_then_exact_install_over_http$/) | test(/^commands::contract::tests::plugin_adapter_dsh_preview_runs_from_live_runtime$/) | test(/^commands::groups::plugins::tests::dsh_import_reviews_without_installing_then_installs_the_exact_bundle$/))'
+filter = '(package(codewhale-engine) | package(codewhale-tui) | package(codewhale-app-server)) & kind(lib) & (test(/^extension_host::/) | test(/^tools::image_ocr::host_tests::/) | test(/^tools::pdf::host_tests::/) | test(/^core::engine::.*extension/) | test(/^core::engine::tests::creator_/) | test(/^plugins::install::dsh::/) | test(/^plugins::tests::dsh_/) | test(/^runtime_api::tests::remote_pairing::/) | test(/^runtime_api::tests::command_catalog::/) | test(/^commands::contract::tests::plugin_adapter_dsh_preview_runs_from_live_runtime$/) | test(/^commands::groups::plugins::tests::dsh_import_reviews_without_installing_then_installs_the_exact_bundle$/)) | (package(codewhale-tui) & test(/plugin_change_/)) | (package(codewhale-app-server) & kind(lib) & (test(/^runtime_api::tests::dsh_package_preview_then_exact_install_over_http$/) | test(/^runtime_api::tests::creator_screen::/))) | binary(cucumber)'
 test-group = 'extension-host'
 
 [[profile.default.overrides]]
-filter = 'binary(integration) & test(/^exec_persistent_service::/)'
+filter = 'package(codewhale-tui) & binary(integration) & test(/^exec_persistent_service::/)'
 test-group = 'exec-persistent-service'
 slow-timeout = { period = "120s" }
 
 [[profile.default.overrides]]
-filter = 'binary(integration)'
+filter = 'package(codewhale-tui) & binary(integration)'
 test-group = 'spawns-binaries'
 
 [[profile.default.overrides]]

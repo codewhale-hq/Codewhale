@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Isso instala a versão mais recente no macOS ou no Linux, e não exige conta. [W
 
 <sub>Esta tradução é um rascunho automático que ainda não foi revisado por um falante nativo.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale em um terminal depois de uma tarefa de demonstração. Ele informa que adicionou uma opção --json ao export.py, que os 3 testes locais passaram e que uma revisão delegada não encontrou problemas. A lista de tarefas abaixo mostra três etapas concluídas, e a linha de status mostra Full Access e o provedor local website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale em um terminal depois de uma tarefa real com gemini-4-hydrogen. Ele executou python3 -m unittest -v test_ls.py, 2 testes passaram e ele informa que adicionou a opção --json ao ls.py com argparse. A linha de status mostra accept edits e gemini-4-hydrogen.">
 
-<sub>Uma build de desenvolvimento da 0.10.3, que ainda não foi lançada, com um modelo de teste roteirizado, em Full Access dentro de um workspace descartável. A edição, três testes e uma revisão por um subagente rodaram de verdade.</sub>
+<sub>Uma sessão real em uma versão de desenvolvimento da 0.10.3: o gemini-4-hydrogen, pela API do Google, escreveu a alteração, e você permitiu uma vez a execução dos testes.</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Mais de 40 provedores vêm integrados, entre eles Anthropic, OpenAI, DeepSeek, G
 
 `/goal` define um objetivo que continua entre turnos. O Codewhale pode dividir o trabalho entre [subagentes](../SUBAGENTS.md), rodar uma [Fleet](../FLEET.md) de agentes com papéis e modelos próprios, ou seguir um [fluxo de trabalho](../WORKFLOW_AUTHORING.md) salvo no repositório.
 
-### Extensões
+### Plugins
 
 Conecte [servidores MCP](../MCP.md), adicione [skills](../SKILLS.md) e [plugins](../PLUGINS.md), e rode [hooks](../HOOKS.md) em eventos de sessão e de ferramentas. O modo código (experimental, ativado por padrão) permite que o modelo escreva um programa `execute_tools` que chama várias ferramentas MCP e de plugins; cada chamada continua seguindo suas regras de aprovação e mantém seu recibo. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) é um plugin separado lançado por conta própria (experimental, só macOS) e fica desligado até você revisar o acesso dele e ativá-lo.
 

@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-13T04:43:39.245Z",
+  "generatedAt": "2026-11-18T01:38:00.686Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -350,6 +350,14 @@ export const FACTS: RepoFacts = {
     }
   ],
   "models": [
+    {
+      "id": "gemini-4-hydrogen",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-12"
+    },
     {
       "id": "gemini-4-carbon",
       "provider": "Google",
@@ -1154,7 +1162,7 @@ export const FACTS: RepoFacts = {
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=18",
   "toolCount": 83,
-  "contributorCount": 433,
+  "contributorCount": 435,
   "license": "MIT",
   "latestPublishedRelease": {
     "tag": "v0.10.2",

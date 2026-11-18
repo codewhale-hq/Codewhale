@@ -27,9 +27,9 @@ This installs the latest release on macOS or Linux, and it needs no account.
 
 [简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja-JP.md) · [Tiếng Việt](docs/i18n/README.vi.md) · [Bahasa Indonesia](docs/i18n/README.id.md) · [한국어](docs/i18n/README.ko-KR.md) · [Español](docs/i18n/README.es-419.md) · [Português](docs/i18n/README.pt-BR.md) · [Русский](docs/i18n/README.ru.md) · [Українська](docs/i18n/README.uk.md) · [Français](docs/i18n/README.fr.md) · [Deutsch](docs/i18n/README.de.md) · [繁體中文](docs/i18n/README.zh-TW.md) · [हिन्दी](docs/i18n/README.hi.md) · [Türkçe](docs/i18n/README.tr.md) · [Italiano](docs/i18n/README.it.md) · [Polski](docs/i18n/README.pl.md) · [العربية](docs/i18n/README.ar.md) · [Català](docs/i18n/README.ca.md)
 
-<img src="web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale in a terminal after a demo task. It reports that it added a --json flag to export.py, that all 3 local tests passed and that a delegated review found no issues. The task list below shows three completed steps, and the status line shows Full Access and the local website-demo provider.">
+<img src="web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in a terminal after a real task on gemini-4-hydrogen. It ran python3 -m unittest -v test_ls.py, 2 tests passed, and it reports that it added a --json flag to ls.py with argparse. The status line shows accept edits and gemini-4-hydrogen.">
 
-<sub>A development build of 0.10.3, which is not released yet, with a scripted test model, in Full Access inside a throwaway workspace. The edit, three tests and a sub-agent review ran for real.</sub>
+<sub>A real session on a 0.10.3 development build: gemini-4-hydrogen through Google's API wrote the edit, and you allowed the test run once.</sub>
 
 </div>
 
@@ -113,7 +113,7 @@ across [sub-agents](docs/SUBAGENTS.md), run a [Fleet](docs/FLEET.md) of agents
 with their own roles and models, or follow a
 [workflow](docs/WORKFLOW_AUTHORING.md) checked into the repository.
 
-### Extensions
+### Plugins
 
 Connect [MCP servers](docs/MCP.md), add [skills](docs/SKILLS.md) and
 [plugins](docs/PLUGINS.md), and run [hooks](docs/HOOKS.md) on session and tool

@@ -286,8 +286,8 @@ authority.
       codewhale`, `curl .../install.sh | sh`); Homebrew is labeled as legacy
       compatibility; the shell installer uses codewhale-native names as documented
       in `docs/REBRAND.md#homebrew`.
-- [ ] Every release crate has the new version on crates.io; there is no
-      automated Cargo publish job. Partial publication is incomplete.
+- [ ] Every release crate has the new version on crates.io (`codewhale-ratatui`
+      has its own version); there is no automated Cargo publish job. Partial publication is incomplete.
 - [ ] `ghcr.io/codewhale-hq/codewhale:vX.Y.Z` and `:latest` are updated.
 - [ ] The CNB release tag and approved downstream results are verified
       separately; a successful GitHub Release does not prove them.

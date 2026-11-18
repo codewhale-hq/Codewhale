@@ -12,6 +12,23 @@ use serde::Deserialize;
 
 const DESCRIPTORS_JSON: &str = include_str!("../assets/provider_descriptors.json");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelIdsPolicy {
+    Strict,
+    Roster,
+    Catalog,
+    Verbatim,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModelRules {
+    pub ids: ModelIdsPolicy,
+    pub accept: &'static [&'static str],
+    pub strip_prefixes: &'static [&'static str],
+    pub aliases: &'static [(&'static str, &'static str)],
+    pub wire_slugs: &'static [(&'static str, &'static str)],
+}
+
 /// Immutable built-in view compiled from the same descriptor data file.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BuiltinProviderDescriptor {
@@ -29,6 +46,7 @@ pub(crate) struct BuiltinProviderDescriptor {
     pub retired: bool,
     pub wire_policy: crate::provider::WirePolicy,
     pub credential_help: crate::provider::CredentialHelp,
+    pub models: ModelRules,
 }
 
 /// Exact compatibility identity for the TUI-only legacy DeepSeek China table.
@@ -215,6 +233,30 @@ pub fn provider_descriptor(id: &str) -> Option<&'static ProviderDescriptor> {
     bundled_provider_descriptors()
         .iter()
         .find(|descriptor| descriptor.matches(id))
+}
+
+#[must_use]
+pub(crate) fn normalize_model_lookup_key(model: &str) -> String {
+    model.trim().to_ascii_lowercase().replace(['_', ' '], "-")
+}
+
+pub(crate) fn model_rules_for(kind: crate::ProviderKind) -> &'static ModelRules {
+    &builtin_provider_descriptor(kind).models
+}
+
+#[must_use]
+pub fn provider_model_alias(kind: crate::ProviderKind, model: &str) -> Option<&'static str> {
+    let key = normalize_model_lookup_key(model);
+    model_rules_for(kind)
+        .aliases
+        .iter()
+        .find(|(alias, _)| *alias == key)
+        .map(|(_, target)| *target)
+}
+
+#[must_use]
+pub fn provider_passes_model_through(kind: crate::ProviderKind) -> bool {
+    model_rules_for(kind).ids == ModelIdsPolicy::Verbatim
 }
 
 #[cfg(test)]

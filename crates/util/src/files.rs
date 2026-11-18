@@ -442,6 +442,14 @@ impl WorkspaceFile {
     }
 
     fn open_with_flags(&self, flags: libc::c_int) -> io::Result<File> {
+        self.open_with_flags_and_max_links(flags, 1)
+    }
+
+    fn open_with_flags_and_max_links(
+        &self,
+        flags: libc::c_int,
+        max_links: u64,
+    ) -> io::Result<File> {
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::MetadataExt;
         // macOS can fail an `openat(O_CREAT)` with ENOENT while another thread
@@ -475,7 +483,7 @@ impl WorkspaceFile {
         // SAFETY: fd is freshly owned.
         let file = unsafe { File::from_raw_fd(fd) };
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.nlink() != 1 {
+        if !metadata.is_file() || !(1..=max_links).contains(&metadata.nlink()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Fleet file must be a regular, non-hard-linked file",
@@ -592,11 +600,21 @@ impl WorkspaceFile {
     }
 
     pub fn open_retained(&self) -> io::Result<File> {
-        self.open_file()
+        self.open_retained_with_max_links(1)
+    }
+
+    /// Open a delivery file while bounding its permitted Unix hard-link count.
+    pub fn open_retained_with_max_links(&self, max_links: u64) -> io::Result<File> {
+        self.open_with_flags_and_max_links(libc::O_RDONLY, max_links)
     }
 
     pub fn identity_probe(&self) -> io::Result<File> {
-        self.open_file()
+        self.identity_probe_with_max_links(1)
+    }
+
+    /// Probe a delivery path while bounding its permitted Unix hard-link count.
+    pub fn identity_probe_with_max_links(&self, max_links: u64) -> io::Result<File> {
+        self.open_with_flags_and_max_links(libc::O_RDONLY, max_links)
     }
 
     pub fn move_opened_to_sibling(&self, file: &File, destination: &Self) -> io::Result<()> {
@@ -609,6 +627,15 @@ impl WorkspaceFile {
     }
 
     pub fn verify_delivery_owner(&self, file: &File) -> io::Result<()> {
+        self.verify_delivery_owner_with_max_links(file, 1)
+    }
+
+    /// Verify parent and file ownership/permissions while bounding permitted links.
+    pub fn verify_delivery_owner_with_max_links(
+        &self,
+        file: &File,
+        max_links: u64,
+    ) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         let owner = codewhale_config::private_directory::PrivateDirectory::current_user_id();
         let parent = self.directory.metadata()?;
@@ -628,15 +655,25 @@ impl WorkspaceFile {
                 "delivery file and retained parent must be owned by the current user and not writable by group or others",
             ));
         }
-        if !same_file(file, &self.identity_probe()?)? {
+        if !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         Ok(())
     }
 
     pub fn move_opened_to_directory(&self, file: &File, destination: &Self) -> io::Result<()> {
+        self.move_opened_to_directory_with_max_links(file, destination, 1)
+    }
+
+    /// Move an opened delivery entry into a destination directory while bounding permitted links.
+    pub fn move_opened_to_directory_with_max_links(
+        &self,
+        file: &File,
+        destination: &Self,
+        max_links: u64,
+    ) -> io::Result<()> {
         use std::os::fd::AsRawFd;
-        if !same_file(file, &self.identity_probe()?)? {
+        if !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         if !rename_exclusive(
@@ -654,12 +691,17 @@ impl WorkspaceFile {
     }
 
     pub fn unlink_opened(&self, file: &File) -> io::Result<()> {
+        self.unlink_opened_with_max_links(file, 1)
+    }
+
+    /// Unlink an opened delivery entry after verifying its private parent and bounded links.
+    pub fn unlink_opened_with_max_links(&self, file: &File, max_links: u64) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::MetadataExt;
         let parent = self.directory.metadata()?;
         let public = parent.mode() & 0o077 != 0 || parent.uid() != unsafe { libc::geteuid() };
         let unverified = public && !mount_cannot_extend_guard(&self.directory);
-        if unverified || !same_file(file, &self.identity_probe()?)? {
+        if unverified || !same_file(file, &self.identity_probe_with_max_links(max_links)?)? {
             return Err(invalid_path());
         }
         if unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.filename.as_ptr(), 0) } != 0 {
@@ -1077,8 +1119,18 @@ impl WorkspaceFile {
         crate::bundle_file::open_bundle_file_for_retirement(&self.directory.join(&self.filename))
     }
 
+    /// Windows delivery files remain strictly single-link.
+    pub fn open_retained_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.open_retained()
+    }
+
     pub fn identity_probe(&self) -> io::Result<File> {
         crate::bundle_file::open_bundle_identity_probe(&self.directory.join(&self.filename), false)
+    }
+
+    /// Windows delivery identity probes remain strictly single-link.
+    pub fn identity_probe_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.identity_probe()
     }
 
     pub fn move_opened_to_sibling(&self, file: &File, destination: &Self) -> io::Result<()> {
@@ -1588,8 +1640,14 @@ impl WorkspaceFile {
     pub fn open_retained(&self) -> io::Result<File> {
         self.open_file()
     }
+    pub fn open_retained_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.open_retained()
+    }
     pub fn identity_probe(&self) -> io::Result<File> {
         self.open_file()
+    }
+    pub fn identity_probe_with_max_links(&self, _max_links: u64) -> io::Result<File> {
+        self.identity_probe()
     }
     pub fn publish_retained(&self, _: &[u8], _: bool) -> io::Result<File> {
         Err(io::ErrorKind::Unsupported.into())

@@ -364,6 +364,71 @@ pub fn approver_label(approver: Option<&PluginApprover>) -> &'static str {
     }
 }
 
+#[must_use]
+pub fn recorded_approver_label(
+    approver: Option<&str>,
+    posture: Option<&str>,
+) -> Option<&'static str> {
+    match (approver, posture) {
+        (Some("person"), _) => Some("approved by you"),
+        (Some("agent"), Some("full_access")) => Some("approved by the agent in Full Access"),
+        (Some("agent"), Some("auto_review")) => Some("approved by the agent in Auto-Review"),
+        (Some("agent"), Some("command_line")) => Some("approved by the agent from a shell command"),
+        (Some("command_line"), _) => {
+            Some("trusted from the command line with --yes; no review was shown there")
+        }
+        (Some("none"), _) => Some("approver not recorded (reviewed before 0.10.3)"),
+        _ => None,
+    }
+}
+
+pub const AGENT_PROCESS_NOTE: &str = "runs apart from your reviewed plugins until you review it";
+
+#[must_use]
+pub fn short_review_date(timestamp: &str) -> &str {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() >= 10
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && timestamp.is_char_boundary(10)
+    {
+        &timestamp[..10]
+    } else {
+        timestamp
+    }
+}
+
+#[must_use]
+pub fn workspace_folder_name(workspace: &str) -> &str {
+    std::path::Path::new(workspace)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(workspace)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostServiceWireState {
+    CanUse,
+    NotOffered,
+}
+
+#[must_use]
+pub fn host_service_wire_state(
+    granted: &[HostService],
+    line: &HostServiceLine,
+) -> HostServiceWireState {
+    if line.offered && granted.contains(&line.service) {
+        HostServiceWireState::CanUse
+    } else {
+        HostServiceWireState::NotOffered
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewApproval {
     pub approved_by: PluginApprover,

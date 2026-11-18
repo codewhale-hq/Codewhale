@@ -11,7 +11,8 @@
 //! policy v4, selected by the flag) makes [`ExtensionHostManager::reconcile_in_background`]
 //! spawn the host in the background — never on the first-prompt path — and
 //! activate one owner per plugin. Tools join the per-turn registry at the next
-//! rebuild, deferred. Disabling, revoking or updating the plugin revokes its
+//! rebuild, or before the next model request when the creator `plugin_manager`
+//! changes a plugin mid-turn. Disabling, revoking or updating the plugin revokes its
 //! registrations synchronously before the host is asked to tear down.
 //!
 //! `core/call` ([`core_call`], tickets in [`ticket`]): an extension tool that
@@ -122,11 +123,12 @@
 pub mod command;
 pub mod composition_review;
 pub mod core_call;
+pub(crate) mod creator_policy;
 mod dsh_attachments;
 pub mod dsh_broker;
 mod dsh_catalog;
 mod dsh_llm;
-mod dsh_network;
+pub(crate) mod dsh_network;
 mod dsh_plugins;
 mod dsh_remote;
 pub(crate) use dsh_remote::end_remote_session;
@@ -537,6 +539,7 @@ struct TierRuntime {
     spawn_attempts: AtomicU64,
     /// Lock order: see [`ManagerShared`].
     supervision: Mutex<SupervisionState>,
+    imported_entries: Mutex<(u64, BTreeMap<PathBuf, String>)>,
 }
 
 impl TierRuntime {
@@ -546,6 +549,7 @@ impl TierRuntime {
             host_generation: AtomicU64::new(0),
             spawn_attempts: AtomicU64::new(0),
             supervision: Mutex::new(SupervisionState::default()),
+            imported_entries: Mutex::new((0, BTreeMap::new())),
         }
     }
 }
@@ -615,6 +619,7 @@ pub struct ManagerShared {
     /// [`tier::BUILTIN_MODULES`] in production; a test substitutes its
     /// own through [`ExtensionHostManager::with_builtin_modules`].
     builtin_modules: &'static [BuiltinModule],
+    materialize_default_builtins: bool,
     attachments: Mutex<BTreeMap<u64, AttachmentState>>,
     next_attachment: AtomicU64,
     /// One registry for both tiers: an owner's entry records which.
@@ -645,6 +650,7 @@ pub struct ManagerShared {
     runtime: Mutex<RuntimePin>,
     /// User settings per plugin name.
     plugin_configs: Mutex<plugin_config::PluginConfigs>,
+    reconcile_settled: tokio::sync::Notify,
 }
 
 /// Which runtime this manager's hosts run on.
@@ -1403,6 +1409,7 @@ impl HostEvents for Events {
                 policy,
             );
         }
+        shared.reconcile_settled.notify_waiters();
         let has_pending = !shared
             .pending_migrations
             .lock()
@@ -1668,20 +1675,30 @@ pub struct ExtensionHostManager {
 impl ExtensionHostManager {
     #[must_use]
     pub fn new(options: ExtensionHostOptions) -> Self {
-        Self::with_builtin_modules(options, tier::BUILTIN_MODULES)
+        Self::build(options, tier::BUILTIN_MODULES, true)
     }
 
     /// A manager with its own built-in module table. Production passes the
-    /// const table through [`Self::new`]; a test passes one of its own to
+    /// static table through [`Self::new`]; a test passes one of its own to
     /// exercise tier 0 without a production row.
+    #[cfg(test)]
     fn with_builtin_modules(
         options: ExtensionHostOptions,
         builtin_modules: &'static [BuiltinModule],
+    ) -> Self {
+        Self::build(options, builtin_modules, false)
+    }
+
+    fn build(
+        options: ExtensionHostOptions,
+        builtin_modules: &'static [BuiltinModule],
+        materialize_default_builtins: bool,
     ) -> Self {
         Self {
             shared: Arc::new(ManagerShared {
                 options,
                 builtin_modules,
+                materialize_default_builtins,
                 attachments: Mutex::new(BTreeMap::new()),
                 next_attachment: AtomicU64::new(0),
                 registry: Mutex::new(OwnerRegistry::new()),
@@ -1703,6 +1720,7 @@ impl ExtensionHostManager {
                 diagnostics: Mutex::new(VecDeque::new()),
                 runtime: Mutex::new(RuntimePin::default()),
                 plugin_configs: Mutex::new(plugin_config::PluginConfigs::default()),
+                reconcile_settled: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -2059,8 +2077,183 @@ impl ExtensionHostManager {
         }
     }
 
-    /// How many engines are attached.
-    #[must_use]
+    /// Re-scan plugins and optionally wait for one plugin's native owner to settle.
+    pub async fn plugins_changed_and_wait(
+        self: &Arc<Self>,
+        plugins: &Arc<PluginRegistry>,
+        plugin_id: Option<&str>,
+        expected_authority: Option<&PluginAuthority>,
+        exempt_invocation_id: Option<u64>,
+        wait_for_owner: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<OwnerReport>, String> {
+        self.refresh_workspace_except(plugins, exempt_invocation_id);
+        if !activation::extension_host_policy_enabled() {
+            return if wait_for_owner {
+                Err(
+                    "the extension host is switched off in this process, so native plugin code did not start"
+                        .to_string(),
+                )
+            } else {
+                Ok(None)
+            };
+        }
+        if wait_for_owner && self.attached_engines() == 0 {
+            if let Some(pid) = plugin_id
+                && let Some(report) = self.owner_report_for(pid, expected_authority)
+                && !matches!(report.state, Some(OwnerState::Activating) | None)
+            {
+                return Ok(Some(report));
+            }
+            return Err("the extension host is not running for this session".to_string());
+        }
+        self.revoke_stale_or_removed_owners(plugins);
+        self.retry_cohort(&HostCohort::reviewed());
+        self.retry_cohort(&HostCohort::agent(plugins.workspace()));
+        if self.attached_engines() == 0 {
+            return Ok(None);
+        }
+        let policy = activation::extension_host_policy_enabled();
+        let reconcile_manager = ExtensionHostManager {
+            shared: Arc::clone(&self.shared),
+        };
+        let mut reconcile_task =
+            tokio::spawn(async move { reconcile_manager.reconcile_with_policy(policy).await });
+        let reconcile_res = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                self.reload_and_reconcile_in_background();
+                return Err(
+                    "cancelled while waiting for the extension host to start plugin code"
+                        .to_string(),
+                );
+            }
+            res = &mut reconcile_task => match res {
+                Ok(res) => res,
+                Err(error) => Err(format!("extension host reconcile task failed: {error}")),
+            },
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+        if !wait_for_owner {
+            return Ok(None);
+        }
+        let Some(pid) = plugin_id else {
+            reconcile_res?;
+            return Ok(None);
+        };
+        let target_cohort = plugins
+            .get(pid)
+            .map(|plugin| {
+                if matches!(
+                    plugin.approved_by,
+                    Some(codewhale_plugins::host_services::PluginApprover::Agent(_))
+                ) {
+                    HostCohort::agent(plugins.workspace())
+                } else {
+                    HostCohort::reviewed()
+                }
+            })
+            .unwrap_or_else(HostCohort::reviewed);
+        loop {
+            let settled = self.shared.reconcile_settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            let report = self.owner_report_for(pid, expected_authority);
+            let migration_pending = self
+                .shared
+                .pending_migrations
+                .lock()
+                .expect("pending migrations lock")
+                .contains_key(pid);
+            if !migration_pending {
+                if let Some(report) = report {
+                    if !matches!(report.state, Some(OwnerState::Activating) | None) {
+                        return Ok(Some(report));
+                    }
+                } else {
+                    let (slot_status, restarting_in_flight) = self
+                        .shared
+                        .cohort_runtime(&target_cohort)
+                        .map(|rt| {
+                            let slot = rt.host.lock().expect("host lock");
+                            let status = slot.status();
+                            let retiring = matches!(
+                                &*slot,
+                                HostSlot::Ready(h) | HostSlot::Unresponsive(h) if h.is_retiring()
+                            );
+                            let (planned, dirty_pending) = {
+                                let sup = rt.supervision.lock().expect("supervision lock");
+                                (sup.planned_restart.is_some(), sup.dirty_restart_pending)
+                            };
+                            (Some(status), retiring || planned || dirty_pending)
+                        })
+                        .unwrap_or((None, false));
+                    if let Some(HostStatus::Failed { reason, .. }) = slot_status {
+                        return Err(reason);
+                    }
+                    if let Err(err) = &reconcile_res
+                        && !restarting_in_flight
+                        && !matches!(
+                            slot_status,
+                            Some(HostStatus::Starting | HostStatus::Restarting { .. })
+                        )
+                    {
+                        return Err(err.clone());
+                    }
+                    let is_desired = self
+                        .shared
+                        .attachments
+                        .lock()
+                        .expect("attachments lock")
+                        .values()
+                        .any(|state| state.desired.contains_key(pid));
+                    if !is_desired
+                        && !restarting_in_flight
+                        && !matches!(
+                            slot_status,
+                            Some(HostStatus::Starting | HostStatus::Restarting { .. })
+                        )
+                    {
+                        return Err(
+                            "the extension host did not select this plugin for activation"
+                                .to_string(),
+                        );
+                    }
+                    if !restarting_in_flight
+                        && matches!(
+                            slot_status,
+                            Some(
+                                HostStatus::Idle | HostStatus::Ready { .. } | HostStatus::Disabled
+                            ) | None
+                        )
+                    {
+                        return Err(
+                            "plugin activation did not register an owner in the extension host"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Err(
+                        "cancelled while waiting for the extension host to start plugin code"
+                            .to_string(),
+                    );
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(
+                        "the extension host did not finish starting native plugin code in time"
+                            .to_string(),
+                    );
+                }
+                () = settled => {}
+            }
+        }
+    }
+
     pub fn attached_engines(&self) -> usize {
         self.shared
             .attachments
@@ -2072,6 +2265,14 @@ impl ExtensionHostManager {
     /// Replace the snapshot of every engine attached to `plugins`'s
     /// workspace: a plugin was enabled, disabled, trusted or revoked there.
     fn refresh_workspace(&self, plugins: &Arc<PluginRegistry>) {
+        self.refresh_workspace_except(plugins, None);
+    }
+
+    fn refresh_workspace_except(
+        &self,
+        plugins: &Arc<PluginRegistry>,
+        exempt_invocation_id: Option<u64>,
+    ) {
         let mut ids_to_revoke = Vec::new();
         {
             let mut attachments = self.shared.attachments.lock().expect("attachments lock");
@@ -2104,7 +2305,9 @@ impl ExtensionHostManager {
             }
         }
         for id in ids_to_revoke {
-            self.shared.core_calls.revoke_attachment(id);
+            self.shared
+                .core_calls
+                .revoke_attachment_except(id, exempt_invocation_id);
         }
         command::bump_epoch();
     }
@@ -2438,6 +2641,13 @@ impl ExtensionHostManager {
 
     async fn reconcile_with_policy(&self, policy: bool) -> Result<(), String> {
         let shared = &self.shared;
+        struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);
+        impl Drop for NotifyOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.notify_waiters();
+            }
+        }
+        let _settled_notify = NotifyOnDrop(&shared.reconcile_settled);
         let _serial = shared.sync_lock.lock().await;
         let (desired, errors) = loop {
             let snapshots: Vec<(u64, Arc<PluginRegistry>)> = shared
@@ -2883,6 +3093,34 @@ impl ExtensionHostManager {
                         continue;
                     }
                 };
+                if let Some(runtime) = shared.cohort_runtime(&cohort) {
+                    let generation = runtime.host_generation.load(Ordering::SeqCst);
+                    let needs_fresh_module_cache = {
+                        let imported = runtime
+                            .imported_entries
+                            .lock()
+                            .expect("imported entries lock");
+                        imported.0 == generation
+                            && owners.iter().any(|(_, want)| {
+                                want.entries.iter().any(|(path, sha256)| {
+                                    imported
+                                        .1
+                                        .get(path)
+                                        .is_some_and(|prev_sha| prev_sha != sha256)
+                                })
+                            })
+                    };
+                    if needs_fresh_module_cache {
+                        let mut supervision = runtime.supervision.lock().expect("supervision lock");
+                        supervision.planned_restart = Some(generation);
+                        if !host.terminate_if_idle(DIRTY_RESTART_REASON) {
+                            supervision.planned_restart = None;
+                            supervision.dirty_restart_pending = true;
+                        }
+                        drop(supervision);
+                        continue;
+                    }
+                }
                 for (plugin_id, want) in owners {
                     if host.has_exited() {
                         break;
@@ -3099,10 +3337,7 @@ impl ExtensionHostManager {
         if !supervisor::bundle_dir(&root, bundle_sha256())
             .join("builtin")
             .exists()
-            && std::ptr::eq(
-                shared.builtin_modules.as_ptr(),
-                tier::BUILTIN_MODULES.as_ptr(),
-            )
+            && shared.materialize_default_builtins
         {
             let materialize_root = root.clone();
             tokio::task::spawn_blocking(move || materialize_bundle(&materialize_root))
@@ -3335,6 +3570,18 @@ impl ExtensionHostManager {
                     continue;
                 }
             }
+            if want.tier() == HostTier::Plugin
+                && let Some(runtime) = shared.cohort_runtime(&want.cohort)
+            {
+                let generation = runtime.host_generation.load(Ordering::SeqCst);
+                let mut imported = runtime
+                    .imported_entries
+                    .lock()
+                    .expect("imported entries lock");
+                if imported.0 == generation {
+                    imported.1.insert(path.clone(), sha256.clone());
+                }
+            }
             let request = CoreRequest::Activate(ActivateParams {
                 scope: scope.clone(),
                 owner: owner.clone(),
@@ -3553,6 +3800,10 @@ impl ExtensionHostManager {
                 _ => runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1,
             };
             runtime.host_generation.store(next_gen, Ordering::SeqCst);
+            *runtime
+                .imported_entries
+                .lock()
+                .expect("imported entries lock") = (next_gen, BTreeMap::new());
             next_gen
         };
         shared
@@ -3921,6 +4172,28 @@ pub fn plugins_changed(plugins: Arc<PluginRegistry>) {
     }
 }
 
+pub async fn plugins_changed_and_wait(
+    plugins: &Arc<PluginRegistry>,
+    plugin_id: Option<&str>,
+    expected_authority: Option<&PluginAuthority>,
+    exempt_invocation_id: Option<u64>,
+    wait_for_owner: bool,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> Result<Option<OwnerReport>, String> {
+    manager()
+        .plugins_changed_and_wait(
+            plugins,
+            plugin_id,
+            expected_authority,
+            exempt_invocation_id,
+            wait_for_owner,
+            cancel,
+            timeout,
+        )
+        .await
+}
+
 /// Install the user's per-plugin settings at boot (the host's other boot
 /// options are `configure`). `source` is the config file `/plugin reload`
 /// re-reads them from. No-op with the flag off.
@@ -4008,16 +4281,6 @@ pub fn owner_report(plugin_id: &str) -> Option<OwnerReport> {
         return None;
     }
     manager().owner_report(plugin_id)
-}
-
-pub(super) fn owner_report_for_authority(
-    plugin_id: &str,
-    expected: Option<&PluginAuthority>,
-) -> Option<OwnerReport> {
-    if !activation::extension_host_policy_enabled() {
-        return None;
-    }
-    manager().owner_report_for(plugin_id, expected)
 }
 
 /// Where a built-in module's source is expected:

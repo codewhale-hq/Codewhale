@@ -57,6 +57,20 @@ mode in Plan is still Plan. `codewhale` and `codewhale exec` take
 `--session-id` or `--continue` it must match the session's saved mode, or the
 run exits with code 2 before any model call.
 
+In Creator mode, read-only `plugin_manager` queries run across postures with zero
+prompts, whereas state-changing plugin calls (`install_bundle`, `remove_bundle`,
+`set_bundle`, `set_plugin`) are prepared read-only on `ToolExecutionPlan` and
+gated by the engine before execution. Inside-workspace local changes route
+through Auto-Review's guardian/allow-rules and Full Access (recording the agent
+posture in plugin state), while outside-scope changes — paths outside the
+project, remote specs or local bundles with unresolved npm dependencies (which
+never fetch before approval and land disabled and untrusted), bundles declaring
+stdio MCP connectors or hooks while shell execution is disabled, person-approved
+plugins, and built-in switches — skip the guardian and ask the person directly
+on the approval card even in Auto-Review and Full Access; `Plan`, `sandbox_mode =
+"read-only"`, `Never`, `Background`, sub-agents, and `execute_tools` refuse
+changing plugin calls.
+
 - **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `grep_files`, `bash`, `agent`, `todo_write`, `present`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
 - **Operate is retired.** It was Work with an orchestration contract, and that contract now lives in every session's constitution: make a goal of a durable request, keep the plan visible, fan independent work out to parallel sub-agents, and have an independent reviewer try to refute a non-trivial change. A saved `default_mode = "operate"` loads as Work and says so once; a Runtime API request with `mode: "operate"` runs as `agent` with the default posture (Accept Edits) and logs one notice per process, never an error. Agents forked from an older Operate conversation do not inherit its contract. Multi-agent work stays on `agent`, `workflow` and `/fleet` in every mode.
@@ -142,11 +156,14 @@ working, while Workflow supplies the repeatable workflow/progress surface for
 large fanout. In the UI, a Workflow run should be shown as an overlay on the
 main screen, not as another mode beside Plan and Work.
 
-App-server clients can persist a thread-scoped goal with `thread/goal/set`, read
-it with `thread/goal/get`, and clear it with `thread/goal/clear`. That persisted
-record carries `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
-or `complete` status plus token/time accounting fields for clients that need
-thread resume semantics.
+App-server clients can read an existing thread-scoped goal with `thread/goal/get`
+and clear it with `thread/goal/clear`. Clients should not call `thread/goal/set`:
+it is omitted from capability discovery while `goal_execution` is `false` and is
+refused with a typed `interactive_execution_unsupported` error before changing
+the goal; starting goals uses the full Runtime HTTP API (`docs/RUNTIME_API.md`).
+That persisted record carries `active`, `paused`, `blocked`, `usage_limited`,
+`budget_limited`, or `complete` status plus token/time accounting fields for
+clients that need thread resume semantics.
 
 ## Mode Persistence
 
@@ -306,7 +323,9 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   (never re-read from disk mid-session), and typed `person_messages` from the
   conversation owner newest first (on subagent turns, inherited from the root
   conversation rather than child briefs; empty on agent-created `Background`
-  threads). Attached `@file` bodies, skill instructions, expanded context, tool
+  threads). On runtime threads the owner composer is the signed-in web client
+  or a runtime-token caller that names `"client": "desktop"` (or `tui`/`web`)
+  on the turn or steer request; other Runtime API callers record nothing. Attached `@file` bodies, skill instructions, expanded context, tool
   outputs, and assistant prose are never passed to the reviewer. Context is
   capped at 64 KiB; the current request and exact proposed call are never
   truncated (exceeding the cap alone fails closed as unavailable), and under

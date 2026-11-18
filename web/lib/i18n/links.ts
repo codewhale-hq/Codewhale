@@ -30,13 +30,13 @@ export interface ChromeLink {
 
 export const SECURITY_POLICY_URL = `${REPO_URL}/blob/main/SECURITY.md`;
 
-export function navLinks(locale: string, chrome: ChromeDict, desktopReleased = false): ChromeLink[] {
+export function navLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: `/${locale}/docs`, label: chrome.navDocs },
     { href: `/${locale}/models`, label: chrome.navModels },
-    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
+    { href: `/${locale}/plugins`, label: chrome.navPlugins },
+    { href: `/${locale}/app`, label: chrome.navDesktop },
     { href: `/${locale}/contribute`, label: chrome.navContribute },
-    ...(desktopReleased ? [{ href: `/${locale}/app`, label: chrome.navDesktop }] : []),
   ];
 }
 

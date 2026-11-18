@@ -1597,26 +1597,27 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     preview.locale = app.ui_locale;
     let selected_attachment = app.selected_composer_attachment_index();
     let mut attachment_index = 0usize;
-    preview.context_items = crate::tui::file_mention::pending_context_previews(&app.input)
-        .into_iter()
-        .map(|item| {
-            let selected = if item.removable {
-                let selected = selected_attachment == Some(attachment_index);
-                attachment_index += 1;
-                selected
-            } else {
-                false
-            };
-            ContextPreviewItem {
-                kind: item.kind,
-                label: item.label,
-                detail: item.detail,
-                included: item.included,
-                removable: item.removable,
-                selected,
-            }
-        })
-        .collect();
+    preview.context_items =
+        crate::tui::file_mention::pending_context_previews(&app.input, app.ui_locale)
+            .into_iter()
+            .map(|item| {
+                let selected = if item.removable {
+                    let selected = selected_attachment == Some(attachment_index);
+                    attachment_index += 1;
+                    selected
+                } else {
+                    false
+                };
+                ContextPreviewItem {
+                    kind: item.kind,
+                    label: item.label,
+                    detail: item.detail,
+                    included: item.included,
+                    removable: item.removable,
+                    selected,
+                }
+            })
+            .collect();
     // #6190: a steer the engine has not recorded yet is exactly what this
     // bucket's "sending into turn" label describes, so it shares it rather
     // than growing a fourth bucket and a fifteenth locale string.
@@ -2303,21 +2304,51 @@ pub(super) fn finish_frame_cursor<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// Draw a complete application frame, optionally with a full viewport reset.
-///
-/// When `full_repaint` is true, the terminal scroll margins and origin mode
-/// are reset, the screen is cleared, ratatui's buffer is emptied, and then
-/// the full UI is drawn — all within a single DEC 2026 synchronized-update
-/// batch so GPU-accelerated terminals (Ghostty, VS Code, Kitty) render one
-/// complete frame instead of a blank intermediate frame followed by the UI.
-///
-/// When `full_repaint` is false, only the diff from the previous draw is
-/// written (normal incremental update path).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum FrameRepaint {
+    Diff,
+    Recapture,
+    Clear,
+}
+
+pub(super) fn draw_frame_with_repaint<B>(
+    terminal: &mut Terminal<B>,
+    repaint: FrameRepaint,
+    render: impl FnOnce(&mut Frame<'_>),
+) -> Result<()>
+where
+    B: ratatui::backend::Backend<Error = std::io::Error> + Write,
+{
+    if repaint != FrameRepaint::Diff {
+        terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+    }
+    if repaint == FrameRepaint::Clear {
+        terminal.clear()?;
+    }
+    terminal.draw(|frame| {
+        render(frame);
+        if repaint == FrameRepaint::Recapture {
+            for cell in &mut frame.buffer_mut().content {
+                #[allow(deprecated)]
+                let skipped = cell.skip;
+                if cell.diff_option == ratatui::buffer::CellDiffOption::None && !skipped {
+                    cell.diff_option = ratatui::buffer::CellDiffOption::AlwaysUpdate;
+                }
+            }
+        }
+    })?;
+    Ok(())
+}
+
+/// Draw a complete application frame within a synchronized-update batch.
+/// Focus recapture covers the viewport without erasing it first; resize and
+/// external handoffs retain the clear-and-redraw path. A recapture can also
+/// cause one additional ordinary diff because Ratatui compares cell directives.
 pub(crate) fn draw_app_frame_inner(
     terminal: &mut AppTerminal,
     app: &mut App,
     config: &Config,
-    full_repaint: bool,
+    repaint: FrameRepaint,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
@@ -2348,13 +2379,14 @@ pub(crate) fn draw_app_frame_inner(
         // before clear/diff operations move it, then restore the one composer
         // position after ratatui finishes drawing (#5023).
         prepare_frame_cursor(terminal)?;
-        if full_repaint || resized.is_some() {
-            terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-            terminal.clear()?;
-        }
+        let repaint = if resized.is_some() {
+            FrameRepaint::Clear
+        } else {
+            repaint
+        };
         let mut cursor_pos = None;
         let mut frame_area = ratatui::layout::Rect::default();
-        terminal.draw(|f| {
+        draw_frame_with_repaint(terminal, repaint, |f| {
             frame_area = f.area();
             cursor_pos = render(f, app, config);
         })?;

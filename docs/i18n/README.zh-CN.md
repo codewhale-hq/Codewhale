@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>本翻译为机器草稿，尚未经母语者审校。</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="一个演示任务结束后的 Codewhale 终端界面。它报告已为 export.py 添加 --json 参数，3 个本地测试全部通过，委派的审查没有发现问题。下方的任务列表显示三个已完成的步骤，状态栏显示 Full Access 和本地 website-demo 提供商。">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 gemini-4-hydrogen 的真实任务结束后的 Codewhale 终端界面。它运行了 python3 -m unittest -v test_ls.py，2 个测试通过，并报告已用 argparse 为 ls.py 添加 --json 参数。状态栏显示 accept edits 和 gemini-4-hydrogen。">
 
-<sub>尚未发布的 0.10.3 的开发构建，使用脚本化的测试模型，在一次性工作区中以 Full Access 运行。其中的编辑、三个测试和一次子智能体审查都是真实运行的。</sub>
+<sub>0.10.3 开发构建上的一次真实会话：gemini-4-hydrogen 通过 Google API 写出了修改，测试运行由你允许了一次。</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 
 `/goal` 设置一个跨回合延续的目标。Codewhale 可以把工作分给[子智能体](../SUBAGENTS.md)，运行一组各有角色和模型的智能体 [Fleet](../FLEET.md)，或者按照提交在仓库中的[工作流](../WORKFLOW_AUTHORING.md)执行。
 
-### 扩展
+### 插件
 
 连接 [MCP 服务器](../MCP.md)，添加[技能](../SKILLS.md)和[插件](../PLUGINS.md)，并在会话和工具事件上运行[钩子](../HOOKS.md)。代码模式（实验性，默认开启）让模型编写一个调用多个 MCP 和插件工具的 `execute_tools` 程序；每次调用仍需遵守你的批准规则，并保留回执。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) 是单独发布的独立插件（实验性，仅限 macOS），在你审查其权限并开启之前一直处于关闭状态。
 

@@ -3,6 +3,11 @@ use codewhale_app_server_protocol::runtime::watch_event::WatchEventReceipt;
 
 mod external_agent;
 pub mod history;
+mod permission_rules;
+pub use permission_rules::{
+    PermissionRuleView, PermissionRulesListing, PermissionRulesUnavailable, StalePermissionToken,
+    StandingGrantView, StandingGrantsListing, StandingRuleIneligible,
+};
 
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub(super) const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
@@ -885,16 +890,65 @@ pub(super) fn append_usage_source_record(
         .as_deref()
         .is_some_and(|origin| origin != turn.id)
     {
-        anyhow::bail!("inherited native usage cannot admit an original-owner update");
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "inherited native usage cannot admit an original-owner update; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!(
+                    "inherited-owner:{}",
+                    routed_usage_source_fingerprint(&record.source_id)
+                ),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
     let key = routed_usage_source_fingerprint(&record.source_id);
     if turn.routed_usage_source_ids.contains(&key) && !turn.source_usage_records.contains_key(&key)
     {
-        bail!(
-            "legacy turn membership has no provable prior contribution; usage correction refused"
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "legacy turn membership has no prior contribution; recording unknown cost"
         );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("legacy-source:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
     }
-    if !record.permits_replacement(turn.source_usage_records.get(&key))? {
+    if record.route_conflicts_with(turn.source_usage_records.get(&key)) {
+        tracing::warn!(
+            turn_id = %turn.id,
+            source_id = %record.source_id,
+            "native usage source changed captured route; recording unknown cost"
+        );
+        let mut route = record.usage.route.clone();
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
+        return Ok(append_routed_usage_drop_record(
+            turn,
+            RuntimeUsageDropRecord {
+                source_id: format!("unverified-replacement:{key}"),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ));
+    }
+    if !record.supersedes(turn.source_usage_records.get(&key)) {
         return Ok(false);
     }
     if !turn.routed_usage_source_ids.contains(&key) {
@@ -1114,7 +1168,23 @@ fn settle_preparent_usage_at(
         unaccepted_usage_turn(thread_id, turn_id)
     };
     for record in &batch.records {
-        append_usage_source_record(&mut turn, record)?;
+        if let Err(error) = append_usage_source_record(&mut turn, record) {
+            tracing::warn!(%error, source_id = %record.source_id, "pre-parent usage record failed; recording unknown cost");
+            let mut route = record.usage.route.clone();
+            route.billing_mode = RouteBillingMode::Unknown;
+            route.provider_live_pricing = None;
+            append_routed_usage_drop_record(
+                &mut turn,
+                RuntimeUsageDropRecord {
+                    source_id: format!(
+                        "preparent-error:{}",
+                        routed_usage_source_fingerprint(&record.source_id)
+                    ),
+                    route,
+                    reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                },
+            );
+        }
     }
     for record in &batch.drop_records {
         append_routed_usage_drop_record(&mut turn, record.clone());
@@ -1333,7 +1403,7 @@ impl Drop for InitialRoutedUsageSettlementGuard {
                     "Failed to persist a completed pre-turn provider call; \
                      falling back to in-process accounting"
                 );
-                crate::cost_status::report_runtime_usage_batch(self.cost_scope, None, &self.batch);
+                crate::cost_status::record_runtime_usage_batch(self.cost_scope, None, &self.batch);
             }
         }
     }
@@ -2995,6 +3065,7 @@ pub(super) struct ActiveThreadState {
     /// Real engines client-preflight before an in-progress record is written.
     /// Explicitly injected test engines own their client seam.
     pub(super) client_preflight_required: bool,
+    pub(super) plugin_creator_enabled: bool,
 }
 
 #[derive(Default)]
@@ -3496,6 +3567,8 @@ pub struct RuntimeThreadManager {
     automations:
         Arc<parking_lot::Mutex<Option<crate::automation_manager::SharedAutomationManager>>>,
     pub(super) pending_approvals: Arc<parking_lot::Mutex<HashMap<String, PendingApprovalEntry>>>,
+    pub(super) turn_accounting_origins:
+        Arc<parking_lot::Mutex<HashMap<String, crate::cost_status::NativeUsageOrigin>>>,
     /// Session approval grants per thread id.
     pub(super) grants: crate::core::authority::grants::GrantStore,
     pub(super) auto_review_blocks: Arc<
@@ -3660,6 +3733,7 @@ pub(super) struct PendingApprovalEntry {
     pub(super) responder: Option<ApprovalResponder>,
     pub(super) agent_settled: Option<watch::Receiver<Option<bool>>>,
     pub(super) owner_only: bool,
+    pub(super) standing_rules: Option<permission_rules::StandingRuleState>,
 }
 
 pub(super) struct PendingUserInputEntry {
@@ -4198,9 +4272,45 @@ impl RuntimeThreadManager {
         }
         crate::tools::workflow::set_session_workflow_config(&self.workspace, workflow_table);
 
+        let new_plugin_creator_enabled = self
+            .read_config()
+            .features()
+            .enabled(codewhale_runtime::features::Feature::PluginCreator);
+        let stale_creator_engines: Vec<(String, EngineHandle)> = {
+            let mut active = self.active.lock().await;
+            let stale_ids: Vec<String> = active
+                .engines
+                .iter()
+                .filter_map(|(id, state)| {
+                    (state.active_turn.is_none()
+                        && state.plugin_creator_enabled != new_plugin_creator_enabled)
+                        .then_some(id.clone())
+                })
+                .collect();
+            let mut removed = Vec::with_capacity(stale_ids.len());
+            for id in stale_ids {
+                active.lru.retain(|entry| entry != &id);
+                if let Some(state) = active.engines.remove(&id) {
+                    removed.push((id, state.engine));
+                }
+            }
+            removed
+        };
+        let evicted_creator_threads: HashSet<&str> = stale_creator_engines
+            .iter()
+            .map(|(thread_id, _)| thread_id.as_str())
+            .collect();
+        for (thread_id, engine) in &stale_creator_engines {
+            self.auto_review_blocks.lock().remove(thread_id);
+            let _ = engine.send(Op::Shutdown).await;
+        }
+
         let settings = codewhale_runtime::settings::Settings::load().unwrap_or_default();
         let stream_chunk_timeout_secs = self.read_config().stream_chunk_timeout_secs();
         for (thread_id, engine, route, active_turn_id) in validated {
+            if evicted_creator_threads.contains(thread_id.as_str()) {
+                continue;
+            }
             let provider = route.identity.provider;
             let route_limits = known_route_limits(route.candidate.limits());
             let mut engine_compaction = runtime_compaction_config(
@@ -4245,6 +4355,7 @@ impl RuntimeThreadManager {
                 "Reloaded runtime controls; provider route will apply on the next turn"
             );
         }
+        self.resync_user_permission_ruleset().await;
         Ok(workshop_activation)
     }
 
@@ -4510,6 +4621,7 @@ impl RuntimeThreadManager {
             task_execution_lease: Arc::new(parking_lot::Mutex::new(None)),
             automations: Arc::new(parking_lot::Mutex::new(None)),
             pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             grants,
             auto_review_blocks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             pending_user_inputs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -4947,6 +5059,7 @@ impl RuntimeThreadManager {
                     responder: None,
                     agent_settled: None,
                     owner_only,
+                    standing_rules: None,
                 });
                 return (id, rx);
             }
@@ -5288,6 +5401,16 @@ impl RuntimeThreadManager {
             {
                 return Err(ApprovalOwnerRequired.into());
             }
+            if matches!(
+                entry.standing_rules,
+                Some(permission_rules::StandingRuleState::Claimed)
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "approval is being answered with a standing rule",
+                )
+                .into());
+            }
             if let Some(previous) = entry.proposed {
                 if previous != decision {
                     return Err(io::Error::new(
@@ -5309,6 +5432,17 @@ impl RuntimeThreadManager {
             (entry.publication.clone(), entry.agent_settled.clone())
         };
         let (publication, agent_settled) = publication;
+        self.await_delivered_approval(approval_id, decision, publication, agent_settled)
+            .await
+    }
+
+    pub(super) async fn await_delivered_approval(
+        &self,
+        approval_id: &str,
+        decision: ExternalApprovalDecision,
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
+        agent_settled: Option<watch::Receiver<Option<bool>>>,
+    ) -> Result<bool> {
         if let Some(settled) = agent_settled {
             return external_agent::await_agent_settlement(settled).await;
         }
@@ -5319,7 +5453,7 @@ impl RuntimeThreadManager {
                 return Ok(true);
             }
             #[cfg(not(any(test, feature = "test-support")))]
-            bail!("approval has no captured Core publication source");
+            bail!("approval {approval_id} has no captured Core publication source");
         };
         let receipt = publication.published().await?;
         Ok(matches!(
@@ -7243,6 +7377,7 @@ impl RuntimeThreadManager {
                 task_execution_lease: task_execution_lease.clone(),
                 automations: automations.clone(),
                 pending_approvals: pending_approvals.clone(),
+                turn_accounting_origins: Arc::new(parking_lot::Mutex::new(HashMap::new())),
                 grants: grants.clone(),
                 auto_review_blocks: auto_review_blocks.clone(),
                 pending_user_inputs: pending_user_inputs.clone(),
@@ -8900,24 +9035,61 @@ impl RuntimeThreadManager {
                     .as_deref()
                     .filter(|origin| *origin != turn.id)
                 {
-                    let original = original_turns.get(origin).ok_or_else(|| {
-                        anyhow!("usage original owner is unavailable; inherited receipts retained")
-                    })?;
-                    anyhow::ensure!(
-                        original
-                            .source_usage_origin_turn_id
-                            .as_deref()
-                            .is_none_or(|owner| owner == origin),
-                        "usage original owner is itself an inherited projection"
-                    );
-                    for (key, inherited) in &turn.source_usage_records {
-                        let current = original.source_usage_records.get(key).ok_or_else(|| anyhow!("native usage original receipt is unavailable; inherited receipts retained"))?;
-                        anyhow::ensure!(
-                            current == inherited || current.follows_protected(inherited)?,
-                            "native usage original receipt conflicts with its inherited projection"
-                        );
+                    let inherited_covered = match original_turns.get(origin) {
+                        Some(original)
+                            if original
+                                .source_usage_origin_turn_id
+                                .as_deref()
+                                .is_none_or(|owner| owner == origin) =>
+                        {
+                            let mut all_present = true;
+                            for (key, inherited) in &turn.source_usage_records {
+                                match original.source_usage_records.get(key) {
+                                    Some(current)
+                                        if current == inherited
+                                            || current.follows_inherited(inherited) => {}
+                                    Some(_) => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt conflicts with inherited projection; keeping best-effort count"
+                                        );
+                                        all_present = false;
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            turn_id = %turn.id,
+                                            origin = %origin,
+                                            source_key = %key,
+                                            "native usage original receipt is unavailable; counting inherited receipt"
+                                        );
+                                        all_present = false;
+                                    }
+                                }
+                            }
+                            all_present
+                        }
+                        Some(_) => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is itself an inherited projection; counting inherited receipts"
+                            );
+                            false
+                        }
+                        None => {
+                            tracing::warn!(
+                                turn_id = %turn.id,
+                                origin = %origin,
+                                "usage original owner is unavailable; counting inherited receipts"
+                            );
+                            false
+                        }
+                    };
+                    if inherited_covered {
+                        continue;
                     }
-                    continue;
                 }
                 let parent_route = turn.effective_route_envelope();
                 let parent_dispatched_at = parent_route
@@ -8969,19 +9141,19 @@ impl RuntimeThreadManager {
                         let origin = turn
                             .source_usage_origin_turn_id
                             .as_deref()
-                            .ok_or_else(|| anyhow!("native usage has no original owning turn"))?;
+                            .unwrap_or(&turn.id);
                         let key = routed_usage_source_fingerprint(&record.source_id);
-                        anyhow::ensure!(
-                            origin == turn.id,
-                            "native usage is not owned by its recorded original turn"
-                        );
                         if let Some(previous_owner) =
                             counted_native_sources.insert(key, origin.to_string())
                         {
-                            anyhow::ensure!(
-                                previous_owner == origin,
-                                "native usage source has conflicting original owners"
-                            );
+                            if previous_owner != origin {
+                                tracing::warn!(
+                                    turn_id = %turn.id,
+                                    previous_owner = %previous_owner,
+                                    origin = %origin,
+                                    "native usage source has multiple owners; keeping first"
+                                );
+                            }
                             continue;
                         }
                         accumulate_source_usage_record(
@@ -9223,7 +9395,7 @@ impl RuntimeThreadManager {
                 .unwrap_or(u32::MAX);
             }
             for record in records {
-                cost.project_usage_record_inner(record, true)?;
+                cost.project_usage_record(record)?;
             }
             cost.unpriced_reasons.extend(combined.unpriced_reasons);
             cost.cny_unpriced_reasons
@@ -11520,12 +11692,35 @@ impl RuntimeThreadManager {
         turn_id: &str,
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
-        let turns = self.store.list_turns_for_thread(id)?;
-        let items_by_turn = self.prepared_items_for_turns(&turns)?;
-        let (_, _, depth_from_tail) =
-            self.fork_cut_for_user_turn(&turns, &items_by_turn, turn_id)?;
-        self.prepare_fork_at_user_message_in_sessions_dir(id, depth_from_tail, sessions_dir)
-            .await
+        let source = self.get_thread(id).await?;
+        anyhow::ensure!(
+            source.executor.is_none(),
+            "a session with another agent cannot be forked; its history lives in the agent"
+        );
+        let source_turns = self.store.list_turns_for_thread(&source.id)?;
+        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
+        let position = user_turn_indices
+            .iter()
+            .position(|index| source_turns[*index].id == turn_id)
+            .with_context(|| {
+                format!("fork_at_user_turn: turn {turn_id} is not a user turn of this thread")
+            })?;
+        let target_turn_idx = user_turn_indices[position];
+        let depth_from_tail = user_turn_indices.len() - 1 - position;
+        let (captured_source, saved_prefix) = self
+            .capture_native_fork_source(&source, &source_turns, sessions_dir)
+            .await?;
+        self.prepare_fork_from_cutoff(
+            source,
+            captured_source,
+            saved_prefix,
+            source_turns,
+            items_by_turn,
+            target_turn_idx,
+            Some(target_turn_idx),
+            depth_from_tail,
+        )
     }
 
     pub async fn prepare_fork_at_user_turn_in_sessions_dir(
@@ -13066,8 +13261,7 @@ impl RuntimeThreadManager {
             }
         }
         let now = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(turn_id);
+        self.turn_accounting_origins.lock().remove(turn_id);
         let mut terminal_items = Vec::new();
         match self.store.list_items_for_turn(turn_id) {
             Ok(items) => {
@@ -13166,33 +13360,6 @@ impl RuntimeThreadManager {
             let _turn_mutation = self.store.turn_mutation.lock();
             match self.store.load_turn(turn_id) {
                 Ok(mut turn) => {
-                    let mut drained_native_usage = Vec::new();
-                    for receipt in &background_usage.decisions {
-                        append_decision_receipt(&mut turn, receipt);
-                    }
-                    for record in background_usage.records.iter().cloned() {
-                        match append_usage_source_record(&mut turn, &record) {
-                            Ok(_) => {
-                                if record.has_native_producer() {
-                                    drained_native_usage.push(record);
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                                turn.routed_usage_dropped_records =
-                                    turn.routed_usage_dropped_records.saturating_add(1);
-                            }
-                        }
-                    }
-                    for record in background_usage.drop_records.iter().cloned() {
-                        append_routed_usage_drop_record(&mut turn, record);
-                    }
-                    let background_residual = background_usage.dropped_records.saturating_sub(
-                        u64::try_from(background_usage.drop_records.len()).unwrap_or(u64::MAX),
-                    );
-                    turn.routed_usage_dropped_records = turn
-                        .routed_usage_dropped_records
-                        .saturating_add(background_residual);
                     if turn.status == RuntimeTurnStatus::InProgress {
                         turn.status = RuntimeTurnStatus::Failed;
                         if let Some(activity) = &mut turn.operation_activity {
@@ -13218,15 +13385,7 @@ impl RuntimeThreadManager {
                             | RuntimeTurnStatus::Interrupted
                             | RuntimeTurnStatus::Canceled
                     ) {
-                        let publication = self.store.save_turn(&turn).and_then(|()| {
-                            for record in &drained_native_usage {
-                                record.acknowledge_persisted().context(
-                                    "Failed to acknowledge drained Runtime usage after terminal publication",
-                                )?;
-                            }
-                            Ok(())
-                        });
-                        match publication {
+                        match self.store.save_turn(&turn) {
                             Ok(()) => (Some(turn), None, None),
                             Err(error) => (None, None, Some(error)),
                         }
@@ -14718,9 +14877,16 @@ impl RuntimeThreadManager {
             // engine, every early return must settle this completed
             // classifier call against its captured origin. The bounded clone
             // is intentionally kept out of the original/replayed turn.
-            let settlement = if initial_routed_usage.records.iter().all(|record| record.has_captured_origin() && record.is_acknowledged()) && initial_routed_usage.drop_records.is_empty() && initial_routed_usage.dropped_records == 0 {
-                None
-            } else { Some(InitialRoutedUsageSettlementGuard::new(self.store.clone(), thread_id, classifier_cost_scope, &initial_routed_usage)) };
+            let settlement = (!initial_routed_usage.drop_records.is_empty()
+                || initial_routed_usage.dropped_records > 0)
+                .then(|| {
+                    InitialRoutedUsageSettlementGuard::new(
+                        self.store.clone(),
+                        thread_id,
+                        classifier_cost_scope,
+                        &initial_routed_usage,
+                    )
+                });
             let route = resolve_runtime_thread_route(
                 &thread_config,
                 &selection.provider,
@@ -15103,16 +15269,28 @@ source_usage_records: Default::default(),
                     let _turn_mutation = self.store.turn_mutation.lock();
                     if self.store.turn_path(&turn_id)?.exists() {
                         let reserved = self.store.load_turn(&turn_id)?;
-                        anyhow::ensure!(reserved.thread_id == thread_id && reserved.routing_settlement, "pre-parent accounting reservation changed before parent admission");
-                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref()) {
-                            anyhow::ensure!(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint), "classifier reservation contains unrelated history or sources");
+                        if reserved.thread_id != thread_id || !reserved.routing_settlement {
+                            tracing::warn!(turn_id = %turn_id, "pre-parent accounting reservation changed before parent admission; continuing");
+                        }
+                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref())
+                            && !(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint))
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation contains unrelated history or sources; continuing");
                         }
                         for record in reserved.source_usage_records.values() {
                             let key = routed_usage_source_fingerprint(&record.source_id);
-                            if let Some(current) = turn.source_usage_records.get(&key) { anyhow::ensure!(current == record, "pre-parent source changed before parent admission"); }
+                            if let Some(current) = turn.source_usage_records.get(&key)
+                                && current != record
+                            {
+                                tracing::warn!(turn_id = %turn_id, source_id = %record.source_id, "pre-parent source changed before parent admission; continuing");
+                            }
                             turn.source_usage_records.insert(key, record.clone());
                         }
-                        anyhow::ensure!(reserved.source_usage_records.is_empty() || reserved.source_usage_origin_turn_id.as_deref() == Some(reserved.id.as_str()), "classifier reservation is an inherited usage projection");
+                        if !reserved.source_usage_records.is_empty()
+                            && reserved.source_usage_origin_turn_id.as_deref() != Some(reserved.id.as_str())
+                        {
+                            tracing::warn!(turn_id = %turn_id, "classifier reservation is an inherited usage projection; continuing");
+                        }
                         turn.source_usage_origin_turn_id = reserved.source_usage_origin_turn_id.clone();
                         turn.source_accounting |= reserved.source_accounting;
                         turn.schema_version = turn.schema_version.max(reserved.schema_version);
@@ -15702,6 +15880,45 @@ source_usage_records: Default::default(),
         Ok(RuntimeEventReplay { base_seq, batches })
     }
 
+    async fn cached_or_evict_stale_creator_engine(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<EngineHandle>> {
+        let plugin_creator_enabled = self
+            .read_config()
+            .features()
+            .enabled(codewhale_runtime::features::Feature::PluginCreator);
+        let stale_engine = {
+            let mut active = self.active.lock().await;
+            self.ensure_accepting_execution()?;
+            let stale = match active.engines.get(thread_id) {
+                Some(state) => {
+                    state.active_turn.is_none()
+                        && state.plugin_creator_enabled != plugin_creator_enabled
+                }
+                None => false,
+            };
+            if stale {
+                active.lru.retain(|entry| entry != thread_id);
+                active.engines.remove(thread_id).map(|state| state.engine)
+            } else if let Some(engine) = active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+            {
+                touch_lru(&mut active.lru, thread_id);
+                return Ok(Some(engine));
+            } else {
+                None
+            }
+        };
+        if let Some(engine) = stale_engine {
+            self.auto_review_blocks.lock().remove(thread_id);
+            let _ = engine.send(Op::Shutdown).await;
+        }
+        Ok(None)
+    }
+
     async fn ensure_engine_loaded(&self, thread_hint: &ThreadRecord) -> Result<EngineHandle> {
         self.ensure_accepting_execution()?;
         if let Some(environment) = thread_hint.environment.as_ref() {
@@ -15714,17 +15931,11 @@ source_usage_records: Default::default(),
                 executor.agent_id
             );
         }
+        if let Some(engine) = self
+            .cached_or_evict_stale_creator_engine(&thread_hint.id)
+            .await?
         {
-            let mut active = self.active.lock().await;
-            self.ensure_accepting_execution()?;
-            if let Some(engine) = active
-                .engines
-                .get(thread_hint.id.as_str())
-                .map(|state| state.engine.clone())
-            {
-                touch_lru(&mut active.lru, &thread_hint.id);
-                return Ok(engine);
-            }
+            return Ok(engine);
         }
 
         // Only one cache-miss build may run at a time. Recheck after taking
@@ -15732,17 +15943,11 @@ source_usage_records: Default::default(),
         let _engine_load = self.engine_load.lock().await;
         self.ensure_accepting_execution()?;
         loop {
+            if let Some(engine) = self
+                .cached_or_evict_stale_creator_engine(&thread_hint.id)
+                .await?
             {
-                let mut active = self.active.lock().await;
-                self.ensure_accepting_execution()?;
-                if let Some(engine) = active
-                    .engines
-                    .get(thread_hint.id.as_str())
-                    .map(|state| state.engine.clone())
-                {
-                    touch_lru(&mut active.lru, &thread_hint.id);
-                    return Ok(engine);
-                }
+                return Ok(engine);
             }
             let thread = {
                 let _thread_mutation = self.store.thread_mutation.lock();
@@ -15863,6 +16068,8 @@ source_usage_records: Default::default(),
                 manager
             };
             let features = cfg.features();
+            let plugin_creator_enabled =
+                features.enabled(codewhale_runtime::features::Feature::PluginCreator);
             let engine_cfg = EngineConfig {
                 user_input_responder: true,
                 session_checkpoint_backend: Some(
@@ -15985,6 +16192,10 @@ source_usage_records: Default::default(),
                             owner,
                             sink,
                         )
+                    }),
+                    owner_accounting_origin: Some({
+                        let origins = Arc::clone(&self.turn_accounting_origins);
+                        Arc::new(move |owner| origins.lock().get(owner).cloned())
                     }),
                     task_manager: self.task_manager.lock().upgrade(),
                     automations: self.automations.lock().clone(),
@@ -16203,6 +16414,7 @@ source_usage_records: Default::default(),
                     route_model,
                     hook_executor: Some(Arc::clone(&thread_hooks)),
                     client_preflight_required: true,
+                    plugin_creator_enabled,
                 },
             );
             touch_lru(&mut active.lru, &thread.id);
@@ -16931,9 +17143,6 @@ source_usage_records: Default::default(),
                 if changed {
                     self.store.save_turn(&turn)?;
                 }
-                if record.has_native_producer() {
-                    record.acknowledge_persisted()?;
-                }
             }
             Err(error) => {
                 tracing::warn!(%error, "wire usage revision has no protected admission");
@@ -16985,6 +17194,14 @@ source_usage_records: Default::default(),
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn accounting_origin_for_turn(
+        &self,
+        turn_id: &str,
+    ) -> Option<crate::cost_status::NativeUsageOrigin> {
+        self.turn_accounting_origins.lock().get(turn_id).cloned()
+    }
+
     pub(super) fn register_runtime_usage_sink(&self, turn_id: &str) {
         let Ok(original_turn) = self.store.load_turn(turn_id) else {
             tracing::warn!("Runtime accounting owner has no admitted turn");
@@ -17004,52 +17221,49 @@ source_usage_records: Default::default(),
         let sink_turn_id = turn_id.to_string();
         let drop_store = self.store.clone();
         let drop_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_usage_sink_with_drop(
-            turn_id,
-            Arc::new(move |record: RuntimeUsageRecord| {
-                if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
-                    return false;
+        let usage_sink = Arc::new(move |record: RuntimeUsageRecord| {
+            if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = store.thread_mutation.lock();
+            if store.load_thread(&source_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = store.turn_mutation.lock();
+            let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != source_thread {
+                return false;
+            }
+            match append_usage_source_record(&mut turn, &record) {
+                Ok(_) => store.save_turn(&turn).is_ok(),
+                Err(error) => {
+                    tracing::warn!(%error, "durable Runtime usage correction refused");
+                    false
                 }
-                let _thread_mutation = store.thread_mutation.lock();
-                if store.load_thread(&source_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = store.turn_mutation.lock();
-                let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != source_thread {
-                    return false;
-                }
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => store.save_turn(&turn).is_ok(),
-                    Err(error) => {
-                        tracing::warn!(%error, "durable Runtime usage correction refused");
-                        false
-                    }
-                }
-            }),
-            Some(Arc::new(move |record: RuntimeUsageDropRecord| {
-                if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
-                    return false;
-                }
-                let _thread_mutation = drop_store.thread_mutation.lock();
-                if drop_store.load_thread(&drop_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = drop_store.turn_mutation.lock();
-                let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != drop_thread {
-                    return false;
-                }
-                if !append_routed_usage_drop_record(&mut turn, record) {
-                    return true;
-                }
-                drop_store.save_turn(&turn).is_ok()
-            })),
-        );
+            }
+        });
+        let drop_sink = Arc::new(move |record: RuntimeUsageDropRecord| {
+            if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
+                return false;
+            }
+            let _thread_mutation = drop_store.thread_mutation.lock();
+            if drop_store.load_thread(&drop_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = drop_store.turn_mutation.lock();
+            let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != drop_thread {
+                return false;
+            }
+            if !append_routed_usage_drop_record(&mut turn, record) {
+                return true;
+            }
+            drop_store.save_turn(&turn).is_ok()
+        });
         let decision_store = self.store.clone();
         let decision_owner = self._process_owner_lock.clone();
         let decision_owner_path = self
@@ -17057,31 +17271,37 @@ source_usage_records: Default::default(),
             .data_dir
             .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
         let decision_turn_id = turn_id.to_string();
-        crate::cost_status::register_runtime_decision_sink(
-            turn_id,
-            Arc::new(move |receipt| {
-                if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path)
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-                let _thread_mutation = decision_store.thread_mutation.lock();
-                if decision_store.load_thread(&expected_thread).is_err() {
-                    return false;
-                }
-                let _turn_mutation = decision_store.turn_mutation.lock();
-                let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
-                    return false;
-                };
-                if turn.thread_id != expected_thread {
-                    return false;
-                }
-                if !append_decision_receipt(&mut turn, &receipt) {
-                    return true;
-                }
-                decision_store.save_turn(&turn).is_ok()
-            }),
+        let decision_sink = Arc::new(move |receipt| {
+            if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path).unwrap_or(false)
+            {
+                return false;
+            }
+            let _thread_mutation = decision_store.thread_mutation.lock();
+            if decision_store.load_thread(&expected_thread).is_err() {
+                return false;
+            }
+            let _turn_mutation = decision_store.turn_mutation.lock();
+            let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
+                return false;
+            };
+            if turn.thread_id != expected_thread {
+                return false;
+            }
+            if !append_decision_receipt(&mut turn, &receipt) {
+                return true;
+            }
+            decision_store.save_turn(&turn).is_ok()
+        });
+        let origin = crate::cost_status::NativeUsageOrigin::captured_runtime_with_sinks(
+            crate::cost_status::scope_token(),
+            turn_id.to_string(),
+            usage_sink,
+            Some(drop_sink),
+            Some(decision_sink),
         );
+        self.turn_accounting_origins
+            .lock()
+            .insert(turn_id.to_string(), origin);
     }
 
     /// Persist an engine status line as a completed `status` item.
@@ -18503,8 +18723,7 @@ source_usage_records: Default::default(),
                         grant.is_some(),
                         deny_grant.is_some(),
                         approval_force_prompt,
-                        // Rust mints this namespace; tool text cannot claim origin.
-                        approval_key.starts_with("extcall:ext:"),
+                        &approval_key,
                     );
 
                     let denied_posture = match disposition {
@@ -18586,6 +18805,9 @@ source_usage_records: Default::default(),
                             "id": approval_id, "approval_id": approval_id, "tool_call_id": id,
                             "tool_name": tool_name, "input": input, "summary": summary,
                             "description": description, "intent_summary": intent_summary,
+                            "standing_rule_candidates": summary_workspace.as_deref().map(|workspace| {
+                                permission_rules::standing_rule_candidates(Some(&id), &tool_name, &input, &description, workspace)
+                            }).unwrap_or_default(),
                         })).await {
                         let _ = publication.acknowledge(Err(format!("Runtime approval request append failed: {error}")));
                         self.cancel_pending_approval(&approval_id);
@@ -18730,6 +18952,16 @@ source_usage_records: Default::default(),
                         .and_then(|entry| entry.responder)
                     {
                         payload["responder"] = json!(responder);
+                    }
+                    if let Some(permission_rules::StandingRuleState::Saved(rules)) = self
+                        .pending_approvals
+                        .lock()
+                        .get(&approval_id)
+                        .and_then(|entry| entry.standing_rules.clone())
+                    {
+                        payload["remember"] = json!(allowed);
+                        payload["remember_scope"] = json!("workspace");
+                        payload["standing_rules"] = json!(rules);
                     }
                     if let Some(posture) = denied_posture {
                         payload["posture"] = json!(posture);
@@ -19307,6 +19539,80 @@ source_usage_records: Default::default(),
                     self.publish_status_item(&thread_id, &turn_id, reason, &settled_approval_calls)
                         .await?;
                 }
+                EngineEvent::PluginChanged {
+                    plugin,
+                    action,
+                    content_hash,
+                    decided_by,
+                    services,
+                    tools_added,
+                    tools_removed,
+                } => {
+                    let mut message = codewhale_localization::tr(
+                        codewhale_localization::Locale::En,
+                        match decided_by.as_deref().filter(|value| !value.is_empty()) {
+                            Some(_) => {
+                                codewhale_localization::MessageId::PluginChangedWithDeciderReceipt
+                            }
+                            None => codewhale_localization::MessageId::PluginChangedReceipt,
+                        },
+                    )
+                    .replace("{plugin}", &plugin)
+                    .replace("{action}", &action);
+                    if let Some(decider) = decided_by.as_deref().filter(|value| !value.is_empty()) {
+                        message = message.replace("{decider}", decider);
+                    }
+                    let item = TurnItemRecord {
+                        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                        id: runtime_record_id("item"),
+                        turn_id: turn_id.clone(),
+                        kind: TurnItemKind::Status,
+                        status: TurnItemLifecycleStatus::Completed,
+                        summary: summarize_text(&message, SUMMARY_LIMIT),
+                        detail: Some(message),
+                        metadata: Some(json!({
+                            "plugin_changed": {
+                                "plugin": &plugin,
+                                "action": &action,
+                                "content_hash": &content_hash,
+                                "decided_by": &decided_by,
+                                "services": &services,
+                                "tools_added": &tools_added,
+                                "tools_removed": &tools_removed,
+                            }
+                        })),
+                        artifact_refs: Vec::new(),
+                        artifacts: Vec::new(),
+                        started_at: Some(Utc::now()),
+                        ended_at: Some(Utc::now()),
+                    };
+                    self.store.save_item(&item)?;
+                    self.attach_item_to_turn(&turn_id, &item.id)?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&item.id),
+                        "item.completed",
+                        json!({ "item": item }),
+                    )
+                    .await?;
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "thread.plugin_changed",
+                        json!({
+                            "plugin": plugin,
+                            "action": action,
+                            "content_hash": content_hash,
+                            "decided_by": decided_by,
+                            "services": services,
+                            "tools_added": tools_added,
+                            "tools_removed": tools_removed,
+                        }),
+                    )
+                    .await?;
+                }
                 _ => {}
             }
         }
@@ -19363,8 +19669,7 @@ source_usage_records: Default::default(),
         }
 
         let ended_at = Utc::now();
-        crate::cost_status::finish_runtime_usage_owner(&turn_id);
-        let background_usage = crate::cost_status::take_runtime_usage(&turn_id);
+        self.turn_accounting_origins.lock().remove(&turn_id);
 
         // A terminal turn can no longer answer an outstanding prompt. Commit
         // each cancellation while the request remains snapshot-authoritative,
@@ -19427,34 +19732,8 @@ source_usage_records: Default::default(),
             }
             turn.usage = turn_usage;
             turn.effective_route_usage = turn_effective_route_usage;
-            for receipt in &background_usage.decisions {
-                append_decision_receipt(&mut turn, receipt);
-            }
-            let mut drained_native_usage = Vec::new();
-            for record in background_usage.records {
-                match append_usage_source_record(&mut turn, &record) {
-                    Ok(_) => {
-                        if record.has_native_producer() {
-                            drained_native_usage.push(record);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
-                        turn.routed_usage_dropped_records =
-                            turn.routed_usage_dropped_records.saturating_add(1);
-                    }
-                }
-            }
-            let background_exact_drop_count = background_usage.drop_records.len();
-            for record in background_usage.drop_records {
-                append_routed_usage_drop_record(&mut turn, record);
-            }
-            let background_residual = background_usage
-                .dropped_records
-                .saturating_sub(u64::try_from(background_exact_drop_count).unwrap_or(u64::MAX));
             turn.routed_usage_dropped_records = turn
                 .routed_usage_dropped_records
-                .saturating_add(background_residual)
                 .saturating_add(turn_routed_usage_dropped_records);
             turn.model_request_diagnostics =
                 turn_model_request_diagnostics.or(turn.model_request_diagnostics);
@@ -19477,20 +19756,6 @@ source_usage_records: Default::default(),
             // busy and refuses every later session save.
             let swept_items = self.settle_turn_items(&turn, turn_status, ended_at)?;
             self.store.save_turn(&turn)?;
-            for record in &drained_native_usage {
-                if let Err(error) = record.acknowledge_persisted() {
-                    turn.status = RuntimeTurnStatus::Failed;
-                    turn.error = Some(format!(
-                        "Failed to acknowledge drained Runtime usage after terminal publication: {error}"
-                    ));
-                    self.store.save_turn(&turn).context(
-                        "Failed to record drained Runtime usage acknowledgement failure",
-                    )?;
-                    return Err(error).context(
-                        "Failed to acknowledge drained Runtime usage after terminal publication",
-                    );
-                }
-            }
             (turn, swept_items)
         };
         // Published after the record guard is released: `emit_event` awaits,
@@ -20133,6 +20398,7 @@ source_usage_records: Default::default(),
         let route = self.resolved_route_for_thread(&config, &thread)?;
         engine.set_host_profile(self.host_profile);
         engine.set_owner_surface_attached(self.owner_surface_attached);
+        engine.set_exec_policy(config.exec_policy_engine.clone());
         {
             let mut selected = self.subagent_manager.lock().await;
             if let Some(manager) = selected.as_ref() {
@@ -20155,6 +20421,9 @@ source_usage_records: Default::default(),
                 route_model: route.model,
                 hook_executor: None,
                 client_preflight_required: false,
+                plugin_creator_enabled: config
+                    .features()
+                    .enabled(codewhale_runtime::features::Feature::PluginCreator),
             },
         );
         touch_lru(&mut active.lru, thread_id);

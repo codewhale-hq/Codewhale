@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -30,10 +31,10 @@ REPO = "codewhale-hq/Codewhale"
 SIBLINGS = ["codewhale-cu-plugin", "codewhale-ratatui", "codewhale-plugin-marketplace", "CodeWhale-VSCode"]
 DATA = ROOT / "docs" / "contributors.json"
 WALL = ROOT / "docs" / "assets" / "contributors.png"
-CACHE = ROOT / "target" / "contributor-avatars"
+CACHE = Path(os.environ.get("CODEWHALE_AVATAR_CACHE") or ROOT / "target" / "contributor-avatars")
 NOREPLY = re.compile(r"^(?:(\d+)\+)?([A-Za-z0-9-]+)@users\.noreply\.github\.com$", re.I)
 NOT_PEOPLE = re.compile(
-    r"\[bot\]|^bot$|copilot|dependabot|github-actions|^claude|anthropic|codex|cursor|devin|jules|grok|deepseek-v4|"
+    r"\[bot\]|^bot$|copilot|^gemini|dependabot|github-actions|^claude|anthropic|codex|cursor|devin|jules|grok|deepseek-v4|"
     r"^codewhale|openclaw|autoghclaw|nanookclaw|agentmail\.to|happy\.engineering|codalume|g1 agent|^bot_|"
     r"^hmbown$|^hunter b(own)?$|^username$|^handle$|^host$", re.I)
 
@@ -64,8 +65,15 @@ def users_exist(logins: set[str]) -> dict[str, dict]:
     for i in range(0, len(logins), 80):
         chunk = logins[i:i + 80]
         query = "query{" + " ".join(f"u{j}: user(login: {json.dumps(x)}) {{ login name }}" for j, x in enumerate(chunk)) + "}"
-        out = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"], cwd=ROOT, capture_output=True, text=True).stdout
-        data = json.loads(out or "{}").get("data") or {}
+        proc = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}"], cwd=ROOT, capture_output=True, text=True)
+        try:
+            payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
+        except json.JSONDecodeError as err:
+            raise RuntimeError(f"gh api graphql returned invalid JSON (rc={proc.returncode}): {proc.stderr.strip() or proc.stdout[:200]}") from err
+        errors = [e for e in (payload.get("errors") or []) if e.get("type") != "NOT_FOUND"]
+        data = payload.get("data")
+        if errors or not isinstance(data, dict):
+            raise RuntimeError(f"gh api graphql failed (rc={proc.returncode}): {errors or proc.stderr.strip() or proc.stdout.strip()}")
         for j, x in enumerate(chunk):
             if data.get(f"u{j}"):
                 found[x.lower()] = data[f"u{j}"]
@@ -119,8 +127,10 @@ def refresh() -> None:
     for login in set(sources):
         uid = ids.get(login.lower())
         if login.lower() not in known and uid:
-            out = subprocess.run(["gh", "api", f"/user/{uid}"], cwd=ROOT, capture_output=True, text=True).stdout
-            user = json.loads(out or "{}")
+            proc = subprocess.run(["gh", "api", f"/user/{uid}"], cwd=ROOT, capture_output=True, text=True)
+            user = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
+            if proc.returncode != 0 and str(user.get("status")) != "404" and "Not Found" not in (user.get("message") or proc.stderr):
+                raise RuntimeError(f"gh api /user/{uid} failed (rc={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
             if user.get("login"):
                 known[login.lower()] = {"login": user["login"], "name": user.get("name")}
     people: dict[str, set[str]] = {}

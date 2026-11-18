@@ -55,10 +55,7 @@ mod view;
 pub use ask_rules::PermissionRuleSavePreview;
 #[cfg(test)]
 use ask_rules::build_save_preview as build_permission_rule_save_preview;
-use ask_rules::{
-    SAVE_PREVIEW_MAX_ENTRIES, build_persistent_allow_rules, build_persistent_ask_rules,
-    build_save_preview,
-};
+use ask_rules::{SAVE_PREVIEW_MAX_ENTRIES, build_save_preview};
 pub use elevation::{ElevationOption, ElevationRequest, ElevationView};
 #[cfg(test)]
 use previews::apply_patch_preview_lines;
@@ -161,7 +158,7 @@ impl ApprovalRequest {
     /// `.codewhale/constitution.json` ask rule forces review.
     #[must_use]
     pub fn is_repo_law_prompt(&self) -> bool {
-        description_is_repo_law_prompt(&self.description)
+        codewhale_engine::core::authority::persistent_rules::is_repo_law_prompt(&self.description)
     }
 
     /// Presentation stakes for this request (see [`ApprovalStakes`]).
@@ -204,20 +201,16 @@ impl ApprovalRequest {
         let approval_grouping_key =
             codewhale_engine::tools::approval_cache::build_approval_grouping_key(tool_name, params)
                 .0;
-        let persistent_ask_rules =
-            build_persistent_ask_rules(semantic_tool_name, params, workspace);
         let stakes = classify_stakes(tool_name, category, risk, params);
-        let persistent_allow_rules =
-            if stakes == ApprovalStakes::Critical || description_is_repo_law_prompt(description) {
-                Vec::new()
-            } else {
-                build_persistent_allow_rules(
-                    semantic_tool_name,
-                    params,
-                    workspace,
-                    &persistent_ask_rules,
-                )
-            };
+        let codewhale_engine::core::authority::persistent_rules::PersistentRuleCandidates {
+            ask: persistent_ask_rules,
+            allow: persistent_allow_rules,
+        } = codewhale_engine::core::authority::persistent_rules::persistent_rule_candidates(
+            tool_name,
+            params,
+            description,
+            workspace,
+        );
 
         Self {
             id: id.to_string(),
@@ -356,11 +349,6 @@ impl ApprovalRequest {
 }
 
 pub use codewhale_engine::mcp::connected_app_server;
-
-fn description_is_repo_law_prompt(description: &str) -> bool {
-    description.starts_with("Repo law holds this write:")
-        && description.contains(".codewhale/constitution.json")
-}
 
 fn mcp_target_hint(tool_name: &str) -> Option<String> {
     let remainder = tool_name.strip_prefix("mcp_")?;

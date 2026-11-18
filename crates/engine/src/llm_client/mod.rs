@@ -741,6 +741,18 @@ impl LlmError {
     }
 
     #[must_use]
+    pub fn from_linked_organization_billing_stop(status: u16, body: &str) -> Option<Self> {
+        let stopped = status == 402
+            && (body.contains("linked_organization_spend_limit_reached")
+                || body.contains("linked_organization_billing_unavailable"));
+        stopped.then(|| {
+            Self::QuotaExhausted(QuotaExhaustionError::from_http_message(
+                "Your Claude organization's spend cap or credit stopped this request. Check Linked platforms and Billing in the Claude Console.".to_string(),
+            ))
+        })
+    }
+
+    #[must_use]
     pub fn authentication_error(message: impl Into<String>) -> Self {
         LlmError::AuthenticationError(AuthenticationErrorDetail::new(message))
     }

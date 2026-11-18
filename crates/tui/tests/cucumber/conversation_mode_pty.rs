@@ -20,6 +20,11 @@ fn print_frame(label: &str, tui: &mut Harness) {
 fn shipped_binary_lists_creator_disabled_and_refuses_new_creator_with_the_reason() {
     let workspace = make_sealed_workspace().expect("sealed workspace");
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").unwrap();
+    std::fs::write(
+        workspace.home().join(".codewhale/config.toml"),
+        "[notifications]\nmethod = \"off\"\ncompletion_sound = \"off\"\n\n[extension_host]\nruntime = \"node\"\nnode = \"/nonexistent/codewhale-no-node\"\n",
+    )
+    .unwrap();
     let trust = workspace.workspace().join(".deepseek");
     std::fs::create_dir_all(&trust).unwrap();
     std::fs::write(trust.join("trusted"), "").unwrap();
@@ -48,10 +53,18 @@ fn shipped_binary_lists_creator_disabled_and_refuses_new_creator_with_the_reason
         .unwrap();
 
     tui.type_line("/new creator").unwrap();
-    tui.wait_for_text("Not ready yet in this version.", WAIT)
+    tui.wait_for_text("Creator mode needs a plugin runtime", WAIT)
         .unwrap();
     print_frame("/new creator in the shipped binary", &mut tui);
     let after_refusal = tui.frame().text();
+    let normalized = after_refusal
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        normalized.contains("Creator mode needs a plugin runtime (Node.js or Bun)"),
+        "{after_refusal}"
+    );
     assert!(
         after_refusal
             .lines()
@@ -71,7 +84,7 @@ fn shipped_binary_lists_creator_disabled_and_refuses_new_creator_with_the_reason
         .find(|line| line.contains("Creator mode"))
         .expect("Creator is listed");
     assert!(
-        creator_row.contains("Not ready yet in this version."),
+        creator_row.contains("Creator mode needs a plugin runtime"),
         "{creator_row}"
     );
     let first_group = frame.find("Conversation mode").unwrap();

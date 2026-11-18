@@ -25,7 +25,7 @@ env:
 jobs:
   resolve:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       # Read release-candidate.yml runs for the RC receipt check below.
@@ -175,7 +175,7 @@ jobs:
             architecture: arm64
             cli_artifact: codewhale-linux-arm64
             shim_artifact: codew-linux-arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -211,7 +211,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -290,7 +290,7 @@ jobs:
     timeout-minutes: 30
     needs: [docker-build, release, resolve]
     if: ${{ !cancelled() && needs.docker-build.result == 'success' && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -309,7 +309,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -395,7 +395,7 @@ jobs:
     timeout-minutes: 30
     needs: [artifacts, docker-build, resolve]
     if: ${{ !cancelled() && needs.artifacts.result == 'success' && (needs.resolve.outputs.prerelease == 'true' || needs.docker-build.result == 'success') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -434,7 +434,7 @@ jobs:
         run: node repo/scripts/release/ensure-release-assets-absent.js "${GITHUB_REPOSITORY}" "${TAG}"
       # Upload into a DRAFT: 34 sequential uploads that die halfway must leave
       # nothing public (and nothing a rerun's immutability guard refuses).
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           name: Codewhale ${{ needs.resolve.outputs.tag }}
@@ -480,7 +480,7 @@ jobs:
     timeout-minutes: 20
     needs: [release, resolve]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -532,7 +532,7 @@ jobs:
     timeout-minutes: 20
     needs: [release, resolve]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -591,7 +591,7 @@ jobs:
     timeout-minutes: 15
     needs: [release, resolve]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

@@ -52,7 +52,7 @@ jobs:
   pin:
     name: Pin caller SHA to this run
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require source_sha equals github.sha
         env:
@@ -162,7 +162,7 @@ jobs:
             cli_artifact: codewhale-ohos-arm64
             shim_artifact: codew-ohos-arm64
             compat_tui_artifact: codewhale-tui-ohos-arm64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     needs: pin
     steps:
       # No ref: — GITHUB_SHA only. CodeQL treats workflow_call checkout-with-ref
@@ -173,6 +173,8 @@ jobs:
           toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.19.0"
         if: runner.os == 'Linux'
         id: sccache
         continue-on-error: true
@@ -184,6 +186,7 @@ jobs:
             echo "SCCACHE_GHA_ENABLED=true"
             echo "RUSTC_WRAPPER=sccache"
             echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
           } >> "${GITHUB_ENV}"
       # Restore after the trusted lockfile is on disk. Key is OS + arch +
       # explicit stable toolchain + rust-cache's Cargo.lock / rust-toolchain
@@ -286,7 +289,7 @@ jobs:
           mirror: true
       - name: Install Java for the OpenHarmony binary signer
         if: matrix.platform == 'ohos-arm64'
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v4
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: '17'
@@ -496,7 +499,7 @@ jobs:
     timeout-minutes: 15
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -626,7 +629,7 @@ jobs:
     timeout-minutes: 15
     needs: [bundle, windows-installer]
     if: ${{ !cancelled() && needs.bundle.result == 'success' && needs.windows-installer.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -666,7 +669,7 @@ jobs:
     timeout-minutes: 15
     needs: assemble
     if: ${{ !cancelled() && needs.assemble.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -677,7 +680,7 @@ jobs:
         with:
           name: codewhale-release-assets
           path: release-assets
-      - name: Verify 34-asset bridge inventory and checksum manifests (single binary)
+      - name: Verify 38-asset bridge inventory and checksum manifests (single binary)
         run: node scripts/release/assemble-release-assets.js --verify release-assets
       - name: Test release inventory contracts
         run: |
@@ -698,6 +701,6 @@ jobs:
             echo ""
             echo "- Source: \`${{ github.sha }}\`"
             echo "- Version metadata: \`${{ inputs.version }}\`"
-            echo "- Inventory: 7 targets / 34 files (single binary; 7 legacy alias assets)"
+            echo "- Inventory: 8 targets / 38 files (single binary; 8 legacy alias assets)"
             echo "- Publication: none (Actions artifact \`codewhale-release-assets\` only)"
           } >> "${GITHUB_STEP_SUMMARY}"

@@ -950,12 +950,9 @@ def validate_reviewed(data: Any) -> dict[str, Any]:
         if not isinstance(row, dict) or not identifier(row.get("id")) or row["id"] in seen or row["id"].lower() not in intrinsic:
             die("missing or duplicate reviewed public model")
         seen.add(row["id"])
-    for key in ("compatibility_aliases", "completion_rosters", "constants", "groups"):
+    for key in ("completion_rosters", "constants", "groups"):
         if not isinstance(data.get(key, {}), dict):
             die(f"reviewed {key} must be an object")
-    for aliases in data.get("compatibility_aliases", {}).values():
-        if not isinstance(aliases, dict) or any(not identifier(key) or not identifier(value) for key, value in aliases.items()):
-            die("malformed reviewed alias")
     for entries in data.get("completion_rosters", {}).values():
         if not isinstance(entries, list) or any(not identifier(value) for value in entries):
             die("malformed reviewed completion roster")

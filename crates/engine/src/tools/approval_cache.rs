@@ -146,6 +146,17 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
     ApprovalKey(fingerprint)
 }
 
+/// Prefix on approval keys minted for human-confirmed `plugin_manager` changes.
+pub const CREATOR_HUMAN_APPROVAL_KEY_PREFIX: &str = "creator-human:";
+
+/// Whether a Rust-minted approval key bypasses Full Access's policy-hold auto-denial
+/// so a person still answers on the approval card.
+#[must_use]
+pub fn forces_full_access_prompt_for_key(approval_key: &str) -> bool {
+    approval_key.starts_with("extcall:ext:")
+        || approval_key.starts_with(CREATOR_HUMAN_APPROVAL_KEY_PREFIX)
+}
+
 /// Exact and grouping keys for one call, as the engine puts them on an
 /// approval request. A tool with an [`approval_scope`] (extension tools) is
 /// keyed `<scope>:<tool_name>:<hash of input>` for both, so its grants are
@@ -161,12 +172,28 @@ pub fn approval_keys_for_call(
     tool_name: &str,
     input: &serde_json::Value,
 ) -> (ApprovalKey, ApprovalKey) {
-    let scope = registry
-        .and_then(|registry| registry.get(tool_name))
-        .and_then(|tool| tool.approval_scope());
+    let tool = registry.and_then(|registry| registry.get(tool_name));
+    let creator_changing = tool.as_deref().is_some_and(|spec| {
+        crate::extension_host::creator_policy::is_creator_changing_spec_call(spec, input)
+    });
+    let scope = tool.and_then(|tool| tool.approval_scope());
     let keys = match scope {
+        Some(scope) if creator_changing => {
+            let key = ApprovalKey(format!(
+                "{CREATOR_HUMAN_APPROVAL_KEY_PREFIX}{scope}:{tool_name}:{}",
+                hash_json_value(input)
+            ));
+            (key.clone(), key)
+        }
         Some(scope) => {
             let key = ApprovalKey(format!("{scope}:{tool_name}:{}", hash_json_value(input)));
+            (key.clone(), key)
+        }
+        None if creator_changing => {
+            let key = ApprovalKey(format!(
+                "{CREATOR_HUMAN_APPROVAL_KEY_PREFIX}{tool_name}:{}",
+                hash_json_value(input)
+            ));
             (key.clone(), key)
         }
         None => (

@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "876599587ccadf2c79b17a8650312d25bd0d46a13f3cb6fcb2f3aa45e6d5ec0e", harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "41bf97f29fad606ae1d92c8937031233094dcbae96e43da90437b86895404923", harness: "ac65aa44a3824dcdb0060db426bf530a088fd593e58b9f4cfdaefbc09a5fa037", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -9449,8 +9449,8 @@ function reviewedMcpModule() {
         if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1e3 || timeout > 864e5 || timeout % 1e3 !== 0) throw new Error("MCP timeout must be whole seconds within Core bounds");
         options.execute_timeout = timeout / 1e3;
       }
-      if (config.failOnStartupError === true) throw new Error("failOnStartupError requires explicit Core MCP connection qualification before activation");
-      if (config.failOnStartupError !== void 0 && config.failOnStartupError !== false) throw new Error("MCP startup gate must be a boolean");
+      if (config.failOnStartupError !== void 0 && typeof config.failOnStartupError !== "boolean") throw new Error("MCP startup gate must be a boolean");
+      if (config.failOnStartupError === true) options.required = true;
       let server;
       if (config.transport === "stdio") {
         const cwd = config.cwd ?? "";
@@ -18544,7 +18544,7 @@ var init_hooks = __esm({
 
 // src/shims/storage.ts
 import { constants as constants2 } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename as rename2, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename as rename2, unlink } from "node:fs/promises";
 import { isAbsolute as isAbsolute3, join as join2 } from "node:path";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -18623,7 +18623,7 @@ function createStorage({ dataDir, isActive, onWarning }) {
   async function directory() {
     const stat = await lstat(dataDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError("invalid", "plugin storage dataDir must be a real directory");
-    return join2(await realpath(dataDir), "storage-v1");
+    return join2(canonicalPath(dataDir), "storage-v1");
   }
   async function prepare(directory2) {
     await mkdir(directory2, { mode: 448 }).catch((error) => {
@@ -18752,6 +18752,7 @@ var init_storage = __esm({
   "src/shims/storage.ts"() {
     "use strict";
     init_define_BUILTIN_MODULE_DIGESTS();
+    init_canonical_path();
     init_json();
     STORAGE_LIMITS = Object.freeze({ keyBytes: 128, valueBytes: 128 * 1024, totalBytes: 4 * 1024 * 1024, keys: 1024 });
     RECORD_NAME = /^[a-f0-9]{64}\.json$/u;

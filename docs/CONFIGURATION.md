@@ -2582,6 +2582,14 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   `ask` rules do not downgrade the session into prompting or blocking; explicit
   `deny` rules still block according to the current execution-policy logic.
 
+  Command `deny` rules match statically parsed command lines (including common
+  shell, wrapper, and launcher invocations), failing closed when a command word
+  cannot be resolved until run time. They do not inspect script files, inline
+  interpreter payloads (`python -c`, `perl -e`), renamed binaries, alternative
+  commands with the same effect, or execution inside remote hosts or container
+  images beyond what is spelled on the local command line. Use the execution
+  sandbox as the real containment control.
+
   In a supported approval card, press `S` to allow the request once and append
   exact `action = "ask"` rules to this file. For eligible safe requests, choose
   **Always allow this exact rule in this repo** (shortcut `P`) to append an
@@ -2618,7 +2626,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   that moved into the old position. Confirmed removal and approval-card appends
   share the adjacent `permissions.toml.lock`, preserve unrelated TOML comments
   and formatting, and atomically replace the file. The running TUI reloads the
-  user ruleset without clearing session-only approvals.
+  user ruleset without clearing session-only approvals. The Runtime API
+  exposes the same list, token-bound removal and repo-scoped allow save for
+  the desktop app ([Runtime API](RUNTIME_API.md), "Permission rules and
+  grants").
 
   This editor intentionally does not create or rewrite rules, persist deny
   choices from approval cards, expand globs, or create broad

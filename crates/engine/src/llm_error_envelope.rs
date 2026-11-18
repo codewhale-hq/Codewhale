@@ -1,4 +1,4 @@
-use crate::llm_client::LlmError;
+use crate::llm_client::{LlmError, RequestTransmission};
 use codewhale_error_taxonomy::{
     ErrorCategory, ErrorEnvelope, ErrorSeverity, classify_error_message,
 };
@@ -17,7 +17,19 @@ use codewhale_error_taxonomy::{
 /// untyped errors fall back to string classification.
 #[must_use]
 pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> ErrorEnvelope {
-    match error.downcast::<LlmError>() {
+    let llm = error.downcast_ref::<LlmError>();
+    let transmission = llm.map_or(RequestTransmission::OutcomeUnknown, LlmError::transmission);
+    let http_status = llm.and_then(|error| match error {
+        LlmError::ServerError { status, .. } | LlmError::InvalidRequest { status, .. } => {
+            Some(*status)
+        }
+        _ => None,
+    });
+    let timeout_ms = llm.and_then(|error| match error {
+        LlmError::Timeout(duration) if !duration.is_zero() => Some(duration.as_millis()),
+        _ => None,
+    });
+    let envelope = match error.downcast::<LlmError>() {
         Ok(llm) => {
             let mut envelope = ErrorEnvelope::from(llm);
             envelope.message = display_message;
@@ -27,7 +39,16 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
             drop(error);
             ErrorEnvelope::classify(display_message, false)
         }
-    }
+    };
+    tracing::warn!(
+        code = %envelope.code,
+        category = %envelope.category,
+        ?transmission,
+        ?http_status,
+        ?timeout_ms,
+        "provider request failed"
+    );
+    envelope
 }
 
 impl From<LlmError> for ErrorEnvelope {
@@ -182,6 +203,127 @@ fn envelope_for_other_llm_error(message: String) -> ErrorEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_failures_reach_info_filtered_logs_without_raw_error_text() {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::time::Duration;
+
+        let secret = "sk-diagnostic-fixture-secret";
+        let display_message = format!("connection reset: {secret}");
+        let cases: [(anyhow::Error, &[&str], bool); 6] = [
+            (
+                anyhow::Error::new(LlmError::Timeout(Duration::from_millis(38_689)))
+                    .context(format!("request context: {secret}")),
+                &[
+                    "code=llm_timeout",
+                    "category=timeout",
+                    "transmission=OutcomeUnknown",
+                    "http_status=None",
+                    "timeout_ms=Some(38689)",
+                ],
+                false,
+            ),
+            (
+                LlmError::Timeout(Duration::ZERO).into(),
+                &[
+                    "code=llm_timeout",
+                    "transmission=OutcomeUnknown",
+                    "http_status=None",
+                    "timeout_ms=None",
+                ],
+                false,
+            ),
+            (
+                LlmError::ConnectError {
+                    message: secret.into(),
+                    transient: true,
+                    timed_out: false,
+                }
+                .into(),
+                &[
+                    "code=llm_connect_before_dispatch",
+                    "category=network",
+                    "transmission=NotDispatched",
+                    "http_status=None",
+                    "timeout_ms=None",
+                ],
+                true,
+            ),
+            (
+                LlmError::ServerError {
+                    status: 503,
+                    message: secret.into(),
+                }
+                .into(),
+                &[
+                    "code=llm_server_503",
+                    "category=internal",
+                    "transmission=OutcomeUnknown",
+                    "http_status=Some(503)",
+                    "timeout_ms=None",
+                ],
+                false,
+            ),
+            (
+                LlmError::InvalidRequest {
+                    status: 413,
+                    message: secret.into(),
+                }
+                .into(),
+                &[
+                    "code=llm_invalid_request",
+                    "category=invalid_input",
+                    "transmission=Rejected",
+                    "http_status=Some(413)",
+                    "timeout_ms=None",
+                ],
+                false,
+            ),
+            (
+                anyhow::anyhow!("connection reset: {secret}"),
+                &[
+                    "code=network",
+                    "category=network",
+                    "transmission=OutcomeUnknown",
+                    "http_status=None",
+                    "timeout_ms=None",
+                ],
+                false,
+            ),
+        ];
+        let mut output = tempfile::tempfile().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+            .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+            .finish();
+        let expected = tracing::subscriber::with_default(subscriber, || {
+            cases.map(|(error, fields, recoverable)| {
+                let envelope = envelope_for_llm_error(error, display_message.clone());
+                assert_eq!(envelope.message, display_message);
+                assert_eq!(envelope.recoverable, recoverable);
+                fields
+            })
+        });
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut logs = String::new();
+        output.read_to_string(&mut logs).unwrap();
+        assert!(!logs.contains(secret), "{logs}");
+        assert!(!logs.contains("connection reset"), "{logs}");
+        assert!(!logs.contains("request context"), "{logs}");
+        let lines: Vec<_> = logs.lines().collect();
+        assert_eq!(lines.len(), expected.len(), "{logs}");
+        for (line, fields) in lines.into_iter().zip(expected) {
+            for field in ["WARN", "provider request failed"]
+                .into_iter()
+                .chain(fields.iter().copied())
+            {
+                assert!(line.contains(field), "missing {field}: {line}");
+            }
+        }
+    }
 
     #[test]
     fn typed_llm_quota_envelope_is_non_recoverable_and_distinct_from_rate_limit() {

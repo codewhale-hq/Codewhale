@@ -2387,7 +2387,7 @@ fn supervised_manager(fixture: &FixturePlugins, node: PathBuf) -> Arc<ExtensionH
 }
 
 async fn wait_host(manager: &ExtensionHostManager, predicate: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         while !predicate() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

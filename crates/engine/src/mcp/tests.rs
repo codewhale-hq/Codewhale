@@ -11569,3 +11569,94 @@ fn configured_mcp_search_excludes_disabled_and_namespace_denied_servers() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn converted_dsh_mcp_template_with_required_connector_boots_and_surfaces_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    let plugins_root = dir.path().join("plugins");
+    let template_src = dir.path().join("dsh-mcp-src");
+    let global_path = dir.path().join("global-mcp.json");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&plugins_root).unwrap();
+    fs::write(&global_path, "{}").unwrap();
+
+    let dead_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_port = dead_listener.local_addr().unwrap().port();
+    drop(dead_listener);
+
+    let canonical_template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../skills/assets/dsh-creator/skills/cordis-plugin-development/templates/mcp");
+    let mut stack = vec![(canonical_template, template_src.clone())];
+    while let Some((src, dst)) = stack.pop() {
+        fs::create_dir_all(&dst).unwrap();
+        for entry in fs::read_dir(&src).unwrap() {
+            let entry = entry.unwrap();
+            let target = dst.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                stack.push((entry.path(), target));
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let patch_path = template_src.join("cordis.patch.yml");
+    let patch_raw = fs::read_to_string(&patch_path).unwrap();
+    let rewritten = patch_raw.replace(
+        "http://127.0.0.1:3000/mcp",
+        &format!("http://127.0.0.1:{dead_port}/mcp"),
+    );
+    fs::write(&patch_path, rewritten).unwrap();
+
+    let bundle_dir = plugins_root.join("demo-mcp");
+    codewhale_plugins::install::dsh::convert_package(&template_src, &bundle_dir).unwrap();
+
+    let discovery = codewhale_plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: plugins_root,
+        workspace_plugins_dir: dir.path().join("workspace-plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: dir.path().join("plugin-state/state.json"),
+    };
+    let mut registry = codewhale_plugins::discovery::discover_with_config(&discovery);
+    registry.trust("demo-mcp").unwrap();
+    registry.enable("demo-mcp").unwrap();
+    let plugin = registry.get("demo-mcp").expect("demo-mcp discovered");
+    assert!(
+        plugin.manifest.mcp_servers.as_ref().unwrap()["demo"].required,
+        "failOnStartupError: true must map to required: true"
+    );
+
+    let qualified = qualified_plugin_server_name("demo-mcp", "demo");
+    let mut pool = McpPool::from_config_path_with_workspace_and_plugins(
+        &global_path,
+        &workspace,
+        Arc::new(registry),
+    )
+    .unwrap()
+    .with_backend(McpBackend::Rust);
+
+    let errors = pool.connect_all().await;
+    assert!(
+        errors.iter().any(|(name, _)| name == &qualified),
+        "expected boot failure for required DSH connector {qualified}, got: {errors:?}"
+    );
+
+    let error_map: HashMap<String, String> = errors
+        .into_iter()
+        .map(|(name, err)| (name, err.to_string()))
+        .collect();
+    let snapshot = pool.manager_snapshot(&global_path, false, &error_map);
+    let row = snapshot
+        .servers
+        .iter()
+        .find(|row| row.name == qualified)
+        .expect("converted DSH connector appears in snapshot");
+    assert!(row.enabled);
+    assert!(row.required);
+    assert!(!row.connected);
+    assert!(
+        row.error.is_some(),
+        "required connector failure must appear in snapshot row: {row:?}"
+    );
+}

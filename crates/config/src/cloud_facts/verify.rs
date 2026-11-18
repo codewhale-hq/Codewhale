@@ -7,10 +7,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 
 use super::keys::{
-    DOMAIN, ENVELOPE_VERSION, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
+    AUTOMATION_CHANNEL_SUFFIX, AUTOMATION_MAX_MODELS, AUTOMATION_MAX_VALIDITY_SECS, DOMAIN,
+    ENVELOPE_VERSION, KeyRole, KeyStatus, MAX_ENVELOPE_BYTES, MAX_PAYLOAD_BYTES,
     SUPPORTED_SCHEMA_VERSION, TrustedKey, trusted_key,
 };
-use super::types::CloudFacts;
+use super::types::{CloudFacts, ModelFact, ModelOp};
 
 /// Grace after `not_after` before facts downgrade to `stale` (48 h).
 pub const NOT_AFTER_GRACE_SECS: u64 = 48 * 60 * 60;
@@ -61,6 +62,8 @@ pub enum FactsRejection {
     BadVersionReq(String),
     NotApplicable { applies_to: String },
     Rollback { got: u64, highest_seen: u64 },
+    OutOfScope(String),
+    WrongSchema { got: String },
 }
 
 impl std::fmt::Display for FactsRejection {
@@ -86,6 +89,8 @@ impl std::fmt::Display for FactsRejection {
             Self::Rollback { got, highest_seen } => {
                 write!(f, "rollback (v{got} < seen v{highest_seen})")
             }
+            Self::OutOfScope(msg) => write!(f, "outside the automation key's scope: {msg}"),
+            Self::WrongSchema { got } => write!(f, "unsupported registry schema {got:?}"),
         }
     }
 }
@@ -110,6 +115,11 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(&mut out, "{byte:02x}");
     }
     out
+}
+
+pub(crate) fn sha256_hex(payload: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex(&sha2::Sha256::digest(payload))
 }
 
 /// The exact bytes an Ed25519 signature covers.
@@ -143,23 +153,27 @@ pub fn parse_rfc3339_utc(value: &str) -> Option<u64> {
     u64::try_from(parsed.timestamp()).ok()
 }
 
-/// Verify a raw envelope document.
-///
-/// * `expected_channel` — the channel the client asked for.
-/// * `current` — the running binary's version (`CARGO_PKG_VERSION`).
-/// * `highest_seen` — highest `facts_version` this client previously accepted
-///   for the channel (rollback protection); equal is accepted.
-/// * `keys` — the pinned trust anchors (normally [`super::keys::TRUSTED_KEYS`]).
-/// * `now_unix` — wall clock, injected for deterministic tests.
-pub fn verify_envelope(
+pub(crate) struct Authenticated {
+    pub envelope: Envelope,
+    pub payload: Vec<u8>,
+    pub key_id: String,
+    pub key_role: KeyRole,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EnvelopeLimits {
+    pub envelope_bytes: usize,
+    pub payload_bytes: usize,
+    pub facts_metadata: bool,
+}
+
+pub(crate) fn authenticate(
     bytes: &[u8],
     expected_channel: &str,
-    current: &semver::Version,
-    highest_seen: Option<u64>,
     keys: &[TrustedKey],
-    now_unix: u64,
-) -> Result<VerifiedFacts, FactsRejection> {
-    if bytes.len() > MAX_ENVELOPE_BYTES {
+    limits: EnvelopeLimits,
+) -> Result<Authenticated, FactsRejection> {
+    if bytes.len() > limits.envelope_bytes {
         return Err(FactsRejection::TooLarge { bytes: bytes.len() });
     }
     let envelope: Envelope = serde_json::from_slice(bytes)
@@ -170,10 +184,11 @@ pub fn verify_envelope(
             envelope.envelope
         )));
     }
-    if envelope.schema_version.is_none()
-        || envelope.applies_to.is_none()
-        || envelope.published_at.is_none()
-        || envelope.sha256.is_none()
+    if limits.facts_metadata
+        && (envelope.schema_version.is_none()
+            || envelope.applies_to.is_none()
+            || envelope.published_at.is_none()
+            || envelope.sha256.is_none())
     {
         return Err(FactsRejection::BadEnvelope(
             "missing signed-payload metadata".into(),
@@ -207,8 +222,14 @@ pub fn verify_envelope(
             "invalid signature candidates".into(),
         ));
     }
-    if envelope.channel.len() > 32
+    if envelope.channel.is_empty()
+        || envelope.channel.len() > 32
         || expected_channel.len() > 32
+        || !envelope
+            .channel
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         || !envelope
             .channel
             .bytes()
@@ -230,7 +251,7 @@ pub fn verify_envelope(
             "invalid metadata bounds".into(),
         ));
     }
-    if envelope.payload_b64.len() > MAX_PAYLOAD_BYTES * 4 / 3 + 4 {
+    if envelope.payload_b64.len() > limits.payload_bytes * 4 / 3 + 4 {
         return Err(FactsRejection::TooLarge {
             bytes: envelope.payload_b64.len(),
         });
@@ -241,14 +262,12 @@ pub fn verify_envelope(
     if payload.is_empty() {
         return Err(FactsRejection::BadEnvelope("empty payload".into()));
     }
-    if payload.len() > MAX_PAYLOAD_BYTES {
+    if payload.len() > limits.payload_bytes {
         return Err(FactsRejection::TooLarge {
             bytes: payload.len(),
         });
     }
 
-    // Candidate signatures: the primary first, then rotation extras. Accept
-    // the first that verifies under a pinned, active key.
     let mut candidates: Vec<(&str, &str)> = Vec::with_capacity(1 + envelope.sigs.len());
     candidates.push((envelope.key_id.as_str(), envelope.sig_b64.as_str()));
     for extra in &envelope.sigs {
@@ -256,7 +275,7 @@ pub fn verify_envelope(
     }
     let mut saw_known = false;
     let mut saw_retired: Option<String> = None;
-    let mut verified_key: Option<String> = None;
+    let mut verified_key: Option<(String, KeyRole)> = None;
     for (key_id, sig_b64) in candidates {
         let Some(key) = trusted_key(keys, key_id) else {
             continue;
@@ -274,11 +293,14 @@ pub fn verify_envelope(
         }
         let message = signing_message(key_id, &payload);
         if ed25519_ok(&key.public_key, &message, &signature) {
-            verified_key = Some(key_id.to_string());
-            break;
+            if key.role == KeyRole::Founder {
+                verified_key = Some((key_id.to_string(), key.role));
+                break;
+            }
+            verified_key.get_or_insert_with(|| (key_id.to_string(), key.role));
         }
     }
-    let Some(key_id) = verified_key else {
+    let Some((key_id, key_role)) = verified_key else {
         if saw_known {
             return Err(FactsRejection::BadSignature);
         }
@@ -289,6 +311,46 @@ pub fn verify_envelope(
             key_id: envelope.key_id,
         });
     };
+
+    Ok(Authenticated {
+        envelope,
+        payload,
+        key_id,
+        key_role,
+    })
+}
+
+/// Verify a raw envelope document.
+///
+/// * `expected_channel` — the channel the client asked for.
+/// * `current` — the running binary's version (`CARGO_PKG_VERSION`).
+/// * `highest_seen` — highest `facts_version` this client previously accepted
+///   for the channel (rollback protection); equal is accepted.
+/// * `keys` — the pinned trust anchors (normally [`super::keys::TRUSTED_KEYS`]).
+/// * `now_unix` — wall clock, injected for deterministic tests.
+pub fn verify_envelope(
+    bytes: &[u8],
+    expected_channel: &str,
+    current: &semver::Version,
+    highest_seen: Option<u64>,
+    keys: &[TrustedKey],
+    now_unix: u64,
+) -> Result<VerifiedFacts, FactsRejection> {
+    let Authenticated {
+        envelope,
+        payload,
+        key_id,
+        key_role,
+    } = authenticate(
+        bytes,
+        expected_channel,
+        keys,
+        EnvelopeLimits {
+            envelope_bytes: MAX_ENVELOPE_BYTES,
+            payload_bytes: MAX_PAYLOAD_BYTES,
+            facts_metadata: true,
+        },
+    )?;
 
     // Only now is the payload trusted enough to parse.
     let facts: CloudFacts = serde_json::from_slice(&payload)
@@ -366,16 +428,24 @@ pub fn verify_envelope(
                 .ok_or_else(|| FactsRejection::BadPayload("invalid not_after timestamp".into()))
         })
         .transpose()?;
-    if not_after.is_some_and(|expires| expires < published_at) {
+    if not_after.is_some_and(|expires| expires <= published_at) {
         return Err(FactsRejection::BadPayload(
-            "not_after precedes published_at".into(),
+            "not_after does not follow published_at".into(),
         ));
+    }
+    if key_role == KeyRole::Automation {
+        let raw: serde_json::Value = serde_json::from_slice(&payload)
+            .map_err(|err| FactsRejection::BadPayload(err.to_string()))?;
+        if let Some(violation) =
+            automation_scope_violation(&facts, &raw, expected_channel, published_at, not_after)
+        {
+            return Err(FactsRejection::OutOfScope(violation));
+        }
     }
     let stale =
         not_after.is_some_and(|expires| now_unix > expires.saturating_add(NOT_AFTER_GRACE_SECS));
 
-    use sha2::Digest as _;
-    let sha256 = hex(&sha2::Sha256::digest(&payload));
+    let sha256 = sha256_hex(&payload);
     if envelope
         .sha256
         .as_ref()
@@ -390,6 +460,196 @@ pub fn verify_envelope(
         raw_len: payload.len(),
         stale,
     })
+}
+
+const AUTOMATION_PAYLOAD_FIELDS: &[&str] = &[
+    "schema_version",
+    "channel",
+    "facts_version",
+    "published_at",
+    "not_after",
+    "applies_to",
+    "models",
+    "provider_defaults",
+    "release",
+    "announcements",
+];
+const AUTOMATION_MODEL_FIELDS: &[&str] = &[
+    "provider",
+    "id",
+    "op",
+    "context_window",
+    "max_output",
+    "reasoning",
+    "display_name",
+    "deprecated_at",
+    "replacement",
+    "note",
+    "applies_to",
+    "pricing_withheld",
+];
+
+fn plain_text(value: Option<&str>, max_chars: usize) -> bool {
+    value
+        .is_none_or(|text| text.chars().count() <= max_chars && !text.chars().any(char::is_control))
+}
+
+fn whole_second_utc(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 20
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            19 => *byte == b'Z',
+            _ => byte.is_ascii_digit(),
+        })
+}
+
+#[must_use]
+pub fn automation_scope_violation(
+    facts: &CloudFacts,
+    raw: &serde_json::Value,
+    expected_channel: &str,
+    published_at: u64,
+    not_after: Option<u64>,
+) -> Option<String> {
+    let CloudFacts {
+        schema_version: _,
+        channel: _,
+        facts_version,
+        published_at: published_text,
+        not_after: not_after_text,
+        applies_to,
+        models,
+        provider_defaults,
+        release,
+        announcements,
+        unknown,
+    } = facts;
+    if !expected_channel
+        .strip_suffix(AUTOMATION_CHANNEL_SUFFIX)
+        .is_some_and(|prefix| {
+            prefix
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+    {
+        return Some(format!(
+            "channel {expected_channel:?} is not an automation channel"
+        ));
+    }
+    if !plain_text(Some(applies_to), 200) {
+        return Some("applies_to is too long or not plain".into());
+    }
+    if !provider_defaults.is_empty() {
+        return Some("provider defaults".into());
+    }
+    if release.is_some() {
+        return Some("release facts".into());
+    }
+    if !announcements.is_empty() {
+        return Some("announcements".into());
+    }
+    let unknown_top = raw.as_object().and_then(|object| {
+        object
+            .keys()
+            .find(|field| !AUTOMATION_PAYLOAD_FIELDS.contains(&field.as_str()))
+    });
+    if let Some(field) = unknown_top.or_else(|| unknown.keys().next()) {
+        return Some(format!("field {field:?} is not allowed"));
+    }
+    if models.len() > AUTOMATION_MAX_MODELS {
+        return Some(format!("more than {AUTOMATION_MAX_MODELS} models"));
+    }
+    let raw_models = raw.get("models").and_then(serde_json::Value::as_array);
+    if raw_models.map_or(0, Vec::len) != models.len() {
+        return Some("models do not match the signed bytes".into());
+    }
+    for (model, raw_model) in models.iter().zip(raw_models.into_iter().flatten()) {
+        let ModelFact {
+            provider,
+            id,
+            op,
+            allow_unlisted,
+            context_window,
+            max_output,
+            pricing,
+            pricing_withheld,
+            reasoning: _,
+            reasoning_options,
+            display_name,
+            deprecated_at,
+            replacement,
+            note,
+            applies_to,
+        } = model;
+        let name = format!("{provider}/{id}");
+        if provider.is_empty() || id.is_empty() {
+            return Some("malformed model entry".into());
+        }
+        let unknown_field = raw_model.as_object().and_then(|object| {
+            object
+                .keys()
+                .find(|field| !AUTOMATION_MODEL_FIELDS.contains(&field.as_str()))
+        });
+        if let Some(field) = unknown_field {
+            return Some(format!("{name}: field {field:?} is not allowed"));
+        }
+        let null_field = raw_model.as_object().and_then(|object| {
+            object
+                .iter()
+                .find_map(|(field, value)| value.is_null().then_some(field.as_str()))
+        });
+        if let Some(field) = null_field {
+            return Some(format!("{name}: field {field:?} is null"));
+        }
+        if *allow_unlisted || pricing.is_some() || reasoning_options.is_some() {
+            return Some(format!("{name}: field outside the automation model fields"));
+        }
+        if !matches!(op, ModelOp::Upsert | ModelOp::Deprecate) {
+            return Some(format!("{name} is not an upsert or deprecation"));
+        }
+        if !plain_text(Some(provider), 64)
+            || !plain_text(Some(id), 200)
+            || !plain_text(display_name.as_deref(), 120)
+            || !plain_text(deprecated_at.as_deref(), 40)
+            || !plain_text(replacement.as_deref(), 200)
+            || !plain_text(note.as_deref(), 300)
+            || !plain_text(applies_to.as_deref(), 200)
+            || !plain_text(pricing_withheld.as_deref(), 300)
+        {
+            return Some(format!("{name}: text too long or not plain"));
+        }
+        let window_ok = context_window.is_none_or(|window| (1_024..=20_000_000).contains(&window));
+        let output_ok = max_output.is_none_or(|output| {
+            (1..=2_000_000).contains(&output)
+                && context_window.is_none_or(|window| output <= window)
+        });
+        if !window_ok || !output_ok {
+            return Some(format!("{name}: limit out of range"));
+        }
+    }
+    if !whole_second_utc(published_text)
+        || not_after_text
+            .as_deref()
+            .is_some_and(|text| !whole_second_utc(text))
+    {
+        return Some("timestamp is not whole-second UTC".into());
+    }
+    if *facts_version != published_at {
+        return Some("facts_version is not the publication time".into());
+    }
+    match not_after {
+        None => Some("no not_after".into()),
+        Some(expires)
+            if expires <= published_at || expires - published_at > AUTOMATION_MAX_VALIDITY_SECS =>
+        {
+            Some("validity outside the automation limit".into())
+        }
+        Some(_) => None,
+    }
 }
 
 /// Evaluate a Cargo-style semver requirement against the running version.

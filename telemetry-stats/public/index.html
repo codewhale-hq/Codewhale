@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Codewhale telemetry stats</title>
+<style>
+:root{--bg:#f7f7f5;--fg:#1b1b1a;--mut:#6a6a66;--card:#fff;--line:#deded9;--bar:#2f6fed;--bar2:#9bb8f5}
+@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#ececea;--mut:#9a9a95;--card:#1c1c1b;--line:#333330;--bar:#6c9bff;--bar2:#35508f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:20px;margin:0 0 4px}
+p.sub{color:var(--mut);margin:0 0 20px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{font-size:14px;margin:0 0 10px}
+svg{width:100%;height:auto;display:block}
+.row{display:grid;grid-template-columns:minmax(0,38%) 1fr auto;gap:8px;align-items:center;font-size:13px;margin:3px 0}
+.row span.k{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.track{background:var(--line);height:8px;border-radius:4px;overflow:hidden}
+.track i{display:block;height:100%;background:var(--bar)}
+.num{font-variant-numeric:tabular-nums;color:var(--mut)}
+.caveats{color:var(--mut);font-size:12.5px;margin-top:22px}
+.err{color:#b3261e}
+</style>
+</head>
+<body>
+<main>
+<h1>Codewhale telemetry stats</h1>
+<p class="sub" id="sub">Loading</p>
+<div class="grid" id="grid"></div>
+<ul class="caveats" id="caveats"></ul>
+</main>
+<script>
+const grid = document.getElementById("grid");
+const NS = "http://www.w3.org/2000/svg";
+const fmt = (n) => n >= 1e9 ? (n/1e9).toFixed(1)+"B" : n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e4 ? (n/1e3).toFixed(1)+"k" : String(Math.round(n));
+
+function card(title) {
+  const s = document.createElement("section");
+  const h = document.createElement("h2");
+  h.textContent = title;
+  s.appendChild(h);
+  grid.appendChild(s);
+  return s;
+}
+
+function series(rows, metric, dim, key) {
+  const m = new Map();
+  for (const r of rows) if (r.metric === metric && r.dim === dim && (key === undefined || r.key === key)) m.set(r.day, (m.get(r.day) || 0) + r.value);
+  return [...m].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function totals(rows, metric, dim, top) {
+  const m = new Map();
+  for (const r of rows) if (r.metric === metric && r.dim === dim) m.set(r.key, (m.get(r.key) || 0) + r.value);
+  let list = [...m].sort((a, b) => b[1] - a[1]);
+  if (top && list.length > top) {
+    const rest = list.slice(top).reduce((s, x) => s + x[1], 0);
+    list = list.slice(0, top).concat([["other (rest)", rest]]);
+  }
+  return list;
+}
+
+function bars(parent, points) {
+  if (!points.length) { parent.appendChild(document.createTextNode("No data in window.")); return; }
+  const w = 320, h = 110, pad = 18, max = Math.max(...points.map((p) => p[1]), 1);
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h + pad}`);
+  const bw = w / points.length;
+  points.forEach(([day, v], i) => {
+    const r = document.createElementNS(NS, "rect");
+    const bh = (v / max) * h;
+    r.setAttribute("x", i * bw + 1); r.setAttribute("y", h - bh); r.setAttribute("width", Math.max(bw - 2, 1)); r.setAttribute("height", bh);
+    r.setAttribute("fill", "var(--bar)");
+    const t = document.createElementNS(NS, "title"); t.textContent = `${day}: ${fmt(v)}`; r.appendChild(t);
+    svg.appendChild(r);
+  });
+  const label = (x, anchor, text) => { const t = document.createElementNS(NS, "text"); t.setAttribute("x", x); t.setAttribute("y", h + 13); t.setAttribute("text-anchor", anchor); t.setAttribute("font-size", "10"); t.setAttribute("fill", "var(--mut)"); t.textContent = text; svg.appendChild(t); };
+  label(0, "start", points[0][0]); label(w, "end", `${points[points.length - 1][0]}  max ${fmt(max)}`);
+  parent.appendChild(svg);
+}
+
+function list(parent, entries) {
+  if (!entries.length) { parent.appendChild(document.createTextNode("No data in window.")); return; }
+  const max = Math.max(...entries.map((e) => e[1]), 1);
+  for (const [k, v] of entries) {
+    const row = document.createElement("div"); row.className = "row";
+    const a = document.createElement("span"); a.className = "k"; a.textContent = k; a.title = k;
+    const tr = document.createElement("div"); tr.className = "track"; const i = document.createElement("i"); i.style.width = (v / max * 100) + "%"; tr.appendChild(i);
+    const n = document.createElement("span"); n.className = "num"; n.textContent = fmt(v);
+    row.append(a, tr, n); parent.appendChild(row);
+  }
+}
+
+function chart(title, points) { bars(card(title), points); }
+function breakdown(title, entries) { list(card(title), entries); }
+
+async function main() {
+  const sub = document.getElementById("sub");
+  let data;
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) throw new Error(String(res.status));
+    data = await res.json();
+  } catch (e) {
+    sub.textContent = "Could not load stats (" + e.message + ").";
+    sub.className = "sub err";
+    return;
+  }
+  const rows = data.rows;
+  sub.textContent = `UTC days ${data.from} to ${data.to}, generated ${data.generated_at}. Aggregates only, no install ids.`;
+  chart("Observed active installs per day", series(rows, "active_installs", "all"));
+  breakdown("Active installs by version (sum of daily)", totals(rows, "active_installs", "version", 12));
+  breakdown("Active installs by surface (sum of daily)", totals(rows, "active_installs", "surface"));
+  breakdown("Active installs by OS (sum of daily)", totals(rows, "active_installs", "os"));
+  chart("Sessions per day", series(rows, "sessions", "all"));
+  chart("Turns per day", series(rows, "turns", "all"));
+  chart("Tool calls per day", series(rows, "tool_calls", "all"));
+  breakdown("Tool calls by tool", totals(rows, "tool_calls", "tool", 15));
+  breakdown("Model turns by provider", totals(rows, "model_turns_ok", "provider"));
+  breakdown("Model turns by catalog model", totals(rows, "model_turns_ok", "model", 15));
+  breakdown("Input tokens by provider", totals(rows, "model_input_tokens", "provider"));
+  breakdown("Output tokens by provider", totals(rows, "model_output_tokens", "provider"));
+  breakdown("Website funnel (weighted counters)", totals(rows, "website_funnel", "funnel"));
+  breakdown("Native funnel (distinct ids per day, summed)", [
+    ["initialized", series(rows, "native_installs_initialized", "funnel").reduce((s, p) => s + p[1], 0)],
+    ["successful turn", series(rows, "native_installs_with_successful_turn", "funnel").reduce((s, p) => s + p[1], 0)],
+  ]);
+  const caveats = document.getElementById("caveats");
+  for (const c of data.caveats) { const li = document.createElement("li"); li.textContent = c; caveats.appendChild(li); }
+  try {
+    const res = await fetch("/api/trend?days=365");
+    if (res.ok) {
+      const trend = await res.json();
+      chart("Observed active installs per day, kept totals", series(trend.rows, "active_installs", "all"));
+      chart("Sessions per day, kept totals", series(trend.rows, "sessions", "all"));
+    }
+  } catch (e) {}
+}
+main();
+</script>
+</body>
+</html>

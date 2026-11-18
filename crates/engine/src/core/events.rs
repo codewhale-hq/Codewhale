@@ -1033,6 +1033,16 @@ pub enum Event {
         reason: String,
         refusal: Option<String>,
     },
+
+    PluginChanged {
+        plugin: String,
+        action: String,
+        content_hash: Option<String>,
+        decided_by: Option<String>,
+        services: Vec<String>,
+        tools_added: Vec<String>,
+        tools_removed: Vec<String>,
+    },
 }
 
 /// Render the already-bounded name sample, marking an incomplete sample with

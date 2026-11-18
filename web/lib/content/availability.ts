@@ -73,12 +73,12 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
     surface: { en: "Desktop", zh: "桌面端" },
     pages: ["product", "app"],
     detail: {
-      en: "A desktop app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation. No public download yet.",
-      zh: "基于同一引擎的桌面应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。暂无公开下载。",
+      en: "A desktop app on the same engine. Run several sessions side by side, set what each may do from the Permissions menu, and review and commit changes in the side panel. No public download yet.",
+      zh: "基于同一引擎的桌面应用。可以并排运行多个会话，在 Permissions 菜单中设定每个会话无需询问即可做什么，并在侧边面板中审阅和提交修改。暂无公开下载。",
     },
     detailReleased: {
-      en: "A desktop app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation.",
-      zh: "基于同一引擎的桌面应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。",
+      en: "A desktop app on the same engine. Run several sessions side by side, set what each may do from the Permissions menu, and review and commit changes in the side panel.",
+      zh: "基于同一引擎的桌面应用。可以并排运行多个会话，在 Permissions 菜单中设定每个会话无需询问即可做什么，并在侧边面板中审阅和提交修改。",
     },
     href: null,
     linkLabel: null,

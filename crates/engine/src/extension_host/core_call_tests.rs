@@ -1755,10 +1755,18 @@ fn extension_calls_resolve_against_every_posture_as_documented() {
         match approval {
             OriginApproval::Unchanged => None,
             OriginApproval::Prompt => Some(resolve_approval_request_disposition(
-                authority, granted, false, false, true,
+                authority,
+                granted,
+                false,
+                false,
+                "extcall:ext:test",
             )),
             OriginApproval::ForcePrompt => Some(resolve_approval_request_disposition(
-                authority, granted, false, true, true,
+                authority,
+                granted,
+                false,
+                true,
+                "extcall:ext:test",
             )),
         }
     };
@@ -4685,7 +4693,7 @@ fn the_broker_act_gate_follows_the_permission_mode_and_needs_an_open_act() {
         ToolPermission::Deny
     );
     assert_eq!(
-        resolve_approval_request_disposition(&ask, false, false, false, true),
+        resolve_approval_request_disposition(&ask, false, false, false, "extcall:ext:test"),
         ApprovalRequestDisposition::Prompt
     );
 

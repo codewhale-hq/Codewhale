@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Lệnh này cài bản phát hành mới nhất trên macOS hoặc Linux và kh�
 
 <sub>Bản dịch này là bản nháp do máy dịch và chưa được người bản ngữ xem lại.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale trong terminal sau một nhiệm vụ demo. Nó báo đã thêm cờ --json vào export.py, cả 3 bài kiểm thử cục bộ đều đạt và bài review được ủy quyền không tìm thấy vấn đề. Danh sách nhiệm vụ bên dưới có ba bước đã hoàn thành, và dòng trạng thái hiển thị Full Access cùng nhà cung cấp cục bộ website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale trong terminal sau một tác vụ thật với gemini-4-hydrogen. Nó đã chạy python3 -m unittest -v test_ls.py, 2 bài kiểm thử đạt, và cho biết đã thêm tùy chọn --json vào ls.py bằng argparse. Dòng trạng thái hiển thị accept edits và gemini-4-hydrogen.">
 
-<sub>Một bản dựng phát triển của 0.10.3, phiên bản chưa phát hành, với mô hình kiểm thử theo kịch bản, chạy ở Full Access trong một workspace dùng một lần. Phần chỉnh sửa, ba bài kiểm thử và một lần review của sub-agent đều chạy thật.</sub>
+<sub>Một phiên làm việc thật trên bản dựng phát triển của 0.10.3: gemini-4-hydrogen qua API của Google đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Hơn 40 nhà cung cấp được tích hợp sẵn, gồm Anthropic, OpenAI, Dee
 
 `/goal` đặt một mục tiêu kéo dài qua nhiều lượt. Codewhale có thể chia việc cho các [sub-agent](../SUBAGENTS.md), chạy một [Fleet](../FLEET.md) gồm các agent với vai trò và mô hình riêng, hoặc làm theo một [quy trình làm việc](../WORKFLOW_AUTHORING.md) được commit trong kho.
 
-### Tiện ích mở rộng
+### Plugin
 
 Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [plugin](../PLUGINS.md), và chạy [hook](../HOOKS.md) trên các sự kiện phiên và công cụ. Chế độ mã (thử nghiệm, bật mặc định) cho phép mô hình viết một chương trình `execute_tools` gọi nhiều công cụ MCP và plugin; mỗi lời gọi vẫn tuân theo quy tắc phê duyệt của bạn và giữ biên nhận. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) là một plugin riêng được phát hành độc lập (thử nghiệm, chỉ macOS) và luôn tắt cho đến khi bạn xem lại quyền truy cập và bật nó.
 

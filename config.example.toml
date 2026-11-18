@@ -1680,7 +1680,6 @@ base_url = "https://integrate.api.nvidia.com/v1"
 # Built-in defaults always include:
 #   http://localhost:3000   http://127.0.0.1:3000
 #   http://localhost:1420   http://127.0.0.1:1420
-#   tauri://localhost
 #
 # Use `cors_origins` to add extra dev origins (e.g. Vite's default `:5173`).
 # User entries STACK on top of the defaults — they do not replace them. The

@@ -482,17 +482,53 @@ fn list_bundles_and_legacy_tools(
             .unwrap_or_default();
         output.push('\n');
         for summary in &summaries {
+            let review = summary
+                .review_display
+                .as_deref()
+                .unwrap_or(&summary.trust_status);
             let _ = writeln!(
                 output,
                 "• {} — {}\n  {} · {} · compatibility={} · {}\n  {}",
                 escape_review_text(&summary.name, ReviewTextContext::Prose),
                 summary.state_label,
                 summary.scope,
-                summary.trust_status,
+                review,
                 summary.compatibility,
                 summary.inventory,
                 escape_review_text(&summary.id, ReviewTextContext::Prose)
             );
+            if let Some(approver) = summary.approver.as_deref() {
+                if let Some(date) = summary.reviewed_date.as_deref() {
+                    let safe_date = escape_review_text(date, ReviewTextContext::Plain);
+                    let approved_date = presentation
+                        .translate("cmd_plugin_audit_approved_date", &[("date", &safe_date)])
+                        .unwrap_or_else(|_| format!("approved {safe_date}"));
+                    let _ = writeln!(output, "  {approver} ({approved_date})");
+                } else {
+                    let _ = writeln!(output, "  {approver}");
+                }
+            }
+            if let Some(enabled_by) = summary.enabled_by.as_deref() {
+                let _ = writeln!(output, "  {enabled_by}");
+            }
+            if summary.outside_reach || summary.reach_folder.is_some() {
+                let folder = escape_review_text(
+                    summary.reach_folder.as_deref().unwrap_or("unknown"),
+                    ReviewTextContext::Prose,
+                );
+                let key = if summary.outside_reach {
+                    "cmd_plugin_audit_reach_only_in"
+                } else {
+                    "cmd_plugin_audit_reach_here"
+                };
+                let reach = presentation
+                    .translate(key, &[("folder", &folder)])
+                    .unwrap_or(folder);
+                let _ = writeln!(output, "  {reach}");
+            }
+            if let Some(note) = summary.process_note.as_deref() {
+                let _ = writeln!(output, "  {note}");
+            }
         }
         output
     };

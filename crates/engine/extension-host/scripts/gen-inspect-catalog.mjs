@@ -274,7 +274,7 @@ const ROW_PACKAGES = {
         url: { type: 'string', description: 'streamable-http and sse: the endpoint, with no credentials, query or fragment.' },
         headers: { type: 'object', maxProperties: 0, description: 'Must be empty or absent: credentials stay with the Engine.' },
         toolCallTimeoutMs: { type: 'integer', minimum: 1000, maximum: 86400000, multipleOf: 1000 },
-        failOnStartupError: { type: 'boolean', const: false, description: 'Only false: the Engine connects lazily and reports failures through /mcp.' },
+        failOnStartupError: { type: 'boolean', description: 'When true, install and enable connect the server first and report failure if it cannot start; when false or absent, the Engine connects lazily and reports failures through /mcp.' },
       },
     },
     limits: ['stdio rows name a command; streamable-http and sse rows name a url.', 'Reconnect and instruction bounds belong to the Engine and are not configurable here.'],

@@ -24,7 +24,7 @@ jobs:
     # Cold check, Clippy, executable and test builds exceeded the old 45m
     # limit before the suite started. Retain the full CI test-job budget.
     timeout-minutes: 210
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Every caller's resolve job already proved GITHUB_SHA equals the
       # candidate or tag commit. Do not interpolate a SHA into checkout or
@@ -37,6 +37,8 @@ jobs:
           toolchain: 1.100.0
           components: clippy, rustfmt
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.19.0"
         id: sccache
         continue-on-error: true
       - name: Enable sccache
@@ -47,6 +49,7 @@ jobs:
             echo "SCCACHE_GHA_ENABLED=true"
             echo "RUSTC_WRAPPER=sccache"
             echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
           } >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         run: |
@@ -64,9 +67,9 @@ jobs:
         with:
           cache-bin: false
           prefix-key: v1-${{ runner.os }}-${{ runner.arch }}-stable
-      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11 # nextest
+      - uses: taiki-e/install-action@b6620ca104fb7b50dafa1109be9622abc1fdd381 # nextest
         with:
-          tool: nextest
+          tool: cargo-nextest@0.9.151
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Compile check
@@ -101,7 +104,7 @@ jobs:
         # does not run them.
         # The runner has been shut down during this step's build on several
         # candidates (exit 143, no test result). The same headroom trace as
-        # ci.yml's test step records whether memory or disk ran out, starting
+        # ci-test-suite.yml's shard step records whether memory or disk ran out, starting
         # with what the earlier check and clippy steps left behind.
         shell: bash
         run: |
@@ -118,7 +121,7 @@ jobs:
           CARGO_BUILD_JOBS: '1'
           # Match the CI test lane: test threads get the same stack the product
           # gives itself (main.rs CODEWHALE_MAIN_STACK_BYTES). See the note in
-          # ci.yml's "Run tests" step. Without it this gate runs the deep
+          # ci-test-suite.yml's "Run tests" step. Without it this gate runs the deep
           # engine/runtime futures on a stack that never ships.
           RUST_MIN_STACK: '16777216'
       - name: Workspace doctests

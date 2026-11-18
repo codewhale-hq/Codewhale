@@ -1,5 +1,5 @@
 use codewhale_engine::conversation_modes::{
-    self, CREATOR, CREATOR_NOT_READY_REASON, ConversationMode, ConversationModeTable, STANDARD,
+    self, CREATOR, ConversationMode, ConversationModeTable, STANDARD,
 };
 use codewhale_engine::extension_host::ExtensionHostOptions;
 use codewhale_localization::{Locale, MessageId, tr};
@@ -67,12 +67,8 @@ pub(crate) fn display_description(locale: Locale, mode: &ConversationMode) -> St
     }
 }
 
-pub(crate) fn display_reason(locale: Locale, reason: &str) -> String {
-    if reason == CREATOR_NOT_READY_REASON {
-        tr(locale, MessageId::ConversationModeNotReady).into_owned()
-    } else {
-        reason.to_string()
-    }
+pub(crate) fn display_reason(_locale: Locale, reason: &str) -> String {
+    reason.to_string()
 }
 
 fn clean(text: &str) -> String {

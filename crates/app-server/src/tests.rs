@@ -3343,7 +3343,7 @@ fn app_server_options_debug_does_not_leak_token() {
 fn default_cors_origins_include_common_dev_ports() {
     assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:3000"));
     assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:5173"));
-    assert!(DEFAULT_CORS_ORIGINS.contains(&"tauri://localhost"));
+    assert!(!DEFAULT_CORS_ORIGINS.iter().any(|o| o.starts_with("tauri:")));
 }
 #[tokio::test]
 async fn runtime_image_daemon_bridge_checks_transport_and_forwards_exact_wire() {

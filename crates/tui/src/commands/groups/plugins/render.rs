@@ -60,7 +60,13 @@ pub(super) fn render_bundle_detail(
                 ("origin", &detail.origin),
                 ("scope", &detail.scope),
                 ("state", &detail.state_label),
-                ("trust", &detail.trust_status),
+                (
+                    "trust",
+                    detail
+                        .trust_display
+                        .as_deref()
+                        .unwrap_or(&detail.trust_status),
+                ),
                 ("inventory", &detail.inventory_summary),
                 ("permissions", &render_permissions(detail, context)),
                 ("mcp", &render_mcp_inventory(detail, context)),
@@ -76,14 +82,34 @@ pub(super) fn render_bundle_detail(
         .iter()
         .map(|skill| escape_review_text(skill, context))
         .collect::<Vec<_>>();
+    let commands = detail
+        .commands
+        .iter()
+        .map(|command| escape_review_text(command, context))
+        .collect::<Vec<_>>();
+    let profiles = detail
+        .profiles
+        .iter()
+        .map(|profile| escape_review_text(profile, context))
+        .collect::<Vec<_>>();
     let _ = write!(
         output,
-        "\nCompatibility: {}\nActive components: [{active_components}]\nInactive components: [{unsupported}]\nQualified skills: [{}]\nActivation boundary: trust stages the exact reviewed content but does not activate it; enable rebuilds this workspace's Skills, MCP, Commands, Agents, and Hooks immediately. Every plugin command dispatch, Agent spawn, Hook process start, Skill use, and MCP call rechecks current authority. {}",
+        "\nCompatibility: {}\nActive components: [{active_components}]\nInactive components: [{unsupported}]\nQualified skills: [{}]\nCommands: [{}]\nProfiles: [{}]\nActivation boundary: trust stages the exact reviewed content but does not activate it; enable rebuilds this workspace's Skills, MCP, Commands, Agents, and Hooks immediately. Every plugin command dispatch, Agent spawn, Hook process start, Skill use, and MCP call rechecks current authority. {}",
         detail.compatibility,
         if skills.is_empty() {
             "none".to_string()
         } else {
             skills.join(", ")
+        },
+        if commands.is_empty() {
+            "none".to_string()
+        } else {
+            commands.join(", ")
+        },
+        if profiles.is_empty() {
+            "none".to_string()
+        } else {
+            profiles.join(", ")
         },
         if extension_host {
             "Native host code (JavaScript) runs in the experimental extension host with your user permissions (sandboxed where the OS sandbox is available); extension tools are never auto-approved by the plugin itself, and each call needs approval under your approval mode. LSP, filesystem-roots, and lifecycle-mutation stay inventoried and inactive."
@@ -91,6 +117,104 @@ pub(super) fn render_bundle_detail(
             "LSP, native, filesystem-roots, and lifecycle-mutation stay inventoried and inactive."
         }
     );
+    if let Some(approver) = detail.approver.as_deref() {
+        if let Some(date) = detail.reviewed_date.as_deref() {
+            let safe_date = escape_review_text(date, ReviewTextContext::Plain);
+            let approved_date = presentation
+                .translate("cmd_plugin_audit_approved_date", &[("date", &safe_date)])
+                .unwrap_or_else(|_| format!("approved {safe_date}"));
+            let _ = write!(output, "\nApproval: {approver} ({approved_date})");
+        } else {
+            let _ = write!(output, "\nApproval: {approver}");
+        }
+    }
+    if let Some(thread_id) = detail.agent_thread_id.as_deref() {
+        let _ = write!(
+            output,
+            "\nApproval thread: {}",
+            escape_review_text(thread_id, context)
+        );
+    }
+    if let Some(enabled_by) = detail.enabled_by.as_deref() {
+        let _ = write!(output, "\nTurned on by: {enabled_by}");
+    }
+    if detail.outside_reach
+        || detail.reach_folder.is_some()
+        || detail.agent_workspace_path.is_some()
+    {
+        let folder =
+            escape_review_text(detail.reach_folder.as_deref().unwrap_or("unknown"), context);
+        let key = if detail.outside_reach {
+            "cmd_plugin_audit_reach_only_in"
+        } else {
+            "cmd_plugin_audit_reach_here"
+        };
+        let reach = presentation
+            .translate(key, &[("folder", &folder)])
+            .unwrap_or(folder);
+        if let Some(workspace_path) = detail.agent_workspace_path.as_deref() {
+            let _ = write!(
+                output,
+                "\nReach: {reach} — {}",
+                escape_review_text(workspace_path, context)
+            );
+        } else {
+            let _ = write!(output, "\nReach: {reach}");
+        }
+    }
+    if let Some(note) = detail.process_note.as_deref() {
+        let _ = write!(output, "\nProcess: {note}");
+    }
+    if !detail.host_services.is_empty() {
+        output.push_str("\nHost services:");
+        for service in &detail.host_services {
+            let line = if !service.withheld_by.is_empty() && service.can_use {
+                let peer_context = if context == ReviewTextContext::Prose {
+                    ReviewTextContext::InlineCode
+                } else {
+                    context
+                };
+                let peers = service
+                    .withheld_by
+                    .iter()
+                    .map(|peer| format!("`{}`", escape_review_text(peer, peer_context)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let key = if service.withheld_by.len() == 1 {
+                    "cmd_plugin_audit_service_withheld_one"
+                } else {
+                    "cmd_plugin_audit_service_withheld_many"
+                };
+                presentation
+                    .translate(key, &[("service", &service.service), ("peers", &peers)])
+                    .unwrap_or_else(|_| format!("{}: off for now: {peers}", service.service))
+            } else if service.can_use {
+                presentation
+                    .translate(
+                        "cmd_plugin_audit_service_can_use",
+                        &[("service", &service.service)],
+                    )
+                    .unwrap_or_else(|_| format!("{}: can use", service.service))
+            } else {
+                presentation
+                    .translate(
+                        "cmd_plugin_audit_service_not_offered",
+                        &[("service", &service.service)],
+                    )
+                    .unwrap_or_else(|_| {
+                        format!("{}: this version does not offer it", service.service)
+                    })
+            };
+            let _ = write!(output, "\n  - {line}");
+        }
+    }
+    if !detail.earlier_reviews.is_empty() {
+        output.push_str("\nEarlier reviews:");
+        for entry in &detail.earlier_reviews {
+            let safe_date = escape_review_text(&entry.reviewed_at, ReviewTextContext::Plain);
+            let _ = write!(output, "\n  - {safe_date}: {}", entry.approver);
+        }
+    }
     append_diagnostics(presentation, &mut output, &detail.diagnostics, context);
     output
 }

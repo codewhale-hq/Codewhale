@@ -19,7 +19,7 @@ jobs:
       ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
        (github.event.issue.pull_request || github.event.pull_request) &&
        github.event.comment.user.type == 'User' && contains(github.event.comment.body, '@codewhale')))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -39,7 +39,7 @@ jobs:
       ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
        (github.event.issue.pull_request || github.event.pull_request) &&
        github.event.comment.user.type == 'User' && contains(github.event.comment.body, '@codewhale')))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
-      - uses: codewhale-hq/Codewhale@b0b2b9a335cc1d24abe8a087189bed080d1cc3db
+      - uses: codewhale-hq/Codewhale@836ba652729f526d1727ebde7f66c3caf5656184
         id: review
         with:
           version: 'v0.10.2'
@@ -81,7 +81,7 @@ jobs:
   publish:
     needs: review
     if: needs.review.outputs.findings != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -101,7 +101,7 @@ jobs:
           private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
           permission-contents: read
           permission-pull-requests: write
-      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@b0b2b9a335cc1d24abe8a087189bed080d1cc3db
+      - uses: codewhale-hq/Codewhale/scripts/github-action/publish@43c87b459914d58e056e207b99b270ba5ddebe74
         id: publish
         with:
           findings: findings/findings.json

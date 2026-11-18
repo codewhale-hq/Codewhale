@@ -10,7 +10,7 @@ use super::observer_hooks::{
     execute_turn_end_observer_hook, surface_observer_hook_submission_failure,
 };
 use super::task_projection::{
-    AUTOMATION_SCAN_BUSY_INTERVAL, automation_scan_is_due, refresh_active_task_panel,
+    AUTOMATION_SCAN_BUSY_INTERVAL, LiveRefresh, automation_scan_is_due, refresh_active_task_panel,
     refresh_automation_panel, refresh_automation_panel_blocking, refresh_shell_exec_live_output,
 };
 use super::*;
@@ -523,6 +523,20 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
 
 /// How long session confirmation may wait before the UI reports it pending.
 pub(super) const LAUNCH_SESSION_SYNC_WAIT: Duration = Duration::from_secs(2);
+
+const TURN_COMPLETE_SNAPSHOT_WAIT: Duration = LAUNCH_SESSION_SYNC_WAIT;
+
+async fn await_terminal_snapshot_with_timeout<T>(
+    timeout: Duration,
+    snapshot: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(timeout, snapshot).await.map_err(|_| {
+        anyhow::anyhow!(
+            "Engine session snapshot timed out after {} ms",
+            timeout.as_millis()
+        )
+    })?
+}
 
 /// Require the exact Engine identity before a startup submit consumes its draft.
 pub(crate) async fn await_engine_session_sync(
@@ -1338,6 +1352,7 @@ pub async fn run_tui(
     }
     app.runtime_services = RuntimeToolServices {
         accounting_origin: None,
+        owner_accounting_origin: None,
         runtime_mcp_servers: app.runtime_services.runtime_mcp_servers.clone(),
 
         shell_manager: Some(shell_manager),
@@ -1452,6 +1467,9 @@ pub async fn run_tui(
     // than through it. Only this path calls it, which is what keeps the
     // cold-start bucket absent on surfaces with no event loop.
     codewhale_runtime::startup_trace::mark_cold_start();
+    if let Some(millis) = codewhale_runtime::startup_trace::cold_start_ms() {
+        codewhale_telemetry::set_cold_start_ms(millis);
+    }
     let result = run_event_loop(
         &mut terminal,
         &mut app,
@@ -2100,20 +2118,9 @@ pub(crate) async fn run_event_loop(
     let mut last_status_frame = Instant::now()
         .checked_sub(Duration::from_millis(UI_STATUS_ANIMATION_MS))
         .unwrap_or_else(Instant::now);
-    // #6728: the last moment anything happened that wanted a prompt reaction:
-    // a terminal event, an engine event, or any non-quiescent UI state. The
-    // idle poll and the automation scan back off from it and return to full
-    // cadence the moment it moves. The git probe backs off from
-    // `last_input_or_engine_event` instead, which a ticking label or an open
-    // card does not move.
-    let mut last_ui_activity = Instant::now();
-    let mut last_input_or_engine_event = Instant::now();
+    let mut idle_clock = IdleClock::new(Instant::now());
     let mut skill_registry_epoch = None;
     let mut skill_cache_refresh: Option<SkillCacheRefresh> = None;
-    // Whether the previous iteration found the UI quiescent and quiet (see
-    // `ui_state_is_quiescent`). The 2.5 s task block runs before this
-    // iteration's facts exist, so it reads the previous one.
-    let mut ui_quiet = false;
     let mut last_automation_scan = Instant::now()
         .checked_sub(AUTOMATION_SCAN_BUSY_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -2147,7 +2154,7 @@ pub(crate) async fn run_event_loop(
     // Last observed coarse turn state for the session-state hook transitions
     // (#6004); `None` until the first publish records it without firing.
     let mut previous_turn_state = None;
-    let mut force_terminal_repaint = false;
+    let mut terminal_repaint = FrameRepaint::Diff;
     // #6311: while the terminal reports unfocused, frames are pure backlog
     // (GTK3 defers all VTE damage on occlusion and replays it on return).
     // Event ingestion continues; only `terminal.draw` emission is gated.
@@ -2244,7 +2251,7 @@ pub(crate) async fn run_event_loop(
             // falsely clear a child's gate.
             app.status_message = Some("Resumed after suspend".to_string());
             app.needs_redraw = true;
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
         }
 
         // The background session-store repair's one-line result (#6144).
@@ -2565,8 +2572,10 @@ pub(crate) async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            if refresh_active_task_panel(app, &task_manager).await {
-                app.needs_redraw = true;
+            match refresh_active_task_panel(app, &task_manager).await {
+                LiveRefresh::Changed => app.needs_redraw = true,
+                LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
             }
             // Shells and tasks that finished join the batched notice; a batch
             // held for finite work or a busy parent turn goes out once that
@@ -2577,7 +2586,7 @@ pub(crate) async fn run_event_loop(
             // rescans on the long cadence (#6728).
             let automation_scan_due = automation_scan_is_due(
                 app,
-                ui_quiet,
+                idle_clock.ui_quiet(),
                 Instant::now().saturating_duration_since(last_automation_scan),
             );
             if refresh_automation_panel(app, automation_scan_due).await {
@@ -2586,8 +2595,10 @@ pub(crate) async fn run_event_loop(
             if automation_scan_due {
                 last_automation_scan = Instant::now();
             }
-            if refresh_shell_exec_live_output(app) {
-                app.needs_redraw = true;
+            match refresh_shell_exec_live_output(app) {
+                LiveRefresh::Changed => app.needs_redraw = true,
+                LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
+                LiveRefresh::Unchanged => {}
             }
             if crate::tui::shell_job_routing::refresh_live_shell_job_pager(app) {
                 app.needs_redraw = true;
@@ -2986,20 +2997,14 @@ pub(crate) async fn run_event_loop(
                             let target_language =
                                 app.ui_locale.translation_target_name().to_string();
                             tokio::spawn(async move {
-                                let response = if !accounting.source.has_captured_origin() {
-                                    Err(anyhow::anyhow!(
-                                        "Translation has no admitted session accounting origin"
-                                    ))
-                                } else {
-                                    client
-                                        .translate_with_usage(
-                                            &original_text,
-                                            &translation_model,
-                                            &target_language,
-                                            &accounting.source,
-                                        )
-                                        .await
-                                };
+                                let response = client
+                                    .translate_with_usage(
+                                        &original_text,
+                                        &translation_model,
+                                        &target_language,
+                                        &accounting.source,
+                                    )
+                                    .await;
                                 let settled = accounting.settle(response);
                                 let _ = tx.send(TranslationEvent::AssistantMessage {
                                     origin_session_fingerprint,
@@ -3108,20 +3113,14 @@ pub(crate) async fn run_event_loop(
                                 let target_language =
                                     app.ui_locale.translation_target_name().to_string();
                                 tokio::spawn(async move {
-                                    let response = if !accounting.source.has_captured_origin() {
-                                        Err(anyhow::anyhow!(
-                                            "Translation has no admitted session accounting origin"
-                                        ))
-                                    } else {
-                                        client
-                                            .translate_with_usage(
-                                                &original_thinking,
-                                                &translation_model,
-                                                &target_language,
-                                                &accounting.source,
-                                            )
-                                            .await
-                                    };
+                                    let response = client
+                                        .translate_with_usage(
+                                            &original_thinking,
+                                            &translation_model,
+                                            &target_language,
+                                            &accounting.source,
+                                        )
+                                        .await;
                                     let settled = accounting.settle(response);
                                     let _ = tx.send(TranslationEvent::Thinking {
                                         origin_session_fingerprint,
@@ -3903,15 +3902,19 @@ pub(crate) async fn run_event_loop(
                         let terminal_snapshot = if terminal_owner_matches
                             && !newer_dispatch_owns_turn_state
                         {
-                            let snapshot = match engine_handle.get_session_snapshot().await {
+                            let snapshot = match await_terminal_snapshot_with_timeout(
+                                TURN_COMPLETE_SNAPSHOT_WAIT,
+                                engine_handle.get_session_snapshot(),
+                            )
+                            .await
+                            {
                                 Ok(snapshot) => Some(snapshot),
                                 Err(error) => {
-                                    tracing::warn!(%error, "terminal session snapshot could not be read; checkpoint retained");
                                     snapshot_error = Some(error.to_string());
                                     None
                                 }
                             };
-                            snapshot.filter(|snapshot| {
+                            let snapshot = snapshot.filter(|snapshot| {
                                 snapshot.source.as_ref() == terminal_source.as_ref()
                                     && app.session_write_owner.as_ref().is_some_and(|owner| {
                                         snapshot
@@ -3923,18 +3926,33 @@ pub(crate) async fn run_event_loop(
                                         == Some(snapshot.session_id.as_str())
                                     && snapshot.workspace == app.workspace
                                     && snapshot.messages.as_slice() == app.api_messages.as_slice()
-                            })
+                            });
+                            if snapshot.is_none() && snapshot_error.is_none() {
+                                snapshot_error = Some(
+                                    "Engine session snapshot no longer matches the active terminal session"
+                                        .to_string(),
+                                );
+                            }
+                            snapshot
                         } else {
                             None
                         };
                         if terminal_owner_matches && terminal_snapshot.is_none() {
+                            let session_id = app.current_session_id.clone();
+                            let error = snapshot_error.unwrap_or_else(|| {
+                                "Engine session snapshot was unavailable; checkpoint retained"
+                                    .to_string()
+                            });
                             tracing::warn!(
                                 ?terminal_source,
-                                "terminal session source no longer matches; checkpoint retained"
+                                %error,
+                                "terminal session save skipped; checkpoint retained"
                             );
-                            let session_id = app.current_session_id.clone();
-                            let error = snapshot_error
-                                .unwrap_or_else(|| std::io::ErrorKind::ResourceBusy.to_string());
+                            if let Some(session_id) = session_id.as_deref() {
+                                crate::tui::persistence_actor::record_skipped_session_save(
+                                    session_id, &error,
+                                );
+                            }
                             surface_session_save_failure(app, session_id.as_deref(), &error);
                         }
                         if terminal_snapshot.is_some()
@@ -4009,19 +4027,6 @@ pub(crate) async fn run_event_loop(
                             for msg in app.drain_pending_steers() {
                                 app.queue_message(msg);
                             }
-                        }
-
-                        // Counted here, at the caller, never inside
-                        // `execute_turn_end_observer_hook`: that function's
-                        // first statement returns early for anyone with no
-                        // TurnEnd hooks, and the natural future optimization
-                        // hoists that check up to this call site — which would
-                        // silently zero the counter for every user who does
-                        // not use hooks.
-                        {
-                            let telemetry = codewhale_telemetry::session_counters();
-                            telemetry.bump(codewhale_telemetry::Counter::Turns);
-                            telemetry.observe_turn_secs(turn_elapsed.as_secs());
                         }
 
                         if let Err(error) = execute_turn_end_observer_hook(
@@ -4312,6 +4317,16 @@ pub(crate) async fn run_event_loop(
                     EngineEvent::ContentFilterRefusal { reason, refusal } => {
                         apply_content_filter_refusal(app, &reason, refusal.as_deref());
                     }
+                    EngineEvent::PluginChanged {
+                        plugin,
+                        action,
+                        decided_by,
+                        ..
+                    } => {
+                        apply_plugin_changed_notice(app, &plugin, &action, decided_by.as_deref());
+                        reload_terminal_plugin_registry(app, config).await;
+                        transcript_batch_updated = true;
+                    }
                     EngineEvent::LspRepairUpdate {
                         diagnostics_found,
                         files,
@@ -4425,7 +4440,7 @@ pub(crate) async fn run_event_loop(
                                     None,
                                 );
                                 app.needs_redraw = true;
-                                force_terminal_repaint = true;
+                                terminal_repaint = FrameRepaint::Clear;
                                 // As above, withholding the acknowledgement
                                 // keeps the child from launching.
                                 continue;
@@ -4941,7 +4956,7 @@ pub(crate) async fn run_event_loop(
                                             source,
                                         ),
                                     );
-                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                    codewhale_engine::cost_status::mark_retired_usage_source(
                                         codewhale_engine::cost_status::scope_token(),
                                         source,
                                     );
@@ -4961,13 +4976,7 @@ pub(crate) async fn run_event_loop(
                                 }
                             }
                             if let Some(error) = receipt["accounting_error"].as_str() {
-                                app.session
-                                    .cost_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session
-                                    .cost_cny_unpriced_reasons
-                                    .insert("usage_settlement_unacknowledged".into());
-                                app.session.missing_usage_overflowed = true;
+                                app.mark_usage_uncertain("usage_settlement_unacknowledged");
                                 app.status_message = Some(format!(
                                     "Provider usage settlement is uncertain: {error}"
                                 ));
@@ -5531,9 +5540,6 @@ pub(crate) async fn run_event_loop(
             underwater_motion,
             cadence_tier,
         ));
-        // #6728: what the loop knows about its own quiet. Anything that
-        // wants a prompt reaction moves `last_ui_activity`; the idle poll
-        // and the automation scan back off from it.
         let idle_facts = IdleFacts {
             has_running_agents,
             animation_active: animation_active
@@ -5543,15 +5549,7 @@ pub(crate) async fn run_event_loop(
         };
         {
             let tick_now = Instant::now();
-            if engine_event_seen {
-                last_input_or_engine_event = tick_now;
-            }
-            if engine_event_seen || !ui_state_is_quiescent(app, &idle_facts, tick_now) {
-                last_ui_activity = tick_now;
-            }
-            let quiet_for = tick_now.saturating_duration_since(last_ui_activity);
-            ui_quiet = quiet_for >= UI_QUIESCENT_AFTER
-                && ui_state_is_quiescent(app, &idle_facts, tick_now);
+            idle_clock.settle(app, &idle_facts, tick_now, engine_event_seen, status_motion);
             // The git cache TTL follows the probe's input and engine-event
             // clock, set every iteration so a stale back-off can never outlive
             // the activity that ended it (a turn does not reach the probe
@@ -5559,7 +5557,7 @@ pub(crate) async fn run_event_loop(
             codewhale_engine::git_status::set_probe_backoff(
                 codewhale_engine::git_status::probe_is_backed_off(git_probe_quiet_for(
                     app,
-                    tick_now.saturating_duration_since(last_input_or_engine_event),
+                    idle_clock.input_quiet_for(tick_now),
                 )),
             );
         }
@@ -5629,7 +5627,7 @@ pub(crate) async fn run_event_loop(
             terminal_paused_at = None;
             app.status_message = Some("Terminal controls restored".to_string());
             app.needs_redraw = true;
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
         }
 
         let now = Instant::now();
@@ -5708,10 +5706,7 @@ pub(crate) async fn run_event_loop(
             static GIT_PROBE_LOCK: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
                 std::sync::OnceLock::new();
             let slot = GIT_PROBE_LOCK.get_or_init(|| std::sync::Mutex::new(None));
-            let quiet_for = git_probe_quiet_for(
-                app,
-                now.saturating_duration_since(last_input_or_engine_event),
-            );
+            let quiet_for = git_probe_quiet_for(app, idle_clock.input_quiet_for(now));
             let should_probe = slot
                 .lock()
                 .map(|mut last| {
@@ -5778,12 +5773,12 @@ pub(crate) async fn run_event_loop(
         // Merge the per-app full-repaint hint (set by theme switches)
         // into the loop-level flag before the draw decision.
         if app.force_next_full_repaint {
-            force_terminal_repaint = true;
+            terminal_repaint = FrameRepaint::Clear;
             app.force_next_full_repaint = false;
         }
         if app.needs_redraw && draw_wait.is_none() && !terminal_unfocused {
-            draw_app_frame_inner(terminal, app, config, force_terminal_repaint)?;
-            force_terminal_repaint = false;
+            draw_app_frame_inner(terminal, app, config, terminal_repaint)?;
+            terminal_repaint = FrameRepaint::Diff;
             frame_rate_limiter.mark_emitted(Instant::now());
             app.needs_redraw = false;
             if std::mem::take(&mut telemetry_notice_awaiting_render) {
@@ -5801,12 +5796,7 @@ pub(crate) async fn run_event_loop(
             // Relaxes only once the UI has been quiescent and quiet for
             // `UI_QUIESCENT_AFTER` (#6728); every deadline below still
             // shortens it, and input returns the loop at once.
-            idle_poll_duration(
-                app,
-                &idle_facts,
-                now,
-                now.saturating_duration_since(last_ui_activity),
-            )
+            idle_clock.poll(app, &idle_facts, now)
         };
         if let Some(until_flush) = app.paste_burst_next_flush_delay_if_enabled(now) {
             poll_timeout = poll_timeout.min(until_flush);
@@ -5854,8 +5844,7 @@ pub(crate) async fn run_event_loop(
         let maybe_terminal_event =
             next_terminal_event(&terminal_input, &mut pending_terminal_events, poll_timeout)?;
         if maybe_terminal_event.is_some() {
-            last_ui_activity = Instant::now();
-            last_input_or_engine_event = last_ui_activity;
+            idle_clock.note_input(Instant::now());
         }
         if maybe_terminal_event.is_none() {
             let now = Instant::now();
@@ -5895,7 +5884,7 @@ pub(crate) async fn run_event_loop(
                     persist_recovery_snapshot(app);
                     last_recovery_snapshot_at = Some(now);
                 }
-                force_terminal_repaint = true;
+                terminal_repaint = FrameRepaint::Clear;
                 app.needs_redraw = true;
             }
         }
@@ -5946,8 +5935,8 @@ pub(crate) async fn run_event_loop(
                 continue;
             }
 
-            // Re-establish terminal mode flags on focus-gain and force a full
-            // viewport reset before repainting. App-switching and interactive
+            // Re-establish terminal mode flags on focus-gain and recapture the
+            // viewport without clearing it first. App-switching and interactive
             // handoffs can leave the host terminal scrolled away from row 0
             // and (on macOS) can drop the keyboard, mouse-tracking, or
             // bracketed-paste modes — recover_terminal_modes() is the
@@ -5962,7 +5951,7 @@ pub(crate) async fn run_event_loop(
                     );
                     last_focus_recovery = now;
                 }
-                force_terminal_repaint = true;
+                terminal_repaint = terminal_repaint.max(FrameRepaint::Recapture);
                 app.needs_redraw = true;
             }
             if let Event::Resize(width, height) = evt {
@@ -5992,7 +5981,7 @@ pub(crate) async fn run_event_loop(
                         final_h,
                         "zero-size Resize event ignored while terminal is hidden/minimized"
                     );
-                    force_terminal_repaint = true;
+                    terminal_repaint = FrameRepaint::Clear;
                     app.needs_redraw = true;
                     continue;
                 }
@@ -6004,11 +5993,11 @@ pub(crate) async fn run_event_loop(
                 // #6311: a resize that lands while unfocused records the size
                 // but must not emit the frame — same deferral as zero-size.
                 if terminal_unfocused {
-                    force_terminal_repaint = true;
+                    terminal_repaint = FrameRepaint::Clear;
                     app.needs_redraw = true;
                     continue;
                 }
-                draw_app_frame_inner(terminal, app, config, true)?;
+                draw_app_frame_inner(terminal, app, config, FrameRepaint::Clear)?;
                 app.needs_redraw = false;
                 continue;
             }
@@ -7906,7 +7895,7 @@ pub(crate) async fn run_event_loop(
                                 }
                             });
                             terminal_input.resume_after_child_terminal();
-                            force_terminal_repaint = true;
+                            terminal_repaint = FrameRepaint::Clear;
                             result
                         }
                     };
@@ -8820,8 +8809,7 @@ mod session_boot_event_tests {
         let assistant = TranslationAccountingContext::capture(&app, "assistant", 1);
         let record_a = assistant
             .source
-            .reported(&translation_test_route(), &usage_a)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_a);
         manager
             .persist_runtime_usage_record("session-translation", &record_a)
             .unwrap();
@@ -8835,8 +8823,7 @@ mod session_boot_event_tests {
         let thinking = TranslationAccountingContext::capture(&app, "thinking", 2);
         let record_b = thinking
             .source
-            .reported(&translation_test_route(), &usage_b)
-            .unwrap();
+            .reported(&translation_test_route(), &usage_b);
         manager
             .persist_runtime_usage_record("session-translation", &record_b)
             .unwrap();
@@ -8885,13 +8872,10 @@ mod session_boot_event_tests {
                 .unwrap(),
         );
         let context = TranslationAccountingContext::capture(&app, "assistant", 7);
-        let record = context
-            .source
-            .reported(
-                &translation_test_route(),
-                &codewhale_models::Usage::default(),
-            )
-            .unwrap();
+        let record = context.source.reported(
+            &translation_test_route(),
+            &codewhale_models::Usage::default(),
+        );
         manager
             .persist_runtime_usage_record("session-translation-missing-usage", &record)
             .unwrap();
@@ -8985,6 +8969,51 @@ mod session_boot_event_tests {
             "fixed fingerprints must distinguish ids with the same long prefix"
         );
     }
+
+    #[tokio::test]
+    async fn translation_runs_without_a_usage_origin() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _env = codewhale_engine::test_support::lock_test_env();
+        let _scope = codewhale_engine::cost_status::test_scope();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-translation",
+                "object": "chat.completion",
+                "model": "deepseek-chat",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "Hola" },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = Config::default();
+        config.provider = Some("deepseek".to_string());
+        let providers = config.providers.get_or_insert_with(Default::default);
+        providers.deepseek.api_key = Some("test-deepseek-key".to_string());
+        providers.deepseek.base_url = Some(format!("{}/v1", server.uri()));
+        let client = codewhale_engine::client::CodewhaleClient::new(&config).expect("client");
+
+        let mut app = test_app();
+        app.session_write_receipt = None;
+        let accounting = TranslationAccountingContext::capture(&app, "assistant", 1);
+        assert!(accounting.source.origin().is_none());
+
+        let response = client
+            .translate_with_usage("Hello", "deepseek-chat", "Spanish", &accounting.source)
+            .await
+            .expect("translation must run without an admitted usage origin");
+        let settled = accounting.settle(Ok(response));
+        assert_eq!(settled.translated.expect("translated text"), "Hola");
+    }
 }
 
 #[cfg(test)]
@@ -9070,13 +9099,278 @@ mod launch_session_sync_tests {
 }
 
 #[cfg(test)]
+mod terminal_snapshot_wait_tests {
+    use super::await_terminal_snapshot_with_timeout;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn pending_terminal_snapshot_times_out() {
+        let error = await_terminal_snapshot_with_timeout(
+            Duration::ZERO,
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .expect_err("a pending snapshot must not hold the UI indefinitely");
+
+        assert_eq!(
+            error.to_string(),
+            "Engine session snapshot timed out after 0 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_terminal_snapshot_is_returned() {
+        let snapshot = await_terminal_snapshot_with_timeout(Duration::from_secs(1), async {
+            Ok::<_, anyhow::Error>("snapshot")
+        })
+        .await
+        .expect("a ready snapshot must pass through");
+
+        assert_eq!(snapshot, "snapshot");
+    }
+}
+
+#[cfg(test)]
+mod plugin_change_tests {
+    use super::{apply_plugin_changed_notice, reload_terminal_plugin_registry};
+    use crate::commands::user_registry;
+    use crate::tui::history::HistoryCell;
+    use codewhale_config::extension_host::ExtensionHostRuntime;
+    use codewhale_config::hooks::{HookEvent, HooksConfig};
+    use codewhale_engine::extension_host::{
+        ExtensionHostManager, ExtensionHostOptions, TestManagerGuard, registry::OwnerState,
+    };
+    use codewhale_engine::hooks::HookExecutor;
+    use codewhale_engine::tools::spec::ToolContext;
+    use codewhale_localization::MessageId;
+    use codewhale_plugins::activation::TestPolicyGuard;
+    use codewhale_plugins::discovery::{DiscoveryConfig, discover_with_config};
+    use std::fs;
+    use std::sync::Arc;
+
+    #[test]
+    fn plugin_change_adds_one_line_with_the_name_defanged() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(temp.path()),
+        );
+        let before = app.history.len();
+        apply_plugin_changed_notice(
+            &mut app,
+            "bad\nname\r\t\u{202E}evil\x1b[31m!long_suffix_to_test_bounding_over_eighty_characters_total_after_ansi_strip",
+            "installed",
+            Some("approved by you"),
+        );
+
+        assert_eq!(app.history.len(), before + 1);
+        assert!(app.needs_redraw);
+        let HistoryCell::System { content } = app.history.last().expect("system line added") else {
+            panic!("expected HistoryCell::System");
+        };
+        assert!(
+            !content.chars().any(|ch| ch.is_control()
+                || matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+            "control/bidi characters must be stripped: {content:?}"
+        );
+        assert!(!content.contains('\x1b'));
+        assert!(content.contains("bad name evil!"));
+        assert!(content.contains("..."));
+        let expected_decider = app.tr(MessageId::CmdPluginAuditApprovedByYou);
+        assert!(content.contains(expected_decider.as_ref()), "{content}");
+    }
+
+    #[tokio::test]
+    async fn plugin_change_rereads_the_terminal_registry() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let user_plugins_dir = temp.path().join("user-plugins");
+        let state_path = temp.path().join("state/plugin-state.json");
+        fs::create_dir_all(workspace.join(".codewhale/plugins")).expect("ws plugins");
+        fs::create_dir_all(&user_plugins_dir).expect("user plugins");
+
+        let cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: user_plugins_dir.clone(),
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path,
+        };
+        let hooks_cfg = HooksConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut config = codewhale_runtime::config::Config::default();
+        config.hooks = Some(hooks_cfg.clone());
+
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(workspace.clone()),
+        );
+        app.plugin_registry = Arc::new(discover_with_config(&cfg));
+        app.hooks = HookExecutor::new(hooks_cfg, workspace.clone());
+
+        assert!(user_registry::with_registry_for_app(&app, |reg| {
+            reg.get("tui-cmd").is_none()
+        }));
+        assert!(!app.hooks.has_hooks_for_event(HookEvent::TurnEnd));
+
+        let plugin_dir = user_plugins_dir.join("alpha-tui");
+        fs::create_dir_all(plugin_dir.join("commands")).expect("commands dir");
+        fs::create_dir_all(plugin_dir.join("hooks")).expect("hooks dir");
+        fs::write(
+            plugin_dir.join("plugin.toml"),
+            "schema_version = 1\n[plugin]\nname = \"alpha-tui\"\nversion = \"1.0.0\"\n[commands]\npath = \"commands\"\n[hooks]\npath = \"hooks\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            plugin_dir.join("commands/tui-cmd.md"),
+            "---\ndescription: Alpha command\n---\nhello from tui command\n",
+        )
+        .expect("command md");
+        fs::write(
+            plugin_dir.join("hooks/hooks.toml"),
+            "enabled = true\n\n[[hooks]]\nname = \"alpha-end\"\nevent = \"turn_end\"\ncommand = \"echo done\"\n",
+        )
+        .expect("hooks toml");
+
+        let mut on_disk = discover_with_config(&cfg);
+        on_disk.trust("alpha-tui").expect("trust");
+        on_disk.enable("alpha-tui").expect("enable");
+
+        let before = app.history.len();
+        apply_plugin_changed_notice(
+            &mut app,
+            "alpha-tui",
+            "installed",
+            Some("approved by the agent in Auto-Review"),
+        );
+        reload_terminal_plugin_registry(&mut app, &config).await;
+
+        assert_eq!(app.history.len(), before + 1);
+        assert!(app.plugin_registry.is_active("alpha-tui"));
+        assert!(user_registry::with_registry_for_app(&app, |reg| {
+            reg.get("tui-cmd").is_some()
+        }));
+        assert!(app.hooks.has_hooks_for_event(HookEvent::TurnEnd));
+    }
+
+    #[tokio::test]
+    async fn plugin_change_older_registry_does_not_undo_the_agents_change() {
+        let _home = crate::test_support::SealedHome::new();
+        let Some(node) = codewhale_engine::extension_host::test_support::node_for_tests(
+            "plugin_change_older_registry_does_not_undo_the_agents_change",
+        ) else {
+            return;
+        };
+        let _policy = TestPolicyGuard::extension_host(true);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("ws");
+        let agent_user_dir = temp.path().join("agent-user");
+        let agent_state = temp.path().join("agent-state/plugin-state.json");
+        let stale_user_dir = temp.path().join("stale-user");
+        let stale_state = temp.path().join("stale-state/plugin-state.json");
+        fs::create_dir_all(workspace.join(".codewhale/plugins")).expect("ws plugins");
+        fs::create_dir_all(&agent_user_dir).expect("agent user");
+        fs::create_dir_all(&stale_user_dir).expect("stale user");
+
+        let plugin_dir = agent_user_dir.join("agent-tool");
+        fs::create_dir_all(plugin_dir.join("native")).expect("native dir");
+        fs::write(
+            plugin_dir.join("plugin.toml"),
+            "schema_version = 1\n[plugin]\nname = \"agent-tool\"\nversion = \"1.0.0\"\n[native]\npath = \"native/index.mjs\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            plugin_dir.join("native/index.mjs"),
+            "export const name = 'agent-tool';\nexport const inject = ['tools'];\nexport function apply(ctx) {\n  ctx.tools.register({\n    name: 'agent_ping',\n    description: 'Ping',\n    parameters: { type: 'object', properties: {}, additionalProperties: false },\n    async execute() { return 'agent-ok'; },\n  });\n}\n",
+        )
+        .expect("index.mjs");
+
+        let agent_cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: agent_user_dir,
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path: agent_state,
+        };
+        let mut agent_reg = discover_with_config(&agent_cfg);
+        let agent_plugin_id = agent_reg
+            .get("agent-tool")
+            .expect("agent-tool discovered")
+            .id
+            .clone();
+        agent_reg.trust("agent-tool").expect("trust");
+        agent_reg.enable("agent-tool").expect("enable");
+
+        let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+            runtime: ExtensionHostRuntime::Node,
+            node_override: Some(node),
+            root: Some(temp.path().join("ext-root")),
+            ..Default::default()
+        }));
+        let _manager_guard = TestManagerGuard::install(Arc::clone(&manager));
+        let attachment = manager.attach(Arc::new(agent_reg));
+        attachment.sync().await.expect("agent host activation");
+        assert!(
+            manager
+                .owner_report(agent_plugin_id.as_str())
+                .is_some_and(|report| report.state == Some(OwnerState::Active))
+        );
+
+        let stale_cfg = DiscoveryConfig {
+            workspace: workspace.clone(),
+            user_plugins_dir: stale_user_dir,
+            workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+            builtin_plugin_dirs: Vec::new(),
+            state_path: stale_state,
+        };
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(workspace.clone()),
+        );
+        app.plugin_registry = Arc::new(discover_with_config(&stale_cfg));
+        let config = codewhale_runtime::config::Config::default();
+
+        apply_plugin_changed_notice(&mut app, "agent-tool", "installed", Some("approved by you"));
+        reload_terminal_plugin_registry(&mut app, &config).await;
+
+        assert!(app.plugin_registry.get("agent-tool").is_none());
+        assert!(
+            manager
+                .owner_report(agent_plugin_id.as_str())
+                .is_some_and(|report| report.state == Some(OwnerState::Active)),
+            "older terminal registry must never deactivate agent-approved host plugin"
+        );
+        assert!(attachment.plugin_view().is_active("agent-tool"));
+
+        let tool = codewhale_engine::extension_host::test_support::host_tool(
+            &attachment,
+            &workspace,
+            "agent_ping",
+        );
+        let result = tool
+            .execute(
+                serde_json::json!({}),
+                &ToolContext::new(&workspace).with_plugin_registry(attachment.plugin_view()),
+            )
+            .await
+            .expect("agent_ping remains callable");
+        assert!(result.content.contains("agent-ok"), "{}", result.content);
+
+        manager.shutdown().await;
+    }
+}
+
+#[cfg(test)]
 mod telemetry_notice_tests {
     use super::telemetry_notice_may_enter_transcript;
 
     #[test]
     fn telemetry_notice_waits_for_the_launch_card_to_leave() {
+        let _home = crate::test_support::SealedHome::new();
+        let temp = tempfile::tempdir().expect("tempdir");
         let mut app = crate::tui::test_support::test_app_with_options(
-            crate::tui::test_support::test_tui_options(std::env::temp_dir()),
+            crate::tui::test_support::test_tui_options(temp.path()),
         );
         app.launch.visible = true;
         app.launch.dissolve_started_ms = None;
@@ -9510,4 +9804,131 @@ pub(super) fn apply_content_filter_refusal(app: &mut App, reason: &str, refusal:
     app.add_message(HistoryCell::System {
         content: format!("Content filtered: {detail}"),
     });
+}
+
+fn sanitize_plugin_change_field(raw: &str, max_chars: usize) -> String {
+    let mut stripped = String::new();
+    codewhale_sanitize::sanitize::strip_ansi_into(raw, &mut stripped);
+    let mut cleaned = String::with_capacity(stripped.len());
+    for ch in stripped.chars() {
+        if codewhale_sanitize::sanitize::is_bidi_control(ch) {
+            continue;
+        }
+        if matches!(ch, '\n' | '\r' | '\t') {
+            cleaned.push(' ');
+        } else if !ch.is_control() {
+            cleaned.push(ch);
+        }
+    }
+    let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = normalized.chars().count();
+    if count <= max_chars {
+        normalized
+    } else {
+        let mut bounded: String = normalized
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect();
+        bounded.push_str("...");
+        bounded
+    }
+}
+
+fn localize_plugin_change_action(app: &App, action: &str) -> String {
+    match action.trim() {
+        "installed" => app.tr(MessageId::PluginChangedActionInstalled).into_owned(),
+        "enabled" => app.tr(MessageId::PluginChangedActionEnabled).into_owned(),
+        "disabled" => app.tr(MessageId::PluginChangedActionDisabled).into_owned(),
+        "removed" | "uninstalled" => app.tr(MessageId::PluginChangedActionRemoved).into_owned(),
+        other => {
+            let cleaned = sanitize_plugin_change_field(other, 40);
+            if cleaned.is_empty() {
+                "updated".to_string()
+            } else {
+                cleaned
+            }
+        }
+    }
+}
+
+fn localize_plugin_change_decider(app: &App, raw: &str) -> String {
+    match raw.trim() {
+        "approved by you" => app.tr(MessageId::CmdPluginAuditApprovedByYou).into_owned(),
+        "approved by the agent in Full Access" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentFullAccess)
+            .into_owned(),
+        "approved by the agent in Auto-Review" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentAutoReview)
+            .into_owned(),
+        "approved by the agent from a shell command" => app
+            .tr(MessageId::CmdPluginAuditApprovedByAgentShell)
+            .into_owned(),
+        "trusted from the command line with --yes; no review was shown there" => app
+            .tr(MessageId::CmdPluginAuditApprovedByCommandLine)
+            .into_owned(),
+        "approver not recorded (reviewed before 0.10.3)" => app
+            .tr(MessageId::CmdPluginAuditApprovedByUnknown)
+            .into_owned(),
+        other => sanitize_plugin_change_field(other, 96),
+    }
+}
+
+pub(super) fn apply_plugin_changed_notice(
+    app: &mut App,
+    plugin: &str,
+    action: &str,
+    decided_by: Option<&str>,
+) {
+    let clean_plugin = sanitize_plugin_change_field(plugin, 80);
+    let plugin_label = if clean_plugin.is_empty() {
+        "plugin"
+    } else {
+        clean_plugin.as_str()
+    };
+    let action_label = localize_plugin_change_action(app, action);
+    let decider_label = decided_by
+        .map(|raw| localize_plugin_change_decider(app, raw))
+        .filter(|value| !value.is_empty());
+    let content = match decider_label {
+        Some(decider) => app
+            .tr(MessageId::PluginChangedWithDeciderReceipt)
+            .replace("{plugin}", plugin_label)
+            .replace("{action}", &action_label)
+            .replace("{decider}", &decider),
+        None => app
+            .tr(MessageId::PluginChangedReceipt)
+            .replace("{plugin}", plugin_label)
+            .replace("{action}", &action_label),
+    };
+    app.add_message(HistoryCell::System { content });
+    app.needs_redraw = true;
+}
+
+pub(super) async fn reload_terminal_plugin_registry(app: &mut App, config: &Config) {
+    let prior = std::sync::Arc::clone(&app.plugin_registry);
+    let workspace = app.workspace.clone();
+    let hooks_config = config.hooks_config();
+    let Ok((refreshed, loaded_hooks)) = tokio::task::spawn_blocking(move || {
+        let refreshed = prior.rediscover_for_workspace(&workspace);
+        let loaded_hooks = codewhale_engine::hooks::config::load_with_project_and_plugins(
+            hooks_config,
+            &workspace,
+            Some(refreshed.as_ref()),
+        );
+        (refreshed, loaded_hooks)
+    })
+    .await
+    else {
+        return;
+    };
+    app.plugin_registry = std::sync::Arc::clone(&refreshed);
+    app.refresh_agent_approved_plugins_notice();
+    for error in crate::commands::user_registry::install_plugin_registry(
+        &app.workspace,
+        app.plugin_registry.as_ref(),
+    ) {
+        tracing::warn!(target: "plugins", "{error}");
+    }
+    app.hooks = app.hooks.rebind(loaded_hooks, app.workspace.clone());
+    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }

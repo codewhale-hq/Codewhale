@@ -170,6 +170,19 @@ pub fn load_permissions_snapshot(config_path: Option<PathBuf>) -> Result<Permiss
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StalePermissionSnapshot {
+    detail: String,
+}
+
+impl std::fmt::Display for StalePermissionSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for StalePermissionSnapshot {}
+
 /// Remove one zero-based permission rule if `expected_token` still describes
 /// that exact index in the current file.
 ///
@@ -185,24 +198,30 @@ pub fn remove_permission_rule(
     config_document::with_config_write_lock(&path, |path| {
         let (file_exists, raw, permissions) = read_permissions_state(path)?;
         if !file_exists {
-            bail!(
-                "permissions changed after they were listed; reload {} and retry",
-                quote_os_path(path)
-            );
+            return Err(anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permissions changed after they were listed; reload {} and retry",
+                    quote_os_path(path)
+                ),
+            }));
         }
-        let rule = permissions.rules.get(index).cloned().with_context(|| {
-            format!(
-                "permission rule {} no longer exists in {}; list rules again",
-                index + 1,
-                quote_os_path(path)
-            )
+        let rule = permissions.rules.get(index).cloned().ok_or_else(|| {
+            anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permission rule {} no longer exists in {}; list rules again",
+                    index + 1,
+                    quote_os_path(path)
+                ),
+            })
         })?;
         let current_token = permission_removal_token(path, &raw, index);
         if current_token != expected_token {
-            bail!(
-                "permissions changed after they were listed; reload {} and retry",
-                quote_os_path(path)
-            );
+            return Err(anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permissions changed after they were listed; reload {} and retry",
+                    quote_os_path(path)
+                ),
+            }));
         }
 
         let mut document = parse_permissions_document(path, &raw)?;

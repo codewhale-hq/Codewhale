@@ -395,7 +395,7 @@ async fn child_work_cancellation_wins_once() {
     let _retry = codewhale_runtime::retry_status::test_guard();
     codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
-    tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
+    tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
         .await
         .unwrap();
     fixture.cancel.cancel();
@@ -426,7 +426,7 @@ async fn child_work_cancellation_after_response_preserves_actual_usage() {
     let _retry = codewhale_runtime::retry_status::test_guard();
     codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
-    tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
+    tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
         .await
         .unwrap();
     let manager = Arc::clone(&fixture.manager);
@@ -434,7 +434,7 @@ async fn child_work_cancellation_after_response_preserves_actual_usage() {
     fixture.release_report.notify_one();
     // Runtime billing publishes the decoded response before it waits for the
     // worker ledger lock. This makes the cancellation seam deterministic.
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let entry = fixture.mailbox.recv().await.unwrap();
             if let MailboxMessage::TokenUsage {

@@ -3415,3 +3415,158 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
     assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
     assert!(plugins.join("remote-preview").is_dir());
 }
+
+#[tokio::test]
+async fn dsh_connection_template_installs_as_written() {
+    let template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../skills/assets/dsh-creator/skills/cordis-plugin-development/templates/mcp");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("converted-template");
+    let converted = dsh::convert_package(&template, &out).unwrap();
+    assert_eq!(converted.remote_servers, vec!["demo".to_string()]);
+    assert!(converted.network_hosts.contains(&"127.0.0.1".to_string()));
+
+    let mcp_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp_json["mcpServers"]["demo"]["type"], "streamable-http");
+    assert_eq!(
+        mcp_json["mcpServers"]["demo"]["url"],
+        "http://127.0.0.1:3000/mcp"
+    );
+    assert_eq!(
+        mcp_json["mcpServers"]["demo"]["extensions"]["net.codewhale"]["required"],
+        true
+    );
+
+    let validated =
+        crate::manifest::PluginManifest::validate_from_path(&out.join("plugin.json")).unwrap();
+    let server = &validated.manifest.mcp_servers.as_ref().unwrap()["demo"];
+    assert!(server.required);
+    assert!(server.is_enabled());
+    assert_eq!(server.url.as_deref(), Some("http://127.0.0.1:3000/mcp"));
+    assert!(
+        validated
+            .manifest
+            .capabilities
+            .network_hosts
+            .contains(&"127.0.0.1".to_string())
+    );
+
+    let plugins = tmp.path().join("user-plugins");
+    let outcome = install(
+        PluginInstallSource::parse(template.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    let PluginInstallOutcome::Installed(installed) = outcome else {
+        panic!("expected installed template");
+    };
+    let installed_mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(installed.path.join("mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(installed_mcp, mcp_json);
+}
+
+#[test]
+fn dsh_fail_on_startup_error_false_or_absent_keeps_today_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let absent_pkg = write_dsh_base_package(
+        &tmp.path().join("absent"),
+        serde_json::json!({
+            "name": "@demo/absent",
+            "version": "1.0.0",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+        "- insert:\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: https://example.com/mcp\n",
+    );
+    let false_pkg = write_dsh_base_package(
+        &tmp.path().join("false"),
+        serde_json::json!({
+            "name": "@demo/false",
+            "version": "1.0.0",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+        "- insert:\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: https://example.com/mcp\n        failOnStartupError: false\n",
+    );
+    let out_absent = tmp.path().join("out-absent");
+    let out_false = tmp.path().join("out-false");
+    dsh::convert_package(&absent_pkg, &out_absent).unwrap();
+    dsh::convert_package(&false_pkg, &out_false).unwrap();
+
+    let absent_mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out_absent.join("mcp.json")).unwrap()).unwrap();
+    let false_mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out_false.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(absent_mcp, false_mcp);
+    assert_eq!(
+        false_mcp["mcpServers"]["demo"]["extensions"]["net.codewhale"],
+        serde_json::json!({})
+    );
+
+    let validated =
+        crate::manifest::PluginManifest::validate_from_path(&out_false.join("plugin.json"))
+            .unwrap();
+    assert!(!validated.manifest.mcp_servers.as_ref().unwrap()["demo"].required);
+}
+
+#[test]
+fn dsh_fail_on_startup_error_non_boolean_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (label, flag_yaml) in [
+        ("string", "\"true\""),
+        ("number", "1"),
+        ("map", "{ enable: true }"),
+        ("null", "null"),
+    ] {
+        let pkg = write_dsh_base_package(
+            &tmp.path().join(label),
+            serde_json::json!({
+                "name": format!("@demo/{label}"),
+                "version": "1.0.0",
+                "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+            }),
+            &format!(
+                "- insert:\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: https://example.com/mcp\n        failOnStartupError: {flag_yaml}\n"
+            ),
+        );
+        let err = dsh::convert_package(&pkg, &tmp.path().join(format!("out-{label}")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("boolean"), "{label}: {err}");
+    }
+}
+
+#[test]
+fn dsh_row_turned_off_with_the_flag_converts_and_is_not_enabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("turned-off"),
+        serde_json::json!({
+            "name": "@demo/turned-off",
+            "version": "1.0.0",
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+        "- insert:\n    - id: demo-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      disabled: true\n      config:\n        serverName: demo\n        transport: streamable-http\n        url: http://127.0.0.1:3000/mcp\n        failOnStartupError: true\n",
+    );
+    let out = tmp.path().join("out-turned-off");
+    dsh::convert_package(&pkg, &out).unwrap();
+
+    let mcp_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        mcp_json["mcpServers"]["demo"]["extensions"]["net.codewhale"],
+        serde_json::json!({ "required": true, "disabled": true })
+    );
+
+    let validated =
+        crate::manifest::PluginManifest::validate_from_path(&out.join("plugin.json")).unwrap();
+    let server = &validated.manifest.mcp_servers.as_ref().unwrap()["demo"];
+    assert!(server.required);
+    assert!(server.disabled);
+    assert!(!server.is_enabled());
+}

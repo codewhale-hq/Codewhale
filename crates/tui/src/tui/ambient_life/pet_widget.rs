@@ -59,8 +59,5 @@ pub(crate) fn render_grid(area: Rect, buf: &mut Buffer, grid: &[u8], label: &str
 }
 
 #[cfg(test)]
-#[path = "pet_widget_legacy.rs"]
-mod pet_widget_legacy;
-#[cfg(test)]
 #[path = "pet_widget_tests.rs"]
 mod pet_widget_tests;

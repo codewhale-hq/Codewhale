@@ -27,7 +27,6 @@ autotests = false
 autobenches = false
 description = "A crossplatform terminal library for manipulating terminals."
 documentation = "https://docs.rs/crossterm/"
-readme = "README.md"
 keywords = [
     "event",
     "color",
@@ -81,70 +80,6 @@ windows = [
 [lib]
 name = "crossterm"
 path = "src/lib.rs"
-
-[[example]]
-name = "copy-to-clipboard"
-path = "examples/copy-to-clipboard.rs"
-required-features = ["osc52"]
-
-[[example]]
-name = "event-match-modifiers"
-path = "examples/event-match-modifiers.rs"
-required-features = [
-    "bracketed-paste",
-    "events",
-]
-
-[[example]]
-name = "event-poll-read"
-path = "examples/event-poll-read.rs"
-required-features = [
-    "bracketed-paste",
-    "events",
-]
-
-[[example]]
-name = "event-read"
-path = "examples/event-read.rs"
-required-features = [
-    "bracketed-paste",
-    "events",
-]
-
-[[example]]
-name = "event-read-char-line"
-path = "examples/event-read-char-line.rs"
-required-features = ["events"]
-
-[[example]]
-name = "event-stream-async-std"
-path = "examples/event-stream-async-std.rs"
-required-features = [
-    "event-stream",
-    "events",
-]
-
-[[example]]
-name = "event-stream-tokio"
-path = "examples/event-stream-tokio.rs"
-required-features = [
-    "event-stream",
-    "events",
-]
-
-[[example]]
-name = "is_tty"
-path = "examples/is_tty.rs"
-
-[[example]]
-name = "key-display"
-path = "examples/key-display.rs"
-required-features = ["events"]
-
-[[example]]
-name = "stderr"
-path = "examples/stderr.rs"
-required-features = ["events"]
 
 [dependencies.base64]
 version = "0.22"

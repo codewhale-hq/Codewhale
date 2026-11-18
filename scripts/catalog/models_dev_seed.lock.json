@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-10T21:14:00Z",
-    "sha256": "019e248c87ca384d63f16bfd2fde60f8e26b2c6fa1126927a1dac25fe88c9740"
+    "fetched_at": "2026-11-17T15:04:45Z",
+    "sha256": "08c60778489d59baf98eadacf6328b4f75e6f79ba16078778366a4302fb69a13"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -2428,6 +2428,55 @@
           "input_audio": 2
         }
       },
+      "gemini-4-hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "canonical_model_id": "google/gemini-4-hydrogen",
+        "name": "Gemini 4 Hydrogen",
+        "description": "Google's Gemini 4 model for everyday coding and agentic workflows, with four thinking levels and a 1M-token context window",
+        "family": "gemini",
+        "knowledge": "2026-03",
+        "release_date": "2026-11-12",
+        "last_updated": "2026-11-12",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 1.5,
+          "output": 7.5,
+          "cache_read": 0.075,
+          "input_audio": 1.5
+        }
+      },
       "gemini-flash-latest": {
         "id": "gemini-flash-latest",
         "name": "Gemini Flash Latest",
@@ -2552,6 +2601,10 @@
         "limit": {
           "context": 262144,
           "output": 32768
+        },
+        "cost": {
+          "input": 0,
+          "output": 0
         }
       },
       "gemma-4-31b-it": {
@@ -2584,6 +2637,10 @@
         "limit": {
           "context": 262144,
           "output": 32768
+        },
+        "cost": {
+          "input": 0,
+          "output": 0
         }
       }
     },
@@ -3452,7 +3509,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -3501,6 +3558,18 @@
               "provider": {
                 "body": {
                   "service_tier": "priority"
+                }
+              }
+            },
+            "flex": {
+              "cost": {
+                "input": 2.5,
+                "output": 15,
+                "cache_read": 0.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
                 }
               }
             }
@@ -3591,7 +3660,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -3685,7 +3754,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -3741,6 +3810,19 @@
                 }
               }
             },
+            "flex": {
+              "cost": {
+                "input": 0.1,
+                "output": 0.6,
+                "cache_read": 0.01,
+                "cache_write": 0.125
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            },
             "pro": {
               "provider": {
                 "body": {
@@ -3779,7 +3861,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -3835,6 +3917,19 @@
                 }
               }
             },
+            "flex": {
+              "cost": {
+                "input": 2,
+                "output": 10,
+                "cache_read": 0.2,
+                "cache_write": 2.5
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            },
             "pro": {
               "provider": {
                 "body": {
@@ -3873,7 +3968,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -3926,6 +4021,19 @@
               "provider": {
                 "body": {
                   "service_tier": "priority"
+                }
+              }
+            },
+            "flex": {
+              "cost": {
+                "input": 1,
+                "output": 6,
+                "cache_read": 0.1,
+                "cache_write": 1.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
                 }
               }
             },
@@ -4022,6 +4130,19 @@
                 }
               }
             },
+            "flex": {
+              "cost": {
+                "input": 5,
+                "output": 25,
+                "cache_read": 0.5,
+                "cache_write": 6.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            },
             "pro": {
               "provider": {
                 "body": {
@@ -4073,7 +4194,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -4129,6 +4250,19 @@
                 }
               }
             },
+            "flex": {
+              "cost": {
+                "input": 0.05,
+                "output": 0.25,
+                "cache_read": 0.005,
+                "cache_write": 0.0625
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            },
             "pro": {
               "provider": {
                 "body": {
@@ -4167,7 +4301,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -4220,6 +4354,19 @@
               "provider": {
                 "body": {
                   "service_tier": "priority"
+                }
+              }
+            },
+            "flex": {
+              "cost": {
+                "input": 1,
+                "output": 5,
+                "cache_read": 0.1,
+                "cache_write": 1.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
                 }
               }
             },
@@ -4316,6 +4463,19 @@
                 }
               }
             },
+            "flex": {
+              "cost": {
+                "input": 1,
+                "output": 5,
+                "cache_read": 0.05,
+                "cache_write": 1.25
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
+                }
+              }
+            },
             "pro": {
               "provider": {
                 "body": {
@@ -4367,7 +4527,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [
@@ -4420,6 +4580,19 @@
               "provider": {
                 "body": {
                   "service_tier": "priority"
+                }
+              }
+            },
+            "flex": {
+              "cost": {
+                "input": 0.5,
+                "output": 2.5,
+                "cache_read": 0.025,
+                "cache_write": 0.625
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "flex"
                 }
               }
             },
@@ -4478,9 +4651,9 @@
           "output": 943717
         },
         "cost": {
-          "input": 0.091,
-          "output": 0.182,
-          "cache_read": 0.0182
+          "input": 0.09,
+          "output": 0.18,
+          "cache_read": 0.018
         }
       },
       "deepseek/deepseek-v4-pro": {
@@ -4524,9 +4697,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.95526,
-          "output": 1.91052,
-          "cache_read": 0.079605
+          "input": 0.9,
+          "output": 1.5,
+          "cache_read": 0.25
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -4545,7 +4718,7 @@
         "tool_call": true,
         "structured_output": true,
         "temperature": true,
-        "open_weights": false,
+        "open_weights": true,
         "modalities": {
           "input": [
             "text",
@@ -5449,7 +5622,7 @@
         ],
         "tool_call": true,
         "structured_output": true,
-        "temperature": false,
+        "temperature": true,
         "open_weights": false,
         "modalities": {
           "input": [

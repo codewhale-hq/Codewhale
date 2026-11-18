@@ -13,7 +13,7 @@ YAML language grammar remains available for highlighting YAML code blocks.
 Their obsolete advisory exceptions are removed so a future reintroduction is
 visible to the advisory checks. No `cargo-audit` advisory is ignored.
 
-The remaining `cargo-deny` maintenance exception is
+The longest-standing `cargo-deny` maintenance exception is
 [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141.html)
 for `bincode` 1.3.3. Syntect 5.3.0 requires it to deserialize its compiled-in
 syntax and theme assets and for its parser's internal lazy-context encoding.
@@ -27,6 +27,19 @@ the graph. A replacement must preserve embedded language/theme coverage,
 multiline highlighting and error recovery, and pass the existing Markdown
 renderer tests with a resolver-verified lockfile. Adding ignores for new
 advisories requires a separate assessment.
+
+Two further exceptions were assessed for the 0.10.3 freeze on November 17, 2026.
+[RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543.html)
+marks `chrono` 0.4.45 unmaintained. It is a workspace dependency used directly
+by about 20 Core crates, and no patched release exists, so removing it is a
+cross-crate migration rather than a freeze change.
+[RUSTSEC-2026-0542](https://rustsec.org/advisories/RUSTSEC-2026-0542.html)
+marks `humantime` 2.4.0 unmaintained only because it wraps `chrono`. It is
+reached solely through `cucumber` 0.23.0, a development dependency of
+`codewhale-tui` that requires it, and is not part of any shipped binary.
+Both advisories are maintenance notices, not vulnerabilities. Remove both
+ignores when Core migrates from `chrono` to `jiff` or `time` and `cucumber` no
+longer pulls `humantime`; review them by February 15, 2027 either way.
 
 The Apps desktop lockfile and its platform dependencies are a separate graph;
 this Core cleanup does not resolve their maintenance or GLib qualification work.

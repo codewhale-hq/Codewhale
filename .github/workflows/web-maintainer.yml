@@ -30,7 +30,7 @@ jobs:
   plan:
     name: Plan
     if: github.repository == 'codewhale-hq/Codewhale' && github.ref == 'refs/heads/main' && vars.WEB_MAINTAINER_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -57,7 +57,7 @@ jobs:
     name: Derived files
     needs: plan
     if: needs.plan.result == 'success' && needs.plan.outputs.derived == 'true' && vars.WEB_MAINTAINER_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -81,7 +81,7 @@ jobs:
           node scripts/derive-facts.mjs
           node scripts/derive-changelog.mjs
           node scripts/derive-install.mjs
-          node scripts/render-terminal-capture.mjs
+          node scripts/render-released-capture.mjs
       - name: Check what changed
         id: drift
         run: |
@@ -122,7 +122,7 @@ jobs:
     name: Lane ${{ matrix.lane }}
     needs: plan
     if: needs.plan.result == 'success' && needs.plan.outputs.lanes != '[]' && vars.WEB_MAINTAINER_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -272,7 +272,7 @@ jobs:
     name: Open pull requests
     needs: [plan, derived, lane]
     if: always() && needs.plan.result == 'success' && vars.WEB_MAINTAINER_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read

@@ -6,6 +6,11 @@ export const PARTNER_PROMO = {
     width: 1440,
     height: 810,
   },
+  thumb: {
+    src: "/codewhale-x-orcarouter-thumb.webp",
+    width: 128,
+    height: 72,
+  },
   endsAt: "2026-11-21T12:29:57Z",
   title: "Codewhale × OrcaRouter",
   bar: {

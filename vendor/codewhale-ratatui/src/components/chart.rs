@@ -71,9 +71,19 @@ impl Default for DataWords {
     }
 }
 
-/// A short form of `value`: `42`, `3.14`, `12.4k`, `1.2M`.
+/// A short form of `value`: `42`, `3.14`, `0.0042`, `12.4k`, `1.2M`.
+///
+/// A value that is not zero never reads as `0`: small values keep two
+/// significant digits and the smallest and largest use an exponent.
 #[must_use]
 pub fn data_number(value: f64) -> String {
+    const TIERS: [(f64, f64, &str); 5] = [
+        (1.0, 1e4, ""),
+        (1e3, 1e6, "k"),
+        (1e6, 1e9, "M"),
+        (1e9, 1e12, "B"),
+        (1e12, 1e15, "T"),
+    ];
     if !value.is_finite() {
         return "?".to_owned();
     }
@@ -81,28 +91,38 @@ pub fn data_number(value: f64) -> String {
         return "0".to_owned();
     }
     let a = value.abs();
-    let (scaled, suffix) = if a >= 1e9 {
-        (value / 1e9, "B")
-    } else if a >= 1e6 {
-        (value / 1e6, "M")
-    } else if a >= 1e4 {
-        (value / 1e3, "k")
-    } else {
-        (value, "")
+    if a < 1e-4 {
+        return format!("{value:.1e}").replace(".0e", "e");
+    }
+    let trim = |s: String| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_owned()
+        } else {
+            s
+        }
     };
-    let s = if scaled.abs() >= 100.0 {
-        format!("{scaled:.0}")
-    } else if scaled.abs() >= 10.0 {
-        format!("{scaled:.1}")
-    } else {
-        format!("{scaled:.2}")
-    };
-    let s = if s.contains('.') {
-        s.trim_end_matches('0').trim_end_matches('.').to_owned()
-    } else {
-        s
-    };
-    format!("{s}{suffix}")
+    if a < 0.1 {
+        let decimals = (1.0 - a.log10().floor()) as usize;
+        return trim(format!("{value:.decimals$}"));
+    }
+    let mut tier = TIERS.iter().position(|t| a < t.1).unwrap_or(TIERS.len());
+    while let Some((unit, next, suffix)) = TIERS.get(tier).copied() {
+        let scaled = value / unit;
+        let s = if scaled.abs() >= 100.0 {
+            format!("{scaled:.0}")
+        } else if scaled.abs() >= 10.0 {
+            format!("{scaled:.1}")
+        } else {
+            format!("{scaled:.2}")
+        };
+        let rounded = s.parse::<f64>().map_or(a, |r| r.abs() * unit);
+        if rounded >= next {
+            tier += 1;
+            continue;
+        }
+        return format!("{}{suffix}", trim(s));
+    }
+    format!("{value:.1e}").replace(".0e", "e")
 }
 
 fn with_unit(value: f64, unit: &str) -> String {
@@ -273,7 +293,7 @@ impl Paint for DataSparkline<'_> {
             let ramp = if theme.ascii() { SPARK_ASCII } else { SPARK };
             let mut line = String::with_capacity(cells * 3);
             for (i, v) in window.iter().enumerate() {
-                line.push_str(if i < shown {
+                line.push_str(if i < shown && v.is_finite() {
                     ramp[level(*v, lo, hi, ramp.len())]
                 } else {
                     " "
@@ -313,8 +333,10 @@ impl DataBarItem {
 ///
 /// Bars scale to the largest value and fill in eighths of a cell. While
 /// `drawn` is below one each bar grows from its `previous` value (or zero)
-/// to its value, a little after the bar above it. A negative value draws no
-/// bar; its words keep the real number.
+/// to its value, a little after the bar above it. A value above zero always
+/// draws at least an eighth of a cell, so it never looks like zero. A
+/// negative value draws no bar; its words keep the real number. On a narrow
+/// row the label gives way before the value does.
 #[derive(Clone, Debug)]
 pub struct DataBars<'a> {
     pub label: Cow<'a, str>,
@@ -426,7 +448,8 @@ impl Paint for DataBars<'_> {
             .map(|l| text::width(l))
             .max()
             .unwrap_or(0)
-            .min((width / 3).max(4));
+            .min((width / 3).max(4))
+            .min(width.saturating_sub(value_w + 2));
         let cells = width.saturating_sub(label_w + 2 + 2 + value_w);
         let peak = self
             .items
@@ -440,13 +463,14 @@ impl Paint for DataBars<'_> {
             if y >= area.height {
                 break;
             }
-            let mut spans = vec![
-                Span::styled(
+            let mut spans = Vec::new();
+            if label_w > 0 {
+                spans.push(Span::styled(
                     text::pad(&labels[i], label_w, ascii),
                     theme.fg(Role::Foreground),
-                ),
-                Span::raw("  "),
-            ];
+                ));
+                spans.push(Span::raw("  "));
+            }
             if cells >= MIN_BAR {
                 let from = self
                     .previous
@@ -465,7 +489,8 @@ impl Paint for DataBars<'_> {
                 } else {
                     0.0
                 };
-                let eighths = (frac * cells as f64 * 8.0).round() as usize;
+                let eighths =
+                    ((frac * cells as f64 * 8.0).round() as usize).max(usize::from(frac > 0.0));
                 let bar = self.bar(eighths, ascii);
                 let bar_w = text::width(&bar);
                 spans.push(Span::styled(bar, theme.fg(Role::Accent)));
@@ -485,8 +510,10 @@ impl Paint for DataBars<'_> {
 /// A caption row, then a braille line chart with its range on the left.
 ///
 /// While `drawn` is below one the line draws from the left and its pen, the
-/// newest drawn cell, is in body ink. Too small for a chart, it paints a
-/// [`DataSparkline`] instead.
+/// newest drawn cell, is in body ink. A series with more points than the
+/// plot has dot columns draws each column from its lowest to its highest
+/// value, so the line always reaches the `min` and `max` the words name. Too
+/// small for a chart, it paints a [`DataSparkline`] instead.
 #[derive(Clone, Debug)]
 pub struct DataTrend<'a> {
     pub label: Cow<'a, str>,
@@ -546,13 +573,23 @@ impl<'a> DataTrend<'a> {
     }
 }
 
-fn sample(values: &[f64], columns: usize) -> Vec<f64> {
+fn sample(values: &[f64], columns: usize) -> Vec<Option<(f64, f64)>> {
     let n = values.len();
     if n == 0 || columns == 0 {
         return Vec::new();
     }
-    if n == 1 || columns == 1 {
-        return vec![values[n - 1]; columns];
+    let point = |v: f64| v.is_finite().then_some((v, v));
+    if n == 1 {
+        return vec![point(values[0]); columns];
+    }
+    if n > columns {
+        return (0..columns)
+            .map(|c| {
+                let start = c * n / columns;
+                let end = ((c + 1) * n / columns).max(start + 1);
+                bounds(&values[start..end])
+            })
+            .collect();
     }
     (0..columns)
         .map(|c| {
@@ -560,7 +597,7 @@ fn sample(values: &[f64], columns: usize) -> Vec<f64> {
             let (i, t) = (at.floor() as usize, at.fract());
             let a = values[i];
             let b = values[(i + 1).min(n - 1)];
-            a + (b - a) * t
+            point(if t == 0.0 { a } else { a + (b - a) * t })
         })
         .collect()
 }
@@ -621,18 +658,22 @@ impl Paint for DataTrend<'_> {
         let shown = ((dots_w as f32 * self.drawn).ceil() as usize).min(dots_w);
         let mut cells = vec![0u8; plot_w * plot_rows];
         let y_of = |v: f64| dots_h - 1 - level(v, lo, hi, dots_h);
-        let mut prev: Option<usize> = None;
-        for (x, v) in points.iter().take(shown).enumerate() {
-            let y = y_of(*v);
-            let (a, b) = match prev {
-                Some(p) if p < y => (p + 1, y),
-                Some(p) if p > y => (y, p - 1),
-                _ => (y, y),
+        let mut prev: Option<(usize, usize)> = None;
+        for (x, span) in points.iter().take(shown).enumerate() {
+            let Some((low, high)) = *span else {
+                prev = None;
+                continue;
             };
-            for yy in a..=b.max(a) {
+            let (top, bottom) = (y_of(high), y_of(low));
+            let (a, b) = match prev {
+                Some((_, below)) if below < top => (below + 1, bottom),
+                Some((above, _)) if above > bottom => (top, above - 1),
+                _ => (top, bottom),
+            };
+            for yy in a..=b {
                 cells[(yy / 4) * plot_w + x / 2] |= braille_bit(x % 2, yy % 4);
             }
-            prev = Some(y);
+            prev = Some((top, bottom));
         }
         let pen = (shown < dots_w && shown > 0).then(|| (shown - 1) / 2);
 
@@ -1034,6 +1075,15 @@ mod tests {
         assert_eq!(data_number(1_250_000.0), "1.25M");
         assert_eq!(data_number(-0.0), "0");
         assert_eq!(data_number(f64::NAN), "?");
+        assert_eq!(data_number(-0.001), "-0.001");
+        assert_eq!(data_number(0.0042), "0.0042");
+        assert_eq!(data_number(0.014), "0.014");
+        assert_eq!(data_number(0.000_000_42), "4.2e-7");
+        assert_eq!(data_number(9_999.6), "10k");
+        assert_eq!(data_number(999_950.0), "1M");
+        assert_eq!(data_number(-999_999_999.0), "-1B");
+        assert_eq!(data_number(2.5e12), "2.5T");
+        assert_eq!(data_number(3e18), "3e18");
         assert_eq!(with_unit(87.0, "%"), "87%");
         assert_eq!(with_unit(87.0, "ms"), "87 ms");
     }
@@ -1134,6 +1184,50 @@ mod tests {
         };
         assert_eq!(dots(0.0), 0);
         assert!(dots(0.5) > 0 && dots(0.5) < dots(1.0));
+    }
+
+    #[test]
+    fn a_dense_trend_still_reaches_its_extremes() {
+        let mut values = vec![10.0; 1000];
+        values[333] = 90.0;
+        values[700] = 1.0;
+        let buf = testing::render(40, 6, |area, buf| {
+            DataTrend::new("", &values).paint(area, buf, &testing::Profile::DarkTrue.theme());
+        });
+        let text = testing::text(&buf);
+        let dots = |line: &str| {
+            line.chars()
+                .filter(|c| ('\u{2801}'..='\u{28FF}').contains(c))
+                .count()
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(dots(lines[1]) > 0, "the spike to max is drawn:\n{text}");
+        assert!(dots(lines[5]) > 0, "the dip to min is drawn:\n{text}");
+    }
+
+    #[test]
+    fn a_small_bar_is_not_drawn_as_zero_and_a_narrow_row_keeps_its_value() {
+        let items = vec![
+            DataBarItem::new("cached", 61_000.0),
+            DataBarItem::new("wrote", 4.0),
+            DataBarItem::new("none", 0.0),
+        ];
+        let theme = testing::Profile::DarkTrue.theme();
+        let buf = testing::render(40, 3, |area, buf| {
+            DataBars::new("", &items).paint(area, buf, &theme);
+        });
+        let text = testing::text(&buf);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[1].contains(EIGHTHS[1]), "{text}");
+        assert!(!lines[2].contains(EIGHTHS[1]) && !lines[2].contains(FULL));
+
+        let long = vec![DataBarItem::new("a long label", 12_400.0)];
+        let buf = testing::render(12, 1, |area, buf| {
+            DataBars::new("", &long)
+                .unit("tokens")
+                .paint(area, buf, &theme);
+        });
+        assert!(testing::text(&buf).contains("12.4k tokens"));
     }
 
     #[test]

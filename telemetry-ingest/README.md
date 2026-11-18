@@ -199,7 +199,7 @@ rule. If a generated provider-id list ever lands in the repo, wire it in here.
 
 Cloudflare stores Analytics Engine data for **three months**, and that is not
 configurable — a ceiling rather than a policy, since no setting could make it
-longer. `docs/TELEMETRY.md` states it.
+longer. `docs/TELEMETRY.md` states it. The separate [`telemetry-stats/`](../telemetry-stats/) Worker is the private page (behind Cloudflare Access, aggregates only) that reads this dataset in place, and its daily rollup keeps per-day totals with no install ids beyond three months; this Worker stays write-only and is not changed by it.
 
 ---
 
@@ -246,7 +246,9 @@ curl "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/analytics_eng
 ```
 
 The token needs **Account → Account Analytics → Read**. Querying is out of band
-through this API; the Worker itself has no read path at all.
+through this API, or through the separate `telemetry-stats/` Worker, which reads
+the dataset in place through an account binding with no token; this Worker
+itself has no read path at all.
 
 ### Rate limiting
 

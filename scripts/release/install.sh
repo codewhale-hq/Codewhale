@@ -298,8 +298,16 @@ install_binary() {
     fi
     stage_dir="$(mktemp -d "$BIN_DIR/.codewhale-install.XXXXXX")"
     stage="$stage_dir/$(basename "$dst")"
-    cp "$src" "$stage"
-    chmod "$mode" "$stage"
+    if [[ "$(basename "$dst")" == "codew" && ! -L "$BIN_DIR/codewhale" && -f "$BIN_DIR/codewhale" && -x "$BIN_DIR/codewhale" ]] && cmp -s "$src" "$BIN_DIR/codewhale"; then
+        if ! ln "$BIN_DIR/codewhale" "$stage" 2>/dev/null; then
+            rm -f "$stage"
+            cp "$src" "$stage"
+            chmod "$mode" "$stage"
+        fi
+    else
+        cp "$src" "$stage"
+        chmod "$mode" "$stage"
+    fi
     # Same-directory hard-link publication is atomic and never overwrites a
     # destination created between preflight and this operation.
     # The explicit parent operand avoids treating a raced-in destination

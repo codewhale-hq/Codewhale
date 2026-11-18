@@ -14,7 +14,7 @@ export const docsPet: DocsPetDict = {
       id: "turn-on",
       title: "开启",
       blocks: [
-        { note: "Pet 模式自 0.9.13 起就已提供。0.10.2 已加入动态鲸鱼、始终可用的消息框、/pet style、/pet language，以及用 Ctrl+] 切换的多种视图。" },
+        { note: "Pet 模式自 0.9.13 起就已提供。0.10.2 已加入动态鲸鱼、始终可用的消息框、/pet style，以及用 Ctrl+] 切换的多种视图。现在鲸鱼的点会变成正在进行的工作本身，例如扳手、铅笔或书本，然后回到鲸鱼；大号活动文字和 /pet language 已移除。" },
         {
           code: "/pet on        # pet mode becomes the main view\n/pet off       # back to the standard view\n/pet status    # on or off, and the companion's identity",
           lang: "Codewhale",
@@ -88,7 +88,6 @@ export const docsPet: DocsPetDict = {
             ["/pet status", "显示模式、伴生进程标识和来源会话。"],
             ["/pet source", "让当前终端的会话成为来源。"],
             ["/pet appearance", "在浏览器中打开外观工作室，仅限本机。"],
-            ["/pet window", "若已安装 macOS 的 Codewhale Pet 应用，则打开原生窗口。"],
             ["/pet sound on、/pet sound off", "开关伴生进程的声音。声音默认关闭，且需要 ffplay。"],
             ["/pet avatar", "列出头像，或选择其一。"],
             ["/pet export", "把回放保存到当前已保存会话的产物目录。"],
@@ -117,7 +116,7 @@ export const docsPet: DocsPetDict = {
           note: "智能体运行期间，检查视图中的智能体列表在回合结束时刷新。状态栏的智能体数量和任务面板是实时的。",
         },
         {
-          note: "`/pet window` 需要 macOS 的 Codewhale Pet 应用，声音需要 ffplay。",
+          note: "声音需要 ffplay。",
         },
       ],
     },

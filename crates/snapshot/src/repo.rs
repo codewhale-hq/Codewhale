@@ -183,13 +183,23 @@ const SNAPSHOT_LOCK_FILE: &str = "codewhale-snapshot.lock";
 const SNAPSHOT_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// How often a waiting writer retries the lock.
-const SNAPSHOT_LOCK_POLL: Duration = Duration::from_millis(25);
+const SNAPSHOT_LOCK_POLL: Duration = Duration::from_millis(5);
+
+const SNAPSHOT_LOCK_REACQUIRE_DELAY: Duration = Duration::from_millis(50);
 
 thread_local! {
     /// Side repos whose write lock this thread already holds, so a locked
     /// operation that calls another (restore takes a safety snapshot, a
     /// snapshot runs the size prune) does not wait on its own lock.
     static HELD_SNAPSHOT_LOCKS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+static SNAPSHOT_LOCK_RELEASED_AT: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<PathBuf, std::time::Instant>>,
+> = std::sync::OnceLock::new();
+
+fn snapshot_lock_released_at() -> &'static std::sync::Mutex<HashMap<PathBuf, std::time::Instant>> {
+    SNAPSHOT_LOCK_RELEASED_AT.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 /// Maximum total snapshot storage in megabytes before pruning kicks in at
@@ -1278,12 +1288,21 @@ impl SnapshotRepo {
         // files cannot be removed/overwritten if the snapshot cannot retain them.
         let backup = self.snapshot_with_session(backup_label, None)?;
         for (rel, _, _, in_work) in &pre_state {
-            if *in_work && !self.snapshot_contains_regular_file(&backup, rel)? {
+            let in_backup = self.snapshot_contains_regular_file(&backup, rel)?;
+            if *in_work && !in_backup {
                 return Err(io_other(
                     "File was excluded from the safety snapshot; nothing was restored",
                 ));
             }
-            self.validate_restore_file(rel)?;
+            if self.validate_restore_file(rel)? != *in_work || in_backup != *in_work {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "'{}' changed while the restore was being prepared; nothing was changed.",
+                        rel.display()
+                    ),
+                ));
+            }
         }
 
         // Recheck after the potentially slow safety snapshot, immediately
@@ -1297,64 +1316,136 @@ impl SnapshotRepo {
                 sources.push(id);
             }
         }
-        for source in sources {
-            let tracked: Vec<String> = pre_state
-                .iter()
-                .filter(|(_, id, in_target, _)| *in_target && id == source)
-                .map(|(rel, _, _, _)| rel.to_string_lossy().into_owned())
-                .collect();
-            let mut args: Vec<String> = vec![
-                "--literal-pathspecs".to_string(),
-                "checkout".to_string(),
-                source.as_str().to_string(),
-                "--".to_string(),
-            ];
-            args.extend(tracked);
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let checkout = run_git(&self.git_dir, &self.work_tree, &arg_refs)?;
-            if !checkout.status.success() {
+
+        let mut rollback_plan = Vec::new();
+        let restore = (|| -> io::Result<_> {
+            for source in sources {
+                let batch = pre_state
+                    .iter()
+                    .filter(|(_, id, in_target, _)| *in_target && id == source);
+                let mut tracked = Vec::new();
+                for (rel, _, _, in_work) in batch.clone() {
+                    if self.validate_restore_file(rel)? != *in_work {
+                        return Err(io_other(format!(
+                            "'{}' changed before checkout",
+                            rel.display()
+                        )));
+                    }
+                    tracked.push(rel.as_path());
+                }
+                rollback_plan.extend(
+                    batch.map(|(rel, _, _, in_work)| (rel.as_path(), Some(source), *in_work)),
+                );
+                self.checkout_snapshot_paths(source, &tracked)?;
+            }
+
+            let mut outcomes = Vec::new();
+            for (rel, _, in_target, was_in_work) in &pre_state {
+                let action = match (in_target, was_in_work) {
+                    (true, true) => PathRestoreAction::Modified,
+                    (true, false) => PathRestoreAction::Recreated,
+                    (false, true) => {
+                        self.remove_restore_file(rel)?;
+                        rollback_plan.push((rel.as_path(), None, true));
+                        PathRestoreAction::Removed
+                    }
+                    (false, false) => continue,
+                };
+                outcomes.push(PathRestoreOutcome {
+                    path: rel.clone(),
+                    action,
+                });
+            }
+            Ok(outcomes)
+        })();
+        let outcomes = match restore {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                let attempted_changes = !rollback_plan.is_empty();
+                let failures: Vec<_> = rollback_plan
+                    .into_iter()
+                    .rev()
+                    .filter_map(|(rel, source, was_in_work)| {
+                        self.rollback_restored_path(&backup, rel, source, was_in_work)
+                            .err()
+                            .map(|error| format!("'{}': {error}", rel.display()))
+                    })
+                    .collect();
+                let recovery = if !attempted_changes {
+                    "no file changes were applied".to_string()
+                } else if failures.is_empty() {
+                    "applied file changes were rolled back".to_string()
+                } else {
+                    format!("rollback incomplete: {}", failures.join("; "))
+                };
                 return Err(io_other(format!(
-                    "git checkout failed: {} (safety snapshot {} holds the previous files)",
-                    String::from_utf8_lossy(&checkout.stderr).trim(),
+                    "scoped restore failed: {error}; {recovery}; safety snapshot {} retains the previous files",
                     backup.as_str()
                 )));
             }
-        }
-
-        let mut outcomes = Vec::new();
-        for (rel, _, in_target, was_in_work) in pre_state {
-            match (in_target, was_in_work) {
-                (true, true) => outcomes.push(PathRestoreOutcome {
-                    path: rel,
-                    action: PathRestoreAction::Modified,
-                }),
-                (true, false) => outcomes.push(PathRestoreOutcome {
-                    path: rel,
-                    action: PathRestoreAction::Recreated,
-                }),
-                (false, true) => {
-                    let path = self.work_tree.join(&rel);
-                    self.validate_restore_file(&rel)?;
-                    std::fs::remove_file(&path).map_err(|error| {
-                        io_other(format!(
-                            "removing '{}' failed: {error} (safety snapshot {} holds the previous files)",
-                            rel.display(),
-                            backup.as_str()
-                        ))
-                    })?;
-                    if prune_emptied_dirs {
-                        self.prune_empty_parent_dirs(path.parent());
-                    }
-                    outcomes.push(PathRestoreOutcome {
-                        path: rel,
-                        action: PathRestoreAction::Removed,
-                    });
+        };
+        if prune_emptied_dirs {
+            for outcome in &outcomes {
+                if outcome.action == PathRestoreAction::Removed
+                    && self.removal_parent_is_real(&outcome.path).unwrap_or(false)
+                {
+                    self.prune_empty_parent_dirs(self.work_tree.join(&outcome.path).parent());
                 }
-                // Already in the snapshot's state.
-                (false, false) => {}
             }
         }
         Ok(outcomes)
+    }
+
+    fn checkout_snapshot_paths(&self, id: &SnapshotId, paths: &[&Path]) -> io::Result<()> {
+        let mut args = vec!["--literal-pathspecs", "checkout", id.as_str(), "--"];
+        for rel in paths {
+            args.push(
+                rel.to_str()
+                    .ok_or_else(|| io_other("restore path must be UTF-8"))?,
+            );
+        }
+        let checkout = run_git(&self.git_dir, &self.work_tree, &args)?;
+        if !checkout.status.success() {
+            return Err(io_other(format!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    fn remove_restore_file(&self, rel: &Path) -> io::Result<()> {
+        self.validate_restore_file(rel)
+            .and_then(|_| std::fs::remove_file(self.work_tree.join(rel)))
+            .map_err(|error| io_other(format!("removing '{}' failed: {error}", rel.display())))
+    }
+
+    fn rollback_restored_path(
+        &self,
+        backup: &SnapshotId,
+        rel: &Path,
+        source: Option<&SnapshotId>,
+        was_in_work: bool,
+    ) -> io::Result<()> {
+        let exists = self.validate_restore_file(rel)?;
+        if exists {
+            let matches_checkout = match source {
+                Some(source) => self.path_matches_snapshot(source, rel)?,
+                None => false,
+            };
+            if !matches_checkout {
+                if self.path_matches_snapshot(backup, rel)? {
+                    return Ok(());
+                }
+                return Err(io_other("file changed during restore"));
+            }
+        }
+        if was_in_work {
+            self.checkout_snapshot_paths(backup, &[rel])?;
+        } else if exists {
+            self.remove_restore_file(rel)?;
+        }
+        Ok(())
     }
 
     /// Return whether the current workspace matches the given snapshot's
@@ -1885,6 +1976,14 @@ impl SnapshotRepo {
         if held {
             return op();
         }
+        let reacquire_delay = snapshot_lock_released_at()
+            .lock()
+            .ok()
+            .and_then(|released| released.get(&self.git_dir).copied())
+            .and_then(|at| SNAPSHOT_LOCK_REACQUIRE_DELAY.checked_sub(at.elapsed()));
+        if let Some(remaining) = reacquire_delay {
+            std::thread::sleep(remaining);
+        }
         let file = open_snapshot_lock_file(&self.git_dir.join(SNAPSHOT_LOCK_FILE))?;
         let mut lock = fd_lock::RwLock::new(file);
         let deadline = std::time::Instant::now() + wait;
@@ -1906,7 +2005,13 @@ impl SnapshotRepo {
         // Declared after the guard, so it is dropped (and the thread's claim
         // released) before the file lock is.
         let _held = HeldSnapshotLock::claim(&self.git_dir);
-        op()
+        let result = op();
+        drop(_held);
+        drop(_guard);
+        if let Ok(mut released) = snapshot_lock_released_at().lock() {
+            released.insert(self.git_dir.clone(), std::time::Instant::now());
+        }
+        result
     }
 
     /// Stage every tracked and untracked path the workspace exposes.
@@ -1939,19 +2044,7 @@ impl SnapshotRepo {
     ) -> io::Result<()> {
         let mut prev_sha: Option<String> = None;
         for s in survivors.iter().rev() {
-            let tree = run_git(
-                &self.git_dir,
-                &self.work_tree,
-                &["rev-parse", &format!("{}^{{tree}}", s.id.as_str())],
-            )?;
-            if !tree.status.success() {
-                return Err(io_other(format!(
-                    "rev-parse {}^{{tree}} failed: {}",
-                    s.id.as_str(),
-                    String::from_utf8_lossy(&tree.stderr).trim()
-                )));
-            }
-            let tree_hash = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+            let tree_hash = s.tree.as_str().to_string();
 
             let mut args = vec![
                 "commit-tree".to_string(),
@@ -3075,6 +3168,17 @@ mod tests {
     /// all succeed and leave a history whose every snapshot still restores.
     #[test]
     fn concurrent_snapshot_and_prune_keep_the_side_repo_consistent() {
+        fn eventually<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+            let mut attempts = 0;
+            loop {
+                match op() {
+                    Err(err) if err.kind() == io::ErrorKind::TimedOut && attempts < 5 => {
+                        attempts += 1;
+                    }
+                    other => return other,
+                }
+            }
+        }
         let tmp = tempdir().unwrap();
         let (repo, _home) = make_repo(tmp.path());
         std::fs::write(repo.work_tree().join("seed.txt"), b"seed").unwrap();
@@ -3092,8 +3196,8 @@ mod tests {
                             repo.work_tree().join(format!("w{writer}.txt")),
                             format!("{writer}-{turn}"),
                         )?;
-                        repo.snapshot(&format!("post-turn:{writer}-{turn}"))?;
-                        repo.prune_keep_last_n(2)?;
+                        eventually(|| repo.snapshot(&format!("post-turn:{writer}-{turn}")))?;
+                        eventually(|| repo.prune_keep_last_n(2))?;
                     }
                     Ok(())
                 })
@@ -3137,6 +3241,21 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the wait ends near its bound"
+        );
+    }
+
+    #[test]
+    fn side_repo_lock_reacquire_waits_out_the_courtesy_delay() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        repo.with_write_lock(|| Ok(())).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            repo.with_write_lock(|| Ok(())).unwrap();
+        }
+        assert!(
+            started.elapsed() >= SNAPSHOT_LOCK_REACQUIRE_DELAY,
+            "an immediate reacquire yields a poll window to a waiting writer"
         );
     }
 
@@ -3338,6 +3457,85 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn restore_path_plan_rolls_back_partial_file_changes() {
+        let tmp = tempdir().unwrap();
+        let (repo, _home) = make_repo(tmp.path());
+        let work = repo.work_tree();
+        let modified = work.join("modified.txt");
+        let recreated = work.join("recreated.txt");
+        let removed = work.join("new/removed.txt");
+        let blocked = work.join("blocked.txt");
+        let unrelated = work.join("unrelated.txt");
+        std::fs::write(&modified, b"before turn").unwrap();
+        std::fs::write(&recreated, b"before deletion").unwrap();
+        std::fs::write(&unrelated, b"before edit").unwrap();
+        let target = repo.snapshot("pre-turn:1").unwrap();
+
+        std::fs::write(&modified, b"after turn").unwrap();
+        std::fs::remove_file(&recreated).unwrap();
+        std::fs::create_dir(removed.parent().unwrap()).unwrap();
+        std::fs::write(&removed, b"new file").unwrap();
+        std::fs::write(&blocked, b"file to remove").unwrap();
+        let plan = [
+            "modified.txt",
+            "recreated.txt",
+            "new/removed.txt",
+            "blocked.txt",
+        ]
+        .map(|rel| (PathBuf::from(rel), target.clone()));
+        let error = repo
+            .restore_path_plan(&plan, "pre-restore:rollback-test", true, || {
+                std::fs::write(&unrelated, b"new editor work")?;
+                std::fs::remove_file(&blocked)?;
+                std::fs::create_dir(&blocked)?;
+                std::fs::write(blocked.join("keep.txt"), b"new work in directory")
+            })
+            .expect_err("the final removal must fail");
+
+        assert_eq!(std::fs::read(&modified).unwrap(), b"after turn");
+        assert!(!recreated.exists());
+        assert_eq!(std::fs::read(&removed).unwrap(), b"new file");
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"new editor work");
+        assert_eq!(
+            std::fs::read(blocked.join("keep.txt")).unwrap(),
+            b"new work in directory"
+        );
+        let message = error.to_string();
+        assert!(message.contains("blocked.txt"), "{message}");
+        assert!(
+            message.contains("applied file changes were rolled back"),
+            "{message}"
+        );
+        let backup = repo.list(1).unwrap().pop().unwrap();
+        assert_eq!(backup.label, "pre-restore:rollback-test");
+        assert!(message.contains(backup.id.as_str()), "{message}");
+
+        std::fs::write(&recreated, b"replacement file").unwrap();
+        let blob = repo
+            .snapshot_file_blob(&target, Path::new("recreated.txt"))
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(
+            repo.git_dir()
+                .join("objects")
+                .join(&blob[..2])
+                .join(&blob[2..]),
+        )
+        .unwrap();
+        let error = repo
+            .restore_path_plan(&plan[..2], "pre-restore:checkout-test", true, || Ok(()))
+            .expect_err("checkout of the missing target blob must fail");
+        let message = error.to_string();
+        assert!(message.contains("git checkout failed"), "{message}");
+        assert!(
+            message.contains("applied file changes were rolled back"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&modified).unwrap(), b"after turn");
+        assert_eq!(std::fs::read(&recreated).unwrap(), b"replacement file");
     }
 
     #[test]

@@ -1290,3 +1290,64 @@ async fn issue_6117_invalid_personal_profile_is_visible_and_never_admitted_as_bu
         guard.cancel_agent(id).unwrap();
     }
 }
+
+#[test]
+fn stale_snapshot_publish_keeps_a_worker_registered_after_it_was_built() {
+    let tmp = tempdir().unwrap();
+    let state_path = tmp.path().join("subagents.v1.json");
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 4).with_state_path(state_path);
+    manager
+        .with_store_transaction(|manager| {
+            manager.register_worker_for_session(
+                make_worker_spec("worker_settled", tmp.path().to_path_buf()),
+                "session-stale-snapshot",
+                None,
+            );
+            manager.persist_state_synchronously()
+        })
+        .unwrap();
+    let (_, stale) = manager.build_persist_payload().unwrap().unwrap();
+    let mut spec = make_worker_spec("worker_fresh", tmp.path().to_path_buf());
+    spec.child_route = Some(ChildRouteReceipt {
+        requested_type: "explore".into(),
+        requested_profile: None,
+        resolved_profile_id: None,
+        profile_origin: None,
+        canonical_role: "explore".into(),
+        provider_id: "deepseek".into(),
+        model_id: "deepseek-v4-flash".into(),
+        route_source: "role.pin".into(),
+        fallback_note: None,
+        requested_reasoning: "inherit".into(),
+        effective_reasoning: None,
+        runtime_version: "fixture".into(),
+        runtime_build_sha: "fixture".into(),
+    });
+    manager.register_worker_for_session(spec, "session-stale-snapshot", None);
+    assert!(
+        !stale
+            .workers
+            .iter()
+            .any(|record| record.spec.worker_id == "worker_fresh")
+    );
+    manager
+        .store_authority
+        .as_ref()
+        .unwrap()
+        .publish(&stale, None, None)
+        .unwrap();
+    assert!(manager.owns_store_record("worker_fresh"));
+    manager.with_store_transaction(|_| Ok(())).unwrap();
+    let fresh = manager
+        .worker_records
+        .get("worker_fresh")
+        .expect("a stale snapshot must not evict a worker registered after it was built");
+    assert_eq!(
+        fresh
+            .spec
+            .child_route
+            .as_ref()
+            .map(|route| route.model_id.as_str()),
+        Some("deepseek-v4-flash")
+    );
+}

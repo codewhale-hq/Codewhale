@@ -336,7 +336,7 @@ pub async fn run_exec_agent(
         || output_format == ExecOutputFormat::StreamJson;
     let mut exec_session_manager = fleet_capture.map(|(_, manager)| Arc::new(manager));
     let _exec_operation_lease = if exec_is_fresh {
-        let (manager, source, lease) = admit_cli_saved_operation(
+        match admit_cli_saved_operation(
             exec_session_manager.clone(),
             exec_session_id.clone(),
             exec_session_workspace.clone(),
@@ -347,10 +347,17 @@ pub async fn run_exec_agent(
             prompt.to_string(),
         )
         .await
-        .context("could not admit exec's saved accounting operation")?;
-        exec_session_manager = Some(manager);
-        exec_write_receipt = Some(source);
-        Some(lease)
+        {
+            Ok((manager, source, lease)) => {
+                exec_session_manager = Some(manager);
+                exec_write_receipt = Some(source);
+                Some(lease)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not admit exec's saved accounting operation; continuing with unknown cost");
+                None
+            }
+        }
     } else {
         None
     };
@@ -370,16 +377,21 @@ pub async fn run_exec_agent(
         open_exec_session_manager()?;
     }
 
-    let accounting_origin = exec_write_receipt
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("exec has no admitted original session source"))?
-        .usage_origin(codewhale_engine::cost_status::scope_token())?;
+    let accounting_origin = exec_write_receipt.as_ref().and_then(|receipt| {
+        match receipt.usage_origin(codewhale_engine::cost_status::scope_token()) {
+            Ok(origin) => Some(origin),
+            Err(error) => {
+                tracing::warn!(%error, "exec accounting origin unavailable; continuing with unknown cost");
+                None
+            }
+        }
+    });
     let route = resolve_cli_exec_route(
         config,
         model,
         prompt,
         force_configured_route,
-        Some(accounting_origin.clone()),
+        accounting_origin.clone(),
     )
     .await?;
     let execution_config = config_for_cli_route(config, &route)?;
@@ -571,7 +583,7 @@ pub async fn run_exec_agent(
         codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone());
     let exec_automations = exec_automation_services(fleet_authority_active || one_shot)?;
     let runtime_services = codewhale_engine::tools::spec::RuntimeToolServices {
-        accounting_origin: Some(accounting_origin),
+        accounting_origin,
         shell_manager: Some(exec_shell_manager.clone()),
         persist_services_enabled,
         automations: exec_automations,
@@ -3205,6 +3217,10 @@ fn write_exec_stdout(text: &str) -> Result<()> {
         .and_then(|()| stdout.flush())
     {
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+            let _ = codewhale_telemetry::report_termination(
+                codewhale_telemetry::ExitClass::Signal,
+                codewhale_telemetry::SIGNAL_FLUSH_TIMEOUT,
+            );
             // SAFETY: restores the default disposition and re-raises the
             // signal the write would have delivered without SIG_IGN.
             #[cfg(unix)]
@@ -3566,54 +3582,47 @@ fn persist_exec_session(
         let Some(source) = receipt["source_id"].as_str() else {
             continue;
         };
-        if receipt["usage_reported"].as_bool() == Some(true) {
-            saved.metadata.cost.usage_source_fingerprints.insert(
-                codewhale_engine::cost_status::usage_source_fingerprint(source),
-            );
-        }
         let coverage = receipt.get("coverage").cloned().and_then(|value| {
             serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
                 .ok()
         });
-        if matches!(
+        let missing_coverage = matches!(
             coverage,
             Some(
                 codewhale_engine::llm_client::ProviderUsageCoverage::Missing
                     | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
             )
-        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
-            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+        );
+        if missing_coverage
+            && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+                serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(
+                    value,
+                )
                 .ok()
-        }) {
+            })
+        {
             let reason =
                 if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
                 } else {
                     codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
                 };
-            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
-                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
-                    source_id: source.to_string(),
-                    route,
-                    reason,
-                },
+            let drop_record = codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                source_id: source.to_string(),
+                route,
+                reason,
+            };
+            if let Err(error) = saved
+                .metadata
+                .cost
+                .project_usage_record(&drop_record.as_usage_record())
+            {
+                tracing::warn!(%error, source_id = %source, "agent missing usage projection skipped");
+            }
+        } else if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
             );
-            let cost = &mut saved.metadata.cost;
-            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-                &mut cost.missing_usage_sources,
-                &mut cost.missing_usage_overflowed,
-                &mut cost.unpriced_turns,
-                &mut cost.cny_unpriced_turns,
-                &pool,
-            );
-            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
-            cost.cny_unpriced_turns = cost
-                .cny_unpriced_turns
-                .saturating_add(pool.cny_unpriced_turns);
-            cost.unpriced_reasons
-                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
-            cost.cny_unpriced_reasons
-                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
         }
     }
     saved.make_storage_compatible();

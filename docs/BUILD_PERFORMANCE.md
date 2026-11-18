@@ -482,6 +482,39 @@ table above (cold build, incremental build, incremental test build,
 frontend time drops with lines removed; the test-binary link is unchanged
 until the tests that live with those modules move with them.
 
+## Hosted CI: keep the rust-cache when a test fails (2026-11-16)
+
+`Swatinem/rust-cache@v2` saves in a post step guarded by
+`post-if: success() || env.CACHE_ON_FAILURE == 'true'`
+([action.yml](https://raw.githubusercontent.com/Swatinem/rust-cache/master/action.yml)).
+A Test leg that compiles everything and then fails one test therefore
+throws away a complete dependency build. `ci.yml` now sets
+`cache-on-failure: true` on the Safety gate, Lint and Test rust-cache steps;
+`save-if` stays main-only and `cache-workspace-crates` stays at its default
+`false`, so entries remain dependencies-only.
+
+Before the change, measured from `gh api actions/runs/<id>/jobs` and the Test
+job logs of main `workflow_dispatch` runs 43879207835, 43879706605,
+43896698899, 43932443327 and 43935781907 (hosted runners; raw data and
+`extract.py` in `CW/artifacts/rust-20261116/b2/`):
+
+| | Failed Test legs (n=10) | Linux leg, cache restored (n=2) | Linux leg, no cache (n=3) |
+| --- | --- | --- | --- |
+| Post rust-cache step | skipped 10/10 | ran, "Cache up-to-date" | skipped 3/3 |
+| Dependency `Compiling` lines | 649-732 | 26 | 732 |
+| Binary build step (min) | | 7.2, 12.3 | 14.1-15.7 |
+| `Run tests` step (min) | | 40.2, 52.5 | 57.2-64.2 |
+
+`gh api actions/caches?key=v0-rust` at 21:35Z listed Test entries for Linux
+(0.90 GB) and Windows (0.82 GB) only; no macOS Test entry existed, and both
+green macOS legs logged `Unable to reserve cache ... another job may be
+creating this cache`. Repo cache usage was 10.57 GB across 1679 entries.
+
+After: not yet measured. `save-if` is main-only, so the effect appears only
+on main runs after this lands. Check the same three things there: a Test
+entry per OS after a red main run, `Restored from cache key` on the next leg,
+and the median binary-build and `Run tests` minutes.
+
 ## Optional accelerators (not required)
 
 - `cargo install cargo-nextest` — see above.

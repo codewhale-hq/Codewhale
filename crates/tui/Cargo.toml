@@ -77,6 +77,10 @@ name = "codewhale_tui"
 path = "src/lib.rs"
 doctest = false
 
+[[example]]
+name = "zz_perf_probe"
+test = false
+
 [dependencies]
 # Independent terminal kit, pinned and vendored for reproducible binary builds.
 codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }

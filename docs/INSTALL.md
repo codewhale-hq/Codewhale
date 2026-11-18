@@ -172,10 +172,10 @@ What it does (verified):
   otherwise it downloads and verifies `codew-<platform>` separately. If either
   entry doesn't match, it stops before installing anything (`codewhale install:
   checksum mismatch for …`).
-* It installs `~/.local/bin/codewhale` and `~/.local/bin/codew` from the
-  verified release bytes as two separately managed files. When both manifest
-  entries match, the download staging step uses a hard link when possible and
-  a temporary copy otherwise.
+* It installs `~/.local/bin/codewhale` first, then installs
+  `~/.local/bin/codew` as a hard link to `~/.local/bin/codewhale` when the
+  bytes match and the filesystem supports linking (falling back to a separate
+  copy otherwise), so updates never leave the two on different versions.
 * It **never uses sudo.** When the install directory is not on `PATH`, it appends one
   marked three-line block to your shell profile (see [Put it on your
   PATH](#put-it-on-your-path)), prints exactly what it added, and skips this with
@@ -1099,7 +1099,7 @@ The `uninstall` command exists in Codewhale 0.10.3 and later. On 0.10.2 or earli
 
 Not sure which one you have? Run `codewhale doctor --installs`: it lists every copy, who owns it and the exact command that removes it, without running or changing anything. `codewhale uninstall` (no `--yes`) shows the same classified list after its own plan.
 
-The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
+The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular files whose bytes match that receipt and, on Unix, whose hard links all belong to the receipted commands in that directory (non-command files, the receipt itself, legacy unreceipted installs, and Windows binaries must remain single-link). On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, external hard links, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
 
 The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces and services. For a receipted release copy it also removes this install's exact three-line `# >>> codewhale PATH >>>` block from your shell profiles, and the Codewhale-generated completion files at the documented paths (`~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish`, honouring `XDG_DATA_HOME` and `XDG_CONFIG_HOME`). Nothing else in a profile is touched, a symlinked or unreadable profile is left for you to edit by hand, and the completion files are kept while another Codewhale copy remains on PATH. If any of that cleanup fails, the command says so and exits non-zero even though the program is already gone. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
 
@@ -1667,8 +1667,8 @@ The `rquickjs` FreeBSD bindings are generated at build time via `bindgen` (see
 `1582ba965`/`5eb0385e8`). No separate `pkg install codewhale` port exists yet —
 a native port is tracked as the follow-up to #1097 under `packaging/freebsd/`
 (contributions welcome). Validate with `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked`
-on the release branch; the 7×1 release matrix (Linux musl x64/arm64,
-Android arm64, macOS x64/arm64, Windows x64/arm64) stays 7 targets — FreeBSD is a
+on the release branch; the 8×1 release matrix (Linux musl x64/arm64,
+Android arm64, macOS x64/arm64, Windows x64/arm64, OpenHarmony arm64) stays 8 targets — FreeBSD is a
 source-build target, not a prebuilt asset.
 
 #### Cross-compiling from x64 to ARM64 Linux

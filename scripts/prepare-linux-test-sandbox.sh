@@ -5,9 +5,12 @@
 set -eu
 
 profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-test -r "$profile"
-sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
-sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+installed=/etc/apparmor.d/bwrap-userns-restrict
+if [ -r "$profile" ]; then
+  sudo install -m 0644 "$profile" "$installed"
+fi
+test -r "$installed"
+sudo apparmor_parser -r "$installed"
 
 # Match the product's isolated namespace/no-network setup before compiling.
 # A denied setup is a provisioning failure, never a skipped safety test.

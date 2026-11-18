@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Perintah ini memasang rilis terbaru di macOS atau Linux, dan tidak memerlukan ak
 
 <sub>Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale di terminal setelah tugas demo. Ia melaporkan telah menambahkan flag --json ke export.py, ketiga tes lokal lulus, dan tinjauan yang didelegasikan tidak menemukan masalah. Daftar tugas di bawahnya menampilkan tiga langkah selesai, dan baris status menampilkan Full Access serta penyedia lokal website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan gemini-4-hydrogen. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py dengan argparse. Baris status menampilkan accept edits dan gemini-4-hydrogen.">
 
-<sub>Build pengembangan 0.10.3, yang belum dirilis, dengan model uji berskrip, dalam Full Access di dalam ruang kerja sekali pakai. Pengeditan, tiga tes, dan tinjauan oleh sub-agen benar-benar dijalankan.</sub>
+<sub>Sesi nyata pada build pengembangan 0.10.3: gemini-4-hydrogen melalui API Google menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Lebih dari 40 penyedia sudah terpasang, termasuk Anthropic, OpenAI, DeepSeek, Go
 
 `/goal` menetapkan sasaran yang berlanjut lintas giliran. Codewhale dapat membagi pekerjaan ke [sub-agen](../SUBAGENTS.md), menjalankan [Fleet](../FLEET.md) agen dengan peran dan model masing-masing, atau mengikuti [alur kerja](../WORKFLOW_AUTHORING.md) yang disimpan di repositori.
 
-### Ekstensi
+### Plugin
 
 Hubungkan [server MCP](../MCP.md), tambahkan [skill](../SKILLS.md) dan [plugin](../PLUGINS.md), dan jalankan [hook](../HOOKS.md) pada peristiwa sesi dan alat. Mode kode (eksperimental, aktif secara bawaan) memungkinkan model menulis satu program `execute_tools` yang memanggil beberapa alat MCP dan plugin; setiap panggilan tetap mengikuti aturan persetujuan Anda dan menyimpan tanda terimanya. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) adalah plugin terpisah yang dirilis sendiri (eksperimental, hanya macOS), dan tetap mati sampai Anda meninjau aksesnya dan mengaktifkannya.
 

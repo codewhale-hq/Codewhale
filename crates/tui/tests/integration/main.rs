@@ -17,6 +17,7 @@ use codewhale_core::tool_parser;
 mod adaptive_evidence_acceptance;
 mod cache_guard;
 mod coordination_acceptance;
+mod creator_exec;
 mod diagnostic_read_only;
 mod dotenv_authority;
 mod eval_harness;

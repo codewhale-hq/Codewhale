@@ -266,6 +266,13 @@ impl ToolRegistry {
         &self.context
     }
 
+    pub fn set_plugin_registry(
+        &mut self,
+        plugins: Option<std::sync::Arc<codewhale_plugins::PluginRegistry>>,
+    ) {
+        self.context.plugin_registry = plugins;
+    }
+
     /// Convert all tools to API Tool format for sending to the model.
     ///
     /// Output is sorted by tool name for **prefix-cache stability** (#263).

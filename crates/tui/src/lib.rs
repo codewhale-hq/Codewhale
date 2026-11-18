@@ -421,6 +421,35 @@ enum SessionsCommand {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    #[command(
+        about = "Update saved sessions and Runtime stores after a workspace directory was renamed or moved"
+    )]
+    Migrate {
+        #[arg(
+            long = "old-path",
+            value_name = "PATH",
+            help = "Previous workspace directory path recorded on the sessions"
+        )]
+        old_path: PathBuf,
+        #[arg(
+            long = "new-path",
+            value_name = "PATH",
+            help = "New workspace directory path"
+        )]
+        new_path: PathBuf,
+        #[arg(
+            long,
+            value_name = "SESSION_ID",
+            help = "Only migrate this session id (or unique prefix)"
+        )]
+        session: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Report what would change without creating or modifying any files"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -906,6 +935,10 @@ fn spawn_signal_cleanup_task() {
     let mut signals = TerminatingSignals::register();
     tokio::spawn(async move {
         let exit_code = signals.wait().await;
+        codewhale_telemetry::record_session_end_blocking(codewhale_telemetry::ExitClass::Signal);
+        let telemetry_send = tokio::task::spawn_blocking(|| {
+            codewhale_telemetry::flush_for_termination(codewhale_telemetry::SIGNAL_FLUSH_TIMEOUT)
+        });
         // Persistence and a serving Runtime API share a bounded window to
         // flush queued saves and end open streams with a typed `stream.end`.
         // A second signal skips both waits.
@@ -914,6 +947,9 @@ fn spawn_signal_cleanup_task() {
                 tokio::join!(
                     codewhale_app_server::runtime_api::drain_for_signal_exit(),
                     crate::tui::persistence_actor::flush_for_signal_exit(),
+                    async {
+                        let _ = telemetry_send.await;
+                    },
                 )
             } => {}
             _ = signals.wait() => {}
@@ -929,64 +965,9 @@ fn spawn_signal_cleanup_task() {
             #[cfg(unix)]
             codewhale_runtime::process_tree::kill_contained_trees_for_exit();
             crate::tui::ui::emergency_restore_terminal();
-            // Nothing async survives the `exit` below, so this is the last
-            // chance to say how the session ended. `record_blocking` is one
-            // `O_APPEND` write with no lock: taking the compaction lock here
-            // would let a second Codewhale process sharing CODEWHALE_HOME hang
-            // Ctrl-C, and the second-signal short-circuit below has to stay
-            // reachable. A no-op unless this process was armed.
-            //
-            // The class is stated, not derived: `RunTerminationReason::Canceled`
-            // also exits 130, so `exit_code` cannot tell a signal from an
-            // Esc-cancelled turn.
-            record_signal_session_end();
         }
         std::process::exit(exit_code);
     });
-}
-
-/// When this process's armed telemetry session began. Set once, at arming, and
-/// read from both the ordinary teardown and the signal path.
-static TELEMETRY_SESSION_START: std::sync::OnceLock<std::time::Instant> =
-    std::sync::OnceLock::new();
-
-/// Build `session_end` from what this process actually accumulated.
-///
-/// The exit class is read from the process-wide atomic and never derived from
-/// an exit code: `RunTerminationReason::Canceled` maps to 130, the same value
-/// the SIGINT path uses, so a code-based derivation would report every
-/// Esc-cancelled turn as a signal.
-///
-/// The cold-start bucket is `None` unless the interactive event loop actually
-/// began, which is what keeps it absent rather than invented on the surfaces
-/// that have no event loop.
-fn telemetry_session_end() -> codewhale_telemetry::Event {
-    let counters = codewhale_telemetry::session_counters();
-    codewhale_telemetry::Event::SessionEnd {
-        duration_bucket: codewhale_telemetry::DurationBucket::from_secs(
-            TELEMETRY_SESSION_START
-                .get()
-                .map_or(0, |start| start.elapsed().as_secs()),
-        ),
-        exit_class: codewhale_telemetry::exit_class(),
-        cold_start_bucket: codewhale_runtime::startup_trace::cold_start_ms()
-            .map(codewhale_telemetry::ColdStartBucket::from_millis),
-        providers: counters.providers(),
-        counters: counters.counters(),
-        errors: counters.errors(),
-        turn_wall: counters.turn_wall(),
-    }
-}
-
-/// Close the session synchronously, from the signal handler.
-///
-/// A no-op unless this process was armed.
-fn record_signal_session_end() {
-    codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Signal);
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record_blocking(event);
-    }
-    codewhale_telemetry::record_blocking(telemetry_session_end());
 }
 
 /// Terminating-signal streams, registered up front and awaited later.
@@ -1690,7 +1671,7 @@ struct ServeArgs {
     #[arg(long, default_value_t = 2)]
     workers: usize,
     /// Additional CORS origin to allow (repeatable). Stacks on top of the
-    /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
+    /// built-in defaults (localhost:3000, localhost:1420).
     /// Also reads `CODEWHALE_CORS_ORIGINS` (comma-separated), then
     /// `DEEPSEEK_CORS_ORIGINS` as an alias, and `[runtime_api] cors_origins`
     /// from `config.toml`. Whalescale#255.
@@ -2558,7 +2539,6 @@ fn arm_telemetry_with_setup(
         return;
     };
     codewhale_telemetry::init(consent.with_config_path(Some(store.path().to_path_buf())));
-    let _ = TELEMETRY_SESSION_START.set(std::time::Instant::now());
     codewhale_telemetry::record(codewhale_telemetry::Event::SessionStart { source });
 }
 
@@ -2624,10 +2604,7 @@ async fn finish_telemetry(outcome: &Result<()>, surface: codewhale_telemetry::Su
     {
         codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Error);
     }
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record(event);
-    }
-    codewhale_telemetry::record(telemetry_session_end());
+    codewhale_telemetry::record_session_end();
     if surface == codewhale_telemetry::Surface::Cli {
         let persistence = codewhale_telemetry::persist_local_blocking();
         logging::info(format!(
@@ -2914,6 +2891,12 @@ async fn run_async_main_dispatch(
                 }) => {
                     run_sessions_export(&id, output.as_deref(), skip_artifacts, compression, force)
                 }
+                Some(SessionsCommand::Migrate {
+                    old_path,
+                    new_path,
+                    session,
+                    dry_run,
+                }) => run_sessions_migrate(old_path, new_path, session, dry_run).await,
             },
             Commands::Receipts {
                 id,
@@ -3444,10 +3427,23 @@ async fn run_async_main_dispatch(
     let mut startup_notice = None;
     let resume_session_id = if cli.continue_session {
         let workspace = resolve_workspace(&cli);
-        resolve_continue_session_id(
+        let resolved = resolve_continue_session_id(
             &workspace,
             io::stdin().is_terminal() && io::stdout().is_terminal(),
-        )
+        );
+        if resolved.is_none()
+            && let Ok(manager) = SessionManager::default_location()
+            && let Some(missing) = manager.missing_workspace_session_hint(&workspace)
+        {
+            startup_notice = Some(format!(
+                "No saved sessions found for {}. If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                workspace.display(),
+                missing.display(),
+                session_manager::shell_quote_path(&missing),
+                session_manager::shell_quote_path(&workspace),
+            ));
+        }
+        resolved
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -4587,7 +4583,7 @@ fn init_plugins_dir(
 /// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
 ///
 /// The runtime API always allows the built-in dev defaults
-/// (localhost:3000, localhost:1420, tauri://localhost). User entries are
+/// (localhost:3000, localhost:1420). User entries are
 /// appended on top — empty strings are skipped, and duplicates are deduped
 /// while preserving first-seen order. Whalescale#255 / #561.
 fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
@@ -9118,6 +9114,12 @@ fn doctor_auth_scheme(config: &Config) -> &'static str {
         config.auth_mode_for_provider(&identity).as_deref(),
     ) {
         "none"
+    } else if provider == codewhale_config::ProviderKind::Anthropic
+        && codewhale_config::credentials::auth_mode_is_claude_org(
+            config.auth_mode_for_provider(&identity).as_deref(),
+        )
+    {
+        "bearer"
     } else if provider == codewhale_config::ProviderKind::Anthropic {
         "x-api-key"
     } else if provider == codewhale_config::ProviderKind::XiaomiMimo
@@ -10508,6 +10510,95 @@ fn run_sessions_export(
     Ok(())
 }
 
+async fn run_sessions_migrate(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    #[cfg(test)]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        run_sessions_migrate_blocking(old_path, new_path, session_id, dry_run)
+    })
+    .await?
+}
+
+fn run_sessions_migrate_blocking(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let manager = SessionManager::default_location()?;
+    let session_arg = session_id
+        .as_deref()
+        .map(|id| {
+            format!(
+                " --session {}",
+                session_manager::shell_quote_path(Path::new(id))
+            )
+        })
+        .unwrap_or_default();
+    let report = manager.migrate_workspace(&session_manager::WorkspaceMigrationOptions {
+        old_path,
+        new_path,
+        session_id,
+        dry_run,
+    })?;
+    let total = report.migrated_sessions.len()
+        + report.migrated_checkpoints.len()
+        + report.migrated_threads.len();
+    if total == 0 && report.busy_sessions.is_empty() && report.unreadable.is_empty() {
+        println!(
+            "No saved sessions or Runtime threads matched workspace {}.",
+            report.old_path.display()
+        );
+        return Ok(());
+    }
+    let verb = if dry_run { "Would migrate" } else { "Migrated" };
+    println!(
+        "{verb} {} session(s), {} checkpoint(s), and {} Runtime thread(s) from {} to {}.",
+        report.migrated_sessions.len(),
+        report.migrated_checkpoints.len(),
+        report.migrated_threads.len(),
+        report.old_path.display(),
+        report.new_path.display(),
+    );
+    for id in &report.migrated_sessions {
+        println!("  session {id}");
+    }
+    if !report.busy_sessions.is_empty() {
+        println!(
+            "{} session(s) were skipped because another Codewhale process is using them (close open sessions and re-run):",
+            report.busy_sessions.len()
+        );
+        for id in &report.busy_sessions {
+            println!("  {id}");
+        }
+    }
+    if !report.unreadable.is_empty() {
+        println!("{} warning(s):", report.unreadable.len());
+        for err in &report.unreadable {
+            println!("  {err}");
+        }
+    }
+    if dry_run && total > 0 {
+        println!(
+            "Re-run without `--dry-run` to apply: `codewhale sessions migrate --old-path {} --new-path {}{session_arg}`.",
+            session_manager::shell_quote_path(&report.old_path),
+            session_manager::shell_quote_path(&report.new_path),
+        );
+    } else if !dry_run && total > 0 {
+        println!(
+            "Run `codewhale --continue` or `codewhale resume <SESSION_ID>` from the new workspace."
+        );
+    }
+    Ok(())
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     let bytes = bytes as f64;
@@ -10955,8 +11046,20 @@ fn run_orcarouter_revoke(config_path: Option<&Path>) -> Result<()> {
 fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
         return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            let hint = SessionManager::default_location()
+                .ok()
+                .and_then(|manager| manager.missing_workspace_session_hint(workspace))
+                .map(|missing| {
+                    format!(
+                        " If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                        missing.display(),
+                        session_manager::shell_quote_path(&missing),
+                        session_manager::shell_quote_path(workspace),
+                    )
+                })
+                .unwrap_or_default();
             anyhow!(
-                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.",
+                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.{hint}",
                 workspace.display()
             )
         });
@@ -11032,19 +11135,49 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
+        if let Err(err) = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace)) {
+            if err.kind() == std::io::ErrorKind::PermissionDenied
+                && let Some(old_ws) = manager
+                    .load_recovery_checkpoint(&id)
+                    .ok()
+                    .flatten()
+                    .filter(|ckpt| {
+                        !session_manager::paths_equivalent(&ckpt.metadata.workspace, &selection_workspace)
+                    })
+                    .map(|ckpt| ckpt.metadata.workspace)
+                    .or_else(|| {
+                        manager
+                            .load_session(&id)
+                            .ok()
+                            .filter(|saved| {
+                                !session_manager::paths_equivalent(&saved.metadata.workspace, &selection_workspace)
+                            })
+                            .map(|saved| saved.metadata.workspace)
+                    })
+            {
+                anyhow::bail!(
+                    "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+                    old_ws.display(),
+                    session_manager::shell_quote_path(&old_ws),
+                    session_manager::shell_quote_path(&selection_workspace),
+                    id,
+                    session_manager::shell_quote_path(&old_ws),
+                );
+            }
+            return Err(err.into());
+        }
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
-        // that snapshot to a different saved project. Match the same physical/
-        // config equality used by workspace overlays without changing either
-        // selected lexical path or merging a second project after the await.
-        let launch_scope = selection_workspace.canonicalize().unwrap_or_else(|_| selection_workspace.clone());
-        let saved_scope = saved.metadata.workspace.canonicalize().unwrap_or_else(|_| saved.metadata.workspace.clone());
+        // that snapshot to a different saved project.
         anyhow::ensure!(
-            paths_equal_for_config(&launch_scope, &saved_scope),
-            "selected session belongs to workspace {}; captured launch project differs; retry with --workspace {} before any canonical operation",
-            saved.metadata.workspace.display(), saved.metadata.workspace.display(),
+            session_manager::paths_equivalent(&selection_workspace, &saved.metadata.workspace),
+            "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+            saved.metadata.workspace.display(),
+            session_manager::shell_quote_path(&saved.metadata.workspace),
+            session_manager::shell_quote_path(&selection_workspace),
+            id,
+            session_manager::shell_quote_path(&saved.metadata.workspace),
         );
         let digest = saved_document_digest(&saved)?;
         if let Some(binding) = saved.metadata.runtime_store.as_ref() {
@@ -11308,7 +11441,10 @@ async fn prepare_mounted_session(
         anyhow::ensure!(
             committed.metadata.id == verify_id
                 && committed.metadata.runtime_store.as_ref() == Some(&binding)
-                && committed.metadata.workspace == selected_workspace,
+                && session_manager::paths_equivalent(
+                    &committed.metadata.workspace,
+                    &selected_workspace,
+                ),
             "committed saved session lost its exact owner binding; mounted handoff refused"
         );
         Ok(committed)
@@ -11457,7 +11593,8 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         }),
         _ => None,
     };
-    let (_, review_source, _review_lease) = admit_cli_saved_operation(
+    let mut review_accounting_origin = None;
+    let _review_lease = match admit_cli_saved_operation(
         None,
         uuid::Uuid::new_v4().to_string(),
         review_workspace.clone(),
@@ -11468,12 +11605,24 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         format!("Review the following diff:\n\n{diff}"),
     )
     .await
-    .context("could not admit the review's saved accounting operation")?;
-    let review_accounting_origin =
-        review_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, review_source, lease)) => {
+            match review_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => review_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit review saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let mut review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
         .with_features(config.features());
-    review_context.accounting_origin = Some(review_accounting_origin.clone());
+    review_context.accounting_origin = review_accounting_origin.clone();
     // #6510: one review prompt authority. Plain diffs and PRs both ask for
     // the structured review contract; a plain diff renders it locally.
     //
@@ -11515,7 +11664,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         &model,
         route_input,
         force_configured_route,
-        Some(review_accounting_origin.clone()),
+        review_accounting_origin.clone(),
     )
     .await?;
     let execution_config = review_config_with_spend_rates(config, &route, review_rates)?;
@@ -11604,7 +11753,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         request.budget = review_budget.tool_budget();
         request.max_output_tokens = Some(review_allowance);
         request.reasoning_effort = reasoning_effort;
-        request.accounting_origin = Some(review_accounting_origin.clone());
+        request.accounting_origin = review_accounting_origin.clone();
         if let Some(cap) = review_budget
             .money_cap_usd
             .filter(|_| review_budget.money_limit_supported)
@@ -15183,7 +15332,8 @@ async fn run_workflow_tool_command_inner(
     initialize_cloud_facts(&config);
     let model = resolve_exec_model(&config, None);
     let workflow_session_id = uuid::Uuid::new_v4().to_string();
-    let (_, workflow_source, _workflow_lease) = admit_cli_saved_operation(
+    let mut workflow_accounting_origin = None;
+    let _workflow_lease = match admit_cli_saved_operation(
         None,
         workflow_session_id.clone(),
         workspace.clone(),
@@ -15194,15 +15344,27 @@ async fn run_workflow_tool_command_inner(
         format!("Run this Workflow:\n{}", serde_json::to_string(&input)?),
     )
     .await
-    .context("could not admit the Workflow's saved accounting operation")?;
-    let workflow_accounting_origin =
-        workflow_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, workflow_source, lease)) => {
+            match workflow_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => workflow_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "workflow accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit the Workflow's saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let route = resolve_cli_exec_route(
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
-        Some(workflow_accounting_origin.clone()),
+        workflow_accounting_origin.clone(),
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route)?;
@@ -15409,7 +15571,7 @@ async fn build_direct_workflow_tool(
     workspace: &Path,
     event_tx: tokio::sync::mpsc::Sender<codewhale_engine::core::events::Event>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
-    accounting_origin: codewhale_engine::cost_status::NativeUsageOrigin,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
 ) -> Result<(
     codewhale_engine::tools::workflow::WorkflowTool,
     codewhale_engine::tools::ToolContext,
@@ -15472,7 +15634,7 @@ async fn build_direct_workflow_tool(
             config.sandbox_network_access,
         ),
     ));
-    context.accounting_origin = Some(accounting_origin);
+    context.accounting_origin = accounting_origin;
     let network_policy = config.network.clone().map(|network| {
         codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
             codewhale_net::network_policy::NetworkPolicy::from(network),
@@ -18705,6 +18867,108 @@ mod mounted_history_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].session_id.as_deref(), Some(id.as_str()));
         runtime.shutdown_and_wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mounted_resume_recovers_after_workspace_rename_via_migrate_and_symlinks() -> Result<()>
+    {
+        let _env = lock_test_env();
+        let _runtime_override = EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+        let _legacy_runtime_override = EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+        let project_a = root.join("Project_A");
+        let project_b = root.join("Project_B");
+        std::fs::create_dir(&project_a)?;
+        let manager = SessionManager::default_location()?;
+        let (original, _) = source(&manager, &project_a)?;
+        let cli_a = cli(&project_a);
+        let (_, id) = prepare_mounted_session(
+            &cli_a,
+            prepare_interactive_config(&cli_a, &config(), true)?,
+            original.metadata.id,
+            MountedHistoryIntent::Resume,
+            plugins(&project_a),
+        )
+        .await?;
+
+        std::fs::rename(&project_a, &project_b)?;
+        let cli_b = cli(&project_b);
+        let mismatch = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("renamed workspace must refuse before migration")?;
+        let mismatch_text = format!("{mismatch:#}");
+        assert!(
+            mismatch_text.contains("codewhale sessions migrate --old-path"),
+            "{mismatch_text}"
+        );
+
+        let mut half_edited = manager
+            .load_session_snapshot_bounded(&id, codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES)?;
+        half_edited.metadata.workspace = project_b.clone();
+        half_edited
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())?;
+        manager.publish_session(&half_edited)?;
+        let half_err = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("half-edited document must diagnose thread mismatch")?;
+        let half_text = format!("{half_err:#}");
+        assert!(
+            half_text.contains("saved history holder source workspace changed")
+                && half_text.contains("codewhale sessions migrate --old-path"),
+            "{half_text}"
+        );
+
+        let report = manager.migrate_workspace(
+            &codewhale_engine::session_manager::WorkspaceMigrationOptions {
+                old_path: project_a.clone(),
+                new_path: project_b.clone(),
+                session_id: None,
+                dry_run: false,
+            },
+        )?;
+        assert_eq!(report.migrated_threads.len(), 1);
+
+        let (_, resumed_id) = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await?;
+        assert_eq!(resumed_id, id);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&project_b, &project_a)?;
+            let cli_link = cli(&project_a);
+            let (_, link_resumed_id) = prepare_mounted_session(
+                &cli_link,
+                prepare_interactive_config(&cli_link, &config(), true)?,
+                id.clone(),
+                MountedHistoryIntent::Resume,
+                plugins(&project_a),
+            )
+            .await?;
+            assert_eq!(link_resumed_id, id);
+        }
         Ok(())
     }
 

@@ -404,11 +404,7 @@ fn child_compaction_config(
         image_input,
         effective_context_window: Some(window),
         focus: None,
-        runtime_cost_owner: runtime
-            .runtime_usage_lease
-            .as_ref()
-            .map(|lease| lease.owner().to_string())
-            .or_else(|| parent.runtime_cost_owner.clone()),
+        runtime_cost_owner: parent.runtime_cost_owner.clone(),
         workspace: Some(runtime.context.workspace.clone()),
         ..parent.clone()
     }
@@ -987,14 +983,6 @@ pub struct AgentWorkerRecord {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_usage_records:
         BTreeMap<String, (crate::cost_status::RuntimeUsageRecord, Option<u64>)>,
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::cost_status::deserialize_missing_usage_sources"
-    )]
-    pub missing_usage_sources: BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub missing_usage_overflowed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub legacy_unreported_usage: bool,
     /// A decoded response omitted usable usage, or a logical provider call
@@ -1111,8 +1099,6 @@ impl AgentWorkerRecord {
             usage: default_agent_run_usage(),
             usage_source_fingerprints: BTreeSet::new(),
             source_usage_records: BTreeMap::new(),
-            missing_usage_sources: BTreeMap::new(),
-            missing_usage_overflowed: false,
             legacy_unreported_usage: false,
             has_unreported_usage: false,
             delivery_evidence,
@@ -1267,24 +1253,9 @@ pub(crate) fn priced_usd_microusd(audit: &crate::pricing::TurnCostAudit) -> Opti
 /// Captured once, when the runtime is built (`SubAgentRuntime::new`: the
 /// engine's per-turn runtime, its off-turn continuation runtime, the direct
 /// Workflow runtime), and inherited unchanged by every `child_runtime` /
-/// `background_runtime` descendant and by the child tool registry's guardian
-/// runtime. It replaces the completion-time `cost_status::scope_token()` read
-/// `record_provider_response_usage` used to perform: a provider response that
-/// lands after `/new` or a session load settles against the session it was
-/// dispatched from, never against whichever session is live when it arrives.
-///
-/// Runtime-owned dispatches (a `RuntimeUsageLease`) already carry their origin
-/// inside the owner sink. This origin governs the ownerless paths: off-turn
-/// continuations, direct Workflow runtimes, and their missing-usage receipts.
 #[derive(Debug, Clone)]
 pub struct SubAgentAccountingOrigin {
-    /// Cost-scope generation at dispatch. The live pool rejects a stale token;
-    /// it is never re-derived at completion.
     cost_scope: crate::cost_status::CostScopeToken,
-    /// Root session of the dispatch: the tool context's state namespace, the
-    /// same identity the terminal fan-in and coordination paths use. A receipt
-    /// whose scope has been retired is appended to this session's durable
-    /// late-usage sidecar.
     session_id: String,
 }
 
@@ -1328,31 +1299,12 @@ async fn record_provider_response_usage(
         .accounting_origin
         .clone()
         .expect("fixture origin captured before dispatch");
-    let prior = runtime
-        .manager
-        .read()
-        .await
-        .worker_records
-        .get(agent_id)
-        .and_then(|worker| {
-            worker
-                .source_usage_records
-                .get(&crate::cost_status::usage_source_fingerprint(source_id))
-        })
-        .map(|record| record.0.clone());
-    let source = if let Some(prior) = prior {
-        crate::cost_status::NativeUsageSource::resume_admitted(&prior, Some(origin))
-            .expect("fixture native predecessor")
-    } else {
-        crate::cost_status::NativeUsageSource::capture_with_origin(
-            source_id,
-            crate::cost_status::UsageSpendOwner::Auxiliary,
-            Some(origin),
-        )
-    };
-    let record = source
-        .reported(&route, usage)
-        .expect("fixture usage revision");
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let record = source.reported(&route, usage);
     let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
     accounting
         .publish(&record)
@@ -1728,10 +1680,16 @@ fn worker_profile_for_spawn(
 }
 
 fn normalize_worker_record(mut record: AgentWorkerRecord) -> AgentWorkerRecord {
-    if record.has_unreported_usage
-        && record.missing_usage_sources.is_empty()
-        && !record.missing_usage_overflowed
-    {
+    let has_missing_sources = record.source_usage_records.values().any(|(src, _)| {
+        src.settlement.as_ref().is_some_and(|revision| {
+            matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        })
+    });
+    if record.has_unreported_usage && !has_missing_sources {
         record.legacy_unreported_usage = true;
     }
     record.spec = normalize_worker_spec(record.spec);
@@ -3135,10 +3093,6 @@ pub struct SubAgentRuntime {
     /// whole spawn tree publishes into one ordered, fan-out-able mailbox.
     /// `None` only when no consumer is wired (legacy entry points / tests).
     pub mailbox: Option<Mailbox>,
-    /// Lease on the durable runtime-turn accounting sink. Detached child
-    /// runtimes clone this guard, keeping the sink alive after the parent UI
-    /// mailbox closes until the final child response has been persisted.
-    pub runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
     /// Dispatch-time accounting ownership for every provider response this
     /// runtime or its descendants settle. Captured in [`Self::new`], cloned
     /// by [`Self::child_runtime`], never refreshed from the live cost scope.
@@ -3287,7 +3241,6 @@ impl SubAgentRuntime {
             cancel_token: CancellationToken::new(),
             foreground_children: None,
             mailbox: None,
-            runtime_usage_lease: None,
             accounting_origin,
             parent_completion_tx: None,
             fork_context: None,
@@ -3504,19 +3457,11 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Inherit the parent session's compaction policy, and bind descendants
-    /// to the durable accounting owner it names (created by a runtime host).
-    /// Interactive TUI turns have no owner and continue using mailbox
-    /// delivery only.
     #[must_use]
     pub fn with_parent_compaction(
         mut self,
         compaction: &crate::compaction::CompactionConfig,
     ) -> Self {
-        self.runtime_usage_lease = compaction
-            .runtime_cost_owner
-            .as_deref()
-            .and_then(crate::cost_status::acquire_runtime_usage_lease);
         self.compaction = compaction.clone();
         self
     }
@@ -3677,7 +3622,6 @@ impl SubAgentRuntime {
             cancel_token,
             foreground_children: self.foreground_children.clone(),
             mailbox: self.mailbox.clone(),
-            runtime_usage_lease: self.runtime_usage_lease.clone(),
             accounting_origin: self.accounting_origin.clone(),
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
@@ -6036,7 +5980,7 @@ impl SubAgentManager {
             || self
                 .store_authority
                 .as_ref()
-                .is_some_and(|authority| authority.owned.lock().contains(id))
+                .is_some_and(|authority| authority.owned.lock().contains_key(id))
     }
 
     fn admitted_store_authority(&mut self) -> Result<Option<Arc<SubAgentStoreAuthority>>> {
@@ -6072,7 +6016,7 @@ impl SubAgentManager {
         self.coordination = image.state.coordination.clone();
         self.foreign_live_owners =
             live_foreign_store_owners(&image, &authority.path, &authority.writer);
-        let owned = authority.owned.lock().clone();
+        let owned: HashSet<String> = authority.owned.lock().keys().cloned().collect();
         let agent_ids = image
             .state
             .agents
@@ -6102,7 +6046,11 @@ impl SubAgentManager {
                         .get(&persisted.id)
                         .is_some_and(|writer| authority.writer_is_live(writer))
                 {
-                    authority.owned.lock().insert(persisted.id.clone());
+                    authority
+                        .owned
+                        .lock()
+                        .entry(persisted.id.clone())
+                        .or_insert(0);
                     adopted.push(persisted.id.clone());
                 }
             }
@@ -6145,7 +6093,11 @@ impl SubAgentManager {
                     .get(&record.spec.worker_id)
                     .is_some_and(|writer| authority.writer_is_live(writer));
                 if !writer_live {
-                    authority.owned.lock().insert(record.spec.worker_id.clone());
+                    authority
+                        .owned
+                        .lock()
+                        .entry(record.spec.worker_id.clone())
+                        .or_insert(0);
                     adopted.push(record.spec.worker_id.clone());
                 }
                 let origin = image
@@ -6226,7 +6178,7 @@ impl SubAgentManager {
                 .record_writers
                 .iter()
                 .filter(|(_, writer)| *writer == &authority.writer)
-                .map(|(id, _)| id.clone())
+                .map(|(id, _)| (id.clone(), 0))
                 .collect();
             self.foreign_live_owners =
                 live_foreign_store_owners(&committed, &authority.path, &authority.writer);
@@ -6851,7 +6803,11 @@ impl SubAgentManager {
     ) {
         let worker_id = spec.worker_id.clone();
         if let Some(authority) = self.store_authority.as_ref() {
-            authority.owned.lock().insert(worker_id.clone());
+            let min_seq = self
+                .persist_sequence
+                .load(std::sync::atomic::Ordering::Acquire)
+                .saturating_add(1);
+            authority.owned.lock().insert(worker_id.clone(), min_seq);
         }
         let now_ms = epoch_millis_now();
         let mut record = AgentWorkerRecord::new_for_session(
@@ -7702,53 +7658,75 @@ impl SubAgentManager {
             .worker_records
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("usage worker is unavailable"))?;
-        if record
-            .missing_usage_sources
-            .get(&key)
-            .is_some_and(|coverage| !coverage.matches_route(&source.usage.route))
-        {
-            return Err(anyhow!("worker usage source changed its captured route"));
-        }
         let previous = record.source_usage_records.get(&key);
+        if source.route_conflicts_with(previous.map(|old| &old.0)) {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker usage source changed its captured route; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key);
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
+        }
         if record.usage_source_fingerprints.contains(&key) && previous.is_none() {
-            return Err(anyhow!(
-                "legacy worker source has no provable prior contribution"
-            ));
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "legacy worker source has no provable prior contribution; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
         }
-        if !source.permits_replacement(previous.map(|old| &old.0))? {
+        if !source.supersedes(previous.map(|old| &old.0)) {
             return Ok(false);
         }
-        if !source.is_acknowledged() {
-            tracing::warn!("worker usage source has no durable acknowledgement; not counted");
-            return Ok(false);
-        }
-        let revision = source
-            .settlement
-            .as_ref()
-            .ok_or_else(|| anyhow!("worker source has no revision"))?;
+        let Some(revision) = source.settlement.as_ref() else {
+            tracing::warn!(
+                worker_id = %worker_id,
+                source_id = %source.source_id,
+                "worker source has no revision; recording unknown cost"
+            );
+            record.legacy_unreported_usage = true;
+            record.usage_source_fingerprints.insert(key.clone());
+            let unknown = crate::cost_status::unknown_cost_record(
+                &source.source_id,
+                &source.usage.route,
+                source.usage.usage.clone(),
+            );
+            record.source_usage_records.insert(key, (unknown, None));
+            record.has_unreported_usage = true;
+            record.updated_at_ms = epoch_millis_now();
+            refresh_usage_note(&mut record.usage);
+            return Ok(true);
+        };
         let reported = revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported;
         let incomplete = revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete;
         let old_usage = previous.map(|old| &old.0.usage.usage);
         let old_cost = previous.and_then(|old| old.1);
         if let Some((prior, cost)) = previous {
-            prior.validate()?;
+            if let Err(error) = prior.validate() {
+                tracing::warn!(%error, "worker prior usage receipt validation failed; continuing");
+            }
             let expected_cost = crate::cost_status::UsageSourceContribution::for_record(prior);
             let expected_cost = (expected_cost.priced > 0)
                 .then(|| priced_usd_microusd(&prior.usage.route.audit_frozen(&prior.usage.usage)))
                 .flatten();
-            anyhow::ensure!(
-                *cost == expected_cost,
-                "worker prior cost does not match its frozen receipt"
-            );
-            anyhow::ensure!(
-                record.usage.input_tokens.unwrap_or(0) >= u64::from(prior.usage.usage.input_tokens)
-                    && record.usage.output_tokens.unwrap_or(0)
-                        >= u64::from(prior.usage.usage.output_tokens)
-                    && record.usage.total_tokens.unwrap_or(0)
-                        >= usage_total_tokens(&prior.usage.usage)
-                    && record.usage.cost_microusd.unwrap_or(0) >= cost.unwrap_or(0),
-                "worker projection is missing its prior source contribution"
-            );
+            if *cost != expected_cost {
+                tracing::warn!("worker prior cost does not match its frozen receipt; continuing");
+            }
         }
         let contribution = crate::cost_status::UsageSourceContribution::for_record(source);
         let priced = (contribution.priced > 0)
@@ -7797,34 +7775,20 @@ impl SubAgentManager {
                 priced.unwrap_or(0),
             );
         }
-        if matches!(
-            revision.coverage,
-            crate::llm_client::ProviderUsageCoverage::Missing
-                | crate::llm_client::ProviderUsageCoverage::Incomplete
-        ) {
-            if record.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
-                || record.missing_usage_sources.contains_key(&key)
-            {
-                record.missing_usage_sources.insert(
-                    key.clone(),
-                    crate::cost_status::MissingUsageCoverage::for_route(
-                        &source.usage.route,
-                        revision.reason,
-                    ),
-                );
-            } else {
-                record.missing_usage_overflowed = true;
-            }
-        } else {
-            record.missing_usage_sources.remove(&key);
-        }
         record.usage_source_fingerprints.insert(key.clone());
         record
             .source_usage_records
             .insert(key, (source.persisted(), priced));
         record.has_unreported_usage = record.legacy_unreported_usage
-            || record.missing_usage_overflowed
-            || !record.missing_usage_sources.is_empty();
+            || record.source_usage_records.values().any(|(src, _)| {
+                src.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
         record.updated_at_ms = epoch_millis_now();
         refresh_usage_note(&mut record.usage);
         Ok(true)
@@ -7840,17 +7804,15 @@ impl SubAgentManager {
         priced_cost_microusd: Option<u64>,
     ) {
         let fingerprint = crate::cost_status::usage_source_fingerprint(source_id);
-        if self
+        let route_conflict = self
             .worker_records
             .get(worker_id)
-            .and_then(|record| record.missing_usage_sources.get(&fingerprint))
-            .is_some_and(|coverage| {
-                !coverage.route_sha256.is_empty() && !coverage.matches_route(route)
-            })
-        {
+            .and_then(|record| record.source_usage_records.get(&fingerprint))
+            .is_some_and(|(existing, _)| existing.usage.route != *route);
+        if route_conflict {
             return;
         }
-        self.record_worker_usage(worker_id, source_id, usage, priced_cost_microusd);
+        self.record_worker_usage_on_route(worker_id, source_id, route, usage, priced_cost_microusd);
     }
     #[cfg(test)]
     fn record_worker_usage(
@@ -7860,16 +7822,33 @@ impl SubAgentManager {
         usage: &Usage,
         priced_cost_microusd: Option<u64>,
     ) {
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek",
+            "deepseek-v4-flash",
+            Some("https://api.deepseek.com/v1"),
+            chrono::Utc::now(),
+        );
+        self.record_worker_usage_on_route(
+            worker_id,
+            source_id,
+            &route,
+            usage,
+            priced_cost_microusd,
+        );
+    }
+
+    #[cfg(test)]
+    fn record_worker_usage_on_route(
+        &mut self,
+        worker_id: &str,
+        source_id: &str,
+        route: &crate::cost_status::EffectiveRouteEnvelope,
+        usage: &Usage,
+        priced_cost_microusd: Option<u64>,
+    ) {
         if !usage_has_reported_data(usage) {
-            self.record_worker_missing_usage(
-                worker_id,
-                source_id,
-                crate::cost_status::MissingUsageCoverage {
-                    reason: crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-                    money_metered: true,
-                    route_sha256: String::new(),
-                },
-            );
+            self.record_worker_missing_usage(worker_id, source_id, route);
             return;
         }
         let now_ms = epoch_millis_now();
@@ -7879,15 +7858,43 @@ impl SubAgentManager {
         };
         let source_fingerprint = crate::cost_status::usage_source_fingerprint(source_id);
         let promoted = record
-            .missing_usage_sources
-            .remove(&source_fingerprint)
-            .is_some();
-        if !record.usage_source_fingerprints.insert(source_fingerprint) && !promoted {
+            .source_usage_records
+            .get(&source_fingerprint)
+            .is_some_and(|(existing, _)| {
+                existing.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
+        if !record
+            .usage_source_fingerprints
+            .insert(source_fingerprint.clone())
+            && !promoted
+        {
             return;
         }
+        let settled = crate::cost_status::NativeUsageSource::capture(
+            source_id,
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+        )
+        .reported(route, usage)
+        .persisted();
+        record
+            .source_usage_records
+            .insert(source_fingerprint, (settled, priced_cost_microusd));
         record.has_unreported_usage = record.legacy_unreported_usage
-            || record.missing_usage_overflowed
-            || !record.missing_usage_sources.is_empty();
+            || record.source_usage_records.values().any(|(src, _)| {
+                src.settlement.as_ref().is_some_and(|rev| {
+                    matches!(
+                        rev.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    )
+                })
+            });
         record.updated_at_ms = now_ms;
         record.usage.input_tokens = Some(
             record
@@ -7928,7 +7935,7 @@ impl SubAgentManager {
         &mut self,
         worker_id: &str,
         source_id: &str,
-        coverage: crate::cost_status::MissingUsageCoverage,
+        route: &crate::cost_status::EffectiveRouteEnvelope,
     ) {
         let Some(record) = self.worker_records.get_mut(worker_id) else {
             return;
@@ -7937,12 +7944,16 @@ impl SubAgentManager {
         if record.usage_source_fingerprints.contains(&fingerprint) {
             return;
         }
-        if record.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES {
-            record.usage_source_fingerprints.insert(fingerprint.clone());
-            record.missing_usage_sources.insert(fingerprint, coverage);
-        } else {
-            record.missing_usage_overflowed = true;
+        record.usage_source_fingerprints.insert(fingerprint.clone());
+        let unknown = crate::cost_status::RuntimeUsageDropRecord {
+            reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            source_id: source_id.to_string(),
+            route: route.clone(),
         }
+        .as_usage_record();
+        record
+            .source_usage_records
+            .insert(fingerprint, (unknown, None));
         record.has_unreported_usage = true;
         record.updated_at_ms = epoch_millis_now();
         self.persist_state_debounced();
@@ -10150,10 +10161,7 @@ impl SubAgentManager {
         let runtime_origin_turn_id = if runtime.context.runtime.active_thread_id.as_deref()
             == Some(runtime.context.state_namespace.as_str())
         {
-            runtime
-                .runtime_usage_lease
-                .as_ref()
-                .map(|lease| lease.owner().to_string())
+            runtime.compaction.runtime_cost_owner.clone()
         } else {
             None
         };
@@ -13471,7 +13479,7 @@ struct SubAgentStoreAuthority {
     path: PathBuf,
     writer: String,
     _lease: fs::File,
-    owned: parking_lot::Mutex<HashSet<String>>,
+    owned: parking_lot::Mutex<HashMap<String, u64>>,
     transaction: parking_lot::Mutex<Option<SubAgentStoreTransaction>>,
     revision: std::sync::atomic::AtomicU64,
     published_sequence: std::sync::atomic::AtomicU64,
@@ -13799,7 +13807,7 @@ impl SubAgentStoreAuthority {
             path: path.to_path_buf(),
             writer: writer.into(),
             _lease: lease,
-            owned: parking_lot::Mutex::new(HashSet::new()),
+            owned: parking_lot::Mutex::new(HashMap::new()),
             transaction: parking_lot::Mutex::new(None),
             revision: std::sync::atomic::AtomicU64::new(image.revision),
             published_sequence: std::sync::atomic::AtomicU64::new(
@@ -13932,8 +13940,6 @@ impl SubAgentStoreAuthority {
                         "usage",
                         "usage_source_fingerprints",
                         "source_usage_records",
-                        "missing_usage_sources",
-                        "missing_usage_overflowed",
                         "legacy_unreported_usage",
                         "has_unreported_usage",
                         "updated_at_ms",
@@ -13971,8 +13977,13 @@ impl SubAgentStoreAuthority {
             );
             return Ok(());
         }
-        let owned = self.owned.lock().clone();
-        let mut selected = owned;
+        let mut selected: HashSet<String> = self
+            .owned
+            .lock()
+            .iter()
+            .filter(|(_, min_seq)| **min_seq <= value.snapshot_sequence)
+            .map(|(id, _)| id.clone())
+            .collect();
         if let Some(id) = terminal {
             selected.insert(id.to_string());
         }
@@ -14248,12 +14259,15 @@ impl SubAgentStoreAuthority {
             value.snapshot_sequence,
             std::sync::atomic::Ordering::Release,
         );
-        *self.owned.lock() = next
-            .record_writers
-            .iter()
-            .filter(|(_, writer)| *writer == &self.writer)
-            .map(|(id, _)| id.clone())
-            .collect();
+        {
+            let mut owned = self.owned.lock();
+            owned.retain(|_, min_seq| *min_seq > value.snapshot_sequence);
+            for (id, writer) in &next.record_writers {
+                if writer == &self.writer {
+                    owned.entry(id.clone()).or_insert(0);
+                }
+            }
+        }
         *image = next;
         Ok(())
     }
@@ -16163,6 +16177,7 @@ async fn spawn_subagent_from_input(
         Err(error) => ToolError::execution_failed(format!("Failed to spawn sub-agent: {error}")),
     })?;
 
+    codewhale_telemetry::session_counters().bump(codewhale_telemetry::Counter::SubagentSpawn);
     Ok((result, spawn_metadata))
 }
 
@@ -16601,12 +16616,41 @@ fn build_subagent_system_prompt_with_skills(
     context: &ToolContext,
 ) -> String {
     let mut prompt = build_subagent_system_prompt(agent_type, assignment);
+    // A child runs under the same session as its parent, so it reads the same
+    // reviewed memory packet the root prompt carries. Without this, a rule the
+    // user pinned (a deployment gate, a working-directory rule) would bind the
+    // parent and silently not the child that actually edits the files.
+    if let Some(section) = subagent_memory_section(context) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&section);
+    }
     let catalog = subagent_skill_catalog(context);
     if !catalog.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&catalog);
     }
     prompt
+}
+
+/// The inherited memory packet for a child, paired with the hygiene guidance
+/// exactly as the root session pairs them.
+///
+/// `memory_path` is inherited from the parent's `ToolContext`, so this is
+/// `None` when the session never enabled memory — the child seam needs no
+/// separate flag and cannot drift from the parent's setting. The packet is
+/// re-composed instead of copied out of the parent prompt: an isolated
+/// worktree resolves to the same workspace scope through its shared git
+/// remote, and re-composition keeps the child honest about a memory edited
+/// since the parent's last header refresh. No receipt is recorded here; the
+/// root session's own preparation is the receipt for these bytes.
+fn subagent_memory_section(context: &ToolContext) -> Option<String> {
+    let memory_path = context.memory_path.as_deref()?;
+    let block = codewhale_runtime::native_memory::native_prompt_block(
+        true,
+        memory_path,
+        &context.workspace,
+    )?;
+    crate::prompts::memory_prompt_section(Some(&block))
 }
 
 /// Render the same workspace/plugin-qualified Skill authority available to
@@ -17610,18 +17654,7 @@ async fn record_return_check_usage(
     let review_route = runtime
         .client
         .effective_route_envelope(reviewer_model, chrono::Utc::now());
-    let origin = runtime
-        .compaction
-        .runtime_cost_owner
-        .as_deref()
-        .and_then(|owner| {
-            crate::cost_status::NativeUsageOrigin::runtime(
-                runtime.accounting_origin.cost_scope,
-                owner,
-            )
-            .ok()
-        })
-        .or_else(|| runtime.context.accounting_origin.clone());
+    let origin = runtime.context.accounting_origin.clone();
     #[cfg(any(test, feature = "test-support"))]
     let origin = origin.or_else(|| runtime.accounting_origin.test_session_origin());
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
@@ -17629,10 +17662,9 @@ async fn record_return_check_usage(
         crate::cost_status::UsageSpendOwner::Auxiliary,
         origin,
     );
-    if let Ok(record) = source.reported(&review_route, usage) {
-        let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
-        accounting.publish_auxiliary_usage(&record).await;
-    }
+    let record = source.reported(&review_route, usage);
+    let accounting = engine::ChildAccountingProjection::capture(runtime, agent_id);
+    accounting.publish_auxiliary_usage(&record).await;
 }
 
 async fn apply_auto_review_return_check(

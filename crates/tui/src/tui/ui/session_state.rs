@@ -2223,6 +2223,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
         content: message.clone(),
     });
     app.status_message = Some(message);
+    app.refresh_agent_approved_plugins_notice();
     app.needs_redraw = true;
     true
 }

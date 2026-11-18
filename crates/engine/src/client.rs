@@ -231,6 +231,7 @@ pub struct CodewhaleClient {
     plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
     plugin_oauth_read_only: bool,
+    claude_org: Option<Arc<claude_org::ClaudeOrgAuth>>,
     session_provider_keys_only: bool,
     /// Exact configured credential values removed from model-bound tool
     /// results. Structural redaction handles config/JSON assignments, while
@@ -551,7 +552,9 @@ fn mark_recovery_probe_if_due(health: &mut ConnectionHealth, now: Instant) -> bo
 
 /// The one command that replaces a rejected key, by where it came from.
 fn auth_fix_hint(route: &str, key_source: &str) -> String {
-    if key_source.starts_with("--api-key") {
+    if key_source == codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE {
+        claude_org::relink_hint()
+    } else if key_source.starts_with("--api-key") {
         "pass a valid --api-key".to_string()
     } else if let Some(rest) = key_source.strip_prefix("env var ")
         && rest.contains("api_key_env")
@@ -576,6 +579,7 @@ impl Clone for CodewhaleClient {
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
+            claude_org: self.claude_org.clone(),
             session_provider_keys_only: self.session_provider_keys_only,
             model_bound_secret_values: Arc::clone(&self.model_bound_secret_values),
             catalog_error_secret_values: Arc::clone(&self.catalog_error_secret_values),
@@ -1918,9 +1922,26 @@ impl CodewhaleClient {
             || config.http_headers(),
             |entry| entry.http_headers.clone().unwrap_or_default(),
         );
-        let auth_disabled = auth_mode_disables_api_key(
-            config.auth_mode_for_provider(&admitted_identity).as_deref(),
-        );
+        let auth_mode = config.auth_mode_for_provider(&admitted_identity);
+        let claude_org = if api_provider == ProviderKind::Anthropic
+            && api_key_source == codewhale_config::credentials::CLAUDE_ORG_KEY_SOURCE
+        {
+            anyhow::ensure!(
+                !config.session_provider_keys_only,
+                "Claude organization billing is unavailable under session-only provider key policy"
+            );
+            Some(Arc::new(claude_org::ClaudeOrgAuth::for_profile(
+                config.account_profile.clone(),
+                http_headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                    .map(|(_, value)| value.clone()),
+            )))
+        } else {
+            None
+        };
+        let auth_disabled =
+            auth_mode_disables_api_key(auth_mode.as_deref()) || claude_org.is_some();
         let insecure_skip_tls_verify = config.insecure_skip_tls_verify();
         let path_suffix = config
             .provider_config_for(&admitted_identity)
@@ -2034,6 +2055,7 @@ impl CodewhaleClient {
             subscription_limit_guidance,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
+            claude_org,
             session_provider_keys_only: config.session_provider_keys_only,
             model_bound_secret_values,
             catalog_error_secret_values,
@@ -2084,6 +2106,17 @@ impl CodewhaleClient {
             !self.session_provider_keys_only || self.plugin_provider.is_none(),
             "Stored OAuth authorization is unavailable under session-only provider key policy"
         );
+        if let Some(claude_org) = &self.claude_org {
+            anyhow::ensure!(
+                !self.session_provider_keys_only,
+                "Claude organization billing is unavailable under session-only provider key policy"
+            );
+            return claude_org
+                .authorize(request, self.claude_org_test_transport_base())
+                .await
+                .map(|(request, _)| request)
+                .map_err(anyhow::Error::new);
+        }
         let Some(provider) = self.plugin_provider.clone() else {
             return Ok(request);
         };
@@ -2133,6 +2166,14 @@ impl CodewhaleClient {
         })
         .await??;
         Ok(request.bearer_auth(token))
+    }
+
+    fn claude_org_test_transport_base(&self) -> Option<&str> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(base_url) = self.test_messages_transport_base_url.as_deref() {
+            return Some(base_url);
+        }
+        None
     }
 
     /// Map a failed HTTP response, naming the route, host and key source on
@@ -3872,8 +3913,7 @@ impl CodewhaleClient {
         source: &crate::cost_status::NativeUsageSource,
     ) -> Result<TranslationProviderResponse> {
         let route = self.effective_route_envelope(model, chrono::Utc::now());
-        let observation = source.observe_route(&route)?;
-        source.admit_dispatch(&route).await?;
+        let observation = source.observation();
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
             Some(observation),
@@ -3908,7 +3948,7 @@ impl CodewhaleClient {
                 },
             }
         };
-        let record = source.prepare_observed(
+        let record = source.prepare_record(
             &route,
             &usage,
             coverage,
@@ -3918,14 +3958,10 @@ impl CodewhaleClient {
                 crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             },
             &wire,
-        )?;
-        if record.has_captured_origin() {
-            crate::cost_status::settle_runtime_usage_record(
-                crate::cost_status::scope_token(),
-                None,
-                &record,
-            )
-            .await?;
+        );
+        if let Some(origin) = source.origin() {
+            crate::cost_status::record_runtime_usage_async(origin.scope(), Some(origin), &record)
+                .await;
         }
         response.map(|mut response| {
             response.accounting = Some(record);
@@ -4014,7 +4050,7 @@ impl CodewhaleClient {
         });
         chat::apply_route_reasoning_controls(
             &mut body,
-            self.api_provider,
+            self.chat_shape_provider(&model),
             &self.base_url,
             &model,
             Some("off"),
@@ -4765,6 +4801,14 @@ impl CodewhaleClient {
         if self.plugin_provider.is_some() {
             return "plugin provider request failed".into();
         }
+        let claude_org_redacted;
+        let raw = match &self.claude_org {
+            Some(claude_org) => {
+                claude_org_redacted = claude_org.redact(raw);
+                claude_org_redacted.as_str()
+            }
+            None => raw,
+        };
         let provider = Some(self.api_provider.provider().display_name());
         let ErrorBodyDisclosure::Guarded { request_secrets } = disclosure else {
             return sanitize_http_error_body(provider, status, raw);
@@ -4837,32 +4881,7 @@ impl CodewhaleClient {
                 } else {
                     request.timeout(total)
                 };
-                async move {
-                    let request = self
-                        .authorize_plugin_request(request)
-                        .await
-                        .map_err(|error| LlmError::Other(error.to_string()))?;
-                    let (client, request) = request.build_split();
-                    let request = request
-                        .map_err(|error| LlmError::Other(error.without_url().to_string()))?;
-                    if operation == crate::llm_client::RetryOperation::ReadOnly
-                        && request.method() != reqwest::Method::GET
-                        && request.method() != reqwest::Method::HEAD
-                    {
-                        return Err(LlmError::Other(
-                            "Read-only retry requires GET or HEAD".to_string(),
-                        ));
-                    }
-                    let pending = crate::llm_client::begin_outbound_transmission(request.method());
-                    // Measure the attempt: from_reqwest cannot know the spent
-                    // budget (reqwest does not expose it).
-                    let started = std::time::Instant::now();
-                    let result = client.execute(request).await.map_err(|error| {
-                        LlmError::from_reqwest_measured(&error.without_url(), started)
-                    });
-                    crate::llm_client::settle_outbound_transmission(pending, &result);
-                    result
-                }
+                async move { self.dispatch_attempt(request, operation).await }
             },
             Some(total),
             disclosure,
@@ -4884,20 +4903,9 @@ impl CodewhaleClient {
                 stream_entry::open_sse_response(&open_req, |policy| {
                     let request = build(policy);
                     async move {
-                        let request = self.authorize_plugin_request(request).await?;
-                        let (client, request) = request.build_split();
-                        let request = request.map_err(|error| {
-                            anyhow::Error::new(LlmError::Other(error.without_url().to_string()))
-                        })?;
-                        let pending =
-                            crate::llm_client::begin_outbound_transmission(request.method());
-                        // Same as the retry loop: measure instead of "0ns".
-                        let started = std::time::Instant::now();
-                        let result = client.execute(request).await.map_err(|error| {
-                            LlmError::from_reqwest_measured(&error.without_url(), started)
-                        });
-                        crate::llm_client::settle_outbound_transmission(pending, &result);
-                        result.map_err(anyhow::Error::new)
+                        self.dispatch_attempt(request, crate::llm_client::RetryOperation::Inference)
+                            .await
+                            .map_err(anyhow::Error::new)
                     }
                 })
                 .await
@@ -4912,6 +4920,80 @@ impl CodewhaleClient {
             crate::llm_client::RetryOperation::Inference,
         )
         .await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn dispatch_attempt(
+        &self,
+        request: reqwest::RequestBuilder,
+        operation: crate::llm_client::RetryOperation,
+    ) -> std::result::Result<reqwest::Response, LlmError> {
+        let replay = self.claude_org.as_ref().and_then(|_| request.try_clone());
+        let (response, sent_token) = self.dispatch_authorized(request, operation).await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && let (Some(claude_org), Some(replay), Some(sent_token)) =
+                (self.claude_org.as_ref(), replay, sent_token)
+            && claude_org.refetch_after_rejection(&sent_token).await?
+        {
+            drop(response);
+            return self
+                .dispatch_authorized(replay, operation)
+                .await
+                .map(|(response, _)| response);
+        }
+        Ok(response)
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn dispatch_authorized(
+        &self,
+        request: reqwest::RequestBuilder,
+        operation: crate::llm_client::RetryOperation,
+    ) -> std::result::Result<(reqwest::Response, Option<String>), LlmError> {
+        let (request, sent_token) = match &self.claude_org {
+            Some(_) if self.session_provider_keys_only => {
+                return Err(LlmError::Other(
+                    "Claude organization billing is unavailable under session-only provider key policy"
+                        .into(),
+                ));
+            }
+            Some(claude_org) => {
+                let (request, token) = claude_org
+                    .authorize(request, self.claude_org_test_transport_base())
+                    .await?;
+                (request, Some(token))
+            }
+            None => (
+                self.authorize_plugin_request(request)
+                    .await
+                    .map_err(|error| {
+                        error
+                            .downcast::<LlmError>()
+                            .unwrap_or_else(|error| LlmError::Other(format!("{error:#}")))
+                    })?,
+                None,
+            ),
+        };
+        let (client, request) = request.build_split();
+        let request = request.map_err(|error| LlmError::Other(error.without_url().to_string()))?;
+        if operation == crate::llm_client::RetryOperation::ReadOnly
+            && request.method() != reqwest::Method::GET
+            && request.method() != reqwest::Method::HEAD
+        {
+            return Err(LlmError::Other(
+                "Read-only retry requires GET or HEAD".to_string(),
+            ));
+        }
+        let pending = crate::llm_client::begin_outbound_transmission(request.method());
+        // Measure the attempt: from_reqwest cannot know the spent
+        // budget (reqwest does not expose it).
+        let started = std::time::Instant::now();
+        let result = client
+            .execute(request)
+            .await
+            .map_err(|error| LlmError::from_reqwest_measured(&error.without_url(), started));
+        crate::llm_client::settle_outbound_transmission(pending, &result);
+        result.map(|response| (response, sent_token))
     }
 
     async fn send_retry_loop<F, Fut>(
@@ -5029,13 +5111,19 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let error = match (provider_error, route_error) {
+                    let billing_stop = self
+                        .claude_org
+                        .as_ref()
+                        .and_then(|_| claude_org::http_error(status.as_u16(), &raw));
+                    let error = match (billing_stop, provider_error, route_error) {
+                        (Some(stop), _, _) => stop,
                         (
+                            None,
                             Some(LlmError::QuotaExhausted(_)),
                             route @ LlmError::QuotaExhausted(_),
                         ) => route,
-                        (Some(native), _) => native,
-                        (None, route) => route,
+                        (None, Some(native), _) => native,
+                        (None, None, route) => route,
                     };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
@@ -5188,13 +5276,19 @@ impl CodewhaleClient {
                         header_retry_after,
                         body_retry_after,
                     );
-                    let error = match (provider_error, route_error) {
+                    let billing_stop = self
+                        .claude_org
+                        .as_ref()
+                        .and_then(|_| claude_org::http_error(status.as_u16(), &raw));
+                    let error = match (billing_stop, provider_error, route_error) {
+                        (Some(stop), _, _) => stop,
                         (
+                            None,
                             Some(LlmError::QuotaExhausted(_)),
                             route @ LlmError::QuotaExhausted(_),
                         ) => route,
-                        (Some(native), _) => native,
-                        (None, route) => route,
+                        (None, Some(native), _) => native,
+                        (None, None, route) => route,
                     };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
@@ -6085,6 +6179,58 @@ fn apply_provider_model_cutline(
     models
 }
 
+fn codewhale_row_pricing_to_cost(
+    pricing: &serde_json::Value,
+    fetched_at: u64,
+) -> Option<codewhale_config::models_dev::ModelsDevCost> {
+    let obj = pricing.as_object()?;
+    let currency = obj.get("currency")?.as_str()?.trim();
+    if !currency.eq_ignore_ascii_case("USD") {
+        return None;
+    }
+    if let Some(raw_expires) = obj.get("expiresAt").filter(|value| !value.is_null()) {
+        let expires_str = raw_expires.as_str()?;
+        let expires_unix = codewhale_config::cloud_facts::verify::parse_rfc3339_utc(expires_str)?;
+        let reference_unix = if fetched_at > 0 {
+            fetched_at
+        } else {
+            now_unix()
+        };
+        if expires_unix <= reference_unix {
+            return None;
+        }
+    }
+    let rates = obj.get("ratesMicrosPerMillion")?.as_object()?;
+    let parse_micros = |field: &str| -> Option<Option<f64>> {
+        let Some(raw) = rates.get(field).filter(|value| !value.is_null()) else {
+            return Some(None);
+        };
+        let micros = raw
+            .as_f64()
+            .filter(|value| value.is_finite() && *value >= 0.0)?;
+        let usd_per_million = micros / 1_000_000.0;
+        usd_per_million.is_finite().then_some(Some(usd_per_million))
+    };
+    let input = parse_micros("input")??;
+    let output = parse_micros("output")??;
+    let cached_input = parse_micros("cachedInput")?;
+    let cache_read_alias = parse_micros("cacheRead")?;
+    let cache_read = match (cached_input, cache_read_alias) {
+        (Some(a), Some(b)) if a != b => return None,
+        (Some(a), _) => Some(a),
+        (None, b) => b,
+    };
+    let cache_write = parse_micros("cacheWrite")?;
+    let cost = codewhale_config::models_dev::ModelsDevCost {
+        input: Some(input),
+        output: Some(output),
+        cache_read,
+        cache_write,
+        ..Default::default()
+    };
+    codewhale_config::pricing::catalog_cost_is_valid(&cost).then_some(cost)
+}
+
 /// Convert a named gateway's `/models` response into truthful provider-scoped
 /// catalog rows. Matching model ids on other providers prove no capabilities,
 /// limits, or prices; only an explicit same-provider bundled row may enrich a
@@ -6130,6 +6276,8 @@ fn codewhale_catalog_offerings_from_body(
         default: bool,
         #[serde(default)]
         limits: Option<RowLimits>,
+        #[serde(default)]
+        pricing: Option<serde_json::Value>,
     }
     #[derive(serde::Deserialize)]
     struct RowLimits {
@@ -6175,6 +6323,11 @@ fn codewhale_catalog_offerings_from_body(
                 output: limits.max_output_tokens.filter(|tokens| *tokens > 0),
             })
             .filter(|limit| *limit != codewhale_config::models_dev::ModelsDevLimit::default());
+        let cost = row
+            .codewhale
+            .as_ref()
+            .and_then(|meta| meta.pricing.as_ref())
+            .and_then(|pricing| codewhale_row_pricing_to_cost(pricing, fetched_at));
         offerings.push(CatalogOffering {
             cost_source: None,
             modalities_source: None,
@@ -6185,7 +6338,7 @@ fn codewhale_catalog_offerings_from_body(
             default_for_provider: row.codewhale.is_some_and(|meta| meta.default),
             family: None,
             limit,
-            cost: None,
+            cost,
             modalities: None,
             attachment: None,
             reasoning: None,
@@ -7188,6 +7341,7 @@ impl CodewhaleClient {
 
 mod anthropic;
 mod chat;
+mod claude_org;
 mod deepseek_effort;
 mod deepseek_tools;
 pub use deepseek_tools::{
@@ -7633,5 +7787,321 @@ mod openrouter_vendor_tests {
                 .get("provider")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn codewhale_catalog_offerings_populates_valid_usd_managed_pricing_and_keeps_byok_unpriced() {
+        let fetched_at = chrono::DateTime::parse_from_rfc3339("2026-11-18T00:00:00Z")
+            .unwrap()
+            .timestamp() as u64;
+        let payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "object": "model",
+                    "owned_by": "deepseek",
+                    "codewhale": {
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-flash",
+                        "protocol": "chat-completions",
+                        "default": true,
+                        "usable": true,
+                        "pricing": {
+                            "currency": "USD",
+                            "pricingPolicy": "pass_through",
+                            "ratesMicrosPerMillion": {
+                                "input": 220_000,
+                                "cachedInput": 7_000,
+                                "output": 660_000
+                            },
+                            "serviceFeeBasisPoints": 0,
+                            "rateCardRevision": "card-rev-1",
+                            "checkedAt": "2026-11-17T00:00:00Z",
+                            "expiresAt": "2026-12-17T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "anthropic/claude-sonnet-5",
+                    "object": "model",
+                    "owned_by": "anthropic",
+                    "codewhale": {
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-5",
+                        "protocol": "anthropic-messages",
+                        "pricing": {
+                            "currency": "usd",
+                            "ratesMicrosPerMillion": {
+                                "input": 3_000_000,
+                                "cacheRead": 300_000,
+                                "cacheWrite": 3_750_000,
+                                "output": 15_000_000
+                            }
+                        }
+                    }
+                },
+                {
+                    "id": "openai/gpt-5.6",
+                    "object": "model",
+                    "owned_by": "openai",
+                    "codewhale": {
+                        "provider": "openai",
+                        "model": "gpt-5.6",
+                        "protocol": "responses",
+                        "billingMode": "byok_external"
+                    }
+                },
+                {
+                    "id": "xai/grok-4.6",
+                    "object": "model"
+                }
+            ]
+        })
+        .to_string();
+
+        let rows = codewhale_catalog_offerings_from_body(&payload, "codewhale", "fp", fetched_at)
+            .expect("managed and BYOK listing should parse");
+        assert_eq!(rows.len(), 4);
+
+        let flash = rows
+            .iter()
+            .find(|row| row.wire_model_id == "deepseek/deepseek-v4-flash")
+            .unwrap();
+        let flash_cost = flash.cost.as_ref().expect("managed USD pricing");
+        assert_eq!(flash_cost.input, Some(0.22));
+        assert_eq!(flash_cost.cache_read, Some(0.007));
+        assert_eq!(flash_cost.output, Some(0.66));
+        assert_eq!(flash_cost.cache_write, None);
+        assert_eq!(flash.cost_source, None);
+
+        let sonnet = rows
+            .iter()
+            .find(|row| row.wire_model_id == "anthropic/claude-sonnet-5")
+            .unwrap();
+        let sonnet_cost = sonnet.cost.as_ref().expect("case-insensitive USD pricing");
+        assert_eq!(sonnet_cost.input, Some(3.0));
+        assert_eq!(sonnet_cost.cache_read, Some(0.3));
+        assert_eq!(sonnet_cost.cache_write, Some(3.75));
+        assert_eq!(sonnet_cost.output, Some(15.0));
+
+        for byok_id in ["openai/gpt-5.6", "xai/grok-4.6"] {
+            let row = rows
+                .iter()
+                .find(|row| row.wire_model_id == byok_id)
+                .unwrap();
+            assert!(row.cost.is_none());
+        }
+
+        let invalid_payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "expired/past",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-11-17T23:59:59Z"
+                        }
+                    }
+                },
+                {
+                    "id": "expired/exact-boundary",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-11-18T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "expired/malformed-ts",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-12-01T00:00:00+08:00"
+                        }
+                    }
+                },
+                {
+                    "id": "currency/non-usd",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "CNY",
+                            "ratesMicrosPerMillion": { "input": 200_000, "output": 600_000 },
+                            "expiresAt": "2026-12-18T00:00:00Z"
+                        }
+                    }
+                },
+                {
+                    "id": "rate/negative-input",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": -1, "output": 600_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/negative-cache",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000, "cachedInput": -5, "output": 600_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/missing-output",
+                    "codewhale": {
+                        "pricing": {
+                            "currency": "USD",
+                            "ratesMicrosPerMillion": { "input": 200_000 }
+                        }
+                    }
+                },
+                {
+                    "id": "rate/non-object",
+                    "codewhale": {
+                        "pricing": "not-an-object"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let invalid_rows =
+            codewhale_catalog_offerings_from_body(&invalid_payload, "codewhale", "fp", fetched_at)
+                .expect("invalid pricing must not fail the catalog refresh");
+        assert_eq!(invalid_rows.len(), 8);
+        assert!(invalid_rows.iter().all(|row| row.cost.is_none()));
+
+        let _env = crate::test_support::lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().expect("home");
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let _base_override = crate::test_support::EnvVarGuard::remove("CODEWHALE_API_BASE");
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
+
+        let now = chrono::Utc::now();
+        let live_fetched_at = u64::try_from(now.timestamp()).unwrap();
+        let expires_at =
+            (now + chrono::Duration::hours(24)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let base = ProviderKind::Codewhale.provider().default_base_url();
+        let fingerprint = base_url_fingerprint(base);
+        let live_payload = serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "deepseek/deepseek-v4-flash",
+                    "object": "model",
+                    "codewhale": {
+                        "protocol": "chat-completions",
+                        "default": true,
+                        "pricing": {
+                            "currency": "USD",
+                            "pricingPolicy": "pass_through",
+                            "ratesMicrosPerMillion": {
+                                "input": 220_000,
+                                "cachedInput": 7_000,
+                                "output": 660_000
+                            },
+                            "expiresAt": expires_at
+                        }
+                    }
+                },
+                {
+                    "id": "openai/gpt-5.6",
+                    "object": "model",
+                    "codewhale": {
+                        "protocol": "responses",
+                        "billingMode": "byok_external"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let offerings = codewhale_catalog_offerings_from_body(
+            &live_payload,
+            "codewhale",
+            &fingerprint,
+            live_fetched_at,
+        )
+        .unwrap();
+        crate::provider_catalog_live::record_success(ProviderCatalogDelta {
+            provider: "codewhale".to_string(),
+            base_url_fingerprint: fingerprint.clone(),
+            fetched_at: live_fetched_at,
+            offerings,
+        });
+
+        let quote = crate::provider_catalog_live::fresh_dispatch_pricing_quote_at(
+            ProviderKind::Codewhale,
+            "codewhale",
+            "deepseek/deepseek-v4-flash",
+            base,
+            live_fetched_at,
+        )
+        .expect("managed row should freeze a live dispatch pricing quote");
+        assert_eq!(quote.input_per_million.as_deref(), Some("0.22"));
+        assert_eq!(quote.cache_read_per_million.as_deref(), Some("0.007"));
+        assert_eq!(quote.output_per_million.as_deref(), Some("0.66"));
+        assert_eq!(
+            quote.provenance,
+            codewhale_config::pricing::PricingProvenance::ProviderLive
+        );
+
+        let usage = codewhale_models::Usage {
+            input_tokens: 2_000_000,
+            prompt_cache_hit_tokens: Some(1_000_000),
+            output_tokens: 1_000_000,
+            ..codewhale_models::Usage::default()
+        };
+        let surface =
+            crate::pricing::billing_surface_for_route(ProviderKind::Codewhale, Some(base));
+        let priced_audit = crate::pricing::audit_turn_cost_for_route_on_endpoint_for_identity_at(
+            ProviderKind::Codewhale,
+            Some("codewhale"),
+            "deepseek/deepseek-v4-flash",
+            surface,
+            Some(&fingerprint),
+            Some(&quote),
+            &usage,
+            now,
+        );
+        let estimate = priced_audit
+            .estimate
+            .expect("managed turn should be priced");
+        assert!((estimate.usd - 0.887).abs() < 1e-12, "got {}", estimate.usd);
+
+        assert!(
+            crate::provider_catalog_live::fresh_dispatch_pricing_quote_at(
+                ProviderKind::Codewhale,
+                "codewhale",
+                "openai/gpt-5.6",
+                base,
+                live_fetched_at,
+            )
+            .is_none()
+        );
+        let byok_audit = crate::pricing::audit_turn_cost_for_route_on_endpoint_for_identity_at(
+            ProviderKind::Codewhale,
+            Some("codewhale"),
+            "openai/gpt-5.6",
+            surface,
+            Some(&fingerprint),
+            None,
+            &usage,
+            now,
+        );
+        assert!(byok_audit.estimate.is_none());
+
+        crate::provider_catalog_live::reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
     }
 }

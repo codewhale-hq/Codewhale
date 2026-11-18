@@ -287,6 +287,7 @@ pub(super) struct ToolExecutionPlan {
     pub(super) blocked_error: Option<ToolError>,
     pub(super) guard_result: Option<ToolResult>,
     pub(super) grants_outside_workspace_read: bool,
+    pub(super) creator_gate: Option<crate::extension_host::creator_policy::CreatorGatePlan>,
 }
 
 pub(super) enum ToolExecutionBatch {

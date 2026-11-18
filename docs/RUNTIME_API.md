@@ -1604,12 +1604,12 @@ a conversation:
   "default": "standard",
   "modes": [
     {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
-    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": true}
   ]
 }
 ```
 
-`reason` appears only when `available` is `false`; a client lists the row
+`reason` appears only when `available` is `false` (for example, when `[features] plugin_creator` is disabled or no supported Node.js or Bun plugin runtime is found); a client lists the row
 disabled and shows it. A thread's mode is its `agent_preset` string. Set it on
 `POST /v1/threads`, or with `PATCH /v1/threads/{id}` while the thread has no
 turn. A thread record with no `agent_preset` is `standard`, and the thread
@@ -1712,6 +1712,13 @@ route.
 A change of effective permission adds a completed `status` item to the thread's
 latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 `source`).
+
+When a running turn installs, enables, disables, or removes a plugin, the
+engine awaits extension-host activation/teardown (for code plugins), refreshes
+the turn's plugin tool catalog immediately for the next model request without
+restarting the thread, adds a completed `status` item to that turn, and publishes
+a `thread.plugin_changed` event (`plugin`, `action`, `content_hash`,
+`decided_by`, `services`, `tools_added`, `tools_removed`).
 
 **Turns** (within a thread)
 - `POST /v1/threads/{id}/turns`
@@ -1939,6 +1946,80 @@ restore them). Grants are stored in the Runtime data directory
 suspended, and matching calls prompt again, until an authenticated client
 resumes the thread. A grant store that cannot be read holds no grants, so every
 call prompts. A forced (non-bypassable) prompt is never answered by a grant.
+
+`"remember": true, "remember_scope": "workspace"` on an `allow` saves the
+same exact, repo-scoped allow rule the terminal's "always allow this exact
+rule in this repo" writes to the user `permissions.toml`, then allows the call
+once; it records no thread grant. `remember_scope: "thread"` is the session
+grant above, and `remember_scope` without `"remember": true`, or `workspace`
+with `deny`, is `400 invalid_remember_scope`. Only an attached owner runtime
+and an owner caller may save one (`403 owner_required`, the same check as
+Auto-Review retry approval). Only a shell command classified safe, or a
+`write_file`, `edit_file` or `apply_patch` inside the thread's workspace, is
+eligible; publish-like, destructive or credential-touching calls,
+repository-law holds, sub-agent approvals, external-agent approvals and
+archived threads are `422 standing_rule_ineligible`, nothing is written and the
+approval stays pending. "In this repo" means the conversation's recorded
+workspace folder, exactly as spelt: not the git root, and not another path to
+the same folder. `approval.required` carries `standing_rule_candidates[]`, the
+exact rules a save would write (empty when the prompt is not eligible), so a
+client can show the rule before offering the button. While a save is being
+written, any other answer to that approval is `409`; if the save fails, the
+approval can be answered again. A config or permissions file that cannot be
+read or written is `409 permissions_unavailable`. The response adds
+`standing_rules[]` (each `{ tool, command?, command_exact?, path?, workspace,
+action }`); repeating the same request while the approval is still settling
+returns the same rules.
+Every save appends a `permission.rules_saved` event (`approval_id`,
+`tool_call_id`, `tool_name`, `standing_rules`) to the thread, whatever happens
+to the call. `approval.decided` also carries `remember_scope: "workspace"` and
+the same `standing_rules` whenever a rule was saved for that approval; there
+they mean "a rule was saved", and `remember` is `true` only when the call was
+also allowed. If the prompt is withdrawn, cancelled or times out while the rule
+is being written, the rule stays, the response says `delivered: false`, and
+`permission.rules_saved` is the record. Running threads of this Runtime use the
+new rule on their next matching call.
+
+A client sends `remember_scope` only when `GET /v1/runtime/info` reports
+`capabilities.approval_remember_workspace`, and treats a `200` without
+`standing_rules` as "no rule was saved": the request body ignores unknown
+fields, so an older Runtime, or a misspelt field, answers the request as the
+plain `remember` choice.
+
+**Permission rules and grants**
+- `GET /v1/permissions/rules` returns
+  `{ status: "ok", path, exists, rules[] }` for the user `permissions.toml`
+  sibling of the config the Runtime loaded. Each rule is
+  `{ index, tool, command, command_exact, path, workspace, action, layer, removal_token }`
+  (`layer` is `user`). A missing file is `exists: false` with no rules. A file
+  that cannot be read or parsed, or a Runtime with no user config, answers
+  `{ status: "unavailable", reason }` with no `rules`, never an empty list.
+  Values are returned as data; clients escape them.
+- `POST /v1/permissions/rules/remove` with
+  `{ "token": "<removal_token>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`
+  removes that one rule and answers `{ ok, removed }`. Removing a `deny` or
+  `ask` rule loosens policy, so it requires an attached owner runtime and an
+  owner caller (`403 owner_required`); watch tokens are refused by the
+  read-only gate. A token that is not 24 lowercase hex characters is `400
+  invalid_permission_token`. A token that no longer describes the current file
+  (the file changed after listing, or the rule was already removed) is `409
+  stale_permission_token` and writes nothing; a file that cannot be read or
+  written is `409 permissions_unavailable`. The response's `applied_to:
+  "this_runtime"` says the scope of the live effect: running threads of this
+  Runtime stop using the rule on their next matching call, but a running
+  terminal session or another Runtime process on the same `permissions.toml`
+  keeps the rule in memory until it reloads or restarts.
+- `GET /v1/approval-grants` returns `{ status: "ok", grants[] }` across every
+  thread: `{ grant_id, scope_kind, thread_id, workspace_id, effect, tool_name,
+  label, summary, created_at, last_used_at, uses, state, suspended_reason }`.
+  Suspended grants are listed with `state: "suspended"`. An unreadable grant
+  store answers `{ status: "unavailable", reason }`.
+
+Running threads pick up rule changes made through these routes. `GET
+/v1/permissions/rules` lists the file, not the live policy: an edit to
+`permissions.toml` made by hand or by the terminal does not reach a running
+Runtime thread until `POST /v1/config/reload`, which re-reads the file and
+applies it to running threads and to threads started afterwards.
 
 **Auto-Review blocks and one-use retry grants**
 - `GET /v1/threads/{id}/auto-review/blocks` returns `{ thread_id, blocks[] }`
@@ -2767,6 +2848,40 @@ thread deletion.
   pure over the snapshot — so a client must not look for one. Anything that
   mutates the session stays a terminal-side command.
 
+**Plugins**
+- `GET /v1/apps/plugins` — `{workspace, plugins: [...], registry_diagnostics: [...],
+  validation_clean}`: installed and workspace plugins discovered for this
+  workspace. Alongside `state`, `enabled`, `trust_status`, and `active`, each
+  entry carries attribution, isolation, and host-service reachability:
+  - `approved_by` (`PluginApprover | null`): who recorded the active trust
+    review — `null` when untrusted/unreviewed, `{"kind": "person", "via":
+    "terminal" | "app" | "approval_card"}`, `{"kind": "agent", "posture",
+    "workspace", "thread_id"?, "turn_id"?, "tool_call_id"?}`, or
+    `{"kind": "command_line"}` (CLI/non-interactive review, never shown as
+    person-reviewed).
+  - `enabled_by` (`PluginApprover | null`): who last turned the plugin on
+    (`null` when disabled or unrecorded).
+  - `cohort`: `{"kind": "reviewed"}` or `{"kind": "agent", "workspace":
+    "<normalized-path>"}`. Agent-approved plugins stay in an isolated cohort
+    scoped to one workspace rather than joining person-reviewed plugins.
+  - `outside_reach` (`bool`): `true` when an agent-approved plugin belongs to
+    another project workspace, keeping `active: false` in this workspace.
+  - `host_services`: array of `{"service", "state": "can_use" |
+    "not_offered", "withheld_by"?: [{ "id", "name" }]}`. `withheld_by` is
+    omitted when empty; when present, `withheld_by` means the service is off for
+    now because those active peers do not include that host service in their own
+    review.
+- `GET /v1/apps/plugins/{selector}` — flattens the summary entry with bundle
+  metadata (`repository`, `license`, `keywords`, `staged`), `review` (confirmation
+  `token`, capabilities, and optional `host_services` preview for interactive
+  person review), `reviewed_at` (`string | null`, RFC 3339 timestamp of the
+  latest recorded review, distinct from when the plugin was enabled), and
+  `review_history` (newest-first list of `{"reviewed_at": "<rfc3339>",
+  "approved_by"?: PluginApprover}`). Re-reviewing an agent-approved plugin as a
+  person via `POST /v1/apps/plugins/{selector}/trust` replaces `approved_by`
+  with the person decision and moves `cohort` to `{"kind": "reviewed"}` while
+  keeping the earlier entry in `review_history`.
+
 **Plugin index**
 - `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
   problems: [...]}`: one list across every plugin, skill, connector, hook and
@@ -2821,6 +2936,36 @@ thread deletion.
   invented number — and `live: false` marks responses where the engine
   could not be loaded and only the store-recorded route's static window
   resolved.
+- `GET /v1/threads/{id}/context/standing` (capability
+  `thread_standing_context`) — the standing-instruction receipt the live
+  Engine session already holds, read-only. `schema_version`, `basis`
+  (`installed_receipt`; `no_receipt` before the session has assembled one;
+  `unavailable` with `live: false` when the engine could not be loaded),
+  `estimator` with `estimated: true` (token counts are the conservative
+  `max(chars/3, bytes/4)` estimate, not a tokenizer), `global_tokens`,
+  `project_tokens`, `constitution_tokens`, `retained_block_tokens`, the
+  resolved `budgets`, and `items[]` with `label`, `path`, `scope`, `origin`,
+  `action` (`kept|trimmed|skipped|refused`), `limit` (`none`,
+  `scope_budget`, `static_guard`, `file_ceiling`, `file_content`,
+  `empty_file`, `rules_cap`, `rules_budget`, `duplicate_path`), `tokens_kept`,
+  `tokens_dropped`, `bytes_kept`, `bytes_dropped`, `fallback_selected` and a
+  typed `detail` (`kind` plus its numeric fields; never an error text).
+  `items` holds at most 200 entries and `items_omitted` counts the rest.
+  Paths are workspace-relative for project items (`../AGENTS.md` for a
+  parent directory's file, `../.claude/CLAUDE.md` for one in its
+  subfolder), `~/...` for global items under the home directory, and a bare
+  file name otherwise; no absolute path is returned, and control characters
+  in labels and paths arrive as `?`. `delivery.cap_bytes` is the
+  65,536-byte limit on the instruction text before the preamble and
+  escaping are added. When a workspace-instructions message was recorded,
+  `delivery.delivered` gives `message_bytes` and `message_tokens` for the
+  delivered reminder body (preamble included, runtime envelope excluded) and
+  `truncated`; read truncation from `truncated`, never by comparing
+  `message_bytes` with `cap_bytes`. The receipt itself does not include that
+  cap. The totals, `budgets`, `items_omitted` and `delivery` keys appear
+  only with `basis: installed_receipt`. `not_measured` lists what the Engine
+  does not measure per item (`skills`, `agents`, `mcp_tool_schemas`,
+  `memory`): show "not measured yet", never zero. An unknown thread is 404.
 
 **Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
 `/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
@@ -2854,7 +2999,11 @@ LFS, keep working.
   frame the write routes take; in a workspace that is a subdirectory of its
   repository, rows outside the workspace are not listed (the counts stay
   repository-wide). A rename out of the workspace appears as its source
-  deletion. Normal Git filters and untracked settings apply. Untracked
+  deletion. A rename can be reported by either side of the change, so that
+  row is a worktree-side deletion (`index` a space, `worktree` `D`) when only
+  the working tree moved, and an index-side one (`index` `D`) when the move
+  is staged. A copy leaves its source in place and is never shown this way.
+  Normal Git filters and untracked settings apply. Untracked
   directories stay collapsed; only a row naming the workspace itself is
   expanded to individually addressable files. The precondition tokens are
   opaque:
@@ -3410,8 +3559,7 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 
 Reports which external agent CLIs this computer already has, without starting a
 session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok and Qwen Code. `state` is `installed` or `not_installed`; a binary is
-looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary is looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
@@ -3794,7 +3942,8 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `approval.timeout`, `user_input.required`, `user_input.answered`,
 `user_input.canceled`, `tool_call.requested`, `tool_call.resolved`,
 `tool_call.timeout`, `tool_call.canceled`, `sandbox.denied`,
-`turn.workspace_snapshot`, `turn.provider_request`, `runtime.store_failure`.
+`permission.rules_saved`, `turn.workspace_snapshot`, `turn.provider_request`,
+`runtime.store_failure`.
 
 `turn.usage` is one model call's receipt, emitted when a parent model call
 reports usage — not once per turn. Its `payload` carries the call's `usage`,
@@ -3898,7 +4047,7 @@ refusal.
 
 The runtime API ships with a built-in dev-origin allow-list:
 `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:1420`,
-`http://127.0.0.1:1420`, `tauri://localhost`. To add additional origins (e.g.
+`http://127.0.0.1:1420`. To add additional origins (e.g.
 when developing a UI on Vite's default `:5173`), use any of:
 
 - CLI flag (repeatable): `codewhale serve --http --cors-origin http://localhost:5173`

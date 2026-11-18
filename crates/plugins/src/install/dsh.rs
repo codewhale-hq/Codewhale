@@ -1912,12 +1912,15 @@ fn timeout_seconds(value: &Value) -> Result<i64> {
 
 fn server_options(config: &Value) -> Result<serde_json::Map<String, Json>> {
     let mut extension = serde_json::Map::new();
-    require(
-        config
-            .get("failOnStartupError")
-            .is_none_or(|v| *v == Value::Bool(false)),
-        "DSH startup-failure policy requires a manual port.",
-    )?;
+    match config.get("failOnStartupError") {
+        None | Some(Value::Bool(false)) => {}
+        Some(Value::Bool(true)) => {
+            extension.insert("required".to_string(), json!(true));
+        }
+        Some(_) => {
+            return refuse("DSH startup-failure policy must be a boolean.");
+        }
+    }
     if let Some(value) = config.get("toolCallTimeoutMs") {
         extension.insert(
             "execute_timeout".to_string(),

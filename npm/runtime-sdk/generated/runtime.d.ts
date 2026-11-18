@@ -68,6 +68,7 @@ export type RuntimeCapabilities = {
   worktrees: boolean
   job_operations: boolean
   thread_shell_consent: boolean
+  thread_standing_context: boolean
   turns: boolean
   turn_operation_idempotency: boolean
   turn_operation_lookup: boolean
@@ -99,6 +100,9 @@ export type RuntimeCapabilities = {
   plugin_management: boolean
   agent_mail: boolean
   event_stream_resume: boolean
+  permission_rules: boolean
+  approval_remember_workspace: boolean
+  approval_grants_list: boolean
   [key: string]: Json | undefined
 }
 

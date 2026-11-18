@@ -2885,7 +2885,7 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
         ToolPermission::Prompt
     );
     assert_eq!(
-        resolve_approval_request_disposition(&ask, false, false, false, false),
+        resolve_approval_request_disposition(&ask, false, false, false, ""),
         ApprovalRequestDisposition::Prompt
     );
     assert_eq!(
@@ -2897,7 +2897,7 @@ async fn interactive_tui_turn_preserves_ask_and_auto_review_interactive_behavior
         ToolPermission::Allow
     );
     assert_eq!(
-        resolve_approval_request_disposition(&full_access, false, false, false, false),
+        resolve_approval_request_disposition(&full_access, false, false, false, ""),
         ApprovalRequestDisposition::AutoApprove
     );
 }

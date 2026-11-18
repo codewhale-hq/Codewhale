@@ -600,8 +600,5 @@ fn mix(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
 mod tests;
 
 #[cfg(test)]
-#[path = "ocean/guarded_legacy.rs"]
-mod guarded_legacy;
-#[cfg(test)]
 #[path = "ocean/guarded_tests.rs"]
 mod guarded_tests;

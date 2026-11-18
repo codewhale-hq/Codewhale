@@ -1,9 +1,10 @@
 /** Owner-local plugin state, never session history or a credential service. */
 import { constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
+import { canonicalPath } from '../dsh/canonical-path.ts'
 import { isJson } from '../json.ts'
 import type { Json } from '../protocol.ts'
 
@@ -139,7 +140,7 @@ export function createStorage({ dataDir, isActive, onWarning }: StorageOptions):
   async function directory(): Promise<string> {
     const stat = await lstat(dataDir)
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError('invalid', 'plugin storage dataDir must be a real directory')
-    return join(await realpath(dataDir), 'storage-v1')
+    return join(canonicalPath(dataDir), 'storage-v1')
   }
 
   async function prepare(directory: string): Promise<void> {

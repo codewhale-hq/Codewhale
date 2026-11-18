@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Això instal·la l’última versió a macOS o Linux, i no necessita cap compte.
 
 <sub>Aquesta traducció és un esborrany automàtic que encara no ha revisat cap parlant nadiu.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale en un terminal després d’una tasca de demostració. Informa que ha afegit una opció --json a export.py, que han passat les 3 proves locals i que una revisió delegada no ha trobat cap problema. La llista de tasques de sota mostra tres passos completats, i la línia d’estat mostra Full Access i el proveïdor local website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale en un terminal després d’una tasca real amb gemini-4-hydrogen. Ha executat python3 -m unittest -v test_ls.py, han passat 2 proves i explica que ha afegit l’opció --json a ls.py amb argparse. La línia d’estat mostra accept edits i gemini-4-hydrogen.">
 
-<sub>Una compilació de desenvolupament de la 0.10.3, que encara no s’ha publicat, amb un model de prova amb guió, en Full Access dins d’un espai de treball d’un sol ús. L’edició, tres proves i una revisió d’un subagent es van executar de debò.</sub>
+<sub>Una sessió real amb una versió de desenvolupament de la 0.10.3: gemini-4-hydrogen, a través de l’API de Google, va escriure el canvi, i vas permetre una vegada l’execució de les proves.</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Porta més de 40 proveïdors integrats, entre ells Anthropic, OpenAI, DeepSeek, 
 
 `/goal` fixa un objectiu que continua d’un torn a l’altre. Codewhale pot repartir la feina entre [subagents](../SUBAGENTS.md), fer anar una [Fleet](../FLEET.md) d’agents amb rols i models propis, o seguir un [flux de treball](../WORKFLOW_AUTHORING.md) desat al repositori.
 
-### Extensions
+### Plugins
 
 Connecta [servidors MCP](../MCP.md), afegeix [skills](../SKILLS.md) i [connectors](../PLUGINS.md), i executa [hooks](../HOOKS.md) en esdeveniments de sessió i d’eines. El mode codi (experimental, activat per defecte) permet que el model escrigui un programa `execute_tools` que crida diverses eines MCP i de connectors; cada crida continua respectant les teves regles d’aprovació i en conserva el rebut. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) és un connector separat publicat pel seu compte (experimental, només macOS), i resta apagat fins que en revises l’accés i l’actives.
 

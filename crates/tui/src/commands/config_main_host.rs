@@ -5698,14 +5698,8 @@ context_window = 262144
 
     #[test]
     fn explicit_default_background_override_survives_theme_preview() {
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-background-override-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let temp_root =
+            crate::test_support::test_scratch_dir("codewhale-tui-background-override-test");
         fs::create_dir_all(temp_root.join(".deepseek")).expect("settings dir");
         let _guard = EnvGuard::new(&temp_root);
         fs::write(
@@ -5761,14 +5755,8 @@ context_window = 262144
 
     #[test]
     fn session_only_background_override_survives_theme_preview() {
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-session-background-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let temp_root =
+            crate::test_support::test_scratch_dir("codewhale-tui-session-background-test");
         fs::create_dir_all(temp_root.join(".deepseek")).expect("settings dir");
         let _guard = EnvGuard::new(&temp_root);
         fs::write(
@@ -6293,15 +6281,7 @@ context_window = 262144
 
     #[test]
     fn test_logout_starts_account_logout_without_clearing_api_key_state() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-tui-logout-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
+        let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-logout-test");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
@@ -6327,15 +6307,7 @@ context_window = 262144
 
     #[test]
     fn logout_preserves_named_custom_provider_keys() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "codewhale-custom-logout-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
+        let temp_root = crate::test_support::test_scratch_dir("codewhale-custom-logout-test");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
         let config_path = temp_root.join(".deepseek").join("config.toml");

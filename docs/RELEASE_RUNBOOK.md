@@ -39,6 +39,16 @@ The complete supporting-crate list and dependency order live in
 the locked workspace graph by the publish helper. Do not maintain a second
 handwritten list here.
 
+`codewhale-ratatui` (`vendor/codewhale-ratatui`) is a workspace member with its
+own version, `0.2.0`, independent of the workspace version (CURRENT_DECISIONS
+§213). It publishes right after `codewhale-protocol`, which it depends on,
+and before the crates that depend on it. `check-versions.sh` exempts only its
+own `0.2.0` pin from the workspace-version rule; its `codewhale-protocol` pin
+still follows the workspace version. Bumping the crate means changing its
+manifest version and the `0.2.0` pins in `codewhale-engine`,
+`codewhale-tui-kit` and `codewhale-tui`, and the exception line in
+`check-versions.sh`, together.
+
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
@@ -244,7 +254,30 @@ The manual `ci.yml` path verifies that the dispatch resolved to
 `expected_sha`, disables light-change shortcuts, and forces the heavy Rust,
 workflow, mobile, Actions, Linux, macOS, Windows, npm-wrapper, and documentation
 gates. A mismatch fails before those gates start; it never silently tests a
-different head.
+different head. The Linux, macOS and Windows suites run as `Sharded tests (<os>)`
+(`ci-test-suite.yml`): one test build per OS, parallel nextest shards of that
+archive, and a `Suite check` job that fails unless the shards together ran
+exactly the tests the archive lists; read that job, not only the shard jobs.
+
+`ci.yml` also takes optional scoped-run inputs for a quick answer from an agent
+or a maintainer. With `crate` (one workspace package, for example
+`codewhale-tui`) and/or `filter` (a nextest filterset such as
+`test(auto_review)`) set, only the `Scoped test` job runs, on the operating
+systems named by `os` (default `ubuntu-latest`; a comma-separated list or
+`all`), and the full suite and every other gate are skipped. `expected_sha`
+stays required and is still verified:
+
+```bash
+gh workflow run ci.yml --ref ci/my-task \
+  -f expected_sha="$(git rev-parse HEAD)" \
+  -f crate=codewhale-tui -f filter='test(auto_review)'
+```
+
+A scoped run proves a slice, never a release; release evidence is a full
+dispatch with the scoped inputs empty. A newer dispatch on the same non-main
+branch, and a newer push to a pull request, cancels the older run of the same
+workflow; runs on `main` are keyed by SHA and never cancel each other, and a
+scoped run never cancels a full one.
 
 Verify beforehand that clean local `HEAD`, `main` and `origin/main` agree.
 Record both run URLs, resolved SHAs and required job results; inspect executed
@@ -325,7 +358,8 @@ After publishing, prove the release is visible in both registries:
 ```
 
 Do not mark a Rust release complete until that command sees `codewhale@X.Y.Z`
-on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io. For a rare
+on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io, except
+`codewhale-ratatui`, which it checks at its own version. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
 

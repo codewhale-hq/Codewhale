@@ -7,6 +7,7 @@ release_crates=(
   codewhale-paths
   codewhale-app-server-protocol
   codewhale-protocol
+  codewhale-ratatui
   codewhale-sanitize
   codewhale-release
   codewhale-secrets

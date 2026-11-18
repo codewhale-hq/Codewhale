@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:c66c04179a4e -->
+<!-- source: README.md sha256:a3f7ac7d7dc2 -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>本翻譯為機器草稿，尚未經母語者審校。</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="一個示範任務結束後的 Codewhale 終端機畫面。它回報已為 export.py 加上 --json 參數，3 個本機測試全部通過，委派的審查沒有發現問題。下方的任務清單顯示三個已完成的步驟，狀態列顯示 Full Access 和本機 website-demo 提供者。">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 gemini-4-hydrogen 的真實任務結束後的 Codewhale 終端機畫面。它執行了 python3 -m unittest -v test_ls.py，2 個測試通過，並回報已用 argparse 為 ls.py 加上 --json 參數。狀態列顯示 accept edits 和 gemini-4-hydrogen。">
 
-<sub>尚未發布的 0.10.3 開發版建置，使用腳本化的測試模型，在一次性工作區中以 Full Access 執行。其中的編輯、三個測試和一次子代理審查都是真實執行的。</sub>
+<sub>0.10.3 開發版本上的一次真實工作階段：gemini-4-hydrogen 透過 Google API 寫出了修改，測試執行由你允許了一次。</sub>
 
 </div>
 
@@ -77,7 +77,7 @@ Fix the failing tests and explain what changed.
 
 `/goal` 設定一個跨回合延續的目標。Codewhale 可以把工作分給[子代理](../SUBAGENTS.md)，執行一組各有角色和模型的代理 [Fleet](../FLEET.md)，或依照提交在儲存庫中的[工作流程](../WORKFLOW_AUTHORING.md)執行。
 
-### 擴充
+### 外掛
 
 連接 [MCP 伺服器](../MCP.md)，加入[技能](../SKILLS.md)和[外掛](../PLUGINS.md)，並在工作階段和工具事件上執行[掛鉤](../HOOKS.md)。程式碼模式（實驗性，預設開啟）讓模型撰寫一個呼叫多個 MCP 和外掛工具的 `execute_tools` 程式；每次呼叫仍須遵守你的核准規則，並保留收據。[Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) 是另外發行的獨立外掛（實驗性，僅限 macOS），在你檢查其權限並開啟之前一直保持關閉。
 

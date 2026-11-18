@@ -1,0 +1,30 @@
+[38;5;255m[48;5;234m
+ [1m[38;5;74m route · configured [0m[38;5;239m[48;5;234m────────────[4m[38;5;74mbrowse catalog (2267)[0m[38;5;239m[48;5;234m─[38;5;255m
+
+  [4m[38;5;74mOrcaRouter · Recommended · fn+F7                    [0m[38;5;255m[48;5;234m
+  [38;5;109mThis link is part of a referral campaign; Codewhale [38;5;255m
+  [38;5;109mmay earn a referral reward on top-ups made through  [38;5;255m
+  [38;5;109mit.                                                 [38;5;255m
+  [38;5;109mprovider [38;5;255mGoogle Gemini
+    [1m Model: hydrogen [0m[38;5;255m[48;5;234m
+  [1m[38;5;109m    Model                   Provider     Context[0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  gemini-4-hydrogen       Open…de Zen  1.05M[0m[38;5;255m[48;5;234m
+  [1m[48;5;236m ▸  gemini-4-hydrogen       Goog…Gemini  1.05M      [0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  google/ge…i-4-hydrogen  OpenRouter   1.05M[0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  google/ge…i-4-hydrogen  Eden AI      1.05M[0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  vertex/ge…i-4-hydrogen  Eden AI      1.05M[0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  vertex/ge…-hydrogen@eu  Eden AI      1.05M[0m[38;5;255m[48;5;234m
+  [2m[38;5;109m [38;5;209m◆[38;5;109m  vertex/ge…-hydrogen@us  Eden AI      1.05M[0m[38;5;255m[48;5;234m
+
+
+    [1m[38;5;109m Thinking [0m[38;5;255m[48;5;234m
+  [38;5;109m[48;5;17m    auto   [48;5;234mchoose per turn[38;5;255m
+      low    [38;5;109mlighter reasoning[38;5;255m
+      med    [38;5;109mbalanced reasoning[38;5;255m
+      high   [38;5;109mdeeper reasoning[38;5;255m
+      xhigh  [38;5;109mextra-high reasoning[38;5;255m
+
+  [1m[38;5;74m ↑↓ [0m[38;5;109m[48;5;234mmove[38;5;255m [1m[38;5;74m Tab [0m[38;5;109m[48;5;234mswitch[38;5;255m [1m[38;5;74m Type [0m[38;5;109m[48;5;234msearch any model[38;5;255m
+  [1m[38;5;74m Enter [0m[38;5;109m[48;5;234mapply[38;5;255m [1m[38;5;74m Esc [0m[38;5;109m[48;5;234mcancel[38;5;255m
+ [38;5;239m──────────────────────────────────────────────────────[38;5;255m
+

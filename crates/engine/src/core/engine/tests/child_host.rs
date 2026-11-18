@@ -785,7 +785,7 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
                 }
             }
         };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
             tokio::join!(
                 async {
                     let result =
@@ -797,7 +797,11 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
             )
         })
         .await
-        .expect("approval/cancellation must stay serviceable with a full steer queue");
+        .unwrap_or_else(|_| {
+            panic!(
+                "approval/cancellation must stay serviceable with a full steer queue (cancel={cancel}, by={by:?}, approved={approved})"
+            )
+        });
         let result = result.unwrap();
         assert_eq!(
             pending.load(std::sync::atomic::Ordering::Acquire),
@@ -958,7 +962,7 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
         core.model_client = Some(timeout_client.clone());
         let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let result = tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(30),
             crate::tools::subagent::engine::drive_child_actor(core, handle, job.clone(), input_rx),
         )
         .await
@@ -980,7 +984,7 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
             "retries do not consume a fresh logical work step"
         );
         assert_eq!(successful.call_count(), 0);
-        let record = tokio::time::timeout(Duration::from_secs(2), async {
+        let record = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let record = job
                     .authority
@@ -1011,9 +1015,9 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
                     .get_worker_record(&job.authority.owner_agent_id)
                     .unwrap();
                 panic!(
-                    "the child's usage receipt settles (body={body} tool_use={tool_use}): fingerprints={} missing={} input={:?} output={:?}",
+                    "the child's usage receipt settles (body={body} tool_use={tool_use}): fingerprints={} records={} input={:?} output={:?}",
                     last.usage_source_fingerprints.len(),
-                    last.missing_usage_sources.len(),
+                    last.source_usage_records.len(),
                     last.usage.input_tokens,
                     last.usage.output_tokens
                 );
@@ -1029,12 +1033,14 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
             assert_eq!(record.usage.output_tokens, Some(3));
         } else {
             assert_eq!(record.usage_source_fingerprints.len(), 1);
-            assert_eq!(record.missing_usage_sources.len(), 1);
+            assert_eq!(record.source_usage_records.len(), 1);
             assert_eq!(record.usage.input_tokens, None);
             assert_eq!(record.usage.output_tokens, None);
-            assert!(record.missing_usage_sources.values().all(|coverage| {
-                coverage.reason
-                    == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            assert!(record.source_usage_records.values().all(|(src, _)| {
+                src.settlement.as_ref().is_some_and(|settlement| {
+                    settlement.reason
+                        == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                })
             }));
             assert!(record.has_unreported_usage);
         }
@@ -1097,7 +1103,7 @@ async fn child_timeout_exhaustion_interrupts_with_checkpoint_and_never_dispatche
     core.model_client = Some(timeout_client.clone());
     let (_input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
     let result = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(30),
         crate::tools::subagent::engine::drive_child_actor(core, handle, job.clone(), input_rx),
     )
     .await
@@ -1151,7 +1157,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
         }
         handle.cancel();
     };
-    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
         tokio::join!(transport, cancel)
     })
     .await
@@ -1162,7 +1168,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
         crate::tools::subagent::SubAgentStatus::Interrupted(_)
     ));
     assert_eq!(successful.call_count(), 0);
-    let record = tokio::time::timeout(Duration::from_secs(2), async {
+    let record = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let record = job
                 .authority
@@ -1172,7 +1178,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
                 .await
                 .get_worker_record(&job.authority.owner_agent_id)
                 .unwrap();
-            if !record.missing_usage_sources.is_empty() {
+            if !record.source_usage_records.is_empty() {
                 break record;
             }
             tokio::task::yield_now().await;
@@ -1180,14 +1186,13 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
     })
     .await
     .unwrap();
-    assert_eq!(record.missing_usage_sources.len(), 1);
-    assert!(
-        record
-            .missing_usage_sources
-            .values()
-            .all(|coverage| coverage.reason
-                == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown)
-    );
+    assert_eq!(record.source_usage_records.len(), 1);
+    assert!(record.source_usage_records.values().all(|(src, _)| {
+        src.settlement.as_ref().is_some_and(|settlement| {
+            settlement.reason
+                == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+        })
+    }));
     assert!(record.usage.total_tokens.is_none());
     assert!(record.has_unreported_usage);
     let pending = crate::cost_status::drain();

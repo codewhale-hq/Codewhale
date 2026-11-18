@@ -6664,6 +6664,7 @@ model = "private-model"
                 .is_ok()
         );
 
+        let now = Utc::now();
         let subminute = manager.create_trigger(CreateDelayedTriggerRequest {
             destination_thread_id: None,
             fire_at: now + Duration::seconds(2),
@@ -6722,6 +6723,7 @@ model = "private-model"
         );
         assert_eq!(manager.trigger_wait_duration(now, max_wait)?, max_wait);
 
+        let now = Utc::now();
         let mut ownerless = manager.create_trigger(CreateDelayedTriggerRequest {
             destination_thread_id: None,
             fire_at: now + Duration::seconds(1),
@@ -6734,6 +6736,7 @@ model = "private-model"
         ownerless.fire_at = now - Duration::seconds(1);
         manager.save_trigger(&ownerless)?;
         manager.execution_scope = Some("other-scope".to_string());
+        let now = Utc::now();
         let mut foreign = manager.create_trigger(CreateDelayedTriggerRequest {
             destination_thread_id: None,
             fire_at: now + Duration::seconds(1),

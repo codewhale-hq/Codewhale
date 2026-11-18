@@ -2449,22 +2449,11 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     root.context = ToolContext::new(tmp.path()).with_state_namespace("session-detached-usage");
     root.accounting_origin = SubAgentAccountingOrigin::capture(&root.context);
     root.mailbox = Some(mailbox.clone());
-    let runtime_owner = "interactive:session-detached-usage:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
+    root.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
         crate::cost_status::scope_token(),
-        "session-detached-usage",
-        "turn-parent",
-        &sessions,
-    );
-    root.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    root.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+        sessions.sessions_dir().to_path_buf(),
+        "session-detached-usage".to_string(),
+    ));
     let detached = root.background_runtime();
 
     let mut cases = [
@@ -2549,11 +2538,10 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     });
 
     mailbox.seal();
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     release_usage_tx
         .send(())
         .expect("detached child remains live after mailbox seal");
-    let cases = tokio::time::timeout(Duration::from_secs(2), child)
+    let cases = tokio::time::timeout(HANG_GUARD, child)
         .await
         .expect("detached usage settles after the sealed parent turn")
         .expect("detached usage task exits cleanly");
@@ -2632,26 +2620,15 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
         None,
     );
 
-    let runtime_owner = "interactive:guardian-usage-session:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
-        crate::cost_status::scope_token(),
-        "guardian-usage-session",
-        "turn-parent",
-        &sessions,
-    );
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path()).with_state_namespace("guardian-usage-session");
     runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    runtime.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        sessions.sessions_dir().to_path_buf(),
+        "guardian-usage-session".to_string(),
+    ));
 
     let source_id = child_guardian_usage_source_id("agent_guardian", "tool-fixed");
     assert_eq!(
@@ -2693,7 +2670,6 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     // call a second time in either the session or worker projection.
     record_provider_response_usage(&runtime, "agent_guardian", &source_id, route, &usage).await;
 
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     let pending = crate::cost_status::drain();
     assert_eq!(pending.source_records.len(), 1);
     let session_usage = sessions
@@ -2760,7 +2736,6 @@ async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
         sessions.sessions_dir().to_path_buf(),
         "direct-usage-session".to_string(),
     ));
-    assert!(runtime.runtime_usage_lease.is_none());
     assert!(runtime.mailbox.is_none());
 
     let source_id = "subagent:agent_direct:step:1:response:direct";
@@ -2873,7 +2848,6 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
         origin_session_id.to_string(),
     ));
     let child = root.background_runtime();
-    assert!(child.runtime_usage_lease.is_none());
     assert!(child.mailbox.is_none());
 
     let mut route = crate::cost_status::EffectiveRouteEnvelope::capture(
@@ -2947,11 +2921,7 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     for record in &replacement_live.source_records {
         assert!(
             receipt
-                .project_usage_record(
-                    crate::cost_status::scope_token(),
-                    record,
-                    &mut replacement_projection.metadata.cost,
-                )
+                .project_usage_record(record, &mut replacement_projection.metadata.cost)
                 .expect("foreign source projection")
                 .is_none()
         );
@@ -3040,28 +3010,17 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
         None,
     );
 
-    let runtime_owner = "interactive:missing-usage-session:turn-parent";
-    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
-        runtime_owner,
-        crate::cost_status::scope_token(),
-        "missing-usage-session",
-        "turn-parent",
-        &sessions,
-    );
     let (mailbox, mut mailbox_rx) = Mailbox::new(CancellationToken::new());
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path()).with_state_namespace("missing-usage-session");
     runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.mailbox = Some(mailbox);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
-    runtime.context.accounting_origin = Some(
-        crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            runtime_owner,
-        )
-        .expect("fixture captured runtime origin"),
-    );
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        sessions.sessions_dir().to_path_buf(),
+        "missing-usage-session".to_string(),
+    ));
 
     let source_id = child_guardian_usage_source_id("agent_missing_usage", "tool-fixed");
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
@@ -3087,7 +3046,6 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
         !mailbox_rx.has_pending(),
         "missing usage must not also publish a priced-zero TokenUsage message"
     );
-    crate::cost_status::finish_runtime_usage_owner(runtime_owner);
     let pending = crate::cost_status::drain();
     assert_eq!(pending.source_records.len(), 1);
     let session_usage = sessions
@@ -13265,6 +13223,163 @@ fn build_subagent_system_prompt_skips_role_when_blank() {
     assert!(!prompt.contains("You are operating in the role of"));
 }
 
+/// Native memory fixture: every note becomes a reviewed global entry, and the
+/// returned handles let a test pin or suppress one exactly as Context Lens
+/// would. The first element is the `memory_path` a session inherits.
+fn native_memory_fixture(
+    root: &std::path::Path,
+    notes: &[&str],
+) -> (
+    std::path::PathBuf,
+    codewhale_memory::Store,
+    codewhale_memory::Access,
+) {
+    let memory_root = root.join("memory");
+    std::fs::create_dir_all(memory_root.join("global")).expect("memory layout");
+    let native = codewhale_runtime::native_memory::NativeMemoryStore::new(&memory_root);
+    for note in notes {
+        native
+            .remember_reviewed(
+                codewhale_runtime::native_memory::MemoryScope::Global,
+                None,
+                note,
+            )
+            .expect("reviewed memory");
+    }
+    let store = codewhale_memory::Store::open(memory_root.join("store.sqlite3")).expect("store");
+    let access = codewhale_memory::Access::operator(vec![
+        codewhale_runtime::native_memory::NativeMemoryStore::owner_scope(),
+    ])
+    .expect("operator access");
+    (memory_root.join("global/MEMORY.md"), store, access)
+}
+
+/// Apply a Context Lens preference to the note whose body is `body`.
+fn set_note_preferences(
+    store: &codewhale_memory::Store,
+    access: &codewhale_memory::Access,
+    body: &str,
+    pinned: bool,
+    suppressed: bool,
+) {
+    let entries = store.list(access, None, 16).expect("list memories");
+    let entry = entries
+        .iter()
+        .find(|m| m.draft.body == body)
+        .unwrap_or_else(|| panic!("captured note {body:?} is missing from the store"));
+    store
+        .set_preferences(access, &entry.id, 0, pinned, suppressed)
+        .expect("memory preference");
+}
+
+#[test]
+fn child_system_prompt_inherits_the_sessions_reviewed_memory_packet() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let deploy = "云端的任何部署操作都要得到用户的许可，线上系统一定要谨慎";
+    let checkout = "修改代码一定在开发目录进行，不要在运行目录做";
+    let (memory_path, store, access) = native_memory_fixture(tmp.path(), &[deploy, checkout]);
+    set_note_preferences(&store, &access, deploy, true, false);
+
+    let mut context = ToolContext::new(&workspace);
+    context.memory_path = Some(memory_path);
+    let assignment = SubAgentAssignment::new("deploy check".to_string(), None);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+
+    assert!(system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(system.contains(deploy), "{system}");
+    assert!(system.contains(checkout), "{system}");
+    assert_eq!(
+        system.matches("codewhale.memory.context.v1").count(),
+        1,
+        "a child gets exactly one memory packet: {system}"
+    );
+    let pinned_at = system.find(deploy).expect("pinned rule");
+    let regular_at = system.find(checkout).expect("unpinned rule");
+    assert!(
+        pinned_at < regular_at,
+        "explicit pins must lead the inherited packet: {system}"
+    );
+    let packet_at = system.find("codewhale.memory.context.v1").expect("packet");
+    let guidance_at = system.find("## Memory Hygiene").expect("hygiene guidance");
+    assert!(
+        packet_at < guidance_at,
+        "the packet keeps its guidance and the guidance follows it: {system}"
+    );
+    // The role contract still leads, so inherited memory cannot displace it.
+    assert!(
+        system.find("background sub-agent").expect("role framing") < packet_at,
+        "{system}"
+    );
+
+    // A nested child inherits the same packet through its runtime context, not
+    // only a directly built prompt.
+    let mut parent_runtime = runtime_with_depth(1, None);
+    parent_runtime.context = context.clone();
+    let (nested, _nested_rx) = runtime_for_nested_agent_tools(
+        &parent_runtime,
+        "agent_parent",
+        SubAgentForkContext {
+            messages: Vec::new(),
+            structured_state_block: None,
+            work_source: None,
+        },
+    );
+    assert_eq!(nested.context.memory_path, context.memory_path);
+    let nested_system =
+        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &nested.context);
+    assert!(
+        nested_system.contains("codewhale.memory.context.v1"),
+        "nested children read the same memory packet: {nested_system}"
+    );
+    assert!(nested_system.contains(deploy), "{nested_system}");
+}
+
+#[test]
+fn child_system_prompt_omits_memory_when_the_session_has_none() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let assignment = SubAgentAssignment::new("review".to_string(), None);
+
+    // Memory disabled for the session: the context carries no path at all.
+    let disabled = ToolContext::new(&workspace);
+    let system =
+        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &disabled);
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(!system.contains("## Memory Hygiene"), "{system}");
+
+    // Memory enabled but empty: no empty envelope is injected either.
+    let (memory_path, _store, _access) = native_memory_fixture(tmp.path(), &[]);
+    let mut enabled = ToolContext::new(&workspace);
+    enabled.memory_path = Some(memory_path);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &enabled);
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+    assert!(!system.contains("## Memory Hygiene"), "{system}");
+}
+
+#[test]
+fn child_system_prompt_honours_a_reviewed_off_memory() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let rule = "云端的任何部署操作都要得到用户的许可";
+    let (memory_path, store, access) = native_memory_fixture(tmp.path(), &[rule]);
+    set_note_preferences(&store, &access, rule, false, true);
+
+    let mut context = ToolContext::new(&workspace);
+    context.memory_path = Some(memory_path);
+    let assignment = SubAgentAssignment::new("review".to_string(), None);
+    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+
+    assert!(
+        !system.contains(rule),
+        "a suppressed memory must not reach a child: {system}"
+    );
+    assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
+}
+
 #[test]
 fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
     let _env = crate::test_support::lock_test_env();
@@ -16468,7 +16583,6 @@ pub fn stub_runtime() -> SubAgentRuntime {
         cancel_token: CancellationToken::new(),
         foreground_children: None,
         mailbox: None,
-        runtime_usage_lease: None,
         accounting_origin,
         parent_agent_id: None,
         parent_completion_tx: None,
@@ -16488,10 +16602,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
         parent_pinned_project_instructions: std::sync::Arc::default(),
         parent_auto_review_state: None,
         approval_receipt_store: Some(Ok(crate::approval_log::ApprovalReceiptStore::new(
-            std::env::temp_dir().join(format!(
-                "codewhale-child-approval-tests-{}",
-                uuid::Uuid::new_v4()
-            )),
+            crate::test_support::test_scratch_dir("codewhale-child-approval-tests"),
         ))),
         mcp_pool: None,
         mcp_auth_context: crate::mcp::process_mcp_auth_context(),
@@ -23852,6 +23963,43 @@ async fn runtime_surface_hardening_resume_from_requires_descendant_control() {
     assert_eq!(manager.read().await.agents.len(), 2);
 }
 
+#[tokio::test]
+async fn spawn_counts_one_subagent_spawn_for_telemetry() {
+    let tmp = tempdir().unwrap();
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let counters = codewhale_telemetry::session_counters();
+    let before = counters.counters().subagent_spawn;
+
+    let (result, _) = spawn_subagent_from_input(
+        json!({"prompt": "inspect the workspace"}),
+        manager.clone(),
+        runtime.clone(),
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("spawn succeeds");
+    assert!(!result.agent_id.is_empty());
+    assert_eq!(counters.counters().subagent_spawn, before + 1);
+
+    let _ = spawn_subagent_from_input(
+        json!({"prompt": "x", "resume_from": "missing-agent"}),
+        manager,
+        runtime,
+        false,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("a refused spawn is not counted");
+    assert_eq!(counters.counters().subagent_spawn, before + 1);
+}
+
 #[test]
 fn resume_from_rejects_running_source() {
     let tmp = tempdir().expect("tempdir");
@@ -28961,22 +29109,23 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let sink_weak = Arc::downgrade(&sink_lifetime);
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let captured_calls = sink_calls.clone();
-    crate::cost_status::register_runtime_usage_sink(
-        owner,
-        Arc::new(move |_| {
-            let _held = &sink_lifetime;
-            captured_calls.fetch_add(1, Ordering::SeqCst);
-            true
-        }),
-    );
     let (mailbox, mut receiver) = Mailbox::new(CancellationToken::new());
     let mut runtime = stub_runtime();
     runtime.manager = manager.clone();
     runtime.mailbox = Some(mailbox);
-    runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(owner);
+    runtime.context.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            owner.to_string(),
+            Arc::new(move |_| {
+                let _held = &sink_lifetime;
+                captured_calls.fetch_add(1, Ordering::SeqCst);
+                true
+            }),
+        ));
+    let origin = runtime.context.accounting_origin.clone();
     let projection = engine::ChildAccountingProjection::capture(&runtime, &worker);
     drop(runtime);
-    crate::cost_status::finish_runtime_usage_owner(owner);
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
@@ -28993,41 +29142,27 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         "settled-response",
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(
-            crate::cost_status::NativeUsageOrigin::runtime(
-                crate::cost_status::scope_token(),
-                owner,
-            )
-            .unwrap(),
-        ),
+        None,
     );
-    let reservation = source.admit_dispatch(&route).await.unwrap().unwrap();
-    projection.project_settled(&reservation).await.unwrap();
-    drop(reservation);
-    let settled = source.reported(&route, &usage).unwrap();
-    crate::cost_status::report_runtime_usage_record(
+    let settled = source.reported(&route, &usage);
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(owner),
+        origin.as_ref(),
         &settled,
-    )
-    .unwrap();
-    assert!(settled.is_acknowledged());
+    );
+    drop(origin);
     let contribution = crate::cost_status::UsageSourceContribution::for_record(&settled);
     let expected_cost = (contribution.priced > 0)
         .then(|| priced_usd_microusd(&route.audit_frozen(&usage)))
         .flatten();
     drop(source);
-    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 1);
     let held_metadata = manager.write().await;
     let mut waiting = Box::pin(projection.project_settled(&settled));
     assert!(futures_util::poll!(&mut waiting).is_pending());
     drop(waiting);
     drop(projection);
     drop(settled);
-    assert!(
-        crate::cost_status::acquire_runtime_usage_lease(owner).is_none(),
-        "the metadata waiter must not extend the registered billing lease"
-    );
     assert!(
         tokio::time::timeout(Duration::from_secs(1), receiver.recv())
             .await
@@ -29037,13 +29172,8 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     );
     assert_eq!(
         sink_calls.load(Ordering::SeqCst),
-        2,
+        1,
         "metadata projection never republishes billing"
-    );
-    assert!(
-        crate::cost_status::take_runtime_usage(owner)
-            .records
-            .is_empty()
     );
     drop(held_metadata);
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -29069,7 +29199,7 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     })
     .await
     .unwrap();
-    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -29994,4 +30124,74 @@ async fn subagent_return_check_skips_non_auto_modes_and_zero_actions_and_deliver
             ContentBlock::Text { text, .. } if text == "Caller delivered output."
         )));
     }
+}
+
+#[tokio::test]
+async fn a_sub_agent_finishes_when_its_usage_source_changed_route() {
+    let _cost_scope = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let agent_id = "agent_route_changed";
+    let mut manager = SubAgentManager::new(workspace.path().to_path_buf(), 2);
+    manager.register_worker_for_session(
+        make_worker_spec(agent_id, workspace.path().to_path_buf()),
+        "sess-route-change",
+        None,
+    );
+
+    let initial_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some("https://api.deepseek.com/v1"),
+        chrono::Utc::now(),
+    );
+    let changed_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Openai,
+        "openai",
+        "gpt-5",
+        Some("https://api.openai.com/v1"),
+        chrono::Utc::now(),
+    );
+    let source_id = "subagent:route-change-source";
+    let key = crate::cost_status::usage_source_fingerprint(source_id);
+    {
+        let worker = manager
+            .worker_records
+            .get_mut(agent_id)
+            .expect("registered worker");
+        let unknown =
+            crate::cost_status::unknown_cost_record(source_id, &initial_route, Usage::default());
+        worker
+            .source_usage_records
+            .insert(key.clone(), (unknown, None));
+        worker.usage_source_fingerprints.insert(key.clone());
+        worker.has_unreported_usage = true;
+    }
+
+    let origin = crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        workspace.path().to_path_buf(),
+        "sess-route-change".to_string(),
+    );
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let settled_other_route = source.reported(
+        &changed_route,
+        &Usage {
+            input_tokens: 15,
+            output_tokens: 6,
+            ..Usage::default()
+        },
+    );
+
+    let recorded = manager
+        .record_worker_source_admitted(agent_id, &settled_other_route)
+        .expect("route change must not fail sub-agent usage recording");
+    assert!(recorded);
+    let worker = manager.get_worker_record(agent_id).expect("worker record");
+    assert!(worker.has_unreported_usage);
+    assert!(worker.source_usage_records.contains_key(&key));
 }

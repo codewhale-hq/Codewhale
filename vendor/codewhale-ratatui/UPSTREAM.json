@@ -260,8 +260,8 @@
     }
   },
   "runtime_update": {
-    "commit": "1d061703691c9130724f58eebfe7060a5fc019ca",
-    "scope": "Selected generic widget fixes, measured ocean themes and caller-clock water drift from standalone; chart, roles and theme verified already matching. Standalone tooling, gallery export and repository-only tests are outside this source synchronization.",
+    "commit": "e8c2746e4b93070ebeac41a064dde3d362cb975d",
+    "scope": "Selected generic widget fixes, measured ocean themes and caller-clock water drift from standalone; roles and theme verified already matching; data-display honesty fixes (chart), Ocean quiet-ink floors in for_theme, and the crate-private is_truecolor used by motion. Standalone tooling, gallery export and repository-only tests are outside this source synchronization.",
     "files": {
       "src/components/instrument.rs": "468280c9c5be4d1244ef1601784d11d9956b2e1d36c9f671618404fbb010c77a",
       "src/components/list.rs": "8f4b8d7220202b49e6a6fb17e4d587123e538ce90d03fbe0c16c3776765a0e34",
@@ -270,13 +270,15 @@
       "src/components/segmented.rs": "a148c79c1d6d214c6b28ed0ac5ab7f669805d0d6a41250efc56632da9b39eb62",
       "src/components/tabs.rs": "2e18bc604786f5403e1491e50322e0bf771fa70389ef34347528ae8bef6afa44",
       "src/components/surface.rs": "fcdec44734d0bdc2db69dad41dd9c88f018003b128927f9d59c4d7536cb9e6c0",
-      "src/ocean.rs": "194a7ade34b6fac7d8ad471f4bfcb04d3ae88a9c4f63f51bc4627c5edfc0183e",
+      "src/ocean.rs": "62eff5da97dab3e5939e7e425ac6922bf2cd309be3caaa128052f89c4bcbd4ff",
       "src/ombre.rs": "7356cc1c7b9af444f8272817d57cbaaa8133bfd2689220a1a794dfaf0d897fda",
-      "src/components/chart.rs": "77759af13c4d2b7ffadee5dae8e4849ec3ed637741cf9dd29764edcff625cc82",
-      "src/gallery/chart.rs": "98e3c20e26e06744e09750209bc627b3c21204d6fb9022883ac5b5f856953175",
+      "src/components/chart.rs": "692f3f8725ca467df27fe16545ed39573c8ad8bd597dafe6596c61bd75e117b4",
+      "src/gallery/chart.rs": "dc0832242654174b36f90e35a761900d2b28156ba463bdd00a52741f1f467eda",
       "examples/data.rs": "633ee3f3786ec5053b98a50cc72b2b44d68ba41a9eedba56a58504f04881670a",
       "src/roles.rs": "2ac8760785aa0a83daeb89c32e7dec259dbae358e9a80426900c83e606f8fa79",
-      "src/theme.rs": "ac3851f676511b494bfb3a9e680d016daff1c85a20ced8ff4b4eba6f115f9f21"
+      "src/theme.rs": "ac3851f676511b494bfb3a9e680d016daff1c85a20ced8ff4b4eba6f115f9f21",
+      "src/color.rs": "e63bfde21ec7197d6d955f689eea8790797a1df9fdb43c25950e6d82534eb551",
+      "src/components/motion.rs": "7b41b6616ff61513d098cd2710a5912d8bece9704d8fdc6c0e8dbb5a5f158251"
     },
     "retained_engine_adaptations": {
       "src/components/workbar.rs": {

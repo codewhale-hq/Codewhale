@@ -62,7 +62,6 @@ impl ModalView for Habitat {
             }
             Some(Id::PetSound) => Some(Control::Sound),
             Some(Id::PetBrowser) => Some(Control::Browser),
-            Some(Id::PetWindow) => Some(Control::Window),
             _ => None,
         };
         if let Some(action) = action
@@ -99,11 +98,7 @@ impl ModalView for Habitat {
 pub fn companion_hints(locale: codewhale_localization::Locale) -> String {
     use codewhale_localization::{MessageId, tr};
     let mut text = tr(locale, MessageId::PetModeCompanionHints).into_owned();
-    for (name, id) in [
-        ("sound", Id::PetSound),
-        ("browser", Id::PetBrowser),
-        ("window", Id::PetWindow),
-    ] {
+    for (name, id) in [("sound", Id::PetSound), ("browser", Id::PetBrowser)] {
         text = text.replace(
             &format!("{{{name}}}"),
             &shell_key_routing::display_chord(shell_key_routing::binding(id).footer_chord),

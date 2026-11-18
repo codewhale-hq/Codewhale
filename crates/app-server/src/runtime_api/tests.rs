@@ -20,6 +20,7 @@ mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
 mod conversation_modes;
+mod creator_screen;
 #[cfg(unix)]
 mod external_agent_options;
 #[cfg(unix)]
@@ -30,6 +31,7 @@ mod member_operations;
 mod native_runtime;
 #[cfg(unix)]
 mod owner_bootstrap;
+mod plugin_audit;
 mod plugin_index;
 mod plugin_ui;
 mod profile_constitution;
@@ -1530,6 +1532,7 @@ async fn build_test_server(
         automations,
         sub_agent_manager,
         runtime_token,
+        desktop_browser_owner: super::desktop_browser_owner_env(),
         skill_state: Arc::new(Mutex::new(
             SkillStateStore::load_from(root.join("skills_state.toml")).unwrap(),
         )),
@@ -1583,7 +1586,7 @@ async fn spawn_test_server() -> Result<
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("deepseek-runtime-api");
     let sessions_dir = root.join("sessions");
     spawn_test_server_with_root(root, sessions_dir).await
 }
@@ -1597,7 +1600,7 @@ async fn spawn_test_server_with_config_path(
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("codewhale-config-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-config-api");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&root)?;
@@ -1625,7 +1628,7 @@ async fn spawn_test_server_with_config_path_and_profile(
         tokio::task::JoinHandle<()>,
     )>,
 > {
-    let root = std::env::temp_dir().join(format!("codewhale-config-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-config-api");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&root)?;
@@ -1782,6 +1785,24 @@ fn parse_sse_frame(frame: &str) -> Result<(String, serde_json::Value)> {
     Ok((event_name, payload))
 }
 
+async fn poll_thread_detail(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    thread_id: &str,
+) -> Result<serde_json::Value> {
+    let response = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}"))
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let url = response.url().clone();
+        let body = response.text().await.unwrap_or_default();
+        bail!("HTTP {status} for {url}: {body}");
+    }
+    Ok(response.json().await?)
+}
+
 /// Polls until the turn is terminal. `timeout` only bounds how long a stuck
 /// turn takes to fail the test, so keep it generous: a loaded shared-process
 /// `cargo test` run can take seconds to settle a mock turn (#6698).
@@ -1793,29 +1814,33 @@ async fn wait_for_terminal_turn_status(
     timeout: Duration,
 ) -> Result<String> {
     let deadline = tokio::time::Instant::now() + ci_scaled(timeout);
+    let mut last_poll_error: Option<String> = None;
     loop {
-        let detail: serde_json::Value = client
-            .get(format!("http://{addr}/v1/threads/{thread_id}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let status = detail["turns"]
-            .as_array()
-            .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
-            .and_then(|turn| turn.get("status"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if matches!(
-            status.as_str(),
-            "completed" | "failed" | "interrupted" | "canceled"
-        ) {
-            return Ok(status);
+        match poll_thread_detail(client, addr, thread_id).await {
+            Ok(detail) => {
+                let status = detail["turns"]
+                    .as_array()
+                    .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
+                    .and_then(|turn| turn.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if matches!(
+                    status.as_str(),
+                    "completed" | "failed" | "interrupted" | "canceled"
+                ) {
+                    return Ok(status);
+                }
+            }
+            Err(error) => last_poll_error = Some(format!("{error:#}")),
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for terminal turn status for {turn_id}");
+            match &last_poll_error {
+                Some(error) => bail!(
+                    "timed out waiting for terminal turn status for {turn_id}; last thread poll failed: {error}"
+                ),
+                None => bail!("timed out waiting for terminal turn status for {turn_id}"),
+            }
         }
         sleep(Duration::from_millis(25)).await;
     }
@@ -1828,22 +1853,26 @@ async fn wait_for_in_progress_item(
     timeout: Duration,
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + ci_scaled(timeout);
+    let mut last_poll_error: Option<String> = None;
     loop {
-        let detail: serde_json::Value = client
-            .get(format!("http://{addr}/v1/threads/{thread_id}"))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        if detail["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| item["status"] == "in_progress"))
-        {
-            return Ok(());
+        match poll_thread_detail(client, addr, thread_id).await {
+            Ok(detail) => {
+                if detail["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item["status"] == "in_progress"))
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) => last_poll_error = Some(format!("{error:#}")),
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!("timed out waiting for in-progress item in thread {thread_id}");
+            match &last_poll_error {
+                Some(error) => bail!(
+                    "timed out waiting for in-progress item in thread {thread_id}; last thread poll failed: {error}"
+                ),
+                None => bail!("timed out waiting for in-progress item in thread {thread_id}"),
+            }
         }
         sleep(Duration::from_millis(25)).await;
     }
@@ -2162,7 +2191,7 @@ async fn mcp_tools_endpoint_is_passive_until_connect_requested() -> Result<()> {
 
 #[tokio::test]
 async fn runtime_token_guard_protects_v1_routes() -> Result<()> {
-    let root = std::env::temp_dir().join(format!("deepseek-runtime-api-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("deepseek-runtime-api");
     let sessions_dir = root.join("sessions");
     let token = "local-test-token".to_string();
     let Some((addr, _runtime_threads, handle)) =
@@ -3262,8 +3291,6 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         },
         usage_source_fingerprints: Default::default(),
         source_usage_records: Default::default(),
-        missing_usage_sources: Default::default(),
-        missing_usage_overflowed: false,
         legacy_unreported_usage: false,
         has_unreported_usage: false,
         delivery_evidence: Default::default(),
@@ -6453,7 +6480,9 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
         payload: json!({
             "approval_id": "approval_test",
             "decision": "allow",
-            "remember": false,
+            "remember": true,
+            "remember_scope": "workspace",
+            "standing_rules": [{ "tool": "exec_shell", "command": "cargo test", "action": "allow" }],
             "internal_secret": "approval-decision-secret",
         }),
     };
@@ -6467,6 +6496,8 @@ async fn stream_compat_mapping_handles_expected_runtime_events() -> Result<()> {
     let text = String::from_utf8_lossy(&body);
     assert!(text.contains("event: approval.decided"));
     assert!(text.contains("\"decision\":\"allow\""));
+    assert!(text.contains("\"remember_scope\":\"workspace\""), "{text}");
+    assert!(text.contains("\"command\":\"cargo test\""), "{text}");
     assert!(!text.contains("approval-decision-secret"));
 
     // A resolution forced by a turn interrupt or turn teardown must
@@ -9517,7 +9548,7 @@ fn snapshots_endpoint_lists_workspace_snapshots() -> Result<()> {
 async fn spawn_server_with_saved_sessions(
     sessions: &[(&str, &str, bool)],
 ) -> Result<Option<(SocketAddr, PathBuf, tokio::task::JoinHandle<()>)>> {
-    let root = std::env::temp_dir().join(format!("codewhale-session-routes-{}", Uuid::new_v4()));
+    let root = codewhale_engine::test_support::test_scratch_dir("codewhale-session-routes");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace)?;
@@ -19769,6 +19800,7 @@ async fn plugin_api_404s_for_unknown_selector() -> Result<()> {
 
 #[tokio::test]
 async fn plugin_catalog_over_http_lists_and_toggles_feature_rows() -> Result<()> {
+    let _creator_guard = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
     let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("runtime");
     let workspace = tmp.path().join("ws");
@@ -23192,6 +23224,162 @@ async fn thread_context_reports_live_budget_from_the_engine() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_standing_context_reports_the_installed_receipt() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = tmp.path().join("repo");
+    let workspace = repo.join("pkg");
+    fs::create_dir_all(repo.join(".git"))?;
+    fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n")?;
+    fs::create_dir_all(&workspace)?;
+    let kept_text = "Run cargo fmt before committing.\n";
+    fs::write(repo.join("AGENTS.md"), kept_text)?;
+    fs::write(workspace.join("AGENTS.md"), "  \n\t\n")?;
+    let (addr, _runtime_threads, handle) = spawn_test_server_with_root_token_mobile_workspace(
+        tmp.path().join("runtime"),
+        tmp.path().join("sessions"),
+        Some("standing-token".to_string()),
+        false,
+        workspace.clone(),
+    )
+    .await?
+    .context("standing context test requires a loopback listener")?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let status = client
+        .get(format!("{base}/v1/threads/thread-x/context/standing"))
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let status = client
+        .get(format!("{base}/v1/threads/thread-missing/context/standing"))
+        .bearer_auth("standing-token")
+        .send()
+        .await?
+        .status();
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let thread: Value = client
+        .post(format!("{base}/v1/threads"))
+        .bearer_auth("standing-token")
+        .json(&json!({ "workspace": workspace }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = thread["id"].as_str().unwrap().to_string();
+
+    let body: Value = client
+        .get(format!("{base}/v1/threads/{thread_id}/context/standing"))
+        .bearer_auth("standing-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(body["schema_version"], 1);
+    assert_eq!(body["live"], true);
+    assert_eq!(body["basis"], "installed_receipt");
+    assert_eq!(body["estimated"], true);
+    assert_eq!(
+        body["not_measured"],
+        json!(["skills", "agents", "mcp_tool_schemas", "memory"])
+    );
+    assert_eq!(body["delivery"]["cap_bytes"], 65_536);
+    assert!(body["delivery"]["delivered"].is_null());
+    assert_eq!(body["items_omitted"], 0);
+
+    let items = body["items"].as_array().unwrap();
+    let project: Vec<&Value> = items
+        .iter()
+        .filter(|item| item["scope"] == "project")
+        .collect();
+    let kept = project
+        .iter()
+        .find(|item| item["action"] == "kept")
+        .context("the parent AGENTS.md is reported kept")?;
+    assert_eq!(kept["path"], "../AGENTS.md");
+    assert_eq!(kept["origin"], "agents");
+    assert_eq!(
+        kept["tokens_kept"].as_u64().unwrap(),
+        codewhale_engine::project_context::estimate_instruction_tokens(kept_text.trim_end()) as u64
+    );
+    let skipped = project
+        .iter()
+        .find(|item| item["action"] == "skipped")
+        .context("the empty workspace AGENTS.md is reported skipped")?;
+    assert_eq!(skipped["path"], "AGENTS.md");
+    assert_eq!(skipped["limit"], "empty_file");
+    for item in items {
+        let path = item["path"].as_str().unwrap_or_default();
+        assert!(
+            !std::path::Path::new(path).is_absolute(),
+            "absolute path leaked: {path}"
+        );
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[test]
+fn thread_standing_context_items_are_relative_inert_and_bounded() {
+    let roots = [std::path::PathBuf::from("/repo/pkg")];
+    let homes = [std::path::PathBuf::from("/home/me")];
+    let display = |path: &str, global: bool| {
+        context::standing_display_path(std::path::Path::new(path), global, &roots, &homes)
+    };
+    assert_eq!(display("/repo/pkg/AGENTS.md", false), "AGENTS.md");
+    assert_eq!(display("/repo/AGENTS.md", false), "../AGENTS.md");
+    assert_eq!(
+        display("/repo/.codewhale/instructions.md", false),
+        "../.codewhale/instructions.md"
+    );
+    assert_eq!(
+        display("/repo/.claude/CLAUDE.md", false),
+        "../.claude/CLAUDE.md"
+    );
+    assert_eq!(display("/elsewhere/AGENTS.md", false), "AGENTS.md");
+    assert_eq!(
+        display("/home/me/.codewhale/AGENTS.md", true),
+        "~/.codewhale/AGENTS.md"
+    );
+    assert_eq!(display("/srv/rules.md", true), "rules.md");
+    assert_eq!(
+        context::standing_display_path(
+            std::path::Path::new("/srv/secret/rules.md"),
+            true,
+            &roots,
+            &[std::path::PathBuf::from("/")],
+        ),
+        "rules.md"
+    );
+
+    let hostile = json!({
+        "path": "/repo/pkg/.codewhale/rules/a\u{1b}[31m\n\u{202e}x.md",
+        "scope": "Project",
+        "origin": "Rules",
+        "action": "Skipped",
+        "limit": "RulesCap",
+        "detail": { "kind": "unreadable", "reason": "secret text", "max_files": 50 },
+    });
+    let notices: Vec<Value> =
+        std::iter::repeat_n(hostile, context::STANDING_MAX_ITEMS + 5).collect();
+    let (items, omitted) = context::standing_items(&notices, &roots, &homes);
+    assert_eq!(items.len(), context::STANDING_MAX_ITEMS);
+    assert_eq!(omitted, 5);
+    assert_eq!(items[0]["path"], ".codewhale/rules/a?[31m??x.md");
+    assert_eq!(items[0]["label"], "a?[31m??x.md");
+    assert_eq!(items[0]["limit"], "rules_cap");
+    assert_eq!(
+        items[0]["detail"],
+        json!({ "kind": "unreadable", "max_files": 50 })
+    );
+}
+
+#[tokio::test]
 async fn provider_key_write_is_write_only_and_reports_readiness() -> Result<()> {
     // The credential store is only exposed to tests under an explicit isolated
     // home plus an explicit backend — both scoped to this test by the env lock.
@@ -25403,7 +25591,7 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/v1/models"))
         .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-            json!({"object": "list", "data": [{"id": "gpui-fixture", "object": "model"}]}),
+            json!({"object": "list", "data": [{"id": "fixture-model", "object": "model"}]}),
         ))
         .expect(1)
         .mount(&upstream)
@@ -25459,8 +25647,8 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
             .as_array()
             .context("models array")?
             .iter()
-            .any(|model| model["id"] == "gpui-fixture"),
-        "expected gpui-fixture immediately after refresh, got {immediate}"
+            .any(|model| model["id"] == "fixture-model"),
+        "expected fixture-model immediately after refresh, got {immediate}"
     );
 
     let providers_before_restart: Value = client
@@ -25520,8 +25708,8 @@ async fn provider_models_refresh_with_vllm_base_url_env_persists_across_restart(
             .as_array()
             .context("models array after restart")?
             .iter()
-            .any(|model| model["id"] == "gpui-fixture"),
-        "expected gpui-fixture after restart, got {after_restart}"
+            .any(|model| model["id"] == "fixture-model"),
+        "expected fixture-model after restart, got {after_restart}"
     );
 
     let providers_after_restart: Value = client
@@ -26590,7 +26778,7 @@ mod thread_snapshot_ownership {
     }
 
     fn test_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("codewhale-6621-{name}-{}", Uuid::new_v4()))
+        codewhale_engine::test_support::test_scratch_dir(&format!("codewhale-6621-{name}"))
     }
 
     /// A session save must not be refused because a finished turn still lists
@@ -27535,7 +27723,7 @@ mod thread_snapshot_ownership {
 async fn switch_provider_away_and_back_keeps_the_root_default_with_its_route() -> Result<()> {
     // Device-test regression: `provider = "openai"` with the model only in the
     // root `default_text_model`. Switching to a pass-through route used to leave
-    // the alias at the root, so that route inherited `gpui-fixture`, the
+    // the alias at the root, so that route inherited `fixture-model`, the
     // provider list advertised OpenAI's catalog default (`gpt-5.6`), and the
     // desktop model chip landed there.
     let root = std::env::temp_dir().join(format!("codewhale-switch-root-alias-{}", Uuid::new_v4()));
@@ -27544,7 +27732,7 @@ async fn switch_provider_away_and_back_keeps_the_root_default_with_its_route() -
     fs::write(
         &config_file,
         r#"provider = "openai"
-default_text_model = "gpui-fixture"
+default_text_model = "fixture-model"
 
 [providers.openai]
 api_key = "sk-test"
@@ -27567,7 +27755,7 @@ api_key = "sk-or-test"
     assert_eq!(status, StatusCode::OK, "body: {away}");
     assert_ne!(
         away["model"].as_str(),
-        Some("gpui-fixture"),
+        Some("fixture-model"),
         "openrouter must not inherit openai's root default: {away}"
     );
     let persisted = fs::read_to_string(&config_file)?;
@@ -27589,15 +27777,19 @@ api_key = "sk-or-test"
         .unwrap_or_default();
     assert_eq!(
         openai["default_model"].as_str(),
-        Some("gpui-fixture"),
+        Some("fixture-model"),
         "the inactive openai entry must keep its configured model, not the catalog default: {openai}"
     );
 
     let (status, back) =
         post_switch_provider(&client, &addr, "openai", &serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {back}");
-    assert_eq!(back["model"].as_str(), Some("gpui-fixture"), "body: {back}");
-    assert_eq!(get_config(&client, &addr).await["model"], "gpui-fixture");
+    assert_eq!(
+        back["model"].as_str(),
+        Some("fixture-model"),
+        "body: {back}"
+    );
+    assert_eq!(get_config(&client, &addr).await["model"], "fixture-model");
 
     handle.abort();
     Ok(())
@@ -27614,7 +27806,7 @@ async fn switch_provider_does_not_resurrect_a_shadowed_legacy_root_model() -> Re
     fs::write(
         &config_file,
         r#"model = "deepseek-v4-flash"
-default_text_model = "gpui-fixture"
+default_text_model = "fixture-model"
 provider = "openai"
 
 [providers.openai]
@@ -27644,12 +27836,20 @@ api_key = "sk-or-test"
             .contains("deepseek-v4-flash"),
         "body: {away}"
     );
-    assert_ne!(away["model"].as_str(), Some("gpui-fixture"), "body: {away}");
+    assert_ne!(
+        away["model"].as_str(),
+        Some("fixture-model"),
+        "body: {away}"
+    );
 
     let (status, back) =
         post_switch_provider(&client, &addr, "openai", &serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {back}");
-    assert_eq!(back["model"].as_str(), Some("gpui-fixture"), "body: {back}");
+    assert_eq!(
+        back["model"].as_str(),
+        Some("fixture-model"),
+        "body: {back}"
+    );
 
     handle.abort();
     Ok(())
@@ -28071,7 +28271,7 @@ async fn request_fields_cannot_grant_interactive_origin_or_owner_presence() -> R
 }
 
 #[tokio::test]
-async fn runtime_api_web_composer_records_person_messages_while_mobile_device_master_and_smuggling_do_not()
+async fn runtime_api_owner_composers_record_person_messages_while_mobile_device_master_and_smuggling_do_not()
 -> Result<()> {
     use codewhale_engine::core::ops::TurnInputAuthorship;
 
@@ -28304,6 +28504,29 @@ async fn runtime_api_web_composer_records_person_messages_while_mobile_device_ma
         assert_eq!(wait_turn_done(turn_id).await?, "completed");
     }
 
+    let device_claims_desktop = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&drive_token)
+        .json(&json!({ "prompt": "device-claims-desktop", "client": "desktop" }))
+        .send()
+        .await?;
+    assert_eq!(device_claims_desktop.status(), StatusCode::FORBIDDEN);
+
+    let desktop_turn: Value = client
+        .post(format!("{origin}/v1/threads/{thread_id}/turns"))
+        .bearer_auth(&token)
+        .json(&json!({ "prompt": "from-desktop-owner", "client": "desktop" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let desktop_turn_id = desktop_turn["turn"]["id"]
+        .as_str()
+        .context("desktop turn id")?
+        .to_string();
+    assert_eq!(wait_turn_done(desktop_turn_id).await?, "completed");
+
     let web_turn_resp = client
         .post(format!("{origin}/v1/threads/{thread_id}/turns"))
         .header(header::COOKIE, &web_cookie)
@@ -28331,6 +28554,7 @@ async fn runtime_api_web_composer_records_person_messages_while_mobile_device_ma
             TurnInputAuthorship::NotPerson,
             TurnInputAuthorship::NotPerson,
             TurnInputAuthorship::NotPerson,
+            TurnInputAuthorship::Person("from-desktop-owner".to_string()),
             TurnInputAuthorship::Person("from-web-owner".to_string()),
         ]
     );
@@ -28653,6 +28877,301 @@ async fn runtime_api_auto_review_blocks_and_approve_enforce_owner_surface_and_st
     );
 
     drop(harness);
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn permission_rules_routes_list_remove_and_save_workspace_rules_for_owners_only() -> Result<()>
+{
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().to_path_buf();
+    let workspace = root.join("workspace");
+    let home = root.join("home");
+    fs::create_dir_all(&home)?;
+    let config_path = home.join("config.toml");
+    let permissions_path = home.join("permissions.toml");
+    let token = "permission-rules-owner-token".to_string();
+    let mut config = Config::default().with_legacy_root(
+        Some("runtime-api-test-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    config.loaded_config_path = Some(config_path.clone());
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            Some(token.clone()),
+            false,
+            workspace,
+            TestServerOverrides {
+                owner_host: true,
+                config: Some(config),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+    let info: Value = client
+        .get(format!("{base}/v1/runtime/info"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .json()
+        .await?;
+    for flag in [
+        "permission_rules",
+        "approval_remember_workspace",
+        "approval_grants_list",
+    ] {
+        assert_eq!(info["capabilities"][flag], true, "{flag}");
+    }
+    let list = || async {
+        let body: Value = client
+            .get(format!("{base}/v1/permissions/rules"))
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Result::<Value>::Ok(body)
+    };
+    let absent = list().await?;
+    assert_eq!(absent["status"], "ok");
+    assert_eq!(absent["exists"], false);
+    assert_eq!(absent["rules"], json!([]));
+
+    fs::write(&permissions_path, "rules = [ { tool = ")?;
+    let invalid = list().await?;
+    assert_eq!(invalid["status"], "unavailable", "{invalid:#}");
+    assert!(invalid.get("rules").is_none(), "{invalid:#}");
+
+    let original = "# keep me\n[[rules]]\ntool = \"exec_shell\"\ncommand = \"git push\"\naction = \"deny\"\n\n[[rules]]\ntool = \"write_file\"\npath = \"notes.md\"\naction = \"ask\"\n";
+    fs::write(&permissions_path, original)?;
+    let listed = list().await?;
+    assert_eq!(listed["status"], "ok");
+    assert_eq!(listed["exists"], true);
+    let rules = listed["rules"].as_array().context("rules")?;
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["tool"], "exec_shell");
+    assert_eq!(rules[0]["command"], "git push");
+    assert_eq!(rules[0]["action"], "deny");
+    assert_eq!(rules[0]["layer"], "user");
+    assert_eq!(rules[1]["path"], "notes.md");
+    let deny_token = rules[0]["removal_token"]
+        .as_str()
+        .context("token")?
+        .to_string();
+    let ask_token = rules[1]["removal_token"]
+        .as_str()
+        .context("token")?
+        .to_string();
+
+    let mint = |intent: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        async move {
+            let minted: Value = client
+                .post(format!("{base}/v1/auth/client-tokens"))
+                .bearer_auth(&token)
+                .json(&json!({ "device_id": format!("{intent}-device"), "intent": intent }))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            Result::<String>::Ok(minted["token"].as_str().context("token")?.to_string())
+        }
+    };
+    let watch_token = mint("watch").await?;
+    let drive_token = mint("drive").await?;
+    let remove = |bearer: String, body: Value| {
+        client
+            .post(format!("{base}/v1/permissions/rules/remove"))
+            .bearer_auth(bearer)
+            .json(&body)
+            .send()
+    };
+    let refused = remove(
+        watch_token,
+        json!({ "token": deny_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    for (bearer, body) in [
+        (
+            drive_token.clone(),
+            json!({ "token": deny_token, "client": "desktop" }),
+        ),
+        (drive_token.clone(), json!({ "token": deny_token })),
+        (token.clone(), json!({ "token": deny_token })),
+        (
+            token.clone(),
+            json!({ "token": deny_token, "client": "phone" }),
+        ),
+    ] {
+        let refused = remove(bearer, body.clone()).await?;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{body}");
+        let error: Value = refused.json().await?;
+        assert_eq!(error["error"]["code"], "owner_required", "{body}");
+    }
+    assert_eq!(fs::read_to_string(&permissions_path)?, original);
+    let malformed = remove(
+        token.clone(),
+        json!({ "token": "not-a-token", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let error: Value = malformed.json().await?;
+    assert_eq!(error["error"]["code"], "invalid_permission_token");
+
+    let removed = remove(
+        token.clone(),
+        json!({ "token": deny_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: Value = removed.json().await?;
+    assert_eq!(removed["removed"]["command"], "git push");
+    assert_eq!(removed["applied_to"], "this_runtime");
+    let after_removal = fs::read_to_string(&permissions_path)?;
+    assert!(after_removal.starts_with("# keep me\n"), "{after_removal}");
+    assert!(!after_removal.contains("git push"), "{after_removal}");
+    assert!(after_removal.contains("notes.md"), "{after_removal}");
+
+    let stale = remove(
+        token.clone(),
+        json!({ "token": ask_token, "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let error: Value = stale.json().await?;
+    assert_eq!(error["error"]["code"], "stale_permission_token");
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let grants: Value = client
+        .get(format!("{base}/v1/approval-grants"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(grants["status"], "ok");
+    assert_eq!(grants["grants"], json!([]));
+
+    let created: Value = client
+        .post(format!("{base}/v1/threads"))
+        .bearer_auth(&token)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?.to_string();
+    let decide = |approval_id: &str, body: Value| {
+        client
+            .post(format!("{base}/v1/approvals/{approval_id}"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+    };
+
+    let (unsafe_id, _unsafe_rx) = runtime_threads
+        .register_pending_tool_approval_for_thread_for_test(
+            &thread_id,
+            "exec_shell",
+            json!({ "command": "rm -rf build" }),
+        );
+    for (body, status, code) in [
+        (
+            json!({ "decision": "deny", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::BAD_REQUEST,
+            "invalid_remember_scope",
+        ),
+        (
+            json!({ "decision": "allow", "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::BAD_REQUEST,
+            "invalid_remember_scope",
+        ),
+        (
+            json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "phone" }),
+            StatusCode::FORBIDDEN,
+            "owner_required",
+        ),
+        (
+            json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "standing_rule_ineligible",
+        ),
+    ] {
+        let resp = decide(&unsafe_id, body.clone()).await?;
+        assert_eq!(resp.status(), status, "{body}");
+        let error: Value = resp.json().await?;
+        assert_eq!(error["error"]["code"], code, "{body}");
+    }
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let (child_id, _child_rx) = runtime_threads.register_pending_tool_call_approval_for_test(
+        &thread_id,
+        "agent:worker:approval:0b6c",
+        "exec_shell",
+        json!({ "command": "cargo test" }),
+    );
+    let child = decide(
+        &child_id,
+        json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(child.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error: Value = child.json().await?;
+    assert_eq!(error["error"]["code"], "standing_rule_ineligible");
+    assert_eq!(fs::read_to_string(&permissions_path)?, after_removal);
+
+    let (safe_id, safe_rx) = runtime_threads.register_pending_tool_approval_for_thread_for_test(
+        &thread_id,
+        "exec_shell",
+        json!({ "command": "cargo test" }),
+    );
+    let saved = decide(
+        &safe_id,
+        json!({ "decision": "allow", "remember": true, "remember_scope": "workspace", "client": "desktop" }),
+    )
+    .await?;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved: Value = saved.json().await?;
+    assert_eq!(saved["decision"], "allow");
+    assert_eq!(saved["delivered"], true);
+    assert_eq!(saved["standing_rules"][0]["command"], "cargo test");
+    assert_eq!(saved["standing_rules"][0]["command_exact"], true);
+    assert_eq!(saved["standing_rules"][0]["action"], "allow");
+    assert!(saved["standing_rules"][0]["workspace"].is_string());
+    assert_eq!(
+        tokio::time::timeout(ci_scaled(Duration::from_secs(1)), safe_rx).await??,
+        ExternalApprovalDecision::Allow { remember: false }
+    );
+    let rules = list().await?;
+    assert_eq!(rules["rules"].as_array().map(Vec::len), Some(2));
+    assert_eq!(rules["rules"][1]["command"], "cargo test");
+
+    let (legacy_id, legacy_rx) =
+        runtime_threads.register_pending_approval_for_thread_for_test(&thread_id, "legacy");
+    let legacy = decide(&legacy_id, json!({ "decision": "allow", "remember": true })).await?;
+    assert_eq!(legacy.status(), StatusCode::OK);
+    let legacy: Value = legacy.json().await?;
+    assert!(legacy.get("standing_rules").is_none());
+    assert_eq!(
+        legacy_rx.await?,
+        ExternalApprovalDecision::Allow { remember: true }
+    );
+
     handle.abort();
     Ok(())
 }

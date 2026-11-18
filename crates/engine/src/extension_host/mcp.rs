@@ -780,22 +780,32 @@ impl SdkTransport {
                 "Host MCP backend requires a Rust-prepared HTTP client or a stdio command; no Rust fallback is allowed"
             );
         }
+        struct McpUsersGuard {
+            shared: Arc<ManagerShared>,
+            armed: bool,
+        }
+        impl Drop for McpUsersGuard {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.shared
+                        .mcp_users
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
         let manager = super::manager();
         manager
             .shared
             .mcp_users
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let ready = manager.ensure_mcp_builtin().await;
-        let (host, owner, host_generation) = match ready {
-            Ok(ready) => ready,
-            Err(error) => {
-                manager
-                    .shared
-                    .mcp_users
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                return Err(anyhow::Error::msg(error));
-            }
+        let mut mcp_users_guard = McpUsersGuard {
+            shared: Arc::clone(&manager.shared),
+            armed: true,
         };
+        let (host, owner, host_generation) = manager
+            .ensure_mcp_builtin()
+            .await
+            .map_err(anyhow::Error::msg)?;
         let session_id = uuid::Uuid::new_v4().to_string();
         let (frame_sender, frames) = mpsc::channel(1);
         let session = Arc::new(Session {
@@ -855,13 +865,10 @@ impl SdkTransport {
                 .lock()
                 .expect("MCP broker lock");
             if sessions.len() >= MAX_SESSIONS {
-                manager
-                    .shared
-                    .mcp_users
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 bail!("MCP host session limit exceeded");
             }
             sessions.insert(session_id.clone(), Arc::clone(&session));
+            mcp_users_guard.armed = false;
         }
         let transport = Self {
             manager,

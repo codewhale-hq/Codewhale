@@ -2141,7 +2141,11 @@ mod tests {
         // generic `--version` probe reports it missing even when installed.
         // The resolver must probe with `-v`. Gated on pdftotext actually
         // being installed so CI without Poppler stays green.
-        if probe_executable_with_flag("pdftotext", "-v") {
+        let mut probe = version_probe_command("pdftotext");
+        probe.arg("-v");
+        let answers_dash_v = probe_output(&mut probe, false, std::time::Duration::from_secs(60))
+            .is_ok_and(|output| output.status.success());
+        if answers_dash_v {
             assert!(
                 resolve_pdftotext().is_some(),
                 "an installed pdftotext must be detected via -v (#1667)"

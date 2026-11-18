@@ -26,7 +26,7 @@ if [[ "${1:-}" == "app-server" ]]; then
     printf '%s\n' \
         '{"id":0,"result":{"userAgent":"fixture","codexHome":"/tmp","platformFamily":"unix","platformOs":"macos"}}' \
         '{"id":1,"result":{"status":"ok","service":"deepseek-app-server","transport":"stdio"}}' \
-        '{"id":2,"result":{"methods":["thread/request","prompt/run","prompt/request","thread/goal/set"]}}' \
+        '{"id":2,"result":{"methods":["thread/request","prompt/run","prompt/request","thread/goal/get"]}}' \
         '{"id":3,"result":{"ok":true,"data":{"transport":"stdio+http"}}}' \
         '{"id":4,"result":{}}' \
         '{"id":5,"result":{}}' \

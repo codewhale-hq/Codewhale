@@ -26,7 +26,7 @@ permissions:
 jobs:
   sync:
     if: github.repository_owner == 'codewhale-hq' && (github.event_name != 'push' || vars.GITCODE_MIRROR == 'enabled')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7

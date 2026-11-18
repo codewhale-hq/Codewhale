@@ -276,6 +276,10 @@ impl PersistActorHandle {
         self.tx.health.reading()
     }
 
+    pub(crate) fn record_skipped_session_save(&self, session_id: &str, reason: &str) {
+        self.tx.health.record_skipped(session_id, reason);
+    }
+
     /// Queue a persistence request without blocking. The request is
     /// coalesced into the shared pending state immediately (latest-wins per
     /// session), so repeated snapshots of one session retain only the
@@ -499,6 +503,12 @@ fn request_label(request: &PersistRequest) -> &'static str {
 /// before it starts.
 pub(crate) fn session_save_health() -> Option<SaveHealthReading> {
     ACTOR_TX.get().map(PersistActorHandle::session_save_health)
+}
+
+pub(crate) fn record_skipped_session_save(session_id: &str, reason: &str) {
+    if let Some(handle) = ACTOR_TX.get() {
+        handle.record_skipped_session_save(session_id, reason);
+    }
 }
 
 pub fn try_persist(request: PersistRequest) -> bool {
@@ -942,11 +952,26 @@ fn flush_inner(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionSaveHealth(Arc<std::sync::Mutex<SaveHealthState>>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SaveHealthFailure {
+    Io(std::io::ErrorKind),
+    Skipped(String),
+}
+
+impl std::fmt::Display for SaveHealthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(kind) => kind.fmt(f),
+            Self::Skipped(reason) => f.write_str(reason),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SaveHealthState {
     /// Bumped whenever `failing` changes, so a poller can tell what is new.
     generation: u64,
-    failing: BTreeMap<String, std::io::ErrorKind>,
+    failing: BTreeMap<String, SaveHealthFailure>,
 }
 
 /// One reading of [`SessionSaveHealth`].
@@ -954,10 +979,25 @@ struct SaveHealthState {
 pub(crate) struct SaveHealthReading {
     pub(crate) generation: u64,
     /// A session whose latest save failed, and how, while any has.
-    pub(crate) failing: Option<(String, std::io::ErrorKind)>,
+    pub(crate) failing: Option<(String, SaveHealthFailure)>,
 }
 
 impl SessionSaveHealth {
+    fn record_skipped(&self, session_id: &str, reason: &str) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let failure = SaveHealthFailure::Skipped(reason.to_string());
+        if state
+            .failing
+            .insert(session_id.to_string(), failure.clone())
+            != Some(failure)
+        {
+            state.generation += 1;
+        }
+    }
+
     fn record<T>(&self, session_id: &str, result: &std::io::Result<T>) {
         let mut state = self
             .0
@@ -966,7 +1006,11 @@ impl SessionSaveHealth {
         let changed = match result {
             Ok(_) => state.failing.remove(session_id).is_some(),
             Err(error) => {
-                state.failing.insert(session_id.to_string(), error.kind()) != Some(error.kind())
+                let failure = SaveHealthFailure::Io(error.kind());
+                state
+                    .failing
+                    .insert(session_id.to_string(), failure.clone())
+                    != Some(failure)
             }
         };
         if changed {
@@ -985,7 +1029,7 @@ impl SessionSaveHealth {
                 .failing
                 .iter()
                 .next()
-                .map(|(id, kind)| (id.clone(), *kind)),
+                .map(|(id, failure)| (id.clone(), failure.clone())),
         }
     }
 }
@@ -1439,6 +1483,68 @@ mod tests {
         let healed = handle.session_save_health();
         assert_eq!(healed.failing, None, "a later save clears the failure");
         assert!(healed.generation > failed.generation);
+
+        handle.try_send(PersistRequest::Shutdown);
+        task.await.expect("persistence actor join");
+    }
+
+    #[tokio::test]
+    async fn successful_completed_commit_retires_skipped_snapshot_notice() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir).expect("manager");
+        let mut session = codewhale_engine::session_manager::create_saved_session_with_mode(
+            &[],
+            "deepseek-v4-pro",
+            tmp.path(),
+            0,
+            None,
+            Some("agent"),
+        );
+        session.write_receipt = Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .expect("native fresh source"),
+        );
+        session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .expect("native producer");
+        let session_id = session.metadata.id.clone();
+        let (handle, task) = spawn_persistence_actor(manager);
+        let mut app = crate::tui::test_support::test_app_with_options(
+            crate::tui::test_support::test_tui_options(std::path::PathBuf::from(".")),
+        );
+        app.status_toasts.clear();
+        let mut seen = 0;
+
+        let reason = "Engine session snapshot timed out after 2000 ms";
+        handle.record_skipped_session_save(&session_id, reason);
+        crate::tui::ui::surface_session_save_health(
+            &mut app,
+            Some(handle.session_save_health()),
+            &mut seen,
+        );
+        assert_eq!(app.status_toasts.len(), 1, "the skipped save is surfaced");
+        assert!(
+            app.status_toasts[0].text.contains(reason),
+            "{:?}",
+            app.status_toasts
+        );
+
+        handle.try_send(PersistRequest::CompletedCommit { session });
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        handle.try_send(PersistRequest::FlushAndReport { reply });
+        receiver.await.expect("flush");
+        assert_eq!(handle.session_save_health().failing, None);
+        crate::tui::ui::surface_session_save_health(
+            &mut app,
+            Some(handle.session_save_health()),
+            &mut seen,
+        );
+        assert!(
+            app.status_toasts.is_empty(),
+            "the successful save retires the notice"
+        );
 
         handle.try_send(PersistRequest::Shutdown);
         task.await.expect("persistence actor join");

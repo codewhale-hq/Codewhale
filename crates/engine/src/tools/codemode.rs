@@ -334,6 +334,10 @@ impl NestedCallGate {
             .map(|gate| (&gate.caller, gate.specs.as_slice()))
     }
 
+    pub fn mcp_pool(&self) -> Option<Arc<AsyncMutex<McpPool>>> {
+        self.mcp_pool.clone()
+    }
+
     pub async fn checkpoint(
         &self,
         caller: crate::core::events::SessionCheckpointCaller,
@@ -528,6 +532,13 @@ pub fn refusal_before_gate(name: &str, input: &Value, gated: bool) -> Option<Str
     {
         return Some(format!(
             "Computer Use call `{name}` grants consent or runs a script; it needs its own approval card, so call it directly and let the user decide"
+        ));
+    }
+    if crate::extension_host::creator_policy::is_creator_plugin_manager_name(&lower)
+        && !crate::extension_host::creator_policy::is_list_action(input)
+    {
+        return Some(format!(
+            "`{name}` changes plugins and is not available inside execute_tools programs; call it directly"
         ));
     }
     if McpPool::is_mcp_tool(name)
@@ -2076,7 +2087,7 @@ mod tests {
         let workspace = note.parent().unwrap().to_path_buf();
         let (context, _asked) = gated_context(
             &workspace,
-            Duration::from_millis(400),
+            Duration::from_millis(2000),
             Duration::ZERO,
             None,
             run_as_asked,
@@ -2115,8 +2126,8 @@ mod tests {
         // person deciding an approval would.
         let (context, _asked) = gated_context(
             &workspace,
-            Duration::from_millis(300),
-            Duration::from_millis(500),
+            Duration::from_secs(6),
+            Duration::from_secs(7),
             None,
             run_as_asked,
         );

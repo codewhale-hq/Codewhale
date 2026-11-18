@@ -175,6 +175,15 @@ struct RuntimeTokenEnvironment {
     legacy_alias_used: bool,
 }
 
+const DESKTOP_BROWSER_OWNER_ENV: &str = "CODEWHALE_BROWSER_OWNER_PUBLIC_KEY";
+
+fn desktop_browser_owner_env() -> Option<String> {
+    std::env::var(DESKTOP_BROWSER_OWNER_ENV)
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| crate::is_valid_desktop_browser_owner_key(key))
+}
+
 fn runtime_token_environment(lookup: &dyn Fn(&str) -> Option<String>) -> RuntimeTokenEnvironment {
     let nonblank = |name| {
         lookup(name)
@@ -225,6 +234,7 @@ pub struct RuntimeApiState {
     automations: SharedAutomationManager,
     sub_agent_manager: SharedSubAgentManager,
     runtime_token: Option<String>,
+    desktop_browser_owner: Option<String>,
     skill_state: Arc<Mutex<SkillStateStore>>,
     auth_required: bool,
     bind_host: String,
@@ -989,6 +999,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 "immutable ACP-base owner cannot admit ordinary listener turns"
             );
             let workspace = selection.workspace;
+            let selection_browser_owner = selection.desktop_browser_owner;
             let options = RuntimeApiOptions {
                 host: selection.host,
                 port: selection.port,
@@ -1030,6 +1041,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 && options.cors_origins == self.state.cors_origins
                 && workspace == self.state.workspace
                 && same_auth
+                && selection_browser_owner == self.state.desktop_browser_owner
             {
                 let ready = RuntimeFrontendReady {
                     endpoint: original_addr,
@@ -1055,6 +1067,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             state.workspace = workspace.clone();
             state.workspace_scope = workspace_scope;
             state.runtime_token = resolved.token.clone();
+            state.desktop_browser_owner = selection_browser_owner;
             state.auth_required = resolved.token.is_some();
             state.bind_host = options.host;
             state.bind_port = endpoint.port();
@@ -1213,8 +1226,8 @@ pub struct RuntimeApiOptions {
     pub port: u16,
     pub workers: usize,
     /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Populated by `--cors-origin` (repeatable),
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`).
+    /// Populated by `--cors-origin` (repeatable),
     /// `CODEWHALE_CORS_ORIGINS` (comma-separated, `DEEPSEEK_CORS_ORIGINS`
     /// as alias), and `[runtime_api] cors_origins` in `config.toml`.
     /// Whalescale#255 / #561.
@@ -1558,7 +1571,16 @@ struct DecideApprovalBody {
     #[serde(default)]
     remember: bool,
     #[serde(default)]
+    remember_scope: Option<RememberScope>,
+    #[serde(default)]
     client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RememberScope {
+    Thread,
+    Workspace,
 }
 
 #[derive(Debug, Serialize)]
@@ -1567,6 +1589,16 @@ struct DecideApprovalResponse {
     approval_id: String,
     decision: String,
     delivered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    standing_rules: Option<Vec<codewhale_execpolicy::ToolAskRule>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemovePermissionRuleBody {
+    token: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1675,6 +1707,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         worktrees: true,
         job_operations: true,
         thread_shell_consent: true,
+        thread_standing_context: true,
         turns: true,
         turn_operation_idempotency: true,
         turn_operation_lookup: true,
@@ -1708,6 +1741,9 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         // SSE journal frames carry their durable `seq` as the event id, and the
         // thread event stream resumes from `Last-Event-ID`.
         event_stream_resume: true,
+        permission_rules: true,
+        approval_remember_workspace: true,
+        approval_grants_list: true,
     }
 }
 
@@ -2335,6 +2371,7 @@ pub async fn run_http_server(
                     insecure_no_auth: options.insecure_no_auth,
                     mobile: options.mobile,
                     web: options.web,
+                    desktop_browser_owner: desktop_browser_owner_env(),
                 };
                 drop(control);
                 crate::daemon_client::connect_listener_if_published(
@@ -2471,6 +2508,7 @@ pub async fn run_http_server(
         automations,
         sub_agent_manager,
         runtime_token: runtime_token.clone(),
+        desktop_browser_owner: desktop_browser_owner_env(),
         skill_state: Arc::new(Mutex::new(skill_state)),
         auth_required: auth_enabled,
         bind_host: options.host.clone(),
@@ -3210,6 +3248,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
         .route(
+            "/v1/threads/{id}/context/standing",
+            get(context::get_thread_standing_context),
+        )
+        .route(
             "/v1/threads/{id}/members",
             post(members::start_thread_member)
                 .layer(DefaultBodyLimit::max(members::MAX_MEMBER_REQUEST_BYTES)),
@@ -3359,6 +3401,9 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/goals", get(list_goals))
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{approval_id}", post(decide_approval))
+        .route("/v1/approval-grants", get(list_approval_grants))
+        .route("/v1/permissions/rules", get(list_permission_rules))
+        .route("/v1/permissions/rules/remove", post(remove_permission_rule))
         .route(
             "/v1/threads/{id}/approval-grants/{grant_id}",
             delete(revoke_approval_grant),
@@ -7173,10 +7218,126 @@ async fn decide_approval(
             )));
         }
     };
+    if req.remember_scope.is_some() && !req.remember {
+        return Err(
+            ApiError::bad_request("remember_scope requires \"remember\": true")
+                .with_code("invalid_remember_scope"),
+        );
+    }
     let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.remember_scope == Some(RememberScope::Workspace) {
+        if !matches!(decision, ExternalApprovalDecision::Allow { .. }) {
+            return Err(ApiError::bad_request(
+                "remember_scope \"workspace\" is valid only with decision \"allow\"",
+            )
+            .with_code("invalid_remember_scope"));
+        }
+        return settle_approval_with_standing_rule(state, approval_id, responder)
+            .await
+            .map(Json);
+    }
     Ok(Json(
         settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
+}
+
+async fn settle_approval_with_standing_rule(
+    state: RuntimeApiState,
+    approval_id: String,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<DecideApprovalResponse, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    let id = approval_id.clone();
+    let settled = tokio::spawn(async move {
+        runtime_threads
+            .deliver_approval_with_standing_rule(&id, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("standing rule task failed"))?
+    .map_err(map_permission_rule_error)?;
+    let Some((delivered, rules)) = settled else {
+        return Err(ApiError::not_found(format!(
+            "no pending approval with id '{approval_id}'"
+        )));
+    };
+    Ok(DecideApprovalResponse {
+        ok: true,
+        approval_id,
+        decision: "allow".to_owned(),
+        delivered,
+        standing_rules: Some(rules),
+    })
+}
+
+fn map_permission_rule_error(error: anyhow::Error) -> ApiError {
+    use codewhale_engine::runtime_threads::manager::{
+        ApprovalOwnerRequired, PermissionRulesUnavailable, StalePermissionToken,
+        StandingRuleIneligible,
+    };
+    if error.is::<ApprovalOwnerRequired>() {
+        ApiError::forbidden(error.to_string()).with_code("owner_required")
+    } else if error.is::<StandingRuleIneligible>() {
+        ApiError::unprocessable(error.to_string()).with_code("standing_rule_ineligible")
+    } else if error.is::<StalePermissionToken>() {
+        ApiError::conflict(error.to_string()).with_code("stale_permission_token")
+    } else if error.is::<PermissionRulesUnavailable>() {
+        ApiError::conflict(error.to_string()).with_code("permissions_unavailable")
+    } else if error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+    {
+        ApiError::conflict(error.to_string())
+    } else {
+        ApiError::internal(format!("permission rule update failed: {error:#}"))
+    }
+}
+
+async fn list_permission_rules(
+    State(state): State<RuntimeApiState>,
+) -> Json<codewhale_engine::runtime_threads::manager::PermissionRulesListing> {
+    Json(state.runtime_threads.list_permission_rules().await)
+}
+
+async fn remove_permission_rule(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Json(req): Json<RemovePermissionRuleBody>,
+) -> Result<Json<Value>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.token.len() != 24
+        || !req
+            .token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(
+            ApiError::bad_request("token must be a listed removal token")
+                .with_code("invalid_permission_token"),
+        );
+    }
+    let runtime_threads = state.runtime_threads.clone();
+    let removed = tokio::spawn(async move {
+        runtime_threads
+            .remove_permission_rule_by_token(&req.token, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("permission removal task failed"))?
+    .map_err(map_permission_rule_error)?;
+    Ok(Json(
+        json!({ "ok": true, "removed": removed, "applied_to": "this_runtime" }),
+    ))
+}
+
+async fn list_approval_grants(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<codewhale_engine::runtime_threads::manager::StandingGrantsListing>, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    tokio::task::spawn_blocking(move || runtime_threads.list_standing_grants())
+        .await
+        .map(Json)
+        .map_err(|_| ApiError::internal("approval grant read task failed"))
 }
 
 async fn settle_approval_request(
@@ -7242,6 +7403,7 @@ async fn settle_approval_request_in_workspace(
         }
         .to_owned(),
         delivered,
+        standing_rules: None,
     })
 }
 
@@ -8001,8 +8163,13 @@ async fn register_desktop_browser_config(
             "MCP configuration changed; reload it before registering desktop tools",
         ));
     }
-    pool.add_desktop_browser_server_config(name, config, proof)
-        .map_err(ApiError::bad_request)?;
+    pool.add_desktop_browser_server_config_for_owner(
+        name,
+        config,
+        proof,
+        state.desktop_browser_owner.as_deref(),
+    )
+    .map_err(ApiError::bad_request)?;
     Ok(())
 }
 
@@ -10640,11 +10807,34 @@ async fn start_thread_turn(
             "paired remote devices are restricted to their paired conversation",
         ));
     }
-    let owner_composer = matches!(
-        caller,
-        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
-    );
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
     start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer, scope).await
+}
+
+fn turn_caller_is_owner_composer(
+    state: &RuntimeApiState,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    body: &Value,
+) -> Result<bool, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    let Some(axum::Extension(caller)) = caller else {
+        return Ok(false);
+    };
+    let client = match body.get("client") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<ApprovalResponder>(value.clone())
+                .map_err(|error| ApiError::unprocessable(format!("client: {error}")))?,
+        ),
+    };
+    if caller == auth::RuntimeAuthCaller::MasterOrLocal && state.runtime_token.is_none() {
+        return Ok(false);
+    }
+    Ok(
+        resolve_approval_responder(caller, client)?
+            .is_some_and(ApprovalResponder::is_owner_surface),
+    )
 }
 
 async fn start_thread_turn_for_caller(
@@ -10896,12 +11086,11 @@ async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
     caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
-    Json(req): Json<SteerTurnRequest>,
+    Json(value): Json<Value>,
 ) -> Result<Json<TurnRecord>, ApiError> {
-    let owner_composer = matches!(
-        caller,
-        Some(axum::Extension(auth::RuntimeAuthCaller::WebSession))
-    );
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
+    let req: SteerTurnRequest = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(error.to_string()))?;
     let turn = state
         .runtime_threads
         .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
@@ -12256,6 +12445,8 @@ fn map_compat_stream_event(
                     "turn_id": event.turn_id,
                     "decision": payload.get("decision"),
                     "remember": payload.get("remember"),
+                    "remember_scope": payload.get("remember_scope"),
+                    "standing_rules": payload.get("standing_rules"),
                     "auto": payload.get("auto"),
                     "timeout": payload.get("timeout"),
                     // Set when the decision was forced by a turn interrupt
@@ -15330,7 +15521,6 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://127.0.0.1:3000",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
-    "tauri://localhost",
 ];
 
 fn cors_layer(extra_origins: &[String]) -> CorsLayer {
@@ -15757,6 +15947,7 @@ base_url = "http://127.0.0.1:9/v1"
             )?)),
             sub_agent_manager,
             runtime_token: None,
+            desktop_browser_owner: None,
             skill_state: Arc::new(Mutex::new(SkillStateStore::load_from(
                 root.join("skills_state.toml"),
             )?)),

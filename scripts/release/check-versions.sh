@@ -171,6 +171,18 @@ else
       echo "::error::Publication requires CHANGELOG.md section ${workspace_version} to use '${dated_heading}'." >&2
       fail=1
     fi
+    current_summary="$(
+      awk '
+        NR == 1 { next }
+        /^### / { exit }
+        { print }
+      ' <<<"${current_section}"
+    )"
+    if grep -qiE 'source candidate' <<<"${current_summary}" ||
+      grep -qiE 'not a published release|not the final [^[:space:]]+ tag|^### Work in progress' <<<"${current_section}"; then
+      echo "::error::Publication requires CHANGELOG.md section ${workspace_version} to replace source-candidate and work-in-progress text." >&2
+      fail=1
+    fi
   elif ! grep -qE "^## \\[${workspace_version}\\] - ([0-9]{4}-[0-9]{2}-[0-9]{2}|Unreleased candidate)$" <<<"${current_section}"; then
     echo "::error::CHANGELOG.md section ${workspace_version} must use '${candidate_heading}' or '${dated_heading}'." >&2
     fail=1
@@ -198,6 +210,33 @@ unreleased_section="$(
     in_section { print }
   ' CHANGELOG.md
 )"
+if [[ "${require_dated_release}" == "1" ]]; then
+  unreleased_body="$(
+    awk '
+      index($0, "## [Unreleased]") == 1 { in_section = 1; next }
+      in_section && /^## \[/ { exit }
+      in_section && /[^[:space:]]/ { print }
+    ' CHANGELOG.md
+  )"
+  if [[ -n "${unreleased_body}" ]]; then
+    echo "::error::Publication requires CHANGELOG.md [Unreleased] to be folded into ${workspace_version} before tagging." >&2
+    fail=1
+  fi
+  if [[ "${workspace_version}" != *-* ]]; then
+    if [[ -f docs/CONTRIBUTORS.md ]] && (
+      grep -qF '<summary><strong>Unreleased' docs/CONTRIBUTORS.md ||
+        grep -qF "<summary><strong>v${workspace_version} — unreleased candidate" docs/CONTRIBUTORS.md
+    ); then
+      echo "::error::Publication requires docs/CONTRIBUTORS.md to fold the Unreleased band into a titled v${workspace_version} release band." >&2
+      fail=1
+    fi
+    if [[ -f web/lib/release-credits.ts ]] &&
+      node -e 'const s = require("fs").readFileSync("web/lib/release-credits.ts", "utf8"); const m = s.match(/UNRELEASED_CONTRIBUTORS:\s*string\[\]\s*=\s*\[([\s\S]*?)\]/); process.exit(m && /@[A-Za-z0-9_-]+/.test(m[1]) ? 0 : 1);'; then
+      echo "::error::Publication requires web/lib/release-credits.ts UNRELEASED_CONTRIBUTORS to be moved into RELEASE_CONTRIBUTORS." >&2
+      fail=1
+    fi
+  fi
+fi
 credit_sections="${current_section}
 ${unreleased_section}"
 

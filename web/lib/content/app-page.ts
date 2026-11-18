@@ -9,12 +9,11 @@
  * download, and the page never links to the hosted app itself.
  */
 
+import type { DesktopShotId } from "@/components/desktop-shot";
 import type { LocalizedText } from "./vocabulary";
 
 export interface AppShot {
-  file: "conversation" | "approval" | "model-picker";
-  width: number;
-  height: number;
+  file: DesktopShotId;
   alt: LocalizedText;
   caption: LocalizedText;
 }
@@ -46,54 +45,59 @@ export const APP_COPY = {
   },
   actions: {
     install: { en: "Install the terminal", zh: "安装终端版" },
-    guide: { en: "Read the app guide", zh: "阅读应用指南" },
+    guide: { en: "Use codewhale web today", zh: "现在就用 codewhale web" },
     signIn: { en: "How sign-in works", zh: "登录方式" },
   },
-  guideUrl: "https://docs.codewhale.net",
+  guidePath: "/docs/web",
 
   shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
   shotsScope: {
-    en: "These are captures of the desktop development build, taken against a test fixture, so some names and text in them are placeholders. Details will change before a release.",
-    zh: "以下是桌面开发版本的截图，取自测试环境，其中部分名称和文字只是占位内容。发布前细节仍会变化。",
+    en: "These screens come from the desktop development build running the real engine and a real model, qwen3:4b, locally through Ollama. Details will change before a release.",
+    zh: "以下画面来自桌面开发版本，运行的是真实引擎和真实模型：通过 Ollama 在本地运行的 qwen3:4b。发布前细节仍会变化。",
   },
   shots: [
     {
-      file: "conversation",
-      width: 1440,
-      height: 725,
+      file: "review",
       alt: {
-        en: "The desktop app showing a session named Codewhale core. A cloud agent named Fix prompt tests changed two files, ran an approved test command, and the side panel lists Changes, Ready to review, Environment, People and Activity.",
-        zh: "桌面应用中名为 Codewhale core 的会话。名为 Fix prompt tests 的云端智能体修改了两个文件并运行了已批准的测试命令，侧边栏列出更改、待审阅、环境、成员和活动记录。",
+        en: "The desktop app with the session list on the left, a finished task in the middle that ran python3 -m pytest -q with 3 tests passed, and on the right the review panel showing the change to core.py with Mark this diff reviewed and Commit and history.",
+        zh: "桌面应用：左侧是会话列表，中间是一项已完成的任务，它运行了 python3 -m pytest -q，3 个测试通过；右侧审阅面板显示对 core.py 的修改，以及“标记此差异已审阅”和“提交与历史”。",
       },
       caption: {
-        en: "A session with a cloud agent ready to review. The side panel keeps changes, environment, people and activity next to the conversation. Development build capture.",
-        zh: "云端智能体完成改动待审阅的会话。侧边栏把更改、环境、成员和活动记录放在对话旁边。开发版本截图。",
+        en: "A finished task with its change open in the review panel. You can mark the diff reviewed and commit from the same panel.",
+        zh: "一项已完成的任务，修改在审阅面板中打开。你可以在同一面板中标记差异已审阅并提交。",
       },
     },
     {
       file: "approval",
-      width: 1440,
-      height: 725,
       alt: {
-        en: "The desktop app asking Run a command? with the exact shell command shown and two buttons: Allow once and Don't allow.",
-        zh: "桌面应用弹出“Run a command?”的询问，显示完整的 shell 命令，并提供两个按钮：Allow once 和 Don't allow。",
+        en: "The desktop app asking Run a command? for python3 -m pytest -q, with the buttons Allow once, Allow for this session and Don't allow, below the applied edit to tally/core.py.",
+        zh: "桌面应用针对 python3 -m pytest -q 询问“Run a command?”，提供 Allow once、Allow for this session 和 Don't allow 三个按钮，上方是已应用到 tally/core.py 的修改。",
       },
       caption: {
-        en: "A command waits for your answer before it runs, with the exact command in view. Development build capture.",
-        zh: "命令在运行前等待你的回答，并展示完整命令。开发版本截图。",
+        en: "In Accept Edits the edit went through, and the test command waits for your answer with the exact command in view.",
+        zh: "在 Accept Edits 模式下，修改已直接应用，测试命令则等待你的回答，并展示完整命令。",
       },
     },
     {
-      file: "model-picker",
-      width: 1440,
-      height: 725,
+      file: "permissions",
       alt: {
-        en: "The desktop app's new session screen with the model picker open, DeepSeek selected on the provider rail, four DeepSeek models listed, and a switch at the bottom for This session or New sessions.",
-        zh: "桌面应用的新会话界面，模型选择器已打开，左侧供应商栏选中 DeepSeek 并列出四个 DeepSeek 模型，底部提供“当前会话”或“新会话”的切换开关。",
+        en: "The Permissions menu open above the composer, listing Ask, Accept Edits (selected), Plan, Auto-Review and Full Access, and under Allowed for this session a Revoke entry for python3 -m pytest -q.",
+        zh: "输入框上方打开的 Permissions 菜单，列出 Ask、Accept Edits（已选中）、Plan、Auto-Review 和 Full Access，并在“本会话已允许”下列出可撤销的 python3 -m pytest -q。",
       },
       caption: {
-        en: "Pick a provider and model before you start, and choose whether the setting applies to this session or new sessions. Development build capture.",
-        zh: "开始前按供应商选择模型，并决定设置应用于当前会话还是新会话。开发版本截图。",
+        en: "The Permissions menu sets what the agent may do without asking, and lists what you allowed for this session so you can revoke it.",
+        zh: "Permissions 菜单决定智能体无需询问即可做什么，并列出你在本会话中允许过的操作，方便你撤销。",
+      },
+    },
+    {
+      file: "sessions",
+      alt: {
+        en: "The desktop app with three sessions in the tally folder: two marked Running and one finished, and the open session thinking about a request to explain the project.",
+        zh: "桌面应用中 tally 文件夹下的三个会话：两个标记为运行中，一个已完成；打开的会话正在思考一个解释项目的请求。",
+      },
+      caption: {
+        en: "Two sessions work in the same folder at once, and the list shows which ones are running.",
+        zh: "两个会话同时在同一个文件夹中工作，列表会显示哪些正在运行。",
       },
     },
   ] satisfies AppShot[],

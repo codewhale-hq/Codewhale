@@ -298,16 +298,52 @@ impl NodeRemoteHarness {
                 .error_for_status()?
                 .json()
                 .await?;
-            let all_terminal = detail["turns"].as_array().is_some_and(|turns| {
+            let turns = detail["turns"].as_array();
+            let all_terminal = turns.is_some_and(|turns| {
                 turns.iter().all(|turn| {
                     matches!(
                         turn["status"].as_str(),
                         Some("completed" | "failed" | "interrupted" | "canceled")
-                    )
+                    ) && turn["workspace"]["state"].as_str() != Some("pending")
                 })
             });
             if all_terminal {
-                return Ok(());
+                let mut replay = self
+                    .state
+                    .runtime_threads
+                    .replay_events(thread_id, None, None)
+                    .await?;
+                let mut events = Vec::new();
+                while let Some(batch) = replay.batches.recv().await {
+                    events.extend(batch.map_err(anyhow::Error::msg)?);
+                }
+                let all_events_settled = turns.is_some_and(|turns| {
+                    turns.iter().all(|turn| {
+                        let Some(id) = turn["id"].as_str() else {
+                            return false;
+                        };
+                        let ran_live = events.iter().any(|ev| {
+                            ev.event == "turn.started" && ev.turn_id.as_deref() == Some(id)
+                        }) || turn.get("workspace").is_some_and(|w| !w.is_null());
+                        if !ran_live {
+                            return true;
+                        }
+                        let has_completed = events.iter().any(|ev| {
+                            ev.event == "turn.completed" && ev.turn_id.as_deref() == Some(id)
+                        });
+                        let needs_artifacts = turn["workspace"]["state"].as_str()
+                            == Some("settled")
+                            || turn["workspace"]["reason"].as_str() == Some("delta_failed");
+                        let has_artifacts = !needs_artifacts
+                            || events.iter().any(|ev| {
+                                ev.event == "turn.artifacts" && ev.turn_id.as_deref() == Some(id)
+                            });
+                        has_completed && has_artifacts
+                    })
+                });
+                if all_events_settled {
+                    return Ok(());
+                }
             }
             if Instant::now() >= deadline {
                 anyhow::bail!("timed out waiting for thread {thread_id} to go idle: {detail}");
@@ -360,7 +396,25 @@ impl NodeRemoteHarness {
                 return Ok(grant);
             }
             if Instant::now() >= deadline {
-                anyhow::bail!("pairing grant never appeared for thread {thread_id}");
+                let mut replay = self
+                    .state
+                    .runtime_threads
+                    .replay_events(thread_id, None, None)
+                    .await?;
+                let mut items = Vec::new();
+                while let Some(batch) = replay.batches.recv().await {
+                    for ev in batch.map_err(anyhow::Error::msg)? {
+                        if ev.event.starts_with("item.") && ev.event != "item.delta" {
+                            let mut line = format!("{} {}", ev.event, ev.payload);
+                            line.truncate(600);
+                            items.push(line);
+                        }
+                    }
+                }
+                anyhow::bail!(
+                    "pairing grant never appeared for thread {thread_id}; items: {}",
+                    items.join(" | ")
+                );
             }
             sleep(Duration::from_millis(25)).await;
         }

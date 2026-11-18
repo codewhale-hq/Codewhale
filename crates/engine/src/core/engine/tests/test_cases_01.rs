@@ -620,11 +620,45 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
         cost.unpriced_turns, 2,
         "the cancelled child's unknown outcome and the root turn's unpriced mock-model usage"
     );
-    assert_eq!(cost.missing_usage_sources.len(), 1);
-    assert!(cost.missing_usage_sources.values().all(|coverage| {
-        coverage.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-            && coverage.money_metered
-    }));
+    assert_eq!(cost.accounted_usage_sources.len(), 2);
+    assert!(
+        cost.accounted_usage_sources
+            .values()
+            .all(|entry| entry.priced == 0 && entry.unpriced == 1 && entry.usd == 0.0),
+        "{:?}",
+        cost.accounted_usage_sources
+    );
+    let (unknown, root): (Vec<_>, Vec<_>) =
+        cost.accounted_usage_sources.values().partition(|entry| {
+            entry.record.settlement.as_ref().is_some_and(|settlement| {
+                settlement.reason
+                    == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            })
+        });
+    assert_eq!(unknown.len(), 1, "{:?}", cost.accounted_usage_sources);
+    assert_eq!(
+        (
+            unknown[0].record.usage.usage.input_tokens,
+            unknown[0].record.usage.usage.output_tokens
+        ),
+        (0, 0)
+    );
+    assert!(
+        unknown[0]
+            .record
+            .usage
+            .route
+            .audit_frozen(&unknown[0].record.usage.usage)
+            .counts_toward_money_coverage()
+    );
+    assert_eq!(root.len(), 1, "{:?}", cost.accounted_usage_sources);
+    assert_eq!(
+        (
+            root[0].record.usage.usage.input_tokens,
+            root[0].record.usage.usage.output_tokens
+        ),
+        (11, 5)
+    );
     assert_eq!(
         client.inner.call_count(),
         1,
@@ -1408,4 +1442,104 @@ async fn terminal_barrier_cancel_join_breaks_on_fresh_esc() {
     assert_eq!(unsettled, vec!["agent_stuck".to_string()]);
     esc_task.await.unwrap();
     drop(registration);
+}
+
+#[tokio::test]
+async fn a_completed_turn_stays_completed_when_usage_cannot_be_retained() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let _cost = crate::cost_status::test_scope();
+    let workspace = tempdir().expect("tempdir");
+    let broken_sessions_file = workspace.path().join("not-a-sessions-dir");
+    std::fs::write(&broken_sessions_file, b"file").expect("create regular file sentinel");
+
+    let mut response = canned::simple_text_turn("completed without retained usage");
+    for event in &mut response {
+        if let codewhale_models::StreamEvent::MessageDelta { usage, .. } = event {
+            *usage = Some(Usage {
+                input_tokens: 12,
+                output_tokens: 4,
+                ..Usage::default()
+            });
+        }
+    }
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![response]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let config = Config::default();
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            broken_sessions_file,
+            "unretained-session".to_string(),
+        ));
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(external_user_message_op(
+            "complete with unwritable origin",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send turn");
+
+    let mut rx = handle.rx_event.write().await;
+    let (status, error) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .expect("timed out waiting for TurnComplete")
+            .expect("engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx);
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(mock.call_count(), 1);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+
+    let mock2 = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "completed despite failing sink",
+    )]));
+    let client2: crate::core::model_client::SharedModelClient = mock2.clone();
+    let mut engine_config2 = deterministic_engine_config(workspace.path());
+    engine_config2.runtime_services.accounting_origin =
+        Some(crate::cost_status::NativeUsageOrigin::captured_runtime(
+            crate::cost_status::scope_token(),
+            "failing-retained-sink-owner".to_string(),
+            std::sync::Arc::new(|_| false),
+        ));
+    let (engine2, handle2) = Engine::new_with_model_client(engine_config2, &config, client2);
+    let task2 = tokio::spawn(engine2.run());
+    handle2
+        .send(external_user_message_op(
+            "complete with failing runtime sink",
+            AppMode::Agent,
+            &config,
+        ))
+        .await
+        .expect("send second turn");
+
+    let mut rx2 = handle2.rx_event.write().await;
+    let (status2, error2) = loop {
+        let event = tokio::time::timeout(model_turn_event_timeout(), rx2.recv())
+            .await
+            .expect("timed out waiting for second TurnComplete")
+            .expect("second engine event channel open");
+        if let Event::TurnComplete { status, error, .. } = event {
+            break (status, error);
+        }
+    };
+    drop(rx2);
+    assert_eq!(status2, TurnOutcomeStatus::Completed, "{error2:?}");
+    assert!(error2.is_none(), "{error2:?}");
+    assert_eq!(mock2.call_count(), 1);
+
+    handle2.send(Op::Shutdown).await.expect("shutdown engine2");
+    task2.await.expect("engine2 task");
 }

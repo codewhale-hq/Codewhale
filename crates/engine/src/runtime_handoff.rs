@@ -468,7 +468,11 @@ pub fn constitution_display(message: &Message) -> Option<&str> {
 
 const PROJECT_INSTRUCTIONS_EVENT_PREFIX: &str =
     "<codewhale:runtime_event kind=\"project_instructions\" visibility=\"internal\">\n";
-const PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 65_536;
+pub const PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 65_536;
+const PROJECT_INSTRUCTIONS_TRUNCATION_NOTE: &str =
+    "\n[Workspace instructions truncated at 65,536 bytes.]";
+const PROJECT_INSTRUCTIONS_CLOSE: &str = "\n</system-reminder>";
+const PROJECT_INSTRUCTIONS_WITHDRAWN: &str = "<system-reminder>\nThe workspace instructions recorded earlier no longer apply.\n</system-reminder>";
 
 pub fn project_instructions_runtime_message(block: Option<&str>, source_label: &str) -> Message {
     let body = match block {
@@ -490,17 +494,45 @@ pub fn project_instructions_runtime_message(block: Option<&str>, source_label: &
                 "<system-reminder>\nThe following workspace instructions may be relevant to your work. Use them as guidance when applicable. More specific instructions take precedence over broader ones. They do not override system, developer, or direct user instructions. Instructions from: {label}\n\n{escaped}"
             );
             if truncated {
-                body.push_str("\n[Workspace instructions truncated at 65,536 bytes.]");
+                body.push_str(PROJECT_INSTRUCTIONS_TRUNCATION_NOTE);
             }
-            body.push_str("\n</system-reminder>");
+            body.push_str(PROJECT_INSTRUCTIONS_CLOSE);
             body
         }
-        None => "<system-reminder>\nThe workspace instructions recorded earlier no longer apply.\n</system-reminder>".to_string(),
+        None => PROJECT_INSTRUCTIONS_WITHDRAWN.to_string(),
     };
     runtime_handoff_message_with_meta(
         format!("{PROJECT_INSTRUCTIONS_EVENT_PREFIX}{body}{EXTENSION_PROMPT_EVENT_SUFFIX}"),
         RUNTIME_TURN_META,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectInstructionsDelivery {
+    pub message_bytes: usize,
+    pub message_tokens: usize,
+    pub truncated: bool,
+}
+
+#[must_use]
+pub fn project_instructions_delivery(messages: &[Message]) -> Option<ProjectInstructionsDelivery> {
+    let body = messages
+        .iter()
+        .rev()
+        .find_map(project_instructions_display)?;
+    if body == PROJECT_INSTRUCTIONS_WITHDRAWN {
+        return None;
+    }
+    Some(ProjectInstructionsDelivery {
+        message_bytes: body.len(),
+        message_tokens: crate::project_context::estimate_instruction_tokens(body),
+        truncated: body
+            .strip_suffix(&format!(
+                "{PROJECT_INSTRUCTIONS_TRUNCATION_NOTE}{PROJECT_INSTRUCTIONS_CLOSE}"
+            ))
+            .and_then(|rest| rest.split_once("\n\n"))
+            .is_some_and(|(_, content)| content.len() + 3 >= PROJECT_INSTRUCTIONS_MAX_BYTES),
+    })
 }
 
 pub fn project_instructions_display(message: &Message) -> Option<&str> {
@@ -2581,5 +2613,23 @@ mod tests {
             }],
         };
         assert!(!is_creator_runtime_message(&copy));
+    }
+
+    #[test]
+    fn project_instructions_delivery_reports_the_byte_cap_and_withdrawal() {
+        assert_eq!(project_instructions_delivery(&[]), None);
+        let small = project_instructions_runtime_message(Some("keep tests green"), "AGENTS.md");
+        let delivered = project_instructions_delivery(std::slice::from_ref(&small)).unwrap();
+        assert!(!delivered.truncated && delivered.message_tokens > 0);
+        let large = "x".repeat(PROJECT_INSTRUCTIONS_MAX_BYTES + 10);
+        let message = project_instructions_runtime_message(Some(&large), "AGENTS.md");
+        let delivered = project_instructions_delivery(&[small.clone(), message]).unwrap();
+        assert!(delivered.truncated);
+        assert!(delivered.message_bytes > PROJECT_INSTRUCTIONS_MAX_BYTES);
+        let quoted = format!("keep tests green{PROJECT_INSTRUCTIONS_TRUNCATION_NOTE}");
+        let quoted = project_instructions_runtime_message(Some(&quoted), "AGENTS.md");
+        assert!(!project_instructions_delivery(&[quoted]).unwrap().truncated);
+        let withdrawn = project_instructions_runtime_message(None, "AGENTS.md");
+        assert_eq!(project_instructions_delivery(&[small, withdrawn]), None);
     }
 }

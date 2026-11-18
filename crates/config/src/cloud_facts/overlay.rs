@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use super::provenance::{CloudFactsState, CloudFactsStatus};
+use super::registry::{AdmittedRegistry, REGISTRY_SCHEMA};
 use super::scope::ScopedFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,7 @@ struct State {
     source_identity: String,
     highest_seen: BTreeMap<String, u64>,
     snapshot: OverlaySnapshot,
+    registry: Option<Arc<AdmittedRegistry>>,
 }
 
 static STATE: LazyLock<RwLock<State>> = LazyLock::new(|| RwLock::new(State::default()));
@@ -60,6 +62,14 @@ fn disable(state: &mut State) {
     state.enabled = false;
     state.snapshot.facts = None;
     state.snapshot.status = CloudFactsStatus::default();
+    state.registry = None;
+}
+
+fn admits(state: &mut State, ticket: &OverlayTicket) -> bool {
+    if hard_disabled() {
+        disable(state);
+    }
+    state.enabled && ticket.epoch == state.epoch && ticket.source_identity == state.source_identity
 }
 
 /// Admit effective settings synchronously. Refreshes must use `current_ticket`
@@ -74,6 +84,7 @@ pub fn configure(enabled: bool, source_identity: &str) -> Option<OverlayTicket> 
         state.epoch = state.epoch.saturating_add(1);
         state.snapshot.generation = state.snapshot.generation.saturating_add(1);
         state.snapshot.facts = None;
+        state.registry = None;
         state.snapshot.status = CloudFactsStatus {
             state: CloudFactsState::BundledOnly,
             ..Default::default()
@@ -107,13 +118,9 @@ pub fn current_ticket(source_identity: &str) -> Option<OverlayTicket> {
 
 #[must_use]
 pub fn is_current(ticket: &OverlayTicket) -> bool {
-    let Ok(mut state) = STATE.write() else {
-        return false;
-    };
-    if hard_disabled() {
-        disable(&mut state);
-    }
-    state.enabled && ticket.epoch == state.epoch && ticket.source_identity == state.source_identity
+    STATE
+        .write()
+        .is_ok_and(|mut state| admits(&mut state, ticket))
 }
 
 pub fn publish(
@@ -135,13 +142,7 @@ pub fn publish_with(
     let Ok(mut state) = STATE.write() else {
         return false;
     };
-    if hard_disabled() {
-        disable(&mut state);
-    }
-    if !state.enabled
-        || ticket.epoch != state.epoch
-        || ticket.source_identity != state.source_identity
-    {
+    if !admits(&mut state, ticket) {
         return false;
     }
     if let Some(facts) = &facts {
@@ -169,6 +170,45 @@ pub fn publish_with(
     state.snapshot.status = status;
     state.snapshot.generation = state.snapshot.generation.saturating_add(1);
     true
+}
+
+pub fn publish_registry(
+    ticket: &OverlayTicket,
+    registry: Option<Arc<AdmittedRegistry>>,
+    before_publish: impl FnOnce(Option<u64>),
+) -> bool {
+    let Ok(mut state) = STATE.write() else {
+        return false;
+    };
+    if !admits(&mut state, ticket) {
+        return false;
+    }
+    if let Some(registry) = &registry {
+        if state
+            .highest_seen
+            .get(REGISTRY_SCHEMA)
+            .is_some_and(|revision| registry.revision < *revision)
+        {
+            return false;
+        }
+        state
+            .highest_seen
+            .insert(REGISTRY_SCHEMA.to_string(), registry.revision);
+    }
+    before_publish(state.highest_seen.get(REGISTRY_SCHEMA).copied());
+    state.registry = registry;
+    true
+}
+
+#[must_use]
+pub fn pulled_registry() -> Option<Arc<AdmittedRegistry>> {
+    let Ok(mut state) = STATE.write() else {
+        return None;
+    };
+    if hard_disabled() {
+        disable(&mut state);
+    }
+    state.registry.clone()
 }
 
 fn snapshot_at(now: u64) -> OverlaySnapshot {

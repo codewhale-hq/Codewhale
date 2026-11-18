@@ -1,12 +1,7 @@
-//! Usage projections and retained native-owner receipts.
-//!
-//! Native request owners publish to their captured durable Session or Runtime
-//! origin before live cost projection. The pending pool carries acknowledged
-//! source records; the existing owner journal retains failed publications and
-//! never acts as another money counter.
+//! Usage projections and source attribution receipts.
 
 use codewhale_runtime::safe_label::{safe_receipt_field, sanitize_persisted_route_label};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
@@ -58,11 +53,6 @@ pub struct PendingBackgroundCost {
     /// batch. These travel with the money so a session snapshot can make a
     /// replay idempotent after reload.
     pub usage_source_fingerprints: BTreeSet<String>,
-    /// Exact unresolved coverage in this same source ledger, bounded to 64.
-    pub missing_usage_sources: BTreeMap<String, MissingUsageCoverage>,
-    /// A late real receipt supersedes only this exact unresolved source.
-    pub resolved_missing_usage_sources: BTreeSet<String>,
-    pub missing_usage_overflowed: bool,
     /// Prompt-cache classes the background routes reported, through
     /// [`crate::pricing::token_usage_for_pricing`] so they never exceed the
     /// input they partition (#6565). `None` until a child reports cache
@@ -1013,16 +1003,17 @@ impl PendingBackgroundCost {
 struct ScopedPendingBackgroundCost {
     generation: u64,
     pending: PendingBackgroundCost,
-    /// All provider responses accepted in this session generation, including
-    /// batches already drained into the live session projection.
     seen_usage_source_fingerprints: HashSet<String>,
+    retired_usage_sources: HashSet<String>,
     source_records: BTreeMap<String, RuntimeUsageRecord>,
-    missing_usage_sources: BTreeMap<String, MissingUsageCoverage>,
-    missing_usage_overflowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CostScopeToken(u64);
+
+pub type RuntimeDecisionSink = Arc<dyn Fn(RuntimeDecisionReceipt) -> bool + Send + Sync>;
+pub type RuntimeUsageSink = Arc<dyn Fn(RuntimeUsageRecord) -> bool + Send + Sync>;
+pub type RuntimeDropSink = Arc<dyn Fn(RuntimeUsageDropRecord) -> bool + Send + Sync>;
 
 #[derive(Clone)]
 pub struct NativeUsageOrigin {
@@ -1030,12 +1021,6 @@ pub struct NativeUsageOrigin {
     #[cfg(any(test, feature = "test-support"))]
     test_origin: std::thread::ThreadId,
     destination: NativeUsageDestination,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionUsageProjection {
-    sessions_dir: std::path::PathBuf,
-    session_id: String,
 }
 
 #[derive(Clone)]
@@ -1048,7 +1033,8 @@ enum NativeUsageDestination {
     Runtime {
         owner: String,
         sink: RuntimeUsageSink,
-        projection: Option<SessionUsageProjection>,
+        drop_sink: Option<RuntimeDropSink>,
+        decision_sink: Option<RuntimeDecisionSink>,
     },
 }
 
@@ -1062,84 +1048,6 @@ impl std::fmt::Debug for NativeUsageOrigin {
 }
 
 impl NativeUsageOrigin {
-    fn journal_owner(&self) -> String {
-        match &self.destination {
-            NativeUsageDestination::Session {
-                sessions_dir,
-                session_id,
-                ..
-            } => session_usage_journal_owner(sessions_dir, session_id),
-            NativeUsageDestination::Runtime { owner, .. } => owner.clone(),
-        }
-    }
-
-    fn same_owner(&self, other: &Self) -> bool {
-        match (&self.destination, &other.destination) {
-            (
-                NativeUsageDestination::Session {
-                    sessions_dir: a_store,
-                    session_id: a_session,
-                    operation_id: a_operation,
-                },
-                NativeUsageDestination::Session {
-                    sessions_dir: b_store,
-                    session_id: b_session,
-                    operation_id: b_operation,
-                },
-            ) => a_store == b_store && a_session == b_session && a_operation == b_operation,
-            (
-                NativeUsageDestination::Runtime {
-                    owner: a_owner,
-                    sink: a_sink,
-                    ..
-                },
-                NativeUsageDestination::Runtime {
-                    owner: b_owner,
-                    sink: b_sink,
-                    ..
-                },
-            ) => a_owner == b_owner && Arc::ptr_eq(a_sink, b_sink),
-            _ => false,
-        }
-    }
-
-    pub(crate) async fn flush_retained_usage(&self) -> std::io::Result<()> {
-        let expected = self.clone();
-        codewhale_runtime::runtime_control::owner_work(move || {
-            #[cfg(any(test, feature = "test-support"))]
-            let _scope = bind_test_cost_scope(expected.test_origin);
-            let owner = expected.journal_owner();
-            let records = with_runtime_usage_journal_mut(|journal| {
-                journal
-                    .get(&owner)
-                    .map(|entry| entry.records.iter().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default()
-            });
-            for record in records {
-                let Some(proof) = record.native.as_ref() else {
-                    continue;
-                };
-                let origin = proof
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .origin
-                    .clone();
-                let Some(origin) = origin.filter(|origin| expected.same_owner(origin)) else {
-                    continue;
-                };
-                if record.is_acknowledged() {
-                    retire_runtime_usage_record(&owner, &record);
-                } else {
-                    origin.publish(&record)?;
-                }
-            }
-            Ok(())
-        })
-        .await
-        .map_err(std::io::Error::other)
-    }
-
     pub(crate) fn scope(&self) -> CostScopeToken {
         self.scope
     }
@@ -1161,44 +1069,20 @@ impl NativeUsageOrigin {
         }
     }
 
-    pub(crate) fn runtime(scope: CostScopeToken, owner: &str) -> std::io::Result<Self> {
-        let local = with_runtime_usage_sinks(|sinks| {
-            sinks
-                .get(owner)
-                .map(|entry| (entry.sink.clone(), entry.session_projection.clone()))
-        });
-        #[cfg(any(test, feature = "test-support"))]
-        let (local, registered_on) = match local {
-            Some(found) => (Some(found), None),
-            None => match migrated_runtime_usage_sink(owner) {
-                Some((thread, sink, projection)) => (Some((sink, projection)), Some(thread)),
-                None => (None, None),
-            },
-        };
-        let (sink, projection) = local.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "native usage owner has no admitted sink",
-            )
-        })?;
-        let mut origin = Self::captured_runtime(scope, owner.to_string(), sink);
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(thread) = registered_on {
-            origin.test_origin = thread;
-        }
-        if let NativeUsageDestination::Runtime {
-            projection: target, ..
-        } = &mut origin.destination
-        {
-            *target = projection;
-        }
-        Ok(origin)
-    }
-
     pub(crate) fn captured_runtime(
         scope: CostScopeToken,
         owner: String,
         sink: RuntimeUsageSink,
+    ) -> Self {
+        Self::captured_runtime_with_sinks(scope, owner, sink, None, None)
+    }
+
+    pub(crate) fn captured_runtime_with_sinks(
+        scope: CostScopeToken,
+        owner: String,
+        sink: RuntimeUsageSink,
+        drop_sink: Option<RuntimeDropSink>,
+        decision_sink: Option<RuntimeDecisionSink>,
     ) -> Self {
         Self {
             scope,
@@ -1207,12 +1091,13 @@ impl NativeUsageOrigin {
             destination: NativeUsageDestination::Runtime {
                 owner,
                 sink,
-                projection: None,
+                drop_sink,
+                decision_sink,
             },
         }
     }
 
-    fn publish(&self, record: &RuntimeUsageRecord) -> std::io::Result<()> {
+    pub(crate) fn publish(&self, record: &RuntimeUsageRecord) {
         #[cfg(any(test, feature = "test-support"))]
         let _origin = bind_test_cost_scope(self.test_origin);
         match &self.destination {
@@ -1221,29 +1106,106 @@ impl NativeUsageOrigin {
                 session_id,
                 operation_id,
             } => {
-                let owner = session_usage_journal_owner(sessions_dir, session_id);
-                let result = crate::session_manager::SessionManager::new(sessions_dir.clone()).and_then(|manager| {
-                    crate::usage_persistence::report_runtime_usage_record_for_origin_with_manager(self.scope, session_id, operation_id, record, &manager)
-                });
-                if result.is_ok() {
-                    retire_runtime_usage_record(&owner, record);
-                } else {
-                    retain_runtime_usage_record(&owner, record)?;
+                if let Err(error) = crate::session_manager::SessionManager::new(
+                    sessions_dir.clone(),
+                )
+                .and_then(|manager| {
+                    crate::usage_persistence::report_runtime_usage_record_for_origin_with_manager(
+                        self.scope,
+                        session_id,
+                        operation_id,
+                        record,
+                        &manager,
+                    )
+                }) {
+                    tracing::warn!(%error, session_id = %session_id, "usage persistence failed; continuing with unknown cost");
                 }
-                result
             }
             NativeUsageDestination::Runtime { owner, sink, .. } => {
                 if !sink(record.clone()) {
-                    retain_runtime_usage_record(owner, record)?;
                     tracing::warn!(
                         owner = %owner,
-                        "captured usage receipt retained for a later flush; the turn continues"
+                        "captured usage receipt was not persisted; continuing"
                     );
-                    return Ok(());
                 }
-                record.acknowledge_persisted()?;
-                retire_runtime_usage_record(owner, record);
-                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn publish_drop(&self, record: &RuntimeUsageDropRecord) {
+        #[cfg(any(test, feature = "test-support"))]
+        let _origin = bind_test_cost_scope(self.test_origin);
+        match &self.destination {
+            NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                operation_id,
+            } => {
+                let ok = crate::session_manager::SessionManager::new(sessions_dir.clone())
+                    .is_ok_and(|manager| {
+                        crate::usage_persistence::report_missing_usage_for_interactive_origin_with_manager(
+                            self.scope,
+                            session_id,
+                            operation_id,
+                            &record.source_id,
+                            &record.route,
+                            record.reason,
+                            &manager,
+                        )
+                    });
+                if !ok {
+                    tracing::warn!(session_id = %session_id, "missing-usage receipt was not persisted; continuing");
+                }
+            }
+            NativeUsageDestination::Runtime {
+                owner,
+                sink,
+                drop_sink,
+                ..
+            } => {
+                let ok = if let Some(drop_sink) = drop_sink {
+                    drop_sink(record.clone())
+                } else {
+                    sink(record.as_usage_record())
+                };
+                if !ok {
+                    tracing::warn!(owner = %owner, "runtime drop receipt was not persisted; continuing");
+                }
+            }
+        }
+    }
+
+    pub(crate) fn publish_decision(&self, receipt: &RuntimeDecisionReceipt) {
+        #[cfg(any(test, feature = "test-support"))]
+        let _origin = bind_test_cost_scope(self.test_origin);
+        match &self.destination {
+            NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                operation_id,
+            } => {
+                if let Ok(manager) =
+                    crate::session_manager::SessionManager::new(sessions_dir.clone())
+                    && manager
+                        .persist_late_decision_receipt(session_id, operation_id, receipt)
+                        .unwrap_or(false)
+                {
+                    let _ = manager.with_live_session_origin(session_id, || {
+                        report_interactive_decision(self.scope, receipt);
+                        true
+                    });
+                }
+            }
+            NativeUsageDestination::Runtime {
+                owner,
+                decision_sink,
+                ..
+            } => {
+                if let Some(decision_sink) = decision_sink
+                    && !decision_sink(receipt.clone())
+                {
+                    tracing::warn!(owner = %owner, "runtime decision receipt was not persisted; continuing");
+                }
             }
         }
     }
@@ -1268,10 +1230,6 @@ fn with_pending_state_mut<R>(f: impl FnOnce(&mut ScopedPendingBackgroundCost) ->
     }
     #[cfg(any(test, feature = "test-support"))]
     {
-        // Rust tests run concurrently. A test-local collector prevents a UI
-        // drain or successful purge in one test from stealing another test's
-        // accounting. Tokio's default test runtime is current-thread, so async
-        // helpers retain this scope across awaits.
         let mut by_thread = TEST_PENDING
             .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
             .lock()
@@ -1280,50 +1238,20 @@ fn with_pending_state_mut<R>(f: impl FnOnce(&mut ScopedPendingBackgroundCost) ->
     }
 }
 
-/// Runtime accounting gets a cloned, owner-scoped copy of compaction usage.
-/// This journal is deliberately separate from the TUI pending-money pool:
-/// taking one runtime owner's records cannot steal or reset the foreground
-/// session's `/cost` state.
-const MAX_RUNTIME_USAGE_RECORDS_PER_OWNER: usize = 256;
-
-#[derive(Default)]
-struct OwnerRuntimeUsageJournal {
-    records: VecDeque<RuntimeUsageRecord>,
-    native_slots: HashMap<String, std::sync::Weak<NativeUsageJournalSlot>>,
-    decisions: VecDeque<RuntimeDecisionReceipt>,
-    drop_records: VecDeque<RuntimeUsageDropRecord>,
-    dropped_records: u64,
-    dropped_source_fingerprints: HashSet<String>,
-    dropped_fingerprint_overflowed: bool,
-}
-
-type RuntimeUsageJournal = HashMap<String, OwnerRuntimeUsageJournal>;
-
-/// Bounded fallback batch returned when no synchronous runtime sink was
-/// available. `dropped_records` is persisted into the turn so aggregates fail
-/// closed instead of silently presenting a partial cost as complete.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeUsageBatch {
-    /// Bounded decision evidence, owned and retired with the same usage ledger.
     pub decisions: Vec<RuntimeDecisionReceipt>,
     pub records: Vec<RuntimeUsageRecord>,
-    /// Exact provider-success calls whose usage payload was absent. The
-    /// bounded records retain route billing truth; `dropped_records` remains
-    /// the authoritative total and may exceed this vector after overflow.
     pub drop_records: Vec<RuntimeUsageDropRecord>,
     pub dropped_records: u64,
 }
 
-/// One owner-scoped usage report with the stable provider-call identity used
-/// to make durable replay idempotent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeUsageRecord {
     pub source_id: String,
     pub usage: EffectiveRouteUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement: Option<UsageSourceRevision>,
-    #[serde(skip)]
-    native: Option<NativeUsageProof>,
 }
 
 impl PartialEq for RuntimeUsageRecord {
@@ -1373,67 +1301,13 @@ impl UsageSourceRevision {
 }
 
 #[derive(Debug, Clone)]
-struct NativeUsageProof {
-    state: Arc<Mutex<NativeUsageState>>,
-    slot: Arc<NativeUsageJournalSlot>,
-    prepared_sha256: String,
-    acknowledged: Arc<std::sync::atomic::AtomicBool>,
-    live_projection: Arc<std::sync::atomic::AtomicBool>,
-}
-
-#[derive(Debug)]
-struct NativeUsageState {
-    origin: Option<NativeUsageOrigin>,
-    producer_closed: bool,
-    admission_started: bool,
-    route: Option<EffectiveRouteEnvelope>,
-    wire: Option<crate::llm_client::OutboundWireObservations>,
+pub struct NativeUsageSource {
     source_id: String,
     lineage: String,
     owner: UsageSpendOwner,
-    accepted: Option<RuntimeUsageRecord>,
-    prepared: Option<RuntimeUsageRecord>,
-    acknowledgement: Arc<std::sync::atomic::AtomicBool>,
-    live_projection: Arc<std::sync::atomic::AtomicBool>,
-}
-
-#[derive(Debug)]
-struct NativeUsageJournalSlot {
-    owner: Option<String>,
-    source_fingerprint: String,
-    lineage: String,
-    active: std::sync::atomic::AtomicBool,
-    #[cfg(any(test, feature = "test-support"))]
-    test_origin: std::thread::ThreadId,
-}
-
-#[derive(Debug)]
-struct NativeUsageProducer {
-    state: std::sync::Weak<Mutex<NativeUsageState>>,
-    slot: Arc<NativeUsageJournalSlot>,
-}
-
-impl Drop for NativeUsageProducer {
-    fn drop(&mut self) {
-        let release = self.state.upgrade().is_none_or(|state| {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.producer_closed = true;
-            state.prepared.is_none()
-        });
-        if release {
-            self.slot
-                .active
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeUsageSource {
-    state: Arc<Mutex<NativeUsageState>>,
-    producer: Arc<NativeUsageProducer>,
+    origin: Option<NativeUsageOrigin>,
+    wire: crate::llm_client::OutboundWireObservations,
+    last_record: Arc<Mutex<Option<RuntimeUsageRecord>>>,
 }
 
 impl NativeUsageSource {
@@ -1446,175 +1320,128 @@ impl NativeUsageSource {
         owner: UsageSpendOwner,
         origin: Option<NativeUsageOrigin>,
     ) -> Self {
-        Self::from_state(NativeUsageState {
-            origin,
-            producer_closed: false,
-            admission_started: false,
-            route: None,
-            wire: None,
-            source_id: source_id.into(),
+        let source_id = source_id.into();
+        let source_id = if source_id.trim().is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            source_id
+        };
+        let wire = crate::llm_client::OutboundWireObservations::default();
+        Self {
+            source_id,
             lineage: uuid::Uuid::new_v4().to_string(),
             owner,
-            accepted: None,
-            prepared: None,
-            acknowledgement: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            live_projection: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        })
-    }
-
-    fn from_state(state: NativeUsageState) -> Self {
-        let slot = Arc::new(NativeUsageJournalSlot {
-            owner: state.origin.as_ref().map(NativeUsageOrigin::journal_owner),
-            source_fingerprint: usage_source_fingerprint(&state.source_id),
-            lineage: state.lineage.clone(),
-            active: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-support"))]
-            test_origin: state
-                .origin
-                .as_ref()
-                .map_or_else(test_cost_scope_id, |origin| origin.test_origin),
-        });
-        let state = Arc::new(Mutex::new(state));
-        let producer = Arc::new(NativeUsageProducer {
-            state: Arc::downgrade(&state),
-            slot,
-        });
-        Self { state, producer }
-    }
-
-    fn reserve_retention_slot(&self) -> std::io::Result<()> {
-        let slot = &self.producer.slot;
-        let Some(owner) = slot.owner.as_deref() else {
-            return Ok(());
-        };
-        #[cfg(any(test, feature = "test-support"))]
-        let _scope = bind_test_cost_scope(slot.test_origin);
-        with_runtime_usage_journal_mut(|journal| {
-            let entry = journal.entry(owner.to_string()).or_default();
-            entry.records.retain(|record| !record.is_acknowledged());
-            let occupied = occupied_runtime_usage_sources(entry);
-            if let Some(current) = entry
-                .native_slots
-                .get(&slot.source_fingerprint)
-                .and_then(std::sync::Weak::upgrade)
-            {
-                if Arc::ptr_eq(&current, slot) {
-                    return Ok(());
-                }
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "usage source already owns another native journal slot",
-                ));
-            }
-            if entry.records.iter().any(|record| {
-                usage_source_fingerprint(&record.source_id) == slot.source_fingerprint
-                    && record
-                        .native
-                        .as_ref()
-                        .is_none_or(|proof| !Arc::ptr_eq(&proof.slot, slot))
-            }) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "usage source already has another retained owner",
-                ));
-            }
-            if !occupied.contains(&slot.source_fingerprint)
-                && occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
-            {
-                tracing::warn!(
-                    owner,
-                    occupied = occupied.len(),
-                    "native usage journal is at capacity; this request continues without a retained receipt"
-                );
-                return Ok(());
-            }
-            slot.active
-                .store(true, std::sync::atomic::Ordering::Release);
-            entry
-                .native_slots
-                .insert(slot.source_fingerprint.clone(), Arc::downgrade(slot));
-            Ok(())
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn resume_admitted(
-        record: &RuntimeUsageRecord,
-        origin: Option<NativeUsageOrigin>,
-    ) -> std::io::Result<Self> {
-        let revision = record.settlement.as_ref().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "legacy usage source has no native predecessor",
-            )
-        })?;
-        record.validate()?;
-        Ok(Self::from_state(NativeUsageState {
             origin,
-            producer_closed: false,
-            admission_started: true,
-            route: Some(record.usage.route.clone()),
-            wire: None,
-            source_id: record.source_id.clone(),
-            lineage: revision.lineage.clone(),
-            owner: revision.owner,
-            accepted: Some(record.persisted()),
-            prepared: None,
-            acknowledgement: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            live_projection: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        }))
-    }
-
-    pub fn has_captured_origin(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .origin
-            .is_some()
-    }
-
-    pub fn bind_dispatch(
-        &self,
-        route: &EffectiveRouteEnvelope,
-        observation: &crate::llm_client::RequestRetryObservation,
-    ) -> std::io::Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .route
-            .as_ref()
-            .is_some_and(|prior| prior != &route.sanitized_for_persistence())
-            || state.prepared.is_some()
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ResourceBusy,
-                "usage source is already bound or awaits acknowledgement",
-            ));
+            wire,
+            last_record: Arc::new(Mutex::new(None)),
         }
-        state.route = Some(route.sanitized_for_persistence());
-        state.wire = Some(observation.wire_observations.clone());
-        Ok(())
     }
 
-    pub fn observe_route(
-        &self,
-        route: &EffectiveRouteEnvelope,
-    ) -> std::io::Result<crate::llm_client::RequestRetryObservation> {
-        let observation = self.observation();
-        self.bind_dispatch(route, &observation)?;
-        Ok(observation)
+    pub fn origin(&self) -> Option<&NativeUsageOrigin> {
+        self.origin.as_ref()
+    }
+
+    pub fn observation(&self) -> crate::llm_client::RequestRetryObservation {
+        let mut obs =
+            crate::llm_client::RequestRetryObservation::for_auxiliary_request(self.source_id());
+        obs.wire_observations = self.wire.clone();
+        obs
     }
 
     pub(crate) fn observed_wire(&self) -> crate::llm_client::OutboundWireObservationBatch {
-        self.state
+        self.wire.snapshot()
+    }
+
+    pub fn source_id(&self) -> String {
+        self.source_id.clone()
+    }
+
+    pub fn prepare_record(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+        coverage: crate::llm_client::ProviderUsageCoverage,
+        reason: RuntimeUsageMissingReason,
+        wire: &crate::llm_client::OutboundWireObservationBatch,
+    ) -> RuntimeUsageRecord {
+        let effective = EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: usage.clone(),
+        };
+        let dropped_extra =
+            u64::try_from(wire.transmissions.len().saturating_sub(32)).unwrap_or(u64::MAX);
+        let physical_requests: Vec<_> = wire
+            .transmissions
+            .iter()
+            .take(32)
+            .cloned()
+            .map(|mut attempt| {
+                attempt.source_id = usage_source_fingerprint(&attempt.source_id);
+                attempt
+            })
+            .collect();
+        let physical_requests_dropped = wire.transmissions_dropped.saturating_add(dropped_extra);
+        let mut last = self
+            .last_record
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .wire
-            .as_ref()
-            .map(crate::llm_client::OutboundWireObservations::snapshot)
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (revision, previous_sha256, lineage) = match last.as_ref() {
+            Some(prior) if prior.usage.route == effective.route => {
+                if prior.usage == effective
+                    && prior.settlement.as_ref().is_some_and(|r| {
+                        r.coverage == coverage
+                            && r.reason == reason
+                            && r.physical_requests == physical_requests
+                            && r.physical_requests_dropped == physical_requests_dropped
+                    })
+                {
+                    return prior.clone();
+                }
+                let prev_rev = prior.settlement.as_ref().map_or(0, |r| r.revision);
+                (
+                    prev_rev.saturating_add(1),
+                    prior.digest().ok(),
+                    prior
+                        .settlement
+                        .as_ref()
+                        .map_or_else(|| self.lineage.clone(), |r| r.lineage.clone()),
+                )
+            }
+            _ => (1, None, uuid::Uuid::new_v4().to_string()),
+        };
+        let record = RuntimeUsageRecord {
+            source_id: self.source_id.clone(),
+            usage: effective,
+            settlement: Some(UsageSourceRevision {
+                lineage,
+                revision,
+                previous_sha256,
+                owner: self.owner,
+                coverage,
+                reason,
+                physical_requests,
+                physical_requests_dropped,
+                reservation: false,
+            }),
+        };
+        *last = Some(record.clone());
+        record
+    }
+
+    pub fn prepare(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+        coverage: crate::llm_client::ProviderUsageCoverage,
+        reason: RuntimeUsageMissingReason,
+    ) -> RuntimeUsageRecord {
+        self.prepare_record(
+            route,
+            usage,
+            coverage,
+            reason,
+            &crate::llm_client::OutboundWireObservationBatch::default(),
+        )
     }
 
     pub fn response_record(
@@ -1622,7 +1449,7 @@ impl NativeUsageSource {
         route: &EffectiveRouteEnvelope,
         response: &anyhow::Result<codewhale_models::MessageResponse>,
         wire: &crate::llm_client::OutboundWireObservationBatch,
-    ) -> std::io::Result<RuntimeUsageRecord> {
+    ) -> RuntimeUsageRecord {
         let empty = Usage::default();
         let usage = response
             .as_ref()
@@ -1649,7 +1476,7 @@ impl NativeUsageSource {
                 },
             }
         };
-        self.prepare_observed(
+        self.prepare_record(
             route,
             usage,
             coverage,
@@ -1662,279 +1489,7 @@ impl NativeUsageSource {
         )
     }
 
-    pub fn observation(&self) -> crate::llm_client::RequestRetryObservation {
-        crate::llm_client::RequestRetryObservation::for_auxiliary_request(self.source_id())
-    }
-
-    pub fn source_id(&self) -> String {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .source_id
-            .clone()
-    }
-
-    pub fn prepare(
-        &self,
-        route: &EffectiveRouteEnvelope,
-        usage: &Usage,
-        coverage: crate::llm_client::ProviderUsageCoverage,
-        reason: RuntimeUsageMissingReason,
-    ) -> std::io::Result<RuntimeUsageRecord> {
-        self.prepare_observed(
-            route,
-            usage,
-            coverage,
-            reason,
-            &crate::llm_client::OutboundWireObservationBatch::default(),
-        )
-    }
-
-    pub fn prepare_observed(
-        &self,
-        route: &EffectiveRouteEnvelope,
-        usage: &Usage,
-        coverage: crate::llm_client::ProviderUsageCoverage,
-        reason: RuntimeUsageMissingReason,
-        wire: &crate::llm_client::OutboundWireObservationBatch,
-    ) -> std::io::Result<RuntimeUsageRecord> {
-        self.prepare_observed_kind(route, usage, coverage, reason, wire, false)
-    }
-
-    fn prepare_observed_kind(
-        &self,
-        route: &EffectiveRouteEnvelope,
-        usage: &Usage,
-        coverage: crate::llm_client::ProviderUsageCoverage,
-        reason: RuntimeUsageMissingReason,
-        wire: &crate::llm_client::OutboundWireObservationBatch,
-        reservation: bool,
-    ) -> std::io::Result<RuntimeUsageRecord> {
-        let final_accepted = {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.prepared.is_none()
-                && state
-                    .accepted
-                    .as_ref()
-                    .and_then(|record| record.settlement.as_ref())
-                    .is_some_and(|revision| {
-                        matches!(
-                            revision.coverage,
-                            crate::llm_client::ProviderUsageCoverage::Reported
-                                | crate::llm_client::ProviderUsageCoverage::NotDispatched
-                                | crate::llm_client::ProviderUsageCoverage::Rejected
-                        )
-                    })
-        };
-        if !final_accepted {
-            self.reserve_retention_slot()?;
-        }
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let effective = EffectiveRouteUsage {
-            route: route.sanitized_for_persistence(),
-            usage: usage.clone(),
-        };
-        if state
-            .route
-            .as_ref()
-            .is_some_and(|prior| prior != &effective.route)
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "usage route changed after native dispatch admission",
-            ));
-        }
-        state.route = Some(effective.route.clone());
-        if let Some(prepared) = state.prepared.as_ref() {
-            if prepared.usage != effective
-                || prepared.settlement.as_ref().is_none_or(|revision| {
-                    revision.reservation != reservation
-                        || revision.coverage != coverage
-                        || revision.reason != reason
-                        || revision.physical_requests
-                            != wire
-                                .transmissions
-                                .iter()
-                                .cloned()
-                                .map(|mut attempt| {
-                                    attempt.source_id =
-                                        usage_source_fingerprint(&attempt.source_id);
-                                    attempt
-                                })
-                                .collect::<Vec<_>>()
-                        || revision.physical_requests_dropped != wire.transmissions_dropped
-                })
-            {
-                tracing::warn!(
-                    "previous usage publication was not acknowledged; keeping it for this attempt"
-                );
-            }
-            let mut record = prepared.clone();
-            record.native = Some(NativeUsageProof {
-                state: self.state.clone(),
-                slot: self.producer.slot.clone(),
-                prepared_sha256: record.digest()?,
-                acknowledged: state.acknowledgement.clone(),
-                live_projection: state.live_projection.clone(),
-            });
-            drop(state);
-            if let Some(owner) = self.producer.slot.owner.as_deref() {
-                retain_runtime_usage_record(owner, &record)?;
-            }
-            return Ok(record);
-        }
-        if let Some(accepted) = state.accepted.as_ref() {
-            if accepted.usage.route != effective.route {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "usage source changed its captured route",
-                ));
-            }
-            if accepted.usage == effective
-                && accepted.settlement.as_ref().is_some_and(|revision| {
-                    revision.reservation == reservation
-                        && revision.coverage == coverage
-                        && revision.reason == reason
-                        && revision.physical_requests
-                            == wire
-                                .transmissions
-                                .iter()
-                                .cloned()
-                                .map(|mut attempt| {
-                                    attempt.source_id =
-                                        usage_source_fingerprint(&attempt.source_id);
-                                    attempt
-                                })
-                                .collect::<Vec<_>>()
-                        && revision.physical_requests_dropped == wire.transmissions_dropped
-                })
-            {
-                let mut record = accepted.clone();
-                record.native = Some(NativeUsageProof {
-                    state: self.state.clone(),
-                    slot: self.producer.slot.clone(),
-                    prepared_sha256: record.digest()?,
-                    acknowledged: state.acknowledgement.clone(),
-                    live_projection: state.live_projection.clone(),
-                });
-                drop(state);
-                if let Some(owner) = self.producer.slot.owner.as_deref() {
-                    retain_runtime_usage_record(owner, &record)?;
-                }
-                return Ok(record);
-            }
-        }
-        let previous_sha256 = state
-            .accepted
-            .as_ref()
-            .map(RuntimeUsageRecord::digest)
-            .transpose()?;
-        let revision = state
-            .accepted
-            .as_ref()
-            .and_then(|record| record.settlement.as_ref())
-            .map_or(Ok(1), |revision| {
-                revision
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| std::io::Error::other("usage source revision exhausted"))
-            })?;
-        let mut record = RuntimeUsageRecord {
-            source_id: state.source_id.clone(),
-            usage: effective,
-            settlement: Some(UsageSourceRevision {
-                lineage: state.lineage.clone(),
-                revision,
-                previous_sha256,
-                owner: state.owner,
-                coverage,
-                reason,
-                physical_requests: wire
-                    .transmissions
-                    .iter()
-                    .cloned()
-                    .map(|mut attempt| {
-                        attempt.source_id = usage_source_fingerprint(&attempt.source_id);
-                        attempt
-                    })
-                    .collect(),
-                physical_requests_dropped: wire.transmissions_dropped,
-                reservation,
-            }),
-            native: None,
-        };
-        record.validate()?;
-        if let Some(accepted) = state.accepted.as_ref() {
-            record.validate_transition(accepted)?;
-        }
-        let digest = record.digest()?;
-        state.prepared = Some(record.clone());
-        state.acknowledgement = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        state.live_projection = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        record.native = Some(NativeUsageProof {
-            state: self.state.clone(),
-            slot: self.producer.slot.clone(),
-            prepared_sha256: digest,
-            acknowledged: state.acknowledgement.clone(),
-            live_projection: state.live_projection.clone(),
-        });
-        drop(state);
-        if let Some(owner) = self.producer.slot.owner.as_deref() {
-            retain_runtime_usage_record(owner, &record)?;
-        }
-        Ok(record)
-    }
-
-    pub async fn admit_dispatch(
-        &self,
-        route: &EffectiveRouteEnvelope,
-    ) -> std::io::Result<Option<RuntimeUsageRecord>> {
-        let scope = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.admission_started || state.accepted.is_some() || state.prepared.is_some() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "usage source was already admitted",
-                ));
-            }
-            state.admission_started = true;
-            state.origin.as_ref().map(|origin| origin.scope)
-        };
-        let Some(scope) = scope else {
-            return Ok(None);
-        };
-        if self.observed_wire().last_transmission.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "provider work began before source admission",
-            ));
-        }
-        let record = self.prepare_observed_kind(
-            route,
-            &Usage::default(),
-            crate::llm_client::ProviderUsageCoverage::Missing,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown,
-            &crate::llm_client::OutboundWireObservationBatch::default(),
-            true,
-        )?;
-        settle_runtime_usage_record(scope, None, &record).await?;
-        Ok(Some(record))
-    }
-
-    pub fn reported(
-        &self,
-        route: &EffectiveRouteEnvelope,
-        usage: &Usage,
-    ) -> std::io::Result<RuntimeUsageRecord> {
+    pub fn reported(&self, route: &EffectiveRouteEnvelope, usage: &Usage) -> RuntimeUsageRecord {
         self.prepare(
             route,
             usage,
@@ -1949,118 +1504,11 @@ impl NativeUsageSource {
 }
 
 impl RuntimeUsageRecord {
-    pub(crate) fn matches_session_projection(
-        &self,
-        sessions_dir: &std::path::Path,
-        session_id: &str,
-    ) -> std::io::Result<bool> {
-        if !self.native_authorizes()? {
-            return Ok(false);
-        }
-        let proof = self.native.as_ref().expect("native producer checked");
-        let state = proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(
-            match state.origin.as_ref().map(|origin| &origin.destination) {
-                Some(NativeUsageDestination::Session {
-                    sessions_dir: original,
-                    session_id: original_id,
-                    ..
-                }) => original == sessions_dir && original_id == session_id,
-                Some(NativeUsageDestination::Runtime {
-                    projection: Some(original),
-                    ..
-                }) => {
-                    original.sessions_dir.as_path() == sessions_dir
-                        && original.session_id == session_id
-                }
-                _ => false,
-            },
-        )
-    }
-
-    pub(crate) fn session_destination(
-        &self,
-    ) -> std::io::Result<(std::path::PathBuf, String, String)> {
-        if !self.native_authorizes()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "usage publication has no captured native producer",
-            ));
-        }
-        let proof = self.native.as_ref().expect("native proof checked");
-        let state = proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match state.origin.as_ref().map(|origin| &origin.destination) {
-            Some(NativeUsageDestination::Session {
-                sessions_dir,
-                session_id,
-                operation_id,
-            }) => Ok((
-                sessions_dir.clone(),
-                session_id.clone(),
-                operation_id.clone(),
-            )),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "usage publication has no captured session destination",
-            )),
-        }
-    }
-
-    pub(crate) fn captured_session_origin(
-        &self,
-    ) -> std::io::Result<Option<(std::path::PathBuf, String, String, CostScopeToken)>> {
-        if !self.native_authorizes()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "retained usage lacks its native producer",
-            ));
-        }
-        let proof = self.native.as_ref().expect("native producer checked");
-        let state = proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(state
-            .origin
-            .as_ref()
-            .and_then(|origin| match &origin.destination {
-                NativeUsageDestination::Session {
-                    sessions_dir,
-                    session_id,
-                    operation_id,
-                } => Some((
-                    sessions_dir.clone(),
-                    session_id.clone(),
-                    operation_id.clone(),
-                    origin.scope,
-                )),
-                NativeUsageDestination::Runtime { .. } => None,
-            }))
-    }
-
-    pub fn has_captured_origin(&self) -> bool {
-        self.native.as_ref().is_some_and(|proof| {
-            proof
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .origin
-                .is_some()
-        })
-    }
-
     pub fn legacy(source_id: impl Into<String>, usage: EffectiveRouteUsage) -> Self {
         Self {
             source_id: source_id.into(),
             usage,
             settlement: None,
-            native: None,
         }
     }
 
@@ -2068,7 +1516,6 @@ impl RuntimeUsageRecord {
         let mut record = self.clone();
         record.source_id = usage_source_fingerprint(&record.source_id);
         record.usage.route = record.usage.route.sanitized_for_persistence();
-        record.native = None;
         record
     }
 
@@ -2099,19 +1546,6 @@ impl RuntimeUsageRecord {
                     "a refused request cannot claim a token receipt",
                 ));
             }
-            if revision.reservation
-                && (revision.revision != 1
-                    || revision.coverage != crate::llm_client::ProviderUsageCoverage::Missing
-                    || revision.reason != RuntimeUsageMissingReason::RequestOutcomeUnknown
-                    || self.usage.usage != Usage::default()
-                    || !revision.physical_requests.is_empty()
-                    || revision.physical_requests_dropped != 0)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid pre-dispatch source reservation",
-                ));
-            }
             if revision.physical_requests.len() > 32
                 || uuid::Uuid::parse_str(&revision.lineage).is_err()
                 || revision.revision == 0
@@ -2132,220 +1566,58 @@ impl RuntimeUsageRecord {
         Ok(())
     }
 
-    fn native_authorizes(&self) -> std::io::Result<bool> {
-        let Some(proof) = self.native.as_ref() else {
-            return Ok(false);
-        };
-        if proof.prepared_sha256 != self.digest()? {
-            return Ok(false);
-        }
-        let state = proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(state.route.as_ref() == Some(&self.usage.route)
-            && proof.slot.source_fingerprint == usage_source_fingerprint(&self.source_id)
-            && self.settlement.as_ref().is_some_and(|revision| {
-                revision.lineage == state.lineage
-                    && revision.lineage == proof.slot.lineage
-                    && revision.owner == state.owner
-            })
-            && usage_source_fingerprint(&self.source_id)
-                == usage_source_fingerprint(&state.source_id))
-    }
-
-    pub(crate) fn acknowledge_persisted(&self) -> std::io::Result<()> {
-        if !self.native_authorizes()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "usage publication has no native producer",
-            ));
-        }
-        let proof = self.native.as_ref().expect("native proof checked");
-        let mut state = proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.prepared.as_ref().is_some_and(|record| record == self) {
-            state.accepted = Some(self.persisted());
-            state.prepared = None;
-        } else if !state.accepted.as_ref().is_some_and(|record| record == self)
-            && !proof
-                .acknowledged
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ResourceBusy,
-                "usage acknowledgement does not match its prepared revision",
-            ));
-        }
-        proof
-            .acknowledged
-            .store(true, std::sync::atomic::Ordering::Release);
-        let release = state.prepared.is_none()
-            && (state.producer_closed
-                || state
-                    .accepted
-                    .as_ref()
-                    .and_then(|record| record.settlement.as_ref())
-                    .is_some_and(|revision| {
-                        matches!(
-                            revision.coverage,
-                            crate::llm_client::ProviderUsageCoverage::Reported
-                                | crate::llm_client::ProviderUsageCoverage::NotDispatched
-                                | crate::llm_client::ProviderUsageCoverage::Rejected
-                        )
-                    }));
-        drop(state);
-        if release {
-            proof
-                .slot
-                .active
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
-        if let Some(owner) = proof.slot.owner.as_deref() {
-            #[cfg(any(test, feature = "test-support"))]
-            let _scope = bind_test_cost_scope(proof.slot.test_origin);
-            retire_runtime_usage_record(owner, self);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn acknowledge_live_projection(&self) -> std::io::Result<()> {
-        if !self.is_acknowledged() || !self.native_authorizes()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "live usage projection lacks its admitted native publication",
-            ));
-        }
-        self.native
-            .as_ref()
-            .expect("native publication checked")
-            .live_projection
-            .store(true, std::sync::atomic::Ordering::Release);
-        Ok(())
-    }
-
-    pub(crate) fn has_live_projection(&self) -> bool {
-        self.is_acknowledged()
-            && self.native.as_ref().is_some_and(|proof| {
-                proof
-                    .live_projection
-                    .load(std::sync::atomic::Ordering::Acquire)
-            })
-    }
-
-    pub fn is_acknowledged(&self) -> bool {
-        self.native.as_ref().is_some_and(|proof| {
-            proof
-                .acknowledged
-                .load(std::sync::atomic::Ordering::Acquire)
+    pub fn route_conflicts_with(&self, previous: Option<&Self>) -> bool {
+        previous.is_some_and(|old| {
+            usage_source_fingerprint(&old.source_id) == usage_source_fingerprint(&self.source_id)
+                && old.usage.route != self.usage.route
         })
     }
 
-    pub fn follows_protected(&self, old: &Self) -> std::io::Result<bool> {
-        self.validate()?;
-        let (Some(prior), Some(next)) = (old.settlement.as_ref(), self.settlement.as_ref()) else {
-            return Ok(false);
-        };
-        Ok(
-            usage_source_fingerprint(&old.source_id) == usage_source_fingerprint(&self.source_id)
-                && old.usage.route == self.usage.route
-                && prior.lineage == next.lineage
-                && prior.owner == next.owner
-                && next.revision > prior.revision
-                && (prior.revision.checked_add(1) != Some(next.revision)
-                    || next.previous_sha256.as_deref() == Some(old.digest()?.as_str())),
-        )
+    pub fn follows_inherited(&self, inherited: &Self) -> bool {
+        usage_source_fingerprint(&self.source_id) == usage_source_fingerprint(&inherited.source_id)
+            && !self.route_conflicts_with(Some(inherited))
+            && self.settlement.as_ref().map(|r| r.owner)
+                == inherited.settlement.as_ref().map(|r| r.owner)
+            && self
+                .settlement
+                .as_ref()
+                .map_or(0, UsageSourceRevision::revision)
+                >= inherited
+                    .settlement
+                    .as_ref()
+                    .map_or(0, UsageSourceRevision::revision)
     }
 
-    pub(crate) fn has_native_producer(&self) -> bool {
-        self.native.is_some()
-    }
-
-    fn validate_transition(&self, old: &Self) -> std::io::Result<()> {
-        let (Some(prior), Some(next)) = (old.settlement.as_ref(), self.settlement.as_ref()) else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "usage source has no native transition",
-            ));
+    pub fn supersedes(&self, previous: Option<&Self>) -> bool {
+        if self.source_id.trim().is_empty() {
+            return false;
+        }
+        let Some(old) = previous else {
+            return true;
         };
-        let refusal_of_reservation = prior.reservation
-            && !next.reservation
-            && old.usage.usage == Usage::default()
-            && prior.physical_requests.is_empty()
-            && prior.physical_requests_dropped == 0
-            && self.usage.usage == Usage::default()
-            && matches!(
-                next.coverage,
-                crate::llm_client::ProviderUsageCoverage::NotDispatched
-                    | crate::llm_client::ProviderUsageCoverage::Rejected
-            );
-        if matches!(
-            prior.coverage,
-            crate::llm_client::ProviderUsageCoverage::Reported
-                | crate::llm_client::ProviderUsageCoverage::Rejected
-                | crate::llm_client::ProviderUsageCoverage::NotDispatched
-        ) || (matches!(
-            next.coverage,
-            crate::llm_client::ProviderUsageCoverage::Rejected
-                | crate::llm_client::ProviderUsageCoverage::NotDispatched
-        ) && !refusal_of_reservation)
-            || (old.usage.usage != Usage::default() && self.usage.usage == Usage::default())
+        if usage_source_fingerprint(&old.source_id) != usage_source_fingerprint(&self.source_id)
+            || old == self
+            || old.usage.route != self.usage.route
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "a final or known usage source cannot be replaced by a conflicting or absent receipt",
-            ));
+            return false;
         }
-        Ok(())
-    }
-
-    pub fn permits_replacement(&self, previous: Option<&Self>) -> std::io::Result<bool> {
-        self.validate()?;
-        if previous.is_some_and(|old| old == self) {
-            return Ok(false);
-        }
-        if !self.native_authorizes()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "usage correction requires its captured native producer",
-            ));
-        }
-        let revision = self.settlement.as_ref().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "usage correction has no revision",
+        let old_final = old.settlement.as_ref().is_some_and(|r| {
+            matches!(
+                r.coverage,
+                crate::llm_client::ProviderUsageCoverage::Reported
+                    | crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    | crate::llm_client::ProviderUsageCoverage::Rejected
             )
-        })?;
-        match previous {
-            None if revision.revision == 1 && revision.previous_sha256.is_none() => Ok(true),
-            Some(old) => {
-                let prior = old.settlement.as_ref().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "legacy usage source has no provable prior contribution",
-                    )
-                })?;
-                if old.usage.route != self.usage.route
-                    || prior.lineage != revision.lineage
-                    || prior.owner != revision.owner
-                    || prior.revision.checked_add(1) != Some(revision.revision)
-                    || revision.previous_sha256.as_deref() != Some(old.digest()?.as_str())
-                {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "usage source predecessor, route or owner changed",
-                    ));
-                }
-                self.validate_transition(old)?;
-                Ok(true)
-            }
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "usage source predecessor is unavailable",
-            )),
+        }) || (old.settlement.is_none() && old.usage.usage != Usage::default());
+        if old_final {
+            return false;
         }
+        if self.usage.usage != Usage::default() {
+            return true;
+        }
+        let old_rev = old.settlement.as_ref().map_or(0, |r| r.revision);
+        let new_rev = self.settlement.as_ref().map_or(0, |r| r.revision);
+        new_rev > old_rev
     }
 }
 
@@ -2472,63 +1744,26 @@ impl RuntimeUsageMissingReason {
         }
     }
 }
-/// Minimal, redacted unresolved-source metadata carried by the existing cost
-/// snapshot. It retains no endpoint/model/secret and never infers token usage.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct MissingUsageCoverage {
-    pub reason: RuntimeUsageMissingReason,
-    pub money_metered: bool,
-    pub route_sha256: String,
-}
-pub const MAX_MISSING_USAGE_SOURCES: usize = 64;
-pub fn deserialize_missing_usage_sources<'de, D>(
-    d: D,
-) -> Result<BTreeMap<String, MissingUsageCoverage>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize as _;
-    let values = BTreeMap::<String, MissingUsageCoverage>::deserialize(d)?;
-    if values.len() > MAX_MISSING_USAGE_SOURCES
-        || values
-            .keys()
-            .any(|key| key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()))
-        || values.values().any(|value| {
-            !value.route_sha256.is_empty()
-                && (value.route_sha256.len() != 64
-                    || !value
-                        .route_sha256
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit()))
-        })
-    {
-        return Err(serde::de::Error::custom(
-            "unbounded or invalid missing-usage source ledger",
-        ));
-    }
-    Ok(values)
-}
-impl MissingUsageCoverage {
-    pub fn for_route(route: &EffectiveRouteEnvelope, reason: RuntimeUsageMissingReason) -> Self {
-        Self {
-            reason,
-            money_metered: !matches!(
-                route.billing_mode,
-                RouteBillingMode::Subscription | RouteBillingMode::Local
-            ),
-            route_sha256: serde_json::to_string(&route.sanitized_for_persistence())
-                .map(|value| usage_source_fingerprint(&value))
-                .unwrap_or_default(),
-        }
-    }
-    pub fn matches_route(&self, route: &EffectiveRouteEnvelope) -> bool {
-        !self.route_sha256.is_empty()
-            && self.route_sha256 == Self::for_route(route, self.reason).route_sha256
-    }
-}
 impl RuntimeUsageDropRecord {
-    pub fn coverage(&self) -> MissingUsageCoverage {
-        MissingUsageCoverage::for_route(&self.route, self.reason)
+    pub fn as_usage_record(&self) -> RuntimeUsageRecord {
+        RuntimeUsageRecord {
+            source_id: self.source_id.clone(),
+            usage: EffectiveRouteUsage {
+                route: self.route.sanitized_for_persistence(),
+                usage: Usage::default(),
+            },
+            settlement: Some(UsageSourceRevision {
+                lineage: uuid::Uuid::new_v4().to_string(),
+                revision: 1,
+                previous_sha256: None,
+                owner: UsageSpendOwner::Auxiliary,
+                coverage: crate::llm_client::ProviderUsageCoverage::Missing,
+                reason: self.reason,
+                physical_requests: Vec::new(),
+                physical_requests_dropped: 0,
+                reservation: false,
+            }),
+        }
     }
 }
 /// Provider decision evidence attached to the existing origin-turn ledger.
@@ -2614,19 +1849,7 @@ impl RuntimeDecisionReceipt {
     }
 }
 
-pub type RuntimeDecisionSink = Arc<dyn Fn(RuntimeDecisionReceipt) -> bool + Send + Sync>;
-
-pub type RuntimeUsageSink = Arc<dyn Fn(RuntimeUsageRecord) -> bool + Send + Sync>;
 pub type RuntimeUsageDropSink = Arc<dyn Fn(RuntimeUsageDropRecord) -> bool + Send + Sync>;
-
-struct RuntimeUsageSinkEntry {
-    sink: RuntimeUsageSink,
-    session_projection: Option<SessionUsageProjection>,
-    dropped_sink: Option<RuntimeUsageDropSink>,
-    decision_sink: Option<RuntimeDecisionSink>,
-    leases: usize,
-    terminal: bool,
-}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn decision_receipt_fixture(source_id: &str) -> RuntimeDecisionReceipt {
@@ -2665,375 +1888,7 @@ pub fn decision_receipt_fixture(source_id: &str) -> RuntimeDecisionReceipt {
     }
 }
 
-/// Keeps an owner sink alive while a detached child can still report usage.
-/// The runtime turn may already be terminal; the last child release retires
-/// the sink only after its final provider response has been durably appended.
-#[derive(Debug)]
-pub struct RuntimeUsageLease {
-    owner: String,
-    active: bool,
-}
-
-#[cfg(not(any(test, feature = "test-support")))]
-static RUNTIME_USAGE_JOURNAL: OnceLock<Mutex<RuntimeUsageJournal>> = OnceLock::new();
-
-#[cfg(any(test, feature = "test-support"))]
-static TEST_RUNTIME_USAGE_JOURNAL: OnceLock<
-    Mutex<std::collections::HashMap<std::thread::ThreadId, RuntimeUsageJournal>>,
-> = OnceLock::new();
-
-#[cfg(not(any(test, feature = "test-support")))]
-static RUNTIME_USAGE_SINKS: OnceLock<Mutex<HashMap<String, RuntimeUsageSinkEntry>>> =
-    OnceLock::new();
-
-/// Sinks are keyed by owner id, and owner ids in tests are short fixture
-/// strings that repeat across tests. Under the default parallel test harness a
-/// process-global map let one test's `register_runtime_usage_sink` replace
-/// another's live sink, and let one test's `finish_runtime_usage_owner` retire
-/// it — turning exactly-once child accounting into an order-dependent race.
-/// Scoping by thread matches the pending-cost pool and the runtime journal,
-/// which are already thread-scoped for the same reason.
-#[cfg(any(test, feature = "test-support"))]
-#[allow(clippy::type_complexity)]
-static TEST_RUNTIME_USAGE_SINKS: OnceLock<
-    Mutex<HashMap<std::thread::ThreadId, HashMap<String, RuntimeUsageSinkEntry>>>,
-> = OnceLock::new();
-
-/// Run `f` against this scope's sink registry.
-fn with_runtime_usage_sinks<R>(
-    f: impl FnOnce(&mut HashMap<String, RuntimeUsageSinkEntry>) -> R,
-) -> R {
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        let mut sinks = RUNTIME_USAGE_SINKS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        f(&mut sinks)
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let mut by_thread = TEST_RUNTIME_USAGE_SINKS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        f(by_thread.entry(test_cost_scope_id()).or_default())
-    }
-}
-
-/// A multi-thread runtime can resume the task that registered a sink on a
-/// different worker thread, where the thread-keyed registry has no entry. An
-/// owner registered under exactly one scope is still unambiguous; two scopes
-/// naming the same owner stay unresolved so tests cannot cross-route usage.
-#[cfg(any(test, feature = "test-support"))]
-fn migrated_runtime_usage_sink(
-    owner: &str,
-) -> Option<(
-    std::thread::ThreadId,
-    RuntimeUsageSink,
-    Option<SessionUsageProjection>,
-)> {
-    let by_thread = TEST_RUNTIME_USAGE_SINKS.get()?;
-    let by_thread = by_thread.lock().unwrap_or_else(|error| error.into_inner());
-    let mut found = by_thread.iter().filter_map(|(thread, sinks)| {
-        sinks.get(owner).map(|entry| {
-            (
-                *thread,
-                entry.sink.clone(),
-                entry.session_projection.clone(),
-            )
-        })
-    });
-    let first = found.next()?;
-    found.next().is_none().then_some(first)
-}
-
-/// Like [`with_runtime_usage_sinks`], but does not create the registry when it
-/// has never been initialized. Used on drop paths, where allocating a registry
-/// to then find it empty would be pointless.
-fn with_existing_runtime_usage_sinks<R>(
-    f: impl FnOnce(&mut HashMap<String, RuntimeUsageSinkEntry>) -> R,
-) -> Option<R> {
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        let sinks = RUNTIME_USAGE_SINKS.get()?;
-        let mut sinks = sinks.lock().unwrap_or_else(|error| error.into_inner());
-        Some(f(&mut sinks))
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let by_thread = TEST_RUNTIME_USAGE_SINKS.get()?;
-        let mut by_thread = by_thread.lock().unwrap_or_else(|error| error.into_inner());
-        let sinks = by_thread.get_mut(&test_cost_scope_id())?;
-        Some(f(sinks))
-    }
-}
-
-fn with_runtime_usage_journal_mut<R>(f: impl FnOnce(&mut RuntimeUsageJournal) -> R) -> R {
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        let mut journal = RUNTIME_USAGE_JOURNAL
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        f(&mut journal)
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let mut by_thread = TEST_RUNTIME_USAGE_JOURNAL
-            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        f(by_thread.entry(test_cost_scope_id()).or_default())
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn record_runtime_usage(
-    owner: &str,
-    source_id: &str,
-    route: &EffectiveRouteEnvelope,
-    usage: &Usage,
-) {
-    if usage == &Usage::default() {
-        record_runtime_usage_drop(owner, source_id, route);
-        return;
-    }
-    let owner = owner.trim();
-    if owner.is_empty() {
-        return;
-    }
-    let record = RuntimeUsageRecord::legacy(
-        source_id.to_string(),
-        EffectiveRouteUsage {
-            route: route.sanitized_for_persistence(),
-            usage: usage.clone(),
-        },
-    );
-    let sink =
-        with_runtime_usage_sinks(|sinks| sinks.get(owner).map(|entry| Arc::clone(&entry.sink)));
-    if sink.is_some_and(|sink| sink(record.clone())) {
-        return;
-    }
-    with_runtime_usage_journal_mut(|journal| {
-        let owner_journal = journal.entry(owner.to_string()).or_default();
-        if owner_journal.records.iter().any(|old| {
-            usage_source_fingerprint(&old.source_id) == usage_source_fingerprint(source_id)
-        }) {
-            return;
-        }
-        let fingerprint = usage_source_fingerprint(source_id);
-        if let Some(index) = owner_journal
-            .drop_records
-            .iter()
-            .position(|old| usage_source_fingerprint(&old.source_id) == fingerprint)
-        {
-            if owner_journal.drop_records[index].route != record.usage.route {
-                return;
-            }
-            owner_journal.drop_records.remove(index);
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_sub(1);
-            owner_journal
-                .dropped_source_fingerprints
-                .remove(&fingerprint);
-        }
-        let occupied = occupied_runtime_usage_sources(owner_journal);
-        if occupied.contains(&fingerprint) || occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
-        {
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(1);
-            return;
-        }
-        owner_journal.records.push_back(record);
-    });
-}
-
-fn record_runtime_usage_drop(owner: &str, source_id: &str, route: &EffectiveRouteEnvelope) {
-    record_runtime_usage_missing(
-        owner,
-        source_id,
-        route,
-        RuntimeUsageMissingReason::SuccessWithoutUsage,
-    );
-}
-fn record_runtime_usage_missing(
-    owner: &str,
-    source_id: &str,
-    route: &EffectiveRouteEnvelope,
-    reason: RuntimeUsageMissingReason,
-) {
-    let owner = owner.trim();
-    if owner.is_empty() {
-        return;
-    }
-    let fingerprint = usage_source_fingerprint(source_id);
-    let sink = with_runtime_usage_sinks(|sinks| {
-        sinks
-            .get(owner)
-            .and_then(|entry| entry.dropped_sink.as_ref().map(Arc::clone))
-    });
-    let record = RuntimeUsageDropRecord {
-        reason,
-        source_id: source_id.to_string(),
-        route: route.sanitized_for_persistence(),
-    };
-    if sink.is_some_and(|sink| sink(record.clone())) {
-        return;
-    }
-    with_runtime_usage_journal_mut(|journal| {
-        let owner_journal = journal.entry(owner.to_string()).or_default();
-        if owner_journal
-            .records
-            .iter()
-            .any(|old| usage_source_fingerprint(&old.source_id) == fingerprint)
-        {
-            return;
-        }
-        if owner_journal
-            .dropped_source_fingerprints
-            .contains(&fingerprint)
-        {
-            return;
-        }
-        if owner_journal.dropped_source_fingerprints.len() < MAX_RUNTIME_USAGE_RECORDS_PER_OWNER {
-            owner_journal
-                .dropped_source_fingerprints
-                .insert(fingerprint);
-            owner_journal.drop_records.push_back(record);
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(1);
-        } else if !owner_journal.dropped_fingerprint_overflowed {
-            // Preserve a bounded fail-closed overflow marker. Once the exact
-            // identity ledger is full, further unknown ids share this one
-            // marker so replays cannot grow the count without bound.
-            owner_journal.dropped_fingerprint_overflowed = true;
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(1);
-        }
-    });
-}
-
-fn record_runtime_usage_drop_count(owner: &str, source_id: &str, count: u64) {
-    let owner = owner.trim();
-    if owner.is_empty() || count == 0 {
-        return;
-    }
-    let fingerprint = usage_source_fingerprint(source_id);
-    with_runtime_usage_journal_mut(|journal| {
-        let owner_journal = journal.entry(owner.to_string()).or_default();
-        if owner_journal
-            .dropped_source_fingerprints
-            .contains(&fingerprint)
-        {
-            return;
-        }
-        if owner_journal.dropped_source_fingerprints.len() < MAX_RUNTIME_USAGE_RECORDS_PER_OWNER {
-            owner_journal
-                .dropped_source_fingerprints
-                .insert(fingerprint);
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(count);
-        } else if !owner_journal.dropped_fingerprint_overflowed {
-            owner_journal.dropped_fingerprint_overflowed = true;
-            owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(1);
-        }
-    });
-}
-
-/// Install a synchronous durability sink for one active runtime turn.
-/// Compaction calls invoke this before they return to the engine, so a process
-/// crash cannot erase already-reported usage from an in-memory journal.
-#[cfg(any(test, feature = "test-support"))]
-pub fn register_runtime_usage_sink(owner: &str, sink: RuntimeUsageSink) {
-    register_runtime_usage_sink_with_drop(owner, sink, None);
-}
-
-pub fn register_runtime_usage_sink_with_drop(
-    owner: &str,
-    sink: RuntimeUsageSink,
-    dropped_sink: Option<RuntimeUsageDropSink>,
-) {
-    register_runtime_usage_sink_inner(owner, sink, dropped_sink, None);
-}
-
-pub(crate) fn register_interactive_runtime_usage_sink_with_projection(
-    owner: &str,
-    sink: RuntimeUsageSink,
-    dropped_sink: Option<RuntimeUsageDropSink>,
-    sessions_dir: std::path::PathBuf,
-    session_id: String,
-) {
-    register_runtime_usage_sink_inner(
-        owner,
-        sink,
-        dropped_sink,
-        Some(SessionUsageProjection {
-            sessions_dir,
-            session_id,
-        }),
-    );
-}
-
-fn register_runtime_usage_sink_inner(
-    owner: &str,
-    sink: RuntimeUsageSink,
-    dropped_sink: Option<RuntimeUsageDropSink>,
-    session_projection: Option<SessionUsageProjection>,
-) {
-    let owner = owner.trim();
-    if owner.is_empty() {
-        return;
-    }
-    with_runtime_usage_sinks(|sinks| {
-        sinks.insert(
-            owner.to_string(),
-            RuntimeUsageSinkEntry {
-                sink,
-                session_projection,
-                dropped_sink,
-                decision_sink: None,
-                leases: 0,
-                terminal: false,
-            },
-        );
-    });
-}
-
-/// Extend the existing owner entry; this is not another sink registry.
-pub fn register_runtime_decision_sink(owner: &str, sink: RuntimeDecisionSink) {
-    with_runtime_usage_sinks(|sinks| {
-        if let Some(entry) = sinks.get_mut(owner.trim()) {
-            entry.decision_sink = Some(sink);
-        }
-    });
-}
-
-fn record_runtime_decision(owner: &str, record: &RuntimeDecisionReceipt) {
-    if !record.is_bounded() {
-        record_runtime_usage_drop(owner, &record.source_id, &record.route);
-        return;
-    }
-    let record = record.sanitized();
-    let sink = with_runtime_usage_sinks(|sinks| {
-        sinks
-            .get(owner)
-            .and_then(|entry| entry.decision_sink.clone())
-    });
-    if sink.is_some_and(|sink| sink(record.clone())) {
-        return;
-    }
-    with_runtime_usage_journal_mut(|journal| {
-        let entry = journal.entry(owner.to_string()).or_default();
-        if entry
-            .decisions
-            .iter()
-            .any(|old| old.source_id == record.source_id)
-        {
-            return;
-        }
-        if entry.decisions.len() == MAX_RUNTIME_USAGE_RECORDS_PER_OWNER {
-            entry.decisions.pop_front();
-            entry.dropped_records = entry.dropped_records.saturating_add(1);
-        }
-        entry.decisions.push_back(record);
-    });
-}
+const MAX_RUNTIME_USAGE_RECORDS_PER_OWNER: usize = 256;
 
 pub fn report_interactive_decision(scope: CostScopeToken, receipt: &RuntimeDecisionReceipt) {
     if !receipt.is_bounded() {
@@ -3063,9 +1918,6 @@ pub fn report_interactive_decision(scope: CostScopeToken, receipt: &RuntimeDecis
     });
 }
 
-/// Redacted durable identity shared by runtime-turn, worker, and interactive
-/// session accounting. Raw response ids never need to be persisted merely to
-/// make replay idempotent.
 #[must_use]
 pub fn usage_source_fingerprint(source_id: &str) -> String {
     let source_id = source_id.trim();
@@ -3074,133 +1926,6 @@ pub fn usage_source_fingerprint(source_id: &str) -> String {
         return fingerprint.to_ascii_lowercase();
     }
     codewhale_config::catalog::base_url_fingerprint(source_id)
-}
-
-/// Install the interactive session's synchronous runtime sink. A detached
-/// child may report after the parent mailbox has sealed; its owner lease keeps
-/// this sink alive, while the captured scope prevents a later session from
-/// inheriting the spend.
-#[cfg(any(test, feature = "test-support"))]
-pub fn register_interactive_runtime_usage_sink(owner: &str, scope: CostScopeToken) {
-    register_runtime_usage_sink_with_drop(
-        owner,
-        Arc::new(move |record| record_interactive_runtime_usage(scope, record)),
-        Some(Arc::new(move |record| {
-            record_interactive_runtime_usage_drop(scope, record)
-        })),
-    );
-}
-
-/// Acquire an owner lease for a root sub-agent runtime. Runtime clones inherit
-/// the lease, so top-level detached children can outlive the parent mailbox
-/// without losing their accounting path.
-pub fn acquire_runtime_usage_lease(owner: &str) -> Option<RuntimeUsageLease> {
-    let owner = owner.trim();
-    if owner.is_empty() {
-        return None;
-    }
-    with_runtime_usage_sinks(|sinks| {
-        let entry = sinks.get_mut(owner)?;
-        entry.leases = entry.leases.saturating_add(1);
-        Some(RuntimeUsageLease {
-            owner: owner.to_string(),
-            active: true,
-        })
-    })
-}
-
-impl RuntimeUsageLease {
-    #[must_use]
-    pub fn owner(&self) -> &str {
-        &self.owner
-    }
-}
-
-impl Clone for RuntimeUsageLease {
-    fn clone(&self) -> Self {
-        if self.active {
-            let cloned = with_runtime_usage_sinks(|sinks| {
-                sinks.get_mut(&self.owner).map(|entry| {
-                    entry.leases = entry.leases.saturating_add(1);
-                })
-            });
-            if cloned.is_some() {
-                return Self {
-                    owner: self.owner.clone(),
-                    active: true,
-                };
-            }
-        }
-        Self {
-            owner: self.owner.clone(),
-            active: false,
-        }
-    }
-}
-
-impl Drop for RuntimeUsageLease {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        with_existing_runtime_usage_sinks(|sinks| {
-            let should_remove = sinks.get_mut(&self.owner).is_some_and(|entry| {
-                entry.leases = entry.leases.saturating_sub(1);
-                entry.terminal && entry.leases == 0
-            });
-            if should_remove {
-                sinks.remove(&self.owner);
-            }
-        });
-    }
-}
-
-/// Mark the parent turn terminal. An owner with detached children stays live
-/// until their cloned leases drop; owners without children retire now.
-pub fn finish_runtime_usage_owner(owner: &str) {
-    with_existing_runtime_usage_sinks(|sinks| {
-        let should_remove = sinks.get_mut(owner).is_some_and(|entry| {
-            entry.terminal = true;
-            entry.leases == 0
-        });
-        if should_remove {
-            sinks.remove(owner);
-        }
-    });
-}
-
-/// Take only the background usage assigned to one runtime turn.
-/// Other runtime turns and the TUI pending pool remain untouched.
-#[must_use]
-pub fn take_runtime_usage(owner: &str) -> RuntimeUsageBatch {
-    with_runtime_usage_journal_mut(|journal| {
-        let Some(entry) = journal.get_mut(owner) else {
-            return RuntimeUsageBatch::default();
-        };
-        let records = std::mem::take(&mut entry.records)
-            .into_iter()
-            .collect::<Vec<_>>();
-        entry.records.extend(
-            records
-                .iter()
-                .filter(|record| record.has_native_producer() && !record.is_acknowledged())
-                .cloned(),
-        );
-        let batch = RuntimeUsageBatch {
-            decisions: std::mem::take(&mut entry.decisions).into_iter().collect(),
-            records,
-            drop_records: std::mem::take(&mut entry.drop_records)
-                .into_iter()
-                .collect(),
-            dropped_records: std::mem::take(&mut entry.dropped_records),
-        };
-        entry.dropped_source_fingerprints.clear();
-        entry.dropped_fingerprint_overflowed = false;
-        if occupied_runtime_usage_sources(entry).is_empty() {
-            journal.remove(owner);
-        }
-        batch
-    })
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3237,82 +1962,64 @@ pub fn scope_token() -> CostScopeToken {
     with_pending_state_mut(|state| CostScopeToken(state.generation))
 }
 
-/// Atomically close the current cost scope and start a fresh generation.
-/// Reports from old in-flight requests are rejected after this returns, so
-/// `/new` and session load cannot inherit another session's spend.
-#[must_use]
 pub fn close_current_scope() -> PendingBackgroundCost {
     with_pending_state_mut(|state| {
         let pending = std::mem::take(&mut state.pending);
         state.generation = state.generation.wrapping_add(1);
         state.seen_usage_source_fingerprints.clear();
+        state.retired_usage_sources.clear();
         state.source_records.clear();
-        state.missing_usage_sources.clear();
-        state.missing_usage_overflowed = false;
         pending
     })
 }
 
-/// Restore the durable response identities belonging to the newly loaded
-/// session. Callers close the previous scope before loading, so replacing the
-/// set cannot make another session's usage visible here.
-#[cfg(any(test, feature = "test-support"))]
 pub fn restore_usage_source_fingerprints(fingerprints: impl IntoIterator<Item = String>) {
     with_pending_state_mut(|state| {
         state.seen_usage_source_fingerprints = fingerprints.into_iter().collect();
+        state.retired_usage_sources.clear();
     })
 }
 
-pub fn restore_accounted_usage_sources(sources: &BTreeMap<String, UsageSourceContribution>) {
+pub fn restore_accounted_usage_sources(
+    sources: &BTreeMap<String, UsageSourceContribution>,
+    fingerprints: &BTreeSet<String>,
+) {
     with_pending_state_mut(|state| {
         state.source_records = sources
             .iter()
             .map(|(key, value)| (key.clone(), value.record.persisted()))
             .collect();
+        state.seen_usage_source_fingerprints = fingerprints.iter().cloned().collect();
+        state.retired_usage_sources.clear();
     });
 }
 
-pub fn restore_usage_source_ledger(
-    fingerprints: impl IntoIterator<Item = String>,
-    missing: &BTreeMap<String, MissingUsageCoverage>,
-    overflowed: bool,
-) {
-    with_pending_state_mut(|state| {
-        state.missing_usage_sources = missing
-            .iter()
-            .take(MAX_MISSING_USAGE_SOURCES)
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        state.missing_usage_overflowed = overflowed || missing.len() > MAX_MISSING_USAGE_SOURCES;
-        state.seen_usage_source_fingerprints = fingerprints
-            .into_iter()
-            .filter(|key| !state.missing_usage_sources.contains_key(key))
-            .collect();
-    });
-}
-
-/// Mark a captured response settled or retired in its original live generation.
-/// This suppresses duplicate mailbox pricing without adding money or a routed
-/// usage record. Durable source membership belongs to the owning projection.
-pub fn acknowledge_retired_usage_source(scope: CostScopeToken, source_id: &str) {
+pub fn mark_retired_usage_source(scope: CostScopeToken, source_id: &str) {
     with_pending_state_mut(|state| {
         if state.generation == scope.0 {
+            let fingerprint = usage_source_fingerprint(source_id);
             state
                 .seen_usage_source_fingerprints
-                .insert(usage_source_fingerprint(source_id));
+                .insert(fingerprint.clone());
+            state.retired_usage_sources.insert(fingerprint);
         }
     });
 }
 
-/// Whether this session generation already accepted or retired a response.
-/// Used by mailbox delivery to avoid pricing a response that the synchronous
-/// runtime sink already handled.
+#[must_use]
+pub fn is_usage_source_retired(scope: CostScopeToken, source_id: &str) -> bool {
+    let fingerprint = usage_source_fingerprint(source_id);
+    with_pending_state_mut(|state| {
+        state.generation == scope.0 && state.retired_usage_sources.contains(&fingerprint)
+    })
+}
+
 #[must_use]
 pub fn usage_source_seen(source_id: &str) -> bool {
     let fingerprint = usage_source_fingerprint(source_id);
     with_pending_state_mut(|state| {
         state.seen_usage_source_fingerprints.contains(&fingerprint)
-            || state.missing_usage_sources.contains_key(&fingerprint)
+            || state.source_records.contains_key(&fingerprint)
     })
 }
 
@@ -3489,315 +2196,115 @@ pub fn report(scope: CostScopeToken, route: &BackgroundRoute<'_>, usage: &Usage)
     record(scope, route.receipt(currency_tag(&audit)), &audit, usage);
 }
 
-/// Report background usage to exactly one accounting owner.
-///
-/// Runtime-owned calls go only to the durable runtime sink. Calls without a
-/// runtime owner belong to the interactive TUI pool. Mixing both paths would
-/// count one provider response twice in hosts that expose both projections.
-fn retire_runtime_usage_record(owner: &str, record: &RuntimeUsageRecord) {
-    with_runtime_usage_journal_mut(|journal| {
-        if let Some(owner) = journal.get_mut(owner) {
-            owner.records.retain(|prior| {
-                usage_source_fingerprint(&prior.source_id)
-                    != usage_source_fingerprint(&record.source_id)
-                    || !(prior == record
-                        || record.permits_replacement(Some(prior)).unwrap_or(false))
-            });
-        }
-    });
-}
-
-fn occupied_runtime_usage_sources(entry: &mut OwnerRuntimeUsageJournal) -> HashSet<String> {
-    entry.native_slots.retain(|_, slot| {
-        slot.upgrade()
-            .is_some_and(|slot| slot.active.load(std::sync::atomic::Ordering::Acquire))
-    });
-    entry
-        .records
-        .iter()
-        .map(|record| usage_source_fingerprint(&record.source_id))
-        .chain(entry.native_slots.keys().cloned())
-        .collect()
-}
-
-fn retain_runtime_usage_record(owner: &str, record: &RuntimeUsageRecord) -> std::io::Result<()> {
-    if record.is_acknowledged() {
-        return Ok(());
+pub(crate) fn unknown_cost_record(
+    source_id: impl Into<String>,
+    route: &EffectiveRouteEnvelope,
+    usage: Usage,
+) -> RuntimeUsageRecord {
+    let mut route = route.sanitized_for_persistence();
+    if !matches!(
+        route.billing_mode,
+        RouteBillingMode::Subscription | RouteBillingMode::Local
+    ) {
+        route.billing_mode = RouteBillingMode::Unknown;
     }
-    if !record.native_authorizes()? {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "retained usage lacks its native producer",
-        ));
+    route.provider_live_pricing = None;
+    let coverage = if usage == Usage::default() {
+        crate::llm_client::ProviderUsageCoverage::Missing
+    } else {
+        crate::llm_client::ProviderUsageCoverage::Incomplete
+    };
+    RuntimeUsageRecord {
+        source_id: source_id.into(),
+        usage: EffectiveRouteUsage { route, usage },
+        settlement: Some(UsageSourceRevision {
+            lineage: uuid::Uuid::new_v4().to_string(),
+            revision: 1,
+            previous_sha256: None,
+            owner: UsageSpendOwner::Auxiliary,
+            coverage,
+            reason: RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            physical_requests: Vec::new(),
+            physical_requests_dropped: 0,
+            reservation: false,
+        }),
     }
-    let proof = record.native.as_ref().expect("native producer checked");
-    #[cfg(any(test, feature = "test-support"))]
-    let _scope = bind_test_cost_scope(proof.slot.test_origin);
-    with_runtime_usage_journal_mut(|journal| {
-        if record.is_acknowledged() {
-            return Ok(());
-        }
-        let entry = journal.entry(owner.to_string()).or_default();
-        let key = usage_source_fingerprint(&record.source_id);
-        if proof.slot.owner.as_deref() != Some(owner)
-            || !proof.slot.active.load(std::sync::atomic::Ordering::Acquire)
-            || !entry
-                .native_slots
-                .get(&key)
-                .and_then(std::sync::Weak::upgrade)
-                .is_some_and(|slot| Arc::ptr_eq(&slot, &proof.slot))
-        {
-            return if record.is_acknowledged() {
-                Ok(())
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "usage publication has no reserved native journal slot",
-                ))
-            };
-        }
-        if let Some(index) = entry
-            .records
-            .iter()
-            .position(|old| usage_source_fingerprint(&old.source_id) == key)
-        {
-            if record.permits_replacement(entry.records.get(index))? {
-                entry.records[index] = record.clone();
-            }
-        } else {
-            entry.records.push_back(record.clone());
-        }
-        Ok(())
-    })
 }
 
-fn session_usage_journal_owner(sessions_dir: &std::path::Path, session_id: &str) -> String {
-    format!(
-        "session:{}:{}",
-        usage_source_fingerprint(&sessions_dir.to_string_lossy()),
-        usage_source_fingerprint(session_id)
-    )
-}
-
-pub(crate) fn retained_session_usage_records(
-    sessions_dir: &std::path::Path,
-    session_id: &str,
-) -> Vec<RuntimeUsageRecord> {
-    let owner = session_usage_journal_owner(sessions_dir, session_id);
-    with_runtime_usage_journal_mut(|journal| {
-        journal
-            .get(&owner)
-            .map(|entry| entry.records.iter().cloned().collect())
-            .unwrap_or_default()
-    })
-}
-
-pub(crate) fn retire_session_usage_record(
-    sessions_dir: &std::path::Path,
-    session_id: &str,
+pub fn record_runtime_usage(
+    scope: CostScopeToken,
+    origin: Option<&NativeUsageOrigin>,
     record: &RuntimeUsageRecord,
 ) {
-    retire_runtime_usage_record(
-        &session_usage_journal_owner(sessions_dir, session_id),
-        record,
-    );
-}
-
-pub(crate) fn retire_session_usage_records(
-    sessions_dir: &std::path::Path,
-    session_id: &str,
-) -> std::io::Result<()> {
-    for record in retained_session_usage_records(sessions_dir, session_id) {
-        let Some((store, session, _, scope)) = record.captured_session_origin()? else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "retained source has no Session origin",
-            ));
-        };
-        if store != sessions_dir || session != session_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "retained source belongs to another Session origin",
-            ));
-        }
-        record.acknowledge_persisted()?;
-        acknowledge_retired_usage_source(scope, &record.source_id);
-        retire_session_usage_record(sessions_dir, session_id, &record);
+    if let Some(origin) = origin {
+        origin.publish(record);
+    } else {
+        let _ = record_interactive_runtime_usage(scope, record.clone());
     }
-    Ok(())
 }
 
-pub async fn settle_runtime_usage_record(
+pub async fn record_runtime_usage_async(
     scope: CostScopeToken,
-    runtime_owner: Option<&str>,
+    origin: Option<&NativeUsageOrigin>,
     record: &RuntimeUsageRecord,
-) -> std::io::Result<()> {
+) {
+    let origin = origin.cloned();
     let record = record.clone();
-    let owner = runtime_owner.map(str::to_string);
     #[cfg(any(test, feature = "test-support"))]
     let test_origin = test_cost_scope_id();
-    codewhale_runtime::runtime_control::owner_work(move || {
+    let _ = codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
-        let _origin = bind_test_cost_scope(test_origin);
-        report_runtime_usage_record(scope, owner.as_deref(), &record).map_err(anyhow::Error::from)
+        let _binding = bind_test_cost_scope(test_origin);
+        record_runtime_usage(scope, origin.as_ref(), &record);
+        Ok(())
     })
-    .await
-    .map_err(std::io::Error::other)
+    .await;
 }
 
-pub fn report_runtime_usage_record(
-    scope: CostScopeToken,
-    runtime_owner: Option<&str>,
-    record: &RuntimeUsageRecord,
-) -> std::io::Result<()> {
-    record.validate()?;
-    if record.settlement.is_none() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "native accounting requires a captured source revision",
-        ));
-    }
-    let origin = record.native.as_ref().and_then(|proof| {
-        proof
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .origin
-            .clone()
-    });
-    if let Some(origin) = origin {
-        return origin.publish(record);
-    }
-    let _ = (scope, runtime_owner);
-    Err(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "usage origin was not captured before dispatch; exact receipt remains with its native caller",
-    ))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn report_effective_route_for_runtime(
-    scope: CostScopeToken,
-    runtime_owner: Option<&str>,
-    source_id: &str,
-    route: &EffectiveRouteEnvelope,
-    usage: &Usage,
-) {
-    if let Some(owner) = runtime_owner {
-        record_runtime_usage(owner, source_id, route, usage);
-    } else {
-        record_interactive_runtime_usage(
-            scope,
-            RuntimeUsageRecord::legacy(
-                source_id.to_string(),
-                EffectiveRouteUsage {
-                    route: route.sanitized_for_persistence(),
-                    usage: usage.clone(),
-                },
-            ),
-        );
-    }
-}
-
-/// Record one provider-success response whose usage payload was absent.
-///
-/// Callers must supply the same fixed-length, non-secret source identity they
-/// would use for a normal routed usage receipt. Runtime owners persist one
-/// bounded dropped-coverage marker; ownerless/interactive calls add one
-/// unpriced coverage turn to the captured session scope. Replays are
-/// idempotent, and a stale scope cannot contaminate a later session.
-pub fn report_unreceipted_provider_success(
-    scope: CostScopeToken,
-    runtime_owner: Option<&str>,
-    source_id: &str,
-    route: &EffectiveRouteEnvelope,
-) {
-    report_missing_runtime_usage(
-        scope,
-        runtime_owner,
-        source_id,
-        route,
-        RuntimeUsageMissingReason::SuccessWithoutUsage,
-    );
-}
 pub fn report_missing_runtime_usage(
     scope: CostScopeToken,
-    runtime_owner: Option<&str>,
+    origin: Option<&NativeUsageOrigin>,
     source_id: &str,
     route: &EffectiveRouteEnvelope,
     reason: RuntimeUsageMissingReason,
 ) {
-    if let Some(owner) = runtime_owner {
-        record_runtime_usage_missing(owner, source_id, route, reason);
+    let drop = RuntimeUsageDropRecord {
+        reason,
+        source_id: source_id.to_string(),
+        route: route.sanitized_for_persistence(),
+    };
+    if let Some(origin) = origin {
+        origin.publish_drop(&drop);
     } else {
-        record_interactive_runtime_usage_drop(
-            scope,
-            RuntimeUsageDropRecord {
-                reason,
-                source_id: source_id.to_string(),
-                route: route.sanitized_for_persistence(),
-            },
-        );
+        let _ = record_interactive_runtime_usage_drop(scope, drop);
     }
 }
 
-/// Settle one bounded routed-usage batch without repricing or losing exact
-/// missing-usage route evidence. Replaying the same batch is idempotent by the
-/// stable per-response source ids. Any residual count whose exact record was
-/// truncated remains an explicit fail-closed coverage gap.
-pub fn report_runtime_usage_batch(
+pub fn record_runtime_usage_batch(
     scope: CostScopeToken,
-    runtime_owner: Option<&str>,
+    origin: Option<&NativeUsageOrigin>,
     batch: &RuntimeUsageBatch,
 ) {
-    for record in &batch.records {
-        if record.settlement.is_some() {
-            if let Err(error) = report_runtime_usage_record(scope, runtime_owner, record) {
-                tracing::warn!(%error, "native usage batch remains unacknowledged");
-            }
-        } else {
-            #[cfg(any(test, feature = "test-support"))]
-            report_effective_route_for_runtime(
-                scope,
-                runtime_owner,
-                &record.source_id,
-                &record.usage.route,
-                &record.usage.usage,
-            );
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                let mut route = record.usage.route.clone();
-                route.billing_mode = RouteBillingMode::Unknown;
-                route.provider_live_pricing = None;
-                report_missing_runtime_usage(
-                    scope,
-                    runtime_owner,
-                    &format!(
-                        "unverified-wire:{}",
-                        usage_source_fingerprint(&record.source_id)
-                    ),
-                    &route,
-                    RuntimeUsageMissingReason::RequestOutcomeUnknown,
-                );
-            }
+    if let Some(origin) = origin {
+        for receipt in &batch.decisions {
+            origin.publish_decision(receipt);
         }
+        for record in &batch.records {
+            origin.publish(record);
+        }
+        for drop in &batch.drop_records {
+            origin.publish_drop(drop);
+        }
+        return;
     }
-    for record in &batch.drop_records {
-        report_missing_runtime_usage(
-            scope,
-            runtime_owner,
-            &record.source_id,
-            &record.route,
-            record.reason,
-        );
-    }
-
     for receipt in &batch.decisions {
-        if let Some(owner) = runtime_owner {
-            record_runtime_decision(owner, receipt);
-        } else {
-            report_interactive_decision(scope, receipt);
-        }
+        report_interactive_decision(scope, receipt);
+    }
+    for record in &batch.records {
+        let _ = record_interactive_runtime_usage(scope, record.clone());
+    }
+    for drop in &batch.drop_records {
+        let _ = record_interactive_runtime_usage_drop(scope, drop.clone());
     }
     let residual = batch
         .dropped_records
@@ -3828,23 +2335,22 @@ pub fn report_runtime_usage_batch(
             identities.join(":")
         ))
     );
-    if let Some(owner) = runtime_owner {
-        record_runtime_usage_drop_count(owner, &residual_source, residual);
-    } else {
-        record_interactive_runtime_usage_drop_count(scope, &residual_source, residual);
-    }
+    let _ = record_interactive_runtime_usage_drop_count(scope, &residual_source, residual);
 }
 
 #[must_use]
 pub fn background_cost_for_runtime_usage(record: &RuntimeUsageRecord) -> PendingBackgroundCost {
     if record.settlement.is_some() {
         let mut pending = PendingBackgroundCost::default();
+        pending
+            .usage_source_fingerprints
+            .insert(usage_source_fingerprint(&record.source_id));
         pending.source_records.push(record.clone());
         return pending;
     }
     if record.usage.usage == Usage::default() {
         return background_cost_for_runtime_drop(&RuntimeUsageDropRecord {
-            reason: crate::cost_status::RuntimeUsageMissingReason::default(),
+            reason: RuntimeUsageMissingReason::default(),
             source_id: record.source_id.clone(),
             route: record.usage.route.clone(),
         });
@@ -3853,10 +2359,7 @@ pub fn background_cost_for_runtime_usage(record: &RuntimeUsageRecord) -> Pending
     let fingerprint = usage_source_fingerprint(&record.source_id);
     let audit = record.usage.route.audit_frozen(&record.usage.usage);
     let receipt = record.usage.route.receipt(&audit);
-    pending
-        .usage_source_fingerprints
-        .insert(fingerprint.clone());
-    pending.resolved_missing_usage_sources.insert(fingerprint);
+    pending.usage_source_fingerprints.insert(fingerprint);
     fold_audit_into_pending(&mut pending, receipt, &audit, &record.usage.usage);
     pending
 }
@@ -3864,119 +2367,55 @@ pub fn background_cost_for_runtime_usage(record: &RuntimeUsageRecord) -> Pending
 #[must_use]
 pub fn background_cost_for_runtime_drop(record: &RuntimeUsageDropRecord) -> PendingBackgroundCost {
     let mut pending = PendingBackgroundCost::default();
-    let fingerprint = usage_source_fingerprint(&record.source_id);
     pending
         .usage_source_fingerprints
-        .insert(fingerprint.clone());
+        .insert(usage_source_fingerprint(&record.source_id));
+    pending.source_records.push(record.as_usage_record());
     pending
-        .missing_usage_sources
-        .insert(fingerprint, record.coverage());
-    if record.coverage().money_metered {
-        pending.unpriced_turns = 1;
-        pending.cny_unpriced_turns = 1;
-        pending.unpriced_reasons.insert(record.reason.label());
-        pending.cny_unpriced_reasons.insert(record.reason.label());
-    }
-    pending
-}
-/// Reconcile exact missing slots in a projection before adding real usage.
-/// Overflow and legacy unattributed gaps are never erased by this operation.
-pub fn reconcile_missing_usage_sources(
-    missing: &mut BTreeMap<String, MissingUsageCoverage>,
-    resolved: &BTreeSet<String>,
-    unpriced: &mut u32,
-    cny_unpriced: &mut u32,
-) {
-    for fingerprint in resolved {
-        if missing
-            .remove(fingerprint)
-            .is_some_and(|coverage| coverage.money_metered)
-        {
-            *unpriced = unpriced.saturating_sub(1);
-            *cny_unpriced = cny_unpriced.saturating_sub(1);
-        }
-    }
 }
 
 pub fn prune_settled_missing_reasons(
-    missing: &BTreeMap<String, MissingUsageCoverage>,
-    overflowed: bool,
-    in_flight: &mut BTreeSet<String>,
+    accounted: &BTreeMap<String, UsageSourceContribution>,
     unpriced: u32,
     cny_unpriced: u32,
     reasons: &mut BTreeSet<String>,
     cny_reasons: &mut BTreeSet<String>,
 ) {
-    in_flight.retain(|source| missing.contains_key(source));
     for reason in [
         RuntimeUsageMissingReason::RequestOutcomeUnknown,
         RuntimeUsageMissingReason::SuccessWithoutUsage,
     ] {
-        let unresolved = overflowed
-            || missing
-                .iter()
-                .any(|(source, coverage)| coverage.reason == reason && !in_flight.contains(source));
-        if unpriced == 0 || !unresolved {
+        let has_usd_reason = accounted.values().any(|entry| {
+            entry.unpriced > 0
+                && entry.record.settlement.as_ref().is_some_and(|revision| {
+                    matches!(
+                        revision.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    ) && revision.reason == reason
+                })
+        });
+        if unpriced == 0 || !has_usd_reason {
             reasons.remove(reason.label());
         }
-        if cny_unpriced == 0 || !unresolved {
+        let has_cny_reason = accounted.values().any(|entry| {
+            entry.cny_unpriced > 0
+                && entry.record.settlement.as_ref().is_some_and(|revision| {
+                    matches!(
+                        revision.coverage,
+                        crate::llm_client::ProviderUsageCoverage::Missing
+                            | crate::llm_client::ProviderUsageCoverage::Incomplete
+                    ) && revision.reason == reason
+                })
+        });
+        if cny_unpriced == 0 || !has_cny_reason {
             cny_reasons.remove(reason.label());
         }
     }
-    let in_progress = crate::pricing::UnpricedReason::RequestInProgress.label();
-    if unpriced == 0 || in_flight.is_empty() {
-        reasons.remove(in_progress);
-    }
-    if cny_unpriced == 0 || in_flight.is_empty() {
-        cny_reasons.remove(in_progress);
-    }
+    reasons.remove(crate::pricing::UnpricedReason::RequestInProgress.label());
+    cny_reasons.remove(crate::pricing::UnpricedReason::RequestInProgress.label());
 }
 
-/// Apply bounded unresolved metadata to an existing cost projection. The
-/// returned batch omits exact identities whose missing slots overflowed; a
-/// real receipt for such an id can still settle once, but cannot erase the gap.
-pub fn project_missing_usage_ledger(
-    missing: &mut BTreeMap<String, MissingUsageCoverage>,
-    overflowed: &mut bool,
-    unpriced: &mut u32,
-    cny_unpriced: &mut u32,
-    pool: &PendingBackgroundCost,
-) -> PendingBackgroundCost {
-    reconcile_missing_usage_sources(
-        missing,
-        &pool.resolved_missing_usage_sources,
-        unpriced,
-        cny_unpriced,
-    );
-    let mut pool = pool.clone();
-    for (fingerprint, coverage) in &pool.missing_usage_sources {
-        if missing.contains_key(fingerprint) {
-            continue;
-        }
-        if missing.len() < MAX_MISSING_USAGE_SOURCES {
-            missing.insert(fingerprint.clone(), coverage.clone());
-        } else {
-            pool.usage_source_fingerprints.remove(fingerprint);
-            if coverage.money_metered {
-                pool.unpriced_turns = pool.unpriced_turns.saturating_sub(1);
-                pool.cny_unpriced_turns = pool.cny_unpriced_turns.saturating_sub(1);
-            }
-            if !*overflowed && !pool.missing_usage_overflowed {
-                pool.missing_usage_overflowed = true;
-                pool.unpriced_turns = pool.unpriced_turns.saturating_add(1);
-                pool.cny_unpriced_turns = pool.cny_unpriced_turns.saturating_add(1);
-                pool.unpriced_reasons
-                    .insert("missing_usage_source_overflow");
-                pool.cny_unpriced_reasons
-                    .insert("missing_usage_source_overflow");
-            }
-        }
-    }
-    *overflowed |= pool.missing_usage_overflowed;
-    pool
-}
-
-/// Fold one already-computed audit into the pending pool.
 #[cfg(any(test, feature = "test-support"))]
 fn record(scope: CostScopeToken, route_receipt: String, audit: &TurnCostAudit, usage: &Usage) {
     with_pending_state_mut(|state| {
@@ -3987,213 +2426,100 @@ fn record(scope: CostScopeToken, route_receipt: String, audit: &TurnCostAudit, u
     });
 }
 
-pub(crate) fn acknowledge_usage_projection(
-    scope: CostScopeToken,
-    record: &RuntimeUsageRecord,
-) -> std::io::Result<()> {
-    if !record.is_acknowledged() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "usage projection has no durable acknowledgement",
-        ));
-    }
+pub fn record_interactive_runtime_usage(scope: CostScopeToken, record: RuntimeUsageRecord) -> bool {
     with_pending_state_mut(|state| {
         if state.generation != scope.0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ResourceBusy,
-                "cost projection scope changed",
-            ));
+            return false;
         }
         let key = usage_source_fingerprint(&record.source_id);
-        if let Some(current) = state.source_records.get(&key) {
-            if current == record || current.follows_protected(record)? {
-                return Ok(());
+        let record_to_store = if let Some(previous) = state.source_records.get(&key) {
+            if record.route_conflicts_with(Some(previous)) {
+                tracing::warn!(
+                    source_id = %key,
+                    "interactive usage source changed route; recording unknown cost"
+                );
+                unknown_cost_record(
+                    &record.source_id,
+                    &record.usage.route,
+                    record.usage.usage.clone(),
+                )
+            } else if !record.supersedes(Some(previous)) {
+                return true;
+            } else {
+                record
             }
         } else if state.seen_usage_source_fingerprints.contains(&key) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "legacy usage membership has no prior source contribution",
-            ));
+            return true;
+        } else {
+            record
+        };
+        state.pending.usage_source_fingerprints.insert(key.clone());
+        state.seen_usage_source_fingerprints.insert(key.clone());
+        let record_to_store = if record_to_store.settlement.is_none()
+            && record_to_store.usage.usage == Usage::default()
+        {
+            RuntimeUsageDropRecord {
+                reason: RuntimeUsageMissingReason::SuccessWithoutUsage,
+                source_id: record_to_store.source_id,
+                route: record_to_store.usage.route,
+            }
+            .as_usage_record()
+        } else {
+            record_to_store
+        };
+        if let Some(revision) = record_to_store.settlement.as_ref() {
+            state
+                .pending
+                .source_records
+                .retain(|old| usage_source_fingerprint(&old.source_id) != key);
+            if matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            ) && record_to_store
+                .usage
+                .route
+                .audit_frozen(&record_to_store.usage.usage)
+                .counts_toward_money_coverage()
+            {
+                state
+                    .pending
+                    .unpriced_reasons
+                    .insert(revision.reason.label());
+                state
+                    .pending
+                    .cny_unpriced_reasons
+                    .insert(revision.reason.label());
+            }
+            state
+                .source_records
+                .insert(key, record_to_store.persisted());
+            state.pending.source_records.push(record_to_store);
+        } else {
+            state
+                .source_records
+                .insert(key, record_to_store.persisted());
+            let audit = record_to_store
+                .usage
+                .route
+                .audit_frozen(&record_to_store.usage.usage);
+            let receipt = record_to_store.usage.route.receipt(&audit);
+            fold_audit_into_pending(
+                &mut state.pending,
+                receipt,
+                &audit,
+                &record_to_store.usage.usage,
+            );
         }
-        if record.permits_replacement(state.source_records.get(&key))? {
-            state.source_records.insert(key.clone(), record.persisted());
-            state.seen_usage_source_fingerprints.insert(key);
-        }
-        Ok(())
+        true
     })
 }
 
-pub fn record_interactive_runtime_usage(scope: CostScopeToken, record: RuntimeUsageRecord) -> bool {
-    if record.settlement.is_some() {
-        let scope = record
-            .native
-            .as_ref()
-            .and_then(|proof| {
-                proof
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .origin
-                    .as_ref()
-                    .map(|origin| origin.scope)
-            })
-            .unwrap_or(scope);
-        if !record.has_live_projection() {
-            return false;
-        }
-        return with_pending_state_mut(|state| {
-            if state.generation != scope.0 {
-                if record.native_authorizes().unwrap_or(false) {
-                    if !state
-                        .pending
-                        .source_records
-                        .iter()
-                        .any(|prior| prior == &record)
-                    {
-                        state.pending.source_records.push(record);
-                    }
-                    return true;
-                }
-                return false;
-            }
-            let key = usage_source_fingerprint(&record.source_id);
-            if state.seen_usage_source_fingerprints.contains(&key)
-                && !state.source_records.contains_key(&key)
-            {
-                tracing::warn!(
-                    "legacy usage membership has no provable prior contribution; correction refused"
-                );
-                return false;
-            }
-            match record.permits_replacement(state.source_records.get(&key)) {
-                Ok(false) => true,
-                Ok(true) => {
-                    state.source_records.insert(key.clone(), record.persisted());
-                    state.pending.source_records.push(record);
-                    state.seen_usage_source_fingerprints.insert(key);
-                    true
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "interactive usage correction refused");
-                    false
-                }
-            }
-        });
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        if record.usage.usage == Usage::default() {
-            return record_interactive_runtime_usage_drop(
-                scope,
-                RuntimeUsageDropRecord {
-                    reason: RuntimeUsageMissingReason::SuccessWithoutUsage,
-                    source_id: record.source_id,
-                    route: record.usage.route,
-                },
-            );
-        }
-        with_pending_state_mut(|state| {
-            if state.generation != scope.0 {
-                return false;
-            }
-            let fingerprint = usage_source_fingerprint(&record.source_id);
-            if state
-                .missing_usage_sources
-                .get(&fingerprint)
-                .is_some_and(|coverage| !coverage.matches_route(&record.usage.route))
-            {
-                return true;
-            }
-            if !state
-                .seen_usage_source_fingerprints
-                .insert(fingerprint.clone())
-            {
-                return true;
-            }
-            if let Some(coverage) = state.missing_usage_sources.remove(&fingerprint) {
-                if state
-                    .pending
-                    .missing_usage_sources
-                    .remove(&fingerprint)
-                    .is_some()
-                {
-                    if coverage.money_metered {
-                        state.pending.unpriced_turns =
-                            state.pending.unpriced_turns.saturating_sub(1);
-                        state.pending.cny_unpriced_turns =
-                            state.pending.cny_unpriced_turns.saturating_sub(1);
-                    }
-                } else {
-                    state
-                        .pending
-                        .resolved_missing_usage_sources
-                        .insert(fingerprint.clone());
-                }
-            }
-            let audit = record.usage.route.audit_frozen(&record.usage.usage);
-            let receipt = record.usage.route.receipt(&audit);
-            state.pending.usage_source_fingerprints.insert(fingerprint);
-            fold_audit_into_pending(&mut state.pending, receipt, &audit, &record.usage.usage);
-            true
-        })
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        false
-    }
-}
 pub fn record_interactive_runtime_usage_drop(
     scope: CostScopeToken,
     record: RuntimeUsageDropRecord,
 ) -> bool {
-    with_pending_state_mut(|state| {
-        if state.generation != scope.0 {
-            return false;
-        }
-        let fingerprint = usage_source_fingerprint(&record.source_id);
-        if state.seen_usage_source_fingerprints.contains(&fingerprint)
-            || state.missing_usage_sources.contains_key(&fingerprint)
-        {
-            return true;
-        }
-        if state.missing_usage_sources.len() == MAX_MISSING_USAGE_SOURCES {
-            if !state.missing_usage_overflowed {
-                state.missing_usage_overflowed = true;
-                state.pending.missing_usage_overflowed = true;
-                state.pending.unpriced_turns = state.pending.unpriced_turns.saturating_add(1);
-                state.pending.cny_unpriced_turns =
-                    state.pending.cny_unpriced_turns.saturating_add(1);
-                state
-                    .pending
-                    .unpriced_reasons
-                    .insert("missing_usage_source_overflow");
-                state
-                    .pending
-                    .cny_unpriced_reasons
-                    .insert("missing_usage_source_overflow");
-            }
-            return true;
-        }
-        let coverage = record.coverage();
-        state
-            .missing_usage_sources
-            .insert(fingerprint.clone(), coverage.clone());
-        state
-            .pending
-            .missing_usage_sources
-            .insert(fingerprint.clone(), coverage.clone());
-        state.pending.usage_source_fingerprints.insert(fingerprint);
-        if coverage.money_metered {
-            state.pending.unpriced_turns = state.pending.unpriced_turns.saturating_add(1);
-            state.pending.cny_unpriced_turns = state.pending.cny_unpriced_turns.saturating_add(1);
-            state.pending.unpriced_reasons.insert(record.reason.label());
-            state
-                .pending
-                .cny_unpriced_reasons
-                .insert(record.reason.label());
-        }
-        true
-    })
+    record_interactive_runtime_usage(scope, record.as_usage_record())
 }
 
 fn record_interactive_runtime_usage_drop_count(
@@ -4260,9 +2586,6 @@ fn fold_audit_into_pending(
         add(&mut pending.cache_write_tokens, classes.cache_write);
     }
 
-    // Only money-metered/unknown-basis turns belong in missing-money coverage
-    // or its reason list. A subscription/local receipt is still audited below,
-    // but `not_money_metered` must never be presented as a gap in a subtotal.
     if audit.counts_toward_money_coverage() {
         if audit.usd_priced {
             pending.priced_turns = pending.priced_turns.saturating_add(1);
@@ -4291,35 +2614,24 @@ fn fold_audit_into_pending(
         }
     }
 
-    // Record which token classes this route actually billed on, so a receipt
-    // shows whether cache-write/reasoning telemetry was even present.
     pending
         .route_receipts
         .insert(receipt_with_usage_classes(route_receipt, usage));
 }
 
-/// Drain the pending pool, returning it and resetting to zero.
-///
-/// Money and its completeness leave together, so a caller can never fold a
-/// subtotal into a session total without the counters that qualify it.
 #[must_use]
 pub fn drain() -> PendingBackgroundCost {
     with_pending_state_mut(|state| std::mem::take(&mut state.pending))
 }
 
-/// Reset the pool to zero without consuming. Test-only helper for
-/// suites that share the static and need to start from a known
-/// state. Production code should always use [`drain`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_tests() {
     with_pending_state_mut(|state| {
         state.pending = PendingBackgroundCost::default();
         state.seen_usage_source_fingerprints.clear();
+        state.retired_usage_sources.clear();
         state.source_records.clear();
-        state.missing_usage_sources.clear();
-        state.missing_usage_overflowed = false;
     });
-    with_runtime_usage_journal_mut(HashMap::clear);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -5537,68 +3849,70 @@ mod tests {
         let fingerprint = usage_source_fingerprint(raw);
         let encoded = format!("routed:{fingerprint}");
         for source in [raw, fingerprint.as_str(), encoded.as_str()] {
-            report_effective_route_for_runtime(
+            record_runtime_usage(
                 scope_token(),
                 None,
-                source,
-                &route,
-                &Usage::default(),
+                &RuntimeUsageRecord::legacy(
+                    source,
+                    EffectiveRouteUsage {
+                        route: route.clone(),
+                        usage: Usage::default(),
+                    },
+                ),
             );
         }
         let missing = drain();
-        assert_eq!(missing.priced_turns, 0);
-        assert_eq!(missing.unpriced_turns, 1);
-        assert_eq!(missing.cny_unpriced_turns, 1);
-        assert_eq!(missing.estimate, CostEstimate::default());
+        assert_eq!(missing.source_records.len(), 1);
         assert_eq!(
             missing.usage_source_fingerprints,
             BTreeSet::from([fingerprint.clone()])
         );
-        assert!(
-            missing
-                .unpriced_reasons
-                .contains("provider_success_missing_usage")
-        );
-        report_effective_route_for_runtime(
+        let contrib = UsageSourceContribution::for_record(&missing.source_records[0]);
+        assert_eq!(contrib.priced, 0);
+        assert_eq!(contrib.unpriced, 1);
+        assert_eq!(contrib.cny_unpriced, 1);
+
+        record_runtime_usage(
             scope_token(),
             None,
-            &encoded,
-            &route,
-            &Usage::default(),
+            &RuntimeUsageRecord::legacy(
+                &encoded,
+                EffectiveRouteUsage {
+                    route: route.clone(),
+                    usage: Usage::default(),
+                },
+            ),
         );
         assert!(
             drain().is_empty(),
             "replayed metadata must stay consumed after drain"
         );
 
-        let owner = "runtime-default-usage-owner";
+        let recorded_owner = Arc::new(Mutex::new(Vec::new()));
+        let recorded_sink = Arc::clone(&recorded_owner);
+        let origin = NativeUsageOrigin::captured_runtime(
+            scope_token(),
+            "runtime-default-usage-owner".to_string(),
+            Arc::new(move |record| {
+                recorded_sink.lock().unwrap().push(record);
+                true
+            }),
+        );
         for source in [raw, fingerprint.as_str(), encoded.as_str()] {
-            report_effective_route_for_runtime(
+            record_runtime_usage(
                 scope_token(),
-                Some(owner),
-                source,
-                &route,
-                &Usage::default(),
+                Some(&origin),
+                &RuntimeUsageRecord::legacy(
+                    source,
+                    EffectiveRouteUsage {
+                        route: route.clone(),
+                        usage: Usage::default(),
+                    },
+                ),
             );
         }
-        let batch = take_runtime_usage(owner);
-        assert!(batch.records.is_empty());
-        assert_eq!(batch.drop_records.len(), 1);
-        assert_eq!(batch.dropped_records, 1);
+        assert_eq!(recorded_owner.lock().unwrap().len(), 3);
         assert!(drain().is_empty());
-        let replay = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
-            encoded,
-            EffectiveRouteUsage {
-                route: route.clone(),
-                usage: Usage::default(),
-            },
-        ));
-        assert_eq!(replay.unpriced_turns, missing.unpriced_turns);
-        assert_eq!(replay.cny_unpriced_turns, missing.cny_unpriced_turns);
-        assert_eq!(
-            replay.usage_source_fingerprints,
-            missing.usage_source_fingerprints
-        );
 
         for billing_mode in [RouteBillingMode::Subscription, RouteBillingMode::Local] {
             let mut nonmetered = route.clone();
@@ -5610,8 +3924,9 @@ mod tests {
                     usage: Usage::default(),
                 },
             ));
-            assert_eq!(cost.unpriced_turns, 0);
-            assert_eq!(cost.cny_unpriced_turns, 0);
+            let c = UsageSourceContribution::for_record(&cost.source_records[0]);
+            assert_eq!(c.unpriced, 0);
+            assert_eq!(c.cny_unpriced, 0);
             assert_eq!(cost.usage_source_fingerprints.len(), 1);
         }
 
@@ -5873,125 +4188,48 @@ mod tests {
         let _g = test_scope();
         let route = deepseek_envelope();
         let usage = small_usage();
-        report_effective_route_for_runtime(
+        let records_a = Arc::new(Mutex::new(Vec::new()));
+        let records_b = Arc::new(Mutex::new(Vec::new()));
+        let sink_a = Arc::clone(&records_a);
+        let sink_b = Arc::clone(&records_b);
+        let origin_a = NativeUsageOrigin::captured_runtime(
             scope_token(),
-            Some("turn-a"),
-            "response-a",
-            &route,
-            &usage,
+            "turn-a".to_string(),
+            Arc::new(move |r| {
+                sink_a.lock().unwrap().push(r);
+                true
+            }),
         );
-        report_effective_route_for_runtime(
+        let origin_b = NativeUsageOrigin::captured_runtime(
             scope_token(),
-            Some("turn-b"),
-            "response-b",
-            &route,
-            &usage,
+            "turn-b".to_string(),
+            Arc::new(move |r| {
+                sink_b.lock().unwrap().push(r);
+                true
+            }),
         );
+        let record_a = NativeUsageSource::capture("response-a", UsageSpendOwner::Auxiliary)
+            .reported(&route, &usage);
+        let record_b = NativeUsageSource::capture("response-b", UsageSpendOwner::Auxiliary)
+            .reported(&route, &usage);
+        record_runtime_usage(scope_token(), Some(&origin_a), &record_a);
+        record_runtime_usage(scope_token(), Some(&origin_b), &record_b);
 
-        assert_eq!(take_runtime_usage("turn-a").records.len(), 1);
-        assert!(take_runtime_usage("turn-a").records.is_empty());
-        assert_eq!(take_runtime_usage("turn-b").records.len(), 1);
+        assert_eq!(records_a.lock().unwrap().len(), 1);
+        assert_eq!(records_b.lock().unwrap().len(), 1);
         assert!(
             drain().is_empty(),
             "runtime-owned usage must not enter TUI cost"
         );
 
-        report_effective_route_for_runtime(scope_token(), None, "response-tui", &route, &usage);
-        assert_eq!(drain().priced_turns, 1, "ownerless usage belongs to TUI");
-    }
-
-    /// Every piece of shared cost accounting is scoped to the test that owns
-    /// it, including the durability sink registry.
-    ///
-    /// Sinks are keyed by owner id, and owner ids in tests are short fixture
-    /// strings that repeat. A process-global registry let one test's
-    /// `register_runtime_usage_sink` overwrite another's live sink, and let one
-    /// test's `finish_runtime_usage_owner` retire it mid-flight — so a passing
-    /// exactly-once assertion depended on which tests happened to run
-    /// concurrently. This pins the isolation directly: a sink registered on
-    /// another thread must be invisible here, and usage reported here must not
-    /// reach it.
-    #[test]
-    fn runtime_usage_sinks_do_not_leak_across_test_threads() {
-        let _g = test_scope();
-        let owner = "shared-owner";
-        let other_thread_deliveries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        // A concurrent test, standing in for any other test in the binary that
-        // happens to use the same owner id.
-        let deliveries = Arc::clone(&other_thread_deliveries);
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let other = std::thread::spawn(move || {
-            register_runtime_usage_sink(
-                owner,
-                Arc::new(move |_record| {
-                    deliveries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    true
-                }),
-            );
-            ready_tx.send(()).expect("signal registration");
-            // Hold the registration open across this thread's assertions.
-            done_rx.recv().expect("wait for the other test to finish");
-            // The other thread's own reports still reach its own sink.
-            report_effective_route_for_runtime(
-                scope_token(),
-                Some(owner),
-                "response-other",
-                &deepseek_envelope(),
-                &small_usage(),
-            );
-        });
-        ready_rx.recv().expect("other test registered its sink");
-
-        // This thread never registered a sink, so its usage must fall through
-        // to this thread's journal — not into the other test's sink.
-        report_effective_route_for_runtime(
-            scope_token(),
-            Some(owner),
-            "response-mine",
-            &deepseek_envelope(),
-            &small_usage(),
-        );
+        let tui_record = NativeUsageSource::capture("response-tui", UsageSpendOwner::Auxiliary)
+            .reported(&route, &usage);
+        record_runtime_usage(scope_token(), None, &tui_record);
         assert_eq!(
-            other_thread_deliveries.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "another test's sink received this test's usage"
-        );
-        let mine = take_runtime_usage(owner);
-        assert_eq!(mine.records.len(), 1);
-        assert_eq!(mine.records[0].source_id, "response-mine");
-        assert_eq!(mine.dropped_records, 0);
-
-        // Retiring the owner here must not retire the other test's sink.
-        finish_runtime_usage_owner(owner);
-        done_tx.send(()).expect("release the other test");
-        other.join().expect("other test thread");
-        assert_eq!(
-            other_thread_deliveries.load(std::sync::atomic::Ordering::SeqCst),
+            drain().source_records.len(),
             1,
-            "the other test's sink was retired by an unrelated test"
+            "ownerless usage belongs to TUI"
         );
-    }
-
-    #[test]
-    fn runtime_usage_fallback_is_bounded_and_reports_truncation() {
-        let _g = test_scope();
-        let route = deepseek_envelope();
-        for index in 0..(MAX_RUNTIME_USAGE_RECORDS_PER_OWNER + 3) {
-            report_effective_route_for_runtime(
-                scope_token(),
-                Some("turn-bounded"),
-                &format!("response-{index}"),
-                &route,
-                &small_usage(),
-            );
-        }
-
-        let batch = take_runtime_usage("turn-bounded");
-        assert_eq!(batch.records.len(), MAX_RUNTIME_USAGE_RECORDS_PER_OWNER);
-        assert_eq!(batch.dropped_records, 3);
-        assert!(drain().is_empty(), "runtime fallback must stay out of TUI");
     }
 
     #[test]
@@ -6151,7 +4389,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_origin_acknowledges_sources_without_accrual_or_scope_leak() {
+    fn retired_origin_suppresses_replay_without_accrual_or_scope_leak() {
         let _g = test_scope();
         let tmp = tempfile::tempdir().expect("tempdir");
         let manager = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
@@ -6219,12 +4457,16 @@ mod tests {
             "old retirement cannot poison a new scope"
         );
         assert!(drain().is_empty());
-        report_effective_route_for_runtime(
+        record_runtime_usage(
             scope_token(),
             None,
-            "after-scope-change",
-            &route,
-            &small_usage(),
+            &RuntimeUsageRecord::legacy(
+                "after-scope-change",
+                EffectiveRouteUsage {
+                    route,
+                    usage: small_usage(),
+                },
+            ),
         );
         assert_eq!(
             drain().priced_turns,
@@ -6255,19 +4497,12 @@ mod tests {
         }
 
         let origin_scope = scope_token();
-        let owner = "interactive:origin-session:origin-turn";
-        register_persistent_interactive_runtime_usage_sink_at(
-            owner,
+        let origin = NativeUsageOrigin::session(
             origin_scope,
-            old_session_id,
-            "origin-turn",
             manager.sessions_dir().to_path_buf(),
+            old_session_id.to_string(),
         );
-        let advisor_lease = acquire_runtime_usage_lease(owner).expect("advisor owner lease");
-        finish_runtime_usage_owner(owner);
 
-        // `/new` closes the old foreground generation while the detached
-        // advisor and translation requests are still in flight.
         assert!(close_current_scope().is_empty());
         let route = deepseek_envelope();
         let usage = Usage {
@@ -6275,20 +4510,26 @@ mod tests {
             output_tokens: 5,
             ..Usage::default()
         };
+        let advisor_source = NativeUsageSource::capture_with_origin(
+            "advisor:origin-turn:response",
+            UsageSpendOwner::Auxiliary,
+            Some(origin.clone()),
+        );
+        let advisor_record = advisor_source.reported(&route, &usage);
+        let advisor_missing_source = NativeUsageSource::capture_with_origin(
+            "advisor:origin-turn:missing-usage",
+            UsageSpendOwner::Auxiliary,
+            Some(origin.clone()),
+        );
+        let advisor_missing_record = advisor_missing_source.prepare(
+            &route,
+            &Usage::default(),
+            crate::llm_client::ProviderUsageCoverage::Missing,
+            RuntimeUsageMissingReason::SuccessWithoutUsage,
+        );
         for _ in 0..2 {
-            report_effective_route_for_runtime(
-                origin_scope,
-                Some(owner),
-                "advisor:origin-turn:response",
-                &route,
-                &usage,
-            );
-            report_unreceipted_provider_success(
-                origin_scope,
-                Some(owner),
-                "advisor:origin-turn:missing-usage",
-                &route,
-            );
+            record_runtime_usage(origin_scope, Some(&origin), &advisor_record);
+            record_runtime_usage(origin_scope, Some(&origin), &advisor_missing_record);
             assert!(report_effective_route_for_interactive_origin_with_manager(
                 origin_scope,
                 old_session_id,
@@ -6307,12 +4548,7 @@ mod tests {
                 &manager,
             ));
         }
-        drop(advisor_lease);
 
-        let fallback = take_runtime_usage(owner);
-        assert!(fallback.records.is_empty());
-        assert!(fallback.drop_records.is_empty());
-        assert_eq!(fallback.dropped_records, 0);
         assert!(drain().is_empty(), "late receipts polluted the new scope");
 
         let old = manager
@@ -6605,191 +4841,47 @@ mod tests {
     }
 
     #[test]
-    fn exact_missing_usage_promotes_once_before_drain_and_rejects_changed_route() {
+    fn runtime_unknown_batch_promotes_and_prunes_reason_via_supersedes() {
         let _scope = test_scope();
         let route = deepseek_envelope();
-        report_missing_runtime_usage(
-            scope_token(),
-            None,
-            "attempt",
-            &route,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        );
-        let mut changed = route.clone();
-        changed.model = "another-model".into();
-        report_effective_route_for_runtime(
-            scope_token(),
-            None,
-            "attempt",
-            &changed,
-            &small_usage(),
-        );
-        report_effective_route_for_runtime(scope_token(), None, "attempt", &route, &small_usage());
-        report_effective_route_for_runtime(scope_token(), None, "attempt", &route, &small_usage());
-        report_missing_runtime_usage(
-            scope_token(),
-            None,
-            "attempt",
-            &route,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        );
-        let pool = drain();
-        assert_eq!(pool.priced_turns, 1);
-        assert_eq!(pool.unpriced_turns, 0);
-        assert_eq!(pool.cny_unpriced_turns, 0);
-        assert!(pool.missing_usage_sources.is_empty());
-        assert!(pool.estimate.usd > 0.0);
-        assert_eq!(pool.usage_source_fingerprints.len(), 1);
-    }
-
-    #[test]
-    fn drained_missing_slot_restores_and_late_receipt_resolves_only_its_origin() {
-        let _scope = test_scope();
-        let route = deepseek_envelope();
-        report_missing_runtime_usage(
-            scope_token(),
-            None,
-            "restored-attempt",
-            &route,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        );
-        let missing = drain();
-        let mut slots = missing.missing_usage_sources.clone();
-        let mut overflow = false;
-        let mut unpriced = missing.unpriced_turns;
-        let mut cny_unpriced = missing.cny_unpriced_turns;
-        assert!(close_current_scope().is_empty());
-        restore_usage_source_ledger(missing.usage_source_fingerprints.clone(), &slots, overflow);
-        report_effective_route_for_runtime(
-            scope_token(),
-            None,
-            "restored-attempt",
-            &route,
-            &small_usage(),
-        );
-        let known = drain();
-        let projected = project_missing_usage_ledger(
-            &mut slots,
-            &mut overflow,
-            &mut unpriced,
-            &mut cny_unpriced,
-            &known,
-        );
-        assert!(slots.is_empty());
-        assert_eq!((unpriced, cny_unpriced), (0, 0));
-        assert_eq!(projected.priced_turns, 1);
-        report_effective_route_for_runtime(
-            scope_token(),
-            None,
-            "restored-attempt",
-            &route,
-            &small_usage(),
-        );
-        assert!(drain().is_empty());
-        // A legacy snapshot retained only consumed identities. Its unattributed
-        // coverage remains conservative rather than being erased by a replay.
-        assert!(close_current_scope().is_empty());
-        restore_usage_source_fingerprints(missing.usage_source_fingerprints);
-        report_effective_route_for_runtime(
-            scope_token(),
-            None,
-            "restored-attempt",
-            &route,
-            &small_usage(),
-        );
-        assert!(drain().is_empty());
-    }
-
-    #[test]
-    fn missing_usage_overflow_is_bounded_and_cannot_be_erased_by_late_receipts() {
-        let _scope = test_scope();
-        let route = deepseek_envelope();
-        for index in 0..65 {
-            for _ in 0..2 {
-                report_missing_runtime_usage(
-                    scope_token(),
-                    None,
-                    &format!("attempt-{index}"),
-                    &route,
-                    RuntimeUsageMissingReason::RequestOutcomeUnknown,
-                );
-            }
-        }
-        let missing = drain();
-        assert_eq!(
-            missing.missing_usage_sources.len(),
-            MAX_MISSING_USAGE_SOURCES
-        );
-        assert_eq!(missing.unpriced_turns, 65);
-        assert!(missing.missing_usage_overflowed);
-        let mut slots = missing.missing_usage_sources.clone();
-        let mut overflow = missing.missing_usage_overflowed;
-        let mut unpriced = missing.unpriced_turns;
-        let mut cny_unpriced = missing.cny_unpriced_turns;
-        for index in 0..65 {
-            for _ in 0..2 {
-                report_effective_route_for_runtime(
-                    scope_token(),
-                    None,
-                    &format!("attempt-{index}"),
-                    &route,
-                    &small_usage(),
-                );
-            }
-        }
-        let known = drain();
-        let projected = project_missing_usage_ledger(
-            &mut slots,
-            &mut overflow,
-            &mut unpriced,
-            &mut cny_unpriced,
-            &known,
-        );
-        assert_eq!(projected.priced_turns, 65);
-        assert_eq!((unpriced, cny_unpriced), (1, 1));
-        assert!(slots.is_empty());
-        assert!(overflow);
-        assert!(projected.estimate.usd > 0.0);
-    }
-
-    #[test]
-    fn runtime_unknown_batch_keeps_reason_and_promotes_without_new_response_identity() {
-        let _scope = test_scope();
-        let route = deepseek_envelope();
-        let owner = "unknown-batch-owner";
-        report_missing_runtime_usage(
-            scope_token(),
-            Some(owner),
-            "batch-attempt",
-            &route,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        );
-        let batch = take_runtime_usage(owner);
-        assert_eq!(
-            batch.drop_records[0].reason,
-            RuntimeUsageMissingReason::RequestOutcomeUnknown
-        );
+        let batch = RuntimeUsageBatch {
+            drop_records: vec![RuntimeUsageDropRecord {
+                reason: RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                source_id: "batch-attempt".to_string(),
+                route: route.clone(),
+            }],
+            dropped_records: 1,
+            ..Default::default()
+        };
         let mut metadata = serde_json::json!({});
         attach_child_usage_batch_metadata(&mut metadata, &batch);
         let batch = child_usage_records_from_metadata(&metadata).unwrap();
-        report_runtime_usage_batch(scope_token(), None, &batch);
-        report_runtime_usage_batch(scope_token(), None, &batch);
+        record_runtime_usage_batch(scope_token(), None, &batch);
+        record_runtime_usage_batch(scope_token(), None, &batch);
         let missing = drain();
-        assert_eq!(missing.unpriced_turns, 1);
-        assert!(missing.unpriced_reasons.contains("request_outcome_unknown"));
-        report_effective_route_for_runtime(
-            scope_token(),
-            None,
-            "batch-attempt",
-            &route,
-            &small_usage(),
-        );
+        assert_eq!(missing.source_records.len(), 1);
+        let prior = &missing.source_records[0];
+        let mut accounted = BTreeMap::from([(
+            usage_source_fingerprint("batch-attempt"),
+            UsageSourceContribution::for_record(prior),
+        )]);
+        let mut reasons = BTreeSet::from(["request_outcome_unknown".to_string()]);
+        let mut cny_reasons = BTreeSet::from(["request_outcome_unknown".to_string()]);
+        assert_eq!(accounted.values().next().unwrap().unpriced, 1);
+
+        let settled = NativeUsageSource::capture("batch-attempt", UsageSpendOwner::Auxiliary)
+            .reported(&route, &small_usage());
+        assert!(settled.supersedes(Some(prior)));
+        record_runtime_usage(scope_token(), None, &settled);
         let known = drain();
-        assert_eq!(known.priced_turns, 1);
-        assert_eq!(
-            known.resolved_missing_usage_sources,
-            BTreeSet::from([usage_source_fingerprint("batch-attempt")])
-        );
+        assert_eq!(known.source_records.len(), 1);
+        let next = UsageSourceContribution::for_record(&known.source_records[0]);
+        assert_eq!(next.priced, 1);
+        assert_eq!(next.unpriced, 0);
+        accounted.insert(usage_source_fingerprint("batch-attempt"), next);
+        prune_settled_missing_reasons(&accounted, 0, 0, &mut reasons, &mut cny_reasons);
+        assert!(!reasons.contains("request_outcome_unknown"));
+        assert!(!cny_reasons.contains("request_outcome_unknown"));
     }
 
     #[test]
@@ -6824,7 +4916,6 @@ mod tests {
         ));
         let missing = manager.load_session_snapshot("unknown-origin").unwrap();
         assert_eq!(missing.metadata.cost.unpriced_turns, 1);
-        assert_eq!(missing.metadata.cost.missing_usage_sources.len(), 1);
         assert!(
             missing
                 .metadata
@@ -6848,7 +4939,13 @@ mod tests {
             let known = manager.load_session_snapshot("unknown-origin").unwrap();
             assert_eq!(known.metadata.cost.priced_turns, 1);
             assert_eq!(known.metadata.cost.unpriced_turns, 0);
-            assert!(known.metadata.cost.missing_usage_sources.is_empty());
+            assert!(
+                !known
+                    .metadata
+                    .cost
+                    .unpriced_reasons
+                    .contains("request_outcome_unknown")
+            );
             assert_eq!(
                 known.metadata.total_tokens,
                 u64::from(small_usage().input_tokens) + u64::from(small_usage().output_tokens)

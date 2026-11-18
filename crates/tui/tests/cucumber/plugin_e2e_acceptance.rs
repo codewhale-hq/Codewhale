@@ -1113,6 +1113,14 @@ async fn run_scenario(name: &'static str, expected_steps: usize) {
 #[test]
 fn a_continued_session_resumes_again_after_each_turn() {
     let workspace = make_sealed_workspace().expect("sealed workspace");
+    let outbox = workspace.home().join(".codewhale/lifecycle-outbox.jsonl");
+    let config_path = workspace.home().join(".codewhale/config.toml");
+    let mut config = std::fs::read_to_string(&config_path).expect("sealed config");
+    config.push_str(&format!(
+        "\n[lifecycle_outbox]\npath = {}\n",
+        serde_json::json!(outbox.to_string_lossy()),
+    ));
+    std::fs::write(config_path, config).expect("configure sealed lifecycle receipt");
     let (base_url, shutdown_tx, model_thread) = spawn_hermetic_model_server();
     let launch = |args: &[&str]| {
         Harness::builder(Harness::codewhale_binary())
@@ -1141,6 +1149,7 @@ fn a_continued_session_resumes_again_after_each_turn() {
     ]);
     begin_new_session_from_startup(&mut tui);
     expect_visible(&mut tui, "binary fixture acknowledged", "first reply");
+    wait_for_turn_receipt(&mut tui, &outbox, 1, "turn.completed");
     wait_for_composer_ready(&mut tui);
     submit_tui_command(&mut tui, "/exit");
     assert_eq!(tui.wait_for_exit(BINARY_ACCEPTANCE_TIMEOUT), Some(0));
@@ -1161,11 +1170,7 @@ fn a_continued_session_resumes_again_after_each_turn() {
         let prompt = format!("continue round {round}");
         tui.type_line(&prompt).expect("send the resumed turn");
         expect_visible(&mut tui, &prompt, "resumed prompt");
-        tui.wait_for_idle(
-            std::time::Duration::from_millis(500),
-            BINARY_ACCEPTANCE_TIMEOUT,
-        )
-        .expect("resumed turn settles");
+        wait_for_turn_receipt(&mut tui, &outbox, round + 1, "turn.completed");
         wait_for_composer_ready(&mut tui);
         submit_tui_command(&mut tui, "/exit");
         assert_eq!(

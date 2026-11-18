@@ -1513,3 +1513,150 @@ async fn extension_creator_inspect_in_a_standard_conversation() {
     );
     manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn extension_creator_install_in_full_access_answers_applied() {
+    let _home = crate::test_support::SealedHome::new();
+    let Some(node) = crate::extension_host::test_support::node_for_tests(
+        "extension_creator_install_in_full_access_answers_applied",
+    ) else {
+        return;
+    };
+    let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
+    let _available = CreatorAvailabilityGuard::set(None);
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("ws");
+    let user_plugins = temp.path().join("home/.codewhale/plugins");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&user_plugins).unwrap();
+
+    let bundle_dir = workspace.join("demo-bundle");
+    fs::create_dir_all(bundle_dir.join("skills/helper")).unwrap();
+    fs::write(
+        bundle_dir.join("plugin.toml"),
+        "schema_version = 1\n[plugin]\nname = \"demo-bundle\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle_dir.join("skills/helper/SKILL.md"),
+        "---\nname: helper\ndescription: test skill\n---\nbody\n",
+    )
+    .unwrap();
+
+    let manager = creator_test_manager(node, temp.path().join("home"));
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
+
+    let install_args = json!({
+        "action": "install_bundle",
+        "target": bundle_dir.to_string_lossy(),
+    })
+    .to_string();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "call-list",
+            "plugin_manager",
+            r#"{"action":"list_bundles"}"#,
+        ),
+        canned::tool_call_turn("call-install", "plugin_manager", &install_args),
+        canned::simple_text_turn("Installed."),
+    ]));
+
+    let mut cfg = deterministic_engine_config(&workspace);
+    cfg.features.enable(Feature::PluginCreator);
+    cfg.features.disable(Feature::ExtensionHost);
+    let reg_config = codewhale_plugins::discovery::DiscoveryConfig {
+        workspace: workspace.clone(),
+        user_plugins_dir: user_plugins.clone(),
+        workspace_plugins_dir: workspace.join(".codewhale/plugins"),
+        builtin_plugin_dirs: Vec::new(),
+        state_path: temp.path().join("state/plugin-state.json"),
+    };
+    let registry = Arc::new(codewhale_plugins::discovery::discover_with_config(
+        &reg_config,
+    ));
+    cfg.plugin_registry = Some(Arc::clone(&registry));
+    cfg.agent_preset = Some("creator".to_string());
+
+    let (mut engine, mut handle) = Engine::new_with_model_client(cfg, &Config::default(), mock);
+    engine.attach_owner_surface_for_tests(&mut handle);
+    let config = Config::default();
+    let task = tokio::spawn(engine.run());
+
+    handle
+        .send(Op::ChangeMode {
+            mode: AppMode::Agent,
+            allow_shell: true,
+            trust_mode: true,
+            auto_approve: true,
+            approval_mode: ApprovalMode::Bypass,
+            configured_sandbox_mode: None,
+        })
+        .await
+        .unwrap();
+    let mut op = external_user_message_op(
+        "List bundles and install the workspace bundle.",
+        AppMode::Agent,
+        &config,
+    );
+    if let Op::SendMessage(ref mut spec) = op {
+        spec.trust_mode = true;
+        spec.auto_approve = true;
+        spec.approval_mode = ApprovalMode::Bypass;
+    }
+    handle.send(op).await.unwrap();
+
+    let mut outcomes = Vec::new();
+    let mut approvals = 0usize;
+    let mut rx = handle.rx_event.write().await;
+    loop {
+        match tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::ApprovalRequired { id, .. } => {
+                approvals += 1;
+                handle.deny_tool_call(id).await.unwrap();
+            }
+            Event::ToolCallComplete {
+                model_call: Some(model_call),
+                result,
+                ..
+            } => match result {
+                Ok(res) => outcomes.push((model_call.provider_id, res.success, res.content)),
+                Err(err) => outcomes.push((model_call.provider_id, false, err.to_string())),
+            },
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.unwrap();
+    task.await.unwrap();
+
+    assert_eq!(approvals, 0);
+    let list = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-list")
+        .expect("list_bundles outcome");
+    assert!(list.1, "list_bundles failed: {list:?}");
+
+    let install = outcomes
+        .iter()
+        .find(|(id, _, _)| id == "call-install")
+        .expect("install_bundle outcome");
+    assert!(install.1, "install_bundle failed: {install:?}");
+    let parsed: Value = serde_json::from_str(&install.2).expect("install JSON");
+    assert_eq!(parsed["application"], "applied", "{parsed}");
+    assert_ne!(parsed["application"], "not_available", "{parsed}");
+    assert!(!install.2.contains("not_available"), "{}", install.2);
+    assert_eq!(parsed["changed"], true, "{parsed}");
+    assert_eq!(parsed["enabled"], true, "{parsed}");
+    assert_eq!(parsed["bundle"], "demo-bundle", "{parsed}");
+    assert!(user_plugins.join("demo-bundle/plugin.toml").exists());
+
+    manager.shutdown().await;
+}

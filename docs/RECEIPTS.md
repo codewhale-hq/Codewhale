@@ -79,7 +79,7 @@ the API reads whatever store its server owns.
 | --- | --- | --- |
 | Terminal session | `sessions/<id>.json` | Every tool call and its result text, in order; each prompt's `<turn_meta>` names the posture the turn ran under; `turn_outcomes` records terminal turn status and errors |
 | Terminal session | `sessions/<id>/approval_receipts.jsonl` | Every approval ask and decision, with time and who decided |
-| Runtime thread | `tasks/runtime/turns`, `items` | Every tool call with its input, status, start and end time, and structured result (exit code, diff, agent status); each turn's `permission_posture` |
+| Runtime thread | `tasks/runtime/turns`, `items` | Every tool call with its input, status, start and end time, and structured result (exit code, diff, agent status, and `core_calls.broker_acts` on `plugin_manager` steps); each turn's `permission_posture` |
 | Runtime thread | `tasks/runtime/events/<thread>.jsonl` | `approval.required` / `approval.decided`, with the flags that say who decided |
 
 The saved-session CLI and live `/receipts` read terminal turn failures,
@@ -244,6 +244,16 @@ The receipt says so instead of guessing:
 - **Why a call ran without asking** beyond the turn's posture: the record
   does not say whether the posture, an allow rule, or a remembered grant let
   it through.
+- **Plugin changes (`plugin_change`) in terminal sessions, or when a broker
+  act record is incomplete.** A Runtime thread reads `plugin_change` actions
+  only from structured `core_calls.broker_acts` metadata written by the host
+  on `plugin_manager` steps, never from tool input or tool result text. Missing
+  fields print `"not recorded"`, overflow past retained acts adds `"Plugin
+  changes: more plugin acts than this receipt lists."`, and a `cut` act without
+  an outcome adds `"Plugin changes: a plugin act was cut before details were
+  recorded (not recorded)."`. Terminal sessions do not persist structured
+  plugin broker metadata yet, so their `not_recorded` list emits `"Plugin
+  changes are not itemized for a terminal session yet"`.
 
 ## Non-Goals
 
@@ -276,7 +286,7 @@ totals always cover every action, and `omitted_actions` counts the rest.
     "files_created": 0, "files_deleted": 0,
     "lines_added": 2, "lines_removed": 1, "line_counts_complete": true,
     "commands": 1, "commands_failed": 0, "code_runs": 0, "network": 0,
-    "mcp_calls": 1, "plugin_calls": 0, "subagents": 0,
+    "mcp_calls": 1, "plugin_calls": 0, "plugin_changes": 0, "subagents": 0,
     "approvals": {
       "total": 3, "approved": 2, "denied": 1, "timed_out": 0,
       "not_answered": 0, "pending": 0,
@@ -317,7 +327,7 @@ totals always cover every action, and `omitted_actions` counts the rest.
 `workspace_change` (`files[]` a turn's snapshots show changed that no file
 tool names, and `truncated` when more than 50 did), `command` (`command`, `cwd`, `exit_code`), `code` (`exit_code`, `nested[]`
 tool calls an `execute_tools` program made), `network` (`action`, `host`,
-`query`), `mcp` (`server`, `plugin`), `subagent` (`name`, `agent_id`,
+`query`), `mcp` (`server`, `plugin`), `plugin_change` (`method`, `plugin`, optional `hash`, `approver`, optional `services[]`), `subagent` (`name`, `agent_id`,
 `outcome`), `approval` (an approval with no matching call), `tool` (any other
 call, listed only when it failed), or `turn_failed`. `status` is `ok`,
 `failed` (ran and failed), `not_run` (held at approval), `blocked`

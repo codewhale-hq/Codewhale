@@ -53,6 +53,20 @@ impl std::error::Error for AutoReviewRetryApprovalError {}
 const USER_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl EngineHandle {
+    pub fn replace_user_permission_ruleset(&self, ruleset: codewhale_execpolicy::Ruleset) {
+        self.exec_policy.clone().set_ruleset(ruleset);
+    }
+
+    #[must_use]
+    pub fn exec_policy(&self) -> &codewhale_execpolicy::ExecPolicyEngine {
+        &self.exec_policy
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_exec_policy(&mut self, exec_policy: codewhale_execpolicy::ExecPolicyEngine) {
+        self.exec_policy = exec_policy;
+    }
+
     /// Wait for this exact background run to return or terminate abnormally.
     /// Cancelling a wait does not stop the engine or consume another waiter's result.
     /// Directly constructed handles return `NotObserved`; completion does not prove

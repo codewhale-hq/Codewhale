@@ -165,7 +165,7 @@ id = "exec-policy"
 name = "Execution policy"
 summary = "Decides allow, ask or deny for each tool call from layered permission rules."
 status = "stable"
-surfaces = { tui = "stable" }
+surfaces = { tui = "stable", api = "preview" }
 since = "0.1.0"
 flag = "exec_policy"
 docs = "docs/AUTHORIZATION_ORDER.md"
@@ -540,6 +540,16 @@ docs = "docs/READ_MEDIA.md#pasted-image-storage"
 owner = "crates/engine/src/session_image_prune.rs"
 
 [[feature]]
+id = "sessions-migrate"
+name = "Workspace session migration"
+summary = "codewhale sessions migrate updates saved sessions, checkpoints, and Runtime thread bindings after a workspace rename."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/GUIDE.md#how-do-i-continue-previous-work"
+owner = "crates/engine/src/session_manager.rs"
+
+[[feature]]
 id = "memory"
 name = "User memory"
 summary = "Opt-in local store of preferences and conventions that persists across sessions."
@@ -778,6 +788,15 @@ summary = "Cancellable account sign-in inside the TUI; account sign-out preserve
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"
+
+[[feature]]
+id = "claude-org-billing"
+name = "Claude organization billing"
+summary = "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\"."
+status = "experimental"
+surfaces = { tui = "preview" }
+docs = "docs/PROVIDERS.md"
+owner = "crates/account-cli/src/claude_org.rs"
 
 [[feature]]
 id = "account-computer-files"

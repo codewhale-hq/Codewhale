@@ -105,12 +105,24 @@ else
   fail=1
 fi
 
+own_versions="$(
+  python3 "${script_dir}/validate-crate-publish-order.py" "${release_crates[@]}" |
+    awk -F'\t' '$1 == "own-version" { print $2 "=" $3 }'
+)"
+
+crate_version() {
+  local own
+  own="$(awk -F= -v name="$1" '$1 == name { print $2 }' <<<"${own_versions}")"
+  echo "${own:-${version}}"
+}
+
 crates_user_agent="CodeWhale release check (https://github.com/codewhale-hq/CodeWhale)"
 for crate in "${release_crates[@]}"; do
-  if curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
-    echo "crates.io ${crate}@${version} is published."
+  crate_release_version="$(crate_version "${crate}")"
+  if curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate}/${crate_release_version}" >/dev/null 2>&1; then
+    echo "crates.io ${crate}@${crate_release_version} is published."
   else
-    echo "crates.io ${crate}@${version} is not published." >&2
+    echo "crates.io ${crate}@${crate_release_version} is not published." >&2
     fail=1
   fi
 done

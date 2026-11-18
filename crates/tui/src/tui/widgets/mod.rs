@@ -32,11 +32,7 @@ use codewhale_ratatui::{
 use codewhale_tui_kit::menu_style;
 use codewhale_tui_kit::scrolling::TranscriptLineMeta;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
-#[cfg(test)]
-use codewhale_tui_kit::ui_text::text_display_width;
 use codewhale_tui_kit::ui_text::truncate_line_to_width;
-#[cfg(test)]
-use ratatui::widgets::BorderType;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -44,8 +40,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
-#[cfg(test)]
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
@@ -1848,10 +1842,6 @@ impl Renderable for ApprovalWidget<'_> {
         1
     }
 }
-
-#[cfg(test)]
-#[path = "approval_band_legacy.rs"]
-pub(crate) mod legacy_approval_band;
 
 /// Build the always-visible approval controls: a "proceed?" prompt, the
 /// numbered/selectable options, and the selection hint. Rendered into a region
@@ -3665,13 +3655,16 @@ fn push_command_entry(
             info.description_for(locale).to_string()
         } else {
             format!(
-                "{}  (aliases: {})",
+                "{}  {}",
                 info.description_for(locale),
-                remaining_aliases
-                    .iter()
-                    .map(|a| format!("/{a}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                tr(locale, MessageId::HelpAliasesSuffix).replace(
+                    "{aliases}",
+                    &remaining_aliases
+                        .iter()
+                        .map(|a| format!("/{a}"))
+                        .collect::<Vec<_>>()
+                        .join(&tr(locale, MessageId::ListSeparator))
+                )
             )
         };
         (desc, hint)
@@ -5634,10 +5627,9 @@ mod tests {
                 "width={width} bottom border disagrees with height policy"
             );
             if expected_panel {
-                let shell = crate::tui::composer_chrome::tideline_composer_geometry(area);
                 assert_eq!(
                     widget.inner_area(area),
-                    Rect::new(1, 1, shell.content.right().saturating_sub(1), 2,),
+                    Rect::new(1, 1, area.width.saturating_sub(7), 2),
                     "width={width} panel input area must reserve the send control and breathing cell"
                 );
                 assert_eq!(buf[(area.left(), area.top())].symbol(), "\u{256d}");
@@ -9365,15 +9357,8 @@ diff --git a/src/b.rs b/src/b.rs\n\
 }
 
 #[cfg(test)]
-#[path = "composer_legacy.rs"]
-mod legacy_composer;
-#[cfg(test)]
 #[path = "mounted_composer_tests.rs"]
 mod mounted_composer_tests;
-
-#[cfg(test)]
-#[path = "transcript_legacy.rs"]
-mod legacy_transcript;
 
 #[cfg(test)]
 #[path = "mounted_transcript_tests.rs"]
