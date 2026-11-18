@@ -470,7 +470,75 @@ fn mirror_saved_key_markers(
 }
 
 #[derive(Clone, Default)]
-pub(super) struct ProviderConnect(Arc<parking_lot::Mutex<Option<ConnectAttempt>>>);
+pub(super) struct ProviderConnect(
+    Arc<parking_lot::Mutex<Option<ConnectAttempt>>>,
+    Arc<ClaudeOrgAvailability>,
+);
+
+#[derive(Default)]
+pub(super) struct ClaudeOrgAvailability {
+    cached: parking_lot::Mutex<Option<(bool, Instant)>>,
+    refreshing: std::sync::atomic::AtomicBool,
+}
+
+const CLAUDE_ORG_AVAILABILITY_TTL: Duration = Duration::from_secs(600);
+
+impl ProviderConnect {
+    pub(super) fn claude_org_available(&self) -> bool {
+        self.1.cached.lock().is_some_and(|(available, _)| available)
+    }
+
+    fn record_claude_org_availability(&self, available: Option<bool>) {
+        *self.1.cached.lock() = available.map(|available| (available, Instant::now()));
+    }
+}
+
+pub(super) fn refresh_claude_org_availability_if_stale(state: &RuntimeApiState) {
+    let availability = &state.provider_connect.1;
+    let fresh = availability
+        .cached
+        .lock()
+        .is_some_and(|(_, at)| at.elapsed() < CLAUDE_ORG_AVAILABILITY_TTL);
+    if fresh
+        || availability
+            .refreshing
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        return;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let state = state.clone();
+    drop(tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let observed = super::account::client(&state)
+            .ok()
+            .map(|client| client.claude_org_link_status());
+        let connect = &state.provider_connect;
+        match observed {
+            Some(Ok(link)) => connect.record_claude_org_availability(Some(link.available)),
+            Some(Err(error))
+                if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::Disabled =>
+            {
+                connect.record_claude_org_availability(Some(false));
+            }
+            Some(Err(error))
+                if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::NotSignedIn =>
+            {
+                connect.record_claude_org_availability(None);
+            }
+            _ => {
+                let previous = connect.claude_org_available();
+                connect.record_claude_org_availability(Some(previous));
+            }
+        }
+        connect
+            .1
+            .refreshing
+            .store(false, std::sync::atomic::Ordering::Release);
+    }));
+}
 
 struct ConnectAttempt {
     id: String,
@@ -614,37 +682,79 @@ fn claude_org_start_error(error: codewhale_account_cli::ClaudeOrgError) -> ApiEr
     }
 }
 
+fn claude_org_connect_target(
+    state: &RuntimeApiState,
+    id: &str,
+) -> Result<codewhale_runtime::config::ProviderIdentity, ApiError> {
+    let config = state.config.read();
+    if config.session_provider_keys_only {
+        return Err(ApiError::conflict(
+            "Browser sign-in is unavailable on an Engine that requires session-only keys",
+        ));
+    }
+    let identity = writable_provider(&config, id, ProviderKeyScope::Durable)?;
+    if config.provider_uses_custom_endpoint(&identity) {
+        return Err(ApiError::conflict(
+            "Claude organization billing works only on the official Anthropic endpoint.",
+        )
+        .with_code("custom_endpoint"));
+    }
+    Ok(identity)
+}
+
 async fn start_claude_org_connect(
     state: &RuntimeApiState,
-    identity: codewhale_runtime::config::ProviderIdentity,
+    id: &str,
 ) -> Result<Json<Value>, ApiError> {
+    let identity = claude_org_connect_target(state, id)?;
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let account_state = state.clone();
-    let authorize_url = tokio::task::spawn_blocking(move || {
+    let started_at = chrono::Utc::now();
+    let started = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let client = super::account::client(&account_state)?;
-        let status = client
-            .claude_org_link_status()
-            .map_err(claude_org_start_error)?;
+        let client = super::account::client(&account_state).map_err(|error| {
+            codewhale_account_cli::ClaudeOrgError::with_message(
+                codewhale_account_cli::ClaudeOrgErrorKind::Unavailable,
+                error.message,
+            )
+        })?;
+        let status = client.claude_org_link_status()?;
         if !status.available {
-            return Err(claude_org_start_error(
-                codewhale_account_cli::ClaudeOrgError::new(
-                    codewhale_account_cli::ClaudeOrgErrorKind::Disabled,
-                ),
+            return Err(codewhale_account_cli::ClaudeOrgError::new(
+                codewhale_account_cli::ClaudeOrgErrorKind::Disabled,
             ));
         }
         if status.linked {
             return Ok(None);
         }
-        client
-            .claude_org_start_link()
-            .map(Some)
-            .map_err(claude_org_start_error)
+        client.claude_org_start_link().map(Some)
     })
     .await
-    .map_err(|_| ApiError::internal("Claude organization connect could not start."))??;
+    .map_err(|_| ApiError::internal("Claude organization connect could not start."))?;
+    let authorize_url = match started {
+        Ok(url) => {
+            state
+                .provider_connect
+                .record_claude_org_availability(Some(true));
+            url
+        }
+        Err(error) => {
+            if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::Disabled {
+                state
+                    .provider_connect
+                    .record_claude_org_availability(Some(false));
+            }
+            return Err(claude_org_start_error(error));
+        }
+    };
+    let _credential_change = state.provider_switches.lock().await;
+    if claude_org_connect_target(state, id)? != identity {
+        return Err(ApiError::conflict(
+            "The Anthropic route changed while Claude organization connect was starting.",
+        ));
+    }
 
     let attempt_id = uuid::Uuid::new_v4().simple().to_string();
     let status = Arc::new(parking_lot::Mutex::new(ConnectStatus::Waiting));
@@ -657,8 +767,14 @@ async fn start_claude_org_connect(
             #[cfg(any(test, feature = "test-support"))]
             let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
             let sleep = |duration| std::thread::sleep(duration);
-            let finished =
-                run_claude_org_connect(&worker_state, &identity, deadline, &worker_status, &sleep);
+            let finished = run_claude_org_connect(
+                &worker_state,
+                &identity,
+                started_at,
+                deadline,
+                &worker_status,
+                &sleep,
+            );
             finish_connect_attempt(&worker_state, &worker_status, finished, "anthropic");
         })
         .map_err(|_| ApiError::internal("Claude organization connect could not start."))?;
@@ -673,6 +789,7 @@ async fn start_claude_org_connect(
 fn run_claude_org_connect(
     state: &RuntimeApiState,
     identity: &codewhale_runtime::config::ProviderIdentity,
+    started_at: chrono::DateTime<chrono::Utc>,
     deadline: Instant,
     status: &parking_lot::Mutex<ConnectStatus>,
     sleep: &dyn Fn(Duration),
@@ -688,9 +805,28 @@ fn run_claude_org_connect(
         }
         match client.claude_org_link_status() {
             Ok(link) if !link.available => {
+                state
+                    .provider_connect
+                    .record_claude_org_availability(Some(false));
                 return ConnectStatus::Failed("claude_billing_disabled");
             }
-            Ok(link) if link.linked => break,
+            Ok(link) if link.linked => {
+                state
+                    .provider_connect
+                    .record_claude_org_availability(Some(true));
+                break;
+            }
+            Ok(link) if link.failure_since(started_at).is_some() => {
+                return match link.failure_since(started_at) {
+                    Some(codewhale_account_cli::ClaudeOrgLinkFailure::Declined) => {
+                        ConnectStatus::Declined
+                    }
+                    Some(codewhale_account_cli::ClaudeOrgLinkFailure::AlreadyLinkedElsewhere) => {
+                        ConnectStatus::Failed("already_linked_elsewhere")
+                    }
+                    _ => ConnectStatus::Failed("link_failed"),
+                };
+            }
             Ok(_) => tolerated_error = false,
             Err(error)
                 if !tolerated_error
@@ -698,7 +834,14 @@ fn run_claude_org_connect(
             {
                 tolerated_error = true;
             }
-            Err(error) => return ConnectStatus::Failed(claude_org_reason(error.kind)),
+            Err(error) => {
+                if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::Disabled {
+                    state
+                        .provider_connect
+                        .record_claude_org_availability(Some(false));
+                }
+                return ConnectStatus::Failed(claude_org_reason(error.kind));
+            }
         }
         if Instant::now() >= deadline {
             return ConnectStatus::Expired;
@@ -731,21 +874,22 @@ fn run_claude_org_connect(
         {
             return ConnectStatus::Failed("not_writable");
         }
+        if config.provider_uses_custom_endpoint(identity) {
+            return ConnectStatus::Failed("custom_endpoint");
+        }
     }
     let Some(table) = identity.compatibility().map(|row| row.base_url_config_key) else {
         return ConnectStatus::Failed("config_not_saved");
     };
-    let saved =
-        codewhale_runtime::config_persistence::config_toml_path(state.config_path.as_deref())
-            .and_then(|path| {
-                codewhale_runtime::config_persistence::mutate_config_document(&path, |doc| {
-                    codewhale_runtime::config_persistence::set_document_value(
-                        doc,
-                        &["providers", table, "auth_mode"],
-                        codewhale_config::credentials::CLAUDE_ORG_AUTH_MODE,
-                    )
-                })
-            });
+    let saved = provider_settings_path(state.config_path.clone()).and_then(|path| {
+        codewhale_runtime::config_persistence::mutate_config_document(&path, |doc| {
+            codewhale_runtime::config_persistence::set_document_value(
+                doc,
+                &["providers", table, "auth_mode"],
+                codewhale_config::credentials::CLAUDE_ORG_AUTH_MODE,
+            )
+        })
+    });
     if saved.is_err() {
         return ConnectStatus::Failed("config_not_saved");
     }
@@ -761,27 +905,33 @@ fn run_claude_org_connect(
     ConnectStatus::Connected
 }
 
+fn provider_settings_path(
+    config_path: Option<std::path::PathBuf>,
+) -> anyhow::Result<std::path::PathBuf> {
+    let store = ConfigStore::load(config_path)?;
+    Ok(
+        match codewhale_config::credentials::credential_metadata_store(&store)? {
+            Some(global) => global.path().to_path_buf(),
+            None => store.path().to_path_buf(),
+        },
+    )
+}
+
 pub(super) async fn start_provider_connect(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let _credential_change = state.provider_switches.lock().await;
     let kind = connect_provider_kind(&id)?;
+    if kind == ProviderKind::Anthropic {
+        return start_claude_org_connect(&state, &id).await;
+    }
+    let _credential_change = state.provider_switches.lock().await;
     if state.config.read().session_provider_keys_only {
         return Err(ApiError::conflict(
             "Browser sign-in is unavailable on an Engine that requires session-only keys",
         ));
     }
     let identity = writable_provider(&state.config.read(), &id, ProviderKeyScope::Durable)?;
-    if kind == ProviderKind::Anthropic {
-        if state.config.read().provider_uses_custom_endpoint(&identity) {
-            return Err(ApiError::conflict(
-                "Claude organization billing works only on the official Anthropic endpoint.",
-            )
-            .with_code("custom_endpoint"));
-        }
-        return start_claude_org_connect(&state, identity).await;
-    }
     let endpoint = state.config.read().base_url_for_route(&identity);
     let target = (identity, endpoint);
     let (listeners, request, auth_base) = tokio::task::spawn_blocking(|| {
@@ -1158,8 +1308,15 @@ pub(super) async fn clear_provider_key(
             }
             (identity, scope)
         };
-        if identity.provider == ProviderKind::Orcarouter
-            && let Some(attempt) = state.provider_connect.0.lock().as_ref()
+        if matches!(
+            identity.provider,
+            ProviderKind::Orcarouter | ProviderKind::Anthropic
+        ) && let Some(attempt) = state
+            .provider_connect
+            .0
+            .lock()
+            .as_ref()
+            .filter(|attempt| attempt.provider == identity.provider)
         {
             attempt.cancel();
         }

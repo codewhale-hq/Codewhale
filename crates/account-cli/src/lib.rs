@@ -34,7 +34,9 @@ pub mod dispatch;
 pub mod machine;
 mod session;
 
-pub use claude_org::{ClaudeOrgError, ClaudeOrgErrorKind, ClaudeOrgLinkStatus, ClaudeOrgToken};
+pub use claude_org::{
+    ClaudeOrgError, ClaudeOrgErrorKind, ClaudeOrgLinkFailure, ClaudeOrgLinkStatus, ClaudeOrgToken,
+};
 pub use session::{
     AccountAuthLease, AccountClient, AccountLogin, AccountLoginCancellation, AccountLoginPoll,
     AccountLoginPrompt, AccountModel, AccountModels, AccountStatus, account_api_base,

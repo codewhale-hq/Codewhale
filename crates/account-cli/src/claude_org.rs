@@ -158,6 +158,44 @@ pub struct ClaudeOrgLinkStatus {
     pub available: bool,
     pub linked: bool,
     pub linked_at: Option<String>,
+    #[serde(default)]
+    last_link_failure: Option<LinkFailureWire>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct LinkFailureWire {
+    code: String,
+    at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaudeOrgLinkFailure {
+    Declined,
+    AlreadyLinkedElsewhere,
+    Failed,
+}
+
+const LINK_FAILURE_CLOCK_SKEW_SECS: i64 = 60;
+
+impl ClaudeOrgLinkStatus {
+    #[must_use]
+    pub fn failure_since(&self, started: DateTime<Utc>) -> Option<ClaudeOrgLinkFailure> {
+        if self.linked {
+            return None;
+        }
+        let failure = self.last_link_failure.as_ref()?;
+        let at = DateTime::parse_from_rfc3339(&failure.at)
+            .ok()?
+            .with_timezone(&Utc);
+        if at.timestamp() < started.timestamp() - LINK_FAILURE_CLOCK_SKEW_SECS {
+            return None;
+        }
+        Some(match failure.code.as_str() {
+            "declined" => ClaudeOrgLinkFailure::Declined,
+            "already_linked_elsewhere" => ClaudeOrgLinkFailure::AlreadyLinkedElsewhere,
+            _ => ClaudeOrgLinkFailure::Failed,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -380,6 +418,7 @@ pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
                 )?;
                 return Ok(());
             }
+            let started = Utc::now();
             let url = start_link(client, api_base)?;
             writeln!(out, "Link a Claude Platform organization")?;
             writeln!(out, "Open: {url}")?;
@@ -393,6 +432,20 @@ pub(crate) fn run_claude_org<T: CloudTransport, W: Write>(
                 sleeper(LINK_POLL_INTERVAL);
                 match link_status(client) {
                     Ok(status) if !status.available => return Err(unavailable()),
+                    Ok(status) if status.failure_since(started).is_some() => {
+                        return Err(match status.failure_since(started) {
+                            Some(ClaudeOrgLinkFailure::Declined) => anyhow!(
+                                "The Claude organization link was declined in the browser. Run `{CLAUDE_ORG_LINK_COMMAND}` to try again."
+                            ),
+                            Some(ClaudeOrgLinkFailure::AlreadyLinkedElsewhere) => {
+                                ClaudeOrgError::new(ClaudeOrgErrorKind::AlreadyLinkedElsewhere)
+                                    .into()
+                            }
+                            _ => anyhow!(
+                                "The Claude organization link failed. Run `{CLAUDE_ORG_LINK_COMMAND}` to try again."
+                            ),
+                        });
+                    }
                     Ok(status) if status.linked => {
                         writeln!(
                             out,

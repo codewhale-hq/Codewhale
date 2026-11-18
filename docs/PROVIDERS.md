@@ -1668,13 +1668,23 @@ asks the control plane for the start URL (validated exactly as the CLI does)
 and returns `{attemptId, authorizeUrl, expiresIn: 600}`; `authorizeUrl` is
 `null` when the account is already linked. The app server never opens a
 browser. A worker polls the link every 3 seconds; once it is linked it writes
-`auth_mode = "claude-org"` under `[providers.anthropic]` and updates the
-running config. `GET /v1/providers/anthropic/connect/{attemptId}` reports
+`auth_mode = "claude-org"` under `[providers.anthropic]` in the same file that
+saved API-key markers go to (the user-global config when the app server runs
+on a workspace-scoped config) and updates the running config. `GET /v1/providers/anthropic/connect/{attemptId}` reports
 `waiting`, `connected`, `expired` (10 minutes passed), `cancelled` or `failed`
 with a `reason`: `not_signed_in`, `claude_billing_disabled`,
 `already_linked_elsewhere`, `unavailable`, `invalid_response`,
-`not_writable` or `config_not_saved`. A start that fails returns the same
-reason as `error.code`. Saving an Anthropic API key through
+`not_writable`, `config_not_saved`, `custom_endpoint` or `link_failed`; it
+ends `declined` when the control plane reports the browser link was declined
+(`lastLinkFailure`), and `already_linked_elsewhere` or `link_failed` for its
+other failure codes. A start that fails returns the same reason as
+`error.code`. The provider row offers `browserConnect` for anthropic only
+while the account's last `GET /api/claude-billing` said `available: true`.
+The app server refreshes that in the background at most every 10 minutes when
+`GET /v1/providers` finds it stale, and a connect attempt that sees billing
+disabled turns it off. Known limit: right after start, or with no Codewhale
+session, the first provider list shows no option until that probe returns.
+Clearing the Anthropic key cancels a waiting attempt. Saving an Anthropic API key through
 `PUT /v1/providers/anthropic/key` replaces `claude-org` with `api_key`, so the
 pasted key is the one used.
 

@@ -29545,3 +29545,246 @@ async fn saving_an_anthropic_key_switches_off_claude_org() -> Result<()> {
     handle.abort();
     Ok(())
 }
+
+fn seed_claude_org_session(control_base: &str) -> Result<()> {
+    codewhale_secrets::account::AccountSessionStore::new(
+        codewhale_secrets::account::secure_account_session_secrets()?,
+        None,
+        control_base,
+    )
+    .save(codewhale_secrets::account::AccountAuthBundle {
+        token_type: "Bearer".into(),
+        access_token: "fixture-codewhale-access".into(),
+        refresh_token: "fixture-codewhale-refresh".into(),
+        session: Some(codewhale_secrets::account::AccountSession {
+            id: "fixture-session".into(),
+            status: "active".into(),
+            expires_at: (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            refresh_expires_at: (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+            ..Default::default()
+        }),
+        user: Some(codewhale_secrets::account::AccountUser {
+            id: "fixture-user".into(),
+            ..Default::default()
+        }),
+    })?;
+    Ok(())
+}
+
+async fn mount_claude_org_status(control: &wiremock::MockServer, body: Value, times: Option<u64>) {
+    use wiremock::matchers::{method, path};
+    let mock = wiremock::Mock::given(method("GET"))
+        .and(path("/api/claude-billing"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body));
+    match times {
+        Some(times) => mock.up_to_n_times(times).mount(control).await,
+        None => mock.mount(control).await,
+    }
+}
+
+async fn mount_claude_org_link(control: &wiremock::MockServer) -> String {
+    use wiremock::matchers::{method, path};
+    let start_url = format!("{}/api/claude-billing/start?ticket=t1", control.uri());
+    wiremock::Mock::given(method("POST"))
+        .and(path("/api/claude-billing/link"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+            json!({"authorizationUrl": start_url, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ))
+        .mount(control)
+        .await;
+    start_url
+}
+
+async fn start_anthropic_connect(client: &reqwest::Client, base: &str) -> Result<Value> {
+    Ok(client
+        .post(format!("{base}/v1/providers/anthropic/connect"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+async fn anthropic_connect_receipt(
+    client: &reqwest::Client,
+    base: &str,
+    attempt: &str,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let receipt: Value = client
+            .get(format!("{base}/v1/providers/anthropic/connect/{attempt}"))
+            .bearer_auth("keys-token")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if receipt["status"] != "waiting" || tokio::time::Instant::now() >= deadline {
+            return Ok(receipt);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn unlinked() -> Value {
+    json!({"available": true, "linked": false, "linkedAt": null})
+}
+
+#[tokio::test]
+async fn anthropic_connect_already_linked_writes_the_provider_settings_file() -> Result<()> {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let control = wiremock::MockServer::start().await;
+    let _env = claude_org_test_env(&tmp, &control.uri())?;
+    seed_claude_org_session(&control.uri())?;
+    mount_claude_org_status(
+        &control,
+        json!({"available": true, "linked": true, "linkedAt": "2026-11-18T00:00:00Z"}),
+        None,
+    )
+    .await;
+    let workspace_config_dir = tmp.path().join("ws/.codewhale");
+    fs::create_dir_all(&workspace_config_dir)?;
+    fs::create_dir_all(tmp.path().join("ws/.git"))?;
+    let config_path = workspace_config_dir.join("config.toml");
+    fs::write(&config_path, "provider = \"deepseek\"\n")?;
+    let global_path = tmp.path().join("cwhome/config.toml");
+    let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config.clone()).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let started = start_anthropic_connect(&client, &base).await?;
+    assert!(started["authorizeUrl"].is_null(), "{started}");
+    let attempt = started["attemptId"]
+        .as_str()
+        .context("attempt id")?
+        .to_string();
+    let receipt = anthropic_connect_receipt(&client, &base, &attempt).await?;
+    assert_eq!(
+        receipt,
+        json!({"attemptId": attempt, "status": "connected"})
+    );
+    let global = codewhale_config::ConfigStore::load(Some(global_path.clone()))?;
+    assert_eq!(
+        global.config.providers.anthropic.auth_mode.as_deref(),
+        Some("claude-org")
+    );
+    let workspace = codewhale_config::ConfigStore::load(Some(config_path.clone()))?;
+    assert_eq!(workspace.config.providers.anthropic.auth_mode, None);
+
+    client
+        .put(format!("{base}/v1/providers/anthropic/key"))
+        .bearer_auth("keys-token")
+        .json(&json!({ "key": "sk-ant-test-same-file" }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let global = codewhale_config::ConfigStore::load(Some(global_path))?;
+    assert_eq!(
+        global.config.providers.anthropic.auth_mode.as_deref(),
+        Some("api_key")
+    );
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_connect_cancel_and_key_clear_stop_a_waiting_attempt() -> Result<()> {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let control = wiremock::MockServer::start().await;
+    let _env = claude_org_test_env(&tmp, &control.uri())?;
+    seed_claude_org_session(&control.uri())?;
+    mount_claude_org_status(&control, unlinked(), None).await;
+    mount_claude_org_link(&control).await;
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "provider = \"deepseek\"\n")?;
+    let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config.clone()).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let first = start_anthropic_connect(&client, &base).await?;
+    let first_id = first["attemptId"]
+        .as_str()
+        .context("attempt id")?
+        .to_string();
+    let cancelled: Value = client
+        .delete(format!("{base}/v1/providers/anthropic/connect/{first_id}"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(cancelled["status"], "cancelled");
+
+    let second = start_anthropic_connect(&client, &base).await?;
+    let second_id = second["attemptId"]
+        .as_str()
+        .context("attempt id")?
+        .to_string();
+    client
+        .delete(format!("{base}/v1/providers/anthropic/key"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?;
+    let receipt = anthropic_connect_receipt(&client, &base, &second_id).await?;
+    assert_eq!(receipt["status"], "cancelled");
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let saved = codewhale_config::ConfigStore::load(Some(config_path))?;
+    assert_eq!(saved.config.providers.anthropic.auth_mode, None);
+    let live = live_config.read();
+    assert_eq!(
+        live.provider_config_for(&live.test_identity_for_kind(ProviderKind::Anthropic))
+            .and_then(|entry| entry.auth_mode.as_deref()),
+        None
+    );
+    drop(live);
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn anthropic_connect_reports_a_declined_link() -> Result<()> {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let control = wiremock::MockServer::start().await;
+    let _env = claude_org_test_env(&tmp, &control.uri())?;
+    seed_claude_org_session(&control.uri())?;
+    mount_claude_org_status(&control, unlinked(), Some(1)).await;
+    mount_claude_org_status(
+        &control,
+        json!({
+            "available": true,
+            "linked": false,
+            "linkedAt": null,
+            "lastLinkFailure": {"code": "declined", "at": chrono::Utc::now().to_rfc3339()}
+        }),
+        None,
+    )
+    .await;
+    mount_claude_org_link(&control).await;
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "provider = \"deepseek\"\n")?;
+    let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let started = start_anthropic_connect(&client, &base).await?;
+    let attempt = started["attemptId"]
+        .as_str()
+        .context("attempt id")?
+        .to_string();
+    let receipt = anthropic_connect_receipt(&client, &base, &attempt).await?;
+    assert_eq!(receipt, json!({"attemptId": attempt, "status": "declined"}));
+    let saved = codewhale_config::ConfigStore::load(Some(config_path))?;
+    assert_eq!(saved.config.providers.anthropic.auth_mode, None);
+    handle.abort();
+    Ok(())
+}
