@@ -1717,7 +1717,7 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     ))
 }
 
-/// Load a context file with size checking and no links below its scope root.
+/// Load a context file with size checking; links must resolve inside its scope root.
 fn load_context_file(root: &Path, path: &Path) -> Result<String, ProjectContextError> {
     load_context_file_limited(root, path, DEFAULT_FILE_MAX_BYTES)
 }
@@ -1727,12 +1727,13 @@ fn load_context_file_limited(
     path: &Path,
     cap: u64,
 ) -> Result<String, ProjectContextError> {
-    let file = codewhale_util::fs_confined::open_read(root, path).map_err(|source| {
-        ProjectContextError::Read {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
+    let file =
+        codewhale_util::fs_confined::open_read_linked_within(root, path).map_err(|source| {
+            ProjectContextError::Read {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
     read_context_file(file, path, cap)
 }
 
@@ -2613,6 +2614,28 @@ mod tests {
             "expected symlink warning, got {:?}",
             ctx.warnings
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_context_follows_agents_md_linked_within_the_workspace() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let operator = workspace.path().join("ops/operator");
+        fs::create_dir_all(&operator).expect("mkdir operator");
+        fs::write(operator.join("AGENTS.md"), "Shared operator rules").expect("write agents");
+        std::os::unix::fs::symlink("ops/operator/AGENTS.md", workspace.path().join("AGENTS.md"))
+            .expect("symlink agents");
+
+        let ctx = load_project_context(workspace.path());
+
+        assert!(
+            ctx.instructions
+                .as_deref()
+                .is_some_and(|text| text.contains("Shared operator rules")),
+            "an in-workspace AGENTS.md link must load: {:?}",
+            ctx.warnings
+        );
+        assert!(ctx.warnings.is_empty(), "{:?}", ctx.warnings);
     }
 
     #[test]
