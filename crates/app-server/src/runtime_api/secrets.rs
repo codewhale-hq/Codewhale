@@ -491,6 +491,20 @@ impl ProviderConnect {
     fn record_claude_org_availability(&self, available: Option<bool>) {
         *self.1.cached.lock() = available.map(|available| (available, Instant::now()));
     }
+
+    pub(super) fn forget_claude_org_availability(&self) {
+        self.record_claude_org_availability(None);
+    }
+}
+
+struct AvailabilityRefresh(Arc<ClaudeOrgAvailability>);
+
+impl Drop for AvailabilityRefresh {
+    fn drop(&mut self) {
+        self.0
+            .refreshing
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 pub(super) fn refresh_claude_org_availability_if_stale(state: &RuntimeApiState) {
@@ -509,7 +523,9 @@ pub(super) fn refresh_claude_org_availability_if_stale(state: &RuntimeApiState) 
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let state = state.clone();
+    let refresh = AvailabilityRefresh(Arc::clone(availability));
     drop(tokio::task::spawn_blocking(move || {
+        let _refresh = refresh;
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let observed = super::account::client(&state)
@@ -518,25 +534,21 @@ pub(super) fn refresh_claude_org_availability_if_stale(state: &RuntimeApiState) 
         let connect = &state.provider_connect;
         match observed {
             Some(Ok(link)) => connect.record_claude_org_availability(Some(link.available)),
+            None => connect.record_claude_org_availability(Some(false)),
             Some(Err(error))
-                if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::Disabled =>
+                if matches!(
+                    error.kind,
+                    codewhale_account_cli::ClaudeOrgErrorKind::Disabled
+                        | codewhale_account_cli::ClaudeOrgErrorKind::NotSignedIn
+                ) =>
             {
                 connect.record_claude_org_availability(Some(false));
             }
-            Some(Err(error))
-                if error.kind == codewhale_account_cli::ClaudeOrgErrorKind::NotSignedIn =>
-            {
-                connect.record_claude_org_availability(None);
-            }
-            _ => {
+            Some(Err(_)) => {
                 let previous = connect.claude_org_available();
                 connect.record_claude_org_availability(Some(previous));
             }
         }
-        connect
-            .1
-            .refreshing
-            .store(false, std::sync::atomic::Ordering::Release);
     }));
 }
 

@@ -29750,6 +29750,71 @@ async fn anthropic_connect_cancel_and_key_clear_stop_a_waiting_attempt() -> Resu
 }
 
 #[tokio::test]
+async fn anthropic_browser_connect_follows_control_plane_availability() -> Result<()> {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let control = wiremock::MockServer::start().await;
+    let _env = claude_org_test_env(&tmp, &control.uri())?;
+    seed_claude_org_session(&control.uri())?;
+    mount_claude_org_status(&control, unlinked(), None).await;
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "provider = \"deepseek\"\n")?;
+    let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+    let anthropic_offers_connect = || async {
+        let providers: Value = client
+            .get(format!("{base}/v1/providers"))
+            .bearer_auth("keys-token")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let offered = providers["providers"]
+            .as_array()
+            .context("providers")?
+            .iter()
+            .find(|entry| entry["id"] == "anthropic")
+            .context("anthropic row")?["browserConnect"]
+            == true;
+        anyhow::Ok(offered)
+    };
+
+    assert!(!anthropic_offers_connect().await?);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !anthropic_offers_connect().await? {
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "availability probe never landed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let probes = control
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/claude-billing")
+        .count();
+    for _ in 0..5 {
+        assert!(anthropic_offers_connect().await?);
+    }
+    let after = control
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|request| request.url.path() == "/api/claude-billing")
+        .count();
+    assert_eq!(probes, 1);
+    assert_eq!(after, probes);
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn anthropic_connect_reports_a_declined_link() -> Result<()> {
     let _env_lock = lock_test_env();
     let tmp = tempfile::tempdir()?;

@@ -187,6 +187,7 @@ async fn import(
             import_allowed: false,
         });
         status["committedRevision"] = json!(revision);
+        state.provider_connect.forget_claude_org_availability();
         Ok(status)
     })
     .await
@@ -208,6 +209,7 @@ async fn claim(
                 "The Codewhale account changed; try again",
             ));
         }
+        state.provider_connect.forget_claude_org_availability();
         Ok(status)
     })
     .await
@@ -272,6 +274,7 @@ async fn logout(
                 access.take();
             }
         }
+        state.provider_connect.forget_claude_org_availability();
         let mut status = read_status(&client)?;
         status["remoteRevoked"] = json!(revoked);
         Ok(status)
