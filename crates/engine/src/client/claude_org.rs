@@ -356,6 +356,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_org_token_is_refused_for_an_origin_it_was_not_bound_to() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&fetches);
+        let auth = ClaudeOrgAuth::with_source(
+            Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(ClaudeOrgToken {
+                    access_token: "org-token-bound".to_string(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                    base_url: "https://api.anthropic.com".to_string(),
+                    anthropic_version: "2026-10-21".to_string(),
+                    user_profile_id: None,
+                })
+            }),
+            None,
+        );
+        let http = crate::platform_client_builder()
+            .build()
+            .expect("http client");
+        for destination in [
+            "https://api.anthropic.com.evil.example/v1/messages",
+            "http://api.anthropic.com/v1/messages",
+            "https://api.anthropic.com:8443/v1/messages",
+        ] {
+            let error = auth
+                .authorize(http.post(destination), None)
+                .await
+                .expect_err("token must not leave its bound origin");
+            assert!(
+                error.to_string().contains("Refusing to send"),
+                "{destination}: {error}"
+            );
+        }
+        let (allowed, _) = auth
+            .authorize(http.post("https://api.anthropic.com/v1/messages"), None)
+            .await
+            .expect("bound origin is allowed");
+        let built = allowed.build().expect("request builds");
+        assert_eq!(
+            built
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer org-token-bound")
+        );
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn claude_org_spend_cap_is_reported_and_not_retried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

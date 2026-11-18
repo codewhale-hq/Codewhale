@@ -4969,7 +4969,7 @@ impl CodewhaleClient {
                     .map_err(|error| {
                         error
                             .downcast::<LlmError>()
-                            .unwrap_or_else(|error| LlmError::Other(error.to_string()))
+                            .unwrap_or_else(|error| LlmError::Other(format!("{error:#}")))
                     })?,
                 None,
             ),
