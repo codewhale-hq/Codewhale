@@ -4583,6 +4583,24 @@ mod tests {
     }
 
     #[test]
+    fn composer_border_holds_still_while_the_transcript_is_scrolled_away() {
+        let mut app = create_test_app();
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll = codewhale_tui_kit::scrolling::TranscriptScroll::at_line(0);
+        assert!(!crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll =
+            codewhale_tui_kit::scrolling::TranscriptScroll::to_bottom();
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
+    }
+
+    #[test]
     fn activity_sweep_real_renders_whale_and_remapped_themes() {
         let exec = HistoryCell::Tool(ToolCell::Exec(ExecCell {
             command: "cargo test -p codewhale-tui".to_string(),
