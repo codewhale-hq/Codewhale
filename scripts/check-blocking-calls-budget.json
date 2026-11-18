@@ -414,8 +414,8 @@
     "std_fs": 3
   },
   "crates/sandbox/src/lib.rs": {
-    "path_canonicalize": 1,
-    "std_fs": 3
+    "path_canonicalize": 3,
+    "std_fs": 9
   },
   "crates/sandbox/src/policy.rs": {
     "path_canonicalize": 8
