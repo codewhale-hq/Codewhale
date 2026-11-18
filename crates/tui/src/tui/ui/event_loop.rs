@@ -3943,10 +3943,14 @@ pub(crate) async fn run_event_loop(
                                 "Engine session snapshot was unavailable; checkpoint retained"
                                     .to_string()
                             });
-                            tracing::warn!(%error, "terminal session save skipped; checkpoint retained");
+                            tracing::warn!(
+                                ?terminal_source,
+                                %error,
+                                "terminal session save skipped; checkpoint retained"
+                            );
                             if let Some(session_id) = session_id.as_deref() {
                                 crate::tui::persistence_actor::record_skipped_session_save(
-                                    session_id,
+                                    session_id, &error,
                                 );
                             }
                             surface_session_save_failure(app, session_id.as_deref(), &error);

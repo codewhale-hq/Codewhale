@@ -276,8 +276,8 @@ impl PersistActorHandle {
         self.tx.health.reading()
     }
 
-    pub(crate) fn record_skipped_session_save(&self, session_id: &str) {
-        self.tx.health.record_skipped(session_id);
+    pub(crate) fn record_skipped_session_save(&self, session_id: &str, reason: &str) {
+        self.tx.health.record_skipped(session_id, reason);
     }
 
     /// Queue a persistence request without blocking. The request is
@@ -505,9 +505,9 @@ pub(crate) fn session_save_health() -> Option<SaveHealthReading> {
     ACTOR_TX.get().map(PersistActorHandle::session_save_health)
 }
 
-pub(crate) fn record_skipped_session_save(session_id: &str) {
+pub(crate) fn record_skipped_session_save(session_id: &str, reason: &str) {
     if let Some(handle) = ACTOR_TX.get() {
-        handle.record_skipped_session_save(session_id);
+        handle.record_skipped_session_save(session_id, reason);
     }
 }
 
@@ -952,11 +952,26 @@ fn flush_inner(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionSaveHealth(Arc<std::sync::Mutex<SaveHealthState>>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SaveHealthFailure {
+    Io(std::io::ErrorKind),
+    Skipped(String),
+}
+
+impl std::fmt::Display for SaveHealthFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(kind) => kind.fmt(f),
+            Self::Skipped(reason) => f.write_str(reason),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SaveHealthState {
     /// Bumped whenever `failing` changes, so a poller can tell what is new.
     generation: u64,
-    failing: BTreeMap<String, std::io::ErrorKind>,
+    failing: BTreeMap<String, SaveHealthFailure>,
 }
 
 /// One reading of [`SessionSaveHealth`].
@@ -964,13 +979,23 @@ struct SaveHealthState {
 pub(crate) struct SaveHealthReading {
     pub(crate) generation: u64,
     /// A session whose latest save failed, and how, while any has.
-    pub(crate) failing: Option<(String, std::io::ErrorKind)>,
+    pub(crate) failing: Option<(String, SaveHealthFailure)>,
 }
 
 impl SessionSaveHealth {
-    fn record_skipped(&self, session_id: &str) {
-        let skipped: std::io::Result<()> = Err(std::io::Error::other("session snapshot skipped"));
-        self.record(session_id, &skipped);
+    fn record_skipped(&self, session_id: &str, reason: &str) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let failure = SaveHealthFailure::Skipped(reason.to_string());
+        if state
+            .failing
+            .insert(session_id.to_string(), failure.clone())
+            != Some(failure)
+        {
+            state.generation += 1;
+        }
     }
 
     fn record<T>(&self, session_id: &str, result: &std::io::Result<T>) {
@@ -981,7 +1006,11 @@ impl SessionSaveHealth {
         let changed = match result {
             Ok(_) => state.failing.remove(session_id).is_some(),
             Err(error) => {
-                state.failing.insert(session_id.to_string(), error.kind()) != Some(error.kind())
+                let failure = SaveHealthFailure::Io(error.kind());
+                state
+                    .failing
+                    .insert(session_id.to_string(), failure.clone())
+                    != Some(failure)
             }
         };
         if changed {
@@ -1000,7 +1029,7 @@ impl SessionSaveHealth {
                 .failing
                 .iter()
                 .next()
-                .map(|(id, kind)| (id.clone(), *kind)),
+                .map(|(id, failure)| (id.clone(), failure.clone())),
         }
     }
 }
@@ -1488,13 +1517,19 @@ mod tests {
         app.status_toasts.clear();
         let mut seen = 0;
 
-        handle.record_skipped_session_save(&session_id);
+        let reason = "Engine session snapshot timed out after 2000 ms";
+        handle.record_skipped_session_save(&session_id, reason);
         crate::tui::ui::surface_session_save_health(
             &mut app,
             Some(handle.session_save_health()),
             &mut seen,
         );
         assert_eq!(app.status_toasts.len(), 1, "the skipped save is surfaced");
+        assert!(
+            app.status_toasts[0].text.contains(reason),
+            "{:?}",
+            app.status_toasts
+        );
 
         handle.try_send(PersistRequest::CompletedCommit { session });
         let (reply, receiver) = tokio::sync::oneshot::channel();

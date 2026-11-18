@@ -34052,14 +34052,14 @@ fn a_resize_burst_keeps_following_input_in_order() {
 /// is withdrawn once a later save of that session lands.
 #[test]
 fn a_failing_session_save_shows_an_error_until_a_save_lands() {
-    use crate::tui::persistence_actor::SaveHealthReading;
+    use crate::tui::persistence_actor::{SaveHealthFailure, SaveHealthReading};
     let mut app = create_test_app();
     let mut seen = 0;
     let failing = SaveHealthReading {
         generation: 1,
         failing: Some((
             "toast-probe".to_string(),
-            std::io::ErrorKind::PermissionDenied,
+            SaveHealthFailure::Io(std::io::ErrorKind::PermissionDenied),
         )),
     };
     let save_errors = |app: &App| {
@@ -34111,7 +34111,7 @@ fn a_failing_session_save_shows_an_error_until_a_save_lands() {
 
 #[test]
 fn shutdown_reports_only_a_save_that_is_still_failing() {
-    use crate::tui::persistence_actor::SaveHealthReading;
+    use crate::tui::persistence_actor::{SaveHealthFailure, SaveHealthReading};
     let locale = codewhale_localization::Locale::En;
     let healthy = SaveHealthReading {
         generation: 4,
@@ -34124,7 +34124,10 @@ fn shutdown_reports_only_a_save_that_is_still_failing() {
     );
     let failing = SaveHealthReading {
         generation: 5,
-        failing: Some(("session-a".to_string(), std::io::ErrorKind::StorageFull)),
+        failing: Some((
+            "session-a".to_string(),
+            SaveHealthFailure::Io(std::io::ErrorKind::StorageFull),
+        )),
     };
     let notice = super::event_loop::shutdown_persistence_notice(locale, &failing)
         .expect("a failing save produces an exit notice");
