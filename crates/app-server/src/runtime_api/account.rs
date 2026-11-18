@@ -35,7 +35,7 @@ async fn no_store(request: axum::extract::Request, next: Next) -> Response {
     response
 }
 
-fn client(state: &RuntimeApiState) -> Result<AccountClient, ApiError> {
+pub(super) fn client(state: &RuntimeApiState) -> Result<AccountClient, ApiError> {
     AccountClient::new(
         state.config_profile.as_deref(),
         Some(&codewhale_engine::profile_constitution::runtime_account_api_base()),

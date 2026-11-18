@@ -1662,6 +1662,22 @@ organization directly for the requests Codewhale sends with it.
 auth_mode = "claude-org"
 ```
 
+The desktop does the same through the app server's browser-connect routes, the
+ones OrcaRouter uses. `POST /v1/providers/anthropic/connect` checks the link,
+asks the control plane for the start URL (validated exactly as the CLI does)
+and returns `{attemptId, authorizeUrl, expiresIn: 600}`; `authorizeUrl` is
+`null` when the account is already linked. The app server never opens a
+browser. A worker polls the link every 3 seconds; once it is linked it writes
+`auth_mode = "claude-org"` under `[providers.anthropic]` and updates the
+running config. `GET /v1/providers/anthropic/connect/{attemptId}` reports
+`waiting`, `connected`, `expired` (10 minutes passed), `cancelled` or `failed`
+with a `reason`: `not_signed_in`, `claude_billing_disabled`,
+`already_linked_elsewhere`, `unavailable`, `invalid_response`,
+`not_writable` or `config_not_saved`. A start that fails returns the same
+reason as `error.code`. Saving an Anthropic API key through
+`PUT /v1/providers/anthropic/key` replaces `claude-org` with `api_key`, so the
+pasted key is the one used.
+
 In this mode each request fetches a short-lived connection token from the
 Codewhale control plane (`POST /api/claude-billing/token`, authenticated with
 your Codewhale session) and sends it to `https://api.anthropic.com` as

@@ -13726,7 +13726,9 @@ fn provider_entry_for_api(
         credential_source: writeability.source,
         credential_writable: writeability.writable,
         credential_writable_reason: writeability.reason,
-        browser_connect: identity.provider == ProviderKind::Orcarouter
+        browser_connect: (identity.provider == ProviderKind::Orcarouter
+            || (identity.provider == ProviderKind::Anthropic
+                && !config.provider_uses_custom_endpoint(identity)))
             && writeability.writable
             && !config.session_provider_keys_only,
         last_check: last_check.map(ProviderLastCheck::from),

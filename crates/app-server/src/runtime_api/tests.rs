@@ -29316,3 +29316,232 @@ async fn permission_rules_routes_list_remove_and_save_workspace_rules_for_owners
     handle.abort();
     Ok(())
 }
+
+fn claude_org_test_env(
+    tmp: &tempfile::TempDir,
+    control_base: &str,
+) -> Result<Vec<codewhale_engine::test_support::EnvVarGuard>> {
+    let guards = vec![
+        EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("cwhome")),
+        EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file"),
+        EnvVarGuard::set("CODEWHALE_CLOUD_API_BASE", control_base),
+        EnvVarGuard::remove("ANTHROPIC_API_KEY"),
+        EnvVarGuard::remove("CODEWHALE_CLI_API_KEY"),
+    ];
+    fs::create_dir_all(tmp.path().join("cwhome"))?;
+    fs::create_dir_all(tmp.path().join("workspace"))?;
+    Ok(guards)
+}
+
+async fn spawn_claude_org_server(
+    tmp: &tempfile::TempDir,
+    config_path: &Path,
+    live_config: Arc<parking_lot::RwLock<Config>>,
+) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let (addr, _runtime_threads, handle) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            tmp.path().join("runtime"),
+            tmp.path().join("sessions"),
+            Some("keys-token".to_string()),
+            false,
+            tmp.path().join("workspace"),
+            TestServerOverrides {
+                config_path: Some(config_path.to_path_buf()),
+                config_handle: Some(live_config),
+                ..TestServerOverrides::default()
+            },
+        )
+        .await?
+        .context("claude-org connect test requires a loopback listener")?;
+    Ok((addr, handle))
+}
+
+#[tokio::test]
+async fn anthropic_browser_connect_links_the_claude_org_and_selects_it() -> Result<()> {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let control = MockServer::start().await;
+    let _env = claude_org_test_env(&tmp, &control.uri())?;
+    codewhale_secrets::account::AccountSessionStore::new(
+        codewhale_secrets::account::secure_account_session_secrets()?,
+        None,
+        &control.uri(),
+    )
+    .save(codewhale_secrets::account::AccountAuthBundle {
+        token_type: "Bearer".into(),
+        access_token: "fixture-codewhale-access".into(),
+        refresh_token: "fixture-codewhale-refresh".into(),
+        session: Some(codewhale_secrets::account::AccountSession {
+            id: "fixture-session".into(),
+            status: "active".into(),
+            expires_at: (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            refresh_expires_at: (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+            ..Default::default()
+        }),
+        user: Some(codewhale_secrets::account::AccountUser {
+            id: "fixture-user".into(),
+            ..Default::default()
+        }),
+    })?;
+    let start_url = format!("{}/api/claude-billing/start?ticket=t1", control.uri());
+    Mock::given(method("GET"))
+        .and(path("/api/claude-billing"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"available": true, "linked": false, "linkedAt": null})),
+        )
+        .up_to_n_times(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/claude-billing/link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"authorizationUrl": start_url, "expiresAt": "2030-01-01T00:00:00Z"}),
+        ))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/claude-billing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"available": true, "linked": true, "linkedAt": "2026-11-18T00:00:00Z"}),
+        ))
+        .mount(&control)
+        .await;
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "provider = \"deepseek\"\n")?;
+    let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config.clone()).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let started: Value = client
+        .post(format!("{base}/v1/providers/anthropic/connect"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(started["authorizeUrl"], start_url);
+    assert_eq!(started["expiresIn"], 600);
+    let attempt = started["attemptId"]
+        .as_str()
+        .context("attempt id")?
+        .to_string();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let receipt = loop {
+        let receipt: Value = client
+            .get(format!("{base}/v1/providers/anthropic/connect/{attempt}"))
+            .bearer_auth("keys-token")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if receipt["status"] != "waiting" || tokio::time::Instant::now() >= deadline {
+            break receipt;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        receipt,
+        json!({"attemptId": attempt, "status": "connected"})
+    );
+    let orcarouter_view = client
+        .get(format!("{base}/v1/providers/orcarouter/connect/{attempt}"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?;
+    assert_eq!(orcarouter_view.status(), StatusCode::NOT_FOUND);
+
+    let saved = codewhale_config::ConfigStore::load(Some(config_path.clone()))?;
+    assert_eq!(
+        saved.config.providers.anthropic.auth_mode.as_deref(),
+        Some("claude-org")
+    );
+    {
+        let live = live_config.read();
+        assert_eq!(
+            live.provider_config_for(&live.test_identity_for_kind(ProviderKind::Anthropic))
+                .and_then(|entry| entry.auth_mode.as_deref()),
+            Some("claude-org")
+        );
+    }
+    let providers: Value = client
+        .get(format!("{base}/v1/providers"))
+        .bearer_auth("keys-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let anthropic = providers["providers"]
+        .as_array()
+        .context("providers")?
+        .iter()
+        .find(|entry| entry["id"] == "anthropic")
+        .context("anthropic row")?;
+    assert_eq!(anthropic["credentialState"], "configured");
+    assert_eq!(anthropic["browserConnect"], true);
+    assert!(!providers.to_string().contains("fixture-codewhale-access"));
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn saving_an_anthropic_key_switches_off_claude_org() -> Result<()> {
+    let _env_lock = lock_test_env();
+    let tmp = tempfile::tempdir()?;
+    let _env = claude_org_test_env(&tmp, "https://api.codewhale.net")?;
+    let config_path = tmp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        "provider = \"anthropic\"\n[providers.anthropic]\nauth_mode = \"claude-org\"\n",
+    )?;
+    let mut initial = Config::default();
+    initial.provider = Some("anthropic".to_string());
+    initial
+        .provider_config_for_mut(&initial.test_identity_for_kind(ProviderKind::Anthropic))?
+        .auth_mode = Some("claude-org".to_string());
+    let live_config = Arc::new(parking_lot::RwLock::new(initial));
+    let (addr, handle) = spawn_claude_org_server(&tmp, &config_path, live_config.clone()).await?;
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}");
+
+    let receipt: Value = client
+        .put(format!("{base}/v1/providers/anthropic/key"))
+        .bearer_auth("keys-token")
+        .json(&json!({ "key": "sk-ant-test-switch-back" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(receipt["credentialState"], "configured");
+    assert!(!receipt.to_string().contains("sk-ant-test-switch-back"));
+    let saved = codewhale_config::ConfigStore::load(Some(config_path.clone()))?;
+    assert_eq!(
+        saved.config.providers.anthropic.auth_mode.as_deref(),
+        Some("api_key")
+    );
+    {
+        let live = live_config.read();
+        let identity = live.test_identity_for_kind(ProviderKind::Anthropic);
+        assert_eq!(
+            live.provider_config_for(&identity)
+                .and_then(|entry| entry.auth_mode.as_deref()),
+            Some("api_key")
+        );
+        assert_eq!(
+            live.active_route_api_key_read_only()?,
+            "sk-ant-test-switch-back"
+        );
+    }
+    handle.abort();
+    Ok(())
+}

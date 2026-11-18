@@ -5036,6 +5036,11 @@ fn claude_org_token_contract_parses_and_maps_errors() {
         ),
         (401, "unauthorized", ClaudeOrgErrorKind::NotSignedIn),
         (503, "claude_refresh_busy", ClaudeOrgErrorKind::Unavailable),
+        (
+            409,
+            "claude_already_linked",
+            ClaudeOrgErrorKind::AlreadyLinkedElsewhere,
+        ),
     ] {
         let error = claude_org_token_from_response(&response(
             status,

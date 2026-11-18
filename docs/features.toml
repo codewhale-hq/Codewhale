@@ -794,7 +794,7 @@ id = "claude-org-billing"
 name = "Claude organization billing"
 summary = "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\"."
 status = "experimental"
-surfaces = { tui = "preview" }
+surfaces = { tui = "preview", api = "preview" }
 docs = "docs/PROVIDERS.md"
 owner = "crates/account-cli/src/claude_org.rs"
 

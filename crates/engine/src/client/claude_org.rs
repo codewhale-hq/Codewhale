@@ -193,7 +193,10 @@ fn token_error(error: ClaudeOrgError) -> LlmError {
         ClaudeOrgErrorKind::NotSignedIn
         | ClaudeOrgErrorKind::NotLinked
         | ClaudeOrgErrorKind::RelinkRequired
-        | ClaudeOrgErrorKind::Disabled => LlmError::authentication_error(error.to_string()),
+        | ClaudeOrgErrorKind::Disabled
+        | ClaudeOrgErrorKind::AlreadyLinkedElsewhere => {
+            LlmError::authentication_error(error.to_string())
+        }
         ClaudeOrgErrorKind::Unavailable => LlmError::ConnectError {
             message: error.to_string(),
             transient: true,

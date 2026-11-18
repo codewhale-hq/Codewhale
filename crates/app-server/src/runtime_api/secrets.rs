@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -350,8 +350,13 @@ pub(super) async fn set_provider_key(
             ));
         }
 
-        if kind == ProviderKind::Orcarouter
-            && let Some(attempt) = state.provider_connect.0.lock().as_ref()
+        if matches!(kind, ProviderKind::Orcarouter | ProviderKind::Anthropic)
+            && let Some(attempt) = state
+                .provider_connect
+                .0
+                .lock()
+                .as_ref()
+                .filter(|attempt| attempt.provider == kind)
         {
             attempt.cancel();
         }
@@ -469,8 +474,13 @@ pub(super) struct ProviderConnect(Arc<parking_lot::Mutex<Option<ConnectAttempt>>
 
 struct ConnectAttempt {
     id: String,
+    provider: ProviderKind,
     status: Arc<parking_lot::Mutex<ConnectStatus>>,
 }
+
+const CLAUDE_ORG_CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
+const CLAUDE_ORG_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const CLAUDE_ORG_POLL_SLICE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectStatus {
@@ -515,15 +525,240 @@ impl ConnectAttempt {
     }
 }
 
-fn connect_provider_kind(id: &str) -> Result<(), ApiError> {
+fn connect_provider_kind(id: &str) -> Result<ProviderKind, ApiError> {
     let row = codewhale_config::descriptors::compatibility_for_selector(id)
         .ok_or_else(|| ApiError::bad_request(format!("Unknown provider id '{id}'")))?;
-    if row.id != row.kind.as_str() || row.kind != ProviderKind::Orcarouter {
+    if row.id != row.kind.as_str()
+        || !matches!(row.kind, ProviderKind::Orcarouter | ProviderKind::Anthropic)
+    {
         return Err(ApiError::bad_request(
-            "Browser connect is available only for 'orcarouter'.",
+            "Browser connect is available only for 'orcarouter' and 'anthropic'.",
         ));
     }
-    Ok(())
+    Ok(row.kind)
+}
+
+fn register_connect_attempt(
+    state: &RuntimeApiState,
+    provider: ProviderKind,
+    id: String,
+    status: Arc<parking_lot::Mutex<ConnectStatus>>,
+) {
+    let mut current = state.provider_connect.0.lock();
+    if let Some(previous) = current.take() {
+        previous.cancel();
+    }
+    *current = Some(ConnectAttempt {
+        id,
+        provider,
+        status,
+    });
+}
+
+fn finish_connect_attempt(
+    state: &RuntimeApiState,
+    status: &parking_lot::Mutex<ConnectStatus>,
+    finished: ConnectStatus,
+    provider: &'static str,
+) {
+    let _credential_change = state.provider_switches.blocking_lock();
+    let finished = {
+        let mut current = status.lock();
+        if matches!(*current, ConnectStatus::Waiting | ConnectStatus::Exchanging) {
+            *current = finished;
+        }
+        *current
+    };
+    let (status, reason) = finished.parts();
+    tracing::info!(
+        target: "codewhale::oauth",
+        provider,
+        status,
+        reason = reason.unwrap_or(""),
+        "provider connect attempt finished"
+    );
+}
+
+fn is_current_connect_attempt(
+    state: &RuntimeApiState,
+    status: &parking_lot::Mutex<ConnectStatus>,
+) -> bool {
+    state
+        .provider_connect
+        .0
+        .lock()
+        .as_ref()
+        .is_some_and(|attempt| std::ptr::eq(attempt.status.as_ref(), status))
+}
+
+fn claude_org_reason(kind: codewhale_account_cli::ClaudeOrgErrorKind) -> &'static str {
+    use codewhale_account_cli::ClaudeOrgErrorKind;
+    match kind {
+        ClaudeOrgErrorKind::NotSignedIn => "not_signed_in",
+        ClaudeOrgErrorKind::Disabled => "claude_billing_disabled",
+        ClaudeOrgErrorKind::AlreadyLinkedElsewhere => "already_linked_elsewhere",
+        ClaudeOrgErrorKind::Unavailable => "unavailable",
+        ClaudeOrgErrorKind::NotLinked
+        | ClaudeOrgErrorKind::RelinkRequired
+        | ClaudeOrgErrorKind::Invalid => "invalid_response",
+    }
+}
+
+fn claude_org_start_error(error: codewhale_account_cli::ClaudeOrgError) -> ApiError {
+    let reason = claude_org_reason(error.kind);
+    let message = error.to_string();
+    if reason == "unavailable" {
+        ApiError::bad_gateway(message).with_code(reason)
+    } else {
+        ApiError::conflict(message).with_code(reason)
+    }
+}
+
+async fn start_claude_org_connect(
+    state: &RuntimeApiState,
+    identity: codewhale_runtime::config::ProviderIdentity,
+) -> Result<Json<Value>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let account_state = state.clone();
+    let authorize_url = tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let client = super::account::client(&account_state)?;
+        let status = client
+            .claude_org_link_status()
+            .map_err(claude_org_start_error)?;
+        if !status.available {
+            return Err(claude_org_start_error(
+                codewhale_account_cli::ClaudeOrgError::new(
+                    codewhale_account_cli::ClaudeOrgErrorKind::Disabled,
+                ),
+            ));
+        }
+        if status.linked {
+            return Ok(None);
+        }
+        client
+            .claude_org_start_link()
+            .map(Some)
+            .map_err(claude_org_start_error)
+    })
+    .await
+    .map_err(|_| ApiError::internal("Claude organization connect could not start."))??;
+
+    let attempt_id = uuid::Uuid::new_v4().simple().to_string();
+    let status = Arc::new(parking_lot::Mutex::new(ConnectStatus::Waiting));
+    let deadline = Instant::now() + CLAUDE_ORG_CONNECT_TIMEOUT;
+    let worker_state = state.clone();
+    let worker_status = status.clone();
+    std::thread::Builder::new()
+        .name("claude-org-connect".to_string())
+        .spawn(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+            let sleep = |duration| std::thread::sleep(duration);
+            let finished =
+                run_claude_org_connect(&worker_state, &identity, deadline, &worker_status, &sleep);
+            finish_connect_attempt(&worker_state, &worker_status, finished, "anthropic");
+        })
+        .map_err(|_| ApiError::internal("Claude organization connect could not start."))?;
+    register_connect_attempt(state, ProviderKind::Anthropic, attempt_id.clone(), status);
+    Ok(Json(json!({
+        "attemptId": attempt_id,
+        "authorizeUrl": authorize_url,
+        "expiresIn": CLAUDE_ORG_CONNECT_TIMEOUT.as_secs(),
+    })))
+}
+
+fn run_claude_org_connect(
+    state: &RuntimeApiState,
+    identity: &codewhale_runtime::config::ProviderIdentity,
+    deadline: Instant,
+    status: &parking_lot::Mutex<ConnectStatus>,
+    sleep: &dyn Fn(Duration),
+) -> ConnectStatus {
+    let cancelled = || *status.lock() == ConnectStatus::Cancelled;
+    let Ok(client) = super::account::client(state) else {
+        return ConnectStatus::Failed("unavailable");
+    };
+    let mut tolerated_error = false;
+    loop {
+        if cancelled() {
+            return ConnectStatus::Cancelled;
+        }
+        match client.claude_org_link_status() {
+            Ok(link) if !link.available => {
+                return ConnectStatus::Failed("claude_billing_disabled");
+            }
+            Ok(link) if link.linked => break,
+            Ok(_) => tolerated_error = false,
+            Err(error)
+                if !tolerated_error
+                    && error.kind == codewhale_account_cli::ClaudeOrgErrorKind::Unavailable =>
+            {
+                tolerated_error = true;
+            }
+            Err(error) => return ConnectStatus::Failed(claude_org_reason(error.kind)),
+        }
+        if Instant::now() >= deadline {
+            return ConnectStatus::Expired;
+        }
+        let mut waited = Duration::ZERO;
+        while waited < CLAUDE_ORG_POLL_INTERVAL && !cancelled() {
+            sleep(CLAUDE_ORG_POLL_SLICE);
+            waited += CLAUDE_ORG_POLL_SLICE;
+        }
+    }
+    if !credential_writeability(&state.config.read(), identity).writable {
+        return ConnectStatus::Failed("not_writable");
+    }
+    {
+        let mut current = status.lock();
+        if *current == ConnectStatus::Cancelled {
+            return ConnectStatus::Cancelled;
+        }
+        *current = ConnectStatus::Exchanging;
+    }
+    let _credential_change = state.provider_switches.blocking_lock();
+    if !is_current_connect_attempt(state, status) || *status.lock() != ConnectStatus::Exchanging {
+        return ConnectStatus::Cancelled;
+    }
+    {
+        let config = state.config.read();
+        if config.session_provider_keys_only
+            || config.verify_provider_identity(identity).is_err()
+            || !credential_writeability(&config, identity).writable
+        {
+            return ConnectStatus::Failed("not_writable");
+        }
+    }
+    let Some(table) = identity.compatibility().map(|row| row.base_url_config_key) else {
+        return ConnectStatus::Failed("config_not_saved");
+    };
+    let saved =
+        codewhale_runtime::config_persistence::config_toml_path(state.config_path.as_deref())
+            .and_then(|path| {
+                codewhale_runtime::config_persistence::mutate_config_document(&path, |doc| {
+                    codewhale_runtime::config_persistence::set_document_value(
+                        doc,
+                        &["providers", table, "auth_mode"],
+                        codewhale_config::credentials::CLAUDE_ORG_AUTH_MODE,
+                    )
+                })
+            });
+    if saved.is_err() {
+        return ConnectStatus::Failed("config_not_saved");
+    }
+    let mut config = state.config.write();
+    match config.provider_config_for_mut(identity) {
+        Ok(entry) => {
+            entry.auth_mode = Some(codewhale_config::credentials::CLAUDE_ORG_AUTH_MODE.to_string());
+        }
+        Err(_) => return ConnectStatus::Failed("config_not_saved"),
+    }
+    drop(config);
+    *status.lock() = ConnectStatus::Connected;
+    ConnectStatus::Connected
 }
 
 pub(super) async fn start_provider_connect(
@@ -531,13 +766,22 @@ pub(super) async fn start_provider_connect(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let _credential_change = state.provider_switches.lock().await;
-    connect_provider_kind(&id)?;
+    let kind = connect_provider_kind(&id)?;
     if state.config.read().session_provider_keys_only {
         return Err(ApiError::conflict(
             "Browser sign-in is unavailable on an Engine that requires session-only keys",
         ));
     }
     let identity = writable_provider(&state.config.read(), &id, ProviderKeyScope::Durable)?;
+    if kind == ProviderKind::Anthropic {
+        if state.config.read().provider_uses_custom_endpoint(&identity) {
+            return Err(ApiError::conflict(
+                "Claude organization billing works only on the official Anthropic endpoint.",
+            )
+            .with_code("custom_endpoint"));
+        }
+        return start_claude_org_connect(&state, identity).await;
+    }
     let endpoint = state.config.read().base_url_for_route(&identity);
     let target = (identity, endpoint);
     let (listeners, request, auth_base) = tokio::task::spawn_blocking(|| {
@@ -568,32 +812,11 @@ pub(super) async fn start_provider_connect(
                 deadline,
                 &worker_status,
             );
-            let _credential_change = worker_state.provider_switches.blocking_lock();
-            let finished = {
-                let mut current = worker_status.lock();
-                if matches!(*current, ConnectStatus::Waiting | ConnectStatus::Exchanging) {
-                    *current = finished;
-                }
-                *current
-            };
-            let (status, reason) = finished.parts();
-            tracing::info!(
-                target: "codewhale::oauth",
-                status,
-                reason = reason.unwrap_or(""),
-                "OrcaRouter connect attempt finished"
-            );
+            finish_connect_attempt(&worker_state, &worker_status, finished, "orcarouter");
         })
         .map_err(|_| ApiError::internal("OrcaRouter connect could not start."))?;
 
-    let mut current = state.provider_connect.0.lock();
-    if let Some(previous) = current.take() {
-        previous.cancel();
-    }
-    *current = Some(ConnectAttempt {
-        id: attempt_id.clone(),
-        status,
-    });
+    register_connect_attempt(&state, ProviderKind::Orcarouter, attempt_id.clone(), status);
     Ok(Json(json!({
         "attemptId": attempt_id,
         "authorizeUrl": authorize_url,
@@ -655,13 +878,7 @@ fn run_provider_connect(
         return ConnectStatus::Failed("scope_refused");
     }
     let _credential_change = state.provider_switches.blocking_lock();
-    let current_attempt = state
-        .provider_connect
-        .0
-        .lock()
-        .as_ref()
-        .is_some_and(|attempt| std::ptr::eq(attempt.status.as_ref(), status));
-    if !current_attempt || *status.lock() != ConnectStatus::Exchanging {
+    if !is_current_connect_attempt(state, status) || *status.lock() != ConnectStatus::Exchanging {
         return ConnectStatus::Cancelled;
     }
     {
@@ -691,21 +908,22 @@ fn run_provider_connect(
 
 fn current_connect_attempt<'a>(
     current: &'a Option<ConnectAttempt>,
+    provider: ProviderKind,
     attempt_id: &str,
 ) -> Result<&'a ConnectAttempt, ApiError> {
     current
         .as_ref()
-        .filter(|attempt| attempt.id == attempt_id)
-        .ok_or_else(|| ApiError::not_found("No current OrcaRouter connect attempt has that id."))
+        .filter(|attempt| attempt.id == attempt_id && attempt.provider == provider)
+        .ok_or_else(|| ApiError::not_found("No current connect attempt has that id."))
 }
 
 pub(super) async fn get_provider_connect(
     State(state): State<RuntimeApiState>,
     Path((id, attempt_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    connect_provider_kind(&id)?;
+    let kind = connect_provider_kind(&id)?;
     let current = state.provider_connect.0.lock();
-    let attempt = current_connect_attempt(&current, &attempt_id)?;
+    let attempt = current_connect_attempt(&current, kind, &attempt_id)?;
     let status = *attempt.status.lock();
     Ok(Json(attempt.receipt(status)))
 }
@@ -715,9 +933,9 @@ pub(super) async fn cancel_provider_connect(
     Path((id, attempt_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let _credential_change = state.provider_switches.lock().await;
-    connect_provider_kind(&id)?;
+    let kind = connect_provider_kind(&id)?;
     let current = state.provider_connect.0.lock();
-    let attempt = current_connect_attempt(&current, &attempt_id)?;
+    let attempt = current_connect_attempt(&current, kind, &attempt_id)?;
     let status = attempt.cancel();
     Ok(Json(attempt.receipt(status)))
 }
