@@ -19,7 +19,7 @@ use axum::middleware;
 use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -117,6 +117,7 @@ mod avatars;
 mod builtin_commands;
 mod computer_display;
 mod context;
+mod design;
 mod diagnostics;
 mod external_agent_options;
 mod external_agents;
@@ -3269,6 +3270,22 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/plan", get(plans::latest_plan))
         .route("/v1/todo", get(plans::latest_todo_route))
         .route("/v1/plans", get(plans::list_plans))
+        .route("/v1/designs", get(design::list_designs))
+        .route("/v1/designs/{doc}", get(design::get_design))
+        .route("/v1/designs/{doc}/comments", post(design::add_comment))
+        .route(
+            "/v1/designs/{doc}/comments/{comment}",
+            patch(design::resolve_comment),
+        )
+        .route(
+            "/v1/designs/{doc}/artboards/{artboard}",
+            patch(design::move_artboard),
+        )
+        .route(
+            "/v1/designs/{doc}/artboards/{artboard}/render",
+            get(design::render_artboard),
+        )
+        .route("/v1/designs/{doc}/assets/{*path}", get(design::design_asset))
         .route("/v1/todos", get(plans::list_todos))
         .route(
             "/v1/targets",
