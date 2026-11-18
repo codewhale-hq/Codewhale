@@ -868,7 +868,10 @@ fn turn_tool_context_and_surface_gate_lsp_by_config() {
     let ctx_off = engine_off.build_tool_context_for_turn(&authority, &route_for(&engine_off));
     assert!(ctx_off.lsp_manager.is_none());
 
-    let registry_off = ToolRegistryBuilder::new().with_lsp_tool().build(ctx_off);
+    let registry_off = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_lsp_tool()
+        .build(ctx_off);
     let catalog_off = build_model_tool_catalog(
         registry_off.to_api_tools_with_cache(true),
         Vec::new(),
@@ -912,7 +915,10 @@ fn turn_tool_context_and_surface_gate_lsp_by_config() {
             .is_some_and(|manager| manager.config().enabled)
     );
 
-    let registry_on = ToolRegistryBuilder::new().with_lsp_tool().build(ctx_on);
+    let registry_on = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_lsp_tool()
+        .build(ctx_on);
     let catalog_on = build_model_tool_catalog(
         registry_on.to_api_tools_with_cache(true),
         Vec::new(),
