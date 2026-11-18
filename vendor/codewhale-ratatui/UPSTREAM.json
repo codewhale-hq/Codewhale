@@ -302,5 +302,17 @@
         "sha256": "fe27335251c06037cabdab9866e0ca5fa7c320e384d965fc4e65a95c141a8902"
       }
     }
+  },
+  "habitat_update": {
+    "commit": "b18d770f18ba1d26ce2bf87fe64a67f0ef95133b",
+    "scope": "The whole-ocean Habitat (FishSchool, Shoal, Jellyfish, MarineSnow, BubbleField, DistantWhale), its poses, color::glow_over, the habitat gallery entries and the habitat example. The Engine paints its Underwater field through Habitat; standalone tests, tools and README assets are outside this source synchronization.",
+    "local_changes": "None: these five files match upstream at this commit byte for byte.",
+    "files": {
+      "src/color.rs": "d7647e683dd19a3b3c5947adcbd0fd329643c36b59e2cd5fb6879c100f83ebd8",
+      "src/components/habitat.rs": "8788f581fd32e7ae6d1da34694ee4f84b84582c19d64803b5e94d61f68803e7c",
+      "src/components/habitat_poses.rs": "a9572968ddcf12b427404a4d41e11a3a0c9596c6dda06415d224eb84930e0919",
+      "src/gallery/habitat.rs": "12c46ce0ad9baee3931b5dff330bf42ed54ee55f72380692ed33ee109b69108b",
+      "examples/habitat.rs": "c063f79997fd3fdde9c853fd85b20a1b61b1ec4270ae71231b4e1437c8a8d9b7"
+    }
   }
 }
