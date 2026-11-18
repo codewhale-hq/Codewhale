@@ -7027,6 +7027,9 @@ impl Engine {
         let capability = route.capability_profile();
         let always_load = self.effective_tools_always_load();
         self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
+        if !self.lsp_manager.config().enabled {
+            tool_registry.remove_tool("lsp");
+        }
         if self.child_host.is_some() {
             tool_registry.remove_tool("create_goal");
             tool_registry.remove_tool("update_goal");
@@ -8954,6 +8957,9 @@ impl Engine {
         .with_shell_policy(authority.shell_policy())
         .with_trusted_external_paths(trusted_external_paths)
         .with_follow_symlinks(self.config.workspace_follow_symlinks);
+        if self.lsp_manager.config().enabled {
+            ctx = ctx.with_lsp_manager(Arc::clone(&self.lsp_manager));
+        }
         ctx.acp_host = self.is_acp_turn().then_some(authority.mode);
         ctx.disallowed_tools = self.config.disallowed_tools.clone().unwrap_or_default();
         ctx.persist_services_enabled = self.config.runtime_services.persist_services_enabled;

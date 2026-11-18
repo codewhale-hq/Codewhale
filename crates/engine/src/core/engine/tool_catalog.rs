@@ -29,7 +29,7 @@ use codewhale_models::Tool;
 use crate::core::session::ToolActivationCache;
 use codewhale_dependencies::ExternalTool;
 use codewhale_runtime::features::{Feature, Features};
-use codewhale_runtime::regex_cache::compile_user_regex;
+use codewhale_runtime::regex_cache::compile_user_regex_case_insensitive;
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
 const CODE_EXECUTION_DESCRIPTION: &str = "Execute Python code with the local Python interpreter using this call's execution policy and return stdout/stderr/return_code as JSON.";
@@ -370,7 +370,7 @@ pub fn ensure_advanced_tooling(
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
-            description: "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Run`, `Web`, `tasks`, `workflow`, `request_user_input`, `github`, `automation`, `lsp`, `review`, `session_search`, `terminal/run`, `apply_patch`, `context_archive_search`/`context_archive_get`, connected MCP servers, and the Registry pair (`registry_sync`, `start_registry_mcp_server`). Calling one by name also loads it.".to_string(),
+            description: tool_search_description(catalog),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -397,6 +397,58 @@ pub fn ensure_advanced_tooling(
             strict: None,
             cache_control: None,
         });
+    }
+    refresh_tool_search_description(catalog);
+}
+
+const ADVERTISED_DEFERRED_TOOLS: &[&str] = &[
+    "Git",
+    "Run",
+    "Web",
+    "tasks",
+    "workflow",
+    "request_user_input",
+    "github",
+    "automation",
+    "lsp",
+    "review",
+    "session_search",
+    "terminal/run",
+    "apply_patch",
+    "context_archive_search",
+    "context_archive_get",
+    "registry_sync",
+    "start_registry_mcp_server",
+];
+
+fn tool_search_description(catalog: &[Tool]) -> String {
+    let advertised = ADVERTISED_DEFERRED_TOOLS
+        .iter()
+        .filter(|name| {
+            catalog
+                .iter()
+                .any(|tool| tool.name == **name && tool.defer_loading.unwrap_or(false))
+        })
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>();
+    let mut description =
+        "Search deferred tool definitions and return matching references. Deferred tools include "
+            .to_string();
+    if !advertised.is_empty() {
+        description.push_str(&advertised.join(", "));
+        description.push_str(", and ");
+    }
+    description.push_str("tools from connected MCP servers. Calling one by name also loads it.");
+    description
+}
+
+pub(super) fn refresh_tool_search_description(catalog: &mut [Tool]) {
+    let description = tool_search_description(catalog);
+    if let Some(tool) = catalog
+        .iter_mut()
+        .find(|tool| tool.name == TOOL_SEARCH_NAME && tool.description != description)
+    {
+        tool.description = description;
     }
 }
 
@@ -649,6 +701,14 @@ impl ToolSurfacePolicy {
     ) -> Self {
         let holds_bounded_verification = holds_bounded_verification(registry.context());
         let mut catalog = tools.unwrap_or_default();
+        if !registry
+            .context()
+            .lsp_manager
+            .as_ref()
+            .is_some_and(|manager| manager.config().enabled)
+        {
+            catalog.retain(|tool| tool.name != "lsp");
+        }
         if !catalog.is_empty() {
             ensure_advanced_tooling(&mut catalog, mode, always_load, tool_mode);
         }
@@ -687,6 +747,7 @@ impl ToolSurfacePolicy {
                 .and_then(Value::as_array)
                 .is_none_or(|actions| !actions.is_empty())
         });
+        refresh_tool_search_description(&mut catalog);
         let mut active_names = initial_active_tools(&catalog);
         active_names.extend(dynamic_active_tools.iter().map(|name| (*name).to_string()));
         active_names.retain(|name| catalog.iter().any(|tool| tool.name == *name));
@@ -955,6 +1016,11 @@ impl ToolSearchScratch {
     }
 }
 
+fn compile_tool_search_regex(query: &str) -> Result<regex::Regex, ToolError> {
+    compile_user_regex_case_insensitive(query)
+        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))
+}
+
 fn catalog_contains_tool(catalog: &[Tool], name: &str) -> bool {
     catalog.iter().any(|tool| tool.name == name)
 }
@@ -967,8 +1033,7 @@ fn unavailable_core_action_tools_with_regex(
     if max_results == 0 {
         return Ok(Vec::new());
     }
-    let regex = compile_user_regex(query)
-        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
+    let regex = compile_tool_search_regex(query)?;
     Ok(cached_fallbacks()
         .iter()
         .filter(|cf| !catalog_contains_tool(catalog, cf.fallback.name))
@@ -1028,8 +1093,7 @@ fn discover_tools_with_regex(
     query: &str,
     max_results: usize,
 ) -> Result<Vec<String>, ToolError> {
-    let regex = compile_user_regex(query)
-        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
+    let regex = compile_tool_search_regex(query)?;
 
     let mut matches = Vec::new();
     let mut scratch = ToolSearchScratch::default();
@@ -1681,14 +1745,14 @@ fn execute_tool_search_inner(
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "The provider cannot offer this tool schema, or its added wire schema exceeds 16KiB. It was not loaded. Use a smaller matching tool or a compatible route."
+            "reason": format!("The provider cannot offer this tool schema, or its added wire schema exceeds {}KiB. It was not loaded. Use a smaller matching tool or a compatible route.", crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 1024)
         })
     }));
     unavailable_references.extend(cache_held.iter().map(|name| {
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "Not loaded in this batch: recently used tools fill the soft toolbox target (8 deferred tools, 16KiB of added wire schemas). Call tool_search with tool_search_input to load this match on its own; recently used tools can exceed these soft targets.",
+            "reason": format!("Not loaded in this batch: recently used tools fill the soft toolbox target ({}). Call tool_search with tool_search_input to load this match on its own; recently used tools can exceed these soft targets.", toolbox_soft_targets()),
             "tool_search_input": readmission_search_input(name),
         })
     }));
@@ -1713,7 +1777,7 @@ fn execute_tool_search_inner(
                 json!({
                     "type": "evicted_tool_reference",
                     "tool_name": name,
-                    "reason": "Removed from the current deferred toolbox while making room under its soft targets (8 deferred tools, 16KiB of added wire schemas). Call tool_search with tool_search_input to load it again; a later admission supersedes this notice.",
+                    "reason": format!("Removed from the current deferred toolbox while making room under its soft targets ({}); MCP tools are removed before first-party tools. Call tool_search with tool_search_input to load it again; a later admission supersedes this notice.", toolbox_soft_targets()),
                     "tool_search_input": readmission_search_input(name),
                 })
             })
@@ -1726,6 +1790,14 @@ fn execute_tool_search_inner(
         success: true,
         metadata: Some(metadata),
     })
+}
+
+fn toolbox_soft_targets() -> String {
+    format!(
+        "{} deferred tools, {}KiB of added wire schemas",
+        crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+        crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 1024
+    )
 }
 
 fn readmission_search_input(name: &str) -> Value {

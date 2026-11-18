@@ -252,7 +252,8 @@ fn cache_eviction_does_not_hide_a_tool_that_became_eager() {
 
 #[test]
 fn successful_cached_execution_updates_lru_without_granting_uncached_names() {
-    let catalog = (0..=8)
+    let max = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES;
+    let catalog = (0..=max)
         .map(|index| {
             let mut definition = tool(&format!("deferred-{index}"));
             definition.defer_loading = Some(true);
@@ -260,22 +261,24 @@ fn successful_cached_execution_updates_lru_without_granting_uncached_names() {
         })
         .collect::<Vec<_>>();
     let mut cache = ToolActivationCache::default();
-    let first = (0..8)
+    let first = (0..max)
         .map(|index| format!("deferred-{index}"))
         .collect::<Vec<_>>();
     let mut active = HashSet::new();
     let delta = cache.activate(&catalog, &first);
     active.extend(delta.admitted);
 
-    assert!(cache.record_use("deferred-7"));
-    let delta = cache.activate(&catalog, &["deferred-8".to_string()]);
+    let oldest = format!("deferred-{}", max - 1);
+    let next_oldest = format!("deferred-{}", max - 2);
+    assert!(cache.record_use(&oldest));
+    let delta = cache.activate(&catalog, &[format!("deferred-{max}")]);
     remove_evicted_cache_activations(&catalog, &mut active, delta.evicted);
     active.extend(delta.admitted);
     // The batch is ranked best-first; using its oldest retained match
     // promotes it ahead of the next batch without granting an unseen tool.
-    assert!(cache.names().any(|name| name == "deferred-7"));
+    assert!(cache.names().any(|name| name == oldest));
     assert!(cache.names().any(|name| name == "deferred-0"));
-    assert!(!cache.names().any(|name| name == "deferred-6"));
+    assert!(!cache.names().any(|name| name == next_oldest));
 
     assert!(!cache.record_use("never-activated"));
     assert!(!active.contains("never-activated"));
@@ -302,6 +305,63 @@ fn searching_for_an_eager_tool_is_not_reported_as_cache_rejected() {
     assert_eq!(metadata["unavailable_tool_references"], json!([]));
     assert!(active.contains("read"));
     assert_eq!(cache.names().count(), 0);
+}
+
+#[test]
+fn regex_search_matches_displayed_tool_names_case_insensitively() {
+    let mut catalog = vec![tool("Web"), tool("automation")];
+    for tool in &mut catalog {
+        tool.defer_loading = Some(true);
+    }
+    let mut active = initial_active_tools(&catalog);
+    let mut cache = ToolActivationCache::default();
+
+    let result = execute_tool_search_with_cache(
+        codewhale_tools::names::TOOL_SEARCH_NAME,
+        &json!({"query": "^(automation|Web)$", "match": "regex"}),
+        &catalog,
+        &mut active,
+        &mut cache,
+    )
+    .expect("tool search should succeed");
+
+    let metadata = result.metadata.expect("search metadata");
+    assert_eq!(metadata["tool_references"], json!(["Web", "automation"]));
+
+    let err = execute_tool_search_with_cache(
+        codewhale_tools::names::TOOL_SEARCH_NAME,
+        &json!({"query": "[unclosed", "match": "regex"}),
+        &catalog,
+        &mut active,
+        &mut cache,
+    )
+    .expect_err("invalid regex should fail")
+    .to_string();
+    assert!(err.contains("[unclosed"), "{err}");
+    assert!(!err.contains("(?i)"), "{err}");
+}
+
+#[test]
+fn tool_search_description_lists_only_deferred_tools_in_the_catalog() {
+    let mut catalog = vec![tool("read"), tool("Web"), tool("lsp")];
+    apply_native_tool_deferral(&mut catalog, &HashSet::new());
+    catalog.retain(|tool| tool.name != "lsp");
+    ensure_advanced_tooling(
+        &mut catalog,
+        AppMode::Plan,
+        &HashSet::new(),
+        ToolMode::Direct,
+    );
+    let description = &catalog
+        .iter()
+        .find(|tool| tool.name == codewhale_tools::names::TOOL_SEARCH_NAME)
+        .expect("tool_search")
+        .description;
+
+    assert!(description.contains("`Web`"));
+    assert!(!description.contains("`Git`"));
+    assert!(!description.contains("`Run`"));
+    assert!(!description.contains("`lsp`"));
 }
 
 #[test]

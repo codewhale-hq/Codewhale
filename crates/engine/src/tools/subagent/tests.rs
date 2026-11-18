@@ -9091,7 +9091,9 @@ fn synthetic_deferred_tool(name: &str, description_bytes: usize) -> Tool {
 
 #[test]
 fn small_surface_caches_are_independent_bounded_and_revalidated() {
-    let mut catalog = (0..9)
+    let max = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES;
+    let max_bytes = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES;
+    let mut catalog = (0..=max)
         .map(|index| synthetic_deferred_tool(&format!("deferred_{index}"), 8))
         .collect::<Vec<_>>();
     ensure_advanced_tooling(
@@ -9101,25 +9103,25 @@ fn small_surface_caches_are_independent_bounded_and_revalidated() {
         crate::core::engine::tool_catalog::ToolMode::Direct,
     );
     catalog.retain(|tool| tool.name == TOOL_SEARCH_NAME || tool.name.starts_with("deferred_"));
-    let warm = (0..9)
+    let warm = (0..=max)
         .map(|index| format!("deferred_{index}"))
         .collect::<Vec<_>>();
     let mut first = ChildSurfaceProbe::new(catalog.clone(), &warm);
     let mut second = ChildSurfaceProbe::new(catalog, &[]);
     let first_names = model_tool_names(model_request_tools(&mut first));
     assert!(first_names.contains("deferred_0"));
-    assert!(!first_names.contains("deferred_8"));
+    assert!(!first_names.contains(format!("deferred_{max}").as_str()));
     assert!(!model_tool_names(model_request_tools(&mut second)).contains("deferred_0"));
 
     first.catalog_mut().retain(|tool| tool.name != "deferred_0");
     assert!(!model_tool_names(model_request_tools(&mut first)).contains("deferred_0"));
     first
         .catalog_mut()
-        .push(synthetic_deferred_tool("oversized", 17 * 1024));
+        .push(synthetic_deferred_tool("oversized", max_bytes + 1024));
     assert!(first.hydrate("oversized", &json!({})).is_err());
 
     let mut byte_catalog = (0..3)
-        .map(|index| synthetic_deferred_tool(&format!("bytes_{index}"), 6 * 1024))
+        .map(|index| synthetic_deferred_tool(&format!("bytes_{index}"), max_bytes * 2 / 5))
         .collect::<Vec<_>>();
     ensure_advanced_tooling(
         &mut byte_catalog,

@@ -833,6 +833,114 @@ async fn post_edit_hook_skips_unknown_tool_names() {
     assert_eq!(fake.call_count(), 0);
 }
 
+#[test]
+fn turn_tool_context_and_surface_gate_lsp_by_config() {
+    let tmp = tempdir().expect("tempdir");
+    let authority = crate::core::authority::TurnAuthority::from_effective_fields(
+        AppMode::Agent,
+        true,
+        true,
+        true,
+        ApprovalMode::Bypass,
+    );
+    let route_for = |engine: &Engine| TurnRouteContext {
+        provider: ProviderKind::Deepseek,
+        model: "test-model".to_string(),
+        capabilities: codewhale_config::route::RouteCapabilities::default(),
+        limits: None,
+        client: None,
+        api_config: Box::new(Config::default()),
+        locale_tag: engine.config.locale_tag.clone(),
+        role_models: engine.subagent_role_models(),
+        auto_model: false,
+        reasoning_effort: None,
+        reasoning_effort_auto: false,
+    };
+
+    let (engine_off, _handle_off) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            lsp_config: None,
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    let ctx_off = engine_off.build_tool_context_for_turn(&authority, &route_for(&engine_off));
+    assert!(ctx_off.lsp_manager.is_none());
+
+    let registry_off = ToolRegistryBuilder::new().with_lsp_tool().build(ctx_off);
+    let catalog_off = build_model_tool_catalog(
+        registry_off.to_api_tools_with_cache(true),
+        Vec::new(),
+        AppMode::Agent,
+        &HashSet::new(),
+    );
+    let surface_off = ToolSurfacePolicy::new(
+        registry_off,
+        Some(catalog_off),
+        AppMode::Agent,
+        &HashSet::new(),
+        &[],
+        false,
+        None,
+        None,
+        None,
+        crate::core::engine::tool_catalog::ToolMode::Direct,
+    );
+    assert!(surface_off.catalog.iter().all(|tool| tool.name != "lsp"));
+    let search_desc_off = &surface_off
+        .catalog
+        .iter()
+        .find(|tool| tool.name == codewhale_tools::names::TOOL_SEARCH_NAME)
+        .expect("tool_search")
+        .description;
+    assert!(!search_desc_off.contains("`lsp`"));
+
+    let (engine_on, _handle_on) = Engine::new(
+        EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            lsp_config: Some(codewhale_lsp::LspConfig::default()),
+            ..Default::default()
+        },
+        &Config::default(),
+    );
+    let ctx_on = engine_on.build_tool_context_for_turn(&authority, &route_for(&engine_on));
+    assert!(
+        ctx_on
+            .lsp_manager
+            .as_ref()
+            .is_some_and(|manager| manager.config().enabled)
+    );
+
+    let registry_on = ToolRegistryBuilder::new().with_lsp_tool().build(ctx_on);
+    let catalog_on = build_model_tool_catalog(
+        registry_on.to_api_tools_with_cache(true),
+        Vec::new(),
+        AppMode::Agent,
+        &HashSet::new(),
+    );
+    let surface_on = ToolSurfacePolicy::new(
+        registry_on,
+        Some(catalog_on),
+        AppMode::Agent,
+        &HashSet::new(),
+        &[],
+        false,
+        None,
+        None,
+        None,
+        crate::core::engine::tool_catalog::ToolMode::Direct,
+    );
+    assert!(surface_on.catalog.iter().any(|tool| tool.name == "lsp"));
+    let search_desc_on = &surface_on
+        .catalog
+        .iter()
+        .find(|tool| tool.name == codewhale_tools::names::TOOL_SEARCH_NAME)
+        .expect("tool_search")
+        .description;
+    assert!(search_desc_on.contains("`lsp`"));
+}
+
 // ── #3802: non-blocking send for ListSubAgents refresh events ─────────────
 
 #[test]
