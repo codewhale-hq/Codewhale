@@ -23822,6 +23822,92 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
 }
 
 #[test]
+fn task_shell_wait_folds_into_its_shell_row_instead_of_adding_rows() {
+    let mut app = create_test_app();
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "cargo test --workspace".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_ab08".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let cells_before = app.virtual_cell_count();
+
+    for id in ["poll-1", "poll-2"] {
+        handle_tool_call_started(
+            &mut app,
+            id,
+            "task_shell_wait",
+            &serde_json::json!({"task_id": "shell_ab08"}),
+        );
+        assert!(
+            app.ignored_tool_calls.contains_key(id),
+            "{id} drew its own row"
+        );
+    }
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Background task running (no new output).",
+        )),
+    );
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::error(
+            "unknown background task",
+        )),
+    );
+    assert_eq!(
+        app.virtual_cell_count(),
+        cells_before + 1,
+        "a failed poll still shows its error"
+    );
+
+    for input in [
+        serde_json::json!({"task_id": "shell_ab08", "cancel": true}),
+        serde_json::json!({"task_id": "shell_ab08", "gate": "test"}),
+        serde_json::json!({"task_ids": ["shell_ab08"]}),
+    ] {
+        handle_tool_call_started(&mut app, "visible", "task_shell_wait", &input);
+        assert!(
+            !app.ignored_tool_calls.contains_key("visible"),
+            "{input} must stay visible"
+        );
+        app.tool_cells.remove("visible");
+    }
+    let cancelled = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec))
+                    if exec.interaction.as_deref() == Some("Cancelled command shell_ab08")
+            )
+        });
+    assert!(cancelled);
+}
+
+#[test]
 fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
     let mut app = create_test_app();
     handle_tool_call_started(
