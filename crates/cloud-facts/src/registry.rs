@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use codewhale_config::catalog::now_unix;
 use codewhale_config::cloud_facts::registry::{
-    AdmittedRegistry, BuiltinNames, MAX_REGISTRY_ENVELOPE_BYTES, REGISTRY_SCHEMA, admit_registry,
-    verify_registry_envelope,
+    AdmittedRegistry, BuiltinNames, MAX_REGISTRY_ENVELOPE_BYTES, REGISTRY_CHANNEL, REGISTRY_SCHEMA,
+    admit_registry, verify_registry_envelope,
 };
 use codewhale_config::cloud_facts::{FactsRejection, TrustedKey, overlay};
 use codewhale_config::persistence::atomic_write;
@@ -29,6 +29,15 @@ pub struct RegistrySettings {
     pub cache_path: Option<PathBuf>,
 }
 
+#[must_use]
+pub fn default_registry_url(facts_url: Option<&str>) -> String {
+    let template = facts_url
+        .map(str::trim)
+        .filter(|url| url.contains("{channel}"))
+        .unwrap_or(super::DEFAULT_URL_TEMPLATE);
+    template.replace("{channel}", REGISTRY_CHANNEL)
+}
+
 impl RegistrySettings {
     #[must_use]
     pub fn from_facts(settings: &Settings) -> Self {
@@ -38,10 +47,21 @@ impl RegistrySettings {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         };
+        let local_path = env(ENV_REGISTRY_PATH).map(PathBuf::from);
+        let explicit_url =
+            env(ENV_REGISTRY_URL).map(|url| url.replace("{channel}", REGISTRY_CHANNEL));
+        let url = if local_path.is_some() {
+            explicit_url
+        } else {
+            explicit_url.or_else(|| {
+                let facts_url = settings.url.clone().or_else(|| env(super::ENV_URL));
+                Some(default_registry_url(facts_url.as_deref()))
+            })
+        };
         Self {
             enabled: settings.enabled && !overlay::hard_disabled(),
-            url: env(ENV_REGISTRY_URL),
-            local_path: env(ENV_REGISTRY_PATH).map(PathBuf::from),
+            url,
+            local_path,
             cache_path: settings
                 .cache_path
                 .as_ref()
@@ -220,11 +240,16 @@ where
     Ok(Some(revision))
 }
 
-pub(crate) fn spawn_registry_refresh(settings: RegistrySettings, ticket: overlay::OverlayTicket) {
+pub(crate) fn spawn_registry_refresh(
+    settings: RegistrySettings,
+    ticket: overlay::OverlayTicket,
+    on_update: Option<Arc<dyn Fn() + Send + Sync>>,
+) {
     if !settings.active() || (settings.local_path.is_none() && fetch_suppressed()) {
         return;
     }
     tokio::spawn(async move {
+        let before = overlay::snapshot().generation;
         let outcome = refresh_registry_using(
             &settings,
             &ticket,
@@ -234,6 +259,11 @@ pub(crate) fn spawn_registry_refresh(settings: RegistrySettings, ticket: overlay
         )
         .await;
         tracing::debug!(target: "cloud_facts", ?outcome, "registry refresh settled");
+        if overlay::snapshot().generation != before
+            && let Some(hook) = on_update
+        {
+            hook();
+        }
     });
 }
 

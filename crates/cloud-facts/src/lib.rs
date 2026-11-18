@@ -699,7 +699,7 @@ async fn fetch_limited(
 /// Uses only admitted settings; callers must configure synchronously first.
 pub async fn refresh(settings: &Settings, force: bool) -> Result<RefreshOutcome, RefreshError> {
     if let Ok(admitted) = ticket(settings, codewhale_config::cloud_facts::TRUSTED_KEYS) {
-        registry::spawn_registry_refresh(RegistrySettings::from_facts(settings), admitted);
+        registry::spawn_registry_refresh(RegistrySettings::from_facts(settings), admitted, None);
     }
     refresh_with_keys(settings, force, codewhale_config::cloud_facts::TRUSTED_KEYS).await
 }
@@ -939,7 +939,11 @@ pub fn spawn_background_refresh(
     let Ok(admitted) = ticket(&settings, codewhale_config::cloud_facts::TRUSTED_KEYS) else {
         return;
     };
-    registry::spawn_registry_refresh(RegistrySettings::from_facts(&settings), admitted.clone());
+    registry::spawn_registry_refresh(
+        RegistrySettings::from_facts(&settings),
+        admitted.clone(),
+        on_update.clone(),
+    );
     if settings.local_path.is_none() && fetch_suppressed() {
         return;
     }

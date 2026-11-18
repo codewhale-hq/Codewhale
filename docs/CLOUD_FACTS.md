@@ -86,8 +86,9 @@ What this does not do:
 
 - **No automation key is pinned**, and a test in each language fails if one
   appears without that test being changed.
-- **No client fetches a `-models` channel.** Until one does, a pinned
-  automation key would authenticate nothing a client asks for.
+- **No client fetches a `-models` channel.** On the `registry` channel (below),
+  a future pinned automation key may sign bounded model-and-offering registry
+  updates, never new provider admissions.
 - **No scheduled publisher exists**, and `emit-sql --public-key` still performs
   no pin, role or scope check.
 - The seven-day limit bounds one payload. A client keeps applying a cached
@@ -237,41 +238,63 @@ channel and is verified by the same pinned-key code
 `crates/cloud-facts/src/registry.rs`. The envelope's `facts_version` carries
 the registry `revision` and `published_at` its `generated_at`.
 
-A pulled registry is accepted only when a `founder` key signs it (an
-automation key is refused), `schema` is exactly `codewhale.registry.v1`, the
-payload parses (`dialects` is an object, as in CONTRACT §1), `generated_at`
-is not in the future, and `revision` is not below the highest revision this
-client already accepted. The payload may be up to 8 MiB. The floor check and
-the install run under the same overlay lock as facts publication, so
-overlapping pulls cannot install an older revision or lower the cached floor.
+A pulled registry is accepted when `schema` is `codewhale.registry.v1`, the
+payload parses (`dialects` is an object, as in CONTRACT §1), `generated_at` is
+not in the future, any `not_after` follows `generated_at` and has not expired,
+and `revision` is not below the highest revision this client already accepted:
 
-Pulled provider rows are admitted only when they are new (no id or alias that
-names a built-in or bundled provider, including its config keys, catalog ids,
-selector and subagent aliases and the legacy TUI row, and no `kind`), use an
-`https` URL on a public host name with the default port and without
-credentials, query or fragment (IP literals, single-label names, `localhost`,
-`*.localhost`, `*.local` and `*.internal` are refused), and declare
-`wire_policy` `openai-compatible`. A row may only
-name its own id as `auth.secret_slot` and its own `<ID>_API_KEY` as
-`auth.env_vars`, and that variable may not belong to a built-in provider.
-Rows for built-in providers are ignored: their address, key and protocol come
-only from the release. Refused rows are kept with a reason.
+- A `founder` signature may authenticate both model/offering updates and newly
+  admitted OpenAI-compatible descriptor providers.
+- An `automation` signature is accepted only when the signed payload carries a
+  non-expired `not_after` at most seven days (`MAX_AUTOMATION_WINDOW_SECS`)
+  after `generated_at` (matching any outer `envelope.not_after`), and every
+  entry in `providers` names an existing bundled `provider_descriptors.json` id
+  without `admission.founder_signature` or any change to frozen trust fields
+  (`kind`, `base_url`, `wire_policy`, `wire`, `auth`, `api_key_env`,
+  `env_vars`, `secret_store_slot`). Adding a provider or touching a frozen
+  provider trust field under an automation key is rejected whole as outside the
+  key's scope.
 
-Wired: the registry follows `[cloud_facts]` (`enabled` and the hard disable)
-and needs a source, `CODEWHALE_REGISTRY_URL` (an HTTP(S) URL) or
-`CODEWHALE_REGISTRY_PATH` (a local envelope). Startup reads a verified
-`facts/registry-cache.json`; a background pull, and `/model refresh`,
-replace it. A failed or rejected pull keeps the copy already in use, and a
-rejected cache is cleared while its revision floor is kept. The cache records
-its source; a body from another source is dropped and only the floor is kept.
-Turning cloud facts off, an invalid facts source, or the hard disable drops
-the registry in the same step. CI suppresses the network pull.
+The payload may be up to 8 MiB. The floor check and the install run under the
+same overlay lock as facts publication, so overlapping pulls cannot install an
+older revision or lower the cached floor.
+
+Pulled provider rows (founder-signed only) are admitted only when they are new
+(no id or alias that names a built-in or bundled provider, including its config
+keys, catalog ids, selector and subagent aliases and the legacy TUI row, and no
+`kind`), use an `https` URL on a public host name with the default port and
+without credentials, query or fragment (IP literals, single-label names,
+`localhost`, `*.localhost`, `*.local` and `*.internal` are refused), and
+declare `wire_policy` `openai-compatible`. A row may only name its own id as
+`auth.secret_slot` and its own `<ID>_API_KEY` as `auth.env_vars`, and that
+variable may not belong to a built-in provider, `CODEWHALE_*`, `DEEPSEEK_*`, or
+another product/search credential. Built-in providers' addresses, keys and wire
+protocols come only from the release; only their model naming rules (`aliases`,
+`wire_slugs`, `strip_prefixes`, `accept`) and model defaults may update from a
+verified registry. Refused rows are kept with a reason and their offerings are
+dropped.
+
+Wired: the registry follows `[cloud_facts]` (`enabled = false` by default unless
+`CODEWHALE_CLOUD_FACTS=1` or config `enabled = true`, with
+`CODEWHALE_DISABLE_CLOUD_FACTS=1` as the hard disable). When neither
+`CODEWHALE_REGISTRY_URL` nor `CODEWHALE_REGISTRY_PATH` is set, the URL defaults
+to `https://codewhale.net/api/facts/v1/registry` (or substitutes `registry`
+into `CODEWHALE_CLOUD_FACTS_URL` when that template contains `{channel}`).
+Startup reads a verified `facts/registry-cache.json`; a background pull, and
+`/model refresh`, replace it. Verified models, offerings, aliases and admitted
+providers feed `resolve_model`, `RouteResolver`, catalog lookups and descriptor
+discovery (`/provider`), with pulled models, offerings and aliases taking
+precedence over bundled seed rows. A failed or rejected pull keeps the copy
+already in use, and a rejected cache is cleared while its revision floor is
+kept. Turning cloud facts off, expiry past `not_after`, an invalid facts
+source, or the hard disable drops the active registry immediately and reverts
+resolution and discovery to the bundled seed. CI suppresses the network pull.
 
 What this does not do yet:
 
-- There is no default URL and no published registry yet, so nothing is fetched
-  by default and no bundled `registry.json` sets a floor; the floor is the
-  highest revision this client cached.
+- Cloud facts remain off by default (`[cloud_facts].enabled = false`), and no
+  bundled `registry.json` sets an initial floor; the floor is the highest
+  revision this client cached.
 - The website relay (`web/app/api/facts/v1/registry`) and publisher
   (`web/scripts/facts-publish.mjs`) verify and serve `codewhale.registry.v1`
   envelopes up to 8 MiB (with `web/supabase/migrations/20261117000114_registry_channel_publication.sql`),
@@ -279,18 +302,11 @@ What this does not do yet:
   record and bounding `automation` signatures to `not_after <= 7 days` with
   unchanged Engine providers; activating the public `registry` channel row in
   Supabase and signing remain operator actions.
-- Admitted providers are inert: they are held in memory with the credential
-  slot and variable they may use, but the route resolver, picker and status
-  surface do not read them yet.
-- Models, offerings and dialects are parsed and held but not applied to the
-  catalog.
-- The `base_url` check is static. A public host name that resolves to a
-  private address is not caught here; the client that first calls a pulled
-  provider must use the guarded network client.
-- A pulled id's `<ID>_API_KEY` is checked only against model-provider
-  variables, not other credentials the product reads (for example
-  `CODEWHALE_CLI_API_KEY` or web search keys). This must close before a
-  consumer reads pulled credentials.
+- Responses `dialects` remain compiled wire behavior in `crates/config`; pulled
+  providers use OpenAI-compatible Chat Completions only.
+- The `base_url` check at admission is static. A public host name that resolves
+  to a private address is not caught at parse time; execution goes through the
+  runtime's network client when the user configures the provider.
 - As for facts, an equal revision replaces the held copy, and a torn cache
   file loses the floor at the next start.
 

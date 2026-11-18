@@ -42,7 +42,7 @@ use crate::tui::views::{
 use codewhale_config::ProviderKind;
 use codewhale_config::catalog::{CatalogOffering, CatalogSnapshot};
 use codewhale_config::descriptors::{
-    ProviderDescriptor, bundled_provider_descriptors, provider_descriptor,
+    ProviderDescriptor, active_provider_descriptors, provider_descriptor,
 };
 use codewhale_config::provider::{CredentialAcquisition, WireFormat};
 use codewhale_config::route::{PricingSku, RequestProtocol};
@@ -370,7 +370,7 @@ pub struct ProviderPickerView {
     /// Bundled descriptor the custom form was prefilled from, so the form can
     /// show that host's credential console, docs and guidance (#6616). `None`
     /// for a hand-entered host and the other prefilled local routes.
-    custom_provider_descriptor: Option<&'static ProviderDescriptor>,
+    custom_provider_descriptor: Option<ProviderDescriptor>,
     /// Pointer geometry for the two-pane picker (Slice D): provider-strip
     /// rows on the left, model rows on the right/under, recorded during
     /// render like the consent hitboxes below.
@@ -2989,7 +2989,7 @@ impl ProviderPickerView {
     /// credential env var, so the only field left is which env var holds the
     /// key. Submitting writes `[providers.<id>]` through the same path a
     /// hand-entered custom provider uses.
-    fn enter_descriptor_form(&mut self, descriptor: &'static ProviderDescriptor) {
+    fn enter_descriptor_form(&mut self, descriptor: ProviderDescriptor) {
         self.prefill_custom_form(
             &descriptor.id,
             &descriptor.base_url,
@@ -4682,7 +4682,7 @@ impl ProviderPickerView {
             "API key env",
             "optional",
         );
-        if let Some(descriptor) = self.custom_provider_descriptor {
+        if let Some(descriptor) = &self.custom_provider_descriptor {
             Paragraph::new(descriptor_help_lines(descriptor))
                 .wrap(Wrap { trim: true })
                 .render(layout[5], buf);
@@ -5743,7 +5743,7 @@ fn descriptor_dashboard_rows(
         .as_ref()
         .map(|providers| providers.custom.keys().map(String::as_str).collect())
         .unwrap_or_default();
-    bundled_provider_descriptors()
+    active_provider_descriptors()
         .iter()
         .filter(|descriptor| !configured.iter().any(|id| descriptor.matches(id)))
         .map(|descriptor| descriptor_dashboard_row(descriptor, active, config, runtime_status))
@@ -5826,6 +5826,7 @@ fn descriptor_dashboard_row(
 mod tests {
     use super::*;
     use crate::test_support::EnvVarGuard;
+    use codewhale_config::descriptors::bundled_provider_descriptors;
     use codewhale_engine::provider_readiness::has_api_key_for;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
@@ -6299,7 +6300,10 @@ mod tests {
     #[test]
     fn descriptor_form_shows_the_hosts_credential_docs_and_guidance() {
         let _env = crate::test_support::lock_test_env();
-        let descriptor = provider_descriptor("aicraft").expect("aicraft descriptor");
+        let descriptor = codewhale_config::descriptors::bundled_provider_descriptors()
+            .iter()
+            .find(|descriptor| descriptor.matches("aicraft"))
+            .expect("aicraft descriptor");
         let _key = crate::test_support::EnvVarGuard::remove(&descriptor.api_key_env);
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
@@ -6336,7 +6340,10 @@ mod tests {
     #[test]
     fn activating_a_descriptor_row_submits_it_as_a_named_custom_provider() {
         let _env = crate::test_support::lock_test_env();
-        let descriptor = provider_descriptor("groq").expect("groq descriptor");
+        let descriptor = codewhale_config::descriptors::bundled_provider_descriptors()
+            .iter()
+            .find(|descriptor| descriptor.matches("groq"))
+            .expect("groq descriptor");
         let _key = crate::test_support::EnvVarGuard::remove(&descriptor.api_key_env);
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);

@@ -315,6 +315,15 @@ pub fn bundled_reviewed() -> &'static ReviewedCatalog {
 /// Never examine the process's live/custom/account catalog here.
 #[must_use]
 pub fn intrinsic_model(model: &str) -> Option<IntrinsicModel> {
+    let id = model.trim().to_ascii_lowercase();
+    if let Some(reg) = crate::cloud_facts::overlay::pulled_registry()
+        && let Some(mut pulled) = reg.compiled.intrinsic_models.get(&id).cloned()
+    {
+        if let Some(bundled) = intrinsic_model_in(super::bundled_models_dev_catalog(), model) {
+            fill_missing(&mut pulled, &bundled);
+        }
+        return Some(pulled);
+    }
     intrinsic_model_in(super::bundled_models_dev_catalog(), model)
 }
 
@@ -410,7 +419,7 @@ fn consensus<T: Copy + PartialEq>(values: impl IntoIterator<Item = T>) -> Option
     values.all(|value| value == first).then_some(first)
 }
 
-fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
+pub(crate) fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     IntrinsicModel {
         canonical_id: (!row.id.is_empty()).then(|| row.id.clone()),
         context_window: row
@@ -443,7 +452,7 @@ fn from_canonical(row: &ModelsDevModel) -> IntrinsicModel {
     }
 }
 
-fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
+pub(crate) fn fill_missing(row: &mut IntrinsicModel, other: &IntrinsicModel) {
     row.context_window = row.context_window.or(other.context_window);
     row.max_output = row.max_output.or(other.max_output);
     row.reasoning = row.reasoning.or(other.reasoning);

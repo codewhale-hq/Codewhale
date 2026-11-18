@@ -30,12 +30,13 @@ pub use keys::{
 };
 pub use overlay::{
     DefaultSource, cloud_default_base_url, cloud_default_model, cloud_default_model_for_route,
-    pulled_registry,
+    pulled_registry, pulled_registry_at,
 };
 pub use provenance::{CloudFactsState, CloudFactsStatus, FactsOrigin};
 pub use registry::{
-    AdmittedRegistry, BuiltinNames, PulledProvider, REGISTRY_CHANNEL, REGISTRY_SCHEMA, Registry,
-    VerifiedRegistry, admit_registry, verify_registry_envelope,
+    AdmittedRegistry, BuiltinNames, CompiledNamingRules, CompiledRegistry, PulledProvider,
+    REGISTRY_CHANNEL, REGISTRY_SCHEMA, Registry, VerifiedRegistry, admit_registry,
+    verify_registry_envelope,
 };
 pub use scope::{ScopedFacts, scoped_view};
 pub use types::{
@@ -43,7 +44,9 @@ pub use types::{
     ProviderDefaultFact, ReleaseFact, Surface,
 };
 pub use verify::{
-    Envelope, FactsRejection, VerifiedFacts, automation_scope_violation, verify_envelope,
+    Envelope, FactsRejection, MAX_AUTOMATION_WINDOW_SECS, VerifiedFacts,
+    automation_scope_violation, automation_window_violation, check_automation_window,
+    verify_envelope,
 };
 
 /// Whether any pinned key can authenticate a release. With none, the layer is

@@ -209,32 +209,74 @@ fn a_refresh_that_verified_against_a_stale_floor_cannot_replace_a_newer_registry
 }
 
 #[test]
-fn registry_is_inert_without_a_source_and_cleared_when_facts_are_disabled() {
+fn registry_uses_default_https_endpoint_stays_off_by_default_and_clears_on_disable() {
     let _guard = lock();
     let _url = TestEnv::set(ENV_REGISTRY_URL, "");
     let _path = TestEnv::set(ENV_REGISTRY_PATH, "");
+    let _facts_url = TestEnv::set(crate::ENV_URL, "");
+    let _disable = TestEnv::set(crate::ENV_DISABLE, "");
     let dir = tempfile::tempdir().expect("tempdir");
+
+    let off = RegistrySettings::from_facts(&Settings::default());
+    assert!(!off.enabled);
+    assert!(!off.active());
+
     let facts = Settings {
         enabled: true,
         cache_path: Some(dir.path().join("cloud-facts.json")),
         ..Settings::default()
     };
     let derived = RegistrySettings::from_facts(&facts);
-    assert!(!derived.active());
+    assert!(derived.active());
+    assert_eq!(
+        derived.url.as_deref(),
+        Some("https://codewhale.net/api/facts/v1/registry")
+    );
     assert_eq!(
         derived.cache_path,
         Some(dir.path().join(REGISTRY_CACHE_FILE))
     );
+
+    let templated = RegistrySettings::from_facts(&Settings {
+        enabled: true,
+        url: Some("https://staging.codewhale.example/api/facts/v1/{channel}".into()),
+        ..Settings::default()
+    });
+    assert_eq!(
+        templated.url.as_deref(),
+        Some("https://staging.codewhale.example/api/facts/v1/registry")
+    );
+
+    let fixed_channel = RegistrySettings::from_facts(&Settings {
+        enabled: true,
+        url: Some("https://staging.codewhale.example/api/facts/v1/stable".into()),
+        ..Settings::default()
+    });
+    assert_eq!(
+        fixed_channel.url.as_deref(),
+        Some("https://codewhale.net/api/facts/v1/registry")
+    );
+
     let ticket = overlay::configure(true, "registry-inert-test").expect("ticket");
     assert_eq!(
         rt().block_on(refresh_registry_using(
-            &derived,
+            &off,
             &ticket,
             &Signer::new().keys(),
             false,
             |_, _, _| std::future::ready(Ok(Fetched::NotFound)),
         )),
         Err(RefreshError::Disabled)
+    );
+    assert_eq!(
+        rt().block_on(refresh_registry_using(
+            &derived,
+            &ticket,
+            &Signer::new().keys(),
+            true,
+            |_, _, _| std::future::ready(Ok(Fetched::NotFound)),
+        )),
+        Err(RefreshError::Suppressed)
     );
 
     let signer = Signer::new();
@@ -249,6 +291,23 @@ fn registry_is_inert_without_a_source_and_cleared_when_facts_are_disabled() {
     ))
     .expect("pulled");
     assert!(pulled_registry().is_some());
+
+    {
+        let _kill = TestEnv::set(crate::ENV_DISABLE, "1");
+        assert!(!RegistrySettings::from_facts(&facts).active());
+        assert!(pulled_registry().is_none());
+    }
+
+    let ticket = overlay::configure(true, "registry-inert-test").expect("ticket");
+    rt().block_on(refresh_registry_using(
+        &active,
+        &ticket,
+        &signer.keys(),
+        false,
+        body(signer.envelope(rev + 1)),
+    ))
+    .expect("pulled after re-enable");
+    assert!(pulled_registry().is_some());
     crate::configure(&Settings::default());
     assert!(pulled_registry().is_none());
     assert_eq!(
@@ -257,7 +316,7 @@ fn registry_is_inert_without_a_source_and_cleared_when_facts_are_disabled() {
             &ticket,
             &signer.keys(),
             false,
-            body(signer.envelope(rev + 1)),
+            body(signer.envelope(rev + 2)),
         )),
         Err(RefreshError::Superseded)
     );
@@ -269,7 +328,7 @@ fn registry_is_inert_without_a_source_and_cleared_when_facts_are_disabled() {
         &ticket,
         &signer.keys(),
         false,
-        body(signer.envelope(rev + 2)),
+        body(signer.envelope(rev + 3)),
     ))
     .expect("pulled again");
     crate::configure(&Settings {

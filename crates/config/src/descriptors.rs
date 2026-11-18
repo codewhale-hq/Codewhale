@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-const DESCRIPTORS_JSON: &str = include_str!("../assets/provider_descriptors.json");
+pub(crate) const DESCRIPTORS_JSON: &str = include_str!("../assets/provider_descriptors.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelIdsPolicy {
@@ -229,9 +229,28 @@ pub fn bundled_provider_descriptors() -> &'static [ProviderDescriptor] {
 }
 
 #[must_use]
-pub fn provider_descriptor(id: &str) -> Option<&'static ProviderDescriptor> {
-    bundled_provider_descriptors()
-        .iter()
+pub fn active_provider_descriptors() -> Vec<ProviderDescriptor> {
+    let mut out = bundled_provider_descriptors().to_vec();
+    if let Some(admitted) = crate::cloud_facts::overlay::pulled_registry() {
+        for row in &mut out {
+            if let Some(default_model) = admitted.compiled.descriptor_defaults.get(&row.id) {
+                row.default_model.clone_from(default_model);
+            }
+        }
+        out.extend(
+            admitted
+                .providers
+                .iter()
+                .map(crate::cloud_facts::PulledProvider::to_descriptor),
+        );
+    }
+    out
+}
+
+#[must_use]
+pub fn provider_descriptor(id: &str) -> Option<ProviderDescriptor> {
+    active_provider_descriptors()
+        .into_iter()
         .find(|descriptor| descriptor.matches(id))
 }
 
@@ -286,7 +305,9 @@ mod tests {
         assert_eq!(cmd.base_url, "https://api.commandcode.ai/provider/v1");
         assert_eq!(cmd.api_key_env, "COMMAND_CODE_API_KEY");
         assert_eq!(
-            provider_descriptor("cmd-code").map(|row| row.id.as_str()),
+            provider_descriptor("cmd-code")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("command-code")
         );
         // Alibaba Model Studio is a data-driven row: live /v1/models is the
@@ -298,7 +319,9 @@ mod tests {
         );
         assert_eq!(dashscope.api_key_env, "DASHSCOPE_API_KEY");
         assert_eq!(
-            provider_descriptor("qwen").map(|row| row.id.as_str()),
+            provider_descriptor("qwen")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("dashscope"),
             "the founder's `qwen` name resolves to the DashScope row"
         );
@@ -355,7 +378,9 @@ mod tests {
         assert_eq!(row.api_key_env, "CHEAPER_INFERENCE_API_KEY");
         assert_eq!(row.default_model, "gpt-5.4-mini");
         assert_eq!(
-            provider_descriptor("cheaper_inference").map(|row| row.id.as_str()),
+            provider_descriptor("cheaper_inference")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("cheaperinference")
         );
     }
@@ -369,7 +394,9 @@ mod tests {
         assert_eq!(row.api_key_env, "STANDARDCOMPUTE_API_KEY");
         assert_eq!(row.default_model, "standardcompute");
         assert_eq!(
-            provider_descriptor("standard_compute").map(|row| row.id.as_str()),
+            provider_descriptor("standard_compute")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("standardcompute")
         );
     }
@@ -383,7 +410,9 @@ mod tests {
         assert_eq!(row.api_key_env, "OPPER_API_KEY");
         assert_eq!(row.default_model, "claude-sonnet-4-6");
         assert_eq!(
-            provider_descriptor("opper_ai").map(|row| row.id.as_str()),
+            provider_descriptor("opper_ai")
+                .as_ref()
+                .map(|row| row.id.as_str()),
             Some("opper")
         );
     }
