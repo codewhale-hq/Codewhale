@@ -526,7 +526,7 @@ async fn execute_native(
             let Json(records) = api(list_automations(State(state.clone())).await)?;
             let mut scoped = Vec::new();
             for record in records {
-                if native_automation(&state, &record).await.is_ok() {
+                if native_automation(&state, &record.record).await.is_ok() {
                     scoped.push(record);
                 }
             }

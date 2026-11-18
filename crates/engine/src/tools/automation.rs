@@ -48,7 +48,7 @@ pub fn require_dispatch_owner(
 /// Read-only actions — these are the only ones the Plan-mode surface exposes.
 const READ_ACTIONS: &[&str] = &["list", "read"];
 const ALL_ACTIONS: &[&str] = &[
-    "create", "list", "read", "update", "pause", "resume", "delete", "run",
+    "create", "list", "read", "update", "pause", "resume", "adopt", "delete", "run",
 ];
 
 /// Unified automation tool.
@@ -146,6 +146,9 @@ impl ToolSpec for AutomationTool {
             }
             Some("pause") => "Pause a durable automation. Requires approval.",
             Some("resume") => "Resume a paused durable automation. Requires approval.",
+            Some("adopt") => {
+                "Adopt an automation bound to another runtime scope into this runtime. Requires approval."
+            }
             Some("delete") => "Delete a durable automation and its run history. Requires approval.",
             Some("run") => {
                 "Run an automation now. The run enqueues a normal durable task and returns linked task/thread/turn ids as they become available."
@@ -154,7 +157,7 @@ impl ToolSpec for AutomationTool {
                 "Inspect durable scheduled automations. Actions: \"list\" (status, next run, last run) and \"read\" (one automation plus recent run records)."
             }
             _ => {
-                "Manage durable scheduled automations. Actions: \"create\" (approval; schedules support ONCE, HOURLY, WEEKLY, and 5-field CRON forms; watcher mode uses EXACT NOTHING_TO_REPORT for no-change checks), \"list\", \"read\", \"update\" (approval), \"pause\" (approval), \"resume\" (approval), \"delete\" (approval), \"run\" (approval)."
+                "Manage durable scheduled automations. Actions: \"create\" (approval; schedules support ONCE, HOURLY, WEEKLY, and 5-field CRON forms; watcher mode uses EXACT NOTHING_TO_REPORT for no-change checks), \"list\", \"read\", \"update\" (approval), \"pause\" (approval), \"resume\" (approval), \"adopt\" (approval), \"delete\" (approval), \"run\" (approval)."
             }
         }
     }
@@ -245,7 +248,7 @@ impl ToolSpec for AutomationTool {
         }
         properties.insert(
             "automation_id".to_string(),
-            json!({ "type": "string", "description": "Target automation id (action=read/update/pause/resume/delete/run)." }),
+            json!({ "type": "string", "description": "Target automation id (action=read/update/pause/resume/adopt/delete/run)." }),
         );
         properties.insert(
             "limit".to_string(),
@@ -315,6 +318,7 @@ impl ToolSpec for AutomationTool {
             "update" => self.execute_update(&input, context).await,
             "pause" => self.execute_simple(context, &input, "pause").await,
             "resume" => self.execute_simple(context, &input, "resume").await,
+            "adopt" => self.execute_simple(context, &input, "adopt").await,
             "delete" => self.execute_simple(context, &input, "delete").await,
             "run" => self.execute_run(&input, context).await,
             action => Err(ToolError::invalid_input(format!(
@@ -391,7 +395,7 @@ impl AutomationTool {
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
         let manager = manager.lock().await;
         let mut automations = manager
-            .list_automations()
+            .list_automation_views()
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         automations.truncate(optional_u64(input, "limit", 50)?.clamp(1, 100) as usize);
         ToolResult::json(&automations).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -410,7 +414,7 @@ impl AutomationTool {
         let manager = manager.lock().await;
         let id = required_str(input, "automation_id")?;
         let automation = manager
-            .get_automation(id)
+            .get_automation_view(id)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         let runs = manager
             .list_runs(id, Some(20))
@@ -506,18 +510,29 @@ impl AutomationTool {
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
         let manager = manager.lock().await;
-        if action == "resume" {
-            // An unknown id falls through to resume's own error.
+        if action == "resume" || action == "adopt" {
             if let Ok(existing) = manager.get_automation(required_str(input, "automation_id")?) {
-                require_within_session_authority(context, &existing, "resume")?;
+                require_within_session_authority(context, &existing, action)?;
             }
-            require_dispatch_owner(&manager, "resume an automation")?;
+            let intent = if action == "adopt" {
+                "adopt an automation"
+            } else {
+                "resume an automation"
+            };
+            require_dispatch_owner(&manager, intent)?;
+        }
+        if action == "adopt" {
+            let view = manager
+                .adopt_automation(required_str(input, "automation_id")?)
+                .map(|adopted| manager.record_view(adopted))
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            return ToolResult::json(&view).map_err(|e| ToolError::execution_failed(e.to_string()));
         }
         let automation = match action {
             "pause" => manager.pause_automation(required_str(input, "automation_id")?),
             "resume" => manager.resume_automation(required_str(input, "automation_id")?),
             "delete" => manager.delete_automation(required_str(input, "automation_id")?),
-            _ => unreachable!("execute_simple only routes pause/resume/delete"),
+            _ => unreachable!("execute_simple only routes pause/resume/adopt/delete"),
         }
         .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         ToolResult::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))

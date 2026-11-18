@@ -8,8 +8,8 @@ use crate::tui::app::{App, AutomationAction};
 use crate::tui::automation_panel::{SettledOutcome, SettledRun};
 use crate::tui::history::{AutomationCell, AutomationCellKind, HistoryCell};
 use codewhale_engine::automation_manager::{
-    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
-    SharedAutomationManager, run_now_shared,
+    AutomationExecutionOwnership, AutomationRecord, AutomationRecordView, AutomationRunRecord,
+    AutomationRunStatus, AutomationStatus, SharedAutomationManager, run_now_shared,
 };
 use codewhale_engine::task_manager::SharedTaskManager;
 use codewhale_localization::{Locale, MessageId, tr};
@@ -56,6 +56,7 @@ pub(super) async fn handle_action(
         },
         AutomationAction::Pause(id) => mutate(locale, &automations, &id, Mutation::Pause).await,
         AutomationAction::Resume(id) => mutate(locale, &automations, &id, Mutation::Resume).await,
+        AutomationAction::Adopt(id) => mutate(locale, &automations, &id, Mutation::Adopt).await,
         AutomationAction::Delete { id, confirmation } => {
             let (cell, command) = delete(locale, &automations, &id, confirmation.as_deref()).await;
             if let Some(command) = command {
@@ -107,7 +108,7 @@ fn present_receipt(app: &mut App, cell: HistoryCell) {
 }
 
 async fn list(locale: Locale, automations: &SharedAutomationManager) -> String {
-    match automations.lock().await.list_automations() {
+    match automations.lock().await.list_automation_views() {
         Ok(records) => format_list(locale, &records),
         Err(error) => {
             tr(locale, MessageId::AutomationListFailed).replace("{error}", &error.to_string())
@@ -117,7 +118,7 @@ async fn list(locale: Locale, automations: &SharedAutomationManager) -> String {
 
 async fn show(locale: Locale, automations: &SharedAutomationManager, id: &str) -> String {
     let manager = automations.lock().await;
-    match manager.get_automation(id) {
+    match manager.get_automation_view(id) {
         Ok(record) => {
             let runs = manager.list_runs(id, Some(5)).ok();
             format_detail(locale, &record, runs.as_deref())
@@ -130,6 +131,7 @@ async fn show(locale: Locale, automations: &SharedAutomationManager, id: &str) -
 enum Mutation {
     Pause,
     Resume,
+    Adopt,
 }
 
 impl Mutation {
@@ -137,6 +139,7 @@ impl Mutation {
         match self {
             Self::Pause => MessageId::AutomationActionPause,
             Self::Resume => MessageId::AutomationActionResume,
+            Self::Adopt => MessageId::AutomationActionAdopt,
         }
     }
 
@@ -144,6 +147,7 @@ impl Mutation {
         match self {
             Self::Pause => MessageId::AutomationActionPaused,
             Self::Resume => MessageId::AutomationActionResumed,
+            Self::Adopt => MessageId::AutomationActionAdopted,
         }
     }
 }
@@ -158,6 +162,7 @@ async fn mutate(
     let result = match mutation {
         Mutation::Pause => manager.pause_automation(id),
         Mutation::Resume => manager.resume_automation(id),
+        Mutation::Adopt => manager.adopt_automation(id),
     };
 
     match result {
@@ -224,7 +229,8 @@ async fn delete(
     let Some(confirmation) = confirmation else {
         let command = format!("/automation delete {id} --confirm {token}");
         let recent_len = runs.len().min(5);
-        let detail = format_detail(locale, &record, Some(&runs[..recent_len]));
+        let view = manager.record_view(record.clone());
+        let detail = format_detail(locale, &view, Some(&runs[..recent_len]));
         let preview = tr(locale, MessageId::AutomationDeletePreview)
             .replace("{id}", id)
             .replace("{name}", &display_text(&record.name))
@@ -291,14 +297,32 @@ fn action_failed(
         .replace("{error}", &error.to_string())
 }
 
-fn format_list(locale: Locale, records: &[AutomationRecord]) -> String {
+fn next_run_display(locale: Locale, view: &AutomationRecordView) -> String {
+    if view.record.status == AutomationStatus::Active && !view.scheduled_here {
+        let id = match view.execution_ownership {
+            AutomationExecutionOwnership::OtherRuntime => {
+                MessageId::AutomationNotScheduledOtherRuntime
+            }
+            AutomationExecutionOwnership::Unbound => MessageId::AutomationNotScheduledUnbound,
+            AutomationExecutionOwnership::HostUnattached => {
+                MessageId::AutomationNotScheduledUnattached
+            }
+            AutomationExecutionOwnership::Owned => return timestamp(view.record.next_run_at),
+        };
+        return tr(locale, id).into_owned();
+    }
+    timestamp(view.record.next_run_at)
+}
+
+fn format_list(locale: Locale, records: &[AutomationRecordView]) -> String {
     if records.is_empty() {
         return tr(locale, MessageId::AutomationEmpty).into_owned();
     }
 
     let lines = records
         .iter()
-        .map(|record| {
+        .map(|view| {
+            let record = &view.record;
             format!(
                 "{}  [{}]  {}  ({}; {}: {})",
                 record.id,
@@ -306,7 +330,7 @@ fn format_list(locale: Locale, records: &[AutomationRecord]) -> String {
                 display_text(&record.name),
                 delivery_mode_label(record),
                 tr(locale, MessageId::AutomationNextLabel),
-                timestamp(record.next_run_at)
+                next_run_display(locale, view)
             )
         })
         .collect::<Vec<_>>()
@@ -316,9 +340,10 @@ fn format_list(locale: Locale, records: &[AutomationRecord]) -> String {
 
 fn format_detail(
     locale: Locale,
-    record: &AutomationRecord,
+    view: &AutomationRecordView,
     runs: Option<&[AutomationRunRecord]>,
 ) -> String {
+    let record = &view.record;
     let runs = match runs {
         Some([]) => format!("  {}", tr(locale, MessageId::AutomationNoRuns)),
         Some(runs) => runs
@@ -415,7 +440,7 @@ fn format_detail(
         field(
             locale,
             MessageId::AutomationNextLabel,
-            &timestamp(record.next_run_at),
+            &next_run_display(locale, view),
         ),
         field(
             locale,
@@ -680,17 +705,30 @@ mod tests {
         assert!(text.contains("Automation manager unavailable"));
     }
 
+    fn view_of(record: AutomationRecord) -> AutomationRecordView {
+        let scheduled_here = record.status == AutomationStatus::Active;
+        AutomationRecordView {
+            record,
+            scheduled_here,
+            execution_ownership: AutomationExecutionOwnership::Owned,
+        }
+    }
+
     #[test]
     fn list_explains_empty_state_and_operator_controls() {
         assert!(format_list(Locale::En, &[]).contains("Choose New automation"));
-        let text = format_list(Locale::En, &[record(AutomationStatus::Paused)]);
+        let text = format_list(Locale::En, &[view_of(record(AutomationStatus::Paused))]);
         assert!(text.contains("auto_1  [paused]  Nightly checks"));
         assert!(text.contains("next: -"));
     }
 
     #[test]
     fn detail_keeps_schedule_and_recent_run_shape() {
-        let text = format_detail(Locale::En, &record(AutomationStatus::Active), Some(&[]));
+        let text = format_detail(
+            Locale::En,
+            &view_of(record(AutomationStatus::Active)),
+            Some(&[]),
+        );
         assert!(text.contains("Automation auto_1 [active]"));
         assert!(text.contains("rrule: FREQ=DAILY"));
         assert!(text.contains("recent runs:"));
@@ -701,14 +739,17 @@ mod tests {
         let mut automation = record(AutomationStatus::Active);
         automation.delivery_mode = Some(AutomationDeliveryMode::Watcher);
 
-        let list = format_list(Locale::En, std::slice::from_ref(&automation));
+        let list = format_list(Locale::En, &[view_of(automation.clone())]);
         assert!(list.contains("(watcher; next:"));
 
-        let detail = format_detail(Locale::En, &automation, Some(&[]));
+        let detail = format_detail(Locale::En, &view_of(automation), Some(&[]));
         assert!(detail.contains("  delivery: watcher"));
 
-        let default_detail =
-            format_detail(Locale::En, &record(AutomationStatus::Active), Some(&[]));
+        let default_detail = format_detail(
+            Locale::En,
+            &view_of(record(AutomationStatus::Active)),
+            Some(&[]),
+        );
         assert!(default_detail.contains("  delivery: task"));
     }
 
@@ -722,7 +763,7 @@ mod tests {
         automation.trust_mode = Some(false);
         automation.auto_approve = Some(true);
 
-        let text = format_detail(Locale::En, &automation, Some(&[]));
+        let text = format_detail(Locale::En, &view_of(automation), Some(&[]));
 
         assert!(text.contains("  prompt:\n    Run release checks"));
         assert!(text.contains("[redacted]"));
@@ -738,7 +779,7 @@ mod tests {
     fn list_stays_compact_and_detail_omits_unset_execution_overrides() {
         let automation = record(AutomationStatus::Paused);
 
-        let list = format_list(Locale::En, std::slice::from_ref(&automation));
+        let list = format_list(Locale::En, &[view_of(automation.clone())]);
         assert!(!list.contains(&automation.prompt));
         assert!(!list.contains("prompt:"));
         assert!(!list.contains("cwd:"));
@@ -747,7 +788,7 @@ mod tests {
         assert!(!list.contains("trust_mode:"));
         assert!(!list.contains("auto_approve:"));
 
-        let detail = format_detail(Locale::En, &automation, Some(&[]));
+        let detail = format_detail(Locale::En, &view_of(automation), Some(&[]));
         assert!(!detail.contains("cwd:"));
         assert!(!detail.contains("mode:"));
         assert!(!detail.contains("allow_shell:"));
@@ -757,7 +798,7 @@ mod tests {
 
     #[test]
     fn automation_output_routes_through_the_selected_locale() {
-        let french = format_list(Locale::Fr, &[record(AutomationStatus::Paused)]);
+        let french = format_list(Locale::Fr, &[view_of(record(AutomationStatus::Paused))]);
         assert!(french.starts_with(tr(Locale::Fr, MessageId::AutomationListHeading).as_ref()));
         assert!(french.contains(tr(Locale::Fr, MessageId::AutomationStatusPaused).as_ref()));
         assert!(!french.starts_with(tr(Locale::En, MessageId::AutomationListHeading).as_ref()));
