@@ -667,6 +667,14 @@ a.dir-row:hover .dir-action { color: var(--text); }
 .figure-frame img { display: block; width: 100%; height: auto; }
 .figure-caption { color: var(--muted); font-size: var(--text-caption); line-height: 1.5; }
 
+/* ---------- desktop shot ---------- */
+.desktop-shot { display: block; }
+.desktop-shot picture { display: block; }
+.desktop-shot img { display: block; width: 100%; height: auto; }
+.desktop-shot-dark { display: none !important; }
+:root[data-theme="dark"] .desktop-shot-light { display: none !important; }
+:root[data-theme="dark"] .desktop-shot-dark { display: block !important; }
+
 /* ---------- callout ---------- */
 .callout {
   display: grid;
