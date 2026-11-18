@@ -274,7 +274,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         <RouteMap parts={parts} engine={d.mapHeading} label={d.sectionDirectionHeading} locale={locale} />
         <figure className="home-desktop">
           <div className="figure-frame home-desktop-frame">
-            <DesktopShot id="review" alt={d.directionShotAlt} sizes="(max-width: 64rem) 100vw, 64rem" />
+            <DesktopShot id="approval" alt={d.directionShotAlt} sizes="(max-width: 64rem) 100vw, 64rem" />
           </div>
           <figcaption className="home-desktop-caption">
             {desktopPart ? <Status tone={STATE_TONE[desktopState]}>{desktopPart.name}: {desktopPart.stateWord}</Status> : null}

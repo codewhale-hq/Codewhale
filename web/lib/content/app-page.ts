@@ -52,8 +52,8 @@ export const APP_COPY = {
 
   shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
   shotsScope: {
-    en: "These screens come from the desktop development build running the real engine and a real model, qwen3:4b, on this computer through Ollama. Details will change before a release.",
-    zh: "以下画面来自桌面开发版本，运行的是真实引擎和真实模型：通过 Ollama 在本机运行的 qwen3:4b。发布前细节仍会变化。",
+    en: "These screens come from the desktop development build running the real engine and a real model, qwen3:4b, locally through Ollama. Details will change before a release.",
+    zh: "以下画面来自桌面开发版本，运行的是真实引擎和真实模型：通过 Ollama 在本地运行的 qwen3:4b。发布前细节仍会变化。",
   },
   shots: [
     {

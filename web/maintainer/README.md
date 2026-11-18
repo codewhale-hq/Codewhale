@@ -8,7 +8,7 @@ deploys and never posts to issues. It is off until the founder enables it.
 
 | Lane | Model | May change |
 | --- | --- | --- |
-| `derived` | none | Regenerated files only: `web/lib/facts.generated.ts`, `web/data/agent-docs.generated.json`, `web/data/features.generated.json`, `web/lib/terminal-capture.generated.ts`, `web/data/latest-published-release.json`, `docs/public-surface-facts.json`, `docs/cloud-facts/stable.json` |
+| `derived` | none | Regenerated files only: `web/lib/facts.generated.ts`, `web/data/agent-docs.generated.json`, `web/data/features.generated.json`, `web/lib/released-capture.generated.ts`, `web/data/latest-published-release.json`, `docs/public-surface-facts.json`, `docs/cloud-facts/stable.json` |
 | `copy-freshness` | DeepSeek | Stale version, model, provider or command mentions in the explicit file list in `allowlist.txt` (install, getting started, models, tools, plugins, native terminal, runtime and a few English dictionaries) |
 | `link-health` | DeepSeek | A moved URL in the same listed files, only where a probe saw a permanent redirect |
 | `docs-drift` | DeepSeek | `web/lib/content/docs-*.ts` and `web/lib/i18n/dictionaries/en/docs-*.ts`, to match `docs/*.md` |

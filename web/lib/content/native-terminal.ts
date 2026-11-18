@@ -80,8 +80,8 @@ export const NATIVE_TERMINAL_VIEWS = [
 export const NATIVE_TERMINAL_COPY = {
   title: { en: "Explore the terminal", zh: "探索终端界面" },
   description: {
-    en: "These views come from one real session: Codewhale 0.10.3 on gemini-4-hydrogen through Google's API, in Accept Edits.",
-    zh: "这些画面来自一次真实会话：Codewhale 0.10.3 通过 Google API 使用 gemini-4-hydrogen，处于 Accept Edits 模式。",
+    en: "These views come from one real session on a development build of 0.10.3, which is not released yet: gemini-4-hydrogen through Google's API, in Accept Edits.",
+    zh: "这些画面来自一次真实会话，运行在尚未发布的 0.10.3 开发版本上：通过 Google API 使用 gemini-4-hydrogen，处于 Accept Edits 模式。",
   },
   viewsLabel: { en: "Terminal views", zh: "终端视图" },
 } satisfies Record<string, LocalizedText>;

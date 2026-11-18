@@ -84,8 +84,8 @@ export const PLUGINS_COPY = {
     zh: "桌面应用仍在开发中，暂无下载。它的“发现”页列出了 Codewhale 公开维护的插件。",
   },
   desktopAlt: {
-    en: "The desktop app's Plugins page on the Discover tab, with filters for Connectors, Skills and Hooks, and cards for Codewhale for Chrome, Cloudflare, Cloudflare Docs, Codewhale Skills, Computer Use, Design Review, GitHub Workflow and Linear Workflow, each with an Install button.",
-    zh: "桌面应用的插件页面，处于“发现”标签，带有连接器、技能和钩子筛选，并列出 Codewhale for Chrome、Cloudflare、Cloudflare Docs、Codewhale Skills、Computer Use、Design Review、GitHub Workflow 和 Linear Workflow 等卡片，每张都有安装按钮。",
+    en: "The desktop app's Plugins Discover catalog under First-party Codewhale extensions, showing cards for Codewhale for Chrome, Cloudflare, Cloudflare Docs, Codewhale Skills, Computer Use, Design Review, GitHub Workflow, Hello Extension (sample) and Linear Workflow, each with an Install button.",
+    zh: "桌面应用的插件“发现”目录中的官方 Codewhale 扩展列表，展示 Codewhale for Chrome、Cloudflare、Cloudflare Docs、Codewhale Skills、Computer Use、Design Review、GitHub Workflow、Hello Extension (sample) 和 Linear Workflow 等卡片，每张都有安装按钮。",
   },
   desktopCaption: {
     en: "A capture of the desktop development build with a real engine.",
