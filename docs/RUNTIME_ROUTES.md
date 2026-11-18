@@ -96,6 +96,13 @@ registration index.
 | GET | `/v1/crashes` |
 | GET | `/v1/crashes/{name}` |
 | GET | `/v1/definition` |
+| GET | `/v1/designs` |
+| GET | `/v1/designs/{doc}` |
+| PATCH | `/v1/designs/{doc}/artboards/{artboard}` |
+| GET | `/v1/designs/{doc}/artboards/{artboard}/render` |
+| GET | `/v1/designs/{doc}/assets/{*path}` |
+| POST | `/v1/designs/{doc}/comments` |
+| PATCH | `/v1/designs/{doc}/comments/{comment}` |
 | GET | `/v1/diagnostics` |
 | GET | `/v1/diff` |
 | GET | `/v1/dsh/remote/pairings` |
@@ -277,4 +284,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 257 distinct literal paths in this table.
+The source contains 264 distinct literal paths in this table.
