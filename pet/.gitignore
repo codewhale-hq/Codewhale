@@ -5,6 +5,12 @@ digests-*.txt
 **/build/
 **/target/
 rs/petsim
+/android/
+/ios/
+/macos/
+/shots/
+/swift/
+/world/
 *.log
 *.jsonl
 !**/fixtures/*.jsonl
