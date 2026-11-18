@@ -85,7 +85,7 @@ encoding_rs = "0.8.35"
 # Users: crates/workflow-js and the extension host in crates/tui (schemaui is
 # gone); keep the graph on one jsonschema/jsonschema-regex/referencing/
 # fancy-regex stack.
-jsonschema = { version = "0.57", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 libc = "0.2"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls-no-provider", "socks"] }
 # NOT "parallel": the Workflow VM stays single-threaded and bridges to the
