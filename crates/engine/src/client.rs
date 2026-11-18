@@ -2593,7 +2593,14 @@ impl CodewhaleClient {
             auth_disabled,
             surface,
         )?;
-        let mut builder = crate::platform_client_builder()
+        let transport = if api_provider == ProviderKind::Custom
+            && codewhale_config::descriptors::is_registry_admitted_base_url(base_url)
+        {
+            codewhale_net::guard::public_address_reqwest_client_builder()
+        } else {
+            crate::platform_client_builder()
+        };
+        let mut builder = transport
             .default_headers(headers)
             .user_agent(client_user_agent(api_provider))
             .connect_timeout(config.connect_timeout())

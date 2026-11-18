@@ -820,8 +820,20 @@ fn founder_signed_registry_admits_new_provider_discovers_it_and_clears_on_disabl
             .any(|row| row.provider == "tavily" || row.wire_model_id == "tavily-leaked-offering")
     );
     assert!(intrinsic_model("acme-sonnet").is_some());
+    assert!(crate::descriptors::is_registry_admitted_base_url(
+        "https://API.acme-cloud.example./v1/chat/completions"
+    ));
+    assert!(!crate::descriptors::is_registry_admitted_base_url(
+        "https://api.other.example/v1"
+    ));
+    assert!(!crate::descriptors::is_registry_admitted_base_url(
+        "http://localhost:11434/v1"
+    ));
 
     overlay::clear();
+    assert!(!crate::descriptors::is_registry_admitted_base_url(
+        "https://api.acme-cloud.example/v1"
+    ));
     assert!(provider_descriptor("acme-cloud").is_none());
     assert!(provider_descriptor("acme-ai").is_none());
     assert_eq!(

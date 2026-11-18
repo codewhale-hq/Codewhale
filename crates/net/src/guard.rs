@@ -29,6 +29,41 @@ pub fn guarded_reqwest_client_builder() -> reqwest::ClientBuilder {
     codewhale_release::tls::reqwest_client_builder().no_proxy()
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PublicAddressResolver;
+
+impl reqwest::dns::Resolve for PublicAddressResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::time::timeout(
+                DNS_PREFLIGHT_TIMEOUT,
+                tokio::net::lookup_host((host.as_str(), 0u16)),
+            )
+            .await
+            .map_err(|_| format!("timed out resolving {host}"))?
+            .map_err(|error| format!("could not resolve {host}: {error}"))?
+            .collect();
+            if let Some(addr) = addrs.iter().find(|addr| is_restricted_ip(&addr.ip())) {
+                return Err(format!(
+                    "{host} resolved to restricted address {} (private/loopback/link-local/metadata); registry-admitted providers must resolve to public addresses",
+                    addr.ip()
+                )
+                .into());
+            }
+            if addrs.is_empty() {
+                return Err(format!("{host} resolved to no addresses").into());
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+pub fn public_address_reqwest_client_builder() -> reqwest::ClientBuilder {
+    guarded_reqwest_client_builder().dns_resolver(PublicAddressResolver)
+}
+
 const CLOUD_METADATA_V4: [Ipv4Addr; 4] = [
     Ipv4Addr::new(169, 254, 169, 254),
     Ipv4Addr::new(100, 100, 100, 200),
@@ -522,6 +557,23 @@ impl<'a> GuardedGet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn public_address_resolver_refuses_names_that_resolve_to_loopback() {
+        use reqwest::dns::Resolve as _;
+        use std::str::FromStr as _;
+        let error = match PublicAddressResolver
+            .resolve(reqwest::dns::Name::from_str("localhost").expect("name"))
+            .await
+        {
+            Ok(addrs) => panic!(
+                "localhost admitted: {:?}",
+                addrs.collect::<Vec<SocketAddr>>()
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("restricted address"), "{error}");
+    }
     #[cfg(not(windows))]
     use std::io::{Read, Write};
     #[cfg(not(windows))]

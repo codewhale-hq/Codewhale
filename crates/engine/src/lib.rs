@@ -91,7 +91,8 @@ pub mod work_graph;
 /// environment at build time, so one builder decides the route for the whole
 /// process lifetime. Installing the loopback fallback here, rather than at
 /// selected call sites, keeps those clients on the same proxy rules. Reviewed
-/// plugin remotes and guarded fetches do not come through here: they use
+/// plugin remotes, guarded fetches and model clients for registry-admitted
+/// custom providers do not come through here: they use
 /// `codewhale_net::guard::guarded_reqwest_client_builder`, which disables
 /// ambient proxies on purpose.
 pub(crate) fn platform_client_builder() -> reqwest::ClientBuilder {

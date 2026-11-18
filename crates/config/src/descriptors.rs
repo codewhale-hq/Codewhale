@@ -248,6 +248,25 @@ pub fn active_provider_descriptors() -> Vec<ProviderDescriptor> {
 }
 
 #[must_use]
+pub fn is_registry_admitted_base_url(base_url: &str) -> bool {
+    fn host(raw: &str) -> Option<String> {
+        url::Url::parse(raw.trim()).ok().and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        })
+    }
+    let Some(target) = host(base_url) else {
+        return false;
+    };
+    crate::cloud_facts::overlay::pulled_registry().is_some_and(|admitted| {
+        admitted
+            .providers
+            .iter()
+            .any(|provider| host(&provider.base_url).as_deref() == Some(target.as_str()))
+    })
+}
+
+#[must_use]
 pub fn provider_descriptor(id: &str) -> Option<ProviderDescriptor> {
     active_provider_descriptors()
         .into_iter()
