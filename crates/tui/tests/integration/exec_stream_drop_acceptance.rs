@@ -21,8 +21,7 @@ use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
 #[cfg(all(unix, feature = "long-running-tests"))]
-#[path = "../support/qa_harness/mod.rs"]
-mod qa_harness;
+use super::qa_harness;
 
 const MODEL: &str = "stream-drop-test";
 /// The server claims a body far larger than it delivers on a "drop" response,
