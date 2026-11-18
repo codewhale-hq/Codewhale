@@ -3684,7 +3684,9 @@ impl Config {
                 if let Some(msg) = warn_on_misplaced_top_level_keys(&contents) {
                     tracing::warn!("{msg}");
                 }
-                reject_unmanaged_tool_launcher(&contents, path)?;
+                if let Ok(document) = toml::from_str::<toml::Value>(&contents) {
+                    codewhale_config::reject_unmanaged_tool_launcher(&document, path)?;
+                }
                 parsed
             } else {
                 apply_profile(ConfigFile::default(), profile)?;
@@ -10375,41 +10377,13 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn tool_launcher_layer_error(path: &Path) -> anyhow::Error {
-    anyhow::anyhow!(
-        "`tool_launcher` in {} is not accepted: it is read only from the managed configuration (CODEWHALE_MANAGED_CONFIG_PATH, or the default managed path), in a file the Engine cannot write",
-        codewhale_config::quote_os_path(path)
-    )
-}
-
-fn tool_launcher_in_profiles(document: &toml::Value) -> bool {
-    document
-        .get("profiles")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|profiles| {
-            profiles
-                .values()
-                .any(|profile| profile.get("tool_launcher").is_some())
-        })
-}
-
-fn reject_unmanaged_tool_launcher(raw: &str, path: &Path) -> Result<()> {
-    let Ok(document) = toml::from_str::<toml::Value>(raw) else {
-        return Ok(());
-    };
-    if document.get("tool_launcher").is_some() || tool_launcher_in_profiles(&document) {
-        return Err(tool_launcher_layer_error(path));
-    }
-    Ok(())
-}
-
 fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
     let Ok(document) = toml::from_str::<toml::Value>(&raw) else {
         return Ok(None);
     };
-    if tool_launcher_in_profiles(&document) {
+    if codewhale_config::tool_launcher_in_profiles(&document) {
         anyhow::bail!(
             "`tool_launcher` in {} belongs at the top level of the managed configuration, not in a profile",
             codewhale_config::quote_os_path(path)

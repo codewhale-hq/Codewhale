@@ -11145,3 +11145,20 @@ id = "account-model"
     assert!(resolved.model_error.is_none());
     assert!(resolved.route.is_ok());
 }
+
+#[test]
+fn config_store_refuses_a_user_layer_tool_launcher() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("config.toml");
+    for body in [
+        "tool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\"]\n",
+        "[profiles.work]\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+    ] {
+        fs::write(&config_path, body).expect("write config");
+        let error = ConfigStore::load(Some(config_path.clone()))
+            .expect_err("a user-layer tool_launcher is a load error");
+        assert!(error.to_string().contains("`tool_launcher`"), "{error}");
+    }
+    fs::write(&config_path, "model = \"deepseek-v4-flash\"\n").expect("write config");
+    ConfigStore::load(Some(config_path)).expect("a config without a launcher loads");
+}
