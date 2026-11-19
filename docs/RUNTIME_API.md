@@ -2573,13 +2573,13 @@ conversations that both use `term-1` in one folder get two shells. These
 routes attach to those shells and never create one, because conjuring a shell
 from an HTTP request would give the client a terminal the Engine does not
 know about. Input is attributable by route: `input` is the client's writer,
-`terminal/send` is the agent's.
+`terminal_send` is the agent's.
 
 - `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
   terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
   the thread's live shells, newest activity first. `terminal_id` is issued
   when the shell starts and is never reused; the agent's terminal tool results
-  carry the same value as `terminal_session_id`, and `terminal/reset` also
+  carry the same value as `terminal_session_id`, and `terminal_reset` also
   reports `previous_session_id`. `instance` names this Engine process's
   terminal registry. While a shell lives, `state` is its latest command's
   state (`running`, `idle`, `canceled`, `failed`, `stale_lost` or `reset`);
@@ -2625,7 +2625,7 @@ Reconnect and restart semantics:
   confirm `instance` is the one recorded, and resume each `terminal_id` from
   its stored cursor. Only retained output is replayed; `gap` reports what the
   ring lost.
-- **Reset** (`terminal/reset`): the shell is killed and a new one starts under
+- **Reset** (`terminal_reset`): the shell is killed and a new one starts under
   the same name with a new `terminal_id`. The old identity is `404`; the list
   shows the replacement, and a client switches to it only on the person's
   choice.
@@ -2633,7 +2633,7 @@ Reconnect and restart semantics:
   `exit_code` until the agent resets it or the Engine restarts.
 - **Engine restart**: live shells end with the process. The list reports a
   different `instance` and none of the old identities, which answer `404`. No
-  shell is recreated and no command is rerun; a later `terminal/run` with the
+  shell is recreated and no command is rerun; a later `terminal_run` with the
   same name starts a new identity.
 - **Input across a failure**: input already sent cannot be retracted. A client
   that loses the connection before the response cannot know whether the bytes

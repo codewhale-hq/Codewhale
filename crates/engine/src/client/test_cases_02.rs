@@ -455,7 +455,7 @@
             .map(str::to_string)
             .collect();
         assert_eq!(source_names, expected_names);
-        assert!(source_names.contains("get_goal"));
+        assert!(!source_names.contains("get_goal"));
         assert!(!source_names.contains("create_goal"));
         assert!(!source_names.contains("update_goal"));
 

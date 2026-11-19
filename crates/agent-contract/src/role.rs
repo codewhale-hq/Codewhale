@@ -356,9 +356,9 @@ pub const RAW_SHELL_DENYLIST: &[&str] = &[
     "exec_shell_cancel",
     "task_shell_start",
     "task_shell_wait",
-    // The persistent PTY surface registers as `terminal/run`, `terminal/send`,
-    // … — a glob, because the family is open-ended and every member of it is a
-    // raw command channel.
+    // The persistent PTY surface registers as `terminal_run`, `terminal_send`,
+    // … with hidden legacy `terminal/*` aliases — both globs stay denied.
+    "terminal_*",
     "terminal/*",
 ];
 

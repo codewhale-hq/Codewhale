@@ -277,8 +277,9 @@ fn registered_resource_claims(
             path_claim(input, "path", Some("."), context, ResourceClaim::ReadTree)
         }
         "apply_patch" => apply_patch_resource_claims(input, context),
-        "terminal/run" => Ok(terminal_claim(input, "session", Some("term-1"))),
-        "terminal/send" | "terminal/wait" | "terminal/cancel" | "terminal/reset" => {
+        "terminal_run" | "terminal/run" => Ok(terminal_claim(input, "session", Some("term-1"))),
+        "terminal_send" | "terminal_wait" | "terminal_cancel" | "terminal_reset"
+        | "terminal/send" | "terminal/wait" | "terminal/cancel" | "terminal/reset" => {
             Ok(terminal_claim(input, "session", None))
         }
         "exec_shell_wait"
@@ -942,8 +943,13 @@ mod tests {
         let context = ToolContext::new(root.path().to_path_buf());
 
         assert_eq!(
-            registered_resource_claims("terminal/run", &json!({}), &context)
+            registered_resource_claims("terminal_run", &json!({}), &context)
                 .expect("default terminal"),
+            vec![ResourceClaim::Terminal("term-1".to_string())]
+        );
+        assert_eq!(
+            registered_resource_claims("terminal/run", &json!({}), &context)
+                .expect("legacy default terminal"),
             vec![ResourceClaim::Terminal("term-1".to_string())]
         );
         assert_eq!(

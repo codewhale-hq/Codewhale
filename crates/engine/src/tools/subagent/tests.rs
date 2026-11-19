@@ -7958,14 +7958,20 @@ async fn issue_5633_catalog_and_dispatch_are_one_grant() {
         // can never call what it cannot see. `Bash`/`exec_shell` are hidden
         // execution-compatibility aliases, so they never appear in any
         // catalog — under a non-Full grant they are still refused by name.
-        for name in ["terminal/run", "terminal/send"] {
+        for name in ["terminal_run", "terminal_send"] {
             assert_eq!(
                 catalog.contains(name),
                 full_shell,
                 "{role:?}: {name} visibility must equal the shell grant"
             );
         }
-        for name in ["Bash", "exec_shell", "terminal/run", "task_shell_start"] {
+        for name in [
+            "Bash",
+            "exec_shell",
+            "terminal_run",
+            "terminal/run",
+            "task_shell_start",
+        ] {
             assert!(!catalog.contains(name) || full_shell, "{role:?}: {name}");
             if !full_shell {
                 let dispatch = registry
@@ -8484,11 +8490,11 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "speech",
         "task_shell_wait",
         "tasks",
-        "terminal/cancel",
-        "terminal/reset",
-        "terminal/run",
-        "terminal/send",
-        "terminal/wait",
+        "terminal_cancel",
+        "terminal_reset",
+        "terminal_run",
+        "terminal_send",
+        "terminal_wait",
         "todo_write",
         // `tts` is a hidden compat alias for `speech` since #5941.
         "tui_help",

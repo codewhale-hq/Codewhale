@@ -1132,9 +1132,14 @@ fn missing_tool_scenario() {
             let message = missing_tool_error_message(tool_name, &catalog);
             assert!(message.contains("not available in the current tool catalog"));
             assert!(
-                message.contains("foreground-only"),
+                !message.contains("foreground-only"),
                 "{tool_name}: {message}"
             );
+            assert!(
+                message.contains("background: true") && message.contains("task_shell_wait"),
+                "{tool_name}: {message}"
+            );
+            assert!(message.contains("terminal_run"), "{tool_name}: {message}");
             assert!(message.contains(TOOL_SEARCH_NAME), "{tool_name}: {message}");
         }
     }
@@ -1147,7 +1152,17 @@ fn missing_shell_scenario() {
     {
         let catalog = vec![api_tool("read_file")];
 
-        for tool_name in ["task_shell_start", "task_shell_wait"] {
+        for tool_name in [
+            "bash",
+            "Bash",
+            "task_shell_start",
+            "task_shell_wait",
+            "terminal_run",
+            "terminal_wait",
+            "terminal_send",
+            "terminal_cancel",
+            "terminal/run",
+        ] {
             let message = missing_tool_error_message(tool_name, &catalog);
             assert!(message.contains("not available in the current tool catalog"));
             assert!(

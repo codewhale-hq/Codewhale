@@ -1143,13 +1143,18 @@ impl ToolRegistryBuilder {
     pub fn with_terminal_tools(self) -> Self {
         use super::terminal_session::{
             TerminalCancelTool, TerminalResetTool, TerminalRunTool, TerminalSendTool,
-            TerminalWaitTool,
+            TerminalWaitTool, legacy_terminal_tool_aliases,
         };
-        self.with_tool(Arc::new(TerminalRunTool))
+        let mut builder = self
+            .with_tool(Arc::new(TerminalRunTool))
             .with_tool(Arc::new(TerminalSendTool))
             .with_tool(Arc::new(TerminalWaitTool))
             .with_tool(Arc::new(TerminalCancelTool))
-            .with_tool(Arc::new(TerminalResetTool))
+            .with_tool(Arc::new(TerminalResetTool));
+        for alias in legacy_terminal_tool_aliases() {
+            builder = builder.with_tool(alias);
+        }
+        builder
     }
 
     /// OpenHarmony does not include the `portable-pty` dependency, so keep the

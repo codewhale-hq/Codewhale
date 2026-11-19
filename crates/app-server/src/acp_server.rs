@@ -915,8 +915,9 @@ fn tool_call_kind(call: &PendingToolCall) -> acp::ToolKind {
         "apply_patch" | "write" | "edit" | "write_file" | "edit_file" => acp::ToolKind::Edit,
         "read" | "read_file" => acp::ToolKind::Read,
         "Git" => acp::ToolKind::Read,
-        "bash" | "Bash" | "terminal/run" | "terminal/send" | "terminal/wait"
-        | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
+        "bash" | "Bash" | "terminal_run" | "terminal_send" | "terminal_wait"
+        | "terminal_cancel" | "terminal_reset" | "terminal/run" | "terminal/send"
+        | "terminal/wait" | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
         _ => acp::ToolKind::Other,
     }
 }

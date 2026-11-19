@@ -7,8 +7,10 @@
 
 use crate::tools::execution_envelope::{holds_bounded_verification, tool_call_denied_for};
 use codewhale_tools::names::{
-    LEGACY_TOOL_SEARCH_BM25_NAME, LEGACY_TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_NAME,
-    is_tool_search_tool,
+    LEGACY_TERMINAL_CANCEL_NAME, LEGACY_TERMINAL_RESET_NAME, LEGACY_TERMINAL_RUN_NAME,
+    LEGACY_TERMINAL_SEND_NAME, LEGACY_TERMINAL_WAIT_NAME, LEGACY_TOOL_SEARCH_BM25_NAME,
+    LEGACY_TOOL_SEARCH_REGEX_NAME, TERMINAL_CANCEL_NAME, TERMINAL_RESET_NAME, TERMINAL_RUN_NAME,
+    TERMINAL_SEND_NAME, TERMINAL_WAIT_NAME, TOOL_SEARCH_NAME, is_tool_search_tool,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -44,16 +46,18 @@ const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 #[rustfmt::skip]
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "grep_files", "bash", "agent", "todo_write",
-    // Continuation instructions require these controls. Hiding them behind
-    // discovery leaves a model unable to stop the work it was asked to run.
-    "create_goal", "get_goal", "update_goal", "task_shell_wait",
+    "read", "write", "edit", "list_dir", "file_search", "grep_files", "bash", "agent", "todo_write",
+    // Starting a goal stays eager; follow-up goal and background-shell controls auto-activate on demand.
+    "create_goal",
     "present",
     // The prompt core tells the model to discover skills through
     // `load_skill`, so the tool has to be on the wire for that instruction
     // to be true.
     "load_skill",
 ];
+
+pub const GOAL_FOLLOWUP_TOOLS: &[&str] = &["get_goal", "update_goal"];
+pub const TASK_SHELL_WAIT_NAME: &str = "task_shell_wait";
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
     CoreActionToolFallback {
@@ -126,8 +130,17 @@ fn default_active_native_tools_set() -> &'static HashSet<&'static str> {
         .get_or_init(|| DEFAULT_ACTIVE_NATIVE_TOOLS.iter().copied().collect())
 }
 
+pub(super) fn always_load_matches(always_load: &HashSet<String>, name: &str) -> bool {
+    always_load.contains(name)
+        || always_load.iter().any(|entry| {
+            entry
+                .strip_suffix('*')
+                .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
+        })
+}
+
 pub(super) fn should_default_defer_tool(name: &str, always_load: &HashSet<String>) -> bool {
-    if always_load.contains(name) {
+    if always_load_matches(always_load, name) {
         return false;
     }
 
@@ -153,7 +166,7 @@ pub(super) fn apply_mcp_tool_deferral(
     always_load: &HashSet<String>,
 ) {
     for tool in catalog {
-        if always_load.contains(&tool.name) {
+        if always_load_matches(always_load, &tool.name) {
             tool.defer_loading = Some(false);
             continue;
         }
@@ -226,7 +239,7 @@ pub(super) fn apply_tool_surface_budget(
         return;
     }
     for tool in catalog {
-        if always_load.contains(&tool.name) {
+        if always_load_matches(always_load, &tool.name) {
             continue;
         }
         if matches!(tool.name.as_str(), "Run" | "tasks" | "Web") {
@@ -413,7 +426,7 @@ const ADVERTISED_DEFERRED_TOOLS: &[&str] = &[
     "lsp",
     "review",
     "session_search",
-    "terminal/run",
+    TERMINAL_RUN_NAME,
     "apply_patch",
     "context_archive_search",
     "context_archive_get",
@@ -602,10 +615,84 @@ pub fn remove_evicted_cache_activations(
     }
 }
 
-/// Make the recovery schema visible on the next provider step when a tool
-/// result actually publishes retrievable evidence. The initial toolbox stays
-/// small, while a receipt never advertises a deferred route that merely asks
-/// the model to repeat the same call.
+fn activate_deferred_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    names: &[&str],
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    let mut to_activate = Vec::new();
+    for name in names {
+        let is_deferred = catalog
+            .iter()
+            .any(|tool| tool.name == *name && tool.defer_loading.unwrap_or(false));
+        if !is_deferred {
+            continue;
+        }
+        if active.contains(*name) {
+            cache.record_use(name);
+            continue;
+        }
+        to_activate.push((*name).to_string());
+    }
+    if to_activate.is_empty() {
+        return Ok(false);
+    }
+    let active_before = active.clone();
+    let delta = cache.activate_measured(catalog, &to_activate, measure)?;
+    remove_evicted_cache_activations(catalog, active, delta.evicted.iter().cloned());
+    active.extend(delta.admitted.iter().cloned());
+    for name in &delta.admitted {
+        cache.record_use(name);
+    }
+    Ok(*active != active_before)
+}
+
+fn result_started_background_shell_job(metadata: Option<&Value>) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    if metadata.get("backgrounded").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let running_task = metadata
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+        && metadata
+            .get("task_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+    if running_task {
+        return true;
+    }
+    if metadata
+        .get("poll_with")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.as_str() == Some(TASK_SHELL_WAIT_NAME))
+        })
+    {
+        return true;
+    }
+    metadata
+        .get("shell_jobs")
+        .and_then(Value::as_array)
+        .is_some_and(|jobs| {
+            jobs.iter().any(|job| {
+                job.get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+            })
+        })
+}
+
+/// Make result-dependent deferred schemas visible on the next provider step
+/// when a tool result publishes retrievable evidence or starts a background
+/// shell job.
 pub fn activate_result_dependencies(
     catalog: &[Tool],
     active: &mut HashSet<String>,
@@ -613,6 +700,7 @@ pub fn activate_result_dependencies(
     result: &ToolResult,
     measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
 ) -> Result<bool, ToolError> {
+    let mut names = Vec::new();
     let needs_retrieval = result
         .metadata
         .as_ref()
@@ -620,14 +708,34 @@ pub fn activate_result_dependencies(
         .and_then(Value::as_bool)
         == Some(true)
         || super::context::offers_retrieval(result.metadata.as_ref());
-    if !needs_retrieval {
+    if needs_retrieval {
+        names.push(TOOL_RESULT_RETRIEVAL_NAME);
+    }
+    if result_started_background_shell_job(result.metadata.as_ref()) {
+        names.push(TASK_SHELL_WAIT_NAME);
+    }
+    if names.is_empty() {
         return Ok(false);
     }
-    let delta =
-        cache.activate_measured(catalog, &[TOOL_RESULT_RETRIEVAL_NAME.to_string()], measure)?;
-    remove_evicted_cache_activations(catalog, active, delta.evicted.iter().cloned());
-    active.extend(delta.admitted.iter().cloned());
-    Ok(!delta.admitted.is_empty() || !delta.evicted.is_empty())
+    activate_deferred_tools(catalog, active, cache, &names, measure)
+}
+
+pub fn activate_goal_followup_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    activate_deferred_tools(catalog, active, cache, GOAL_FOLLOWUP_TOOLS, measure)
+}
+
+pub fn activate_background_shell_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    activate_deferred_tools(catalog, active, cache, &[TASK_SHELL_WAIT_NAME], measure)
 }
 
 fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
@@ -1088,21 +1196,30 @@ fn unavailable_core_action_tools_with_bm25_like(
         .collect()
 }
 
+fn is_eager_wire_tool(
+    tool: &Tool,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
+) -> bool {
+    !tool.defer_loading.unwrap_or(false)
+        || is_tool_search_tool(&tool.name)
+        || (active_tools.contains(&tool.name)
+            && cache.is_some_and(|cache| !cache.names().any(|cached| cached == tool.name)))
+}
+
 fn discover_tools_with_regex(
     catalog: &[Tool],
     query: &str,
     max_results: usize,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
 ) -> Result<Vec<String>, ToolError> {
     let regex = compile_tool_search_regex(query)?;
 
     let mut matches = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
-        // tool_search loads definitions omitted from the current request. An
-        // eager tool is already present, so returning it as a cache candidate
-        // would misclassify it as rejected (the cache intentionally accepts
-        // deferred definitions only).
-        if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
+        if is_eager_wire_tool(tool, active_tools, cache) {
             continue;
         }
         scratch.load(tool);
@@ -1116,7 +1233,124 @@ fn discover_tools_with_regex(
     Ok(matches)
 }
 
-fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {
+const TOOL_SEARCH_SYNONYM_GROUPS: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "pdf",
+            "image",
+            "images",
+            "screenshot",
+            "screenshots",
+            "photo",
+            "picture",
+            "audio",
+            "video",
+            "media",
+        ],
+        &["read", "read_media", "media"],
+    ),
+    (
+        &[
+            "git", "diff", "commit", "branch", "blame", "status", "stash", "merge", "log",
+        ],
+        &["git"],
+    ),
+    (
+        &[
+            "test", "tests", "lint", "check", "build", "verify", "verifier", "cargo", "pytest",
+        ],
+        &["run", "verify", "run_tests"],
+    ),
+    (
+        &[
+            "shell",
+            "pty",
+            "terminal",
+            "tty",
+            "bg",
+            "background",
+            "interactive",
+            "process",
+        ],
+        &[
+            "bash",
+            "terminal_run",
+            "terminal_wait",
+            "terminal_send",
+            "terminal_cancel",
+            "task_shell_wait",
+        ],
+    ),
+    (
+        &[
+            "subagent", "delegate", "worker", "spawn", "child", "parallel",
+        ],
+        &["agent", "workflow"],
+    ),
+    (
+        &["memory", "note", "notes", "remember", "recall", "save"],
+        &["remember", "memory_search", "memory_get"],
+    ),
+    (
+        &[
+            "web", "url", "http", "https", "fetch", "browse", "internet", "search",
+        ],
+        &["web", "web.run", "fetch_url", "web_search"],
+    ),
+    (
+        &[
+            "lsp",
+            "definition",
+            "references",
+            "diagnostics",
+            "symbol",
+            "symbols",
+            "hover",
+            "typecheck",
+        ],
+        &["lsp"],
+    ),
+    (
+        &["todo", "checklist", "plan", "task", "tasks"],
+        &["todo_write", "tasks"],
+    ),
+];
+
+fn expand_bm25_synonyms(terms: &[String]) -> Vec<&'static str> {
+    let mut expanded = Vec::new();
+    for term in terms {
+        let normalized = term.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.');
+        if normalized.is_empty() {
+            continue;
+        }
+        for (triggers, targets) in TOOL_SEARCH_SYNONYM_GROUPS {
+            if triggers.contains(&normalized) {
+                for target in *targets {
+                    if !terms.iter().any(|existing| existing == target)
+                        && !expanded.contains(target)
+                    {
+                        expanded.push(*target);
+                    }
+                }
+            }
+        }
+    }
+    expanded
+}
+
+fn name_has_token(name_lower: &str, token: &str) -> bool {
+    name_lower
+        .split(['_', '-', '.', '/', ':'])
+        .any(|part| part == token)
+}
+
+fn discover_tools_with_bm25_like(
+    catalog: &[Tool],
+    query: &str,
+    max_results: usize,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
+) -> Vec<String> {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|term| term.trim().to_lowercase())
@@ -1126,21 +1360,32 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usi
         return Vec::new();
     }
 
+    let synonym_targets = expand_bm25_synonyms(&terms);
     let mut scored: Vec<(i64, String)> = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
-        if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
+        if is_eager_wire_tool(tool, active_tools, cache) {
             continue;
         }
         scratch.load(tool);
         let mut score = 0i64;
         for term in &terms {
             if scratch.hay.contains(term) {
-                score += 1;
+                score += 10;
             }
             // Loop-invariant: lowered once by `load`, not once per term.
             if scratch.name_lower.contains(term) {
-                score += 2;
+                score += 20;
+            }
+            if scratch.name_lower == *term {
+                score += 40;
+            }
+        }
+        for target in &synonym_targets {
+            if scratch.name_lower == *target {
+                score += 12;
+            } else if name_has_token(&scratch.name_lower, target) {
+                score += 5;
             }
         }
         if score > 0 {
@@ -1298,7 +1543,7 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     if tool_name == "exec_shell" {
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
-             `exec_shell` was replaced by `bash` — call `bash` with a `command` instead. \
+             `exec_shell` was replaced by `bash` — call `bash` with a `command` (or `background: true` for background jobs) instead. \
              If `bash` is also absent: {shell_hint}.",
             shell_hint = shell_tool_allow_shell_hint()
         );
@@ -1309,7 +1554,8 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     ) {
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
-             Lowercase `bash` is foreground-only; use {TOOL_SEARCH_NAME} to discover shell session controls."
+             Use `bash` (with `background: true` for background work) and `task_shell_wait` for background jobs, \
+             or use {TOOL_SEARCH_NAME} to discover persistent terminal controls (`{TERMINAL_RUN_NAME}`, `{TERMINAL_WAIT_NAME}`, `{TERMINAL_SEND_NAME}`, `{TERMINAL_CANCEL_NAME}`)."
         );
     }
     if suggestions.is_empty() {
@@ -1348,14 +1594,27 @@ fn shell_tool_allow_shell_hint() -> &'static str {
      the next turn will expose shell again"
 }
 
-fn is_shell_tool_name(tool_name: &str) -> bool {
+pub(super) fn is_shell_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "exec_shell"
+        "bash"
+            | "Bash"
+            | "exec_shell"
             | "exec_shell_wait"
             | "exec_shell_interact"
+            | "exec_shell_cancel"
             | "task_shell_start"
             | "task_shell_wait"
+            | TERMINAL_RUN_NAME
+            | TERMINAL_WAIT_NAME
+            | TERMINAL_SEND_NAME
+            | TERMINAL_CANCEL_NAME
+            | TERMINAL_RESET_NAME
+            | LEGACY_TERMINAL_RUN_NAME
+            | LEGACY_TERMINAL_WAIT_NAME
+            | LEGACY_TERMINAL_SEND_NAME
+            | LEGACY_TERMINAL_CANCEL_NAME
+            | LEGACY_TERMINAL_RESET_NAME
     )
 }
 
@@ -1454,10 +1713,16 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
             } else {
                 ""
             };
-            lines.push(format!(
-                "  {}: {}{}",
-                field.name, field.kind, required_marker
-            ));
+            match field.description.as_deref() {
+                Some(description) => lines.push(format!(
+                    "  {}: {}{} — {}",
+                    field.name, field.kind, required_marker, description
+                )),
+                None => lines.push(format!(
+                    "  {}: {}{}",
+                    field.name, field.kind, required_marker
+                )),
+            }
         }
     }
     lines.push(String::new());
@@ -1485,7 +1750,7 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
         }
     }
 
-    ToolResult::success(lines.join("\n")).with_metadata(json!({
+    ToolResult::error(lines.join("\n")).with_metadata(json!({
         "event": "tool.schema_hydrated",
         "tool": tool.name,
         "executed": false,
@@ -1505,6 +1770,7 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
 struct SchemaField {
     name: String,
     kind: String,
+    description: Option<String>,
 }
 
 fn schema_fields(schema: &Value) -> Vec<SchemaField> {
@@ -1516,10 +1782,25 @@ fn schema_fields(schema: &Value) -> Vec<SchemaField> {
         .map(|(name, spec)| SchemaField {
             name: name.clone(),
             kind: schema_type_label(spec),
+            description: concise_schema_description(spec),
         })
         .collect::<Vec<_>>();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
     fields
+}
+
+fn concise_schema_description(spec: &Value) -> Option<String> {
+    const MAX_DESC_CHARS: usize = 160;
+    let raw = spec.get("description").and_then(Value::as_str)?;
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    if collapsed.chars().count() <= MAX_DESC_CHARS {
+        return Some(collapsed);
+    }
+    let truncated: String = collapsed.chars().take(MAX_DESC_CHARS - 1).collect();
+    Some(format!("{truncated}…"))
 }
 
 fn schema_required_fields(schema: &Value) -> Vec<String> {
@@ -1535,16 +1816,86 @@ fn schema_required_fields(schema: &Value) -> Vec<String> {
 }
 
 fn schema_type_label(spec: &Value) -> String {
-    let Some(kind) = spec.get("type").and_then(Value::as_str) else {
-        return "value".to_string();
-    };
+    schema_type_label_at_depth(spec, 0)
+}
+
+fn schema_type_label_at_depth(spec: &Value, depth: usize) -> String {
+    const MAX_NESTED_DEPTH: usize = 2;
+    const MAX_NESTED_FIELDS: usize = 6;
     if let Some(values) = spec.get("enum").and_then(Value::as_array) {
-        let labels = values.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        let labels = values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(text) => Some(text.clone()),
+                Value::Number(num) => Some(num.to_string()),
+                Value::Bool(flag) => Some(flag.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         if !labels.is_empty() {
+            let kind = spec.get("type").and_then(Value::as_str).unwrap_or("enum");
             return format!("{kind} ({})", labels.join(" | "));
         }
     }
+    if let Some(variants) = spec
+        .get("oneOf")
+        .or_else(|| spec.get("anyOf"))
+        .and_then(Value::as_array)
+        && depth < MAX_NESTED_DEPTH
+    {
+        let labels = variants
+            .iter()
+            .map(|variant| schema_type_label_at_depth(variant, depth + 1))
+            .collect::<Vec<_>>();
+        if !labels.is_empty() {
+            return labels.join(" | ");
+        }
+    }
+    let Some(kind) = spec.get("type").and_then(Value::as_str) else {
+        if spec.get("properties").is_some() && depth < MAX_NESTED_DEPTH {
+            return format_nested_object_shape(spec, depth, MAX_NESTED_FIELDS);
+        }
+        return "value".to_string();
+    };
+    if kind == "array"
+        && depth < MAX_NESTED_DEPTH
+        && let Some(items) = spec.get("items")
+    {
+        return format!("array<{}>", schema_type_label_at_depth(items, depth + 1));
+    }
+    if kind == "object" && depth < MAX_NESTED_DEPTH && spec.get("properties").is_some() {
+        return format_nested_object_shape(spec, depth, MAX_NESTED_FIELDS);
+    }
     kind.to_string()
+}
+
+fn format_nested_object_shape(spec: &Value, depth: usize, max_fields: usize) -> String {
+    let Some(properties) = spec.get("properties").and_then(Value::as_object) else {
+        return "object".to_string();
+    };
+    if properties.is_empty() {
+        return "object".to_string();
+    }
+    let required = schema_required_fields(spec);
+    let mut keys = properties.keys().collect::<Vec<_>>();
+    keys.sort();
+    let total = keys.len();
+    let mut parts = keys
+        .into_iter()
+        .take(max_fields)
+        .map(|key| {
+            let child = schema_type_label_at_depth(&properties[key], depth + 1);
+            if required.contains(key) {
+                format!("{key}: {child} required")
+            } else {
+                format!("{key}: {child}")
+            }
+        })
+        .collect::<Vec<_>>();
+    if total > max_fields {
+        parts.push(format!("+{} more", total - max_fields));
+    }
+    format!("object {{{}}}", parts.join(", "))
 }
 
 fn received_field_names(input: &Value) -> Vec<String> {
@@ -1688,10 +2039,16 @@ fn execute_tool_search_inner(
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
     let mut discovered = if match_kind == "regex" {
-        discover_tools_with_regex(catalog, query, max_results)?
+        discover_tools_with_regex(catalog, query, max_results, active_tools, cache.as_deref())?
     } else {
-        discover_tools_with_bm25_like(catalog, query, max_results)
+        discover_tools_with_bm25_like(catalog, query, max_results, active_tools, cache.as_deref())
     };
+    discovered.retain(|name| {
+        catalog
+            .iter()
+            .find(|tool| &tool.name == name)
+            .is_some_and(|tool| !is_eager_wire_tool(tool, active_tools, cache.as_deref()))
+    });
     let remaining_results = max_results.saturating_sub(discovered.len());
     let unavailable = if match_kind == "regex" {
         unavailable_core_action_tools_with_regex(catalog, query, remaining_results)?
@@ -1704,24 +2061,35 @@ fn execute_tool_search_inner(
     let mut evicted = Vec::new();
     let mut toolbox = None;
     if let Some(cache) = cache {
-        let delta = cache.activate_measured(catalog, &discovered, measure)?;
-        toolbox = Some(json!({
-            "active_deferred_tools": cache.names().collect::<Vec<_>>(),
-            "added_wire_schema_bytes": delta.schema_bytes,
-            "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
-            "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
-            "exceeds_soft_target": delta.exceeds_soft_target,
-            "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
-        }));
-        remove_evicted_cache_activations(catalog, active_tools, delta.evicted.iter().cloned());
-        evicted = delta
-            .evicted
-            .into_iter()
-            .filter(|name| !active_tools.contains(name))
-            .collect();
-        cache_rejected = delta.rejected;
-        cache_held = delta.held;
-        discovered = delta.admitted;
+        if discovered.is_empty() {
+            toolbox = Some(json!({
+                "active_deferred_tools": cache.names().collect::<Vec<_>>(),
+                "added_wire_schema_bytes": Value::Null,
+                "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
+                "exceeds_soft_target": cache.names().count() > crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
+            }));
+        } else {
+            let delta = cache.activate_measured(catalog, &discovered, measure)?;
+            toolbox = Some(json!({
+                "active_deferred_tools": cache.names().collect::<Vec<_>>(),
+                "added_wire_schema_bytes": delta.schema_bytes,
+                "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
+                "exceeds_soft_target": delta.exceeds_soft_target,
+                "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
+            }));
+            remove_evicted_cache_activations(catalog, active_tools, delta.evicted.iter().cloned());
+            evicted = delta
+                .evicted
+                .into_iter()
+                .filter(|name| !active_tools.contains(name))
+                .collect();
+            cache_rejected = delta.rejected;
+            cache_held = delta.held;
+            discovered = delta.admitted;
+        }
     }
     for name in &discovered {
         active_tools.insert(name.clone());
@@ -1802,7 +2170,7 @@ fn toolbox_soft_targets() -> String {
 
 fn readmission_search_input(name: &str) -> Value {
     json!({
-        "query": format!("^{}\\n", regex::escape(&name.to_lowercase())),
+        "query": format!("^{}$", regex::escape(name)),
         "match": "regex",
         "max_results": 1,
     })
@@ -1825,9 +2193,10 @@ pub(super) fn describe_tools_for_program(
     )?)
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
+    let no_active = HashSet::new();
     let names = match match_kind {
-        "regex" => discover_tools_with_regex(catalog, query, max_results)?,
-        "bm25" => discover_tools_with_bm25_like(catalog, query, max_results),
+        "regex" => discover_tools_with_regex(catalog, query, max_results, &no_active, None)?,
+        "bm25" => discover_tools_with_bm25_like(catalog, query, max_results, &no_active, None),
         other => {
             return Err(ToolError::invalid_input(format!(
                 "Unsupported match algorithm '{other}'. Expected one of: bm25, regex"

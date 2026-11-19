@@ -6797,6 +6797,7 @@ command = "echo project"
             ("read", "safe"),
             ("write", "file_write"),
             ("edit", "file_write"),
+            ("list_dir", "other"),
             // Searches the workspace without caller-named write targets, so it
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
@@ -6808,9 +6809,6 @@ command = "echo project"
             // Goal controls retain their existing hook classification when
             // promoted from deferred discovery to the eager catalog.
             ("create_goal", "other"),
-            ("get_goal", "other"),
-            ("update_goal", "other"),
-            ("task_shell_wait", "other"),
             ("present", "other"),
             // Reads the skill registry, not caller-named paths, so it keeps
             // the classification it already had as a deferred tool. Making it

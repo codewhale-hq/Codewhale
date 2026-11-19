@@ -3163,7 +3163,7 @@ async fn dsh_terminal_arm_runs_through_the_gate_in_the_plugins_own_thread_owned_
     assert!(terminal_session::lookup(&workspace, Some("thread-b"), &terminal_id).is_none());
     let receipts = guard_a.receipts().expect("the terminal call is receipted");
     assert_eq!(receipts["total"], 1, "{receipts}");
-    assert!(receipts.to_string().contains("terminal/run"), "{receipts}");
+    assert!(receipts.to_string().contains("terminal_run"), "{receipts}");
 
     terminal_session::get_or_create(
         "thread-a",
