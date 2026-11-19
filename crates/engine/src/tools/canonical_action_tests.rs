@@ -17,9 +17,10 @@ fn retired_names_are_not_model_visible() {
 
 #[test]
 fn shared_prompt_text_names_only_callable_tools() {
-    assert_text_names_only_callable_tools(
+    assert_text_names_only_callable_tools_with_auto_active(
         "GOAL_CONTINUATION_PROMPT",
         crate::prompts::GOAL_CONTINUATION_PROMPT,
+        crate::core::engine::tool_catalog::GOAL_FOLLOWUP_TOOLS,
     );
     assert_text_names_only_callable_tools(
         "HANDLE_READ_ACTIVATION_HINT",

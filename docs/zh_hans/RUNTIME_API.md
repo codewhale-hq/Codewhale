@@ -1814,13 +1814,13 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
 同一文件夹里两个都使用 `term-1` 的对话会得到两个 shell。
 这些路由附着到这些 shell，且从不创建 shell，因为从一次 HTTP 请求中凭空变出一个 shell
 会让客户端得到一个 Engine 并不知道的终端。输入可按路由归因：
-`input` 是客户端的写入通道，`terminal/send` 是智能体的。
+`input` 是客户端的写入通道，`terminal_send` 是智能体的。
 
 - `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
   terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
   该线程的活动 shell，按最近活动排序。`terminal_id` 在 shell 启动时签发，
   且永不复用；智能体终端工具的结果以 `terminal_session_id` 携带同一个值，
-  `terminal/reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
+  `terminal_reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
   进程的终端注册表。shell 存活期间，`state` 是其最近一条命令的状态（`running`、
   `idle`、`canceled`、`failed`、`stale_lost` 或 `reset`）；shell 本身结束后为
   `exited`，此时 `running` 为 false，`exit_code` 给出 shell 的退出状态
@@ -1857,14 +1857,14 @@ Engine 从不以同名 shell 代替。
 - **重新连接**（连接中断、面板或窗口重新打开，或 Engine 持续运行期间客户端
   应用重启）：列出线程的终端，确认 `instance` 与记录的一致，然后从保存的游标
   继续每个 `terminal_id`。只会重放仍保留的输出；`gap` 报告环形缓冲区丢失的部分。
-- **重置**（`terminal/reset`）：旧 shell 被结束，同名的新 shell 以新的
+- **重置**（`terminal_reset`）：旧 shell 被结束，同名的新 shell 以新的
   `terminal_id` 启动。旧标识返回 `404`；列表会显示替代者，客户端只在用户
   选择后才切换过去。
 - **退出**：该标识仍会以 `running: false` 及其 `exit_code` 出现在列表中，
   直到智能体重置它或 Engine 重启。
 - **Engine 重启**：活动 shell 随进程一起结束。列表会报告不同的 `instance`，
   且不含任何旧标识，旧标识返回 `404`。不会重建 shell，也不会重新运行命令；
-  之后同名的 `terminal/run` 会启动一个新标识。
+  之后同名的 `terminal_run` 会启动一个新标识。
 - **故障中的输入**：已发送的输入无法撤回。在收到响应前失去连接的客户端
   无法知道这些字节是否到达 shell，且不得自动重发。
 

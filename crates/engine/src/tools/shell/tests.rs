@@ -221,8 +221,8 @@ fn inherited_interactive_terminal_fails_closed_before_spawn() {
     assert!(message.contains("background: true, tty: true"), "{message}");
     assert!(message.contains("action: \"interact\""), "{message}");
     assert!(message.contains("task_id"), "{message}");
-    assert!(message.contains("terminal/run"), "{message}");
-    assert!(message.contains("terminal/send"), "{message}");
+    assert!(message.contains("terminal_run"), "{message}");
+    assert!(message.contains("terminal_send"), "{message}");
 }
 
 #[cfg(all(unix, target_env = "ohos"))]
@@ -238,7 +238,7 @@ fn inherited_interactive_terminal_offers_only_ohos_recovery_paths() {
     assert!(message.contains("new terminal"), "{message}");
     assert!(message.contains("omit `interactive: true`"), "{message}");
     assert!(!message.contains("background: true"), "{message}");
-    assert!(!message.contains("terminal/run"), "{message}");
+    assert!(!message.contains("terminal_run"), "{message}");
 }
 
 #[test]

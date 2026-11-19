@@ -23667,7 +23667,7 @@ fn hydrated_result(
     content: &str,
 ) -> Result<codewhale_engine::tools::spec::ToolResult, codewhale_engine::tools::spec::ToolError> {
     Ok(
-        codewhale_engine::tools::spec::ToolResult::success(content).with_metadata(
+        codewhale_engine::tools::spec::ToolResult::error(content).with_metadata(
             serde_json::json!({
                 "event": "tool.schema_hydrated",
                 "tool": "exec_shell",

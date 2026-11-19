@@ -172,6 +172,36 @@ const RUNTIME_TURN_META: &str = concat!(
     "</turn_meta>",
 );
 
+pub fn deferred_toolbox_runtime_message(active_deferred_tools: &[&str]) -> Message {
+    let snapshot = serde_json::json!({
+        "type": "current_deferred_toolbox",
+        "active_deferred_tools": active_deferred_tools,
+        "authority": "This current deferred toolbox supersedes earlier activation, eviction and unavailable notices. Tools loaded eagerly remain available. Every execution still requires current permission.",
+    });
+    runtime_handoff_message_with_meta(snapshot.to_string(), RUNTIME_TURN_META)
+}
+
+pub fn deferred_toolbox_tools(message: &Message) -> Option<Vec<String>> {
+    if message.role != Role::User
+        || !codewhale_models::turn_classify::is_runtime_owned_user_message(message)
+    {
+        return None;
+    }
+    let ContentBlock::Text { text, .. } = message.content.first()? else {
+        return None;
+    };
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    if parsed.get("type").and_then(serde_json::Value::as_str) != Some("current_deferred_toolbox") {
+        return None;
+    }
+    parsed
+        .get("active_deferred_tools")?
+        .as_array()?
+        .iter()
+        .map(|entry| entry.as_str().map(str::to_string))
+        .collect()
+}
+
 /// Build the last Operate contract message an earlier build saved to history.
 pub fn operate_contract_runtime_message() -> Message {
     runtime_handoff_message_with_meta(OPERATE_CONTRACT_EVENT.to_string(), RUNTIME_TURN_META)

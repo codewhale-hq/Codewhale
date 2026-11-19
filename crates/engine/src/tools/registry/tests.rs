@@ -96,6 +96,10 @@ fn shell_denial_keeps_the_existing_bounded_child_read_only_exception() {
         ("bash", json!({"command":"pwd", "background":true})),
         ("task_shell_start", json!({"command":"pwd"})),
         (
+            "terminal_send",
+            json!({"session":"existing", "text":"pwd\n"}),
+        ),
+        (
             "terminal/send",
             json!({"session":"existing", "text":"pwd\n"}),
         ),
@@ -1990,7 +1994,7 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
         registry
             .names()
             .into_iter()
-            .all(|name| !name.starts_with("terminal/"))
+            .all(|name| !name.starts_with("terminal/") && !name.starts_with("terminal_"))
     );
     let bash = registry
         .to_api_tools()

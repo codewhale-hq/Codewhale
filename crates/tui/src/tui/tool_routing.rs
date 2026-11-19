@@ -1664,9 +1664,6 @@ fn metadata_status(metadata: Option<&serde_json::Value>) -> Option<&str> {
 }
 
 fn is_deferred_schema_hydration(tool_result: &ToolResult) -> bool {
-    if !tool_result.success {
-        return false;
-    }
     let Some(metadata) = tool_result.metadata.as_ref() else {
         return false;
     };
@@ -1678,6 +1675,10 @@ fn is_deferred_schema_hydration(tool_result: &ToolResult) -> bool {
             .get("executed")
             .and_then(serde_json::Value::as_bool)
             .is_some_and(|executed| !executed)
+        && metadata
+            .get("deferred_tool_loaded")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
 }
 
 fn is_exploring_tool(name: &str) -> bool {

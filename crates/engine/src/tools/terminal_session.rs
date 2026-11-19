@@ -41,6 +41,11 @@ use super::spec::{
 };
 #[cfg(unix)]
 use super::spec::{optional_u64, required_str};
+use codewhale_tools::names::{
+    LEGACY_TERMINAL_CANCEL_NAME, LEGACY_TERMINAL_RESET_NAME, LEGACY_TERMINAL_RUN_NAME,
+    LEGACY_TERMINAL_SEND_NAME, LEGACY_TERMINAL_WAIT_NAME, TERMINAL_CANCEL_NAME,
+    TERMINAL_RESET_NAME, TERMINAL_RUN_NAME, TERMINAL_SEND_NAME, TERMINAL_WAIT_NAME,
+};
 
 #[cfg(unix)]
 const BUFFER_LIMIT: usize = 512 * 1024;
@@ -562,7 +567,7 @@ fn find(owner: &str, name: &str, workspace: &Path) -> Result<SharedSession, Stri
         record.updated_at = chrono::Utc::now().to_rfc3339();
         let _ = persist_durable(&path, &record);
         return Err(format!(
-            "terminal session '{name}' is stale/lost after restart (last cwd: {}); run terminal/run with this name to start a replacement while preserving the historical summary",
+            "terminal session '{name}' is stale/lost after restart (last cwd: {}); run {TERMINAL_RUN_NAME} with this name to start a replacement while preserving the historical summary",
             record.last_known_cwd.display()
         ));
     }
@@ -895,7 +900,7 @@ impl std::fmt::Display for HumanInputError {
 }
 
 /// Human input is bound to the displayed incarnation, including across reset.
-/// It follows the same sandbox-reuse guard as the model's terminal/run path.
+/// It follows the same sandbox-reuse guard as the model's terminal_run path.
 #[cfg(unix)]
 pub fn write_human_input(
     handle: &SharedSession,
@@ -1051,8 +1056,8 @@ fn wait_session(session: &mut TerminalSession, timeout: Duration) -> (Option<(i3
     }
 }
 
-/// Wait without monopolizing the per-session lock. `terminal/send` and
-/// `terminal/cancel` must be able to acquire the lock while a foreground
+/// Wait without monopolizing the per-session lock. `terminal_send` and
+/// `terminal_cancel` must be able to acquire the lock while a foreground
 /// command is active; otherwise interactive input and cancellation deadlock
 /// behind the waiter.
 #[cfg(unix)]
@@ -1218,8 +1223,15 @@ fn timeout_secs(input: &serde_json::Value, key: &str) -> Result<Duration, ToolEr
 
 fn shell_allowed(context: &ToolContext, name: &str) -> Result<(), ToolError> {
     crate::tools::execution_envelope::enforce_tool_denial(context, name, &json!({}))?;
-    if matches!(name, "terminal/run" | "terminal/send" | "terminal/reset")
-        && context.shell_policy != codewhale_agent_contract::worker_profile::ShellPolicy::Full
+    if matches!(
+        name,
+        TERMINAL_RUN_NAME
+            | TERMINAL_SEND_NAME
+            | TERMINAL_RESET_NAME
+            | LEGACY_TERMINAL_RUN_NAME
+            | LEGACY_TERMINAL_SEND_NAME
+            | LEGACY_TERMINAL_RESET_NAME
+    ) && context.shell_policy != codewhale_agent_contract::worker_profile::ShellPolicy::Full
     {
         return Err(ToolError::permission_denied(
             "Persistent terminal execution and input require full shell permission.",
@@ -1240,7 +1252,7 @@ fn unsupported() -> ToolResult {
 }
 
 macro_rules! terminal_tool_common {
-    ($name:literal, $description:literal) => {
+    ($name:expr, $description:literal) => {
         fn name(&self) -> &'static str {
             $name
         }
@@ -1259,12 +1271,84 @@ macro_rules! terminal_tool_common {
     };
 }
 
+pub struct LegacyTerminalToolAlias<T> {
+    name: &'static str,
+    inner: T,
+}
+
+impl<T> LegacyTerminalToolAlias<T> {
+    pub const fn new(name: &'static str, inner: T) -> Self {
+        Self { name, inner }
+    }
+}
+
+#[async_trait]
+impl<T: ToolSpec + Send + Sync> ToolSpec for LegacyTerminalToolAlias<T> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn model_visible(&self) -> bool {
+        false
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        self.inner.input_schema()
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        self.inner.capabilities()
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        self.inner.approval_requirement()
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        shell_allowed(context, self.name)?;
+        self.inner.execute(input, context).await
+    }
+}
+
+pub fn legacy_terminal_tool_aliases() -> Vec<std::sync::Arc<dyn ToolSpec>> {
+    vec![
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_RUN_NAME,
+            TerminalRunTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_SEND_NAME,
+            TerminalSendTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_WAIT_NAME,
+            TerminalWaitTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_CANCEL_NAME,
+            TerminalCancelTool,
+        )),
+        std::sync::Arc::new(LegacyTerminalToolAlias::new(
+            LEGACY_TERMINAL_RESET_NAME,
+            TerminalResetTool,
+        )),
+    ]
+}
+
 pub struct TerminalRunTool;
 #[async_trait]
 impl ToolSpec for TerminalRunTool {
     terminal_tool_common!(
-        "terminal/run",
-        "Run a command in a persistent PTY shell session. cd, exports, shell functions, and activated environments persist across calls in this process. Identity and a non-secret last-known summary persist across restarts; prior shells are surfaced as stale/lost and are never reattached. On timeout the wait is abandoned but the command keeps running in the session (use terminal/wait or cancel). (Unix only)"
+        TERMINAL_RUN_NAME,
+        "Run a command in a persistent PTY shell session. cd, exports, shell functions, and activated environments persist across calls in this process. Identity and a non-secret last-known summary persist across restarts; prior shells are surfaced as stale/lost and are never reattached. On timeout the wait is abandoned but the command keeps running in the session (use terminal_wait or terminal_cancel). (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
         json!({"type":"object","properties":{"command":{"type":"string"},"session":{"type":"string","default":"term-1"},"timeout_secs":{"type":"integer","default":120}},"required":["command"]})
@@ -1316,7 +1400,7 @@ pub struct TerminalSendTool;
 #[async_trait]
 impl ToolSpec for TerminalSendTool {
     terminal_tool_common!(
-        "terminal/send",
+        TERMINAL_SEND_NAME,
         "Send raw input to a live persistent terminal session. Use a literal ETX control byte to interrupt an interactive process. A prior-process shell is reported as stale/lost rather than reattached. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1365,7 +1449,7 @@ pub struct TerminalWaitTool;
 #[async_trait]
 impl ToolSpec for TerminalWaitTool {
     terminal_tool_common!(
-        "terminal/wait",
+        TERMINAL_WAIT_NAME,
         "Wait for the current foreground command in a live persistent terminal session and return buffered output. A prior-process shell is reported as stale/lost rather than reattached. Output buffer holds at most 512KiB; older bytes are dropped silently. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1405,7 +1489,7 @@ pub struct TerminalCancelTool;
 #[async_trait]
 impl ToolSpec for TerminalCancelTool {
     terminal_tool_common!(
-        "terminal/cancel",
+        TERMINAL_CANCEL_NAME,
         "Interrupt the running foreground command with ETX. The live terminal session survives and can be reused; its non-secret summary persists. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1450,7 +1534,7 @@ pub struct TerminalResetTool;
 #[async_trait]
 impl ToolSpec for TerminalResetTool {
     terminal_tool_common!(
-        "terminal/reset",
+        TERMINAL_RESET_NAME,
         "Kill and recreate a persistent terminal session with a fresh environment. This loses live cd, exports, functions, activated environments, and running work while retaining the prior historical summary. (Unix only)"
     );
     fn input_schema(&self) -> serde_json::Value {
@@ -1640,11 +1724,11 @@ mod tests {
             TerminalRunTool
                 .description()
                 .contains("the command keeps running in the session"),
-            "terminal/run must disclose that a timeout abandons the wait, not the command"
+            "terminal_run must disclose that a timeout abandons the wait, not the command"
         );
         assert!(
             TerminalWaitTool.description().contains("512KiB"),
-            "terminal/wait must disclose the retained-output bound"
+            "terminal_wait must disclose the retained-output bound"
         );
     }
 
@@ -2114,15 +2198,15 @@ mod tests {
                 .await
         });
         // Observe the PTY reader directly: taking the session mutex here would
-        // hide the old bug by waiting for terminal/send to finish first.
+        // hide the old bug by waiting for terminal_send to finish first.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !output.lock().unwrap().text().contains("model-") {
-            assert!(Instant::now() < deadline, "terminal/send did not write");
+            assert!(Instant::now() < deadline, "terminal_send did not write");
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(
             !send.is_finished(),
-            "terminal/send already finished its wait"
+            "terminal_send already finished its wait"
         );
         let path = workspace.path().to_path_buf();
         let mut dock = tokio::task::spawn_blocking(move || {
@@ -2147,7 +2231,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let result = send.await.unwrap().unwrap();
-        assert!(responsive, "terminal/send held the session during wait_ms");
+        assert!(responsive, "terminal_send held the session during wait_ms");
         assert_eq!(entries[0].state, DurableTerminalState::Running);
         assert!(String::from_utf8_lossy(&snapshot.unwrap().bytes).contains("model-"));
         assert!(result.content.contains("answer=model-human"), "{result:?}");

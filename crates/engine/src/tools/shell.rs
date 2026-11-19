@@ -2108,7 +2108,7 @@ pub fn inherited_interactive_terminal_refusal() -> Option<&'static str> {
         "Inherited interactive terminal takeover is unavailable on Unix because foreground TTY \
          ownership cannot be transferred safely. Use Bash with `background: true, tty: true`, \
          then continue it with `action: \"interact\"` and the returned `task_id`; alternatively \
-         use `terminal/run` and `terminal/send`, or launch the command in a new terminal. For \
+         use `terminal_run` and `terminal_send`, or launch the command in a new terminal. For \
          non-interactive work, omit `interactive: true`.",
     )
 }

@@ -672,6 +672,9 @@ fn shell_denial_filters_search_catalog_without_expanding_allow_grants() {
         "exec_shell",
         "task_shell_start",
         "task_gate_run",
+        "terminal_run",
+        "terminal_send",
+        "terminal_reset",
         "terminal/run",
         "terminal/send",
         "terminal/reset",
@@ -720,6 +723,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
             tasks,
             catalog_tool("Run"),
             catalog_tool("task_shell_wait"),
+            catalog_tool("terminal_cancel"),
             catalog_tool("terminal/cancel"),
         ],
         None,
@@ -737,6 +741,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
     assert!(!surface.denies_call("tasks", &json!({"action":"list"})));
     assert!(surface.denies_call("tasks", &json!({"action":"gate_run"})));
     assert!(!surface.denies_call("task_shell_wait", &json!({})));
+    assert!(!surface.denies_call("terminal_cancel", &json!({})));
     assert!(!surface.denies_call("terminal/cancel", &json!({})));
     for input in [
         json!({"action":"tests"}),
@@ -772,6 +777,8 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
             "tasks/pr_attempt_preflight",
             "git apply --check of a stored patch",
         ),
+        ("terminal_cancel", "stops an existing terminal session"),
+        ("terminal_wait", "reads an existing terminal session"),
         ("terminal/cancel", "stops an existing terminal session"),
         ("terminal/wait", "reads an existing terminal session"),
         (
