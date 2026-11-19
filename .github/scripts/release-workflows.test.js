@@ -1135,7 +1135,7 @@ for (const [file, source] of workflowSources) {
   ];
   for (const [kind, value, index] of selectors) {
     if (kind === "action ref" && (/^[0-9a-f]{40}$/.test(value) || value === "master")) continue;
-    const expected = file === "ci.yml" && inMsrvJob(index) ? msrv : pinnedToolchain;
+    const expected = file === "ci.yml" && inMsrvJob(index) ? msrv : file === "toolchain-drift.yml" ? "stable" : pinnedToolchain;
     assert.equal(value, expected, `${file}: ${kind} ${value} must equal ${expected}`);
   }
   assert.doesNotMatch(source, /rustup (?:target|component) add --toolchain/, `${file}: rustup adds must follow rust-toolchain.toml`);

@@ -217,6 +217,11 @@ fn source_width(value: &str) -> usize {
 /// Lossless soft wrapping: row concatenation reproduces each logical source
 /// line, including hidden source scalars; the painter sanitizes display only.
 pub fn native_composer_wrap_text(value: &str, width: usize) -> Vec<String> {
+    native_composer_wrap_text_bounded(value, width, usize::MAX)
+}
+
+/// [`native_composer_wrap_text`] that stops after `limit` complete rows.
+fn native_composer_wrap_text_bounded(value: &str, width: usize, limit: usize) -> Vec<String> {
     if width == 0 {
         return vec![value.to_owned()];
     }
@@ -243,6 +248,9 @@ pub fn native_composer_wrap_text(value: &str, width: usize) -> Vec<String> {
         }};
     }
     for g in value.graphemes(true) {
+        if lines.len() >= limit {
+            return lines;
+        }
         if g == "\n" {
             break_at = None;
             lines.push(std::mem::take(&mut current));
@@ -262,7 +270,9 @@ pub fn native_composer_wrap_text(value: &str, width: usize) -> Vec<String> {
             flush!()
         }
     }
-    lines.push(current);
+    if lines.len() < limit {
+        lines.push(current);
+    }
     lines
 }
 pub fn native_composer_source_rows(value: &str, width: usize) -> Vec<(usize, String)> {
@@ -280,6 +290,20 @@ pub fn native_composer_source_rows(value: &str, width: usize) -> Vec<(usize, Str
         start += 1
     }
     result
+}
+/// [`native_composer_source_rows`] count, wrapped only as far as `limit`.
+pub fn native_composer_source_row_count(value: &str, width: usize, limit: usize) -> usize {
+    if value.is_empty() || width == 0 {
+        return 1;
+    }
+    let mut count = 0usize;
+    for raw in value.split('\n') {
+        if count >= limit {
+            break;
+        }
+        count += native_composer_wrap_text_bounded(raw, width, limit - count).len();
+    }
+    count
 }
 pub fn native_composer_source_cursor(rows: &[(usize, String)], cursor: usize) -> (usize, usize) {
     let row = rows
@@ -433,25 +457,62 @@ impl NativeComposerFrame<'_> {
             self.enclosed,
             self.history_search,
         );
-        native_composer_height(
-            native_composer_source_rows(&self.text, usize::from(geometry.text.width.max(1))).len(),
-            self.menu.reserved_rows,
-            available,
-            self.density,
-            panel,
-        )
+        let available = available.max(1);
+        let menu = self.menu.reserved_rows;
+        let border = if panel && available >= 3 {
+            2
+        } else {
+            usize::from(available >= 2)
+        };
+        let cap = if menu == 0 {
+            usize::from(available)
+        } else {
+            usize::from(available).min(usize::from(self.density.max_rows()))
+        };
+        let rows = native_composer_source_row_count(
+            &self.text,
+            usize::from(geometry.text.width.max(1)),
+            cap.saturating_sub(menu).saturating_sub(border).max(1),
+        );
+        native_composer_height(rows, menu, available, self.density, panel)
     }
     pub fn plan(&self, area: Rect) -> NativeComposerPlan {
+        self.plan_with_source(area, self.source_plan(area))
+    }
+    /// The wrapped rows [`Self::plan`] projects over `area`, computed once
+    /// for callers that need a second plan over the same text.
+    pub fn source_plan(&self, area: Rect) -> NativeComposerSourcePlan {
         let geometry = native_composer_geometry(area, self.enclosed, self.history_search);
         let budget = native_composer_input_budget(
             geometry.inner.height,
             self.menu.reserved_rows.max(self.menu.items.len()),
         );
-        let source = native_composer_source_plan(
+        native_composer_source_plan(
             &self.text,
             self.cursor,
             usize::from(geometry.text.width.max(1)),
             budget,
+        )
+    }
+    /// The input-row budget `plan` reports for `area`.
+    pub fn input_rows_budget(&self, area: Rect) -> usize {
+        let geometry = native_composer_geometry(area, self.enclosed, self.history_search);
+        native_composer_input_budget(
+            geometry.inner.height,
+            self.menu.reserved_rows.max(self.menu.items.len()),
+        )
+    }
+    /// [`Self::plan`] over rows already wrapped by [`Self::source_plan`];
+    /// same geometry and menu, so only the projected hints can differ.
+    pub fn plan_with_source(
+        &self,
+        area: Rect,
+        source: NativeComposerSourcePlan,
+    ) -> NativeComposerPlan {
+        let geometry = native_composer_geometry(area, self.enclosed, self.history_search);
+        let budget = native_composer_input_budget(
+            geometry.inner.height,
+            self.menu.reserved_rows.max(self.menu.items.len()),
         );
         let visual = if self.text.is_empty() {
             1
@@ -578,7 +639,7 @@ impl NativeComposerFrame<'_> {
             .then_some(Position::new(x, y));
         let cursor = if self.focused { prompt_position } else { None };
         let frame = NativeComposerFrame {
-            text: Cow::Owned(self.text.to_string()),
+            text: Cow::Borrowed(""),
             cursor: self.cursor,
             selection: self.selection,
             placeholder: self.placeholder.clone(),
@@ -788,4 +849,75 @@ pub fn native_composer_step_row(
         }
     };
     Some(start.saturating_add(offset).min(input.chars().count()))
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        NativeComposerDensity, NativeComposerFrame, NativeComposerMenu, NativeComposerStyles,
+        native_composer_height, native_composer_source_row_count, native_composer_source_rows,
+    };
+    use ratatui::text::Line;
+    use std::borrow::Cow;
+
+    fn frame<'a>(text: &'a str, reserved_rows: usize) -> NativeComposerFrame<'a> {
+        NativeComposerFrame {
+            text: Cow::Borrowed(text),
+            cursor: text.chars().count(),
+            selection: None,
+            placeholder: Line::default(),
+            enclosed: false,
+            density: NativeComposerDensity::Comfortable,
+            history_search: false,
+            focused: true,
+            can_submit: true,
+            ascii: false,
+            top_title: None,
+            top_right: None,
+            hint: None,
+            quiet_hint: None,
+            styles: NativeComposerStyles::default(),
+            menu: NativeComposerMenu {
+                reserved_rows,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn bounded_count_equals_full_count_until_the_limit() {
+        let cjk = "你好世界".repeat(40);
+        for input in [
+            "",
+            "short",
+            "one\ntwo\nthree",
+            cjk.as_str(),
+            "a very long line of words that wraps across several display rows",
+            "tail\n",
+        ] {
+            for width in [1usize, 7, 40] {
+                let full = native_composer_source_rows(input, width).len();
+                for limit in [1usize, 2, 5, usize::MAX] {
+                    assert_eq!(
+                        native_composer_source_row_count(input, width, limit),
+                        full.min(limit),
+                        "input={input:?} width={width} limit={limit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn desired_height_matches_the_full_wrap_for_large_drafts() {
+        let huge = "你好世界 paste payload ".repeat(400);
+        for (reserved, available) in [(0usize, 9u16), (4, 9), (0, 1)] {
+            let frame = frame(&huge, reserved);
+            let full_rows = native_composer_source_rows(&huge, 38).len();
+            assert_eq!(
+                frame.desired_height(40, available),
+                native_composer_height(full_rows, reserved, available.max(1), frame.density, false,),
+                "reserved={reserved} available={available}"
+            );
+        }
+    }
 }

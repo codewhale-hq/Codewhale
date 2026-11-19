@@ -848,7 +848,7 @@ pub(crate) fn coalesce_scroll_burst(
         };
         match &next_observed.event {
             Event::Mouse(next) if is_scroll_event(next) => {
-                let _ = handle_mouse_event(app, latest);
+                let _ = handle_mouse_event(app, latest, next_observed.observed_at);
                 latest = *next;
             }
             _ => {
@@ -1694,15 +1694,15 @@ pub async fn run_tui(
 /// Whether a composer guard owns this launch-screen Enter. Every guard is
 /// applied here, before a session exists, so a held submit never leaves the
 /// user in a new empty session.
-pub(super) fn launch_submit_held(app: &mut App, protect_paste: bool) -> bool {
+pub(super) fn launch_submit_held(app: &mut App, protect_paste: bool, now: Instant) -> bool {
     if !protect_paste
         && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
     {
         app.insert_str(&pending);
     }
-    if app.startup_input_unproven || !app.composer_enter_would_submit(protect_paste) {
+    if app.startup_input_unproven || !app.composer_enter_would_submit(protect_paste, now) {
         // A paste burst, empty composer or startup integrity hold.
-        app.handle_composer_enter(protect_paste);
+        app.handle_composer_enter(protect_paste, now);
         return true;
     }
     // An oversized draft is backed up to a paste file now; if that fails the
@@ -1735,6 +1735,7 @@ async fn dispatch_launch_composer_submit(
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.launch.return_to_session {
         app.launch.dismiss();
@@ -1746,10 +1747,11 @@ async fn dispatch_launch_composer_submit(
             config,
             chord,
             protect_paste,
+            now,
         )
         .await;
     }
-    if launch_submit_held(app, protect_paste) {
+    if launch_submit_held(app, protect_paste, now) {
         return Ok(false);
     }
     let action = app.decide_composer_submit(chord);
@@ -1771,7 +1773,7 @@ async fn dispatch_launch_composer_submit(
         return Ok(false);
     }
     // The transition is applied; only now consume the draft it carries.
-    let Some(input) = app.handle_composer_enter(protect_paste) else {
+    let Some(input) = app.handle_composer_enter(protect_paste, now) else {
         return Ok(false);
     };
     if should_intercept_memory_quick_add(config, &input) {
@@ -1809,6 +1811,7 @@ pub(super) fn present_turn_failure(
         status,
         codewhale_engine::core::events::TurnOutcomeStatus::Failed
     );
+    let mut error_code = None;
     if failed
         && app.turn_error_posted
         && let Some(notice) = app.turn_error_notice.clone()
@@ -1818,9 +1821,11 @@ pub(super) fn present_turn_failure(
                 Some(HistoryCell::Error { message, .. }) if *message == notice
             )
         })
-        && let Some(HistoryCell::Error { severity, .. }) = app.cell_at_virtual_index_mut(index)
+        && let Some(HistoryCell::Error { severity, code, .. }) =
+            app.cell_at_virtual_index_mut(index)
     {
         *severity = codewhale_error_taxonomy::ErrorSeverity::Error;
+        error_code = code.clone();
     }
     // What the transcript shows for this turn's failure: the error cell an
     // earlier `Event::Error` already posted, or the notice added here.
@@ -1832,6 +1837,7 @@ pub(super) fn present_turn_failure(
             app.add_message(HistoryCell::Error {
                 message: notice.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
             });
         }
         app.set_sticky_status(notice.clone(), StatusToastLevel::Error, None);
@@ -1842,8 +1848,9 @@ pub(super) fn present_turn_failure(
     // Persist the failure with the session (redacted), so resume, export,
     // and the Runtime API can say why the turn stopped after the TUI closes.
     if failed && let Some(shown) = shown {
-        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed(
+        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
             &shown,
+            error_code.as_deref(),
             app.api_messages.len(),
         );
         codewhale_engine::session_manager::push_turn_outcome(
@@ -1869,6 +1876,7 @@ async fn dispatch_session_composer_submit(
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.launch.return_to_session {
         app.launch.dismiss();
@@ -1878,7 +1886,7 @@ async fn dispatch_session_composer_submit(
         let _ = send_next_queued_message_now(app, config, engine_handle).await?;
         return Ok(false);
     }
-    if !app.composer_enter_would_submit(protect_paste) {
+    if !app.composer_enter_would_submit(protect_paste, now) {
         return Ok(false);
     }
     submit_decided_composer_input(
@@ -1889,6 +1897,7 @@ async fn dispatch_session_composer_submit(
         config,
         action,
         protect_paste,
+        now,
     )
     .await
 }
@@ -1910,11 +1919,12 @@ async fn submit_decided_composer_input(
     config: &mut Config,
     action: ComposerSubmitAction,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.pending_fresh_session.is_some() {
         if looks_like_slash_command_input(&app.input)
             && commands::pending_session_control_command(&app.input)
-            && app.composer_enter_would_submit(protect_paste)
+            && app.composer_enter_would_submit(protect_paste, now)
         {
             let input = app.input.clone();
             return execute_command_input(
@@ -1964,7 +1974,7 @@ async fn submit_decided_composer_input(
         }
     }
 
-    let Some(input) = app.handle_composer_enter(protect_paste) else {
+    let Some(input) = app.handle_composer_enter(protect_paste, now) else {
         return Ok(false);
     };
     // `# foo` quick-add (#492) — when memory is enabled, a single line
@@ -5645,8 +5655,20 @@ pub(crate) async fn run_event_loop(
             terminal_repaint = FrameRepaint::Clear;
         }
 
+        // The burst window is armed in event-observed time, so expiry must
+        // be asked on that same clock: when input is backlogged, "now" for
+        // the paste machine is the *oldest* event still queued — the queue
+        // is FIFO-ordered by observed_at, so front() is the only bound that
+        // cannot outrun an unjudged Enter sitting behind it. back() would
+        // let a late mouse move or trailing char kill the window while an
+        // in-window Enter still waits its turn. Drain the pump first so
+        // queued input counts before the window can die underneath it.
+        collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
+        let paste_now = pending_terminal_events
+            .front()
+            .map_or_else(Instant::now, |event| event.observed_at);
+        flush_paste_burst_before_composer(app, paste_now);
         let now = Instant::now();
-        flush_paste_burst_before_composer(app, now);
         if let Some(target) = app.pending_auto_review_retry.take() {
             super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
         }
@@ -6032,7 +6054,7 @@ pub(crate) async fn run_event_loop(
                     &terminal_input,
                     &mut pending_terminal_events,
                 )?;
-                let events = handle_mouse_event(app, mouse);
+                let events = handle_mouse_event(app, mouse, event_observed_at);
                 if handle_view_events_boxed(
                     terminal,
                     app,
@@ -6115,6 +6137,7 @@ pub(crate) async fn run_event_loop(
                         config,
                         chord,
                         true,
+                        event_observed_at,
                     )
                     .await?
                     {
@@ -6708,6 +6731,7 @@ pub(crate) async fn run_event_loop(
                                 config,
                                 chord,
                                 key.modifiers == KeyModifiers::NONE,
+                                event_observed_at,
                             )
                             .await?
                             {
@@ -7649,6 +7673,7 @@ pub(crate) async fn run_event_loop(
                             config,
                             action,
                             false,
+                            event_observed_at,
                         )
                         .await?
                         {
@@ -7702,6 +7727,7 @@ pub(crate) async fn run_event_loop(
                         config,
                         action,
                         is_plain_enter,
+                        event_observed_at,
                     )
                     .await?
                     {

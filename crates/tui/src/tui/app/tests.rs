@@ -5566,7 +5566,7 @@ fn enter_during_active_paste_burst_appends_newline_to_buffer_not_submit() {
     assert!(app.paste_burst.is_active());
     assert!(app.input.is_empty());
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert!(
         result.is_none(),
@@ -5598,7 +5598,7 @@ fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
         "suppression window should be open"
     );
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert!(
         result.is_none(),
@@ -5608,9 +5608,12 @@ fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
         app.input, "hello\n",
         "newline must be inserted into the composer instead of firing a submit"
     );
-    assert!(!app.composer_enter_would_submit(true));
-    assert!(app.composer_enter_would_submit(false));
-    assert_eq!(app.handle_composer_enter(false).as_deref(), Some("hello\n"));
+    assert!(!app.composer_enter_would_submit(true, Instant::now()));
+    assert!(app.composer_enter_would_submit(false, Instant::now()));
+    assert_eq!(
+        app.handle_composer_enter(false, Instant::now()).as_deref(),
+        Some("hello\n")
+    );
 }
 
 /// The absorbed Enter above must not buy the window more time. Re-arming on
@@ -5627,7 +5630,7 @@ fn enter_absorbed_after_flush_does_not_re_arm_the_suppression_window() {
     app.paste_burst.extend_window(now);
 
     assert!(
-        app.handle_composer_enter(true).is_none(),
+        app.handle_composer_enter(true, Instant::now()).is_none(),
         "first Enter is absorbed as the paste's possible trailing newline"
     );
     assert_eq!(app.input, "hello\n");
@@ -5650,7 +5653,7 @@ fn enter_outside_any_paste_burst_window_submits_normally() {
     app.input = "hello world".to_string();
     app.cursor_position = "hello world".chars().count();
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert_eq!(
         result.as_deref(),
@@ -5677,7 +5680,7 @@ fn enter_with_paste_burst_detection_disabled_submits_normally() {
     let now = Instant::now();
     app.paste_burst.extend_window(now);
 
-    let result = app.handle_composer_enter(true);
+    let result = app.handle_composer_enter(true, Instant::now());
 
     assert_eq!(result.as_deref(), Some("ship it"));
 }

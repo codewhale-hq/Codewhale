@@ -33,15 +33,18 @@ fn composer_selection_publishes_primary_quietly_even_when_released_outside() {
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Down(MouseButton::Left), text.x, text.y),
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Drag(MouseButton::Left), text.x + 5, text.y),
+        Instant::now(),
     );
     let status = app.status_message.clone();
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Left), 90, 25),
+        Instant::now(),
     );
     assert_eq!(app.clipboard.read_primary_text().as_deref(), Some("alpha"));
     assert_eq!(app.selected_text(), "alpha");
@@ -85,6 +88,7 @@ fn transcript_selection_uses_clean_text_and_preserves_regular_clipboard() {
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Left), 90, 10),
+        Instant::now(),
     );
     assert_eq!(app.clipboard.read_primary_text(), Some(expected));
     assert_eq!(app.clipboard.last_written_text(), Some("REGULAR_CLIPBOARD"));
@@ -106,6 +110,7 @@ fn middle_click_inserts_guarded_text_at_pointer_without_cutting_or_submitting() 
             text.x + 1,
             text.y,
         ),
+        Instant::now(),
     );
     assert_eq!(app.input, "aX\n/quit\nbc");
     assert!(app.selection_anchor.is_none());
@@ -115,6 +120,7 @@ fn middle_click_inserts_guarded_text_at_pointer_without_cutting_or_submitting() 
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Middle), text.x + 1, text.y),
+        Instant::now(),
     );
     assert_eq!(app.input, "aX\n/quit\nbc", "release must not paste twice");
 }
@@ -155,6 +161,7 @@ fn middle_click_respects_overlays_missing_composer_and_remote_clipboard() {
                 text.x + 1,
                 text.y,
             ),
+            Instant::now(),
         );
         assert_eq!(app.input, "KEEP_DRAFT", "{mode}");
         assert_eq!(app.cursor_position, 4, "{mode}");
@@ -194,6 +201,7 @@ fn transcript_drag_released_over_composer_keeps_caret_and_clears_drag() {
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Drag(MouseButton::Left), text.x + 2, text.y),
+        Instant::now(),
     );
     assert_eq!(app.cursor_position, 5);
     assert!(app.selection_anchor.is_none());
@@ -202,6 +210,7 @@ fn transcript_drag_released_over_composer_keeps_caret_and_clears_drag() {
     handle_mouse_event(
         &mut app,
         event(MouseEventKind::Up(MouseButton::Left), text.x + 2, text.y),
+        Instant::now(),
     );
     assert!(!app.viewport.transcript_selection.dragging);
     assert_eq!(app.cursor_position, 5);

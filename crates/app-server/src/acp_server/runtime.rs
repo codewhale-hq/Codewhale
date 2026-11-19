@@ -390,6 +390,7 @@ impl PromptRun {
                 if let Some(item) = p.get("item")
                     && let Some(id) = item
                         .pointer("/metadata/execution_id")
+                        .or_else(|| item.pointer("/metadata/external_agent/tool_call_id"))
                         .and_then(Value::as_str)
                     && let Some(call) = calls.remove(id)
                 {
@@ -905,6 +906,52 @@ mod tests {
                 .await
                 .is_err()
         );
+        rig.close().await;
+        Ok(())
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_agent_tool_completion_settles_from_the_external_call_id() -> Result<()> {
+        let mut rig = Rig::new(fixture_config(), vec![])?;
+        let id = rig.new_session().await;
+        let thread = rig.server.sessions[&id].thread_id.clone();
+        let mut p = Projection {
+            session: &id,
+            thread: &thread,
+            turn: "turn-current",
+            cursor: 0,
+            emit: true,
+            calls: HashMap::new(),
+            permissions: HashMap::new(),
+        };
+        let mut output: Vec<Value> = Vec::new();
+        let start = event(
+            1,
+            &thread,
+            p.turn,
+            "item.started",
+            json!({"tool":{"id":"agent-call-1","name":"edit","input":{"path":"a.rs"}}}),
+        );
+        rig.server
+            .prompt_run()
+            .project_event(&mut p, &start, &mut recording(&mut output))
+            .await?;
+        assert_eq!(p.calls.len(), 1);
+        let done = event(
+            2,
+            &thread,
+            p.turn,
+            "item.completed",
+            json!({"item":{"status":"completed","detail":"edited","metadata":{"external_agent":{"tool_call_id":"agent-call-1","kind":"edit"}}}}),
+        );
+        rig.server
+            .prompt_run()
+            .project_event(&mut p, &done, &mut recording(&mut output))
+            .await?;
+        assert!(p.calls.is_empty());
+        let update = &output.last().expect("tool call update frame")["params"]["update"];
+        assert_eq!(update["sessionUpdate"], "tool_call_update");
+        assert_eq!(update["toolCallId"], "agent-call-1");
+        assert_eq!(update["status"], "completed");
         rig.close().await;
         Ok(())
     }
