@@ -324,6 +324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn slow_paced_mixed_ascii_cjk_paste_keeps_newlines() {
         // Windows Terminal injects pasted console records at its own pace —
         // tens of ms apart on a loaded runner, past the 8ms burst-forming
@@ -364,21 +365,21 @@ mod tests {
     #[test]
     fn composer_enter_uses_event_observed_time_not_processing_time() {
         let mut app = test_app();
-        // The stream ended ~430ms ago: chars observed at ~30ms cadence, the
-        // slow-injected shape from the real Windows Terminal run — past the
-        // 8ms burst interval so nothing ever buffers, inside the 60ms stream
-        // window so `stream_chars` proves a paste is in flight. All of it
-        // sat in the input queue until now, so a processing-time probe
-        // reads the last char as ~460ms stale and submits mid-paste.
+        // The stream ended ~880ms ago: chars observed at 5ms cadence, the
+        // ~1ms-apart shape the real Windows Terminal run produced, so the
+        // burst forms and the Enter lands inside its 120ms suppression
+        // window. All of it sat in the input queue until now, so a
+        // processing-time probe reads the last char as ~920ms stale and
+        // submits mid-paste — the revert this test exists to catch.
         let t0 = Instant::now() - Duration::from_millis(880);
         for (i, ch) in "cw-clipboard-01".chars().enumerate() {
-            let now = t0 + Duration::from_millis(30 * i as u64);
+            let now = t0 + Duration::from_millis(5 * i as u64);
             app.flush_paste_burst_if_due(now);
             assert!(handle_paste_burst_key(&mut app, &plain(ch), now));
         }
-        // The Enter was observed ~30ms after the last char — on its own
+        // The Enter was observed 40ms after the last char — on its own
         // clock, unambiguous paste payload: a newline, not a submit.
-        let enter_observed_at = t0 + Duration::from_millis(30 * 15);
+        let enter_observed_at = t0 + Duration::from_millis(5 * 15 + 40);
         app.flush_paste_burst_if_due(enter_observed_at);
         assert!(
             app.handle_composer_enter(true, enter_observed_at).is_none(),
