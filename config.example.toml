@@ -530,6 +530,10 @@ show_whats_new = true
 # human_wait_timeout. 0 or omitted uses 1800; values are clamped to 1..=86400.
 # task_human_wait_cap_seconds = 1800
 #
+# Shell commands a single parallel tool wave may run at once. 0 or omitted
+# uses 4; values above 32 are clamped.
+# max_parallel_shell_exec = 4
+#
 # Bound an interactive approval card's wait (#6101). When the window elapses
 # the card resolves to deny (fail-closed) and the transcript says the bound
 # denied the call; omitted or 0 waits indefinitely.

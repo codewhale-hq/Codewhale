@@ -9,21 +9,31 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceClaim {
+    ReadOnly,
+    WorkspaceRead,
     ReadPath(PathBuf),
     WritePath(PathBuf),
     ReadTree(PathBuf),
     WriteTree(PathBuf),
     Terminal(String),
+    ToolCatalogWrite,
     GlobalExclusive,
 }
 
 impl ResourceClaim {
     #[must_use]
     pub fn conflicts_with(&self, other: &Self) -> bool {
-        use ResourceClaim::{GlobalExclusive, ReadPath, ReadTree, Terminal, WritePath, WriteTree};
+        use ResourceClaim::{
+            GlobalExclusive, ReadOnly, ReadPath, ReadTree, Terminal, ToolCatalogWrite,
+            WorkspaceRead, WritePath, WriteTree,
+        };
 
         match (self, other) {
             (GlobalExclusive, _) | (_, GlobalExclusive) => true,
+            (ReadOnly, _) | (_, ReadOnly) => false,
+            (WorkspaceRead, WritePath(_) | WriteTree(_))
+            | (WritePath(_) | WriteTree(_), WorkspaceRead) => true,
+            (ToolCatalogWrite, ToolCatalogWrite) => true,
             (Terminal(left), Terminal(right)) => left == right,
             (ReadPath(_), ReadPath(_)) => false,
             (ReadPath(left), WritePath(right)) | (WritePath(right), ReadPath(left)) => {
@@ -165,12 +175,83 @@ mod tests {
     #[test]
     fn global_exclusive_conflicts_with_every_claim() {
         for claim in [
+            ResourceClaim::ReadOnly,
+            ResourceClaim::WorkspaceRead,
             ResourceClaim::ReadPath(PathBuf::from("src/lib.rs")),
             ResourceClaim::Terminal("shell-1".to_string()),
+            ResourceClaim::ToolCatalogWrite,
             ResourceClaim::GlobalExclusive,
         ] {
             assert!(ResourceClaim::GlobalExclusive.conflicts_with(&claim));
             assert!(claim.conflicts_with(&ResourceClaim::GlobalExclusive));
         }
+    }
+
+    #[test]
+    fn readonly_workspace_read_and_catalog_claims_schedule_with_write_barriers() {
+        let batches = schedule_non_conflicting(vec![
+            ("read", vec![ResourceClaim::ReadPath(PathBuf::from("a.rs"))]),
+            ("git_status", vec![ResourceClaim::WorkspaceRead]),
+            ("bash_ro", vec![ResourceClaim::WorkspaceRead]),
+            ("load_skill", vec![ResourceClaim::ReadOnly]),
+            ("tool_search_1", vec![ResourceClaim::ToolCatalogWrite]),
+            ("grep", vec![ResourceClaim::ReadTree(PathBuf::from("src"))]),
+            ("tool_search_2", vec![ResourceClaim::ToolCatalogWrite]),
+            (
+                "edit",
+                vec![ResourceClaim::WritePath(PathBuf::from("b.rs"))],
+            ),
+            ("git_diff", vec![ResourceClaim::WorkspaceRead]),
+            ("mutating_bash", vec![ResourceClaim::GlobalExclusive]),
+            ("session_search", vec![ResourceClaim::ReadOnly]),
+        ]);
+        assert_eq!(
+            batches,
+            vec![
+                vec![
+                    "read",
+                    "git_status",
+                    "bash_ro",
+                    "load_skill",
+                    "tool_search_1",
+                    "grep"
+                ],
+                vec!["tool_search_2", "edit"],
+                vec!["git_diff"],
+                vec!["mutating_bash"],
+                vec!["session_search"],
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_read_conflicts_with_writes_but_not_reads() {
+        assert!(
+            !ResourceClaim::WorkspaceRead
+                .conflicts_with(&ResourceClaim::ReadPath(PathBuf::from("a.rs")))
+        );
+        assert!(
+            !ResourceClaim::WorkspaceRead
+                .conflicts_with(&ResourceClaim::ReadTree(PathBuf::from("src")))
+        );
+        assert!(!ResourceClaim::WorkspaceRead.conflicts_with(&ResourceClaim::ReadOnly));
+        assert!(!ResourceClaim::WorkspaceRead.conflicts_with(&ResourceClaim::WorkspaceRead));
+        assert!(!ResourceClaim::WorkspaceRead.conflicts_with(&ResourceClaim::ToolCatalogWrite));
+        assert!(
+            ResourceClaim::WorkspaceRead
+                .conflicts_with(&ResourceClaim::WritePath(PathBuf::from("a.rs")))
+        );
+        assert!(
+            ResourceClaim::WritePath(PathBuf::from("a.rs"))
+                .conflicts_with(&ResourceClaim::WorkspaceRead)
+        );
+        assert!(
+            ResourceClaim::WorkspaceRead
+                .conflicts_with(&ResourceClaim::WriteTree(PathBuf::from("src")))
+        );
+        assert!(
+            ResourceClaim::WriteTree(PathBuf::from("src"))
+                .conflicts_with(&ResourceClaim::WorkspaceRead)
+        );
     }
 }

@@ -152,6 +152,10 @@ impl ToolSpec for FetchUrlTool {
         ApprovalRequirement::Required
     }
 
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let url = input
             .get("url")
