@@ -2050,7 +2050,7 @@ impl Expander {
         let tokens = &line.words;
         match name {
             "nix" => {
-                for verb_idx in resolve_wrapper_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
+                for verb_idx in launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
@@ -2088,7 +2088,7 @@ impl Expander {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 } else {
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                    for verb_idx in launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
                         if tokens
                             .get(verb_idx)
                             .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
@@ -2137,7 +2137,7 @@ impl Expander {
             }
             _ => {
                 if name == "launchctl" {
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                    for verb_idx in launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
                         if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
                         }
@@ -2147,7 +2147,7 @@ impl Expander {
                     if launcher.program != name {
                         continue;
                     }
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, launcher.global) {
+                    for verb_idx in launcher_verb_targets(tokens, head + 1, launcher.global) {
                         let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                             continue;
                         };
@@ -2160,6 +2160,22 @@ impl Expander {
                         } else {
                             None
                         };
+                        if let Some((ep_val, ep_idx)) = entrypoint.as_ref()
+                            && !ep_val.is_empty()
+                        {
+                            let image_spec = Wrapper {
+                                operands: 0,
+                                ..*launcher.subcmd
+                            };
+                            for image in resolve_wrapper_targets(tokens, verb_idx + 1, &image_spec)
+                            {
+                                if image < tokens.len() {
+                                    let combined =
+                                        build_prefixed_line(ep_val, *ep_idx, line, image + 1);
+                                    self.record(&combined, depth + 1);
+                                }
+                            }
+                        }
                         for landing in
                             resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
                         {
@@ -3848,6 +3864,19 @@ fn step_wrapper_option(
     WrapperStep::Landing
 }
 
+fn launcher_verb_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
+    let mut targets = resolve_wrapper_targets(tokens, start, spec);
+    for at in targets.clone() {
+        if let Some(word) = (at..tokens.len()).find(|&i| !tokens[i].is_empty())
+            && !targets.contains(&word)
+        {
+            targets.push(word);
+        }
+    }
+    targets.sort_unstable();
+    targets
+}
+
 fn resolve_wrapper_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
     let mut landings = Vec::new();
     let mut seen = HashSet::new();
@@ -4167,6 +4196,21 @@ mod tests {
         assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
         assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
         assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
+    }
+
+    #[test]
+    fn launcher_payloads_survive_empty_words_and_entrypoint_args() {
+        for (command, expected) in [
+            ("npm '' exec -c 'rm -rf /'", "rm -rf /"),
+            ("npm '' '' x --call 'rm -rf /'", "rm -rf /"),
+            ("docker '' run alpine rm -rf /", "rm -rf /"),
+            ("nix '' develop -c rm -rf /", "rm -rf /"),
+            ("docker -D run --entrypoint rm alpine -rf /", "rm -rf /"),
+            ("docker run --entrypoint=rm alpine -rf /", "rm -rf /"),
+            ("podman run -it --entrypoint rm alpine -rf /", "rm -rf /"),
+        ] {
+            assert!(contains(command, expected), "{command}");
+        }
     }
 
     #[test]
