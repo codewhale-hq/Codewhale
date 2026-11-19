@@ -4,9 +4,11 @@
 
 `cnb.cool/codewhale.net/codewhale` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
-(primarily mainland China). The mirror receives every push to `main`, every
-`fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
-and each `v*` release tag after its complete GitHub Release is published.
+(primarily mainland China). The mirror receives every push to `main` and
+each `v*` release tag after its complete GitHub Release is published. The
+GitCode mirror (`gitcode.com/HunterBown/Codewhale`) receives the same `main`
+and release tags from [`Sync to GitCode`](../.github/workflows/sync-gitcode.yml);
+it carries source only, with no binary releases.
 
 ## Source and downloads are separate checks (2026-10-06 audit)
 
@@ -48,9 +50,11 @@ The mirror is maintained by the [`Sync to CNB`](../.github/workflows/sync-cnb.ym
 GitHub Actions workflow:
 
 - **Trigger:** `push` to `main`, the release workflow after canonical publication,
-  release work branches matching `work/v*`, first-party fix and rebrand
-  branches matching `fix/*` and `rebrand/*`, or `workflow_dispatch` for manual
-  recovery. A tag push alone does not mirror a release tag. Manual tag recovery
+  a schedule at :17 and :47 past each hour, or `workflow_dispatch` for manual
+  recovery. The schedule re-mirrors `main` (catching pushes that started no
+  workflow) and fails when the latest GitHub Release tag is missing or
+  different on CNB or its CNB checksum manifest is unreachable; it never
+  pushes a tag. A tag push alone does not mirror a release tag. Manual tag recovery
   also verifies the complete public GitHub asset inventory and immutable source.
 - **Auth:** HTTPS basic auth as user `cnb` with the `CNB_GIT_TOKEN`
   repository secret as the password. Forks never inherit the secret, so the
@@ -58,9 +62,8 @@ GitHub Actions workflow:
   it is skipped instead of failing. In this repository a missing or misspelled
   secret still fails the push step.
 - **Scope:** only the ref that triggered the run is pushed. Tag pushes
-  push exactly that tag. Branch pushes mirror `main`, first-party
-  `fix/*`/`rebrand/*` branches, or explicitly matched release branches. Other
-  feature branches and dependabot refs are intentionally *not* mirrored.
+  push exactly that tag; branch syncs push `main`. Other branches and
+  dependabot refs are intentionally *not* mirrored.
 - **Concurrency:** `cnb-sync-${{ github.ref }}` serializes each ref separately.
   Distinct release tags cannot replace one another in a global pending slot;
   only a newer push of the same branch supersedes its pending branch sync.
@@ -267,7 +270,7 @@ For a stable install, clone `main` or a release tag from:
 https://cnb.cool/codewhale.net/codewhale.git
 ```
 
-The mirror receives `main`, release tags, and matched release branches. GitHub
+The mirror receives `main` and release tags. GitHub
 is the fallback when the CNB workflow or credentials are unhealthy.
 
 The bilingual self-hosting guide is

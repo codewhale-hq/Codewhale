@@ -5,8 +5,10 @@
 
 `cnb.cool/codewhale.net/codewhale` 是这个 GitHub 仓库的单向镜像，服务那些
 GitHub 慢或无法访问的网络环境（主要是中国大陆）。镜像会收到：`main` 的每一次
-推送，第一方发布工作用到的每个 `fix/*`、`rebrand/*` 和 `work/v*` 分支，以及
-每个完整 GitHub Release 已发布后的 `v*` 发布标签。
+推送，以及每个完整 GitHub Release 已发布后的 `v*` 发布标签。GitCode 镜像
+（`gitcode.com/HunterBown/Codewhale`）通过
+[`Sync to GitCode`](../../.github/workflows/sync-gitcode.yml) 收到相同的 `main`
+和发布标签；它只提供源码，没有二进制 release。
 
 ## 源码与下载分别验证（2026-10-06 审核）
 
@@ -43,17 +45,17 @@ sha256sum -c codewhale-artifacts-sha256.txt --ignore-missing
 镜像由 [`Sync to CNB`](../../.github/workflows/sync-cnb.yml) GitHub Actions
 工作流维护：
 
-- **触发：** 推送到 `main`、权威 Release 发布成功后的发布工作流、匹配 `work/v*` 的发布工作分支、
-  匹配 `fix/*` 和 `rebrand/*` 的第一方修复与改名分支，或用于手动恢复的
-  `workflow_dispatch`。仅推送标签不会触发发布标签镜像。手动恢复标签也必须
+- **触发：** 推送到 `main`、权威 Release 发布成功后的发布工作流、每小时第 17 和
+  第 47 分钟的定时任务，或用于手动恢复的 `workflow_dispatch`。定时任务会重新镜像
+  `main`（补上没有触发工作流的推送），并在最新 GitHub Release 标签在 CNB 上缺失、
+  指向不同提交，或其 CNB 校验清单无法访问时失败；它从不推送标签。仅推送标签不会触发发布标签镜像。手动恢复标签也必须
   验证 GitHub 已公开的完整资产清单及不可变的源码提交。
 - **认证：** HTTPS basic auth，用户名为 `cnb`，密码是仓库 secret
   `CNB_GIT_TOKEN`。fork 永远不会继承这个 secret，所以 `sync` 作业只在仓库所有者为
   `codewhale-hq` 时运行；在 fork 上会被跳过而不是失败。本仓库中 secret 缺失或拼写
   错误时，push 步骤仍会失败。
-- **范围：** 只推送触发本次运行的那个 ref。标签推送就推送该标签。分支推送镜像
-  `main`、第一方 `fix/*`/`rebrand/*` 分支，或显式匹配的发布分支。其他功能分支
-  和 dependabot ref 有意*不*镜像。
+- **范围：** 只推送触发本次运行的那个 ref。标签推送就推送该标签；分支同步推送
+  `main`。其他分支和 dependabot ref 有意*不*镜像。
 - **并发：** 按 `cnb-sync-${{ github.ref }}` 为每个 ref 单独串行化。
   不同标签不会互相挤掉待运行任务；同一分支只保留最新待同步推送。
 - **重试：** 每次推送最多重试三次，采用线性退避（5s、10s），之后工作流放弃。
@@ -235,7 +237,7 @@ GitHub 仍是 macOS/Windows 的权威发布矩阵。
 https://cnb.cool/codewhale.net/codewhale.git
 ```
 
-镜像会收到 `main`、发布标签和匹配到的发布分支。当 CNB 工作流或凭据不健康时，
+镜像会收到 `main` 和发布标签。当 CNB 工作流或凭据不健康时，
 GitHub 是回退方案。
 
 腾讯云 Lighthouse 自建服务器的中文/英文操作步骤见

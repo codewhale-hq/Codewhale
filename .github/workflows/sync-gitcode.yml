@@ -3,6 +3,8 @@ name: Sync to GitCode
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17,47 * * * *"
   workflow_dispatch: {}
   workflow_call:
     inputs:
@@ -25,7 +27,7 @@ permissions:
 
 jobs:
   sync:
-    if: github.repository_owner == 'codewhale-hq' && (github.event_name != 'push' || vars.GITCODE_MIRROR == 'enabled')
+    if: github.repository_owner == 'codewhale-hq' && ((github.event_name != 'push' && github.event_name != 'schedule') || vars.GITCODE_MIRROR == 'enabled')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -72,3 +74,13 @@ jobs:
           else
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
           fi
+
+      - name: Verify the latest release reached GitCode
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          ./scripts/release/verify-remote-tag.sh gitcode "${TAG}" "$(git rev-parse "refs/tags/${TAG}^{commit}")"

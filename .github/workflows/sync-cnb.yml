@@ -5,8 +5,9 @@ name: Sync to CNB
 # releases from the Tencent-hosted mirror.
 #
 # Main pushes mirror to CNB unless the repository variable CNB_MIRROR is
-# "disabled"; release tags arrive through release.yml; manual dispatch is the
-# fallback.
+# "disabled"; release tags arrive through release.yml; a half-hourly schedule
+# re-mirrors main and fails if the latest release is missing on CNB; manual
+# dispatch is the fallback.
 #
 # Why the rewrite (v0.8.31):
 #   The previous implementation used the opaque tencentcom/git-sync Docker
@@ -22,6 +23,8 @@ name: Sync to CNB
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17,47 * * * *"
   workflow_dispatch: {}
   workflow_call:
     inputs:
@@ -52,7 +55,7 @@ permissions:
 
 jobs:
   sync:
-    if: github.repository_owner == 'codewhale-hq' && (github.event_name != 'push' || vars.CNB_MIRROR != 'disabled')
+    if: github.repository_owner == 'codewhale-hq' && ((github.event_name != 'push' && github.event_name != 'schedule') || vars.CNB_MIRROR != 'disabled')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -118,4 +121,19 @@ jobs:
             # tag.
             BRANCH="${GITHUB_REF#refs/heads/}"
             scripts/release/mirror-push.sh cnb "branch ${BRANCH}" "HEAD:refs/heads/${BRANCH}" --force
+          fi
+
+      - name: Verify the latest release reached CNB
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          ./scripts/release/verify-remote-tag.sh cnb "${TAG}" "$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if ! curl -fsSL --retry 3 -o /dev/null \
+              "https://cnb.cool/codewhale.net/codewhale/-/releases/download/${TAG}/codewhale-artifacts-sha256.txt"; then
+            echo "::error::CNB release ${TAG} has no codewhale-artifacts-sha256.txt; recover its CNB tag build (docs/CNB_MIRROR.md)." >&2
+            exit 1
           fi
