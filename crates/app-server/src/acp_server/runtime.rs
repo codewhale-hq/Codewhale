@@ -480,7 +480,7 @@ impl PromptRun {
                                 .map(acp::ToolCallContent::Diff)
                                 .into_iter()
                                 .chain([acp::ToolCallContent::from(text)])
-                                .collect(),
+                                .collect::<Vec<_>>(),
                         );
                     if !nested {
                         fields = fields.status(acp::ToolCallStatus::Pending);
