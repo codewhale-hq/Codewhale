@@ -614,7 +614,8 @@ fn statusline_full_frame_presets_preserve_transcript_composer_and_hitboxes() {
                     column: cursor.0,
                     row: cursor.1,
                     modifiers: KeyModifiers::NONE,
-                }
+                },
+                Instant::now()
             ));
             assert_eq!(
                 app.cursor_position,
