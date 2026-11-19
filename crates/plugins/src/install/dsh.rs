@@ -2449,16 +2449,20 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
                     .components()
                     .any(|part| part.as_os_str().to_str() == Some("node_modules"));
                 let contained_target = dependency_link
-                    && fs::canonicalize(&path).is_ok_and(|target| {
-                        target.starts_with(&canonical_root)
-                            && fs::metadata(&target)
-                                .is_ok_and(|target| target.is_file() || target.is_dir())
-                    });
-                require(
-                    contained_target,
-                    "Source paths must not contain links or reparse points.",
-                )?;
-                continue;
+                    .then(|| fs::canonicalize(&path).ok())
+                    .flatten()
+                    .filter(|target| target.starts_with(&canonical_root));
+                match contained_target {
+                    Some(target) if target.is_dir() => {
+                        return refuse(
+                            "This source links `node_modules` dependencies (pnpm-style installs); the converted bundle cannot materialize linked dependency directories. Install dependencies in a real layout, or remove `node_modules` before converting.",
+                        );
+                    }
+                    Some(target) if target.is_file() => continue,
+                    _ => {
+                        return refuse("Source paths must not contain links or reparse points.");
+                    }
+                }
             }
             visit(&path, metadata.is_dir())?;
             if metadata.is_dir() {
