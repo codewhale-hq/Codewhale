@@ -1166,7 +1166,9 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     &[],
                 ));
             }
-            HistoryCell::Error { message, severity } => {
+            HistoryCell::Error {
+                message, severity, ..
+            } => {
                 let summary = one_line_summary(message, 96);
                 let status = severity.to_string();
                 rows.push(timeline_row("error", &summary, Some(&status), None, &[]));

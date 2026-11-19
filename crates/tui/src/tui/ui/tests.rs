@@ -7309,6 +7309,7 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
         HistoryCell::Error {
             message: "selected error".into(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
         running_exec_cell(),
     ];
@@ -8015,6 +8016,7 @@ fn error_or_interruption_transfers_reasoning_ownership_truthfully() {
         HistoryCell::Error {
             message: "provider disconnected".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -19671,6 +19673,65 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
 }
 
 #[test]
+fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "run the check"));
+    app.is_loading = true;
+    apply_engine_error_to_app(
+        &mut app,
+        codewhale_error_taxonomy::ErrorEnvelope::new(
+            codewhale_error_taxonomy::ErrorCategory::Network,
+            codewhale_error_taxonomy::ErrorSeverity::Error,
+            false,
+            "llm_network_error",
+            "SSE stream request did not receive response headers after 45s",
+        ),
+    );
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        }) if message == "SSE stream request did not receive response headers after 45s"
+            && code == "llm_network_error"
+    ));
+
+    super::event_loop::present_turn_failure(
+        &mut app,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+        None,
+    );
+    let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
+    assert_eq!(snapshot.turn_outcomes.len(), 1);
+    assert_eq!(
+        snapshot.turn_outcomes[0].code.as_deref(),
+        Some("llm_network_error")
+    );
+
+    manager.save_session(&snapshot).expect("save");
+    let loaded = manager
+        .load_session(&snapshot.metadata.id)
+        .expect("load session");
+    let mut resumed = create_test_app();
+    apply_loaded_session(&mut resumed, &mut Config::default(), &loaded).expect("resume");
+    assert!(resumed.history.iter().any(|cell| matches!(
+        cell,
+        HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        } if message == "SSE stream request did not receive response headers after 45s"
+            && code == "llm_network_error"
+    )));
+}
+
+#[test]
 fn turn_started_route_is_captured_before_cancel_suppression() {
     let mut app = create_test_app();
     app.suppress_stream_events_until_turn_complete = true;
@@ -22598,6 +22659,7 @@ fn visible_error_becomes_full_detail_target_ahead_of_adjacent_tool() {
             message: "Refusing insecure base URL.\nSet CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host."
                 .to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -29918,7 +29980,11 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
     assert!(!app.is_loading);
     for (width, height) in [(80, 24), (140, 40)] {
         let frame = render_test_app(&mut app, &config, width, height);
-        let text = frame.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = frame
+            .split_whitespace()
+            .filter(|word| *word != "\u{258f}")
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             text.contains("API key not found"),
             "{width}x{height}: {text}"
