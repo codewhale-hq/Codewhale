@@ -848,7 +848,7 @@ pub(crate) fn coalesce_scroll_burst(
         };
         match &next_observed.event {
             Event::Mouse(next) if is_scroll_event(next) => {
-                let _ = handle_mouse_event(app, latest);
+                let _ = handle_mouse_event(app, latest, next_observed.observed_at);
                 latest = *next;
             }
             _ => {
@@ -5655,7 +5655,15 @@ pub(crate) async fn run_event_loop(
             terminal_repaint = FrameRepaint::Clear;
         }
 
-        let now = Instant::now();
+        // The burst window is armed in event-observed time, so expiry must
+        // be asked on that same clock: when input is backlogged, "now" for
+        // the paste machine is the newest event the loop has actually seen,
+        // not the wall clock. Drain the pump first so queued Enters and
+        // chars count before the window can die underneath them.
+        collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
+        let now = pending_terminal_events
+            .back()
+            .map_or_else(Instant::now, |event| event.observed_at);
         flush_paste_burst_before_composer(app, now);
         if let Some(target) = app.pending_auto_review_retry.take() {
             super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
@@ -6042,7 +6050,7 @@ pub(crate) async fn run_event_loop(
                     &terminal_input,
                     &mut pending_terminal_events,
                 )?;
-                let events = handle_mouse_event(app, mouse);
+                let events = handle_mouse_event(app, mouse, event_observed_at);
                 if handle_view_events_boxed(
                     terminal,
                     app,
@@ -6125,7 +6133,7 @@ pub(crate) async fn run_event_loop(
                         config,
                         chord,
                         true,
-                        Instant::now(),
+                        event_observed_at,
                     )
                     .await?
                     {

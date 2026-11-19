@@ -533,6 +533,7 @@ fn cjk_composer_cursor_and_mouse_geometry_agree_in_compact_and_wide_frames() {
                 row: first_cursor.1,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now()
         ));
         assert_eq!(
             app.cursor_position,
@@ -2190,6 +2191,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                 row: sheet.y + sheet.height / 2,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(app.viewport.pending_scroll_delta, 0);
@@ -2214,6 +2216,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                         row: 0,
                         modifiers: KeyModifiers::NONE,
                     },
+                    Instant::now(),
                 );
                 assert_eq!(app.viewport.pending_scroll_delta, expected);
             }
@@ -2402,6 +2405,7 @@ fn approval_mouse_wheel_reviews_transcript_without_closing_card() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -2432,6 +2436,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(
@@ -2450,6 +2455,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert!(
@@ -4694,6 +4700,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Full-cell coverage (#6228 sends fragments down the exact-text
     // fallback): "alpha beta" spans columns 0-10, so release past it.
@@ -4705,6 +4712,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4714,6 +4722,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     // Drag-release autocopy now takes the Markdown-source path (#6156): the
@@ -4774,6 +4783,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Fragment coverage: "alpha beta" spans columns 0-10, so releasing at
     // column 4 cuts the cell in half and the Markdown path must decline.
@@ -4785,6 +4795,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4794,6 +4805,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let copied = app
@@ -4996,7 +5008,7 @@ fn loading_mouse_filter_allows_sidebar_hover_to_clear() {
     };
 
     assert!(!should_drop_loading_mouse_motion(&app, moved));
-    handle_mouse_event(&mut app, moved);
+    handle_mouse_event(&mut app, moved, Instant::now());
 
     assert_eq!(app.sidebar_hover_tooltip, None);
     assert_eq!(app.last_mouse_pos, Some((12, 5)));
@@ -5019,7 +5031,7 @@ fn loading_mouse_filter_allows_sidebar_exit_to_clear_highlight() {
         !should_drop_loading_mouse_motion(&app, exit_left),
         "first move out of the sidebar must clear stale sidebar hover state"
     );
-    handle_mouse_event(&mut app, exit_left);
+    handle_mouse_event(&mut app, exit_left, Instant::now());
 
     assert_eq!(app.last_mouse_pos, Some((59, 5)));
     assert!(!should_drop_loading_mouse_motion(
@@ -5053,6 +5065,7 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
             row: 6,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5095,6 +5108,7 @@ fn pinned_prompt_click_jumps_to_the_message_it_names() {
             row: 3,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5129,6 +5143,7 @@ fn pinned_prompt_click_only_claims_the_header_row() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5175,6 +5190,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5197,6 +5213,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.viewport.transcript_scrollbar_dragging);
 
@@ -5209,6 +5226,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(!app.viewport.transcript_scrollbar_dragging);
@@ -5239,6 +5257,7 @@ fn left_down_inside_transcript_starts_selection() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5284,6 +5303,7 @@ fn drag_below_viewport_arms_autoscroll_down() {
             row: 12, // below area.y + area.height (= 8)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5318,6 +5338,7 @@ fn drag_above_viewport_arms_autoscroll_up() {
             row: 1,     // above area.y (= 4)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5369,6 +5390,7 @@ fn drag_back_inside_disarms_autoscroll() {
             row: 0, // inside area
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5398,6 +5420,7 @@ fn mouse_up_clears_selection_autoscroll() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5515,6 +5538,7 @@ fn right_click_opens_context_menu() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5585,6 +5609,7 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5618,6 +5643,7 @@ fn composer_mouse_wheel_scrolls_wrapped_draft_not_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5651,6 +5677,7 @@ fn composer_mouse_wheel_up_moves_within_wrapped_draft() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
 
     assert!(app.cursor_position < app.input.chars().count());
@@ -5684,6 +5711,7 @@ fn composer_mouse_wheel_with_empty_draft_scrolls_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5722,6 +5750,7 @@ fn composer_mouse_wheel_at_draft_top_falls_through_to_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert_eq!(app.cursor_position, 0, "caret was already at the top");
@@ -5808,6 +5837,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(
         app.cursor_position, 0,
@@ -5825,6 +5855,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(app.cursor_position, 1);
 }
@@ -7270,7 +7301,7 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
 
     app.needs_redraw = false;
     let down_first = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_first);
+    handle_mouse_event(&mut app, down_first, Instant::now());
     assert!(app.needs_redraw, "mouse Down must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7284,17 +7315,18 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
             row: u16::MAX,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.needs_redraw, "click outside must clear + redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![1]);
 
     let down_second = mouse_on_cell(&app, 1, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_second);
+    handle_mouse_event(&mut app, down_second, Instant::now());
     let _ = render_underwater_test_app(&mut app, 100, 32);
     app.needs_redraw = false;
     let drag_first = mouse_on_cell(&app, 0, MouseEventKind::Drag(MouseButton::Left));
-    handle_mouse_event(&mut app, drag_first);
+    handle_mouse_event(&mut app, drag_first, Instant::now());
     assert!(app.needs_redraw, "mouse Drag must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7316,9 +7348,9 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
     app.resync_history_revisions();
     let _ = render_underwater_test_app(&mut app, 100, 32);
     let down = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down);
+    handle_mouse_event(&mut app, down, Instant::now());
     let up = mouse_on_cell(&app, 0, MouseEventKind::Up(MouseButton::Left));
-    handle_mouse_event(&mut app, up);
+    handle_mouse_event(&mut app, up, Instant::now());
 
     assert!(
         app.viewport
@@ -7663,7 +7695,8 @@ fn clicking_composer_releases_transcript_and_work_surface_focus() {
             column: composer.x + 3,
             row: composer.y + 1,
             modifiers: KeyModifiers::NONE,
-        }
+        },
+        Instant::now()
     ));
     assert!(!app.viewport.transcript_selection.is_active());
     assert!(!app.work_surface.focused);
@@ -33869,6 +33902,7 @@ fn focused_agent_transcript_receives_wheel_scroll_through_the_frame() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(events.is_empty());
     terminal

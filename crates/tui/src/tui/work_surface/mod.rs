@@ -79,6 +79,7 @@ pub(crate) use terminal::{handle_paste as handle_terminal_paste, poll as poll_te
 mod tests {
     use super::WorkSurfacePlacement;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -4029,6 +4030,7 @@ mod tests {
                 row: row_y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ContextMenu));
