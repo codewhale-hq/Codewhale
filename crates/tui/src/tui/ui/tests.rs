@@ -32327,7 +32327,7 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
             continue;
         }
         if key.code == KeyCode::Enter {
-            submitted = app.handle_composer_enter(true, Instant::now());
+            submitted = app.handle_composer_enter(true, observed.observed_at);
         }
     }
 
@@ -32335,6 +32335,79 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
         submitted.as_deref(),
         Some(prompt),
         "a deliberate Enter observed 150ms after raw input must submit even when the event loop drains the backlog without delay"
+    );
+}
+
+#[test]
+fn queued_mid_stream_enter_inserts_newline_not_submit_under_backlog() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // A raw paste at the pace the real Windows Terminal harness produced:
+    // chars ~5ms apart form a burst, and its Enter lands inside the 120ms
+    // suppression window. The whole stream is queued before the loop reads
+    // it, so processing time lags the last char far beyond the window — the
+    // predicate must run on each event's observed_at or the mid-paste Enter
+    // submits (a processing-time dispatch revert fails this test).
+    let first_at = Instant::now()
+        .checked_sub(Duration::from_millis(880))
+        .expect("stale stream origin");
+    for (index, ch) in "pasted payload".chars().enumerate() {
+        tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            first_at + Duration::from_millis(index as u64 * 5),
+        )))
+        .expect("queue paste char");
+    }
+    let last_char_at = first_at + Duration::from_millis(13 * 5);
+    let enter_at = last_char_at + Duration::from_millis(40);
+    tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        enter_at,
+    )))
+    .expect("queue mid-stream Enter");
+
+    let input = TerminalInputPump {
+        rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let mut pending = VecDeque::new();
+    let mut app = create_test_app();
+    app.use_paste_burst_detection = true;
+    app.bracketed_paste_seen = false;
+    let mut submitted = None;
+
+    for _ in 0..="pasted payload".len() {
+        let observed = next_terminal_event(&input, &mut pending, Duration::from_millis(1))
+            .expect("read queued terminal event")
+            .expect("queued event remains");
+        let Event::Key(key) = observed.event else {
+            panic!("queued stream contains only keys");
+        };
+        flush_paste_burst_before_composer(&mut app, observed.observed_at);
+        if handle_plain_key_before_composer(&mut app, &key, observed.observed_at) {
+            continue;
+        }
+        if key.code == KeyCode::Enter {
+            submitted = app.handle_composer_enter(true, observed.observed_at);
+        }
+    }
+
+    assert_eq!(
+        submitted, None,
+        "an Enter observed inside the suppression window must not submit just because processing ran late"
+    );
+    // The absorbed newline lives in the burst buffer; a later expiry flush
+    // delivers the whole payload to the composer in order.
+    flush_paste_burst_before_composer(&mut app, enter_at + Duration::from_millis(200));
+    assert!(
+        app.input.contains("pasted payload\n"),
+        "the absorbed Enter must land as a newline after the pasted text, got {:?}",
+        app.input
     );
 }
 

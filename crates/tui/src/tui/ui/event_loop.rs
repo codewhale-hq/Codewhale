@@ -5657,14 +5657,18 @@ pub(crate) async fn run_event_loop(
 
         // The burst window is armed in event-observed time, so expiry must
         // be asked on that same clock: when input is backlogged, "now" for
-        // the paste machine is the newest event the loop has actually seen,
-        // not the wall clock. Drain the pump first so queued Enters and
-        // chars count before the window can die underneath them.
+        // the paste machine is the *oldest* event still queued — the queue
+        // is FIFO-ordered by observed_at, so front() is the only bound that
+        // cannot outrun an unjudged Enter sitting behind it. back() would
+        // let a late mouse move or trailing char kill the window while an
+        // in-window Enter still waits its turn. Drain the pump first so
+        // queued input counts before the window can die underneath it.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
-        let now = pending_terminal_events
-            .back()
+        let paste_now = pending_terminal_events
+            .front()
             .map_or_else(Instant::now, |event| event.observed_at);
-        flush_paste_burst_before_composer(app, now);
+        flush_paste_burst_before_composer(app, paste_now);
+        let now = Instant::now();
         if let Some(target) = app.pending_auto_review_retry.take() {
             super::apply::apply_approve_auto_review_retry(app, &engine_handle, &target);
         }
