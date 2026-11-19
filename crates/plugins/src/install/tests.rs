@@ -2473,6 +2473,38 @@ fn plain_dsh_package_with_no_plugin_json_keeps_behavior_with_skills_dir_or_mcp_j
     assert!(!conversion_md.contains("Merged from sibling plugin.json"));
 }
 
+#[cfg(unix)]
+#[test]
+fn dsh_custom_skill_dirs_refuse_a_symlinked_skill_dir_inside_the_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_dsh_base_package(
+        &tmp.path().join("leak-pkg"),
+        serde_json::json!({
+            "name": "@demo/leak",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        minimal_dsh_patch_with_skill(),
+    );
+    write_minimal_skill(&dir.join("custom-skills"), "guide");
+
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(
+        outside.join("SKILL.md"),
+        "---\nname: leaked\ndescription: outside skill\n---\nbody\n",
+    )
+    .unwrap();
+    fs::write(outside.join("secret.txt"), "TOP-SECRET-OUTSIDE-PACKAGE\n").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("custom-skills/leak")).unwrap();
+
+    let err = dsh::convert_package(&dir, &tmp.path().join("out-leak"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("links or reparse points"), "{err}");
+    assert!(!tmp.path().join("out-leak").exists());
+}
+
 #[test]
 fn component_paths_in_sibling_plugin_json_cannot_escape_or_follow_links() {
     let tmp = tempfile::tempdir().unwrap();
