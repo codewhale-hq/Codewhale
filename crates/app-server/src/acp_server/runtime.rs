@@ -365,9 +365,17 @@ impl PromptRun {
                         input: tool.get("input").cloned().unwrap_or(Value::Null),
                     };
                     if emit {
+                        let external = p.pointer("/item/metadata/external_agent").map(|agent| {
+                            agent
+                                .get("locations")
+                                .and_then(external_locations)
+                                .unwrap_or_default()
+                        });
                         out(update(
                             session,
-                            acp::SessionUpdate::ToolCall(tool_call_start(&call, workspace)),
+                            acp::SessionUpdate::ToolCall(tool_call_start(
+                                &call, workspace, external,
+                            )),
                         ))?;
                     }
                     calls.insert(id, call);
@@ -389,6 +397,7 @@ impl PromptRun {
                         acp::ToolCallStatus::InProgress,
                         None,
                         &[],
+                        None,
                     )),
                 ))?;
             }
@@ -412,6 +421,12 @@ impl PromptRun {
                     } else {
                         acp::ToolCallStatus::Failed
                     };
+                    let external = item.pointer("/metadata/external_agent").map(|agent| {
+                        agent
+                            .get("locations")
+                            .and_then(external_locations)
+                            .unwrap_or_default()
+                    });
                     out(update(
                         session,
                         acp::SessionUpdate::ToolCallUpdate(tool_call_update(
@@ -420,6 +435,7 @@ impl PromptRun {
                             status,
                             item.get("detail").and_then(Value::as_str),
                             &blocks,
+                            external,
                         )),
                     ))?;
                 }
@@ -472,17 +488,31 @@ impl PromptRun {
                         (Some(text), None) | (None, Some(text)) => text.to_string(),
                         (None, None) => title.clone(),
                     };
+                    let external = p.get("external_agent").map(|_| {
+                        p.get("locations")
+                            .and_then(external_locations)
+                            .unwrap_or_default()
+                    });
                     let mut fields = acp::ToolCallUpdateFields::new()
                         .title(title)
                         .kind(tool_call_kind(shown_call))
                         .raw_input((!shown_call.input.is_null()).then(|| shown_call.input.clone()))
                         .content(
-                            tool_call_requested_diff(shown_call, workspace)
-                                .map(acp::ToolCallContent::Diff)
-                                .into_iter()
-                                .chain([acp::ToolCallContent::from(text)])
-                                .collect::<Vec<_>>(),
+                            if nested || external.is_some() {
+                                Vec::new()
+                            } else {
+                                tool_call_requested_diffs(shown_call, workspace)
+                                    .into_iter()
+                                    .map(acp::ToolCallContent::Diff)
+                                    .collect()
+                            }
+                            .into_iter()
+                            .chain([acp::ToolCallContent::from(text)])
+                            .collect::<Vec<_>>(),
                         );
+                    if let Some(locations) = external {
+                        fields = fields.locations(locations);
+                    }
                     if !nested {
                         fields = fields.status(acp::ToolCallStatus::Pending);
                     }
@@ -937,6 +967,7 @@ mod tests {
             emit: true,
             calls: HashMap::new(),
             permissions: HashMap::new(),
+            workspace: Path::new("/"),
         };
         let mut output: Vec<Value> = Vec::new();
         let start = event(

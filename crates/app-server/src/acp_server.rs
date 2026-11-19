@@ -544,6 +544,7 @@ impl AcpServer {
                         updates.push(acp::SessionUpdate::ToolCall(tool_call_start(
                             &call,
                             &saved.metadata.workspace,
+                            None,
                         )));
                         calls.insert(key, call);
                     }
@@ -566,6 +567,7 @@ impl AcpServer {
                                 status,
                                 Some(&detail),
                                 &[],
+                                None,
                             )));
                         }
                     }
@@ -965,53 +967,115 @@ fn tool_call_location(call: &PendingToolCall, workspace: &Path) -> Option<PathBu
     })
     .flatten()
     .filter(|path| !path.is_empty())
-    .map(|path| workspace.join(path))
+    .and_then(|path| {
+        let resolved = codewhale_engine::tools::spec::resolve_home_path(path)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| workspace.join(path));
+        let normalized = codewhale_engine::tools::spec::normalize_path(&resolved);
+        normalized.to_str().map(PathBuf::from)
+    })
 }
 
-fn tool_call_requested_diff(call: &PendingToolCall, workspace: &Path) -> Option<acp::Diff> {
-    (tool_call_kind(call) == acp::ToolKind::Edit)
-        .then(|| tool_call_location(call, workspace))
-        .flatten()
-        .and_then(|path| tool_call_diff(call, &path))
+fn tool_call_requested_diffs(call: &PendingToolCall, workspace: &Path) -> Vec<acp::Diff> {
+    if tool_call_kind(call) != acp::ToolKind::Edit {
+        return Vec::new();
+    }
+    tool_call_location(call, workspace)
+        .map(|path| tool_call_diffs(call, &path))
+        .unwrap_or_default()
 }
 
-fn tool_call_start(call: &PendingToolCall, workspace: &Path) -> acp::ToolCall {
-    acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
+fn external_locations(value: &Value) -> Option<Vec<acp::ToolCallLocation>> {
+    value.as_array().map(|entries| {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.get("path").and_then(Value::as_str)?;
+                let mut location = acp::ToolCallLocation::new(PathBuf::from(path));
+                if let Some(line) = entry.get("line").and_then(Value::as_u64) {
+                    location = location.line(line as u32);
+                }
+                Some(location)
+            })
+            .collect()
+    })
+}
+
+fn tool_call_start(
+    call: &PendingToolCall,
+    workspace: &Path,
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
+) -> acp::ToolCall {
+    let foreign = external_locations.is_some();
+    let mut start = acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
         .kind(tool_call_kind(call))
-        .status(acp::ToolCallStatus::Pending)
-        .locations(
+        .status(acp::ToolCallStatus::Pending);
+    if let Some(locations) = external_locations {
+        start = start.locations(locations);
+    } else {
+        start = start.locations(
             tool_call_location(call, workspace)
                 .map(acp::ToolCallLocation::new)
                 .into_iter()
                 .collect(),
-        )
-        .content(
-            tool_call_requested_diff(call, workspace)
-                .map(acp::ToolCallContent::Diff)
+        );
+    }
+    if !foreign {
+        start = start.content(
+            tool_call_requested_diffs(call, workspace)
                 .into_iter()
+                .map(acp::ToolCallContent::Diff)
                 .collect(),
-        )
-        .raw_input((!call.input.is_null()).then(|| call.input.clone()))
+        );
+    }
+    start.raw_input((!call.input.is_null()).then(|| call.input.clone()))
 }
 
-fn tool_call_diff(call: &PendingToolCall, path: &Path) -> Option<acp::Diff> {
+fn tool_call_diffs(call: &PendingToolCall, path: &Path) -> Vec<acp::Diff> {
     let text = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| call.input.get(*key).and_then(Value::as_str))
     };
     if let Some(content) = text(&["content"]) {
-        return Some(acp::Diff::new(path, content));
+        return vec![acp::Diff::new(path, content)];
     }
-    let search = text(&["search", "old_string", "old_str", "oldText", "old_text"])?;
-    let replace = text(&[
-        "replace",
-        "new_string",
-        "new_str",
-        "newText",
-        "new_text",
-        "replacement",
-    ])?;
-    Some(acp::Diff::new(path, replace).old_text(search.to_string()))
+    // The model-facing edit contract is edits[] = {oldText, newText}, which may
+    // also arrive as a JSON-encoded string.
+    let edits = call
+        .input
+        .get("edits")
+        .and_then(|value| match value {
+            Value::String(encoded) => serde_json::from_str::<Value>(encoded).ok(),
+            _ => Some(value.clone()),
+        })
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let diffs: Vec<acp::Diff> = edits
+        .iter()
+        .filter_map(|edit| {
+            let old = edit.get("oldText").and_then(Value::as_str)?;
+            let new = edit.get("newText").and_then(Value::as_str)?;
+            Some(acp::Diff::new(path.to_path_buf(), new).old_text(old.to_string()))
+        })
+        .collect();
+    if !diffs.is_empty() {
+        return diffs;
+    }
+    let (Some(search), Some(replace)) = (
+        text(&["search", "old_string", "old_str", "oldText", "old_text"]),
+        text(&[
+            "replace",
+            "new_string",
+            "new_str",
+            "newText",
+            "new_text",
+            "replacement",
+        ]),
+    ) else {
+        return Vec::new();
+    };
+    vec![acp::Diff::new(path, replace).old_text(search.to_string())]
 }
 
 fn tool_call_update(
@@ -1020,11 +1084,22 @@ fn tool_call_update(
     status: acp::ToolCallStatus,
     content: Option<&str>,
     rich_blocks: &[codewhale_tools::ToolResultContentBlock],
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
 ) -> acp::ToolCallUpdate {
+    let foreign = external_locations.is_some();
     let mut fields = acp::ToolCallUpdateFields::new().status(status);
+    if let Some(locations) = external_locations {
+        fields = fields.locations(locations);
+    }
     if content.is_some() || !rich_blocks.is_empty() {
         let mut blocks = Vec::with_capacity(rich_blocks.len() + 2);
-        blocks.extend(tool_call_requested_diff(call, workspace).map(acp::ToolCallContent::Diff));
+        if !foreign {
+            blocks.extend(
+                tool_call_requested_diffs(call, workspace)
+                    .into_iter()
+                    .map(acp::ToolCallContent::Diff),
+            );
+        }
         if let Some(content) = content {
             blocks.push(acp::ToolCallContent::from(truncate_for_acp(content)));
         }
@@ -1961,6 +2036,7 @@ mod tests {
                     input,
                 },
                 workspace,
+                None,
             ))
             .expect("ACP tool call")
         };
@@ -2004,11 +2080,84 @@ mod tests {
             acp::ToolCallStatus::Completed,
             Some("edited"),
             &[],
+            None,
         ))
         .expect("ACP update");
         assert_eq!(completed["content"][0]["type"], "diff");
         assert_eq!(completed["content"][0]["newText"], "b");
         assert_eq!(completed["content"][1]["content"]["text"], "edited");
+        let home = codewhale_paths::user_home().expect("home");
+        let home_edit = start(
+            "File",
+            json!({"action": "edit", "path": "~/notes.txt", "old_string": "a", "new_string": "b"}),
+        );
+        assert_eq!(
+            home_edit["locations"],
+            json!([{"path": home.join("notes.txt").to_string_lossy()}])
+        );
+        let edits_array = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": [
+                {"oldText": "a", "newText": "b"},
+                {"oldText": "c", "newText": "d"}
+            ]}),
+        );
+        assert_eq!(edits_array["content"][0]["type"], "diff");
+        assert_eq!(edits_array["content"][0]["newText"], "b");
+        assert_eq!(edits_array["content"][1]["newText"], "d");
+        let encoded = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"}),
+        );
+        assert_eq!(encoded["content"][0]["newText"], "b");
+        let dotted = start(
+            "File",
+            json!({"action": "read", "path": "./sub/../README.md"}),
+        );
+        assert_eq!(
+            dotted["locations"],
+            json!([{"path": "/work/repo/README.md"}])
+        );
+    }
+
+    #[test]
+    fn external_tool_start_forwards_agent_locations_without_fabricated_diff() {
+        let workspace = Path::new("/work/repo");
+        let start = to_wire(&tool_call_start(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            Some(vec![acp::ToolCallLocation::new(Path::new(
+                "/other/agent-workspace/notes.txt",
+            ))]),
+        ))
+        .expect("ACP tool call");
+        assert_eq!(
+            start["locations"],
+            json!([{"path": "/other/agent-workspace/notes.txt"}])
+        );
+        assert!(start["content"].as_array().is_none_or(|c| c.is_empty()));
+        let suppressed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+            Some(Vec::new()),
+        ))
+        .expect("ACP update");
+        assert!(
+            suppressed["update"]["content"]
+                .as_array()
+                .is_none_or(|c| c.iter().all(|block| block["type"] != "diff"))
+        );
     }
 
     #[test]
@@ -2027,6 +2176,7 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 data: "QUJD".to_string(),
             }],
+            None,
         ))
         .expect("ACP update");
         let content = update["content"].as_array().expect("ACP content blocks");
