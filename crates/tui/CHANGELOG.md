@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Auto-Review review failures ask you instead of blocking:** when the Auto-Review reviewer times out, cannot be reached, answers incompletely or unparseably, or the review context is over budget, it now retries once after a timeout or transport failure within the same 90-second budget, then opens the normal approval card for that call on an interactive turn you are attending instead of blocking it. Child workers and unattended or headless runs still deny fail closed, now with a message that says the review failed rather than that the action is unsafe. (CW-6881)
+
 ## [0.10.3] - 2026-11-18
 - **Gemini OpenAI-compatibility parallel tool calls, `gemini-4-hydrogen` `xhigh` effort, and error envelopes:** Google `/v1beta/openai` sessions no longer fail permanently after parallel tool calls because only the first `tool_calls` entry in an assistant message carries `extra_content.google.thought_signature`, streaming `delta.tool_calls` chunks that omit `index` no longer collide onto slot `0` or drop continuation `thought_signature` fields, `gemini-4-hydrogen` preserves `reasoning_effort = "xhigh"` while Gemini 4 and 3.1/3.8 models without `"minimal"` map `off`/`minimal` to `"low"` so outbound catalog checks succeed, and single-element JSON array HTTP error responses (`[{"error": …}]`) surface their provider message, quota code, and `retryDelay`.
 - **Flag-only launcher commands no longer crash the turn:** running `npm --version`, `nix --version`, `launchctl --help`, `docker --version`, `podman --version`, or another launcher command with global flags and no subcommand no longer panics with an out-of-bounds index during command policy expansion.
