@@ -1,9 +1,9 @@
 function assertSupportedNode() {
   const version = process.versions && process.versions.node ? process.versions.node : "unknown";
   const major = Number.parseInt(String(version).split(".")[0], 10);
-  if (Number.isNaN(major) || major < 18) {
+  if (Number.isNaN(major) || major < 22) {
     process.stderr.write(
-      "codewhale: Node.js 18 or newer is required for npm installation. " +
+      "codewhale: Node.js 22 or newer is required for npm installation. " +
       `Current Node.js version is ${version}. ` +
       "Please upgrade Node.js and rerun `npm install -g codewhale`.\n",
     );
