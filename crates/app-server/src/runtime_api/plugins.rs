@@ -1113,7 +1113,8 @@ const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
     return out.join("/");
   }
   function resolve(from, id) {
-    var base = normalize(from.slice(0, from.lastIndexOf("/")) + "/" + id);
+    var slash = from.lastIndexOf("/");
+    var base = normalize((slash < 0 ? "" : from.slice(0, slash)) + "/" + id);
     for (var i = 0; i < probes.length; i++) {
       if (Object.prototype.hasOwnProperty.call(files, base + probes[i])) return base + probes[i];
     }
@@ -2689,6 +2690,55 @@ pub(super) async fn put_catalog_settings(
 #[cfg(test)]
 mod review_tests {
     use super::mcp_server_review;
+
+    #[test]
+    fn dsh_bootstrap_resolves_relative_requires_from_a_root_level_entry() {
+        let files = [
+            (
+                "client.js",
+                "var h = require('./helper'); module.exports = { apply() { return h.v; } };",
+            ),
+            ("helper.js", "module.exports = { v: 1 };"),
+        ];
+        let closure = super::DshClosure {
+            package: "@demo/root".to_string(),
+            entry: "client.js".to_string(),
+            files: files
+                .iter()
+                .map(|(path, _)| (path.to_string(), String::new()))
+                .collect(),
+            host_provided: Vec::new(),
+        };
+        let verified: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(path, text)| (path.to_string(), text.as_bytes().to_vec()))
+            .collect();
+        let bootstrap = String::from_utf8(
+            super::dsh_bootstrap("root", &closure, &verified)
+                .ok()
+                .unwrap(),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("run.js");
+        std::fs::write(
+            &script,
+            format!(
+                "var captured;\nvar window = {{ __ModuleLoader__: {{ load: function (r) {{ captured = r; }} }} }};\n{bootstrap}\nprocess.stdout.write(String(captured.factory(function () {{}}).apply()));\n"
+            ),
+        )
+        .unwrap();
+        let Ok(output) = std::process::Command::new("node").arg(&script).output() else {
+            eprintln!("node is unavailable; the bootstrap execution check was skipped");
+            return;
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "1");
+    }
 
     #[test]
     fn plugin_mcp_review_omits_url_credentials_without_changing_the_bundle() {
