@@ -698,6 +698,16 @@ pub(super) fn shell_exec_live_update(
     }
     let task_id = exec.shell_task_id.as_deref()?;
     let Some(job) = jobs.get(task_id) else {
+        if exec.status != ToolStatus::Running {
+            return exec.live_output.clone().map(|live| ShellExecLiveUpdate {
+                task_id: task_id.to_string(),
+                status: exec.status,
+                output: Some(live),
+                duration_ms: exec.duration_ms.unwrap_or_default(),
+                finalized: true,
+                stale_elapsed_since_output_ms: None,
+            });
+        }
         return Some(ShellExecLiveUpdate {
             task_id: task_id.to_string(),
             status: ToolStatus::Stopped,
@@ -719,7 +729,9 @@ pub(super) fn shell_exec_live_update(
     } else {
         None
     };
-    if exec.status == next_status
+    let needs_finalize_output = finalized && (exec.live_output.is_some() || next_live.is_some());
+    if !needs_finalize_output
+        && exec.status == next_status
         && exec.live_output == next_live
         && exec.duration_ms == Some(job.elapsed_ms)
         && exec.stale_elapsed_since_output_ms == stale_elapsed_since_output_ms
@@ -747,7 +759,7 @@ pub(super) fn detached_shell_job_output(task_id: &str, exec: &ExecCell) -> Optio
     Some(output)
 }
 
-pub(super) fn shell_job_tool_status(status: &ShellStatus) -> ToolStatus {
+pub(crate) fn shell_job_tool_status(status: &ShellStatus) -> ToolStatus {
     match status {
         ShellStatus::Running => ToolStatus::Running,
         ShellStatus::Completed => ToolStatus::Success,
@@ -756,7 +768,7 @@ pub(super) fn shell_job_tool_status(status: &ShellStatus) -> ToolStatus {
     }
 }
 
-pub(super) fn shell_job_live_output(job: &ShellJobSnapshot) -> Option<String> {
+pub(crate) fn shell_job_live_output(job: &ShellJobSnapshot) -> Option<String> {
     match (job.stdout_tail.is_empty(), job.stderr_tail.is_empty()) {
         (true, true) => None,
         (false, true) => Some(job.stdout_tail.clone()),

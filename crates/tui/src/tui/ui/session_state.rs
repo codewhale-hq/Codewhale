@@ -629,6 +629,7 @@ pub(crate) fn recover_stalled_runtime_turn(app: &mut App, message: &str, level: 
     // transcript doesn't show permanent spinners after recovery.
     streaming_thinking::finalize_current(app);
     app.finalize_streaming_assistant_as_interrupted();
+    app.ignored_tool_calls.clear();
     app.finalize_active_cell_as_interrupted();
     app.streaming_state.reset();
     app.streaming_message_index = None;
@@ -718,6 +719,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
 
     streaming_thinking::finalize_current(app);
     app.finalize_streaming_assistant_as_interrupted();
+    app.ignored_tool_calls.clear();
     app.finalize_active_cell_as_interrupted();
     app.streaming_state.reset();
     app.streaming_message_index = None;

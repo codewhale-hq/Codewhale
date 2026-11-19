@@ -754,7 +754,7 @@ pub(super) fn handle_tool_call_complete(
             && let Some(task_id) = shell_delta_task_id(tool_result, input)
             && let Some(origin_idx) = find_shell_origin_row_index(app, task_id)
         {
-            fold_shell_delta_into_origin_row(app, origin_idx, tool_result, status);
+            fold_shell_delta_into_origin_row(app, origin_idx, task_id, tool_result, status);
             true
         } else {
             false
@@ -766,7 +766,7 @@ pub(super) fn handle_tool_call_complete(
             // have to see them, or `tool_call_after` silently skips a whole class
             // of completions while claiming to fire after each tool call. Fired
             // here and returned immediately, so each id emits exactly once;
-            // genuine tool errors fall through to the orphan-completion card.
+            // genuine tool errors fall through to render a visible card.
             record_spillover_artifact_if_any(app, id, name, result);
             fire_tool_completion_hooks(app, id, name, result, Some(input));
             if status != ToolStatus::Running
@@ -862,13 +862,20 @@ pub(super) fn handle_tool_call_complete(
         return;
     }
 
-    // Look up the cell by tool id. If the id isn't registered, that's an
-    // orphan completion (race condition where the started event was lost or
-    // a tool result arrived after the active cell was already flushed). Build
-    // a finalized standalone cell from the result so the user can still see
-    // the output, but DO NOT touch the active cell.
+    // Look up the cell by tool id. If the id isn't registered, either a
+    // current-turn ignored call failed (which appends into `active_cell` when
+    // active) or it is an orphan completion (race condition where the started
+    // event was lost or a tool result arrived after the active cell was
+    // already flushed), which builds a finalized standalone cell in history
+    // without touching the active cell.
     let Some(cell_index) = app.tool_cells.remove(id) else {
-        push_orphan_tool_completion(app, id, name, result, ignored_input.as_ref());
+        if let Some(input) = ignored_input.as_ref()
+            && app.active_cell.is_some()
+        {
+            push_active_completed_tool_cell(app, id, name, result, input);
+        } else {
+            push_orphan_tool_completion(app, id, name, result, ignored_input.as_ref());
+        }
         if tool_status_from_result(result) != ToolStatus::Running
             && refreshes_workspace_context_on_completion(&semantic_name)
         {
@@ -1566,30 +1573,13 @@ fn history_cell_has_running_tool(cell: &HistoryCell) -> bool {
     }
 }
 
-/// Build a finalized standalone history cell for a tool completion whose
-/// start was never registered (orphan). This preserves the contract that
-/// every tool result is visible somewhere; the alternative (silently
-/// dropping it) hides errors and breaks debuggability.
-///
-/// Choice of cell type: success-only mutation metadata is sufficient to
-/// reconstruct a structured File receipt; other orphans stay generic,
-/// preserving any captured input payload when available. The pager remains
-/// usable in both cases because `tool_details_by_cell` is populated with the
-/// result text.
-///
-/// ## Index drift
-///
-/// If an active cell is in flight when the orphan arrives, pushing the
-/// orphan into `app.history` shifts every active-cell virtual index forward
-/// by 1. We must rewrite `tool_cells` / `exploring_entries` accordingly so
-/// later completion lookups still find the right entries.
-fn push_orphan_tool_completion(
-    app: &mut App,
+fn build_unregistered_tool_cell(
+    app: &App,
     tool_id: &str,
     name: &str,
     result: &Result<ToolResult, ToolError>,
     input: Option<&serde_json::Value>,
-) {
+) -> (HistoryCell, ToolDetailRecord) {
     let semantic_name = input.map_or(name, |input| canonical_action_alias(name, input));
     let input_summary = input.and_then(|input| tool_input_summary(semantic_name, name, input));
     let status = tool_status_from_result(result);
@@ -1634,20 +1624,66 @@ fn push_orphan_tool_completion(
             is_diff,
         }))
     };
+    let detail = ToolDetailRecord {
+        tool_id: tool_id.to_string(),
+        tool_name: name.to_string(),
+        input: input.cloned().unwrap_or(serde_json::Value::Null),
+        output: match result.as_ref() {
+            Ok(tool_result) => Some(bounded_tool_detail_output(tool_result.content.clone())),
+            Err(err) => Some(bounded_tool_detail_output(err.to_string())),
+        },
+    };
+    (cell, detail)
+}
+
+fn push_active_completed_tool_cell(
+    app: &mut App,
+    tool_id: &str,
+    name: &str,
+    result: &Result<ToolResult, ToolError>,
+    input: &serde_json::Value,
+) {
+    let (cell, detail) = build_unregistered_tool_cell(app, tool_id, name, result, Some(input));
+    let Some(active) = app.active_cell.as_mut() else {
+        return;
+    };
+    let entry_idx = active.push_tool(tool_id.to_string(), cell);
+    let virtual_index = app.history.len() + entry_idx;
+    app.active_tool_details.insert(tool_id.to_string(), detail);
+    app.active_cell_revision = app.active_cell_revision.wrapping_add(1);
+    app.mark_history_updated();
+    refresh_active_tool_completion_timestamp(app, virtual_index);
+}
+
+/// Build a finalized standalone history cell for a tool completion whose
+/// start was never registered (orphan). This preserves the contract that
+/// every tool result is visible somewhere; the alternative (silently
+/// dropping it) hides errors and breaks debuggability.
+///
+/// Choice of cell type: success-only mutation metadata is sufficient to
+/// reconstruct a structured File receipt; other orphans stay generic,
+/// preserving any captured input payload when available. The pager remains
+/// usable in both cases because `tool_details_by_cell` is populated with the
+/// result text.
+///
+/// ## Index drift
+///
+/// If an active cell is in flight when the orphan arrives, pushing the
+/// orphan into `app.history` shifts every active-cell virtual index forward
+/// by 1. We must rewrite `tool_cells` / `exploring_entries` accordingly so
+/// later completion lookups still find the right entries.
+fn push_orphan_tool_completion(
+    app: &mut App,
+    tool_id: &str,
+    name: &str,
+    result: &Result<ToolResult, ToolError>,
+    input: Option<&serde_json::Value>,
+) {
+    let (cell, detail) = build_unregistered_tool_cell(app, tool_id, name, result, input);
     app.add_message(cell);
     let cell_index = app.history.len().saturating_sub(1);
-    app.tool_details_by_cell.insert(
-        cell_index,
-        ToolDetailRecord {
-            tool_id: tool_id.to_string(),
-            tool_name: name.to_string(),
-            input: input.cloned().unwrap_or(serde_json::Value::Null),
-            output: match result.as_ref() {
-                Ok(tool_result) => Some(tool_result.content.clone()),
-                Err(err) => Some(err.to_string()),
-            },
-        },
-    );
+    app.tool_details_by_cell.insert(cell_index, detail);
+    release_oldest_tool_detail_outputs(app);
 
     // The virtual-index rebase this path used to do inline now lives in
     // `App::add_message`, so every mid-turn history insert gets it — not just
@@ -1719,9 +1755,18 @@ fn plain_shell_poll_task_id(input: &serde_json::Value) -> Option<&str> {
     if input.get("task_ids").is_some_and(|ids| !ids.is_null())
         || input.get("gate").is_some_and(|gate| !gate.is_null())
         || codewhale_engine::tools::tasks::task_shell_wait_requests_cancel(input)
-        || input
-            .get("wait")
-            .is_some_and(|wait| !wait.is_null() && !wait.is_boolean())
+        || ["wait", "block"].into_iter().any(|field| {
+            input
+                .get(field)
+                .is_some_and(|v| !v.is_null() && !v.is_boolean())
+        })
+        || ["timeout_ms", "timeout_secs", "timeout"]
+            .into_iter()
+            .any(|field| {
+                input
+                    .get(field)
+                    .is_some_and(|v| !v.is_null() && v.as_u64().is_none())
+            })
     {
         return None;
     }
@@ -1777,60 +1822,28 @@ fn shell_delta_task_id<'a>(
         .filter(|task_id| !task_id.trim().is_empty())
 }
 
-fn fold_shell_delta_into_origin_row(
-    app: &mut App,
-    origin_idx: usize,
-    tool_result: &ToolResult,
-    status: ToolStatus,
-) {
-    let metadata = tool_result.metadata.as_ref();
-    let duration_ms = metadata
-        .and_then(|meta| meta.get("duration_ms"))
-        .and_then(serde_json::Value::as_u64);
-    let needs_update = match app.cell_at_virtual_index(origin_idx) {
-        Some(HistoryCell::Tool(ToolCell::Exec(exec))) => {
-            if status == ToolStatus::Running {
-                exec.status == ToolStatus::Running
-                    && exec.output.is_none()
-                    && duration_ms.is_some()
-                    && exec.duration_ms != duration_ms
-            } else {
-                exec.status == ToolStatus::Running || exec.output.is_none()
-            }
-        }
-        _ => false,
-    };
-    if !needs_update {
-        return;
-    }
+enum ShellSnapshotLookup {
+    NoManager,
+    Contended,
+    MissingJob,
+    Snapshot(codewhale_engine::tools::shell::ShellJobSnapshot),
+}
 
-    let delta_empty = metadata.is_some_and(|meta| {
-        meta.get("stdout_len").and_then(serde_json::Value::as_u64) == Some(0)
-            && meta.get("stderr_len").and_then(serde_json::Value::as_u64) == Some(0)
-    });
-    let shown_content = codewhale_engine::core::engine::content_without_approval_note(tool_result);
-    if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) = app.cell_at_virtual_index_mut(origin_idx)
-    {
-        if status == ToolStatus::Running {
-            exec.duration_ms = duration_ms;
-        } else {
-            exec.status = status;
-            exec.waiting = None;
-            if duration_ms.is_some() {
-                exec.duration_ms = duration_ms;
-            }
-            exec.stale_elapsed_since_output_ms = None;
-            if exec.output.is_none() {
-                exec.output = if delta_empty && exec.live_output.is_some() {
-                    exec.live_output.take()
-                } else {
-                    visible_tool_output(shown_content)
-                };
-                exec.output_summary = exec.output.as_deref().map(summarize_tool_output);
-                exec.live_output = None;
-            }
-        }
+fn lookup_shell_job_snapshot(app: &App, task_id: &str) -> ShellSnapshotLookup {
+    let Some(shell_mgr) = app.runtime_services.shell_manager.as_ref() else {
+        return ShellSnapshotLookup::NoManager;
+    };
+    let Ok(mut mgr) = shell_mgr.try_lock() else {
+        return ShellSnapshotLookup::Contended;
+    };
+    let session_id = app.current_session_id.as_deref().unwrap_or_default();
+    match mgr.inspect_job_for_session(session_id, task_id) {
+        Ok(detail) => ShellSnapshotLookup::Snapshot(detail.snapshot),
+        Err(_) => ShellSnapshotLookup::MissingJob,
     }
+}
+
+fn mark_origin_cell_updated(app: &mut App, origin_idx: usize) {
     app.mark_history_updated();
     if origin_idx >= app.history.len() {
         app.active_cell_revision = app.active_cell_revision.wrapping_add(1);
@@ -1839,6 +1852,189 @@ fn fold_shell_delta_into_origin_row(
         }
         refresh_active_tool_completion_timestamp(app, origin_idx);
     }
+}
+
+fn is_shell_wait_timing_line(line: &str, task_id: Option<&str>) -> bool {
+    if line.contains('\n') {
+        return false;
+    }
+    let Some(rest) = line.strip_prefix("Task ").and_then(|s| s.strip_suffix('.')) else {
+        return false;
+    };
+    let Some((prefix, elapsed)) = rest.rsplit_once(" after ") else {
+        return false;
+    };
+    if elapsed.trim().is_empty() {
+        return false;
+    }
+    let phrases = [
+        "still running",
+        "completed",
+        "failed",
+        "killed",
+        "timed out",
+    ];
+    if phrases.contains(&prefix) {
+        return true;
+    }
+    task_id.is_some_and(|id| {
+        prefix
+            .strip_prefix(id)
+            .and_then(|s| s.strip_prefix(' '))
+            .is_some_and(|phrase| phrases.contains(&phrase))
+    })
+}
+
+fn strip_shell_wait_timing_line(content: &str, task_id: Option<&str>) -> String {
+    let paragraphs: Vec<&str> = content
+        .split("\n\n")
+        .filter(|paragraph| !is_shell_wait_timing_line(paragraph.trim(), task_id))
+        .collect();
+    paragraphs.join("\n\n").trim_start_matches('\n').to_string()
+}
+
+fn fallback_folded_shell_output(
+    live_output: Option<String>,
+    stripped_body: &str,
+    metadata: Option<&serde_json::Value>,
+) -> Option<String> {
+    let stdout_len = metadata
+        .and_then(|meta| meta.get("stdout_len"))
+        .and_then(serde_json::Value::as_u64);
+    let stderr_len = metadata
+        .and_then(|meta| meta.get("stderr_len"))
+        .and_then(serde_json::Value::as_u64);
+    let trimmed = stripped_body.trim();
+    let is_empty_placeholder =
+        trimmed.is_empty() || trimmed == "(no output)" || trimmed == "(no new output)";
+    let delta_empty = (stdout_len == Some(0) && stderr_len == Some(0)) || is_empty_placeholder;
+
+    if let Some(prev) = live_output {
+        if delta_empty {
+            return Some(prev);
+        }
+        if prev.ends_with(stripped_body) {
+            return Some(prev);
+        }
+        let mut combined = prev;
+        if !combined.is_empty() && !combined.ends_with('\n') && !stripped_body.starts_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(stripped_body);
+        return Some(combined);
+    }
+
+    if is_empty_placeholder {
+        return None;
+    }
+    visible_tool_output(stripped_body)
+}
+
+fn fold_shell_delta_into_origin_row(
+    app: &mut App,
+    origin_idx: usize,
+    task_id: &str,
+    tool_result: &ToolResult,
+    status: ToolStatus,
+) {
+    let metadata = tool_result.metadata.as_ref();
+    let duration_ms = metadata
+        .and_then(|meta| meta.get("duration_ms"))
+        .and_then(serde_json::Value::as_u64);
+    let (is_running, has_output, prev_duration_ms) = match app.cell_at_virtual_index(origin_idx) {
+        Some(HistoryCell::Tool(ToolCell::Exec(exec))) => (
+            exec.status == ToolStatus::Running,
+            exec.output.is_some(),
+            exec.duration_ms,
+        ),
+        _ => return,
+    };
+    if !is_running {
+        return;
+    }
+
+    if status == ToolStatus::Running {
+        if !has_output
+            && let Some(next_duration) = duration_ms
+            && prev_duration_ms.is_none_or(|prev| next_duration > prev)
+        {
+            if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) =
+                app.cell_at_virtual_index_mut(origin_idx)
+            {
+                exec.duration_ms = Some(next_duration);
+            }
+            mark_origin_cell_updated(app, origin_idx);
+        }
+        return;
+    }
+
+    match lookup_shell_job_snapshot(app, task_id) {
+        ShellSnapshotLookup::Snapshot(snapshot)
+            if !matches!(
+                snapshot.status,
+                codewhale_engine::tools::shell::ShellStatus::Running
+            ) =>
+        {
+            let next_status =
+                crate::tui::ui::task_projection::shell_job_tool_status(&snapshot.status);
+            let snapshot_output = crate::tui::ui::task_projection::shell_job_live_output(&snapshot);
+            if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) =
+                app.cell_at_virtual_index_mut(origin_idx)
+            {
+                exec.status = next_status;
+                exec.waiting = None;
+                exec.duration_ms = Some(
+                    exec.duration_ms
+                        .map_or(snapshot.elapsed_ms, |prev| prev.max(snapshot.elapsed_ms)),
+                );
+                exec.stale_elapsed_since_output_ms = None;
+                if exec.output.is_none() {
+                    exec.output = snapshot_output.or_else(|| exec.live_output.take());
+                    exec.output_summary = exec.output.as_deref().map(summarize_tool_output);
+                    exec.live_output = None;
+                }
+            }
+        }
+        ShellSnapshotLookup::Contended | ShellSnapshotLookup::Snapshot(_) => {
+            if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) =
+                app.cell_at_virtual_index_mut(origin_idx)
+            {
+                exec.status = status;
+                exec.waiting = None;
+                if let Some(next_duration) = duration_ms {
+                    exec.duration_ms = Some(
+                        exec.duration_ms
+                            .map_or(next_duration, |prev| prev.max(next_duration)),
+                    );
+                }
+                exec.stale_elapsed_since_output_ms = None;
+            }
+        }
+        ShellSnapshotLookup::NoManager | ShellSnapshotLookup::MissingJob => {
+            let shown_content =
+                codewhale_engine::core::engine::content_without_approval_note(tool_result);
+            let stripped_body = strip_shell_wait_timing_line(shown_content, Some(task_id));
+            if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) =
+                app.cell_at_virtual_index_mut(origin_idx)
+            {
+                exec.status = status;
+                exec.waiting = None;
+                if let Some(next_duration) = duration_ms {
+                    exec.duration_ms = Some(
+                        exec.duration_ms
+                            .map_or(next_duration, |prev| prev.max(next_duration)),
+                    );
+                }
+                exec.stale_elapsed_since_output_ms = None;
+                if exec.output.is_none() {
+                    let live = exec.live_output.take();
+                    exec.output = fallback_folded_shell_output(live, &stripped_body, metadata);
+                    exec.output_summary = exec.output.as_deref().map(summarize_tool_output);
+                }
+            }
+        }
+    }
+    mark_origin_cell_updated(app, origin_idx);
 }
 
 fn tool_input_summary(
@@ -1902,7 +2098,12 @@ fn task_shell_wait_input_summary(input: &serde_json::Value) -> Option<String> {
     }
     if let Some(task_ids) = task_ids {
         if let Some(ids) = task_ids.as_array() {
-            let names: Vec<&str> = ids.iter().filter_map(serde_json::Value::as_str).collect();
+            let names: Vec<&str> = ids
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .collect();
             if !names.is_empty() && names.len() == ids.len() {
                 parts.push(format!("wait {}", names.join(", ")));
             } else {

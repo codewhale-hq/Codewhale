@@ -3298,6 +3298,7 @@ pub(crate) async fn run_event_loop(
                             name.as_str(),
                             "agent"
                                 | "task_shell_start"
+                                | "task_shell_wait"
                                 | "exec_shell"
                                 | "exec_shell_cancel"
                                 | "exec_shell_wait"

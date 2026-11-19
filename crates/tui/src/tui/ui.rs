@@ -1163,6 +1163,7 @@ fn mark_active_turn_cancelled_locally(app: &mut App) {
     // command abort) must snapshot before it clears turn state. Otherwise
     // --continue reloads the previous save and the interrupted turn vanishes.
     app.streaming_state.reset();
+    app.ignored_tool_calls.clear();
     app.finalize_active_cell_as_interrupted();
     app.finalize_streaming_assistant_as_interrupted();
     persist_recovery_snapshot(app);

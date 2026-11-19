@@ -23888,6 +23888,7 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
     let virtual_before = app.virtual_cell_count();
 
     let poll_1_input = serde_json::json!({"task_id": "shell_ab08"});
+    let poll_stale_duration_input = serde_json::json!({"task_id": "shell_ab08"});
     let poll_2_input = serde_json::json!({
         "task_id": "shell_ab08",
         "task_ids": null,
@@ -23895,8 +23896,15 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
         "cancel": false,
     });
     handle_tool_call_started(&mut app, "poll-1", "task_shell_wait", &poll_1_input);
+    handle_tool_call_started(
+        &mut app,
+        "poll-stale",
+        "task_shell_wait",
+        &poll_stale_duration_input,
+    );
     handle_tool_call_started(&mut app, "poll-2", "task_shell_wait", &poll_2_input);
     assert!(app.ignored_tool_calls.contains_key("poll-1"));
+    assert!(app.ignored_tool_calls.contains_key("poll-stale"));
     assert!(app.ignored_tool_calls.contains_key("poll-2"));
     assert_eq!(app.virtual_cell_count(), virtual_before);
 
@@ -23912,6 +23920,21 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
                 "task_id": "shell_ab08",
                 "stream_delta": true,
                 "duration_ms": 500_u64,
+            })),
+        }),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-stale",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_ab08 still running after 300 ms.\n\nBackground task running (no new output).".to_string(),
+            success: true,
+            metadata: Some(serde_json::json!({
+                "status": "Running",
+                "task_id": "shell_ab08",
+                "stream_delta": true,
+                "duration_ms": 300_u64,
             })),
         }),
     );
@@ -23948,11 +23971,9 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
         panic!("expected origin exec cell");
     };
     assert_eq!(origin_after_fail.status, ToolStatus::Failed);
-    assert!(
-        origin_after_fail
-            .output
-            .as_deref()
-            .is_some_and(|out| out.contains("test failed"))
+    assert_eq!(
+        origin_after_fail.output.as_deref(),
+        Some("STDERR:\ntest failed")
     );
 
     handle_tool_call_started(
@@ -23982,6 +24003,10 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
         panic!("expected timeout origin exec cell");
     };
     assert_eq!(timeout_origin.status, ToolStatus::Failed);
+    assert_eq!(
+        timeout_origin.output.as_deref(),
+        Some("Command timed out (no new output).")
+    );
 
     app.last_exec_wait_command = Some("cargo check".to_string());
     handle_tool_call_started(
@@ -24011,6 +24036,10 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
         panic!("expected dedup origin exec cell");
     };
     assert_eq!(dedup_origin.status, ToolStatus::Failed);
+    assert_eq!(
+        dedup_origin.output.as_deref(),
+        Some("STDERR:\ncheck failed")
+    );
 
     let err_poll_input = serde_json::json!({"task_id": "shell_ab08"});
     handle_tool_call_started(&mut app, "poll-err", "task_shell_wait", &err_poll_input);
@@ -24022,14 +24051,403 @@ fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
             "unknown background task",
         )),
     );
-    assert_eq!(app.history.len(), history_before + 1);
-    let orphan_idx = app.history.len() - 1;
-    let HistoryCell::Tool(ToolCell::Generic(orphan)) = &app.history[orphan_idx] else {
-        panic!("expected generic orphan cell");
+    assert_eq!(app.history.len(), history_before);
+    let active_entries = app.active_cell.as_ref().expect("active cell").entries();
+    assert_eq!(active_entries.len(), 2);
+    let HistoryCell::Tool(ToolCell::Generic(active_err)) = &active_entries[1] else {
+        panic!("expected failed poll appended inside active cell");
     };
-    assert_eq!(orphan.status, ToolStatus::Failed);
-    assert_eq!(orphan.input_summary.as_deref(), Some("task_id: shell_ab08"));
-    assert_eq!(app.tool_details_by_cell[&orphan_idx].input, err_poll_input);
+    assert_eq!(active_err.status, ToolStatus::Failed);
+    assert_eq!(
+        active_err.input_summary.as_deref(),
+        Some("task_id: shell_ab08")
+    );
+    assert_eq!(app.active_tool_details["poll-err"].input, err_poll_input);
+
+    app.flush_active_cell();
+    let flushed_err_idx = app.history.len() - 1;
+    assert_eq!(
+        app.tool_details_by_cell[&flushed_err_idx].input,
+        err_poll_input
+    );
+}
+
+#[test]
+fn task_shell_wait_folds_active_origin_killed_silent_and_partial_live_output() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "active-shell",
+        "exec_shell",
+        &serde_json::json!({"command": "sleep 60", "background": true}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "active-shell",
+        "exec_shell",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Started background shell task shell_active_kill.",
+        )
+        .with_metadata(serde_json::json!({
+            "status": "Running",
+            "task_id": "shell_active_kill",
+        }))),
+    );
+    handle_tool_call_started(
+        &mut app,
+        "poll-kill",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_active_kill"}),
+    );
+    assert!(app.ignored_tool_calls.contains_key("poll-kill"));
+    handle_tool_call_complete(
+        &mut app,
+        "poll-kill",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content:
+                "Task shell_active_kill killed after 800 ms.\n\nCommand killed (no new output)."
+                    .to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Killed",
+                "task_id": "shell_active_kill",
+                "stream_delta": true,
+                "duration_ms": 800_u64,
+            })),
+        }),
+    );
+    let active_entries = app.active_cell.as_ref().expect("active cell").entries();
+    assert_eq!(active_entries.len(), 1);
+    let HistoryCell::Tool(ToolCell::Exec(killed_exec)) = &active_entries[0] else {
+        panic!("expected origin exec cell inside active cell");
+    };
+    assert_eq!(killed_exec.status, ToolStatus::Stopped);
+    assert_eq!(
+        killed_exec.output.as_deref(),
+        Some("Command killed (no new output).")
+    );
+
+    app.flush_active_cell();
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "git checkout -b silent-branch".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_silent".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let silent_idx = app.history.len() - 1;
+    handle_tool_call_started(
+        &mut app,
+        "poll-silent-1",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_silent"}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-silent-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_silent completed after 400 ms.\n\n(no new output)".to_string(),
+            success: true,
+            metadata: Some(serde_json::json!({
+                "status": "Completed",
+                "task_id": "shell_silent",
+                "stream_delta": true,
+                "duration_ms": 400_u64,
+                "stdout_len": 0_u64,
+                "stderr_len": 0_u64,
+                "stdout_total_len": 0_u64,
+                "stderr_total_len": 0_u64,
+            })),
+        }),
+    );
+    handle_tool_call_started(
+        &mut app,
+        "poll-silent-2",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_silent"}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-silent-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_silent completed after 400 ms.\n\n(no new output)".to_string(),
+            success: true,
+            metadata: Some(serde_json::json!({
+                "status": "Completed",
+                "task_id": "shell_silent",
+                "stream_delta": true,
+                "duration_ms": 400_u64,
+                "stdout_len": 0_u64,
+                "stderr_len": 0_u64,
+                "stdout_total_len": 0_u64,
+                "stderr_total_len": 0_u64,
+            })),
+        }),
+    );
+    let HistoryCell::Tool(ToolCell::Exec(silent_exec)) = &app.history[silent_idx] else {
+        panic!("expected silent exec cell");
+    };
+    assert_eq!(silent_exec.status, ToolStatus::Success);
+    assert_eq!(silent_exec.output, None);
+
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "cargo test".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: Some("error[E0308]: mismatched types\n  --> src/lib.rs:10".to_string()),
+        shell_task_id: Some("shell_partial".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: Some(1_000),
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let partial_idx = app.history.len() - 1;
+    handle_tool_call_started(
+        &mut app,
+        "poll-partial",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_partial"}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-partial",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_partial failed after 3.1 s.\n\ntest result: FAILED".to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Failed",
+                "task_id": "shell_partial",
+                "stream_delta": true,
+                "duration_ms": 3_100_u64,
+                "stdout_len": 19_u64,
+                "stderr_len": 0_u64,
+                "stdout_total_len": 70_u64,
+                "stderr_total_len": 0_u64,
+            })),
+        }),
+    );
+    let HistoryCell::Tool(ToolCell::Exec(partial_exec)) = &app.history[partial_idx] else {
+        panic!("expected partial exec cell");
+    };
+    assert_eq!(partial_exec.status, ToolStatus::Failed);
+    assert_eq!(partial_exec.live_output, None);
+    let partial_output = partial_exec.output.as_deref().expect("preserved output");
+    assert!(
+        partial_output.contains("error[E0308]: mismatched types"),
+        "{partial_output}"
+    );
+    assert!(
+        partial_output.contains("test result: FAILED"),
+        "{partial_output}"
+    );
+    assert!(
+        !partial_output.contains("Task shell_partial failed"),
+        "{partial_output}"
+    );
+}
+
+#[test]
+fn task_shell_wait_fold_uses_shell_manager_snapshot_and_recovers_from_contention() {
+    let mut app = create_test_app();
+    app.current_session_id = Some("fold-snapshot-session".to_string());
+    let manager = app
+        .runtime_services
+        .shell_manager
+        .clone()
+        .expect("shell manager");
+
+    let spawn_and_wait_terminal = |command: &str| -> String {
+        let task_id = manager
+            .lock()
+            .unwrap()
+            .execute_with_options_env_for_session(
+                command,
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                std::collections::HashMap::new(),
+                "fold-snapshot-session",
+            )
+            .expect("spawn shell")
+            .task_id
+            .expect("task_id");
+        for _ in 0..100 {
+            let status = manager
+                .lock()
+                .unwrap()
+                .inspect_job_for_session("fold-snapshot-session", &task_id)
+                .expect("inspect")
+                .snapshot
+                .status;
+            if status != codewhale_engine::tools::shell::ShellStatus::Running {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        task_id
+    };
+
+    let fail_id =
+        spawn_and_wait_terminal("printf 'diag line 1\\n'; printf 'boom stderr\\n' >&2; exit 1");
+    let contended_id = spawn_and_wait_terminal("printf 'full contended err\\n' >&2; exit 1");
+    let silent_id = spawn_and_wait_terminal("true");
+
+    for (task_id, cmd) in [
+        (&fail_id, "fail cmd"),
+        (&contended_id, "contended cmd"),
+        (&silent_id, "true"),
+    ] {
+        app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: cmd.to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            live_output: None,
+            shell_task_id: Some(task_id.clone()),
+            owner_agent_id: None,
+            owner_agent_name: None,
+            started_at: None,
+            duration_ms: None,
+            stale_elapsed_since_output_ms: None,
+            waiting: None,
+            source: ExecSource::Assistant,
+            description: None,
+            interaction: None,
+            output_summary: None,
+        })));
+    }
+
+    handle_tool_call_started(
+        &mut app,
+        "poll-mgr-fail",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": fail_id}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-mgr-fail",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: format!("Task {fail_id} failed after 100 ms.\n\nCommand failed (exit code 1)"),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Failed",
+                "task_id": fail_id,
+                "stream_delta": true,
+                "duration_ms": 100_u64,
+                "stdout_len": 0_u64,
+                "stderr_len": 0_u64,
+            })),
+        }),
+    );
+    let HistoryCell::Tool(ToolCell::Exec(mgr_fail)) = &app.history[0] else {
+        panic!("expected fail exec cell");
+    };
+    assert_eq!(mgr_fail.status, ToolStatus::Failed);
+    let fail_out = mgr_fail.output.as_deref().expect("authoritative output");
+    assert!(fail_out.contains("diag line 1"), "{fail_out}");
+    assert!(fail_out.contains("boom stderr"), "{fail_out}");
+    assert!(!fail_out.contains("Command failed"), "{fail_out}");
+
+    {
+        let _hold = manager.lock().unwrap();
+        handle_tool_call_started(
+            &mut app,
+            "poll-mgr-contended",
+            "task_shell_wait",
+            &serde_json::json!({"task_id": contended_id}),
+        );
+        handle_tool_call_complete(
+            &mut app,
+            "poll-mgr-contended",
+            "task_shell_wait",
+            &Ok(codewhale_engine::tools::spec::ToolResult {
+                content: format!(
+                    "Task {contended_id} failed after 100 ms.\n\nCommand failed (exit code 1)"
+                ),
+                success: false,
+                metadata: Some(serde_json::json!({
+                    "status": "Failed",
+                    "task_id": contended_id,
+                    "stream_delta": true,
+                    "duration_ms": 100_u64,
+                    "stdout_len": 0_u64,
+                    "stderr_len": 0_u64,
+                })),
+            }),
+        );
+    }
+    let HistoryCell::Tool(ToolCell::Exec(contended_before_tick)) = &app.history[1] else {
+        panic!("expected contended exec cell");
+    };
+    assert_eq!(contended_before_tick.status, ToolStatus::Failed);
+    assert_eq!(contended_before_tick.output, None);
+
+    assert_eq!(
+        refresh_shell_exec_live_output(&mut app),
+        LiveRefresh::Changed
+    );
+    let HistoryCell::Tool(ToolCell::Exec(contended_after_tick)) = &app.history[1] else {
+        panic!("expected contended exec cell");
+    };
+    assert_eq!(contended_after_tick.status, ToolStatus::Failed);
+    assert!(
+        contended_after_tick
+            .output
+            .as_deref()
+            .is_some_and(|out| out.contains("full contended err"))
+    );
+
+    handle_tool_call_started(
+        &mut app,
+        "poll-mgr-silent",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": silent_id}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-mgr-silent",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: format!("Task {silent_id} completed after 50 ms.\n\n(no new output)"),
+            success: true,
+            metadata: Some(serde_json::json!({
+                "status": "Completed",
+                "task_id": silent_id,
+                "stream_delta": true,
+                "duration_ms": 50_u64,
+                "stdout_len": 0_u64,
+                "stderr_len": 0_u64,
+            })),
+        }),
+    );
+    let HistoryCell::Tool(ToolCell::Exec(mgr_silent)) = &app.history[2] else {
+        panic!("expected silent exec cell");
+    };
+    assert_eq!(mgr_silent.status, ToolStatus::Success);
+    assert_eq!(mgr_silent.output, None);
 }
 
 #[test]
@@ -24177,12 +24595,44 @@ fn task_shell_wait_gate_cancel_and_task_ids_stay_visible_and_preserve_errors() {
             )),
             "invalid type for task_ids",
         ),
+        (
+            "task-ids-blank-item",
+            serde_json::json!({"task_ids": [""]}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "unknown background task",
+            )),
+            "unknown background task",
+        ),
+        (
+            "invalid-block-type",
+            serde_json::json!({"task_id": "shell_ab08", "block": "yes"}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "invalid type for block",
+            )),
+            "invalid type for block",
+        ),
+        (
+            "invalid-timeout-type",
+            serde_json::json!({"task_id": "shell_ab08", "timeout_ms": "5000"}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "invalid type for timeout_ms",
+            )),
+            "invalid type for timeout_ms",
+        ),
     ];
 
     for (id, input, result, expected_error) in failure_cases {
         handle_tool_call_started(&mut app, id, "task_shell_wait", &input);
         assert!(!app.ignored_tool_calls.contains_key(id), "{id} was hidden");
         let cell_idx = app.tool_cells[id];
+        if id == "task-ids-blank-item" {
+            let Some(HistoryCell::Tool(ToolCell::Generic(generic))) =
+                app.cell_at_virtual_index(cell_idx)
+            else {
+                panic!("expected generic cell");
+            };
+            assert_ne!(generic.input_summary.as_deref(), Some("wait "));
+        }
         handle_tool_call_complete(&mut app, id, "task_shell_wait", &result);
         let rendered = rendered_text(
             &app.cell_at_virtual_index(cell_idx)
@@ -24211,20 +24661,39 @@ fn ignored_tool_calls_clear_on_turn_end_error_interrupt_and_stall_recovery() {
     assert!(app.ignored_tool_calls.is_empty());
 
     app.ignored_tool_calls.insert(
-        "poll-interrupt".to_string(),
+        "poll-interrupted-turn".to_string(),
         serde_json::json!({"task_id": "shell_2"}),
     );
-    app.finalize_active_cell_as_interrupted();
+    app.finalize_turn_tool_cells(codewhale_engine::core::events::TurnOutcomeStatus::Interrupted);
     assert!(app.ignored_tool_calls.is_empty());
 
     app.ignored_tool_calls.insert(
-        "poll-error".to_string(),
-        serde_json::json!({"task_id": "shell_3"}),
+        "poll-recoverable-active".to_string(),
+        serde_json::json!({"task_id": "shell_2b"}),
     );
+    app.is_loading = true;
+    app.suppress_stream_events_until_turn_complete = false;
     apply_engine_error_to_app(
         &mut app,
         codewhale_error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
     );
+    assert!(
+        app.ignored_tool_calls
+            .contains_key("poll-recoverable-active")
+    );
+
+    apply_engine_error_to_app(
+        &mut app,
+        codewhale_error_taxonomy::ErrorEnvelope::fatal_auth("auth failed"),
+    );
+    assert!(app.ignored_tool_calls.is_empty());
+
+    app.ignored_tool_calls.insert(
+        "poll-local-cancel".to_string(),
+        serde_json::json!({"task_id": "shell_3"}),
+    );
+    app.is_loading = true;
+    mark_active_turn_cancelled_locally(&mut app);
     assert!(app.ignored_tool_calls.is_empty());
 
     app.ignored_tool_calls.insert(

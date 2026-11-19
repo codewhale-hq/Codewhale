@@ -6837,7 +6837,6 @@ impl App {
         // A detached workflow outlives the turn that started it, and a
         // foreground one is cancelled by the engine, which says so with its
         // own `run_cancelled`. Neither is marked here.
-        self.ignored_tool_calls.clear();
         self.flush_active_cell();
     }
 
@@ -6845,6 +6844,7 @@ impl App {
         &mut self,
         status: codewhale_engine::core::events::TurnOutcomeStatus,
     ) {
+        self.ignored_tool_calls.clear();
         if matches!(
             status,
             codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
@@ -6853,7 +6853,6 @@ impl App {
             self.finalize_active_cell_as_interrupted();
             self.finalize_streaming_assistant_as_interrupted();
         } else {
-            self.ignored_tool_calls.clear();
             self.flush_active_cell();
         }
     }
