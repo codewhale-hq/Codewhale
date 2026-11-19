@@ -31,6 +31,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -40,6 +41,12 @@ pub const MAX_EVENTS: usize = 512;
 pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
+
+/// How long `with_lock` retries a busy compaction lock before giving up.
+/// `flock` has no timeout of its own, so a suspended process holding the
+/// lock would otherwise wedge every launch behind it.
+const PRIVACY_LOCK_BUDGET: Duration = Duration::from_secs(3);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Exact contents of the opt-out tombstone observed by a consent decision.
 ///
@@ -412,17 +419,26 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-/// Run `operation` holding the exclusive compaction lock, **blocking**.
+/// Run `operation` holding the exclusive compaction lock.
 ///
-/// Only startup arming and the opt-out wipe use this. They are not exit
-/// paths, so blocking is fine there and nowhere else.
+/// Startup arming, the opt-out wipe, and the spool header write use this.
+/// `flock` has no timeout of its own, so a suspended process holding the lock
+/// would wedge every launch behind it; the wait is bounded by
+/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
+/// caller treats as skip-and-continue rather than fatal.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
     let file = open_lock(root)?;
+    let deadline = Instant::now() + PRIVACY_LOCK_BUDGET;
     let mut lock = fd_lock::RwLock::new(file);
-    let _guard = lock.write().context("failed to take the telemetry lock")?;
-    operation()
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return operation(),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(LOCK_RETRY_INTERVAL),
+            Err(_) => anyhow::bail!("the telemetry compaction lock stayed busy"),
+        }
+    }
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
@@ -477,8 +493,9 @@ pub fn truncate(path: &Path) -> Result<()> {
 ///
 /// Order matters and is the whole of the guarantee:
 ///
-/// 1. take the blocking lock — this is not an exit path;
-/// 2. write the tombstone **first**, and never remove it here;
+/// 1. take the bounded lock — this is not an exit path;
+/// 2. write the tombstone **first**, and never remove it here — a lock that
+///    stays busy still installs the tombstone on the error path;
 /// 3. truncate `buffer.jsonl` and `dryrun.jsonl` — do **not** unlink them, and
 ///    never unlink the privacy lock file — and delete every spool;
 /// 4. remove `install_id.json` and `state.json`.
@@ -487,28 +504,8 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// logs it — but the tombstone alone already makes the buffer permanently
 /// undrainable, so a failed wipe fails **closed**.
 pub fn wipe(root: &Path) -> Result<()> {
-    with_lock(root, || {
-        let tombstone = tombstone_path(root);
-        // A tombstone generation identifies one durable opted-out period. Keep
-        // it stable across later launches that re-observe the same persistent
-        // choice; re-enable removes the file, so the next real opt-out creates
-        // a naturally distinct generation. An unreadable or oversized file is
-        // repaired in the fail-closed direction by replacing it here; legacy
-        // empty tombstones remain valid stable generations.
-        if tombstone_generation(root).ok().flatten().is_none() {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tombstone)
-                .with_context(|| format!("failed to write {}", tombstone.display()))?;
-            secure(&file)?;
-            file.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
-                .with_context(|| format!("failed to write {}", tombstone.display()))?;
-            file.sync_data()
-                .with_context(|| format!("failed to sync {}", tombstone.display()))?;
-            drop(file);
-        }
+    match with_lock(root, || {
+        write_tombstone(root)?;
 
         let mut failure: Option<anyhow::Error> = None;
         for path in [buffer_path(root), dryrun_path(root)] {
@@ -535,7 +532,46 @@ pub fn wipe(root: &Path) -> Result<()> {
             Some(error) => Err(error),
             None => Ok(()),
         }
-    })
+    }) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // The lock stayed busy or a later step failed: the opt-out marker
+            // still has to land, or already-armed buffers keep appending. The
+            // install is atomic, so writing it outside the lock cannot tear.
+            write_tombstone(root)?;
+            Err(error)
+        }
+    }
+}
+
+fn write_tombstone(root: &Path) -> Result<()> {
+    let tombstone = tombstone_path(root);
+    // A tombstone generation identifies one durable opted-out period. Keep
+    // it stable across later launches that re-observe the same persistent
+    // choice; re-enable removes the file, so the next real opt-out creates
+    // a naturally distinct generation. An unreadable or oversized file is
+    // repaired in the fail-closed direction by replacing it here; legacy
+    // empty tombstones remain valid stable generations.
+    if tombstone_generation(root).ok().flatten().is_some() {
+        return Ok(());
+    }
+    let tmp = root.join(format!(".disabled.{}.tmp", std::process::id()));
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        secure(&file)?;
+        file.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
+            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        file.sync_data()
+            .with_context(|| format!("failed to sync {}", tmp.display()))?;
+    }
+    fs::rename(&tmp, &tombstone)
+        .with_context(|| format!("failed to install {}", tombstone.display()))?;
+    Ok(())
 }
 
 /// Clear the tombstone, deleting every spool when there was one, and truncate
