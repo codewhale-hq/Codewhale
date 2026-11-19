@@ -675,7 +675,7 @@ fn register_clickable_chrome_for_hover(app: &App) {
     // nothing is the same defect as one that acts without lighting up.
     if let Some(composer) = app.viewport.last_composer_area
         && let Some(submit) = crate::tui::widgets::active_composer_submit_rect(app, composer)
-        && app.composer_enter_would_submit(true)
+        && app.composer_enter_would_submit(true, Instant::now())
     {
         crate::tui::hover_layer::register_rect(
             crate::tui::hover_hit::HoverTargetKind::Link,
