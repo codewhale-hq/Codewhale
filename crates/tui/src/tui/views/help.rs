@@ -2016,9 +2016,7 @@ mod tests {
             .expect("filter row")
             + 1;
         // The scroll rail paints the last column of every row.
-        let strip_rail = |row: &str| {
-            row.trim_matches(['█', '│', '┃', ' ']).to_string()
-        };
+        let strip_rail = |row: &str| row.trim_matches(['█', '│', '┃', ' ']).to_string();
         let detail = strip_rail(narrow.get(detail_row).expect("detail row"));
         assert!(
             !detail.is_empty(),

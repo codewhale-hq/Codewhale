@@ -1282,10 +1282,11 @@ mod tests {
                     let mut buffer = Buffer::empty(area);
                     view.render(area, &mut buffer);
                     let text = rendered_text(area, &buffer);
-                    let compact =
-                        |s: &str| s.chars()
+                    let compact = |s: &str| {
+                        s.chars()
                             .filter(|c| !c.is_whitespace() && *c != '│')
-                            .collect::<String>();
+                            .collect::<String>()
+                    };
                     assert!(
                         compact(&text).contains(&compact(receipt)),
                         "{locale:?}/{width}/{detail}: {text}"
