@@ -30,11 +30,12 @@ impl HostAttachment {
             .live_hooks()
             .into_iter()
             .filter(|hook| {
-                desired.includes(
-                    &hook.owner.plugin_id,
-                    &hook.content_hash,
-                    hook.scope.as_ref(),
-                )
+                hook.event == "tools/pre-execute"
+                    && desired.includes(
+                        &hook.owner.plugin_id,
+                        &hook.content_hash,
+                        hook.scope.as_ref(),
+                    )
             })
             .collect();
         let mut results = Vec::with_capacity(hooks.len());
@@ -116,6 +117,72 @@ impl HostAttachment {
             }
         }
         results
+    }
+
+    /// Best-effort read-only observer dispatch for `tools/post-execute` hooks.
+    /// Observers receive a redacted outcome summary with no session handles or
+    /// invocation tickets, and can never mutate or fail a turn.
+    pub async fn tool_after_hooks(&self, payload: HookCallPayload) {
+        let shared = &self.manager.shared;
+        let desired = shared
+            .attachments
+            .lock()
+            .expect("attachments lock")
+            .get(&self.id)
+            .map(|state| state.selection.clone())
+            .unwrap_or_default();
+        let hooks: Vec<_> = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .live_hooks()
+            .into_iter()
+            .filter(|hook| {
+                hook.event == "tools/post-execute"
+                    && desired.includes(
+                        &hook.owner.plugin_id,
+                        &hook.content_hash,
+                        hook.scope.as_ref(),
+                    )
+            })
+            .collect();
+        if hooks.is_empty() {
+            return;
+        }
+        let batch_started = Instant::now();
+        for hook in hooks {
+            let Ok(host) = shared.live_host_for_hook(&hook).await else {
+                continue;
+            };
+            let still_desired = desired.revision.is_some_and(|revision| {
+                shared.selection_current(
+                    revision,
+                    &hook.owner.plugin_id,
+                    &hook.content_hash,
+                    hook.scope.as_ref(),
+                )
+            });
+            if !still_desired {
+                continue;
+            }
+            let remaining_ms = HOOK_DEADLINE
+                .saturating_sub(batch_started.elapsed())
+                .as_millis() as u64;
+            if remaining_ms == 0 {
+                break;
+            }
+            let _ = host
+                .call(
+                    CoreRequest::HookEvaluate(HookEvaluateParams {
+                        handle: hook.handle,
+                        event: hook.event.clone(),
+                        payload: payload.clone(),
+                        deadline_ms: remaining_ms,
+                    }),
+                    Some(hook.owner.plugin_id.clone()),
+                )
+                .await;
+        }
     }
 }
 
