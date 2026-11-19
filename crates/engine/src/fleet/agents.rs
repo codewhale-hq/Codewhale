@@ -213,6 +213,19 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_binary: None,
         adapter_cli_env: None,
     },
+    ExternalAgent {
+        id: "muse",
+        name: "Muse Code",
+        binary: "muse",
+        acp_args: None,
+        website: "https://dev.meta.ai/products/muse-code",
+        min_version: None,
+        upgrade: None,
+        login: Some("muse login"),
+        adapter: Some("@bex-co/muse-code-acp"),
+        adapter_binary: Some("muse-code-acp"),
+        adapter_cli_env: Some("MUSE_CODE_EXECUTABLE"),
+    },
 ];
 
 const FIXTURE_AGENT: ExternalAgent = ExternalAgent {
@@ -849,6 +862,17 @@ mod tests {
         assert_eq!(
             (grok.login, grok.upgrade),
             (Some("grok login"), Some("grok update"))
+        );
+        let muse = find("muse").unwrap();
+        assert_eq!(
+            (muse.binary, muse.adapter, muse.adapter_binary, muse.adapter_cli_env, muse.login),
+            (
+                "muse",
+                Some("@bex-co/muse-code-acp"),
+                Some("muse-code-acp"),
+                Some("MUSE_CODE_EXECUTABLE"),
+                Some("muse login"),
+            )
         );
     }
 }
