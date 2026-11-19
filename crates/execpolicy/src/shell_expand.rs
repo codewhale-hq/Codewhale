@@ -1304,6 +1304,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         seen_extra_deny: HashSet::new(),
         literal_backslashes: windows,
         dynamic: false,
+        dropped: false,
         nested: false,
         arguments_dynamic: false,
         control: false,
@@ -1338,6 +1339,7 @@ struct Expander {
     seen_extra_deny: HashSet<String>,
     literal_backslashes: bool,
     dynamic: bool,
+    dropped: bool,
     nested: bool,
     arguments_dynamic: bool,
     control: bool,
@@ -1420,6 +1422,7 @@ impl Expander {
         }
         if self.extra_deny.len() >= MAX_COMMANDS {
             self.dynamic = true;
+            self.dropped = true;
             return;
         }
         self.seen_extra_deny.insert(joined.clone());
@@ -1443,6 +1446,7 @@ impl Expander {
         if self.out.len() >= MAX_COMMANDS {
             // A dropped command line was never checked: unresolved.
             self.dynamic = true;
+            self.dropped = true;
             return;
         }
         self.seen.insert(joined.clone());
@@ -1462,6 +1466,7 @@ impl Expander {
         if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
             // Unexamined code is unresolved code.
             self.dynamic = true;
+            self.dropped = true;
             return;
         }
         if depth > 0 && !input.trim().is_empty() {
@@ -2021,6 +2026,7 @@ impl Expander {
     fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
             self.dynamic = true;
+            self.dropped = true;
             return;
         }
         let mut child = Expander {
@@ -2031,6 +2037,7 @@ impl Expander {
             seen_extra_deny: HashSet::new(),
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
+            dropped: false,
             nested: false,
             arguments_dynamic: false,
             control: false,
@@ -2038,6 +2045,7 @@ impl Expander {
             deny_only: true,
         };
         child.record(sub, depth);
+        self.dynamic |= child.dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
         }
@@ -2081,6 +2089,7 @@ impl Expander {
                         };
                         match attached {
                             Some("") => {
+                                self.dynamic |= dynamic[at];
                                 if at + 1 < tokens.len() {
                                     self.record(&slice_line(line, at + 1), depth + 1);
                                 }

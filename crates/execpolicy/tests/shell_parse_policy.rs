@@ -215,6 +215,9 @@ const HIDDEN_RM: &[&str] = &[
     "nix develop --command='rm x'",
     "nix develop -crm x",
     "nix shell --command='rm x'",
+    "nix develop --command=$(echo rm) -rf /",
+    "nix develop -c$(echo rm) x",
+    "nix shell --command=`echo rm` x",
     "nix-shell -p busybox --run 'rm x'",
     "docker run --rm alpine rm x",
     "docker run --entrypoint /bin/rm alpine -rf /",
@@ -573,5 +576,17 @@ fn subcommand_deny_rules_hold_against_glob_group_spellings() {
                 .expect("policy check");
             assert!(decision.allow, "{command:?} was denied: {decision:?}");
         }
+    }
+}
+
+#[test]
+fn a_deny_region_overflow_inside_a_double_dash_slice_still_fails_closed() {
+    let many = (0..300)
+        .map(|i| format!("c{i} x"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let command = format!("true -- bash -c '{many}; rm -rf /'");
+    for engine in deny_rm_engines() {
+        assert!(denied(&engine, &command), "cap-hidden rm must fail closed");
     }
 }
