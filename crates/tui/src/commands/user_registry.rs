@@ -22,9 +22,13 @@ struct UserCommandRegistryState {
     initialized: bool,
     workspace: Option<PathBuf>,
     command_dirs_snapshot: Vec<CommandDirSnapshot>,
-    plugin_workspace: Option<PathBuf>,
-    plugin_sources: Vec<codewhale_plugins::runtime::PluginComponentSource>,
-    plugin_errors: Vec<String>,
+    plugins: HashMap<
+        Option<PathBuf>,
+        (
+            Vec<codewhale_plugins::runtime::PluginComponentSource>,
+            Vec<String>,
+        ),
+    >,
     /// `extension_host::command::epoch()` when `registry` was built: it
     /// reloads when the live extension commands may have changed.
     extension_epoch: u64,
@@ -845,9 +849,12 @@ fn with_registry_for_workspace_inner<R>(
     {
         let guard = lock.read().expect("user command registry lock poisoned");
         let plugin_matches = offered.as_ref().is_none_or(|(sources, errors)| {
-            guard.plugin_workspace == workspace
-                && guard.plugin_sources == *sources
-                && guard.plugin_errors == *errors
+            guard
+                .plugins
+                .get(&workspace)
+                .is_some_and(|(cached_sources, cached_errors)| {
+                    cached_sources == sources && cached_errors == errors
+                })
         });
         if plugin_matches
             && guard.initialized
@@ -862,11 +869,7 @@ fn with_registry_for_workspace_inner<R>(
         Some((sources, errors)) => (sources.clone(), errors.clone()),
         None => {
             let guard = lock.read().expect("user command registry lock poisoned");
-            if guard.plugin_workspace == workspace {
-                (guard.plugin_sources.clone(), guard.plugin_errors.clone())
-            } else {
-                (Vec::new(), Vec::new())
-            }
+            guard.plugins.get(&workspace).cloned().unwrap_or_default()
         }
     };
     let snapshot = command_dirs_snapshot_with_plugins(workspace.as_deref(), &plugin_sources);
@@ -896,13 +899,9 @@ fn with_registry_for_workspace_inner<R>(
     let mut guard = lock.write().expect("user command registry lock poisoned");
     let mut reload = registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch);
     if let Some((sources, errors)) = offered {
-        let plugin_changed = guard.plugin_workspace != workspace
-            || guard.plugin_sources != sources
-            || guard.plugin_errors != errors;
-        if plugin_changed {
-            guard.plugin_workspace = workspace.clone();
-            guard.plugin_sources = sources;
-            guard.plugin_errors = errors;
+        let offered = (sources, errors);
+        if guard.plugins.get(&workspace) != Some(&offered) {
+            guard.plugins.insert(workspace.clone(), offered);
             reload = true;
         }
     }
@@ -933,9 +932,10 @@ pub fn install_plugin_registry(
         .write()
         .expect("user command registry lock poisoned");
     guard.initialized = false;
-    guard.plugin_workspace = Some(workspace.to_path_buf());
-    guard.plugin_sources = sources;
-    guard.plugin_errors = errors.clone();
+    guard.plugins.insert(
+        normalize_workspace(Some(workspace)),
+        (sources, errors.clone()),
+    );
     errors
 }
 
