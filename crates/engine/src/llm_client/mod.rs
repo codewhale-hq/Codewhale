@@ -2836,6 +2836,5 @@ mod tests {
         }
         .to_string();
         assert!(!generic.contains("OpenCode"), "{generic}");
->>>>>>> e4d4df4882
     }
 }
