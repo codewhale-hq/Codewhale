@@ -10757,12 +10757,12 @@ async fn retry_thread_turn(
         .thread_restore_guard(&id)
         .await
         .map_err(map_thread_err)?;
+    drop(reservation);
     let runtime = state.runtime_threads.clone();
     let sessions_dir = state.sessions_dir.clone();
     let prompt = req.prompt;
     let (forked_thread, retry_prompt, original_user_images, max_output_tokens) =
         tokio::spawn(async move {
-            let _reservation = reservation;
             let prepared = runtime
                 .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &sessions_dir)
                 .await
@@ -10776,7 +10776,7 @@ async fn retry_thread_turn(
                 ));
             }
             let (forked_thread, _, original_user_images, max_output_tokens) = runtime
-                .publish_prepared_fork(prepared)
+                .publish_prepared_fork_guarded(prepared)
                 .await
                 .map_err(map_thread_err)?;
             Ok((

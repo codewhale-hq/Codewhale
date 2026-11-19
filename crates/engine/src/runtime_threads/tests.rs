@@ -28284,3 +28284,170 @@ async fn standing_rule_refuses_sub_agent_approvals_and_holds_other_answers_while
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn named_turn_fork_does_not_block_unrelated_thread_restore_guard() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let thread_b = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let (guard_b, record_b) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread_b.id),
+    )
+    .await
+    .expect("unrelated thread_restore_guard must not wait on another thread's fork preparation")?;
+    assert_eq!(record_b.id, thread_b.id);
+    drop(guard_b);
+
+    let _ = resume.send(());
+    let (forked, original_text, _, _) = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should complete")??;
+    assert_eq!(
+        forked.parent_thread_id.as_deref(),
+        Some(thread_a.id.as_str())
+    );
+    assert_eq!(original_text.as_deref(), Some("second"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_fork_rejects_commit_when_source_thread_changes_mid_prepare() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_race_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_race_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let mut mutated_a = manager.store.load_thread(&thread_a.id)?;
+    mutated_a.latest_turn_id = Some("turn_concurrent_mutation".to_string());
+    mutated_a.updated_at = Utc::now() + chrono::Duration::seconds(1);
+    manager.store.save_thread(&mutated_a)?;
+
+    let _ = resume.send(());
+    let err = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should settle")?
+        .expect_err("fork must fail closed when source thread changed during preparation");
+    assert!(
+        format!("{err:#}").contains("source thread changed while preparing fork"),
+        "{err:#}"
+    );
+    let threads = manager
+        .list_threads(ThreadListFilter::IncludeArchived, None)
+        .await?;
+    assert_eq!(threads.len(), 1);
+    Ok(())
+}
