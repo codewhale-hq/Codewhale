@@ -228,6 +228,7 @@ fn adapter_projects_visible_history_fallback_with_baseline_markers() {
         HistoryCell::Error {
             message: "boom".to_string(),
             severity: ErrorSeverity::Warning,
+            code: None,
         },
     ];
 
@@ -1425,5 +1426,76 @@ fn adapter_resolves_absolute_paths_and_keeps_the_lexical_fallback() {
     assert_eq!(
         resolve(&mut harness.app, "relative.md").expect("lexical fallback"),
         missing.join("relative.md")
+    );
+}
+
+#[test]
+fn command_clipboard_export_includes_session_turn_outcomes_in_last_copy() {
+    let mut harness = ExportHarness::new();
+    let app = &mut harness.app;
+    app.clipboard = ClipboardHandler::for_test(false, false);
+    app.api_messages = std::sync::Arc::new(vec![
+        text_message(Role::User, "run the migration"),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "call-todo".to_string(),
+                name: "todo_write".to_string(),
+                input: serde_json::json!({"items": []}),
+                caller: None,
+                thought_signature: None,
+            }],
+        },
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                execution_id: None,
+                tool_use_id: "call-todo".to_string(),
+                content: "updated".to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        },
+    ]);
+    app.session_turn_outcomes = vec![
+        codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
+            "SSE stream request did not receive response headers after 45s (token sk-live1234567890abcdef)",
+            Some("llm_network_error"),
+            3,
+        ),
+        codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
+            "SSE stream request did not receive response headers after 45s",
+            Some("llm_network_error"),
+            3,
+        ),
+    ];
+
+    let result = dispatch(app, Some("clipboard"));
+    assert!(!result.is_error, "{:?}", result.message);
+
+    let last_copy = std::fs::read_to_string(harness.temp.path().join("home/exports/last-copy.md"))
+        .expect("last-copy.md");
+    let tool_pos = last_copy.find("## 3. tool").expect("last tool message");
+    let outcome_pos = last_copy
+        .find("## Turn outcome (failed)")
+        .expect("failed turn outcome in last-copy.md");
+    assert!(tool_pos < outcome_pos, "{last_copy}");
+    assert_eq!(
+        last_copy.matches("## Turn outcome (failed)").count(),
+        2,
+        "{last_copy}"
+    );
+    assert!(
+        last_copy.contains("- Code: `llm_network_error`"),
+        "{last_copy}"
+    );
+    assert!(
+        last_copy.contains("SSE stream request did not receive response headers after 45s"),
+        "{last_copy}"
+    );
+    assert!(
+        !last_copy.contains("sk-live1234567890abcdef"),
+        "secret leaked in last-copy.md: {last_copy}"
     );
 }
