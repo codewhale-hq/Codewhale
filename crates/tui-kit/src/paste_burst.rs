@@ -15,7 +15,12 @@ const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
 /// space them tens of milliseconds apart — past the burst-forming interval,
 /// so such a paste never buffers even though its Enters are paste payload.
 /// 60ms is far below a deliberate submit after typing and well inside the
-/// 120ms suppression budget.
+/// 120ms suppression budget. Elsewhere the bound stays at the burst interval:
+/// a deliberate Enter pressed inside a fast typing run must still submit, so
+/// the wider band is only bought where slow paste injection is proven.
+#[cfg(not(windows))]
+const PASTE_BURST_STREAM_WINDOW: Duration = PASTE_BURST_CHAR_INTERVAL;
+#[cfg(windows)]
 const PASTE_BURST_STREAM_WINDOW: Duration = Duration::from_millis(60);
 
 #[derive(Default)]
@@ -267,11 +272,11 @@ impl PasteBurst {
             "buffer must be flushed before deactivating"
         );
         self.consecutive_plain_char_burst = 0;
-        self.stream_chars = 0;
-        self.last_plain_char_time = None;
         self.active = false;
         self.pending_first_char = None;
-        // burst_window_until intentionally NOT cleared
+        // burst_window_until, stream_chars and last_plain_char_time are
+        // intentionally NOT cleared: a trailing Enter a stream-window after
+        // a table cell boundary is still pasted payload.
     }
 
     pub fn is_active(&self) -> bool {
@@ -627,7 +632,9 @@ mod tests {
     /// interval. Such a paste never buffers, but its embedded Enters are
     /// still payload, not submits. The stream counter (>=3 plain chars each
     /// within the 60ms stream window) proves a stream is live, and the
-    /// window bounds how stale the last char may be.
+    /// window bounds how stale the last char may be. The 60ms window is
+    /// Windows-only; elsewhere the bound is the burst interval.
+    #[cfg(windows)]
     #[test]
     fn enter_inside_a_slow_paced_raw_paste_inserts_a_newline() {
         let mut burst = PasteBurst::default();
@@ -652,6 +659,7 @@ mod tests {
 
     /// The same stream releases Enter once the last char is stale: a
     /// deliberate submit lands past the 60ms stream window.
+    #[cfg(windows)]
     #[test]
     fn enter_after_a_slow_stream_gone_still_submits() {
         let mut burst = PasteBurst::default();
