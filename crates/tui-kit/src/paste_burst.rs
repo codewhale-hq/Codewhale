@@ -242,6 +242,13 @@ impl PasteBurst {
         self.is_active_internal() || self.pending_first_char.is_some()
     }
 
+    /// True while a burst buffer holds pasted text. Unlike [`Self::is_active`]
+    /// a lone held first char does not count: it precedes anything appended
+    /// now in arrival order, so callers flush it before buffering.
+    pub fn is_buffering(&self) -> bool {
+        self.is_active_internal()
+    }
+
     fn is_active_internal(&self) -> bool {
         self.active || !self.buffer.is_empty()
     }
