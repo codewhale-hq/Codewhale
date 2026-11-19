@@ -4848,6 +4848,7 @@ mod tests {
         app.add_message(HistoryCell::Error {
             message: "验证失败 detail target".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         });
 
         let area = Rect::new(0, 0, 80, 12);

@@ -1809,6 +1809,7 @@ pub(super) fn present_turn_failure(
         status,
         codewhale_engine::core::events::TurnOutcomeStatus::Failed
     );
+    let mut error_code = None;
     if failed
         && app.turn_error_posted
         && let Some(notice) = app.turn_error_notice.clone()
@@ -1818,9 +1819,11 @@ pub(super) fn present_turn_failure(
                 Some(HistoryCell::Error { message, .. }) if *message == notice
             )
         })
-        && let Some(HistoryCell::Error { severity, .. }) = app.cell_at_virtual_index_mut(index)
+        && let Some(HistoryCell::Error { severity, code, .. }) =
+            app.cell_at_virtual_index_mut(index)
     {
         *severity = codewhale_error_taxonomy::ErrorSeverity::Error;
+        error_code = code.clone();
     }
     // What the transcript shows for this turn's failure: the error cell an
     // earlier `Event::Error` already posted, or the notice added here.
@@ -1832,6 +1835,7 @@ pub(super) fn present_turn_failure(
             app.add_message(HistoryCell::Error {
                 message: notice.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
             });
         }
         app.set_sticky_status(notice.clone(), StatusToastLevel::Error, None);
@@ -1842,8 +1846,9 @@ pub(super) fn present_turn_failure(
     // Persist the failure with the session (redacted), so resume, export,
     // and the Runtime API can say why the turn stopped after the TUI closes.
     if failed && let Some(shown) = shown {
-        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed(
+        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
             &shown,
+            error_code.as_deref(),
             app.api_messages.len(),
         );
         codewhale_engine::session_manager::push_turn_outcome(
