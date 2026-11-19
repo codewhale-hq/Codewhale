@@ -218,6 +218,12 @@ real isolated worktree may proceed in parallel. A `custom` role requires
 explicit write-capable authority to claim writes; otherwise it starts
 read-only.
 
+A read-only role (`explore`, `planner`, `reviewer`, `test`, `advisor`) that is
+given `deliverables`, `write_roots`, `exact_files` or `coordination_contracts`
+is refused at start, before any model call, with the roles and saved profiles
+on the current roster that can write. The child is never started only to
+discover it cannot do the job.
+
 Every write-capable child (`general`, `implement`, `custom`) is told how to
 work in a checkout: use its own worktree (the isolated one it was given, or
 ask the parent for `worktree=true` when others may write the same checkout),
@@ -726,7 +732,9 @@ model = "deepseek/deepseek-v4-pro"
 
 These are manual pins for direct and Workflow `agent` starts. A task may restate
 the same model or exact provider/model pair, but cannot change the pin with
-`model` or `model_strength`. An explicit saved profile takes precedence over a
+`model` or `model_strength`. The refusal names the roles (unpinned `type`
+values) and saved profiles on the current roster that do accept the requested
+model. An explicit saved profile takes precedence over a
 manual role pin. A type-only start also selects a unique saved role pin when
 there is no manual override; ambiguous saved roles fail instead of choosing one.
 Durable Fleet runs retain their selected member's frozen route.

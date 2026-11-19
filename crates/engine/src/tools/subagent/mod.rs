@@ -15775,6 +15775,7 @@ async fn spawn_subagent_from_input(
     // role with no declared scope claims the workspace root ('.'), which the
     // coordination ledger then arbitrates against live peers.
     validate_spawn_write_contract(&mut spawn_request, false)?;
+    refuse_write_brief_for_read_only_role(&runtime, &spawn_request, member_roster)?;
 
     if runtime.would_exceed_depth() {
         return Err(ToolError::execution_failed(format!(
@@ -20768,8 +20769,134 @@ fn validate_spawn_pin_request(
         return Ok(());
     }
     Err(ToolError::invalid_input(format!(
-        "{} pins route '{provider}/{pinned}'; the requested model conflicts with that route. Omit the task model or change the saved pin.",
+        "{} pins route '{provider}/{pinned}'; the requested model conflicts with that route. {} Or omit the task model, or change the saved pin.",
         selection.source.as_str(),
+        spawn_model_alternatives(runtime, requested),
+    )))
+}
+
+fn spawn_model_alternatives(runtime: &SubAgentRuntime, requested: &str) -> String {
+    let roster = spawn_roster(runtime);
+    let overrides = runtime
+        .api_config
+        .as_deref()
+        .map(codewhale_runtime::config::Config::subagent_model_overrides)
+        .unwrap_or_default();
+    let saved = || {
+        roster
+            .members()
+            .iter()
+            .filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn)
+    };
+    let profiles = saved()
+        .filter(|member| {
+            member.profile.model.as_deref().is_some_and(|model| {
+                requested_spawn_model_matches_pin(
+                    runtime,
+                    requested,
+                    model,
+                    member.profile.provider.as_deref(),
+                )
+            })
+        })
+        .take(8)
+        .map(|member| {
+            format!(
+                "profile={}",
+                crate::fleet::identity::bounded_identity_field(&member.id)
+            )
+        })
+        .collect::<Vec<_>>();
+    let roles = FleetRole::all()
+        .into_iter()
+        .filter(|role| {
+            configured_role_model_override(&overrides, None, role).is_none()
+                && !saved().any(|member| {
+                    FleetRole::parse(&member.profile.role.name).as_ref() == Some(role)
+                        && member
+                            .profile
+                            .model
+                            .as_deref()
+                            .is_some_and(|model| !model.trim().is_empty())
+                })
+        })
+        .map(|role| format!("type={}", role.as_str()))
+        .collect::<Vec<_>>();
+    let choices = profiles.into_iter().chain(roles).collect::<Vec<_>>();
+    if choices.is_empty() {
+        "No role or saved profile on this roster accepts that model without changing a pin."
+            .to_string()
+    } else {
+        format!(
+            "Choices that accept this task model: {}.",
+            choices.join(", ")
+        )
+    }
+}
+
+fn refuse_write_brief_for_read_only_role(
+    runtime: &SubAgentRuntime,
+    request: &SpawnRequest,
+    roster: Option<&crate::fleet::roster::FleetRoster>,
+) -> Result<(), ToolError> {
+    if spawn_request_is_write_capable(request) {
+        return Ok(());
+    }
+    let asks = [
+        ("deliverables", request.deliverables.is_empty()),
+        ("write_roots", request.write_roots.is_empty()),
+        ("exact_files", request.exact_files.is_empty()),
+        (
+            "coordination_contracts",
+            request.coordination_contracts.is_empty(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, empty)| (!empty).then_some(field))
+    .collect::<Vec<_>>();
+    if asks.is_empty() {
+        return Ok(());
+    }
+    let loaded;
+    let roster = match roster {
+        Some(roster) => roster,
+        None => {
+            loaded = spawn_roster(runtime);
+            &loaded
+        }
+    };
+    let profiles = roster
+        .members()
+        .iter()
+        .filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn)
+        .filter(|member| {
+            matches!(
+                FleetRole::parse(&member.profile.role.name),
+                Some(FleetRole::Worker | FleetRole::Builder)
+            )
+        })
+        .take(8)
+        .map(|member| {
+            format!(
+                "profile={}",
+                crate::fleet::identity::bounded_identity_field(&member.id)
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut choices = vec![
+        format!("type={}", FleetRole::Worker.as_str()),
+        format!("type={}", FleetRole::Builder.as_str()),
+        format!(
+            "type={} with write_authority=workspace_write",
+            FleetRole::Custom.as_str()
+        ),
+    ];
+    choices.extend(profiles);
+    let asks = asks.join(", ");
+    Err(ToolError::invalid_input(format!(
+        "type={} cannot write files, but this start declares {asks}; nothing was started. Roles that can write: {}. Or drop {asks} and have the child return the content for you to write.",
+        request.agent_type.as_str(),
+        choices.join(", "),
     )))
 }
 

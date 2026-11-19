@@ -1531,6 +1531,20 @@ fn tool_error_messages_include_actionable_hints() {
     let formatted = format_tool_error_with_schema(&missing_field, "read_file", Some(&schema));
     assert!(formatted.contains("\"required\":[\"path\"]"));
 
+    let large_schema = json!({
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "x".repeat(8 * 1024)},
+            "action": {"type": "string"}
+        },
+        "required": ["action"]
+    });
+    let invalid = ToolError::invalid_input("conflict");
+    let formatted = format_tool_error_with_schema(&invalid, "agent", Some(&large_schema));
+    assert!(formatted.len() < 1024, "{formatted}");
+    assert!(formatted.contains("\"required\":[\"action\"]"));
+    assert!(formatted.contains("\"properties\":[\"prompt\",\"action\"]"));
+
     let timeout = ToolError::Timeout { seconds: 5 };
     let formatted = format_tool_error(&timeout, "exec_shell");
     assert!(formatted.contains("timed out"));
