@@ -1621,6 +1621,7 @@ impl Engine {
         let (receipt, effect) = match &review.outcome {
             super::reviewer::ReviewerOutcome::Allow { reason, .. } => {
                 self.auto_review_state.lock().record_allow();
+                self.guardian_breaker.lock().record_allow(&turn.id);
                 (
                     Some((
                         crate::core::events::ToolGateVerdict::Allowed,
@@ -1648,6 +1649,7 @@ impl Engine {
                     "auto_review_guardian",
                     "denied",
                 );
+                let _ = self.guardian_breaker.lock().record_deny(&turn.id);
                 (
                     Some((
                         crate::core::events::ToolGateVerdict::Denied,
@@ -1661,6 +1663,7 @@ impl Engine {
                 )
             }
             super::reviewer::ReviewerOutcome::Unavailable { reason } => {
+                self.guardian_breaker.lock().record_failure(&turn.id);
                 let recorded = self.record_auto_review_block(
                     in_auto_mode,
                     owner_present,
@@ -1744,6 +1747,7 @@ impl Engine {
         self.turn_wall_clock =
             codewhale_runtime::turn_budget::TurnWallClock::start(self.config.turn_wall_clock);
         self.turn_heartbeat.begin_turn(&turn.id);
+        self.guardian_breaker.lock().clear_turn(&turn.id);
 
         // Only interactive TUI hosts own terminal chrome. Headless exec,
         // app-server, and stream-json stdout must remain byte-clean.
@@ -2976,7 +2980,12 @@ impl Engine {
                                     .and_then(serde_json::Value::as_str)
                                     .map(str::trim)
                                     .filter(|id| !id.is_empty());
-                                if let Err(failure) = self
+                                if let Some(trip_message) =
+                                    self.guardian_breaker.lock().tripped_message(&turn.id)
+                                {
+                                    blocked_error =
+                                        Some(ToolError::permission_denied(trip_message));
+                                } else if let Err(failure) = self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,

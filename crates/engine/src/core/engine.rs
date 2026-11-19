@@ -1100,6 +1100,7 @@ pub struct Engine {
     shared_auto_review_policy: Arc<crate::core::authority::auto_review::AutoReviewPolicy>,
     auto_review_state:
         Arc<parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>>,
+    guardian_breaker: Arc<parking_lot::Mutex<guardian_breaker::GuardianBreaker>>,
     shell_manager: SharedShellManager,
     /// Read-before-edit snapshots live for the session, not for one turn's
     /// transient `ToolContext` (#4475).
@@ -2841,6 +2842,9 @@ impl Engine {
             subagent_execution_limits,
             shared_auto_review_policy,
             auto_review_state: Arc::clone(&auto_review_state),
+            guardian_breaker: Arc::new(parking_lot::Mutex::new(
+                guardian_breaker::GuardianBreaker::default(),
+            )),
             shell_manager,
             file_read_tracker,
             mcp_pool,
@@ -12511,6 +12515,7 @@ use context::{
     effective_max_output_tokens_for_route,
 };
 mod dispatch;
+pub(crate) mod guardian_breaker;
 mod lsp_hooks;
 pub mod review;
 pub mod reviewer;

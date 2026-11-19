@@ -161,6 +161,18 @@ impl Engine {
             )
             .await;
 
+        if let Some(trip_message) = self
+            .guardian_breaker
+            .lock()
+            .take_interrupt_message(&turn.id)
+        {
+            let _ = self.send_event(Event::status(trip_message)).await;
+            return PhaseResult::Return((
+                TurnOutcomeStatus::Interrupted,
+                Some(trip_message.to_string()),
+            ));
+        }
+
         let accepted_steer_after_tools = !pending_steers.is_empty();
         if !pending_steers.is_empty() {
             for pending in pending_steers.drain(..) {
