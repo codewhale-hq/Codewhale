@@ -2008,17 +2008,17 @@ impl App {
     /// Windows Terminal clipboard harness showed (24 lines joined, or a
     /// mid-paste modal eating the next lines).
     pub fn handle_composer_enter(&mut self, protect_paste: bool, now: Instant) -> Option<String> {
-        if protect_paste && self.use_paste_burst_detection {
-            if self
+        if protect_paste
+            && self.use_paste_burst_detection
+            && self
                 .paste_burst
                 .newline_should_insert_instead_of_submit(now)
-            {
-                if !self.paste_burst.append_newline_if_active(now) {
-                    self.insert_char('\n');
-                }
-                self.needs_redraw = true;
-                return None;
+        {
+            if !self.paste_burst.append_newline_if_active(now) {
+                self.insert_char('\n');
             }
+            self.needs_redraw = true;
+            return None;
         }
         self.submit_input()
     }
