@@ -16752,7 +16752,7 @@ fn write_capable_child_needs_verify_contract(agent_type: &FleetRole) -> bool {
     )
 }
 
-fn build_subagent_system_prompt_with_skills(
+fn build_subagent_system_prompt_with_memory(
     agent_type: &FleetRole,
     assignment: &SubAgentAssignment,
     context: &ToolContext,
@@ -16765,11 +16765,6 @@ fn build_subagent_system_prompt_with_skills(
     if let Some(section) = subagent_memory_section(context) {
         prompt.push_str("\n\n");
         prompt.push_str(&section);
-    }
-    let catalog = subagent_skill_catalog(context);
-    if !catalog.is_empty() {
-        prompt.push_str("\n\n");
-        prompt.push_str(&catalog);
     }
     prompt
 }
@@ -16887,22 +16882,6 @@ fn subagent_memory_section(context: &ToolContext) -> Option<String> {
         &context.workspace,
     )?;
     crate::prompts::memory_prompt_section(Some(&block))
-}
-
-/// Render the same workspace/plugin-qualified Skill authority available to
-/// `load_skill`, without leaking a mutable source or staged filesystem path.
-/// Every fresh and nested child derives this from its inherited ToolContext;
-/// forked children receive it at system precedence as well.
-fn subagent_skill_catalog(context: &ToolContext) -> String {
-    codewhale_skills::render_index(
-        &context.workspace,
-        context.skills_dir.as_deref(),
-        &context.skills_config,
-        "en",
-        context.plugin_registry.as_deref(),
-        context.route_context_window,
-    )
-    .unwrap_or_default()
 }
 
 fn subagent_request_system_prompt(subagent_system_prompt: &str) -> SystemPrompt {
