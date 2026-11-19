@@ -2051,7 +2051,9 @@ impl Expander {
         match name {
             "nix" => {
                 for verb_idx in resolve_wrapper_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
-                    let verb = tokens[verb_idx].as_str();
+                    let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                        continue;
+                    };
                     if matches!(verb, "develop" | "shell")
                         && let Some(at) = (verb_idx + 1..tokens.len())
                             .take_while(|&i| tokens[i] != "--")
@@ -2087,7 +2089,10 @@ impl Expander {
                     }
                 } else {
                     for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
-                        if matches!(tokens[verb_idx].as_str(), "exec" | "x") {
+                        if tokens
+                            .get(verb_idx)
+                            .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
+                        {
                             for (payload, payload_dynamic) in option_payloads(
                                 tokens,
                                 verb_idx,
@@ -2133,7 +2138,7 @@ impl Expander {
             _ => {
                 if name == "launchctl" {
                     for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
-                        if tokens[verb_idx] == "submit" {
+                        if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
                         }
                     }
@@ -2143,11 +2148,14 @@ impl Expander {
                         continue;
                     }
                     for verb_idx in resolve_wrapper_targets(tokens, head + 1, launcher.global) {
-                        if !launcher.verbs.contains(&tokens[verb_idx].as_str()) {
+                        let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                            continue;
+                        };
+                        if !launcher.verbs.contains(&verb) {
                             continue;
                         }
                         let is_container_run =
-                            matches!(name, "docker" | "podman") && tokens[verb_idx] == "run";
+                            matches!(name, "docker" | "podman") && verb == "run";
                         let entrypoint = if is_container_run {
                             find_entrypoint(&tokens[verb_idx + 1..], verb_idx + 1)
                         } else {
@@ -4133,6 +4141,33 @@ mod tests {
     fn expand(command: &str) -> Vec<String> {
         // Exercise the POSIX grammar consistently on every test host.
         expanded_commands_for_platform(command, false)
+    }
+
+    #[test]
+    fn launcher_flag_only_commands_do_not_panic() {
+        for command in [
+            "npm --version",
+            "npm -v",
+            "nix --version",
+            "nix --offline --version",
+            "launchctl --help",
+            "docker --version",
+            "docker -D --tls",
+            "podman --version",
+            "uv --version",
+            "poetry --version",
+            "pipx --version",
+            "bundle --version",
+            "perf --version",
+            "tmux -V",
+            "cd /tmp && node --version && npm --version && ls node_modules/@deepseek-ai/",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(!expansion.commands.is_empty(), "{command}");
+        }
+        assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
+        assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
+        assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
     }
 
     #[test]

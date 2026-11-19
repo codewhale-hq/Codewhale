@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Flag-only launcher commands no longer crash the turn:** running `npm --version`, `nix --version`, `launchctl --help`, `docker --version`, `podman --version`, or another launcher command with global flags and no subcommand no longer panics with an out-of-bounds index during command policy expansion.
 - **Stop terminal scroll-away redraw flicker ("scrolling demon"):** scrolling up into transcript history now holds status animation ticks, the working clock glow, and Underwater ocean/completion animation still until you return to the live tail, preventing Terminal.app and other terminals without synchronized output from repainting at 8–12 fps while reading history during active multi-agent turns.
 - **Muse Code as an external agent:** Codewhale now discovers an installed Meta Muse Code CLI (`muse`) and drives it over ACP through `@bex-co/muse-code-acp` (`muse-code-acp`, with `MUSE_CODE_EXECUTABLE` and `muse login`), listing it in `GET /v1/agents/external` alongside Claude, Codex, Antigravity, and other installed agents.
 - **Crisper 980-dot whale and activity forms in `/pet`:** the terminal pet's 980 dots now compile from perimeter-anchored hexagonal-lattice silhouettes with rorqual throat illumination at rest and cleaner edges across all thirteen running, waiting and done forms, while keeping zero motion under Hold still and Reduce motion. (CW-6453)
