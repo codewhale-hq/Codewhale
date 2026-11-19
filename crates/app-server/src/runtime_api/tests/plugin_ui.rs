@@ -593,7 +593,6 @@ exports.apply = function (ctx) {
     let revision = detail["revision"].as_str().unwrap().to_string();
     let asset_base = detail["base"].as_str().unwrap().to_string();
 
-    // Reviewed CSS and SVG static assets are served with safe headers.
     let css = client
         .get(format!("{asset_base}source/lib/style.css"))
         .header("If-Match", &revision)
@@ -627,7 +626,6 @@ exports.apply = function (ctx) {
             .is_some_and(|v| v.contains("default-src 'none'"))
     );
 
-    // Raw JS/JSON source files remain refused for DSH grants.
     let raw_js = client
         .get(format!("{asset_base}source/lib/util.js"))
         .header("If-Match", &revision)

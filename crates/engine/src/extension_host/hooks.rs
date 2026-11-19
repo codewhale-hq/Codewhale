@@ -119,9 +119,6 @@ impl HostAttachment {
         results
     }
 
-    /// Best-effort read-only observer dispatch for `tools/post-execute` hooks.
-    /// Observers receive a redacted outcome summary with no session handles or
-    /// invocation tickets, and can never mutate or fail a turn.
     pub async fn tool_after_hooks(&self, payload: HookCallPayload) {
         let shared = &self.manager.shared;
         let desired = shared
