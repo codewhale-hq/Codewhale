@@ -3516,6 +3516,41 @@ pub(crate) fn tool_header_sweep_extent(
     }
 }
 
+pub(crate) fn tool_header_settle_spans(tool: &ToolCell, line: &Line<'static>) -> Vec<usize> {
+    let base = usize::from(
+        line.spans
+            .first()
+            .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ ")),
+    );
+    let mut spans = vec![base];
+    match (tool, tool.status()) {
+        (ToolCell::Exec(_), Some(status)) => {
+            let status_fg =
+                tool_glyph_color(status, crate::tui::widgets::tool_card::ToolFamily::Run);
+            spans.extend((base + 2..line.spans.len()).find(|index| {
+                line.spans[*index].style.fg == Some(status_fg)
+                    && line.spans[index - 1].content == " \u{00B7} "
+            }));
+        }
+        _ => {
+            spans.push(base + 1);
+            if line
+                .spans
+                .get(base + 3)
+                .is_some_and(|span| span.content == " ")
+            {
+                spans.push(base + 4);
+            }
+        }
+    }
+    spans.retain(|index| {
+        line.spans
+            .get(*index)
+            .is_some_and(|span| !span.content.trim().is_empty())
+    });
+    spans
+}
+
 pub(crate) fn running_elapsed_label(started_at: Instant) -> Option<String> {
     let secs = started_at.elapsed().as_secs();
     (secs >= 1).then(|| codewhale_command_contract::elapsed::format_elapsed_secs(secs))
