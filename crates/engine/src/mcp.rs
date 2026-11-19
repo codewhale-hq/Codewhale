@@ -5299,7 +5299,9 @@ impl McpPool {
     ) -> Result<Vec<String>> {
         const MAX_DISCOVERY_SERVERS: usize = 8;
         let regex = match match_kind {
-            "regex" => Some(codewhale_runtime::regex_cache::compile_user_regex(query)?),
+            "regex" => {
+                Some(codewhale_runtime::regex_cache::compile_user_regex_case_insensitive(query)?)
+            }
             "bm25" => None,
             _ => anyhow::bail!("Unsupported tool search match algorithm"),
         };

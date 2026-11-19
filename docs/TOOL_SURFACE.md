@@ -213,12 +213,14 @@ auto-approved native calls only, no MCP.
 ### Conversation toolbox cache
 
 A successful search activation is remembered by name for the current
-conversation. Its soft targets are eight deferred names and 16 KiB of added
+conversation. Its soft targets are sixteen deferred names and 32 KiB of added
 provider-wire schemas, measured after the route's production transformations
 against the eager-tool baseline. An adapter that cannot measure the wire reports
-unknown bytes; internal `Tool` serialization is not substituted. To make room it evicts tools that were never called first
-(oldest activation first), then the least recently called; a tool called in the
-current or previous turn is never evicted. When such tools already fill the
+unknown bytes; internal `Tool` serialization is not substituted. To make room it
+evicts MCP tools before first-party tools, and within each group evicts tools
+that were never called first (oldest activation first), then the least recently
+called; a tool called in the current or previous turn is never evicted. When such
+tools already fill the
 cache, a search still activates its best match over the bound and holds the
 rest; a later activation restores the bound once those tools go unused. Every
 entry is revalidated against the current catalog and policy before it is

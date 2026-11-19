@@ -1,12 +1,13 @@
 //! Programmable admission listeners reuse the native strict hook fold.
 //! The host returns proposals, never tool or approval authority.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::protocol::{CoreRequest, HookCallPayload, HookEvaluateParams, HookVerdictWire};
-use super::{HostAttachment, ManagerShared};
+use super::{ExtensionHostManager, HostAttachment, ManagerShared};
 use crate::hooks::HookResult;
 
 const HOOK_DEADLINE: Duration = Duration::from_secs(5);
@@ -30,11 +31,12 @@ impl HostAttachment {
             .live_hooks()
             .into_iter()
             .filter(|hook| {
-                desired.includes(
-                    &hook.owner.plugin_id,
-                    &hook.content_hash,
-                    hook.scope.as_ref(),
-                )
+                hook.event == "tools/pre-execute"
+                    && desired.includes(
+                        &hook.owner.plugin_id,
+                        &hook.content_hash,
+                        hook.scope.as_ref(),
+                    )
             })
             .collect();
         let mut results = Vec::with_capacity(hooks.len());
@@ -116,6 +118,77 @@ impl HostAttachment {
             }
         }
         results
+    }
+
+    pub fn spawn_tool_after_hooks(&self, payload: HookCallPayload) {
+        let manager = Arc::clone(&self.manager);
+        let id = self.id;
+        tokio::spawn(async move { tool_after_hooks(manager, id, payload).await });
+    }
+}
+
+async fn tool_after_hooks(manager: Arc<ExtensionHostManager>, id: u64, payload: HookCallPayload) {
+    {
+        let shared = &manager.shared;
+        let desired = shared
+            .attachments
+            .lock()
+            .expect("attachments lock")
+            .get(&id)
+            .map(|state| state.selection.clone())
+            .unwrap_or_default();
+        let hooks: Vec<_> = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .live_hooks()
+            .into_iter()
+            .filter(|hook| {
+                hook.event == "tools/post-execute"
+                    && desired.includes(
+                        &hook.owner.plugin_id,
+                        &hook.content_hash,
+                        hook.scope.as_ref(),
+                    )
+            })
+            .collect();
+        if hooks.is_empty() {
+            return;
+        }
+        let batch_started = Instant::now();
+        for hook in hooks {
+            let Ok(host) = shared.live_host_for_hook(&hook).await else {
+                continue;
+            };
+            let still_desired = desired.revision.is_some_and(|revision| {
+                shared.selection_current(
+                    revision,
+                    &hook.owner.plugin_id,
+                    &hook.content_hash,
+                    hook.scope.as_ref(),
+                )
+            });
+            if !still_desired {
+                continue;
+            }
+            let remaining_ms = HOOK_DEADLINE
+                .saturating_sub(batch_started.elapsed())
+                .as_millis() as u64;
+            if remaining_ms == 0 {
+                break;
+            }
+            let _ = host
+                .call(
+                    CoreRequest::HookEvaluate(HookEvaluateParams {
+                        handle: hook.handle,
+                        event: hook.event.clone(),
+                        payload: payload.clone(),
+                        deadline_ms: remaining_ms,
+                    }),
+                    Some(hook.owner.plugin_id.clone()),
+                )
+                .await;
+        }
     }
 }
 

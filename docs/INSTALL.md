@@ -412,8 +412,9 @@ options and only prints an `export` line for the current shell, so add the block
 
 ## 4. npm
 
-**Prerequisites:** Node.js 18+ and npm, with a **global prefix you can write
-to**. npm installs the registry's latest published version, never an
+**Prerequisites:** Node.js 22+ and npm, with a **global prefix you can write
+to**. On Node.js 18 or 20 the install stops and asks you to upgrade Node.js.
+npm installs the registry's latest published version, never an
 unpublished source candidate.
 
 ```bash

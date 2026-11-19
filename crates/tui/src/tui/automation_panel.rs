@@ -40,6 +40,7 @@ const SLOT_GLYPH: &str = "⏱";
 pub struct AutomationScan {
     pub records: Vec<AutomationRecord>,
     pub runs: Vec<AutomationRunRecord>,
+    pub execution_scope: Option<String>,
 }
 
 /// Snapshot of live scheduled work, refreshed on the task-panel cadence.
@@ -111,16 +112,31 @@ impl AutomationPanelState {
     /// would re-light the band for history the operator already saw. Settled
     /// runs are likewise gated on having been seen live by a previous fold,
     /// so the first scan of a session never replays old receipts.
+    #[cfg(test)]
     pub(crate) fn fold_scan(
         &mut self,
         records: &[AutomationRecord],
         runs: &[AutomationRunRecord],
         session_started_at: DateTime<Utc>,
     ) -> ScanDelta {
+        self.fold_scan_in_scope(records, runs, session_started_at, None)
+    }
+
+    pub(crate) fn fold_scan_in_scope(
+        &mut self,
+        records: &[AutomationRecord],
+        runs: &[AutomationRunRecord],
+        session_started_at: DateTime<Utc>,
+        execution_scope: Option<&str>,
+    ) -> ScanDelta {
         let previous = std::mem::take(self);
         self.active_automations = records
             .iter()
-            .filter(|record| matches!(record.status, AutomationStatus::Active))
+            .filter(|record| {
+                matches!(record.status, AutomationStatus::Active)
+                    && execution_scope
+                        .is_none_or(|scope| record.execution_scope.as_deref() == Some(scope))
+            })
             .count();
         self.live_run_ids = runs
             .iter()

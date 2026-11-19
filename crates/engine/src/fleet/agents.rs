@@ -865,7 +865,13 @@ mod tests {
         );
         let muse = find("muse").unwrap();
         assert_eq!(
-            (muse.binary, muse.adapter, muse.adapter_binary, muse.adapter_cli_env, muse.login),
+            (
+                muse.binary,
+                muse.adapter,
+                muse.adapter_binary,
+                muse.adapter_cli_env,
+                muse.login
+            ),
             (
                 "muse",
                 Some("@bex-co/muse-code-acp"),

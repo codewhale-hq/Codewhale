@@ -59,9 +59,10 @@ use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_engine::automation_manager::{
-    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
-    CreateAutomationRequest, CreateDelayedTriggerRequest, DelayedTriggerRecord,
-    DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
+    AutomationManager, AutomationRecord, AutomationRecordView, AutomationRunRecord,
+    AutomationSchedulerConfig, CreateAutomationRequest, CreateDelayedTriggerRequest,
+    DelayedTriggerRecord, DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest,
+    spawn_scheduler,
 };
 use codewhale_engine::fleet::executor::{FleetExecutor, configured_codewhale_binary};
 use codewhale_engine::fleet::ledger::{
@@ -3580,6 +3581,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/run", post(run_automation))
         .route("/v1/automations/{id}/pause", post(pause_automation))
         .route("/v1/automations/{id}/resume", post(resume_automation))
+        .route("/v1/automations/{id}/adopt", post(adopt_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/automations/missed", get(automations::list_missed))
         .route("/v1/automations/{id}/missed", get(automations::get_missed))
@@ -6191,10 +6193,14 @@ async fn list_commands(
     };
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let plugins = state.plugin_discovery.registry_for_workspace(&workspace);
     let commands = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let mut commands = command_catalog(&catalog.builtins(), &catalog.user_commands(&workspace));
+        let mut commands = command_catalog(
+            &catalog.builtins(),
+            &catalog.user_commands_with_plugins(&workspace, &plugins),
+        );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
             *counts
@@ -8596,10 +8602,10 @@ fn apply_write_request_to_config(
 
 async fn list_automations(
     State(state): State<RuntimeApiState>,
-) -> Result<Json<Vec<AutomationRecord>>, ApiError> {
+) -> Result<Json<Vec<AutomationRecordView>>, ApiError> {
     let manager = state.automations.lock().await;
     let automations = manager
-        .list_automations()
+        .list_automation_views()
         .map_err(|e| ApiError::internal(format!("Failed to list automations: {e}")))?;
     Ok(Json(automations))
 }
@@ -8984,9 +8990,11 @@ async fn create_automation_in_workspace(
 async fn get_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-) -> Result<Json<AutomationRecord>, ApiError> {
+) -> Result<Json<AutomationRecordView>, ApiError> {
     let manager = state.automations.lock().await;
-    let automation = manager.get_automation(&id).map_err(map_automation_err)?;
+    let automation = manager
+        .get_automation_view(&id)
+        .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -9151,6 +9159,41 @@ async fn resume_automation(
         headers,
         "resume",
         codewhale_engine::automation_manager::AutomationStatus::Active,
+    )
+    .await
+}
+
+async fn adopt_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<AutomationPreconditionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let existing = state
+        .automations
+        .lock()
+        .await
+        .get_automation(&id)
+        .map_err(map_automation_err)?;
+    require_destination_thread(&state, existing.destination_thread_id.as_deref()).await?;
+    automation_mutation(
+        &state,
+        &headers,
+        &format!("POST /v1/automations/{id}/adopt"),
+        &query.expected_revision,
+        StatusCode::OK,
+        map_automation_err,
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let id = id.clone();
+            let expected = query.expected_revision;
+            tokio::task::spawn_blocking(move || {
+                let adopted = manager.adopt_automation_if(&id, expected)?;
+                Ok(manager.record_view(adopted))
+            })
+            .await
+            .context("automation adopt worker failed")?
+        },
     )
     .await
 }

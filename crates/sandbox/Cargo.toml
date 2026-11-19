@@ -24,13 +24,13 @@ dirs.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
 codewhale-runtime = { path = "../runtime", version = "0.10.3", features = ["test-support", "test-thread-scoped-state"] }
-tempfile.workspace = true
 tokio.workspace = true
 
 [target.'cfg(unix)'.dependencies]

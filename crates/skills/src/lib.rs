@@ -1279,6 +1279,15 @@ fn merge_watched_directories(
         let (registry, dir_watched) = SkillRegistry::discover_watched_confined(&dir, confine_to);
         watched.extend(dir_watched);
         for mut skill in registry.skills {
+            if let Some(owned) = owned {
+                if let Some(retired) = system::retired_bundled_skill_name(&skill.name) {
+                    let marker = owned.join(retired).join(".installed-from");
+                    watched.push((marker.clone(), watched_path_stamp(&marker)));
+                }
+                if system::retired_bundled_copy_disabled(policy, &skill.path, &skill.name, owned) {
+                    continue;
+                }
+            }
             if let Some(owned) = owned.filter(|_| system::is_bundled_skill_name(&skill.name)) {
                 let marker = owned.join(&skill.name).join(".installed-from");
                 watched.push((marker.clone(), watched_path_stamp(&marker)));

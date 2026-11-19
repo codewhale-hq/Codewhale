@@ -35,8 +35,8 @@ use super::{
 };
 use crate::tui::app::App;
 use codewhale_engine::automation_manager::{
-    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
-    SharedAutomationManager,
+    AutomationExecutionOwnership, AutomationRecord, AutomationRunRecord, AutomationRunStatus,
+    AutomationStatus, SharedAutomationManager,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -52,6 +52,7 @@ const RECENT_RUNS: usize = 5;
 #[derive(Debug, Clone)]
 pub(crate) struct AutomationRow {
     pub(crate) record: AutomationRecord,
+    pub(crate) execution_ownership: Option<AutomationExecutionOwnership>,
     /// Newest first.
     pub(crate) runs: Vec<AutomationRunRecord>,
     /// The run history could not be read. Painted instead of "no recorded
@@ -231,7 +232,7 @@ impl AutomationsView {
         let Ok(manager) = manager.try_lock() else {
             return;
         };
-        let records = match manager.list_automations() {
+        let records = match manager.list_automation_views() {
             Ok(records) => records,
             Err(error) => {
                 self.problem = Some(
@@ -244,13 +245,15 @@ impl AutomationsView {
         let selected_id = self.selected().map(|row| row.record.id.clone());
         self.rows = records
             .into_iter()
-            .map(|record| {
-                let (runs, runs_error) = match manager.list_runs(&record.id, Some(RECENT_RUNS)) {
+            .map(|view| {
+                let (runs, runs_error) = match manager.list_runs(&view.record.id, Some(RECENT_RUNS))
+                {
                     Ok(runs) => (runs, None),
                     Err(error) => (Vec::new(), Some(error.to_string())),
                 };
                 AutomationRow {
-                    record,
+                    record: view.record,
+                    execution_ownership: Some(view.execution_ownership),
                     runs,
                     runs_error,
                 }
@@ -305,6 +308,13 @@ impl AutomationsView {
         }
     }
 
+    fn adopt(&self) -> ViewAction {
+        match self.selected() {
+            Some(row) => Self::command(format!("/automation adopt {}", row.record.id)),
+            None => ViewAction::None,
+        }
+    }
+
     /// Cancel the live run: an automation run is a durable task, so the
     /// task's own cancel is the one path.
     fn cancel_live_run(&self) -> ViewAction {
@@ -352,6 +362,18 @@ impl AutomationsView {
                 "r",
                 tr(locale, MessageId::AutomationActionRun),
             ));
+            if matches!(
+                row.execution_ownership,
+                Some(
+                    AutomationExecutionOwnership::OtherRuntime
+                        | AutomationExecutionOwnership::Unbound
+                )
+            ) {
+                hints.push(ActionHint::new(
+                    "a",
+                    tr(locale, MessageId::AutomationActionAdopt),
+                ));
+            }
             if row.live_run().is_some() {
                 hints.push(ActionHint::new(
                     "x",
@@ -374,7 +396,12 @@ impl AutomationsView {
         let active = self
             .rows
             .iter()
-            .filter(|row| row.record.status == AutomationStatus::Active)
+            .filter(|row| {
+                row.record.status == AutomationStatus::Active
+                    && row
+                        .execution_ownership
+                        .is_none_or(|ownership| ownership == AutomationExecutionOwnership::Owned)
+            })
             .count();
         let live = self
             .rows
@@ -456,7 +483,7 @@ impl AutomationsView {
                     format!(
                         "  ·  {state}  ·  {}: {}",
                         tr(self.locale, MessageId::AutomationNextLabel),
-                        next_run_label(row.record.next_run_at)
+                        self.next_run_text(row)
                     ),
                     Style::default()
                         .fg(palette::TEXT_DIM)
@@ -512,7 +539,7 @@ impl AutomationsView {
             ]),
             Line::from(vec![
                 label(MessageId::AutomationNextLabel),
-                value(next_run_label(record.next_run_at)),
+                value(self.next_run_text(row)),
             ]),
         ];
         if !record.cwds.is_empty() {
@@ -622,6 +649,27 @@ impl AutomationsView {
             self.detail_scroll,
         ));
     }
+    fn next_run_text(&self, row: &AutomationRow) -> String {
+        if row.record.status == AutomationStatus::Active
+            && let Some(ownership) = row.execution_ownership
+            && ownership != AutomationExecutionOwnership::Owned
+        {
+            let id = match ownership {
+                AutomationExecutionOwnership::OtherRuntime => {
+                    MessageId::AutomationNotScheduledOtherRuntime
+                }
+                AutomationExecutionOwnership::Unbound => MessageId::AutomationNotScheduledUnbound,
+                AutomationExecutionOwnership::HostUnattached => {
+                    MessageId::AutomationNotScheduledUnattached
+                }
+                AutomationExecutionOwnership::Owned => {
+                    return next_run_label(row.record.next_run_at);
+                }
+            };
+            return tr(self.locale, id).into_owned();
+        }
+        next_run_label(row.record.next_run_at)
+    }
 }
 
 fn next_run_label(value: Option<chrono::DateTime<chrono::Utc>>) -> String {
@@ -720,6 +768,7 @@ impl ModalView for AutomationsView {
             }
             KeyCode::Char('p') | KeyCode::Char(' ') => self.toggle_pause(),
             KeyCode::Char('r') => self.run_now(),
+            KeyCode::Char('a') => self.adopt(),
             KeyCode::Char('x') | KeyCode::Char('c') => self.cancel_live_run(),
             KeyCode::Char('d') => self.delete(),
             _ => ViewAction::None,
@@ -915,11 +964,13 @@ mod tests {
             vec![
                 AutomationRow {
                     record: record("vision", AutomationStatus::Active),
+                    execution_ownership: None,
                     runs: vec![run("vision", AutomationRunStatus::Running)],
                     runs_error: None,
                 },
                 AutomationRow {
                     record: record("infra", AutomationStatus::Paused),
+                    execution_ownership: None,
                     runs: Vec::new(),
                     runs_error: None,
                 },
@@ -1138,6 +1189,7 @@ mod tests {
         let view = AutomationsView::from_rows(
             vec![AutomationRow {
                 record: record("vision", AutomationStatus::Active),
+                execution_ownership: None,
                 runs: Vec::new(),
                 runs_error: Some("run store unreadable".to_string()),
             }],
@@ -1168,6 +1220,7 @@ mod tests {
         let mut view = AutomationsView::from_rows(
             vec![AutomationRow {
                 record: long,
+                execution_ownership: None,
                 runs: Vec::new(),
                 runs_error: None,
             }],

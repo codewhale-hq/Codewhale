@@ -343,13 +343,13 @@ fn classify(
             .ok()
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > STALE_AFTER);
-        return Some(
-            if stale && (meta.is_dir() || name.starts_with(".codewhale-update-")) {
-                InstallClass::BackupLeftover
-            } else {
-                InstallClass::NotOurs("in use or recent; not changed")
-            },
-        );
+        return Some(if !stale {
+            InstallClass::NotOurs("changed within the last hour, so it may be in use; not changed")
+        } else if meta.is_dir() || name.starts_with(".codewhale-update-") {
+            InstallClass::BackupLeftover
+        } else {
+            InstallClass::NotOurs("an install receipt or marker file, not a backup; not changed")
+        });
     }
     if host_recovery {
         return Some(if meta.is_file() && meta.len() <= 64 * 1024 {
@@ -592,15 +592,22 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn dir_bytes(path: &Path) -> u64 {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|entry| fs::symlink_metadata(entry.path()).ok())
-                .map(|meta| if meta.is_file() { meta.len() } else { 0 })
-                .sum()
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| fs::symlink_metadata(entry.path()).ok().map(|m| (entry, m)))
+        .map(|(entry, meta)| {
+            if meta.is_dir() {
+                dir_bytes(&entry.path())
+            } else if meta.is_file() {
+                meta.len()
+            } else {
+                0
+            }
         })
-        .unwrap_or(0)
+        .sum()
 }
 
 fn display(path: &Path) -> String {
@@ -1001,11 +1008,24 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
             }
             let meta =
                 fs::symlink_metadata(&record.stored).context("no longer in the recovery folder")?;
-            if let Some(expected) = &record.sha256
-                && meta.is_file()
-                && &file_sha256(&record.stored)? != expected
-            {
-                bail!("its bytes changed in the recovery folder");
+            if meta.is_symlink() {
+                bail!("stored entry is a symlink");
+            }
+            if record.sha256.is_some() && !meta.is_file() {
+                bail!("stored entry is no longer a regular file");
+            }
+            if meta.is_file() {
+                match &record.sha256 {
+                    Some(expected) => {
+                        if &file_sha256(&record.stored)? != expected {
+                            bail!("its bytes changed in the recovery folder");
+                        }
+                    }
+                    None if record.bytes != meta.len() => {
+                        bail!("its size changed in the recovery folder");
+                    }
+                    None => {}
+                }
             }
             if let Ok(current) = fs::symlink_metadata(&record.original) {
                 if !current.is_file() || !meta.is_file() {

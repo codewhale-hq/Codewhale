@@ -60,6 +60,7 @@ fn enforced_readonly_refuses_an_unenforced_or_writable_prepared_environment() {
         timeout: Duration::from_secs(1),
         sandbox_type: SandboxType::None,
         policy: ExecutionSandboxPolicy::read_only(),
+        scratch: None,
     };
     assert!(require_native_readonly_execution(&environment).is_err());
     #[cfg(target_os = "macos")]
@@ -232,5 +233,91 @@ async fn enforced_readonly_native_python_cannot_reach_a_loopback_listener() {
     );
     eprintln!(
         "NATIVE_READONLY_ENFORCED: loopback connection denied; listener received no connection"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::print_stderr)]
+async fn enforced_readonly_native_gets_a_private_tmpdir_removed_after_the_command() {
+    let tmp = crate::test_support::sandbox_visible_tempdir();
+    let Some(context) = native_context(tmp.path()) else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    let command = "f=$(mktemp -p \"$TMPDIR\") && echo scratch > \"$f\" && cat \"$f\" && /bin/zsh -c 'cat <<EOF\nheredoc-ok:$TMPDIR\nEOF'";
+    #[cfg(not(target_os = "macos"))]
+    let command = "f=$(mktemp -p \"$TMPDIR\") && echo scratch > \"$f\" && cat \"$f\" <<'EOF'\nunused\nEOF\ncat <<EOF\nfile:$f\nheredoc-ok:$TMPDIR\nEOF";
+    let result = LowercaseBashTool
+        .execute(
+            json!({
+                "command": command,
+                "read_only": true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(
+        result.success && result.content.contains("scratch"),
+        "{}",
+        result.content
+    );
+    let scratch = result
+        .content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("heredoc-ok:"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| panic!("{}", result.content));
+    assert!(!scratch.starts_with(tmp.path()), "{}", scratch.display());
+    #[cfg(target_os = "macos")]
+    assert!(
+        !scratch.exists(),
+        "{} outlived the command",
+        scratch.display()
+    );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let file = result
+            .content
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("file:"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("{}", result.content));
+        assert!(
+            !file.exists(),
+            "{} leaked outside bubblewrap",
+            file.display()
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let sh_heredoc = LowercaseBashTool
+            .execute(
+                json!({"command": "/bin/sh -c 'cat <<EOF\nhi\nEOF'", "read_only": true}),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            sh_heredoc.to_string().contains("/bin/zsh -c"),
+            "{sh_heredoc}"
+        );
+    }
+    let refused = LowercaseBashTool
+        .execute(
+            json!({"command": "printf x > peer.txt", "read_only": true}),
+            &context,
+        )
+        .await;
+    assert!(!tmp.path().join("peer.txt").exists(), "{refused:?}");
+    let error = refused.expect_err("workspace write must fail");
+    let message = error.to_string();
+    assert!(message.contains("private TMPDIR"), "{message}");
+    let metadata = error.metadata().expect("failure metadata");
+    assert!(metadata.get("sandbox_denied_hint").is_some());
+    assert!(metadata.get("sandbox_network_restricted").is_none());
+    eprintln!(
+        "NATIVE_READONLY_ENFORCED: private TMPDIR usable and removed; workspace write refused"
     );
 }

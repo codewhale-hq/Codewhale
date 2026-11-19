@@ -1277,6 +1277,7 @@ pub struct BackgroundShell {
     /// small-contract-compatible accumulator while persisting the complete output.
     bounded_output: Option<Arc<Mutex<BoundedOutputAccumulator>>>,
     heavy_permit: Option<HeavyCommandPermit>,
+    scratch: Option<codewhale_sandbox::ScratchDir>,
     stdout_cursor: usize,
     stderr_cursor: usize,
     completion_reported: bool,
@@ -1476,6 +1477,7 @@ impl BackgroundShell {
                     };
                     self.heavy_permit.take();
                     self.collect_output();
+                    self.scratch.take();
                     true
                 }
                 Ok(None) => false, // Still running
@@ -1484,6 +1486,7 @@ impl BackgroundShell {
                     self.wait_failed = true;
                     self.heavy_permit.take();
                     self.collect_output();
+                    self.scratch.take();
                     true
                 }
             }
@@ -1809,6 +1812,7 @@ impl BackgroundShell {
         self.mark_finished();
         self.heavy_permit.take();
         self.collect_output();
+        self.scratch.take();
         self.publish_lifecycle_best_effort();
         Ok(())
     }
@@ -2261,6 +2265,7 @@ impl ShellManager {
                 stderr_buffer: Some(new_shared_raw_output()),
                 bounded_output: None,
                 heavy_permit: None,
+                scratch: None,
                 stdout_cursor: 0,
                 stderr_cursor: 0,
                 completion_reported: false,
@@ -2611,7 +2616,12 @@ impl ShellManager {
             CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
         };
         let spec = spec.with_policy(policy).with_env(extra_env);
-        let exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
+        let spec = if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
+            spec.with_private_tmp()
+        } else {
+            spec
+        };
+        let mut exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
             anyhow::Error::msg(message.clone())
                 .context(ShellLaunchNotStarted)
                 .context(message)
@@ -2632,7 +2642,7 @@ impl ShellManager {
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
-                &exec_env,
+                &mut exec_env,
                 None,
                 stdin_data,
                 tty,
@@ -2965,7 +2975,7 @@ impl ShellManager {
         &mut self,
         original_command: &str,
         working_dir: &std::path::Path,
-        exec_env: &ExecEnv,
+        exec_env: &mut ExecEnv,
         heavy_permit: Option<HeavyCommandPermit>,
         stdin_data: Option<&str>,
         tty: bool,
@@ -3208,6 +3218,7 @@ impl ShellManager {
             stderr_buffer,
             bounded_output,
             heavy_permit,
+            scratch: exec_env.scratch.take(),
             stdout_cursor: 0,
             stderr_cursor: 0,
             completion_reported: false,
@@ -4524,15 +4535,195 @@ fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
         "couldn't connect",
         "connection timed out",
         "connection reset",
+        "error connecting to",
+        "token in keyring is invalid",
     ]
     .iter()
     .any(|pattern| output.contains(pattern))
 }
 
-const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files outside its private TMPDIR. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+
+const READONLY_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. A command that must write (git fetch writes .git/FETCH_HEAD; git ls-remote reads remote refs without writing) has to run without read_only.";
+
+const READONLY_AGENT_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. This read-only agent cannot run mutating commands; return your findings and the blocked command to the parent.";
+
+const READONLY_SESSION_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. This read-only session cannot run mutating commands; the user can change modes with /mode.";
+
+const READONLY_MACOS_MKTEMP_HINT: &str = "macOS mktemp ignores TMPDIR unless told otherwise and writes to the per-user temporary directory, which read_only cannot write. Use `mktemp -p \"$TMPDIR\"` or `mktemp \"$TMPDIR/name.XXXXXX\"`.";
+
+const READONLY_MACOS_HEREDOC_HINT: &str = "macOS /bin/sh and /bin/bash ignore TMPDIR for here-documents (<<EOF) and write to /var/tmp, which read_only cannot write. Run the heredoc with `/bin/zsh -c '...'` (which uses the private TMPDIR), pipe with `printf ... |`, or pass input via a file under `\"$TMPDIR\"`.";
+
+const READONLY_SETUID_DENIED_HINT: &str = "macOS Seatbelt never starts a setuid program such as ps or top inside a sandbox. List processes with `pgrep -lf <pattern>` or `lsof -nP -iTCP -sTCP:LISTEN` instead.";
+
+fn split_shell_separators(token: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let bytes = token.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let sep_len = if bytes[i..].starts_with(b"||") || bytes[i..].starts_with(b"&&") {
+            2
+        } else if matches!(
+            bytes[i],
+            b';' | b'|' | b'&' | b'(' | b')' | b'\n' | b'<' | b'>'
+        ) {
+            1
+        } else {
+            0
+        };
+        if sep_len > 0 {
+            if start < i {
+                out.push(&token[start..i]);
+            }
+            out.push(&token[i..i + sep_len]);
+            i += sep_len;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < bytes.len() {
+        out.push(&token[start..]);
+    }
+    out
+}
+
+fn command_invokes_program(command: &str, target: &str) -> bool {
+    let mut expect_command = true;
+    let mut in_shell_invocation = false;
+    let mut after_shell_c = false;
+    let tokens = shell_words::split(command).unwrap_or_else(|_| {
+        command
+            .split_whitespace()
+            .map(|token| token.trim_matches(['\'', '"']).to_string())
+            .collect()
+    });
+    for token in tokens {
+        for piece in split_shell_separators(&token) {
+            if piece.is_empty() {
+                continue;
+            }
+            if matches!(piece, ";" | "|" | "||" | "&" | "&&" | "(" | ")" | "\n") {
+                expect_command = true;
+                in_shell_invocation = false;
+                after_shell_c = false;
+                continue;
+            }
+            if after_shell_c {
+                after_shell_c = false;
+                if command_invokes_program(piece, target) {
+                    return true;
+                }
+                expect_command = false;
+                continue;
+            }
+            if expect_command {
+                if piece.contains('=') && !piece.starts_with('=') {
+                    continue;
+                }
+                if matches!(
+                    piece,
+                    "command" | "exec" | "env" | "nohup" | "time" | "nice"
+                ) {
+                    continue;
+                }
+                let base = piece.rsplit('/').next().unwrap_or(piece);
+                let matches_target = base == target
+                    && (piece == target
+                        || match target {
+                            "ps" => piece == "/bin/ps",
+                            "top" => piece == "/usr/bin/top",
+                            _ => true,
+                        });
+                if matches_target {
+                    return true;
+                }
+                in_shell_invocation = matches!(base, "sh" | "bash" | "zsh" | "dash" | "ksh");
+                expect_command = false;
+            } else if in_shell_invocation && piece.starts_with('-') && piece.contains('c') {
+                after_shell_c = true;
+                in_shell_invocation = false;
+            } else if !piece.starts_with('-') {
+                in_shell_invocation = false;
+            }
+        }
+    }
+    false
+}
+
+fn mentions_denied_program(output: &str, name: &str, abs_path: &str) -> bool {
+    output.contains(&format!("{abs_path}: operation not permitted"))
+        || output.contains(&format!("operation not permitted: {abs_path}"))
+        || output.contains(&format!("operation not permitted: '{abs_path}'"))
+        || output.contains(&format!("operation not permitted: {name}"))
+        || output.contains(&format!("{name}: operation not permitted"))
+}
+
+fn readonly_write_denied_hint(context: &ToolContext) -> &'static str {
+    if matches!(context.shell_policy, ShellPolicy::ReadOnly) {
+        if context.owner_agent_id.is_some() || context.tool_authority.is_some() {
+            READONLY_AGENT_WRITE_DENIED_HINT
+        } else {
+            READONLY_SESSION_WRITE_DENIED_HINT
+        }
+    } else {
+        READONLY_WRITE_DENIED_HINT
+    }
+}
+
+fn readonly_denied_hint(
+    context: &ToolContext,
+    command: &str,
+    result: &ShellResult,
+) -> Option<&'static str> {
+    readonly_denied_hint_for_os(context, command, result, cfg!(target_os = "macos"))
+}
+
+fn readonly_denied_hint_for_os(
+    context: &ToolContext,
+    command: &str,
+    result: &ShellResult,
+    is_macos: bool,
+) -> Option<&'static str> {
+    if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
+        || result.exit_code == Some(0)
+    {
+        return None;
+    }
+    if result.sandbox_denied && codewhale_sandbox::bwrap_setup_failure(&result.stderr).is_some() {
+        return None;
+    }
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if !output.contains("operation not permitted") && !output.contains("read-only file system") {
+        return None;
+    }
+    if is_macos {
+        if output.contains("cannot create temp file for here document") {
+            return Some(READONLY_MACOS_HEREDOC_HINT);
+        }
+        if (command_invokes_program(command, "ps")
+            && mentions_denied_program(&output, "ps", "/bin/ps"))
+            || (command_invokes_program(command, "top")
+                && mentions_denied_program(&output, "top", "/usr/bin/top"))
+        {
+            return Some(READONLY_SETUID_DENIED_HINT);
+        }
+        if command_invokes_program(command, "mktemp")
+            && (output.contains("mkstemp failed") || output.contains("mkdtemp failed"))
+        {
+            return Some(READONLY_MACOS_MKTEMP_HINT);
+        }
+    }
+    Some(readonly_write_denied_hint(context))
+}
 
 fn readonly_offline_network_hint(command: &str, result: &ShellResult) -> Option<&'static str> {
     if result.sandbox_denied && codewhale_sandbox::bwrap_setup_failure(&result.stderr).is_some() {
+        return None;
+    }
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if output.contains("read-only file system") || output.contains("fetch_head") {
         return None;
     }
     let rest = split_leading_cd(command).map(|(_, rest)| rest);
@@ -5853,11 +6044,14 @@ fn finish_contract_bash_result(
     execution_receipt: Option<serde_json::Value>,
     readonly_network: bool,
     network_restricted_hint: Option<&str>,
+    readonly_denied_hint: Option<&str>,
     explicit_background: bool,
     description: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
     let sandbox_denied_hint = if network_restricted_hint.is_none() {
-        shell_sandbox_denied_hint(context, &result)
+        readonly_denied_hint
+            .map(str::to_string)
+            .or_else(|| shell_sandbox_denied_hint(context, &result))
     } else {
         None
     };
@@ -5870,9 +6064,9 @@ fn finish_contract_bash_result(
             format!("{hint}\n\n{output}")
         };
     }
-    if let Some(hint) = sandbox_denied_hint {
+    if let Some(hint) = sandbox_denied_hint.as_deref() {
         output = if output.is_empty() {
-            hint
+            hint.to_string()
         } else {
             format!("{hint}\n\n{output}")
         };
@@ -5895,6 +6089,9 @@ fn finish_contract_bash_result(
     if let Some(hint) = network_restricted_hint {
         metadata["sandbox_network_restricted"] = json!(true);
         metadata["sandbox_network_denied_hint"] = json!(hint);
+    }
+    if let Some(hint) = sandbox_denied_hint {
+        metadata["sandbox_denied_hint"] = json!(hint);
     }
     if result.status == ShellStatus::Running {
         let task_id = result.task_id.as_deref().unwrap_or("unknown");
@@ -6713,7 +6910,9 @@ impl ToolSpec for BashTool {
             // shell_env hooks are arbitrary operator-configured processes.
             // They cannot run inside the evidence-only execution boundary.
             HashMap::new()
-        } else if let Some(hook_executor) = &context.runtime.hook_executor {
+        } else if context.acp_host.is_none()
+            && let Some(hook_executor) = &context.runtime.hook_executor
+        {
             let hook_ctx = crate::hooks::HookContext::new()
                 .with_tool_context(context)
                 .with_tool_name("exec_shell")
@@ -7096,6 +7295,9 @@ impl ToolSpec for BashTool {
                 let readonly_offline_hint = (enforced_readonly && !readonly_network)
                     .then(|| readonly_offline_network_hint(command, &result))
                     .flatten();
+                let readonly_sandbox_hint = enforced_readonly
+                    .then(|| readonly_denied_hint(context, command, &result))
+                    .flatten();
                 if self.optional_timeout {
                     let network_restricted_hint = readonly_offline_hint
                         .or_else(|| shell_network_restricted_hint(context, command, &result));
@@ -7106,6 +7308,7 @@ impl ToolSpec for BashTool {
                         execution_receipt,
                         readonly_network,
                         network_restricted_hint,
+                        readonly_sandbox_hint,
                         background,
                         description.as_deref(),
                     );
@@ -7122,7 +7325,9 @@ impl ToolSpec for BashTool {
                     .or_else(|| shell_network_restricted_hint(context, command, &result))
                     .map(str::to_string);
                 let sandbox_denied_hint = if network_restricted_hint.is_none() {
-                    shell_sandbox_denied_hint(context, &result)
+                    readonly_sandbox_hint
+                        .map(str::to_string)
+                        .or_else(|| shell_sandbox_denied_hint(context, &result))
                 } else {
                     None
                 };

@@ -85,6 +85,7 @@ pub const CANONICAL_ACTION_ALIASES: &[(&str, &str, &str)] = &[
     ("automation", "update", "automation_update"),
     ("automation", "pause", "automation_pause"),
     ("automation", "resume", "automation_resume"),
+    ("automation", "adopt", "automation_adopt"),
     ("automation", "delete", "automation_delete"),
     ("automation", "run", "automation_run"),
     ("github", "issue_context", "github_issue_context"),

@@ -48,7 +48,7 @@
 //! grammar, which finds their command words but not every cmd.exe or
 //! PowerShell construct.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Maximum nesting depth followed through substitutions and `-c` payloads.
 const MAX_DEPTH: usize = 8;
@@ -1302,6 +1302,8 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny: Vec::new(),
         seen: HashSet::new(),
         seen_extra_deny: HashSet::new(),
+        extra_deny_dropped: false,
+        deny_suffix_depths: HashMap::new(),
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
@@ -1336,6 +1338,8 @@ struct Expander {
     extra_deny: Vec<String>,
     seen: HashSet<String>,
     seen_extra_deny: HashSet<String>,
+    extra_deny_dropped: bool,
+    deny_suffix_depths: HashMap<String, usize>,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
@@ -1415,8 +1419,11 @@ impl Expander {
         if joined.is_empty()
             || self.seen.contains(&joined)
             || self.seen_extra_deny.contains(&joined)
-            || self.extra_deny.len() >= MAX_COMMANDS
         {
+            return;
+        }
+        if self.extra_deny.len() >= MAX_COMMANDS {
+            self.extra_deny_dropped = true;
             return;
         }
         self.seen_extra_deny.insert(joined.clone());
@@ -2019,12 +2026,27 @@ impl Expander {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
             return;
         }
+        let key = format!(
+            "{}{:?}",
+            self.literal_backslashes,
+            (&sub.words, &sub.dynamic, &sub.odd, &sub.quoted)
+        );
+        if self
+            .deny_suffix_depths
+            .get(&key)
+            .is_some_and(|&seen| seen <= depth)
+        {
+            return;
+        }
+        self.deny_suffix_depths.insert(key, depth);
         let mut child = Expander {
             out: Vec::new(),
             out_words: Vec::new(),
             extra_deny: Vec::new(),
             seen: HashSet::new(),
             seen_extra_deny: HashSet::new(),
+            extra_deny_dropped: false,
+            deny_suffix_depths: std::mem::take(&mut self.deny_suffix_depths),
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
             nested: false,
@@ -2034,8 +2056,13 @@ impl Expander {
             deny_only: true,
         };
         child.record(sub, depth);
+        self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
+        let child_dropped = child.extra_deny_dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
+        }
+        if child_dropped || self.extra_deny_dropped {
+            self.deny_suffix_depths.clear();
         }
     }
 
@@ -2048,10 +2075,15 @@ impl Expander {
         depth: usize,
     ) {
         let tokens = &line.words;
+        let mut truncated = false;
         match name {
             "nix" => {
-                for verb_idx in resolve_wrapper_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
-                    let verb = tokens[verb_idx].as_str();
+                for verb_idx in
+                    launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC, &mut truncated)
+                {
+                    let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                        continue;
+                    };
                     if matches!(verb, "develop" | "shell")
                         && let Some(at) = (verb_idx + 1..tokens.len())
                             .take_while(|&i| tokens[i] != "--")
@@ -2086,8 +2118,13 @@ impl Expander {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 } else {
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
-                        if matches!(tokens[verb_idx].as_str(), "exec" | "x") {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
+                    {
+                        if tokens
+                            .get(verb_idx)
+                            .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
+                        {
                             for (payload, payload_dynamic) in option_payloads(
                                 tokens,
                                 verb_idx,
@@ -2106,7 +2143,8 @@ impl Expander {
                 if ssh_skips_remote_command(&tokens[head + 1..]) {
                     return;
                 }
-                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC) {
+                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated)
+                {
                     if landing < tokens.len() {
                         let rest = &tokens[landing..];
                         let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
@@ -2121,7 +2159,9 @@ impl Expander {
                 if screen_attaches_only(&tokens[head + 1..]) {
                     return;
                 }
-                for landing in resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC) {
+                for landing in
+                    resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC, &mut truncated)
+                {
                     if landing < tokens.len() {
                         self.record(&slice_line(line, landing), depth + 1);
                     }
@@ -2132,8 +2172,10 @@ impl Expander {
             }
             _ => {
                 if name == "launchctl" {
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
-                        if tokens[verb_idx] == "submit" {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
+                    {
+                        if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
                         }
                     }
@@ -2142,24 +2184,55 @@ impl Expander {
                     if launcher.program != name {
                         continue;
                     }
-                    for verb_idx in resolve_wrapper_targets(tokens, head + 1, launcher.global) {
-                        if !launcher.verbs.contains(&tokens[verb_idx].as_str()) {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, launcher.global, &mut truncated)
+                    {
+                        let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                            continue;
+                        };
+                        if !launcher.verbs.contains(&verb) {
                             continue;
                         }
-                        let is_container_run =
-                            matches!(name, "docker" | "podman") && tokens[verb_idx] == "run";
-                        let entrypoint = if is_container_run {
-                            find_entrypoint(&tokens[verb_idx + 1..], verb_idx + 1)
-                        } else {
-                            None
+                        let is_container_run = matches!(name, "docker" | "podman") && verb == "run";
+                        let entrypoints_before = |end: usize| {
+                            if !is_container_run {
+                                return Vec::new();
+                            }
+                            let end = end.min(tokens.len()).max(verb_idx + 1);
+                            let mut found =
+                                find_entrypoints(&tokens[verb_idx + 1..end], verb_idx + 1);
+                            found.retain(|(value, _)| !value.is_empty());
+                            found
                         };
-                        for landing in
-                            resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
-                        {
-                            if let Some((ep_val, ep_idx)) = entrypoint.as_ref()
-                                && !ep_val.is_empty()
-                            {
-                                let combined = build_prefixed_line(ep_val, *ep_idx, line, landing);
+                        if is_container_run {
+                            let image_spec = Wrapper {
+                                operands: 0,
+                                ..*launcher.subcmd
+                            };
+                            for image in resolve_wrapper_targets(
+                                tokens,
+                                verb_idx + 1,
+                                &image_spec,
+                                &mut truncated,
+                            ) {
+                                if image >= tokens.len() {
+                                    continue;
+                                }
+                                for (ep_val, ep_idx) in entrypoints_before(image) {
+                                    let combined =
+                                        build_prefixed_line(&ep_val, ep_idx, line, image + 1);
+                                    self.record(&combined, depth + 1);
+                                }
+                            }
+                        }
+                        for landing in resolve_wrapper_targets(
+                            tokens,
+                            verb_idx + 1,
+                            launcher.subcmd,
+                            &mut truncated,
+                        ) {
+                            for (ep_val, ep_idx) in entrypoints_before(landing) {
+                                let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
                                 self.record(&combined, depth + 1);
                             }
                             if landing < tokens.len() {
@@ -2179,6 +2252,7 @@ impl Expander {
                 }
             }
         }
+        self.dynamic |= truncated;
     }
 
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
@@ -2924,22 +2998,25 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
-fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
+fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
     let mut i = 0usize;
     while i < tokens.len() {
         let token = tokens[i].as_str();
         if token == "--" {
             break;
         }
-        if token == "--entrypoint" {
-            return tokens.get(i + 1).map(|v| (v.clone(), base + i + 1));
+        if token == "--entrypoint"
+            && let Some(value) = tokens.get(i + 1)
+        {
+            found.push((value.clone(), base + i + 1));
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
-            return Some((val.to_string(), base + i));
+            found.push((val.to_string(), base + i));
         }
         i += 1;
     }
-    None
+    found
 }
 
 fn ssh_skips_remote_command(args: &[String]) -> bool {
@@ -3841,12 +3918,44 @@ fn step_wrapper_option(
     WrapperStep::Landing
 }
 
-fn resolve_wrapper_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
+fn launcher_verb_targets(
+    tokens: &[String],
+    start: usize,
+    spec: &Wrapper,
+    truncated: &mut bool,
+) -> Vec<usize> {
+    let mut targets = resolve_wrapper_targets(tokens, start, spec, truncated);
+    let mut index = 0;
+    while index < targets.len() {
+        let at = targets[index];
+        if tokens.get(at).is_some_and(String::is_empty) {
+            for next in resolve_wrapper_targets(tokens, at + 1, spec, truncated) {
+                if !targets.contains(&next) {
+                    targets.push(next);
+                }
+            }
+        }
+        index += 1;
+    }
+    targets.sort_unstable();
+    targets
+}
+
+fn resolve_wrapper_targets(
+    tokens: &[String],
+    start: usize,
+    spec: &Wrapper,
+    truncated: &mut bool,
+) -> Vec<usize> {
     let mut landings = Vec::new();
     let mut seen = HashSet::new();
     let mut stack = vec![(start, spec.operands, false)];
     while let Some((index, operands, options_done)) = stack.pop() {
-        if !seen.insert((index, operands, options_done)) || seen.len() >= MAX_HEAD_STATES {
+        if !seen.insert((index, operands, options_done)) {
+            continue;
+        }
+        if seen.len() >= MAX_HEAD_STATES {
+            *truncated = true;
             continue;
         }
         if index >= tokens.len() {
@@ -4136,6 +4245,105 @@ mod tests {
     }
 
     #[test]
+    fn launcher_flag_only_commands_do_not_panic() {
+        for command in [
+            "npm --version",
+            "npm -v",
+            "nix --version",
+            "nix --offline --version",
+            "launchctl --help",
+            "docker --version",
+            "docker -D --tls",
+            "podman --version",
+            "uv --version",
+            "poetry --version",
+            "pipx --version",
+            "bundle --version",
+            "perf --version",
+            "tmux -V",
+            "cd /tmp && node --version && npm --version && ls node_modules/@deepseek-ai/",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(!expansion.commands.is_empty(), "{command}");
+        }
+        assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
+        assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
+        assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
+    }
+
+    #[test]
+    fn launcher_option_walk_past_state_limit_is_dynamic() {
+        for prefix in ["docker run", "npm", "nix"] {
+            let flags = "-e A ".repeat(1000);
+            let command = format!("{prefix} {flags}alpine rm -rf /");
+            assert!(expand_for_platform(&command, false).dynamic, "{prefix}");
+        }
+        assert!(!expand_for_platform("docker run -e A alpine rm -rf /", false).dynamic);
+    }
+
+    #[test]
+    fn launcher_payloads_survive_empty_words_and_entrypoint_args() {
+        for (command, expected) in [
+            ("npm '' exec -c 'rm -rf /'", "rm -rf /"),
+            ("npm '' '' x --call 'rm -rf /'", "rm -rf /"),
+            ("docker '' run alpine rm -rf /", "rm -rf /"),
+            ("nix '' develop -c rm -rf /", "rm -rf /"),
+            ("npm '' --silent exec -c 'rm -rf /'", "rm -rf /"),
+            ("docker '' -D run alpine rm -rf /", "rm -rf /"),
+            ("nix '' --offline develop -c rm -rf /", "rm -rf /"),
+            ("docker -D run --entrypoint rm alpine -rf /", "rm -rf /"),
+            ("docker run --entrypoint=rm alpine -rf /", "rm -rf /"),
+            ("podman run -it --entrypoint rm alpine -rf /", "rm -rf /"),
+            (
+                "docker run --entrypoint true --entrypoint rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint=true --entrypoint=rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm alpine -rf / --entrypoint true",
+                "rm -rf / --entrypoint true",
+            ),
+            (
+                "podman run --entrypoint=rm alpine -rf / --entrypoint=true",
+                "rm -rf / --entrypoint=true",
+            ),
+            (
+                "docker run --entrypoint sh alpine -c 'rm -rf /' --entrypoint=true",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm -e --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm --label --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint sh -e --entrypoint=true alpine -c 'rm -rf /'",
+                "rm -rf /",
+            ),
+            (
+                "podman run --entrypoint rm -e --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run -e --entrypoint --entrypoint rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "podman run -l --entrypoint --entrypoint sh alpine -c 'rm -rf /'",
+                "rm -rf /",
+            ),
+        ] {
+            assert!(contains(command, expected), "{command}");
+        }
+    }
+
+    #[test]
     fn native_windows_command_words_are_plain_literals() {
         for command in [
             r"C:\Windows\System32\where.exe git",
@@ -4191,6 +4399,41 @@ mod tests {
 
     fn contains(command: &str, expected: &str) -> bool {
         expand(command).iter().any(|target| target == expected)
+    }
+
+    #[test]
+    fn repeated_double_dash_expands_in_bounded_time() {
+        for prefix in ["echo", "npm"] {
+            let command = format!("{prefix} {}rm -rf /", "-- ".repeat(40));
+            let started = std::time::Instant::now();
+            let expansion = expand_for_platform(&command, false);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "{prefix}"
+            );
+            assert!(
+                expansion.deny_commands().any(|cmd| cmd == "rm -rf /"),
+                "{prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn capped_extra_deny_still_finds_deny_after_repeated_suffix() {
+        let pads = (1..=253)
+            .map(|i| format!("p{i}"))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let payload = format!("{pads} ; y -- sudo rm -rf /");
+        let seeds = format!("\"bash -c {payload}\" ; {pads} ; \"y -- sudo rm -rf /\"");
+        let command =
+            format!("{seeds} ; x -- bash -c \"{payload}\" ; x -- bash -c 'w -- sudo rm -rf /'");
+        let expansion = expand_for_platform(&command, false);
+        assert!(
+            expansion.deny_commands().any(|cmd| cmd == "rm -rf /"),
+            "rm -rf / missing from {:?}",
+            expansion.deny_commands().collect::<Vec<_>>()
+        );
     }
 
     #[test]

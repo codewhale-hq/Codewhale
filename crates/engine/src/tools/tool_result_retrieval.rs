@@ -24,7 +24,8 @@ const HARD_MAX_MATCHES: usize = 100;
 const DEFAULT_CONTEXT_LINES: usize = 1;
 const HARD_CONTEXT_LINES: usize = 5;
 const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_TEXT_LINE_BYTES: usize = 1024 * 1024;
+const WRAP_LINE_BYTES: usize = 2 * 1024;
+const MAX_JSON_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_QUERY_BYTES: usize = 4 * 1024;
 pub const MAX_REFERENCE_BYTES: usize = 32 * 1024;
@@ -39,7 +40,7 @@ impl ToolSpec for RetrieveToolResultTool {
     }
 
     fn description(&self) -> &'static str {
-        "Inspect retained tool evidence with strict session ownership and bounds. Accepts an artifact id, validated session-relative path, or an ownership-proven legacy call/SHA reference. Unowned legacy-global evidence fails closed. Modes: metadata, summary, head, tail, lines, query, bytes. bytes returns a bounded base64 slice for exact text or binary recovery."
+        "Inspect retained tool evidence with strict session ownership and bounds. Accepts an artifact id, validated session-relative path, or an ownership-proven legacy call/SHA reference. Unowned legacy-global evidence fails closed. Modes: metadata, summary, head, tail, lines, query, json, bytes. Lines longer than 2 KiB are split into numbered segments. json parses the evidence (JSON text inside it, such as an MCP text block, included) and returns the `jsonpath` selection, cut to max_bytes as valid JSON. bytes returns a bounded base64 slice for exact text or binary recovery."
     }
 
     fn input_schema(&self) -> Value {
@@ -52,12 +53,16 @@ impl ToolSpec for RetrieveToolResultTool {
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["metadata", "summary", "head", "tail", "lines", "query", "bytes"],
+                    "enum": ["metadata", "summary", "head", "tail", "lines", "query", "json", "bytes"],
                     "description": "Retrieval mode. Defaults to summary."
                 },
                 "query": {
                     "type": "string",
                     "description": "Case-insensitive substring to search for when mode=query."
+                },
+                "jsonpath": {
+                    "type": "string",
+                    "description": "JSONPath subset for mode=json: $, .field, [index], [*], and ['field']. Defaults to $."
                 },
                 "lines": {
                     "type": "string",
@@ -140,10 +145,10 @@ impl ToolSpec for RetrieveToolResultTool {
         let mode = mode.trim().to_ascii_lowercase();
         if !matches!(
             mode.as_str(),
-            "metadata" | "summary" | "head" | "tail" | "lines" | "query" | "bytes"
+            "metadata" | "summary" | "head" | "tail" | "lines" | "query" | "json" | "bytes"
         ) {
             return Err(ToolError::invalid_input(format!(
-                "unsupported mode `{mode}` (expected metadata, summary, head, tail, lines, query, or bytes)"
+                "unsupported mode `{mode}` (expected metadata, summary, head, tail, lines, query, json, or bytes)"
             )));
         }
         let max_bytes = clamp_u64(
@@ -161,7 +166,17 @@ impl ToolSpec for RetrieveToolResultTool {
                 Ok(digest.to_ascii_lowercase())
             })
             .transpose()?;
-        let inspection = if mode == "metadata" || mode == "bytes" {
+        let jsonpath = optional_str(&input, "jsonpath")?
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .unwrap_or("$")
+            .to_string();
+        if jsonpath.len() > crate::tools::handle::JSONPATH_MAX_PATH_BYTES {
+            return Err(ToolError::invalid_input(
+                "jsonpath exceeds the 4096-byte inspection limit",
+            ));
+        }
+        let inspection = if matches!(mode.as_str(), "metadata" | "bytes" | "json") {
             None
         } else {
             Some(TextInspection::new(&mode, &input, max_bytes)?)
@@ -277,6 +292,39 @@ impl ToolSpec for RetrieveToolResultTool {
                 "data": base64::engine::general_purpose::STANDARD.encode(slice),
             }))
             .map_err(|err| ToolError::execution_failed(err.to_string()));
+        }
+        if mode == "json" {
+            let bytes = snapshot.byte_slice;
+            let total_bytes = snapshot.size_bytes;
+            let path = jsonpath.clone();
+            let owned_reference = reference.to_string();
+            let payload = evidence_owner_work(context, move |cancel| {
+                check_evidence_cancelled(cancel)?;
+                let (selection, match_cap_hit) = select_json(&bytes, &path)?;
+                check_evidence_cancelled(cancel)?;
+                let matches = selection.len();
+                let (values, omitted) =
+                    crate::tools::truncate::shrink_json(Value::Array(selection), max_bytes);
+                let truncated = omitted > 0 || match_cap_hit;
+                let mut payload = json!({
+                    "ref": owned_reference,
+                    "mode": "json",
+                    "jsonpath": path,
+                    "total_bytes": total_bytes,
+                    "matches": matches,
+                    "values": values,
+                    "truncated": truncated,
+                });
+                if truncated {
+                    payload["hint"] = json!(
+                        "values keep their leading elements; narrow jsonpath (for example $.items[10] or $.items[*].id) or raise max_bytes (up to 131072)"
+                    );
+                }
+                Ok(payload)
+            })
+            .await?;
+            return ToolResult::json(&payload)
+                .map_err(|err| ToolError::execution_failed(err.to_string()));
         }
         let inspection = snapshot
             .inspection?
@@ -612,7 +660,9 @@ struct TextInspection {
     range: (usize, usize),
     query: String,
     query_lower: String,
+    wrap_tail: String,
     total_lines: usize,
+    wrapped_segments: usize,
     non_empty_lines: usize,
     matched_lines: usize,
     retained_bytes: usize,
@@ -707,7 +757,7 @@ impl TextInspection {
         );
     }
 
-    fn push_line(&mut self, line: &str) -> Result<(), ToolError> {
+    fn push_line(&mut self, line: &str, wrapped: bool) -> Result<(), ToolError> {
         self.total_lines += 1;
         let line_no = self.total_lines;
         if !line.trim().is_empty() {
@@ -768,7 +818,16 @@ impl TextInspection {
             let record = self.retain(line_no, line, budget)?;
             self.matches[index].1.push(record);
         }
-        if line.to_lowercase().contains(&self.query_lower) {
+        let mut matched = line.to_lowercase().contains(&self.query_lower);
+        if !matched && !self.wrap_tail.is_empty() {
+            let combined = format!("{}{}", self.wrap_tail, line);
+            let combined_lower = combined.to_lowercase();
+            let boundary = self.wrap_tail.to_lowercase().len();
+            matched = combined_lower
+                .rfind(&self.query_lower)
+                .is_some_and(|pos| pos + self.query_lower.len() > boundary);
+        }
+        if matched {
             self.matched_lines += 1;
             if self.matches.len() < self.max_matches {
                 let mut window = Vec::new();
@@ -782,6 +841,33 @@ impl TextInspection {
                 self.active_matches
                     .push_back((index, line_no.saturating_add(self.context_lines)));
             }
+        }
+        if wrapped {
+            let keep_chars = self.query_lower.chars().count().saturating_sub(1);
+            if keep_chars == 0 {
+                self.wrap_tail.clear();
+            } else {
+                let line_chars = line.chars().count();
+                if line_chars >= keep_chars {
+                    let start = line
+                        .char_indices()
+                        .nth(line_chars - keep_chars)
+                        .map_or(line.len(), |(idx, _)| idx);
+                    self.wrap_tail = line[start..].to_string();
+                } else {
+                    let tail_need = keep_chars - line_chars;
+                    let tail_chars = self.wrap_tail.chars().count();
+                    let skip = tail_chars.saturating_sub(tail_need);
+                    let start = self
+                        .wrap_tail
+                        .char_indices()
+                        .nth(skip)
+                        .map_or(self.wrap_tail.len(), |(idx, _)| idx);
+                    self.wrap_tail = format!("{}{}", &self.wrap_tail[start..], line);
+                }
+            }
+        } else {
+            self.wrap_tail.clear();
         }
         if self.context_lines > 0 && self.matches.len() < self.max_matches {
             if self.previous.len() == self.context_lines
@@ -804,7 +890,8 @@ impl TextInspection {
                 budget,
             )
         };
-        match self.mode.as_str() {
+        let wrapped_segments = self.wrapped_segments;
+        let mut payload = match self.mode.as_str() {
             "summary" => json!({
                 "ref": reference,
                 "mode": "summary",
@@ -844,7 +931,12 @@ impl TextInspection {
                 })).collect::<Vec<_>>(),
             }),
             _ => unreachable!(),
+        };
+        if wrapped_segments > 0 {
+            payload["long_lines_split_at_bytes"] = json!(WRAP_LINE_BYTES);
+            payload["split_segments"] = json!(wrapped_segments);
         }
+        payload
     }
 }
 
@@ -934,6 +1026,14 @@ async fn stream_evidence(
             return Err(limit_error());
         }
         hasher.update(&chunk[..n]);
+        if mode == "json" {
+            if total > MAX_JSON_BYTES {
+                return Err(ToolError::execution_failed(
+                    "evidence exceeds the 32 MiB json inspection limit; use mode=query or mode=lines",
+                ));
+            }
+            byte_slice.extend_from_slice(&chunk[..n]);
+        }
         if mode == "bytes" {
             let first = offset.max(start);
             let last = slice_end.min(total);
@@ -944,41 +1044,46 @@ async fn stream_evidence(
         }
         if state.is_some() {
             for piece in chunk[..n].split_inclusive(|byte| *byte == b'\n') {
-                if line.len().saturating_add(piece.len()) > MAX_TEXT_LINE_BYTES {
-                    text_error = Some(ToolError::execution_failed(
-                        "evidence contains a line above the 1 MiB text inspection limit; use mode=bytes with offset and length for exact recovery",
-                    ));
+                line.extend_from_slice(piece);
+                let terminated = piece.ends_with(b"\n");
+                let mut result = Ok(());
+                loop {
+                    let body = if terminated {
+                        let raw = line.strip_suffix(b"\n").unwrap_or(&line);
+                        raw.strip_suffix(b"\r").unwrap_or(raw)
+                    } else {
+                        line.strip_suffix(b"\r").unwrap_or(&line)
+                    };
+                    if body.len() <= WRAP_LINE_BYTES {
+                        if terminated {
+                            result = feed_line(state.as_mut().unwrap(), body, false);
+                            line.clear();
+                        }
+                        break;
+                    }
+                    let mut cut = WRAP_LINE_BYTES;
+                    while cut > 0 && body[cut] & 0xC0 == 0x80 {
+                        cut -= 1;
+                    }
+                    let cut = if cut == 0 { WRAP_LINE_BYTES } else { cut };
+                    result = feed_line(state.as_mut().unwrap(), &body[..cut], true);
+                    if result.is_err() {
+                        break;
+                    }
+                    line.drain(..cut);
+                }
+                if let Err(error) = result {
+                    text_error = Some(error);
                     state = None;
                     line.clear();
                     break;
-                }
-                line.extend_from_slice(piece);
-                if piece.ends_with(b"\n") {
-                    let raw = line.strip_suffix(b"\n").unwrap_or(&line);
-                    let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
-                    let result = std::str::from_utf8(raw)
-                        .map_err(|_| ToolError::execution_failed("evidence encoding is binary; bounded text inspection is unavailable"))
-                        .and_then(|text| state.as_mut().unwrap().push_line(text));
-                    if let Err(error) = result {
-                        text_error = Some(error);
-                        state = None;
-                        line.clear();
-                        break;
-                    }
-                    line.clear();
                 }
             }
         }
     }
     if let Some(state) = state.as_mut()
         && !line.is_empty()
-        && let Err(error) = std::str::from_utf8(&line)
-            .map_err(|_| {
-                ToolError::execution_failed(
-                    "evidence encoding is binary; bounded text inspection is unavailable",
-                )
-            })
-            .and_then(|text| state.push_line(text))
+        && let Err(error) = feed_line(state, &line, false)
     {
         text_error = Some(error);
     }
@@ -996,6 +1101,44 @@ async fn stream_evidence(
             None => Ok(state),
         },
     })
+}
+
+fn feed_line(state: &mut TextInspection, raw: &[u8], wrapped: bool) -> Result<(), ToolError> {
+    let text = std::str::from_utf8(raw).map_err(|_| {
+        ToolError::execution_failed(
+            "evidence encoding is binary; bounded text inspection is unavailable",
+        )
+    })?;
+    if wrapped {
+        state.wrapped_segments += 1;
+    }
+    state.push_line(text, wrapped)
+}
+
+fn select_json(bytes: &[u8], path: &str) -> Result<(Vec<Value>, bool), ToolError> {
+    fn expand(value: &mut Value) {
+        match value {
+            Value::String(text) => {
+                let trimmed = text.trim_start();
+                if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                    && let Ok(mut parsed) = serde_json::from_str::<Value>(text)
+                {
+                    expand(&mut parsed);
+                    *value = parsed;
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(expand),
+            Value::Object(map) => map.values_mut().for_each(expand),
+            _ => {}
+        }
+    }
+    let mut root: Value = serde_json::from_slice(bytes).map_err(|error| {
+        ToolError::execution_failed(format!(
+            "evidence is not JSON ({error}); use mode=summary, query or lines"
+        ))
+    })?;
+    expand(&mut root);
+    crate::tools::handle::query_jsonpath_capped(&root, path).map_err(ToolError::invalid_input)
 }
 
 fn parse_line_selector(input: &Value) -> Result<(usize, usize), ToolError> {
@@ -1403,6 +1546,105 @@ mod tests {
         assert!(rendered.contains("2: two before"));
         assert!(rendered.contains("3: needle here"));
         assert!(rendered.contains("4: after"));
+    }
+
+    #[test]
+    fn single_line_mcp_json_pages_by_segment_and_jsonpath() {
+        let _lock = test_lock();
+        let tmp = tempdir().unwrap();
+        let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
+        let session_id = "session-legacy-json";
+        let runs: Vec<Value> = (0..30)
+            .map(|id| json!({"id": id, "conclusion": "success", "repository": {"description": "r".repeat(12_000)}}))
+            .collect();
+        let inner = json!({"total_count": 40_000, "workflow_runs": runs}).to_string();
+        let envelope = json!({"content": [{"type": "text", "text": inner}]}).to_string();
+        assert!(envelope.len() > 300_000 && !envelope.contains('\n'));
+        write_owned_legacy("call-json", &envelope, session_id);
+
+        let summary =
+            execute_tool_in_session(json!({"ref": "call-json", "mode": "summary"}), session_id)
+                .unwrap();
+        let summary: Value = serde_json::from_str(&summary.content).unwrap();
+        assert!(summary["total_lines"].as_u64().unwrap() > 100, "{summary}");
+        assert_eq!(summary["long_lines_split_at_bytes"], WRAP_LINE_BYTES);
+        assert!(summary["head"].as_str().unwrap().len() <= DEFAULT_MAX_BYTES / 2);
+
+        let ids = execute_tool_in_session(
+            json!({"ref": "call-json", "mode": "json", "jsonpath": "$.content[0].text.workflow_runs[*].id"}),
+            session_id,
+        )
+        .unwrap();
+        let ids: Value = serde_json::from_str(&ids.content).unwrap();
+        assert_eq!(ids["matches"], 30);
+        assert_eq!(ids["values"], json!((0..30).collect::<Vec<_>>()));
+        assert_eq!(ids["truncated"], false);
+
+        let whole =
+            execute_tool_in_session(json!({"ref": "call-json", "mode": "json"}), session_id)
+                .unwrap();
+        assert!(
+            whole.content.len() < 2 * DEFAULT_MAX_BYTES,
+            "{}",
+            whole.content.len()
+        );
+        let whole: Value = serde_json::from_str(&whole.content).unwrap();
+        assert_eq!(whole["truncated"], true);
+        assert_eq!(
+            whole["values"][0]["content"][0]["text"]["total_count"],
+            40_000
+        );
+
+        let large_runs: Vec<Value> = (0..1_050)
+            .map(|id| json!({"id": id, "repository": {"description": "r".repeat(1_100)}}))
+            .collect();
+        let large_body = json!({"total_count": 1_050, "workflow_runs": large_runs}).to_string();
+        assert!(large_body.len() > 1_100_000);
+        write_owned_legacy("call-json-large", &large_body, session_id);
+        let large_whole = execute_tool_in_session(
+            json!({"ref": "call-json-large", "mode": "json"}),
+            session_id,
+        )
+        .unwrap();
+        let large_whole: Value = serde_json::from_str(&large_whole.content).unwrap();
+        assert_eq!(large_whole["truncated"], true);
+        assert_eq!(large_whole["values"][0]["total_count"], 1_050);
+
+        let capped = execute_tool_in_session(
+            json!({"ref": "call-json-large", "mode": "json", "jsonpath": "$.workflow_runs[*].id"}),
+            session_id,
+        )
+        .unwrap();
+        let capped: Value = serde_json::from_str(&capped.content).unwrap();
+        assert_eq!(capped["matches"], 1_024);
+        assert_eq!(capped["truncated"], true);
+    }
+
+    #[test]
+    fn query_matches_needle_straddling_split_boundary() {
+        let _lock = test_lock();
+        let tmp = tempdir().unwrap();
+        let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
+        let session_id = "session-query-straddle";
+        let body = format!("{}NEEDLE_XYZ{}\n", "a".repeat(2_040), "b".repeat(3_000));
+        write_owned_legacy("call-straddle", &body, session_id);
+
+        let out = execute_tool_in_session(
+            json!({"ref": "call-straddle", "mode": "query", "query": "needle_xyz"}),
+            session_id,
+        )
+        .unwrap();
+        let out: Value = serde_json::from_str(&out.content).unwrap();
+        assert_eq!(out["matched_lines"], 1, "{out}");
+
+        let long_query = format!("{}NEEDLE_XYZ{}", "a".repeat(1_500), "b".repeat(1_500));
+        let long_out = execute_tool_in_session(
+            json!({"ref": "call-straddle", "mode": "query", "query": long_query}),
+            session_id,
+        )
+        .unwrap();
+        let long_out: Value = serde_json::from_str(&long_out.content).unwrap();
+        assert_eq!(long_out["matched_lines"], 1, "{long_out}");
     }
 
     #[test]
