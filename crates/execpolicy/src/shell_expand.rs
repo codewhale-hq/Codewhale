@@ -2948,6 +2948,7 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
 }
 
 fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
+    let mut found = None;
     let mut i = 0usize;
     while i < tokens.len() {
         let token = tokens[i].as_str();
@@ -2955,14 +2956,18 @@ fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
             break;
         }
         if token == "--entrypoint" {
-            return tokens.get(i + 1).map(|v| (v.clone(), base + i + 1));
+            if let Some(value) = tokens.get(i + 1) {
+                found = Some((value.clone(), base + i + 1));
+            }
+            i += 2;
+            continue;
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
-            return Some((val.to_string(), base + i));
+            found = Some((val.to_string(), base + i));
         }
         i += 1;
     }
-    None
+    found
 }
 
 fn ssh_skips_remote_command(args: &[String]) -> bool {
@@ -4216,6 +4221,14 @@ mod tests {
             ("docker -D run --entrypoint rm alpine -rf /", "rm -rf /"),
             ("docker run --entrypoint=rm alpine -rf /", "rm -rf /"),
             ("podman run -it --entrypoint rm alpine -rf /", "rm -rf /"),
+            (
+                "docker run --entrypoint true --entrypoint rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint=true --entrypoint=rm alpine -rf /",
+                "rm -rf /",
+            ),
         ] {
             assert!(contains(command, expected), "{command}");
         }
