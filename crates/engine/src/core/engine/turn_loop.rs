@@ -3554,7 +3554,20 @@ impl Engine {
                     })
                     .collect();
                 let mut tool_tasks = FuturesUnordered::new();
-                let shell_permits = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_SHELL_EXEC));
+                let shell_permits = Arc::new(tokio::sync::Semaphore::new(
+                    resolve_max_parallel_shell_exec(
+                        self.config
+                            .tools
+                            .as_ref()
+                            .and_then(|tools| tools.max_parallel_shell_exec)
+                            .or_else(|| {
+                                self.api_config
+                                    .tools
+                                    .as_ref()
+                                    .and_then(|tools| tools.max_parallel_shell_exec)
+                            }),
+                    ),
+                ));
                 for plan in plans {
                     if let Some(result) = plan.guard_result.clone() {
                         let result = Ok(result);

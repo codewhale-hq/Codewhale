@@ -191,7 +191,7 @@ impl ToolSpec for WebTool {
     }
 
     fn supports_parallel_for(&self, input: &Value) -> bool {
-        self.resolve_action(input) == "search"
+        matches!(self.resolve_action(input), "search" | "fetch")
     }
 
     fn starts_detached_for(&self, _input: &Value) -> bool {

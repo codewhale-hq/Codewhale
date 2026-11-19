@@ -822,6 +822,9 @@ pub struct ToolsConfig {
     /// are clamped to `1..=86_400` (24h) with a warning.
     #[serde(default)]
     pub task_human_wait_cap_seconds: Option<u64>,
+
+    #[serde(default)]
+    pub max_parallel_shell_exec: Option<usize>,
 }
 
 /// Persistent-goal loop controls (`[goal]` table in config.toml, #5052).

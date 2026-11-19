@@ -12541,6 +12541,14 @@ pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
+pub(super) const MAX_PARALLEL_SHELL_EXEC_CAP: usize = 32;
+
+pub(super) fn resolve_max_parallel_shell_exec(configured: Option<usize>) -> usize {
+    configured
+        .filter(|&value| value > 0)
+        .unwrap_or(MAX_PARALLEL_SHELL_EXEC)
+        .min(MAX_PARALLEL_SHELL_EXEC_CAP)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_active_native_tool_names() -> &'static [&'static str] {
