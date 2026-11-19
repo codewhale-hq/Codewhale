@@ -201,8 +201,8 @@ export const INSTALL_COPY = {
 
   npmTitle: { en: "npm", zh: "npm" },
   npmBody: {
-    en: "npm needs Node.js 18 or newer and a global folder you can write to, and that folder's `bin` must be on your PATH. On Windows, Node stays the launcher for the whole session, so do not stop it by process name.",
-    zh: "npm 需要 Node.js 18 或更高版本，以及一个你有写入权限的全局文件夹，并且该文件夹的 `bin` 必须在 PATH 中。在 Windows 上，Node 会在整个会话期间作为启动器，因此不要按进程名终止它。",
+    en: "npm needs Node.js 22 or newer and a global folder you can write to, and that folder's `bin` must be on your PATH. On Windows, Node stays the launcher for the whole session, so do not stop it by process name.",
+    zh: "npm 需要 Node.js 22 或更高版本，以及一个你有写入权限的全局文件夹，并且该文件夹的 `bin` 必须在 PATH 中。在 Windows 上，Node 会在整个会话期间作为启动器，因此不要按进程名终止它。",
   },
   npmEacces: {
     en: "If npm stops with `EACCES`, do not use sudo. Point npm at a folder you own:",
