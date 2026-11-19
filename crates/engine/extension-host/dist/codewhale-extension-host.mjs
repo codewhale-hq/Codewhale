@@ -19,7 +19,7 @@ var __export = (target, all) => {
 var define_BUILTIN_MODULE_DIGESTS_default;
 var init_define_BUILTIN_MODULE_DIGESTS = __esm({
   "<define:__BUILTIN_MODULE_DIGESTS__>"() {
-    define_BUILTIN_MODULE_DIGESTS_default = { creator: "41bf97f29fad606ae1d92c8937031233094dcbae96e43da90437b86895404923", harness: "4c76ee0c0eeac4fab05b55cfe3ea9520bd8261c2e16e4f31b63de25d93d20bd2", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
+    define_BUILTIN_MODULE_DIGESTS_default = { creator: "dacda4ed3211feffbd92c2a569edac113037a2384202d1b577904b1dc4c5c2df", harness: "4c76ee0c0eeac4fab05b55cfe3ea9520bd8261c2e16e4f31b63de25d93d20bd2", mcp: "f9735707e49e349ee38f791fa3c6f3379fde43cad5044f381f8e313286ea3d39" };
   }
 });
 
@@ -19225,21 +19225,21 @@ var init_root = __esm({
         const unsupportedDshLifecycle = /* @__PURE__ */ new Set([
           "agent/pre-step",
           "agent/turn-stopping",
-          "tools/post-execute",
           "subagent/start",
           "subagent/end"
         ]);
         root.on("internal/listener", function(name, callback, options) {
           if (this[OWNER] && unsupportedDshLifecycle.has(name)) throw new Error(`DSH lifecycle ${name} is not projected by this host checkpoint`);
           if (name === "agent/created" && options?.global) throw new Error("agent/created listeners are owner-scoped; global is unsupported");
-          if (name !== "tools/pre-execute") return;
+          if (name !== "tools/pre-execute" && name !== "tools/post-execute") return;
           const owner = this[OWNER];
-          if (!owner) throw new Error("pre-execute listener registered outside an extension owner");
-          if (options?.prepend || options?.global) throw new Error("pre-execute listeners use core registration order; prepend/global are unsupported");
+          if (!owner) throw new Error(`${name} listener registered outside an extension owner`);
+          if (options?.prepend || options?.global) throw new Error(`${name} listeners use core registration order; prepend/global are unsupported`);
+          const description = name === "tools/pre-execute" ? "Programmable tool admission listener" : "Read-only tool outcome observer";
           return this.effect(() => host2.hookRegistrations.add(
             { owner, name, callback, disposed: false },
-            { name, description: "Programmable tool admission listener" }
-          ), 'ctx.on("tools/pre-execute")');
+            { name, description }
+          ), `ctx.on("${name}")`);
         });
         const shimClasses = /* @__PURE__ */ new Map();
         const shimsProvided = /* @__PURE__ */ new Set();
@@ -19824,6 +19824,17 @@ var init_root = __esm({
           throw new RpcError(ErrorCode.NotAvailable, "hook handle is not live for this event");
         }
         const exec = hookExecution(params.payload, signal);
+        if (params.event === "tools/post-execute") {
+          const run2 = ownerStorage.run(local.owner, async () => {
+            try {
+              await local.callback(exec, async () => ({ kind: "abstain" }));
+            } catch (error) {
+              this.log("warn", `tools/post-execute listener threw: ${describeError2(error)}`, local.owner);
+            }
+            return { kind: "abstain" };
+          });
+          return Promise.race([run2, abortedBy(signal)]);
+        }
         const run = ownerStorage.run(local.owner, async () => hookVerdict(
           await local.callback(exec, async () => ({ kind: "abstain" })),
           () => {

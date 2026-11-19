@@ -300,6 +300,13 @@ enum PluginsCommand {
         #[arg(long, help = "Print the result as JSON")]
         json: bool,
     },
+    #[command(
+        about = "Review or install a third-party plugin package (currently: DeepSeek Harness `dsh`)"
+    )]
+    Import {
+        #[command(subcommand)]
+        command: PluginImportCommand,
+    },
     #[command(about = "Update an installed user-scope plugin bundle from its recorded source")]
     Update {
         #[arg(value_name = "NAME", help = "Plugin bundle name")]
@@ -366,6 +373,24 @@ enum PluginsCommand {
         #[arg(value_name = "NAME", help = "Plugin bundle name")]
         name: String,
         #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PluginImportCommand {
+    #[command(
+        about = "Review a DeepSeek Harness package, or approve and install an exact reviewed content hash"
+    )]
+    Dsh {
+        #[arg(
+            value_name = "ARGS",
+            required = true,
+            num_args = 1..=3,
+            help = "<package-dir> to review, or `approve <package-dir> <content-hash>` to install"
+        )]
+        args: Vec<String>,
+        #[arg(long, help = "Print the review or install result as JSON")]
         json: bool,
     },
 }
@@ -2839,6 +2864,28 @@ async fn run_async_main_dispatch(
                     };
                     run_plugins_install_cli(
                         spec,
+                        json,
+                        config,
+                        registry,
+                        &plugin_discovery,
+                        &workspace,
+                    )
+                    .await
+                }
+                PluginsCommand::Import {
+                    command: PluginImportCommand::Dsh { args, json },
+                } => {
+                    let config = load_config_from_cli(&cli)?;
+                    let default_workspace = resolve_workspace(&cli);
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let registry = if workspace == default_workspace {
+                        (*plugin_registry).clone()
+                    } else {
+                        (*plugin_discovery.inspect_registry_for_workspace(&workspace)).clone()
+                    };
+                    run_plugins_import_dsh_cli(
+                        args,
                         json,
                         config,
                         registry,
@@ -9777,6 +9824,187 @@ async fn run_plugins_install_cli(
     Ok(())
 }
 
+async fn run_plugins_import_dsh_cli(
+    args: Vec<String>,
+    json: bool,
+    config: Config,
+    registry: codewhale_plugins::PluginRegistry,
+    plugin_discovery: &Arc<codewhale_plugins::PluginDiscoveryContext>,
+    workspace: &Path,
+) -> Result<()> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["approve", path, expected_hash] => {
+            let receipt = codewhale_plugins::mutation::install_exact_from_cli_receipt(
+                format!("dsh:{path}"),
+                (*expected_hash).to_string(),
+                config,
+                registry,
+            )
+            .await?;
+            if !json {
+                println!("Installed {} (disabled, untrusted).", receipt.name);
+                println!(
+                    "Review with `codewhale plugins trust {}`, then enable with `codewhale plugins enable {}`.",
+                    receipt.name, receipt.name
+                );
+                return Ok(());
+            }
+            let refreshed = plugin_discovery.inspect_registry_for_workspace(workspace);
+            let record = refreshed
+                .get(&receipt.name)
+                .map(|plugin| {
+                    let mut value = plugin_cli_record(plugin);
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("action".to_string(), "installed".into());
+                    }
+                    value
+                })
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "name": plugin_cli_text(&receipt.name),
+                        "action": "installed",
+                        "path": receipt.path.as_ref().map(|p| plugin_cli_text(&p.to_string_lossy())),
+                        "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                        "trust": "untrusted",
+                        "enabled": false,
+                    })
+                });
+            println!("{}", serde_json::to_string_pretty(&record)?);
+            Ok(())
+        }
+        [path] if *path != "approve" => {
+            let package_path = PathBuf::from(path);
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+            let (canonical, conversion, content_hash) = tokio::task::spawn_blocking(move || {
+                let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+                let canonical = package_path.canonicalize().with_context(|| {
+                    format!("DSH package not found at {}", package_path.display())
+                })?;
+                let (conversion, content_hash) =
+                    codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)?;
+                Ok::<_, anyhow::Error>((canonical, conversion, content_hash))
+            })
+            .await
+            .context("DSH preview task failed to finish")??;
+            let manual_ports: Vec<String> = conversion
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.needs_manual_port())
+                .map(|outcome| {
+                    format!(
+                        "{} ({}) {}: {}",
+                        outcome.row.as_deref().unwrap_or("unlabeled"),
+                        outcome.package.as_deref().unwrap_or("unlabeled"),
+                        outcome.kind,
+                        outcome.reason
+                    )
+                })
+                .collect();
+            if json {
+                let payload = serde_json::json!({
+                    "action": "preview",
+                    "plugin_name": conversion.plugin_name,
+                    "source_package": conversion.source_package,
+                    "source_version": conversion.source_version,
+                    "package_path": canonical.to_string_lossy(),
+                    "content_hash": content_hash,
+                    "skills": conversion.skills,
+                    "commands": conversion.commands,
+                    "agents": conversion.agents,
+                    "hooks": conversion.hooks,
+                    "remote_servers": conversion.remote_servers,
+                    "local_servers": conversion.local_servers,
+                    "network_hosts": conversion.network_hosts,
+                    "native_rows": conversion.native_rows,
+                    "requires_node": conversion.requires_node,
+                    "manual_ports": manual_ports,
+                    "diagnostics": conversion.diagnostics,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
+            let pkg_label =
+                plugin_cli_text(conversion.source_package.as_deref().unwrap_or("unnamed"));
+            let version_suffix = conversion
+                .source_version
+                .as_deref()
+                .map(|v| format!("@{}", plugin_cli_text(v)))
+                .unwrap_or_default();
+            println!(
+                "DeepSeek Harness package {pkg_label}{version_suffix} -> plugin '{}'",
+                plugin_cli_text(&conversion.plugin_name)
+            );
+            println!(
+                "  Source: {}",
+                plugin_cli_text(&canonical.to_string_lossy())
+            );
+            let fmt_list = |items: &[String]| {
+                if items.is_empty() {
+                    "none".to_string()
+                } else {
+                    plugin_cli_text(&items.join(", "))
+                }
+            };
+            println!("  Skills: {}", fmt_list(&conversion.skills));
+            println!("  Commands: {}", fmt_list(&conversion.commands));
+            println!("  Agents: {}", fmt_list(&conversion.agents));
+            println!("  Hooks: {}", fmt_list(&conversion.hooks));
+            println!(
+                "  Remote MCP servers: {}",
+                fmt_list(&conversion.remote_servers)
+            );
+            println!(
+                "  Local MCP servers: {}",
+                fmt_list(&conversion.local_servers)
+            );
+            println!("  Network hosts: {}", fmt_list(&conversion.network_hosts));
+            if !conversion.native_rows.is_empty() {
+                println!("  Native host code: {}", fmt_list(&conversion.native_rows));
+            }
+            if conversion.requires_node {
+                println!("  Requires: node on PATH");
+            }
+            if manual_ports.is_empty() {
+                println!("  Skipped: none");
+            } else {
+                println!("  Skipped ({}):", manual_ports.len());
+                for line in &manual_ports {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            if !conversion.diagnostics.is_empty() {
+                println!("  Diagnostics:");
+                for line in &conversion.diagnostics {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            println!("  Content hash: {content_hash}");
+            println!();
+            println!(
+                "Nothing was installed. To import exactly this bundle (disabled and untrusted):"
+            );
+            println!(
+                "  codewhale plugins import dsh approve {} {}",
+                plugin_cli_text(&format!(
+                    "'{}'",
+                    canonical.to_string_lossy().replace('\'', "'\\''")
+                )),
+                content_hash
+            );
+            Ok(())
+        }
+        _ => bail!(
+            "Usage:\n  codewhale plugins import dsh <package-dir> [--json]\n  codewhale plugins import dsh approve <package-dir> <content-hash> [--json]"
+        ),
+    }
+}
+
 fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
@@ -9877,8 +10105,8 @@ fn run_plugins_cli(
             json,
             &mut headless::ProcessConsole,
         )?,
-        PluginsCommand::Install { .. } => {
-            unreachable!("plugins install is dispatched before spawn_blocking")
+        PluginsCommand::Install { .. } | PluginsCommand::Import { .. } => {
+            unreachable!("plugins install/import is dispatched before spawn_blocking")
         }
         PluginsCommand::Update { name, json } => {
             let network = config
