@@ -10,6 +10,7 @@ pub mod markdown_render;
 pub mod menu_style;
 pub mod osc8;
 pub mod paste_burst;
+pub mod paste_debug;
 pub mod scrolling;
 pub mod spinner;
 pub mod streaming;

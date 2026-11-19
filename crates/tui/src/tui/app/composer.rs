@@ -2001,6 +2001,11 @@ impl App {
     pub fn handle_composer_enter(&mut self, protect_paste: bool) -> Option<String> {
         if protect_paste && self.use_paste_burst_detection {
             let now = Instant::now();
+            codewhale_tui_kit::paste_debug::log(&format!(
+                "composer_enter protect={} | {}",
+                protect_paste,
+                self.paste_burst.debug_state(now)
+            ));
             if self
                 .paste_burst
                 .newline_should_insert_instead_of_submit(now)

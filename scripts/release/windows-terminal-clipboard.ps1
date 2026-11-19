@@ -62,6 +62,8 @@ try {
         if ($arg.Contains('"')) { throw 'Unexpected quote in fixture argument' }
     }
     $arguments = "-w new new-tab --title `"$Title`" --suppressApplicationTitle --startingDirectory `"$Workspace`" `"$Binary`" --workspace `"$Workspace`" --no-project-config --skip-onboarding --fresh"
+    # TEMPORARY: route the paste-burst event trace into the evidence bundle.
+    $env:CW_PASTE_DEBUG_LOG = Join-Path $Evidence 'paste-debug.log'
     Write-Output 'desktop stage: starting owned Terminal'
     Start-Process -FilePath $Terminal -ArgumentList $arguments | Out-Null
     Write-Output 'desktop stage: locating owned Terminal window'

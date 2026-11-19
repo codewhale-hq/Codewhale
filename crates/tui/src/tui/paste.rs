@@ -67,6 +67,16 @@ fn terminal_identity_allows_paste_bypass(
 /// further input handling); `false` when the key still needs the normal
 /// composer path.
 pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bool {
+    codewhale_tui_kit::paste_debug::log(&format!(
+        "burst_key {:?} mods={:?} upbd={} bps={} bpt={} ubp={} | {}",
+        key.code,
+        key.modifiers,
+        app.use_paste_burst_detection,
+        app.bracketed_paste_seen,
+        app.bracketed_paste_trusted,
+        app.use_bracketed_paste,
+        app.paste_burst.debug_state(now)
+    ));
     if !app.use_paste_burst_detection {
         return false;
     }
@@ -100,9 +110,11 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
                 return false;
             }
             if app.paste_burst.append_newline_if_active(now) {
+                codewhale_tui_kit::paste_debug::log("enter -> append_newline_if_active");
                 return true;
             }
             if app.paste_burst.newline_should_insert_instead_of_submit(now) {
+                codewhale_tui_kit::paste_debug::log("enter -> insert_newline");
                 app.insert_char('\n');
                 // Deliberately no `extend_window` here. This Enter arrived
                 // with no burst being assembled, so it is only *maybe* a
@@ -114,6 +126,7 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
                 // by `append_newline_if_active` above, which does re-arm.
                 return true;
             }
+            codewhale_tui_kit::paste_debug::log("enter -> release");
         }
         KeyCode::Char(c) if !has_ctrl_alt_or_super => {
             if !c.is_ascii() {

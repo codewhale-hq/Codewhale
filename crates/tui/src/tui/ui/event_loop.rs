@@ -705,10 +705,28 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
     if !app.view_stack.is_empty() {
         // One grammar buffer: a modal owns keys. Held burst must not leak
         // into the composer (leaky `/model` after the picker opens).
+        codewhale_tui_kit::paste_debug::log(&format!(
+            "flush -> view_stack_clear | {}",
+            app.paste_burst.debug_state(now)
+        ));
         app.paste_burst.clear_after_explicit_paste();
         return false;
     }
-    match app.take_paste_burst_flush_if_enabled(now) {
+    let flush = app.take_paste_burst_flush_if_enabled(now);
+    codewhale_tui_kit::paste_debug::log(&format!(
+        "flush -> {} | {}",
+        match &flush {
+            codewhale_tui_kit::paste_burst::FlushResult::Paste(text) =>
+                format!("Paste({}b)", text.len()),
+            codewhale_tui_kit::paste_burst::FlushResult::Typed(ch) =>
+                format!("Typed({ch:?})"),
+            codewhale_tui_kit::paste_burst::FlushResult::SuppressionExpired =>
+                "SuppressionExpired".to_string(),
+            codewhale_tui_kit::paste_burst::FlushResult::None => "None".to_string(),
+        },
+        app.paste_burst.debug_state(now)
+    ));
+    match flush {
         codewhale_tui_kit::paste_burst::FlushResult::Paste(text) => {
             // Terminals without bracketed paste deliver a dropped file the
             // same way; attach it exactly as `insert_paste_text` would.
@@ -5912,6 +5930,9 @@ pub(crate) async fn run_event_loop(
         if let Some(observed_terminal_event) = maybe_terminal_event {
             let event_observed_at = observed_terminal_event.observed_at;
             let evt = observed_terminal_event.event;
+            if !matches!(&evt, Event::Key(_)) {
+                codewhale_tui_kit::paste_debug::log(&format!("event {:?}", evt));
+            }
             if app.launch.mark_reveal_started_at.is_some()
                 && matches!(&evt, Event::Key(_) | Event::Paste(_) | Event::Resize(_, _))
             {
@@ -6163,6 +6184,13 @@ pub(crate) async fn run_event_loop(
             let Event::Key(mut key) = evt else {
                 continue;
             };
+            codewhale_tui_kit::paste_debug::log(&format!(
+                "key {:?} kind={:?} mods={:?} age={:?}us",
+                key.code,
+                key.kind,
+                key.modifiers,
+                event_observed_at.elapsed().as_micros()
+            ));
 
             if key.kind != KeyEventKind::Press {
                 // Windows Terminal consumes the key-down of any chord it handles

@@ -322,6 +322,28 @@ impl PasteBurst {
             self.burst_window_until = Some(now + PASTE_BURST_CHAR_INTERVAL);
         }
     }
+
+    /// TEMPORARY one-line state dump for the WT clipboard fixture trace.
+    pub fn debug_state(&self, now: Instant) -> String {
+        let last_age = self
+            .last_plain_char_time
+            .map(|t| now.duration_since(t).as_millis());
+        let bwu = self
+            .burst_window_until
+            .map(|until| until.saturating_duration_since(now).as_millis() as i64)
+            .unwrap_or(-1);
+        format!(
+            "active={} buf={} pend={} consec={} stream={} last_age={:?}ms bwu_rem={}ms ins={}",
+            self.is_active_internal(),
+            self.buffer.len(),
+            self.pending_first_char.is_some(),
+            self.consecutive_plain_char_burst,
+            self.stream_chars,
+            last_age,
+            bwu,
+            self.newline_should_insert_instead_of_submit(now)
+        )
+    }
 }
 
 #[cfg(test)]
