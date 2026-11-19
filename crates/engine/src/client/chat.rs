@@ -4,7 +4,7 @@
 //! request building (`build_chat_messages*`), and SSE parsing
 //! (`parse_sse_chunk_with_reasoning_style`) all live here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
@@ -4300,6 +4300,8 @@ enum SseDataFrame {
 pub(super) struct ChatToolStream {
     google: bool,
     calls: Vec<ChatToolSlot>,
+    by_index: HashMap<u64, usize>,
+    by_id: HashMap<String, usize>,
     previous_batch: Vec<usize>,
 }
 
@@ -4325,14 +4327,15 @@ impl ChatToolStream {
         position: usize,
         batch_len: usize,
     ) -> Result<Option<usize>, &'static str> {
-        let by_index = index.and_then(|i| self.calls.iter().position(|c| c.wire_index == Some(i)));
+        let by_index = index.and_then(|i| self.by_index.get(&i).copied());
         if !self.google {
             return Ok(by_index);
         }
-        let by_id = id.and_then(|id| self.calls.iter().position(|c| c.id.as_deref() == Some(id)));
+        let by_id = id.and_then(|id| self.by_id.get(id).copied());
         if let Some(slot) = by_index.or(by_id) {
             let call = &self.calls[slot];
-            if index.zip(call.wire_index).is_some_and(|(a, b)| a != b)
+            if by_index.zip(by_id).is_some_and(|(a, b)| a != b)
+                || index.zip(call.wire_index).is_some_and(|(a, b)| a != b)
                 || id.zip(call.id.as_deref()).is_some_and(|(a, b)| a != b)
             {
                 return Err("Conflicting tool call identities in provider stream");
@@ -4346,6 +4349,23 @@ impl ChatToolStream {
             return Ok(self.previous_batch.get(position).copied());
         }
         Err("Cannot match a tool call delta to its provider stream block")
+    }
+
+    fn record_identity(&mut self, slot: usize, index: Option<u64>, id: Option<&str>) {
+        let call = &mut self.calls[slot];
+        if call.wire_index.is_none()
+            && let Some(index) = index
+        {
+            self.by_index.insert(index, slot);
+            call.wire_index = Some(index);
+        }
+        if self.google
+            && call.id.is_none()
+            && let Some(id) = id
+        {
+            self.by_id.insert(id.to_owned(), slot);
+            call.id = Some(id.to_owned());
+        }
     }
 }
 
@@ -4690,7 +4710,8 @@ fn parse_sse_chunk_with_reasoning_style(
                 } else {
                     Vec::new()
                 };
-                let mut used_position = false;
+                let mut batch_slots = HashSet::new();
+                let mut inferred_positions = 0;
                 let mut changed_positions = false;
                 let mut carries_call_data = false;
                 for (tc_pos, tc) in tool_calls.iter().enumerate() {
@@ -4722,16 +4743,13 @@ fn parse_sse_chunk_with_reasoning_style(
                         };
                     let (slot, tool_block_index) = match slot {
                         Some(slot) => {
-                            if batch.contains(&slot) {
+                            if tool_indices.google && !batch_slots.insert(slot) {
                                 return vec![StreamEvent::Error {
                                     error: json!({ "message": "Duplicate tool call in provider stream batch" }),
                                 }];
                             }
-                            let call = &mut tool_indices.calls[slot];
-                            call.wire_index = call.wire_index.or(wire_index);
-                            if call.id.is_none() {
-                                call.id = id.map(str::to_string);
-                            }
+                            tool_indices.record_identity(slot, wire_index, id);
+                            let call = &tool_indices.calls[slot];
                             if tool_indices.google
                                 && let Some(sig) = tc
                                     .pointer("/extra_content/google/thought_signature")
@@ -4809,14 +4827,19 @@ fn parse_sse_chunk_with_reasoning_style(
                             let slot = tool_indices.calls.len();
                             tool_indices.calls.push(ChatToolSlot {
                                 block: block_index,
-                                wire_index,
-                                id: id.map(str::to_string),
+                                wire_index: None,
+                                id: None,
                             });
+                            tool_indices.record_identity(slot, wire_index, id);
+                            if tool_indices.google {
+                                batch_slots.insert(slot);
+                            }
                             (slot, block_index)
                         }
                     };
                     if tool_indices.google {
-                        used_position |= wire_index.is_none() && id.is_none() && !has_name;
+                        inferred_positions +=
+                            usize::from(wire_index.is_none() && id.is_none() && !has_name);
                         changed_positions |= tool_indices.previous_batch.get(tc_pos) != Some(&slot);
                         carries_call_data |= has_name || args.is_some();
                         batch.push(slot);
@@ -4832,9 +4855,9 @@ fn parse_sse_chunk_with_reasoning_style(
                         });
                     }
                 }
-                if used_position && changed_positions {
+                if inferred_positions > 1 || (inferred_positions == 1 && changed_positions) {
                     return vec![StreamEvent::Error {
-                        error: json!({ "message": "Cannot infer positions in a reordered tool call batch" }),
+                        error: json!({ "message": "Cannot infer positions in an ambiguous tool call batch" }),
                     }];
                 }
                 if carries_call_data {
@@ -4920,6 +4943,8 @@ fn parse_sse_chunk_with_reasoning_style(
             }
             // Close tool blocks
             tool_indices.previous_batch.clear();
+            tool_indices.by_index.clear();
+            tool_indices.by_id.clear();
             for call in tool_indices.calls.drain(..) {
                 events.push(StreamEvent::ContentBlockStop { index: call.block });
             }

@@ -7925,6 +7925,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn late_thought_signature_is_retained_on_the_target_tool() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let starts = (0..2).map(|index| {
+            Ok(StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlockStart::ToolUse {
+                    id: format!("call_{index}"),
+                    name: "read_file".into(),
+                    input: json!({}),
+                    caller: None,
+                    thought_signature: None,
+                },
+            })
+        });
+        let stream = futures_util::stream::iter(starts.chain([
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ThoughtSignatureDelta {
+                    thought_signature: "first_signature".into(),
+                },
+            }),
+            Ok(canned::message_stop()),
+        ]));
+        let outcome = engine
+            .process_stream(
+                Box::pin(stream),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert_eq!(outcome.tool_uses.len(), 2);
+        assert_eq!(
+            outcome.tool_uses[0].thought_signature.as_deref(),
+            Some("first_signature")
+        );
+        assert!(outcome.tool_uses[1].thought_signature.is_none());
+    }
+
+    #[tokio::test]
     async fn typed_terminal_stream_failure_never_replays_or_consumes_suffix() {
         use crate::llm_client::{LlmError, mock::canned};
         for code in [

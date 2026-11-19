@@ -2056,7 +2056,7 @@ fn google_parallel_tool_continuations_match_identity_then_batch_position() {
         {"id":"call_g2","function":{"name":"grep_files","arguments":"{\"pattern\":"}}
     ]}}]}"#;
     let continue_both = r#"{"choices":[{"delta":{"tool_calls":[
-        {"function":{"arguments":"\"a.rs\"}"}},
+        {"id":"call_g1","function":{"arguments":"\"a.rs\"}"}},
         {"function":{"arguments":"\"needle\"}"}}
     ]}}]}"#;
     let signature_for_first = r#"{"choices":[{"delta":{"tool_calls":[
@@ -2096,6 +2096,13 @@ fn google_parallel_tool_continuations_match_identity_then_batch_position() {
     let events = decode_google_chunks(&[start, ambiguous]);
     assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
 
+    let anonymous_parallel = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, anonymous_parallel]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
     let partly_reordered = r#"{"choices":[{"delta":{"tool_calls":[
         {"id":"call_g2","function":{"arguments":"{}"}},
         {"function":{"arguments":"{}"}}
@@ -2107,6 +2114,16 @@ fn google_parallel_tool_continuations_match_identity_then_batch_position() {
         {"index":5,"function":{"arguments":"{}"}}
     ]}}]}"#;
     let events = decode_google_chunks(&[start, unknown_continuation]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let indexed_batch = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"function":{"name":"read_file"}},
+        {"index":1,"id":"call_g2","function":{"name":"grep_files"}}
+    ]}}]}"#;
+    let conflicting_identity = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g2"}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[indexed_batch, conflicting_identity]);
     assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
 }
 
