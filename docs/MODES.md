@@ -335,9 +335,15 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   middle `person_messages` trim first while preserving the earliest typed limit
   and latest request. High or critical risk cannot auto-run unless you approve a
   one-use retry of that exact call, and an explicit guardian denial still
-  blocks even then. It has no tools, remembers no rules, and makes a single
-  request with a fail-closed result on incomplete or malformed output, timeout,
-  cancellation, or provider failure. Every Auto-Review block names the rule and
+  blocks even then. It has no tools and remembers no rules. It makes one
+  request and retries once after a timeout or transport failure, both inside
+  one 90-second budget. A review that still cannot finish (timeout, transport
+  failure, malformed or incomplete output, or context over budget) is a review
+  failure, not a safety denial: on an owner-present turn whose owner can be
+  prompted (not a child worker) it opens the normal approval card for that
+  exact call and is not counted as a block or an unavailable check; otherwise
+  the call is denied fail closed with a review-failure message. Cancellation
+  always fails closed. Every Auto-Review block names the rule and
   reason and invites either another route or, on interactive owner-present
   blocks eligible for retry, one-use owner approval of that exact call via the
   block receipt (`r` in an empty composer), `/permissions blocked`, or the

@@ -17776,7 +17776,8 @@ async fn apply_auto_review_return_check(
                         reason,
                         review.usage,
                     ),
-                    ReviewerOutcome::Unavailable { reason } => (
+                    ReviewerOutcome::TimedOut { reason }
+                    | ReviewerOutcome::Failed { reason, .. } => (
                         format_subagent_return_warning_unavailable(&reason),
                         ToolGateVerdict::Unavailable,
                         "unavailable",

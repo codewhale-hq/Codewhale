@@ -1463,8 +1463,9 @@ impl Engine {
         in_auto_mode: bool,
         allow_retry_receipt: bool,
         person_approved_retry: bool,
+        can_fallback_to_person: bool,
     ) -> Result<
-        (),
+        Option<&'static str>,
         Box<(
             ToolError,
             crate::core::authority::auto_review::AutoReviewOutcomeEffect,
@@ -1484,11 +1485,28 @@ impl Engine {
             ) {
                 Ok(text) => text,
                 Err(reason) => {
-                    let outcome = super::reviewer::ReviewerOutcome::Unavailable {
+                    let outcome = super::reviewer::ReviewerOutcome::Failed {
+                        kind: super::reviewer::ReviewerFailureKind::OverBudget,
                         reason: reason.to_string(),
                     };
                     let decision = outcome.audit_decision();
                     let risk = outcome.audit_risk();
+                    let fallback_kind = outcome.failure_prompt_kind();
+                    if can_fallback_to_person {
+                        emit_tool_audit(json!({
+                            "event": "tool.auto_review",
+                            "gate": "guardian",
+                            "tool_id": tool_id,
+                            "reviewer_model": reviewer_model.as_str(),
+                            "decision": decision,
+                            "attempts": 0,
+                            "fallback": "prompt",
+                            "risk": risk,
+                            "reason": reason,
+                        }))
+                        .await;
+                        return Ok(fallback_kind);
+                    }
                     let is_child_host = self.child_host.is_some();
                     let owner_present = self.current_turn_authority().owner_present();
                     let recorded = self.record_auto_review_block(
@@ -1511,6 +1529,8 @@ impl Engine {
                     "tool_id": tool_id,
                     "reviewer_model": reviewer_model.as_str(),
                     "decision": decision,
+                    "attempts": 0,
+                    "fallback": "deny",
                     "risk": risk,
                     "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
                 }))
@@ -1533,7 +1553,7 @@ impl Engine {
                         })
                         .await;
                     return result
-                        .map(|_| ())
+                        .map(|_| None)
                         .map_err(|error| Box::new((error, recorded.effect)));
                 }
             };
@@ -1616,6 +1636,19 @@ impl Engine {
         }
         let decision = review.outcome.audit_decision();
         let risk = review.outcome.audit_risk();
+        let attempts = review.attempts;
+        let fallback_prompt_kind = if can_fallback_to_person {
+            review.outcome.failure_prompt_kind()
+        } else {
+            None
+        };
+        let fallback_audit = if fallback_prompt_kind.is_some() {
+            Some("prompt")
+        } else if review.outcome.failure_reason().is_some() {
+            Some("deny")
+        } else {
+            None
+        };
         let is_child_host = self.child_host.is_some();
         let owner_present = self.current_turn_authority().owner_present();
         let (receipt, effect) = match &review.outcome {
@@ -1660,40 +1693,55 @@ impl Engine {
                     recorded.effect,
                 )
             }
-            super::reviewer::ReviewerOutcome::Unavailable { reason } => {
-                let recorded = self.record_auto_review_block(
-                    in_auto_mode,
-                    owner_present,
-                    is_child_host,
-                    allow_retry_receipt,
-                    tool_id,
-                    context.tool_name.as_ref(),
-                    tool_input,
-                    Some("guardian-unavailable"),
-                    reason,
-                    "auto_review_guardian",
-                    "unavailable",
-                );
-                (
-                    Some((
-                        crate::core::events::ToolGateVerdict::Unavailable,
-                        reason.clone(),
-                        Some("guardian-unavailable".to_string()),
-                        recorded.receipt_id,
-                        recorded.call_digest,
-                        (!recorded.action_summary.is_empty()).then_some(recorded.action_summary),
-                    )),
-                    recorded.effect,
-                )
+            super::reviewer::ReviewerOutcome::TimedOut { reason }
+            | super::reviewer::ReviewerOutcome::Failed { reason, .. } => {
+                let verdict = crate::core::events::ToolGateVerdict::Unavailable;
+                if fallback_prompt_kind.is_some() {
+                    (None, AutoReviewOutcomeEffect::Continue)
+                } else {
+                    let recorded = self.record_auto_review_block(
+                        in_auto_mode,
+                        owner_present,
+                        is_child_host,
+                        allow_retry_receipt,
+                        tool_id,
+                        context.tool_name.as_ref(),
+                        tool_input,
+                        Some("guardian-unavailable"),
+                        reason,
+                        "auto_review_guardian",
+                        verdict.as_str(),
+                    );
+                    (
+                        Some((
+                            verdict,
+                            reason.clone(),
+                            Some("guardian-unavailable".to_string()),
+                            recorded.receipt_id,
+                            recorded.call_digest,
+                            (!recorded.action_summary.is_empty())
+                                .then_some(recorded.action_summary),
+                        )),
+                        recorded.effect,
+                    )
+                }
             }
             super::reviewer::ReviewerOutcome::Cancelled => {
                 (None, AutoReviewOutcomeEffect::Continue)
             }
         };
-        let result = review.outcome.into_tool_result_with_rule(
-            context.tool_name.as_ref(),
-            Some(soft_rule.unwrap_or("guardian")),
-        );
+        let result = if fallback_prompt_kind.is_some() {
+            Ok(review
+                .outcome
+                .failure_reason()
+                .unwrap_or_default()
+                .to_string())
+        } else {
+            review.outcome.into_tool_result_with_rule(
+                context.tool_name.as_ref(),
+                Some(soft_rule.unwrap_or("guardian")),
+            )
+        };
         emit_tool_audit(json!({
             "event": "tool.auto_review",
             "gate": "guardian",
@@ -1701,6 +1749,8 @@ impl Engine {
             "rule_id": soft_rule,
             "reviewer_model": review.reviewer_model.as_str(),
             "decision": decision,
+            "attempts": attempts,
+            "fallback": fallback_audit,
             "risk": risk,
             "reason": result.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
         }))
@@ -1724,7 +1774,7 @@ impl Engine {
                 .await;
         }
         result
-            .map(|_| ())
+            .map(|_| fallback_prompt_kind)
             .map_err(|error| Box::new((error, effect)))
     }
 
@@ -2976,7 +3026,9 @@ impl Engine {
                                     .and_then(serde_json::Value::as_str)
                                     .map(str::trim)
                                     .filter(|id| !id.is_empty());
-                                if let Err(failure) = self
+                                let can_fallback_to_person =
+                                    owner_can_prompt && self.child_host.is_none();
+                                match self
                                     .consult_auto_review_guardian(
                                         client,
                                         &review_context,
@@ -2988,19 +3040,32 @@ impl Engine {
                                         batch_approval_mode == ApprovalMode::Auto,
                                         allow_retry_receipt,
                                         person_approved_retry,
+                                        can_fallback_to_person,
                                     )
                                     .await
                                 {
-                                    let (error, effect) = *failure;
-                                    blocked_error = Some(error);
-                                    if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
-                                        reason: pause_reason,
-                                    } = effect
-                                    {
-                                        pending_pause_reason = Some(pause_reason);
+                                    Err(failure) => {
+                                        let (error, effect) = *failure;
+                                        blocked_error = Some(error);
+                                        if let crate::core::authority::auto_review::AutoReviewOutcomeEffect::PauseToAsk {
+                                            reason: pause_reason,
+                                        } = effect
+                                        {
+                                            pending_pause_reason = Some(pause_reason);
+                                        }
                                     }
-                                } else if !hook_requires_approval && !approval_force_prompt {
-                                    approval_required = false;
+                                    Ok(Some(kind)) => {
+                                        approval_required = true;
+                                        approval_force_prompt = true;
+                                        approval_description = format!(
+                                            "Auto-Review could not finish ({kind}); please decide."
+                                        );
+                                    }
+                                    Ok(None) => {
+                                        if !hook_requires_approval && !approval_force_prompt {
+                                            approval_required = false;
+                                        }
+                                    }
                                 }
                             }
                         }

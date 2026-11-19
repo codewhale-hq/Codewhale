@@ -29837,7 +29837,7 @@ async fn auto_review_subagent_return_check_outage_prepends_could_not_review_warn
     })
     .await;
 
-    assert_eq!(review_bodies.lock().expect("review bodies").len(), 1);
+    assert_eq!(review_bodies.lock().expect("review bodies").len(), 2);
     let snapshot = manager
         .read()
         .await
