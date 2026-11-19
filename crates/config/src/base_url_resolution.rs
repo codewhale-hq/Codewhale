@@ -340,9 +340,7 @@ pub fn provider_published_pricing_base_urls(provider: ProviderKind) -> Vec<&'sta
         ProviderKind::Custom => vec![],
         _ => {
             let extra: &[&'static str] = match provider {
-                ProviderKind::Anthropic => {
-                    &["https://api.anthropic.com", "https://api.anthropic.com/v1"]
-                }
+                ProviderKind::Anthropic => &["https://api.anthropic.com"],
                 ProviderKind::Openai => &["https://api.openai.com", "https://api.openai.com/v1"],
                 ProviderKind::Zai => &[
                     "https://api.z.ai",
