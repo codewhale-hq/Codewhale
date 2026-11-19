@@ -806,6 +806,9 @@ jobs:
       - name: Check TUI product vocabulary
         if: github.event_name != 'schedule'
         run: sh scripts/check-tui-product-vocabulary.sh
+      - name: Report docs findings (warn-only)
+        if: github.event_name != 'schedule'
+        run: sh scripts/docs/run-checks.sh
       - name: Check website locale dictionary parity
         if: github.event_name != 'schedule'
         run: node web/scripts/check-locales.mjs
