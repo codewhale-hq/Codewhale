@@ -5,6 +5,7 @@
 //! directly to verify each "class of stream failure" the engine relies on.
 use super::*;
 use crate::client::wire::{SseLineDecoder, SseLineError};
+use codewhale_config::descriptors::defaults::DEFAULT_GOOGLE_BASE_URL;
 use codewhale_models::{ContentBlockStart, Delta, StreamEvent};
 
 /// Decode a raw SSE-data JSON chunk into our internal events, mirroring
@@ -35,10 +36,25 @@ fn decode_chunks_with_style(
     chunks: &[&str],
     reasoning_stream_style: ReasoningStreamStyle,
 ) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(chunks, reasoning_stream_style, ChatToolStream::default())
+}
+
+fn decode_google_chunks(chunks: &[&str]) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(
+        chunks,
+        ReasoningStreamStyle::SeparateField,
+        ChatToolStream::for_base_url(DEFAULT_GOOGLE_BASE_URL),
+    )
+}
+
+fn decode_chunks_with_tool_stream(
+    chunks: &[&str],
+    reasoning_stream_style: ReasoningStreamStyle,
+    mut tool_indices: ChatToolStream,
+) -> Vec<StreamEvent> {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
     let mut events = Vec::new();
@@ -1949,7 +1965,7 @@ fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_clea
         .to_string(),
     ];
     let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
-    let events = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    let events = decode_google_chunks(&refs);
 
     let starts: Vec<(u32, String, Option<String>)> = events
         .into_iter()
@@ -1975,7 +1991,7 @@ fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_clea
         ]
     );
 
-    let events2 = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    let events2 = decode_google_chunks(&refs);
     assert!(events2.iter().any(|ev| matches!(
         ev,
         StreamEvent::ContentBlockDelta {
@@ -2046,10 +2062,7 @@ fn google_parallel_tool_continuations_match_identity_then_batch_position() {
     let signature_for_first = r#"{"choices":[{"delta":{"tool_calls":[
         {"index":0,"id":"call_g1","extra_content":{"google":{"thought_signature":"sig_first"}}}
     ]}}]}"#;
-    let events = decode_chunks_with_style(
-        &[start, continue_both, signature_for_first],
-        ReasoningStreamStyle::SeparateField,
-    );
+    let events = decode_google_chunks(&[start, signature_for_first, continue_both]);
     let input: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -2080,7 +2093,20 @@ fn google_parallel_tool_continuations_match_identity_then_batch_position() {
     let ambiguous = r#"{"choices":[{"delta":{"tool_calls":[
         {"function":{"arguments":"\"unknown target\"}"}}
     ]}}]}"#;
-    let events = decode_chunks_with_style(&[start, ambiguous], ReasoningStreamStyle::SeparateField);
+    let events = decode_google_chunks(&[start, ambiguous]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let partly_reordered = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g2","function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, partly_reordered]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let unknown_continuation = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":5,"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, unknown_continuation]);
     assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
 }
 

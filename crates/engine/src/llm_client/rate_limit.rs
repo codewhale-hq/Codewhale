@@ -471,7 +471,7 @@ pub fn provider_error(
         .filter_map(|p| body.pointer(p).and_then(serde_json::Value::as_str))
         .any(|code| normalized_error_code(code) == "insufficientquota")
             || normalized_error_code(marked) == "insufficientquota");
-    if ambiguous_quota && independent_billing_evidence(&body, raw, hint.is_some()) {
+    if ambiguous_quota && independent_billing_evidence(body, raw, hint.is_some()) {
         return Some(LlmError::QuotaExhausted(
             super::QuotaExhaustionError::from_http_message(safe.to_owned()),
         ));

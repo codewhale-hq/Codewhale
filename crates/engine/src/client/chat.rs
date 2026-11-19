@@ -829,7 +829,7 @@ fn validate_google_thought_signature_replay(
         let missing = call
             .pointer("/extra_content/google/thought_signature")
             .and_then(Value::as_str)
-            .is_none();
+            .is_none_or(|signature| signature.is_empty());
         if missing {
             let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
             if requires_signatures {
@@ -1606,7 +1606,7 @@ impl CodewhaleClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices = ChatToolStream::default();
+            let mut tool_indices = ChatToolStream::for_base_url(&base_url);
             let mut reasoning_detail_buffers: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
             let mut inline_reasoning_tags = InlineReasoningTagState::default();
             let reasoning_stream_style = reasoning_stream_style_for_route(
@@ -4298,6 +4298,7 @@ enum SseDataFrame {
 
 #[derive(Default)]
 pub(super) struct ChatToolStream {
+    google: bool,
     calls: Vec<ChatToolSlot>,
     previous_batch: Vec<usize>,
 }
@@ -4309,6 +4310,13 @@ struct ChatToolSlot {
 }
 
 impl ChatToolStream {
+    fn for_base_url(base_url: &str) -> Self {
+        Self {
+            google: is_google_openai_compat_chat_route(base_url),
+            ..Self::default()
+        }
+    }
+
     fn slot(
         &self,
         index: Option<u64>,
@@ -4318,6 +4326,9 @@ impl ChatToolStream {
         batch_len: usize,
     ) -> Result<Option<usize>, &'static str> {
         let by_index = index.and_then(|i| self.calls.iter().position(|c| c.wire_index == Some(i)));
+        if !self.google {
+            return Ok(by_index);
+        }
         let by_id = id.and_then(|id| self.calls.iter().position(|c| c.id.as_deref() == Some(id)));
         if let Some(slot) = by_index.or(by_id) {
             let call = &self.calls[slot];
@@ -4328,13 +4339,13 @@ impl ChatToolStream {
             }
             return Ok(Some(slot));
         }
-        if index.is_some() || id.is_some() || has_name {
+        if has_name {
             return Ok(None);
         }
-        if self.previous_batch.len() == batch_len {
+        if index.is_none() && id.is_none() && self.previous_batch.len() == batch_len {
             return Ok(self.previous_batch.get(position).copied());
         }
-        Err("Cannot match an unindexed tool call delta to its provider stream block")
+        Err("Cannot match a tool call delta to its provider stream block")
     }
 }
 
@@ -4674,28 +4685,41 @@ fn parse_sse_chunk_with_reasoning_style(
                 .and_then(Value::as_array)
                 .filter(|calls| !calls.is_empty())
             {
-                let mut batch = Vec::with_capacity(tool_calls.len());
+                let mut batch = if tool_indices.google {
+                    Vec::with_capacity(tool_calls.len())
+                } else {
+                    Vec::new()
+                };
+                let mut used_position = false;
+                let mut changed_positions = false;
+                let mut carries_call_data = false;
                 for (tc_pos, tc) in tool_calls.iter().enumerate() {
                     let wire_index = tc.get("index").and_then(Value::as_u64);
+                    let wire_index = if tool_indices.google {
+                        wire_index
+                    } else {
+                        Some(u64::from(wire_index.unwrap_or(0) as u32))
+                    };
                     let id = tc
                         .get("id")
                         .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty());
+                        .filter(|id| !tool_indices.google || !id.is_empty());
                     let name = tc.pointer("/function/name").and_then(Value::as_str);
-                    let slot = match tool_indices.slot(
-                        wire_index,
-                        id,
-                        name.is_some_and(|name| !name.trim().is_empty()),
-                        tc_pos,
-                        tool_calls.len(),
-                    ) {
-                        Ok(slot) => slot,
-                        Err(message) => {
-                            return vec![StreamEvent::Error {
-                                error: json!({ "message": message }),
-                            }];
-                        }
-                    };
+                    let has_name = name.is_some_and(|name| !name.trim().is_empty());
+                    let args = tc
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .filter(|args| !args.is_empty());
+                    let slot =
+                        match tool_indices.slot(wire_index, id, has_name, tc_pos, tool_calls.len())
+                        {
+                            Ok(slot) => slot,
+                            Err(message) => {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": message }),
+                                }];
+                            }
+                        };
                     let (slot, tool_block_index) = match slot {
                         Some(slot) => {
                             if batch.contains(&slot) {
@@ -4708,10 +4732,11 @@ fn parse_sse_chunk_with_reasoning_style(
                             if call.id.is_none() {
                                 call.id = id.map(str::to_string);
                             }
-                            if let Some(sig) = tc
-                                .pointer("/extra_content/google/thought_signature")
-                                .and_then(Value::as_str)
-                                .filter(|s| !s.is_empty())
+                            if tool_indices.google
+                                && let Some(sig) = tc
+                                    .pointer("/extra_content/google/thought_signature")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
                             {
                                 events.push(StreamEvent::ContentBlockDelta {
                                     index: call.block,
@@ -4790,15 +4815,15 @@ fn parse_sse_chunk_with_reasoning_style(
                             (slot, block_index)
                         }
                     };
-                    batch.push(slot);
+                    if tool_indices.google {
+                        used_position |= wire_index.is_none() && id.is_none() && !has_name;
+                        changed_positions |= tool_indices.previous_batch.get(tc_pos) != Some(&slot);
+                        carries_call_data |= has_name || args.is_some();
+                        batch.push(slot);
+                    }
 
                     // Stream tool call arguments
-                    if let Some(args) = tc
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(Value::as_str)
-                        && !args.is_empty()
-                    {
+                    if let Some(args) = args {
                         events.push(StreamEvent::ContentBlockDelta {
                             index: tool_block_index,
                             delta: Delta::InputJsonDelta {
@@ -4807,7 +4832,14 @@ fn parse_sse_chunk_with_reasoning_style(
                         });
                     }
                 }
-                tool_indices.previous_batch = batch;
+                if used_position && changed_positions {
+                    return vec![StreamEvent::Error {
+                        error: json!({ "message": "Cannot infer positions in a reordered tool call batch" }),
+                    }];
+                }
+                if carries_call_data {
+                    tool_indices.previous_batch = batch;
+                }
             }
         }
 
