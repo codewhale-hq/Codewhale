@@ -1043,6 +1043,8 @@ impl Default for ComposerState {
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
 pub struct ViewportState {
     pub(crate) working_glow_visible: bool,
+    pub(crate) activity_sweep_visible: bool,
+    pub(crate) detected_background: Option<ratatui::style::Color>,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
     pub(crate) ocean_caps: Option<codewhale_ratatui::Caps>,
@@ -1119,6 +1121,8 @@ impl Default for ViewportState {
     fn default() -> Self {
         Self {
             working_glow_visible: false,
+            activity_sweep_visible: false,
+            detected_background: None,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
             transcript_scroll: TranscriptScroll::to_bottom(),
@@ -2449,7 +2453,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell

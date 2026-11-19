@@ -181,6 +181,17 @@ executables. For x64 the 2 pairs are documented Microsoft API contracts
 (Windows XP minimum on each function's reference page); the x64 profile now
 allows 473 pairs and the ARM64 profile 475, with the same limits as above.
 
+Release candidate run 44379943827 on source `7616799f09` stopped the check on
+`api-ms-win-crt-math-l1-1-0.dll!cosf` on both 64-bit targets (from `f32::cos()`
+in 5.4.0 live motion) and `kernel32.dll!IsProcessorFeaturePresent` on x64 (from
+the `windows-2025-vs2026` runner's MSVC 14.52 CRT/toolchain update, already
+qualified on ARM64). Probe run 44417404125 (Windows 11 ARM64 build 26200.9974)
+resolved all 449 imports of that candidate's ARM64 executables, and `cosf` was
+added. For x64 the 2 pairs are documented Microsoft API contracts (10.0.10240
+UCRT API-set minimum for `cosf` and Windows 2000 Professional minimum for
+`IsProcessorFeaturePresent`); the x64 profile now allows 475 pairs and the
+ARM64 profile 476, with the same limits as above.
+
 At this snapshot, startup/installation of the final release bytes on an actual
 1607 machine and the candidate's generated uninstaller were still unqualified.
 The final frozen source, release import dumps, archive/native/npm installation,

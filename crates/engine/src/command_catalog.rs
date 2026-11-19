@@ -43,6 +43,13 @@ pub trait CommandCatalog: Send + Sync {
     fn answers_to(&self, name: &str) -> bool;
     fn builtins(&self) -> Vec<BuiltinCommand>;
     fn user_commands(&self, workspace: &Path) -> Vec<UserCommand>;
+    fn user_commands_with_plugins(
+        &self,
+        workspace: &Path,
+        _plugins: &codewhale_plugins::PluginRegistry,
+    ) -> Vec<UserCommand> {
+        self.user_commands(workspace)
+    }
     /// Whether this host executes `name` remotely at all. Checked before any
     /// thread state is assembled, so a name outside the remote surface is
     /// refused exactly like a name no host knows. `false` is the default: a

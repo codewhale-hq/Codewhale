@@ -31,11 +31,12 @@
 //! program that hits its deadline still reports what finished, what was
 //! refused, and what was in flight. Oversized nested results keep the
 //! `{content, metadata, truncated}` keys, and the cut is never silent:
-//! `truncated` names the original size and the spillover file holding the
-//! full output, and `content` becomes the leading text of the raw output
-//! (a JSON result cannot stay parsed once cut), so a script checks
-//! `truncated` before reading fields. A failed call's text is bounded and
-//! spilled the same way.
+//! `truncated` names the original size, the spillover file holding the
+//! full output and the `ref` that `retrieve_tool_result` pages it by. A JSON
+//! `content` stays valid JSON of the same shape with trailing array
+//! elements, object members and string tails cut; text `content` becomes its
+//! leading text, so a script checks `truncated` before trusting counts. A
+//! failed call's text is bounded and spilled the same way.
 //!
 //! KV-cache effect: `[features] code_mode` (on by default) makes
 //! `execute_tools` eager from the first request of a session; with the flag
@@ -106,6 +107,9 @@ const MAX_CONCURRENT_CALLS: usize = 4;
 const PER_CALL_RESULT_CAP_BYTES: usize = crate::tools::truncate::SPILLOVER_THRESHOLD_BYTES;
 /// Model-visible return cap, in serialized bytes.
 const RETURN_CAP_BYTES: usize = 16 * 1024;
+const MAX_LOG_LINES: usize = 200;
+const MAX_LOG_LINE_BYTES: usize = 1024;
+const MAX_LOG_TOTAL_BYTES: usize = 8 * 1024;
 
 /// Names refused before the gate, with a message that names the supported
 /// alternative. These either need the turn loop itself (a prompt, a
@@ -138,9 +142,10 @@ pub fn execute_tools_tool_definition() -> Tool {
              throws (catch to continue). tools.call('tool_search', {query}) returns names \
              with input schemas without loading them. Results are {content, metadata, \
              truncated}; a bare MCP JSON text block parses into content; check truncated \
-             before reading fields (when set, content is raw leading text, not parsed \
-             JSON). Not available in programs: agent, workflow, request_user_input, \
-             nested execute_tools, interactive shells, sandbox escalation, Computer Use, \
+             before trusting counts (when set, JSON content keeps only its leading \
+             elements; page the rest with retrieve_tool_result {ref: truncated.ref, \
+             mode: 'json'}). Not available in programs: agent, workflow, \
+             request_user_input, nested execute_tools, interactive shells, sandbox escalation, Computer Use, \
              MCP sign-in; inline images need a direct call. Max 50 nested calls, 4 \
              concurrent; return capped at 16 KiB."
             .to_string(),
@@ -559,6 +564,8 @@ struct Truncation {
     original_bytes: usize,
     kept_bytes: usize,
     spill_path: Option<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    retrieve_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1031,6 +1038,7 @@ impl CodemodeInvoker {
                         result.content,
                         PER_CALL_RESULT_CAP_BYTES,
                         &self.spill_id(seq, name),
+                        &self.context.state_namespace,
                     );
                     (text, raw_len, truncated)
                 };
@@ -1080,6 +1088,7 @@ impl CodemodeInvoker {
                             message,
                             PER_CALL_RESULT_CAP_BYTES,
                             &self.spill_id(seq, name),
+                            &self.context.state_namespace,
                         );
                         self.finish(seq, |receipt| {
                             receipt.decision = Some(decision);
@@ -1105,9 +1114,10 @@ impl CodemodeInvoker {
 
     /// Stable envelope: the tool's text content (parsed as JSON when it is
     /// JSON), its structured metadata, and `truncated` (null unless cut).
-    /// An oversized result keeps the same keys: `content` becomes the head
-    /// of the raw text (no longer parsed JSON) and `truncated` says how much
-    /// there was and where the whole output was saved.
+    /// An oversized result keeps the same keys: JSON `content` keeps its
+    /// shape with trailing elements and string tails cut, text `content`
+    /// becomes its head, and `truncated` says how much there was, where the
+    /// whole output was saved, and the `ref` that pages it.
     fn bounded_envelope(
         &self,
         seq: usize,
@@ -1115,48 +1125,60 @@ impl CodemodeInvoker {
         result: &ToolResult,
     ) -> (Value, usize, Option<Truncation>) {
         let metadata = result.metadata.clone().unwrap_or(Value::Null);
-        let content = serde_json::from_str(&result.content)
+        let mut content = serde_json::from_str(&result.content)
             .unwrap_or_else(|_| Value::String(result.content.clone()));
+        if McpPool::is_mcp_tool(name)
+            && let Some(envelope) = content.as_object()
+            && envelope
+                .keys()
+                .all(|key| key == "content" || key == "isError")
+            && envelope
+                .get("isError")
+                .is_none_or(|value| value == &Value::Bool(false))
+            && let Some(blocks) = envelope.get("content").and_then(Value::as_array)
+            && let [block] = blocks.as_slice()
+            && let Some(fields) = block.as_object()
+            && fields.keys().all(|key| key == "type" || key == "text")
+            && block.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(text) = block.get("text").and_then(Value::as_str)
+            && let Ok(parsed) = serde_json::from_str::<Value>(text)
+        {
+            content = parsed;
+        }
         let mut payload =
             json!({ "content": content, "metadata": metadata, "truncated": Value::Null });
         let raw = payload.to_string();
         if raw.len() <= PER_CALL_RESULT_CAP_BYTES {
-            if McpPool::is_mcp_tool(name)
-                && let Some(envelope) = payload["content"].as_object()
-                && envelope
-                    .keys()
-                    .all(|key| key == "content" || key == "isError")
-                && envelope
-                    .get("isError")
-                    .is_none_or(|value| value == &Value::Bool(false))
-                && let Some(blocks) = envelope.get("content").and_then(Value::as_array)
-                && let [block] = blocks.as_slice()
-                && let Some(fields) = block.as_object()
-                && fields.keys().all(|key| key == "type" || key == "text")
-                && block.get("type").and_then(Value::as_str) == Some("text")
-                && let Some(text) = block.get("text").and_then(Value::as_str)
-                && let Ok(content) = serde_json::from_str::<Value>(text)
-            {
-                payload["content"] = content;
-            }
             return (payload, raw.len(), None);
         }
-        let spill_path = spill(&self.spill_id(seq, name), &raw);
+        let (spill_path, retrieve_ref) = spill(
+            &self.spill_id(seq, name),
+            &raw,
+            &self.context.state_namespace,
+        );
         let metadata_len = metadata.to_string().len();
         let metadata = if metadata_len <= PER_CALL_RESULT_CAP_BYTES / 4 {
             metadata
         } else {
             Value::Null
         };
-        let head = char_prefix(&result.content, PER_CALL_RESULT_CAP_BYTES / 2);
+        let content = match payload["content"].take() {
+            Value::String(text) => Value::String(char_prefix(&text, PER_CALL_RESULT_CAP_BYTES / 2)),
+            value => crate::tools::truncate::shrink_json(value, PER_CALL_RESULT_CAP_BYTES / 2).0,
+        };
+        let kept_bytes = match &content {
+            Value::String(text) => text.len(),
+            value => crate::tools::truncate::json_len(value),
+        };
         let truncation = Truncation {
             original_bytes: raw.len(),
-            kept_bytes: head.len(),
+            kept_bytes,
             spill_path,
+            retrieve_ref,
         };
         (
             json!({
-                "content": head,
+                "content": content,
                 "metadata": metadata,
                 "truncated": truncation,
             }),
@@ -1377,33 +1399,28 @@ impl ToolInvoker for CodemodeInvoker {
     }
 }
 
-/// [`WorkflowDriver`] for code-mode runs: `task()` is refused (fan-out stays
-/// with `workflow`), the token budget is unconstrained, and progress events
-/// feed the run receipt.
-pub struct CodemodeDriver {
-    events: Mutex<Vec<ProgressEvent>>,
+#[derive(Default)]
+struct CodemodeLogBuffer {
+    lines: Vec<String>,
+    total_bytes: usize,
+    dropped: usize,
 }
 
-impl Default for CodemodeDriver {
-    fn default() -> Self {
-        Self {
-            events: Mutex::new(Vec::new()),
-        }
-    }
+#[derive(Default)]
+pub struct CodemodeDriver {
+    logs: Mutex<CodemodeLogBuffer>,
 }
 
 impl CodemodeDriver {
     fn log_lines(&self) -> Vec<String> {
-        self.events
+        self.logs
             .lock()
-            .map(|events| {
-                events
-                    .iter()
-                    .filter_map(|event| match event {
-                        ProgressEvent::Log { message } => Some(message.clone()),
-                        _ => None,
-                    })
-                    .collect()
+            .map(|logs| {
+                let mut lines = logs.lines.clone();
+                if logs.dropped > 0 {
+                    lines.push(format!("... ({} log entries omitted)", logs.dropped));
+                }
+                lines
             })
             .unwrap_or_default()
     }
@@ -1426,9 +1443,31 @@ impl WorkflowDriver for CodemodeDriver {
     }
 
     fn progress(&self, event: ProgressEvent) {
-        if let Ok(mut events) = self.events.lock() {
-            events.push(event);
+        let ProgressEvent::Log { message } = event else {
+            return;
+        };
+        let Ok(mut logs) = self.logs.lock() else {
+            return;
+        };
+        if logs.dropped > 0
+            || logs.lines.len() >= MAX_LOG_LINES
+            || logs.total_bytes >= MAX_LOG_TOTAL_BYTES
+        {
+            logs.dropped = logs.dropped.saturating_add(1);
+            return;
         }
+        let line = if message.len() > MAX_LOG_LINE_BYTES {
+            format!("{}...", char_prefix(&message, MAX_LOG_LINE_BYTES - 3))
+        } else {
+            message
+        };
+        let remaining = MAX_LOG_TOTAL_BYTES.saturating_sub(logs.total_bytes);
+        if line.len() > remaining {
+            logs.dropped = logs.dropped.saturating_add(1);
+            return;
+        }
+        logs.total_bytes = logs.total_bytes.saturating_add(line.len());
+        logs.lines.push(line);
     }
 
     fn cancel_all(&self) {}
@@ -1444,38 +1483,74 @@ fn char_prefix(text: &str, max_bytes: usize) -> String {
     text[..cut].to_string()
 }
 
-/// Save a full value through the session spillover store; `None` when the
-/// store is unavailable (the truncation is still reported).
-fn spill(id: &str, content: &str) -> Option<String> {
-    crate::tools::truncate::write_spillover(id, content)
-        .map(|path| path.display().to_string())
-        .map_err(|error| {
+/// Save a full value through the session spillover store and record which
+/// session owns it, so `retrieve_tool_result` can page it by `ref`. The path
+/// is `None` when the store is unavailable (the truncation is still
+/// reported); the ref is `None` when ownership could not be recorded.
+fn spill(id: &str, content: &str, session: &str) -> (Option<String>, Option<String>) {
+    let path = match crate::tools::truncate::write_spillover(id, content) {
+        Ok(path) => path,
+        Err(error) => {
             tracing::warn!(target: "codemode", %error, "nested result spillover failed");
-        })
-        .ok()
+            return (None, None);
+        }
+    };
+    let retrieve_ref = crate::tools::truncate::publish_legacy_spillover_ownership(
+        &path,
+        session,
+        content.as_bytes(),
+    )
+    .ok()
+    .and_then(|_| path.file_stem())
+    .map(|stem| stem.to_string_lossy().into_owned());
+    (Some(path.display().to_string()), retrieve_ref)
 }
 
 /// Bound the program's return value to `cap` serialized bytes. An oversized
-/// value becomes the head of its JSON text, and the truncation record says so.
-fn bound_json(value: Value, cap: usize, spill_id: &str) -> (Value, Option<Truncation>) {
+/// value keeps its JSON shape with trailing elements and string tails cut,
+/// and the truncation record says so.
+fn bound_json(
+    value: Value,
+    cap: usize,
+    spill_id: &str,
+    session: &str,
+) -> (Value, Option<Truncation>) {
     let raw = value.to_string();
     if raw.len() <= cap {
         return (value, None);
     }
-    bound_text(raw, cap, spill_id)
+    if let Value::String(text) = value {
+        return bound_text(text, cap, spill_id, session);
+    }
+    let (spill_path, retrieve_ref) = spill(spill_id, &raw, session);
+    let (kept, _) = crate::tools::truncate::shrink_json(value, cap / 2);
+    let truncation = Truncation {
+        original_bytes: raw.len(),
+        kept_bytes: crate::tools::truncate::json_len(&kept),
+        spill_path,
+        retrieve_ref,
+    };
+    (kept, Some(truncation))
 }
 
 /// Bound `text` to `cap` bytes: an oversized text becomes its head, the
 /// whole text is saved, and the truncation record says so.
-fn bound_text(text: String, cap: usize, spill_id: &str) -> (Value, Option<Truncation>) {
+fn bound_text(
+    text: String,
+    cap: usize,
+    spill_id: &str,
+    session: &str,
+) -> (Value, Option<Truncation>) {
     if text.len() <= cap {
         return (Value::String(text), None);
     }
     let head = char_prefix(&text, cap / 2);
+    let (spill_path, retrieve_ref) = spill(spill_id, &text, session);
     let truncation = Truncation {
         original_bytes: text.len(),
         kept_bytes: head.len(),
-        spill_path: spill(spill_id, &text),
+        spill_path,
+        retrieve_ref,
     };
     (Value::String(head), Some(truncation))
 }
@@ -1602,7 +1677,12 @@ pub async fn execute_tools_tool(
         Ok(Ok(value)) => value,
     };
     let spill_id = format!("{}-return", invoker.spill_prefix);
-    let (bounded, truncated) = bound_json(program_result, RETURN_CAP_BYTES, &spill_id);
+    let (bounded, truncated) = bound_json(
+        program_result,
+        RETURN_CAP_BYTES,
+        &spill_id,
+        &invoker.context.state_namespace,
+    );
     Ok(receipt_payload(
         true,
         json!({ "return": bounded, "return_truncated": truncated }),
@@ -1668,7 +1748,7 @@ mod tests {
 
     #[test]
     fn bound_json_keeps_small_values_verbatim() {
-        let (value, truncated) = bound_json(json!({"a": 1}), 1024, "bound-small");
+        let (value, truncated) = bound_json(json!({"a": 1}), 1024, "bound-small", "");
         assert!(truncated.is_none());
         assert_eq!(value, json!({"a": 1}));
     }
@@ -1682,18 +1762,31 @@ mod tests {
         let previous =
             crate::tools::truncate::set_test_spillover_root(Some(spill_root.path().to_path_buf()));
         let big = "x".repeat(100);
-        let (value, truncated) = bound_json(json!({ "blob": big }), 64, "bound-big");
+        let (value, truncated) = bound_json(
+            json!({ "id": 7, "blob": big }),
+            64,
+            "bound-big",
+            "session-bound",
+        );
         crate::tools::truncate::set_test_spillover_root(previous);
         let truncated = truncated.expect("oversized value is reported");
-        assert_eq!(truncated.original_bytes, 111);
-        assert_eq!(truncated.kept_bytes, 32);
+        assert_eq!(truncated.original_bytes, 118);
+        assert_eq!(value["id"], 7, "a cut JSON value stays parsed: {value}");
         assert!(
-            value
+            value["blob"]
                 .as_str()
-                .is_some_and(|head| head.starts_with("{\"blob\""))
+                .is_some_and(|blob| blob.starts_with("xx"))
         );
+        assert_eq!(truncated.kept_bytes, value.to_string().len());
+        assert!(truncated.kept_bytes <= 32);
+        assert_eq!(truncated.retrieve_ref.as_deref(), Some("bound-big"));
         let saved = truncated.spill_path.expect("full value saved");
-        assert_eq!(std::fs::read_to_string(saved).unwrap().len(), 111);
+        assert_eq!(std::fs::read_to_string(saved).unwrap().len(), 118);
+
+        let (kept_after_big_key, omitted) =
+            crate::tools::truncate::shrink_json(json!({"k".repeat(9_000): 1, "z": 2}), 64);
+        assert_eq!(kept_after_big_key, json!({"z": 2}));
+        assert_eq!(omitted, 1);
     }
 
     use crate::core::engine::tool_catalog::ToolMode;
@@ -2224,5 +2317,152 @@ mod tests {
                 .is_some(),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn console_methods_populate_receipt_log_and_respect_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        let code = r#"
+            console.log("hello", { n: 1 });
+            console.info("step");
+            console.warn("careful");
+            console.error("problem");
+            console.debug("detail");
+            return "ok";
+        "#;
+        let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        let parsed = body(&result);
+        assert_eq!(parsed["body"]["return"], "ok");
+        assert_eq!(
+            parsed["log"],
+            json!([
+                r#"hello {"n":1}"#,
+                "[info] step",
+                "[warn] careful",
+                "[error] problem",
+                "[debug] detail",
+            ])
+        );
+
+        let spam_code = format!(
+            "for (let i = 0; i < {}; i++) console.log('line-' + i); return true;",
+            MAX_LOG_LINES + 25
+        );
+        let spam_result = execute_tools_tool(&json!({ "code": spam_code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(spam_result.success, "{}", spam_result.content);
+        let spam_logs = body(&spam_result)["log"].as_array().unwrap().clone();
+        assert_eq!(spam_logs.len(), MAX_LOG_LINES + 1);
+        assert_eq!(spam_logs[0], "line-0");
+        assert_eq!(spam_logs[MAX_LOG_LINES], "... (25 log entries omitted)");
+
+        let huge_line_code = format!(
+            "for (let i = 0; i < 20; i++) console.log('x'.repeat({})); return true;",
+            MAX_LOG_LINE_BYTES + 500
+        );
+        let huge_result =
+            execute_tools_tool(&json!({ "code": huge_line_code }), &registry, &context)
+                .await
+                .unwrap();
+        assert!(huge_result.success, "{}", huge_result.content);
+        let huge_logs = body(&huge_result)["log"].as_array().unwrap().clone();
+        assert_eq!(
+            huge_logs.len(),
+            (MAX_LOG_TOTAL_BYTES / MAX_LOG_LINE_BYTES) + 1
+        );
+        assert_eq!(huge_logs[0].as_str().unwrap().len(), MAX_LOG_LINE_BYTES);
+        assert!(huge_logs[0].as_str().unwrap().ends_with("..."));
+        assert!(
+            huge_logs
+                .last()
+                .and_then(Value::as_str)
+                .is_some_and(|line| line.contains("log entries omitted")),
+            "{huge_logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn url_and_search_params_work_inside_execute_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        let code = r#"
+            const u = new URL("https://example.com:8443/a/b?b=1&k=v1#frag");
+            u.searchParams.set("b", "2");
+            u.searchParams.append("k", "v2");
+            const p = new URLSearchParams("x=1&y=two+words");
+            p.delete("x");
+            return {
+                protocol: u.protocol,
+                hostname: u.hostname,
+                host: u.host,
+                port: u.port,
+                pathname: u.pathname,
+                search: u.search,
+                hash: u.hash,
+                origin: u.origin,
+                href: u.href,
+                kAll: u.searchParams.getAll("k"),
+                pStr: p.toString(),
+                pY: p.get("y"),
+            };
+        "#;
+        let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            body(&result)["body"]["return"],
+            json!({
+                "protocol": "https:",
+                "hostname": "example.com",
+                "host": "example.com:8443",
+                "port": "8443",
+                "pathname": "/a/b",
+                "search": "?b=2&k=v1&k=v2",
+                "hash": "#frag",
+                "origin": "https://example.com:8443",
+                "href": "https://example.com:8443/a/b?b=2&k=v1&k=v2#frag",
+                "kAll": ["v1", "v2"],
+                "pStr": "y=two+words",
+                "pY": "two words",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn determinism_errors_in_execute_tools_avoid_workflow_wording() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        for (code, needle) in [
+            ("return Date.now();", "Date.now()"),
+            ("return new Date();", "new Date()/Date()"),
+            ("return Math.random();", "Math.random()"),
+        ] {
+            let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+                .await
+                .unwrap();
+            assert!(!result.success, "{}", result.content);
+            let error = body(&result)["body"]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(error.contains(needle), "{error}");
+            assert!(error.contains("execute_tools"), "{error}");
+            assert!(
+                !error.contains("Workflow") && !error.contains("record/replay"),
+                "{error}"
+            );
+        }
     }
 }

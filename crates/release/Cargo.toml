@@ -28,4 +28,5 @@ toml.workspace = true
 webpki-roots = "1"
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true

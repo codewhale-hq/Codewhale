@@ -20,6 +20,7 @@ use codewhale_tui_kit::diff_render;
 use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 mod agent_activity;
+mod approval_receipt;
 mod archived_context;
 mod automation;
 mod checklist;
@@ -35,6 +36,7 @@ mod tool_output;
 mod tool_run;
 mod turn_fold;
 
+pub use approval_receipt::{ApprovalReceiptCell, ApprovalReceiptOutcome};
 use archived_context::{parse_archived_context, render_archived_context};
 pub use automation::{AutomationCell, AutomationCellKind};
 pub(crate) use checklist::is_checklist_tool_name;
@@ -171,6 +173,7 @@ pub enum HistoryCell {
     Error {
         message: String,
         severity: codewhale_error_taxonomy::ErrorSeverity,
+        code: Option<String>,
     },
     Thinking {
         content: String,
@@ -202,6 +205,7 @@ pub enum HistoryCell {
     /// one-line bulleted card that replaced bare-String `System` receipts
     /// (AUTOMATION-VISIBILITY-SPEC §2.2).
     Automation(AutomationCell),
+    ApprovalReceipt(ApprovalReceiptCell),
     /// Live in-transcript card for sub-agent activity (issue #128). Owns
     /// either a single `DelegateCard` or a multi-worker `FanoutCard`; the
     /// UI re-binds it from the mailbox stream as envelopes arrive.
@@ -329,7 +333,19 @@ impl HistoryCell {
             | HistoryCell::Thinking { .. }
             | HistoryCell::ArchivedContext { .. }
             | HistoryCell::Automation(_)
+            | HistoryCell::ApprovalReceipt(_)
             | HistoryCell::SubAgent(_) => false,
+        }
+    }
+
+    pub(crate) fn activity_sweep(&self) -> Option<ActivitySweep> {
+        match self {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => (exec.status == ToolStatus::Running
+                && exec.waiting.is_none()
+                && exec.stale_elapsed_since_output_ms.is_none())
+            .then_some(ActivitySweep::StatusOnly),
+            HistoryCell::Tool(_) if self.has_live_motion() => Some(ActivitySweep::VerbAndStatus),
+            _ => None,
         }
     }
 
@@ -421,9 +437,11 @@ impl HistoryCell {
                 &escape_note_backslashes(content),
                 width,
             ),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, true)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, true),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -432,6 +450,7 @@ impl HistoryCell {
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
@@ -585,11 +604,14 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::System { .. } => self.lines(width),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, true)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, true),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => {
                 render_archived_context(self, width, options.palette_mode)
             }
@@ -727,9 +749,11 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { .. } => self.lines(width),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, false)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, false),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -745,6 +769,7 @@ impl HistoryCell {
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
@@ -1472,18 +1497,20 @@ impl ExecCell {
         };
 
         let separator = Style::default().fg(palette::TEXT_DIM);
+        let running_elapsed = (held.is_none() && self.status == ToolStatus::Running)
+            .then(|| self.started_at.and_then(running_elapsed_label))
+            .flatten();
         let state = held.or_else(|| match self.status {
             ToolStatus::Success => None,
-            ToolStatus::Running => Some(self.started_at.map_or_else(
-                || tool_status_label(ToolStatus::Running, locale).to_string(),
-                |started| running_status_label_with_elapsed(started.elapsed().as_secs(), locale),
-            )),
             status => Some(tool_status_label(status, locale).to_string()),
         });
         let mut suffix = Vec::new();
         if let Some(state) = state {
             suffix.push(Span::styled(" \u{00B7} ", separator));
             suffix.push(Span::styled(state, tool_status_style(self.status, family)));
+        }
+        if let Some(elapsed) = running_elapsed {
+            suffix.push(Span::styled(format!("  {elapsed}"), separator));
         }
         if let Some(duration) = self.finished_duration() {
             suffix.push(Span::styled(" \u{00B7} ", separator));
@@ -3175,6 +3202,42 @@ fn error_body_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style 
     Style::default().fg(color)
 }
 
+pub(crate) fn normalize_error_code(code: &str) -> Option<String> {
+    let trimmed = code.trim().trim_matches(['[', ']']).trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub(crate) fn display_error_code<'a>(message: &str, code: Option<&'a str>) -> Option<&'a str> {
+    let code = code?.trim().trim_matches(['[', ']']).trim();
+    if code.is_empty() || contains_code_token(message, code) {
+        return None;
+    }
+    Some(code)
+}
+
+fn contains_code_token(message: &str, code: &str) -> bool {
+    let lower_message = message.to_ascii_lowercase();
+    let lower_code = code.to_ascii_lowercase();
+    let is_token_char = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let bytes = lower_message.as_bytes();
+    let mut start = 0;
+    while let Some(offset) = lower_message[start..].find(&lower_code) {
+        let match_start = start + offset;
+        let match_end = match_start + lower_code.len();
+        let left_ok = match_start == 0 || !is_token_char(bytes[match_start - 1]);
+        let right_ok = match_end == bytes.len() || !is_token_char(bytes[match_end]);
+        if left_ok && right_ok {
+            return true;
+        }
+        start = match_start
+            + lower_message[match_start..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// Render an engine error without markdown interpretation. The live transcript
 /// advertises the dedicated full-error pager once the error wraps past four
 /// rows: terminal height, scroll position, and adjacent tool cards can
@@ -3184,6 +3247,7 @@ fn error_body_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style 
 fn render_error_message(
     message: &str,
     severity: codewhale_error_taxonomy::ErrorSeverity,
+    code: Option<&str>,
     width: u16,
     show_full_error_affordance: bool,
 ) -> Vec<Line<'static>> {
@@ -3194,12 +3258,52 @@ fn render_error_message(
     let label = error_label_text(severity);
     let label_style = error_label_style(severity);
     let body_style = error_body_style(severity);
+    let badge = display_error_code(message, code).map(|value| format!("[{value}]"));
     let prefix_width = UnicodeWidthStr::width(label);
     let content_width = width.saturating_sub(2 + prefix_width as u16).max(1);
-    let mut lines: Vec<_> = message
-        .split('\n')
-        .flat_map(|line| wrap_plain_line(line, body_style, content_width))
-        .collect();
+    let mut lines: Vec<Line<'static>> = match badge {
+        None => message
+            .split('\n')
+            .flat_map(|line| wrap_plain_line(line, body_style, content_width))
+            .collect(),
+        Some(badge) => {
+            let badge_style = Style::default().fg(palette::TEXT_MUTED);
+            let badge_width = UnicodeWidthStr::width(badge.as_str());
+            let mut raw_lines = message.split('\n');
+            let first_raw = raw_lines.next().unwrap_or("");
+            let mut lines = Vec::new();
+            let remaining_on_first = (content_width as usize).saturating_sub(badge_width + 1);
+            if remaining_on_first >= 12 {
+                let mut head_len = None;
+                for_each_wrapped_text(first_raw, remaining_on_first, |part| {
+                    if head_len.is_none() {
+                        head_len = Some(part.len());
+                    }
+                });
+                let split = head_len.unwrap_or(first_raw.len());
+                let head = &first_raw[..split];
+                let tail = &first_raw[split..];
+                let mut first_spans = vec![Span::styled(badge, badge_style)];
+                if !head.is_empty() {
+                    first_spans.push(Span::raw(" "));
+                    first_spans.push(Span::styled(head.to_string(), body_style));
+                }
+                lines.push(Line::from(first_spans));
+                if !tail.is_empty() {
+                    lines.extend(wrap_plain_line(tail, body_style, content_width));
+                }
+            } else {
+                lines.push(Line::from(Span::styled(badge, badge_style)));
+                if !first_raw.is_empty() {
+                    lines.extend(wrap_plain_line(first_raw, body_style, content_width));
+                }
+            }
+            for line in raw_lines {
+                lines.extend(wrap_plain_line(line, body_style, content_width));
+            }
+            lines
+        }
+    };
     if let Some(first) = lines.get_mut(0) {
         first.spans.insert(0, Span::raw(" "));
         first.spans.insert(0, Span::styled(label, label_style));
@@ -3259,15 +3363,9 @@ fn render_tool_header_with_family_and_summary(
     low_motion: bool,
     locale: Locale,
 ) -> Line<'static> {
-    // For long-running tools, append elapsed seconds so the user can see the
-    // call isn't stuck. Threshold matches the eye's "did this hang?" reflex
-    // — under 3s we stay quiet so quick reads/greps don't visually churn.
-    let state_owned = match (state, status, started_at) {
-        (Some(state), _, _) => state.to_string(),
-        (None, ToolStatus::Running, Some(started)) => {
-            running_status_label_with_elapsed(started.elapsed().as_secs(), locale)
-        }
-        _ => tool_status_label(status, locale).into_owned(),
+    let state_owned = match state {
+        Some(state) => state.to_string(),
+        None => tool_status_label(status, locale).into_owned(),
     };
 
     let glyph = crate::tui::widgets::tool_card::family_glyph(family);
@@ -3299,6 +3397,15 @@ fn render_tool_header_with_family_and_summary(
         spans.push(Span::styled(
             truncate_text(&summary, TOOL_HEADER_SUMMARY_LIMIT),
             Style::default().fg(palette::TEXT_MUTED),
+        ));
+    }
+    if state.is_none()
+        && status == ToolStatus::Running
+        && let Some(elapsed) = started_at.and_then(running_elapsed_label)
+    {
+        spans.push(Span::styled(
+            format!("  {elapsed}"),
+            Style::default().fg(palette::TEXT_DIM),
         ));
     }
 
@@ -3342,17 +3449,114 @@ fn normalize_header_summary(summary: &str) -> Option<String> {
     }
 }
 
-/// Build the "running" label with an elapsed-seconds badge for long-running
-/// tools. Below 3s the badge is suppressed to avoid visual churn for tools
-/// that resolve in milliseconds; at 3s and beyond the badge appears and ticks
-/// every second the tool stays in flight.
-pub(crate) fn running_status_label_with_elapsed(elapsed_secs: u64, locale: Locale) -> String {
-    let state = tool_status_label(ToolStatus::Running, locale);
-    if elapsed_secs < 3 {
-        state.into_owned()
-    } else {
-        format!("{state} ({elapsed_secs}s)")
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivitySweep {
+    VerbAndStatus,
+    StatusOnly,
+}
+
+pub(crate) fn tool_header_sweep_extent(
+    shape: ActivitySweep,
+    line: &Line<'static>,
+    line_in_cell: usize,
+) -> Option<std::ops::Range<usize>> {
+    let has_rail = line
+        .spans
+        .first()
+        .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ "));
+    match (shape, line_in_cell) {
+        (ActivitySweep::StatusOnly, 0) if has_rail => {
+            (line.spans.get(4).is_some_and(|span| span.content == " ")
+                && line
+                    .spans
+                    .get(5)
+                    .is_some_and(|span| !span.content.trim().is_empty()))
+            .then_some(5..6)
+        }
+        (ActivitySweep::StatusOnly, 0) => {
+            let status_fg = tool_glyph_color(
+                ToolStatus::Running,
+                crate::tui::widgets::tool_card::ToolFamily::Run,
+            );
+            (line.spans.len() >= 4
+                && line.spans[3].style.fg == Some(status_fg)
+                && !line.spans[3].content.trim().is_empty())
+            .then_some(3..4)
+        }
+        (ActivitySweep::StatusOnly, 1) if !has_rail => {
+            let status_fg = tool_glyph_color(
+                ToolStatus::Running,
+                crate::tui::widgets::tool_card::ToolFamily::Run,
+            );
+            line.spans
+                .first()
+                .is_some_and(|span| {
+                    span.style.fg == Some(status_fg)
+                        && !span.content.starts_with(char::is_whitespace)
+                        && !span.content.trim().is_empty()
+                })
+                .then_some(0..1)
+        }
+        (ActivitySweep::VerbAndStatus, 0) => {
+            let base = usize::from(has_rail);
+            let verb = base + 2;
+            line.spans.get(verb)?;
+            if line
+                .spans
+                .get(verb + 1)
+                .is_some_and(|span| span.content == " ")
+                && line.spans.get(verb + 2).is_some()
+            {
+                Some(verb..verb + 3)
+            } else {
+                Some(verb..verb + 1)
+            }
+        }
+        _ => None,
     }
+}
+
+pub(crate) fn tool_header_settle_spans(tool: &ToolCell, line: &Line<'static>) -> Vec<usize> {
+    let base = usize::from(
+        line.spans
+            .first()
+            .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ ")),
+    );
+    let mut spans = vec![base];
+    let family_header = line.spans.get(base + 1).is_some_and(|span| {
+        span.content.ends_with(' ') && is_tool_family_glyph(span.content.trim_end())
+    });
+    match (tool, tool.status()) {
+        (ToolCell::Exec(_), Some(status)) if !family_header => {
+            let status_fg =
+                tool_glyph_color(status, crate::tui::widgets::tool_card::ToolFamily::Run);
+            spans.extend((base + 2..line.spans.len()).find(|index| {
+                line.spans[*index].style.fg == Some(status_fg)
+                    && line.spans[index - 1].content == " \u{00B7} "
+            }));
+        }
+        _ => {
+            spans.push(base + 1);
+            if line
+                .spans
+                .get(base + 3)
+                .is_some_and(|span| span.content == " ")
+            {
+                spans.push(base + 4);
+            }
+        }
+    }
+    spans.retain(|index| {
+        line.spans
+            .get(*index)
+            .is_some_and(|span| !span.content.trim().is_empty())
+    });
+    spans
+}
+
+pub(crate) fn running_elapsed_label(started_at: Instant) -> Option<String> {
+    let secs = started_at.elapsed().as_secs();
+    (secs >= 1).then(|| codewhale_command_contract::elapsed::format_elapsed_secs(secs))
 }
 
 pub(crate) fn stale_shell_status_label(elapsed_since_output_ms: u64, locale: Locale) -> String {

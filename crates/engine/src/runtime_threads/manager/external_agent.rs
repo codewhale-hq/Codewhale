@@ -487,7 +487,7 @@ fn tool_status(update: &Value) -> Option<TurnItemLifecycleStatus> {
     }
 }
 
-fn locations(update: &Value) -> Vec<String> {
+fn location_entries(update: &Value) -> Vec<Value> {
     update
         .get("locations")
         .and_then(Value::as_array)
@@ -495,12 +495,36 @@ fn locations(update: &Value) -> Vec<String> {
             locations
                 .iter()
                 .take(MAX_LOCATIONS)
-                .filter_map(|location| location.get("path").and_then(Value::as_str))
-                .filter(|path| path.len() <= 4096 && !path.chars().any(char::is_control))
-                .map(str::to_string)
+                .filter_map(|location| {
+                    let path = location.get("path").and_then(Value::as_str)?;
+                    if path.len() > 4096 || path.chars().any(char::is_control) {
+                        return None;
+                    }
+                    let mut entry = json!({ "path": path });
+                    if let Some(line) = location
+                        .get("line")
+                        .and_then(Value::as_u64)
+                        .filter(|line| (1..=u64::from(u32::MAX)).contains(line))
+                    {
+                        entry["line"] = json!(line);
+                    }
+                    Some(entry)
+                })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn locations(update: &Value) -> Vec<String> {
+    location_entries(update)
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 fn content_text(content: Option<&Value>) -> String {
@@ -1430,7 +1454,7 @@ impl RuntimeThreadManager {
                 }
                 let kind = tool_kind(update);
                 let title = label(update.get("title"), "Tool call");
-                let paths = locations(update);
+                let paths = location_entries(update);
                 let input = bounded_json(update.get("rawInput"));
                 let mut detail = String::new();
                 if let Some(input) = input.as_ref() {

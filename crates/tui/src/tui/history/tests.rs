@@ -25,7 +25,7 @@ use super::{
     REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, RenderMode, ToolCell, ToolStatus,
     TranscriptFold, TranscriptRenderOptions, WebSearchCell, assistant_label_style_for,
     extract_reasoning_summary, render_spillover_annotation, render_thinking,
-    render_thinking_with_analysis, running_status_label_with_elapsed,
+    render_thinking_with_analysis, render_tool_header_with_summary,
 };
 use crate::tui::motion::MotionMode;
 use codewhale_engine::session_manager::{SessionManager, create_saved_session};
@@ -259,6 +259,7 @@ fn ordinary_cell_fold_preserves_body_metadata_and_full_exports() {
         HistoryCell::Error {
             message: content.clone(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
         HistoryCell::Tool(ToolCell::Exec(tool)),
     ];
@@ -1348,7 +1349,6 @@ fn disabling_the_reasoning_highlight_leaves_no_span_with_a_background() {
 /// filled, legible bubble rather than the blank the spinner starts on.
 #[test]
 fn reduced_and_still_motion_render_a_frame_that_does_not_move() {
-    let frame_symbols = super::TOOL_RUNNING_SYMBOLS.len() as u64;
     let frame_at = |elapsed_ms: u64, low_motion: bool, motion: MotionMode| {
         let mut exec = exec_tool("echo hi", ToolStatus::Running);
         exec.started_at = Some(Instant::now() - Duration::from_millis(elapsed_ms));
@@ -1363,13 +1363,12 @@ fn reduced_and_still_motion_render_a_frame_that_does_not_move() {
         ))
     };
 
-    // Half a spinner cycle apart, and both well under the 3s elapsed-badge
-    // threshold so the badge itself cannot be the thing that differs.
-    let early = codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS;
-    let late = early + super::TOOL_STATUS_SYMBOL_MS * (frame_symbols / 2);
+    let frame_symbols = super::TOOL_RUNNING_SYMBOLS.len() as u64;
+    let early = 1_250;
+    let late = early + super::TOOL_STATUS_SYMBOL_MS * (frame_symbols / 8);
     assert!(
-        late < 3_000,
-        "both samples must stay under the elapsed badge"
+        early >= 1_000 && late < 2_000,
+        "both samples must stay in the same elapsed-second bucket"
     );
 
     // Two independent mechanisms are supposed to produce stillness — the
@@ -1828,6 +1827,7 @@ fn error_severity_ranks_stay_visually_distinguishable() {
         let cell = HistoryCell::Error {
             message: "Authentication failed: invalid API key".to_string(),
             severity,
+            code: None,
         };
         let lines = cell.lines(80);
         assert!(!lines.is_empty(), "{severity:?} must render a line");
@@ -1859,6 +1859,7 @@ fn error_severity_ranks_stay_visually_distinguishable() {
     let cell = HistoryCell::Error {
         message: "Authentication failed: invalid API key".to_string(),
         severity: ErrorSeverity::Error,
+        code: None,
     };
     let body_fg = cell
         .lines(80)
@@ -1877,6 +1878,7 @@ fn error_guidance_keeps_recovery_commands_on_their_own_line() {
         message: "DeepSeek API key not found.\nSave it:\n  codewhale auth set --provider deepseek"
             .to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     };
     for width in [80, 140] {
         let lines = cell.lines(width);
@@ -1907,6 +1909,7 @@ Set CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host.";
     let cell = HistoryCell::Error {
         message: recovery.to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     };
 
     let live_text = lines_text(&cell.lines(48));
@@ -1922,6 +1925,72 @@ Set CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host.";
     assert!(
         transcript_text.contains("192.168.1.25"),
         "the offending host must survive verbatim: {transcript_text}"
+    );
+}
+
+#[test]
+fn error_envelope_code_renders_muted_badge_without_duplication() {
+    let cell = HistoryCell::Error {
+        message: "SSE stream request did not receive response headers after 45s".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: Some("llm_network_error".to_string()),
+    };
+
+    let lines = cell.lines(80);
+    let rendered = lines_text(&lines);
+    assert!(rendered.contains("Error [llm_network_error]"), "{rendered}");
+    assert!(rendered.contains("after 45s"), "{rendered}");
+    for line in &lines {
+        assert!(line.width() <= 80, "line overflowed 80 cols: {line:?}");
+    }
+    let badge_span = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == "[llm_network_error]")
+        .expect("muted error code badge");
+    let label_span = &lines[0].spans[0];
+    assert_eq!(badge_span.style.fg, Some(codewhale_palette::TEXT_MUTED));
+    assert_ne!(badge_span.style.fg, label_span.style.fg);
+    assert_eq!(
+        crate::tui::history::text::history_cell_to_text(&cell, 80),
+        "[llm_network_error] SSE stream request did not receive response headers after 45s"
+    );
+
+    let narrow = cell.lines(28);
+    let narrow_text = lines_text(&narrow);
+    assert!(narrow_text.contains("[llm_network_error]"), "{narrow_text}");
+    assert!(narrow_text.contains("after 45s"), "{narrow_text}");
+    for line in &narrow {
+        assert!(
+            line.width() <= 28,
+            "narrow line overflowed 28 cols: {line:?}"
+        );
+    }
+
+    let already_tagged = HistoryCell::Error {
+        message: "Provider failed [llm_rate_limited]: retry in 10s".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Warning,
+        code: Some("llm_rate_limited".to_string()),
+    };
+    let tagged_text = lines_text(&already_tagged.lines(100));
+    assert_eq!(
+        tagged_text.matches("llm_rate_limited").count(),
+        1,
+        "code already present in message must not duplicate: {tagged_text}"
+    );
+    assert_eq!(
+        crate::tui::history::text::history_cell_to_text(&already_tagged, 100),
+        "Provider failed [llm_rate_limited]: retry in 10s"
+    );
+
+    let substring_non_match = HistoryCell::Error {
+        message: "Invalid statement from provider".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: Some("state".to_string()),
+    };
+    assert!(
+        lines_text(&substring_non_match.lines(80)).contains("[state]"),
+        "partial word match must not suppress badge"
     );
 }
 
@@ -2869,19 +2938,31 @@ fn the_card_helpers_accept_their_documented_forms_and_decline_the_rest() {
         );
     }
 
-    // The elapsed badge appears at three seconds and not before, so quick
-    // reads and greps do not visually churn.
-    for secs in [0, 1, 2] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            "running"
-        );
-    }
-    for secs in [3u64, 7, 120] {
-        assert_eq!(
-            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
-            format!("running ({secs}s)")
-        );
+    let summary_column = |secs: u64| {
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(secs))
+            .expect("monotonic clock covers the test offset");
+        let header = line_to_plain(&render_tool_header_with_summary(
+            "read_file",
+            Some("READINESS.md"),
+            None,
+            ToolStatus::Running,
+            Some(started),
+            true,
+            codewhale_localization::Locale::En,
+        ));
+        let column = header
+            .find("READINESS.md")
+            .expect("summary is shown on a running header");
+        (column, header)
+    };
+    let (still, quick) = summary_column(0);
+    assert!(quick.trim_end().ends_with("READINESS.md"), "{quick:?}");
+    for secs in [5u64, 65] {
+        let (column, header) = summary_column(secs);
+        assert_eq!(column, still, "summary moved at {secs}s: {header:?}");
+        let elapsed = codewhale_command_contract::elapsed::format_elapsed_secs(secs);
+        assert!(header.trim_end().ends_with(&elapsed), "{header:?}");
     }
 
     // A reasoning summary prefers an explicit Summary block, and otherwise is

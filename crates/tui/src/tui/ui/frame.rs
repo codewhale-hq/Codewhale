@@ -675,7 +675,7 @@ fn register_clickable_chrome_for_hover(app: &App) {
     // nothing is the same defect as one that acts without lighting up.
     if let Some(composer) = app.viewport.last_composer_area
         && let Some(submit) = crate::tui::widgets::active_composer_submit_rect(app, composer)
-        && app.composer_enter_would_submit(true)
+        && app.composer_enter_would_submit(true, Instant::now())
     {
         crate::tui::hover_layer::register_rect(
             crate::tui::hover_hit::HoverTargetKind::Link,
@@ -1645,6 +1645,7 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
     app.viewport.working_glow_visible = false;
+    app.viewport.activity_sweep_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
@@ -1838,13 +1839,15 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     } else {
         app.plugin_cta_row_height()
     };
+    let approval_height = app.view_stack.top_docked_height(body_area.width);
     let auxiliary_budget = body_height.saturating_sub(
         top_work_strip_height
             .saturating_add(MIN_CHAT_HEIGHT)
             .saturating_add(composer_height)
             .saturating_add(footer_height)
             .saturating_add(info_height)
-            .saturating_add(plugin_cta_height),
+            .saturating_add(plugin_cta_height)
+            .saturating_add(approval_height),
     );
     // Queued-only previews author the direct controls in row two (and fall
     // back to controls-only when just one row remains). Mixed previews retain
@@ -1909,6 +1912,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(preview_height),     // Pending input preview (0 if empty)
             Constraint::Length(attachment_preview_height), // Image thumbnail (0 if none)
             Constraint::Length(plugin_cta_height),  // Live plugin CTA (0 unless matched)
+            Constraint::Length(approval_height),
             Constraint::Length(composer_height),    // Composer
             Constraint::Length(footer_height),      // Posture bar
             Constraint::Length(workbar_height),     // Workbar: one row per workflow run
@@ -1916,15 +1920,28 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_below_height), // Roster + To-do under the chrome (`bottom`)
         ])
         .split(body_area);
-    let strip_slot = if strip_below { 9 } else { 0 };
+    let strip_slot = if strip_below { 10 } else { 0 };
     let preview_slot = 2;
     let attachment_preview_slot = 3;
     let plugin_cta_slot = 4;
-    let composer_slot = 5;
-    let footer_slot = 6;
-    let workbar_slot = 7;
-    let info_slot = 8;
+    let approval_slot = 5;
+    let composer_slot = 6;
+    let footer_slot = 7;
+    let workbar_slot = 8;
+    let info_slot = 9;
 
+    if approval_height > 0 {
+        let dock_area = body_chunks[approval_slot];
+        let dock_canvas = Rect::new(
+            dock_area.x,
+            body_area.y,
+            dock_area.width,
+            dock_area.bottom().saturating_sub(body_area.y),
+        );
+        app.view_stack.set_approval_dock_canvas(Some(dock_canvas));
+    } else {
+        app.view_stack.set_approval_dock_canvas(None);
+    }
     if matches!(
         app.view_stack.top_kind(),
         Some(ModalKind::Approval | ModalKind::UserInput)
@@ -2353,6 +2370,7 @@ pub(crate) fn draw_app_frame_inner(
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     app.viewport.ocean_caps = Some(terminal.backend().native_ocean_caps());
+    app.viewport.detected_background = terminal.backend().detected_background();
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the
@@ -2615,6 +2633,8 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::{
         drain_text_block, estimate_output_tokens_from_text, register_info_interaction_targets,
         render_info_row, short_title_truncate,
@@ -3429,6 +3449,7 @@ mod tests {
                     row: target.area.y,
                     modifiers: crossterm::event::KeyModifiers::NONE,
                 },
+                Instant::now(),
             );
             assert!(matches!(
                 events.as_slice(),
@@ -3588,7 +3609,8 @@ mod pet_main_tests {
                     column: cursor.0,
                     row: cursor.1,
                     modifiers: KeyModifiers::NONE,
-                }
+                },
+                Instant::now()
             ));
             assert_eq!(app.cursor_position, app.input.chars().count());
             handle_bracketed_paste(&mut app, " pasted");
@@ -3633,6 +3655,7 @@ mod pet_main_tests {
                 row: hint.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::PetHabitat));
         app.view_stack

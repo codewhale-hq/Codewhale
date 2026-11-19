@@ -439,7 +439,7 @@ fn creator_pty_full_access_installs_and_calls_its_tool() {
     tui.pump();
     let frame = tui.frame().text();
     assert!(
-        !frame.contains("Do you want to proceed?"),
+        !frame.contains("Do you want to proceed?") && !frame.contains("[▾ m]"),
         "unexpected approval prompt:\n{frame}"
     );
     tui.shutdown();
@@ -513,8 +513,8 @@ fn creator_pty_ask_card_yes_installs_and_calls_its_tool() {
     tui.wait_for(
         |frame| {
             let text = frame.text();
-            text.contains("Allow once")
-                && text.contains("Do you want to proceed?")
+            text.contains("Allow")
+                && text.contains("Deny")
                 && (text.contains("Plugin manager") || text.contains("plugin_manager"))
                 && !text.contains("Use the loop_echo tool")
         },
@@ -532,8 +532,8 @@ fn creator_pty_ask_card_yes_installs_and_calls_its_tool() {
     tui.wait_for(
         |frame| {
             let text = frame.text();
-            text.contains("Allow once")
-                && text.contains("Do you want to proceed?")
+            text.contains("Allow")
+                && text.contains("Deny")
                 && text.contains("Use the loop_echo tool")
         },
         PTY_WAIT,

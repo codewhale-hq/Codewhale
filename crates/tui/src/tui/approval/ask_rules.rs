@@ -19,6 +19,7 @@ pub struct PermissionRuleSavePreview {
     pub action: PermissionAction,
     pub rule_count: usize,
     pub entries: Vec<String>,
+    pub patterns: Vec<String>,
     pub omitted: usize,
 }
 
@@ -35,9 +36,23 @@ impl PermissionRuleSavePreview {
         };
         tr(locale, id).into_owned()
     }
+
+    #[must_use]
+    pub fn pattern_text(&self) -> String {
+        let mut out = self.patterns.join(", ");
+        if self.omitted > 0 {
+            out.push_str(&format!(" (+{} more)", self.omitted));
+        }
+        out
+    }
 }
 
 pub(super) const SAVE_PREVIEW_MAX_ENTRIES: usize = 4;
+
+#[must_use]
+pub(crate) fn format_allow_rules_pattern(rules: &[ToolAskRule]) -> Option<String> {
+    build_save_preview(rules, SAVE_PREVIEW_MAX_ENTRIES).map(|preview| preview.pattern_text())
+}
 
 #[must_use]
 pub(super) fn build_save_preview(
@@ -53,12 +68,34 @@ pub(super) fn build_save_preview(
         .take(max_entries)
         .map(format_save_entry)
         .collect();
+    let patterns = rules
+        .iter()
+        .take(max_entries)
+        .map(format_rule_pattern)
+        .collect();
     Some(PermissionRuleSavePreview {
         action: rules[0].action,
         rule_count: rules.len(),
         entries,
+        patterns,
         omitted: rules.len().saturating_sub(max_entries),
     })
+}
+
+#[must_use]
+fn format_rule_pattern(rule: &ToolAskRule) -> String {
+    if let Some(command) = rule.command.as_deref() {
+        let cmd = sanitize_preview_value(command);
+        if rule.command_exact {
+            cmd
+        } else {
+            format!("{cmd} *")
+        }
+    } else if let Some(path) = rule.path.as_deref() {
+        sanitize_preview_value(path)
+    } else {
+        sanitize_preview_value(&rule.tool)
+    }
 }
 
 /// One saved rule as a plain phrase: what it covers ("run cargo test",

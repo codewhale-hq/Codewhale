@@ -23,7 +23,7 @@ use super::file::{EXPECTED_HASH_DESCRIPTION, PATCH_PARAMS, content_hash};
 use super::rust_format::normalize_edit;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64,
+    optional_bool, optional_str, optional_u64,
 };
 use super::syntax_check::guard_edit;
 
@@ -289,9 +289,6 @@ impl ToolSpec for ApplyPatchTool {
             for entry in pending.iter().filter(|p| p.content.is_some()) {
                 context.note_file_read(&entry.path);
             }
-            // Resolve absolute paths for LSP diagnostics query.
-            let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
-            let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
             let result = PatchResult {
                 success: true,
                 files_applied: stats.stats.files_applied,
@@ -305,17 +302,13 @@ impl ToolSpec for ApplyPatchTool {
                 file_summaries: stats.file_summaries.clone(),
                 message: build_summary_message(&stats),
             };
-            let mut tool_result = ToolResult::json(&result)
-                .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-            tool_result = tool_result.with_metadata(apply_patch_result_metadata(
-                &preflight.summary,
-                &pending,
-                &stats,
-            ));
-            if !diag_block.is_empty() {
-                tool_result.content.push('\n');
-                tool_result.content.push_str(&diag_block);
-            }
+            let tool_result = ToolResult::json(&result)
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?
+                .with_metadata(apply_patch_result_metadata(
+                    &preflight.summary,
+                    &pending,
+                    &stats,
+                ));
             return Ok(tool_result);
         }
 
@@ -348,13 +341,6 @@ impl ToolSpec for ApplyPatchTool {
         for entry in pending.iter().filter(|p| p.content.is_some()) {
             context.note_file_read(&entry.path);
         }
-        // Resolve absolute paths for LSP diagnostics query.
-        let abs_paths: Vec<PathBuf> = pending
-            .iter()
-            .filter(|p| p.content.is_some()) // skip deleted files
-            .map(|p| p.path.clone())
-            .collect();
-        let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
         let result = PatchResult {
             success: true,
             files_applied: stats.stats.files_applied,
@@ -368,17 +354,13 @@ impl ToolSpec for ApplyPatchTool {
             file_summaries: stats.file_summaries.clone(),
             message: build_summary_message(&stats),
         };
-        let mut tool_result =
-            ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        tool_result = tool_result.with_metadata(apply_patch_result_metadata(
-            &preflight.summary,
-            &pending,
-            &stats,
-        ));
-        if !diag_block.is_empty() {
-            tool_result.content.push('\n');
-            tool_result.content.push_str(&diag_block);
-        }
+        let tool_result = ToolResult::json(&result)
+            .map_err(|e| ToolError::execution_failed(e.to_string()))?
+            .with_metadata(apply_patch_result_metadata(
+                &preflight.summary,
+                &pending,
+                &stats,
+            ));
         Ok(tool_result)
     }
 }

@@ -743,6 +743,7 @@ pub enum ViewEvent {
         approval_grouping_key: String,
         /// Permission rules to append when the decision approves.
         persistent_rules: Vec<codewhale_config::ToolAskRule>,
+        subject: Option<String>,
     },
     ElevationDecision {
         tool_id: String,
@@ -1250,6 +1251,9 @@ pub trait ModalView: std::any::Any {
     fn occupied_region(&self, area: Rect) -> Rect {
         area
     }
+    fn docked_height(&self, _width: u16) -> u16 {
+        0
+    }
     fn input_anchor(&self) -> Option<(u16, u16)> {
         None
     }
@@ -1299,6 +1303,7 @@ pub struct ViewStack {
     /// this instant was typed at something else and must never answer an
     /// approval, elevation or question prompt that only then became visible.
     top_since: Option<std::time::Instant>,
+    approval_dock_canvas: Option<Rect>,
 }
 
 /// What one [`ViewStack::tick`] produced: events to handle, and whether the
@@ -1327,6 +1332,7 @@ impl ViewStack {
             focus_texture: FocusTextureMode::Off,
             focus_texture_theme: None,
             top_since: None,
+            approval_dock_canvas: None,
         }
     }
 
@@ -1377,7 +1383,8 @@ impl ViewStack {
     pub fn cursor_anchor(&self, area: Rect) -> Option<(u16, u16)> {
         let view = self.views.last()?;
         view.input_anchor().or_else(|| {
-            let region = view.occupied_region(area);
+            let view_area = self.effective_area_for(view.as_ref(), area);
+            let region = view.occupied_region(view_area);
             (region.width > 0 && region.height > 0).then(|| {
                 (
                     region
@@ -1499,8 +1506,30 @@ impl ViewStack {
         false
     }
 
+    pub fn set_approval_dock_canvas(&mut self, canvas: Option<Rect>) {
+        self.approval_dock_canvas = canvas;
+    }
+
+    #[must_use]
+    pub fn top_docked_height(&self, width: u16) -> u16 {
+        self.views
+            .last()
+            .map_or(0, |view| view.docked_height(width))
+    }
+
+    fn effective_area_for(&self, view: &dyn ModalView, area: Rect) -> Rect {
+        if view.kind() == ModalKind::Approval
+            && let Some(dock) = self.approval_dock_canvas
+        {
+            return dock.intersection(area);
+        }
+        area
+    }
+
     pub fn top_occupied_region(&self, area: Rect) -> Option<Rect> {
-        self.views.last().map(|view| view.occupied_region(area))
+        self.views
+            .last()
+            .map(|view| view.occupied_region(self.effective_area_for(view.as_ref(), area)))
     }
 
     pub fn push<V: ModalView + 'static>(&mut self, mut view: V) {
@@ -1564,10 +1593,11 @@ impl ViewStack {
         // the default `occupied_region` of the entire frame, so their backdrop
         // is unchanged.
         for view in &self.views {
-            let region = view.occupied_region(area);
+            let view_area = self.effective_area_for(view.as_ref(), area);
+            let region = view.occupied_region(view_area);
             codewhale_tui_kit::osc8::overlay_frame_links(region, Vec::new());
             render_modal_backdrop(region, buf);
-            view.render(area, buf);
+            view.render(view_area, buf);
         }
     }
 
@@ -7452,7 +7482,10 @@ mod tests {
                 // The card heading is the plain summary of the call (E6,
                 // mark 4), not the raw tool name.
                 assert!(
-                    text.contains("Do you want to proceed?") && text.contains("Read src/main.rs"),
+                    text.contains("Allow")
+                        && text.contains("Deny")
+                        && text.contains("Read")
+                        && text.contains("src/main.rs"),
                     "{mode:?} {w}x{h}: approval prompt must survive the texture"
                 );
                 // Zero sentinel bleed INSIDE the focused band: the backdrop

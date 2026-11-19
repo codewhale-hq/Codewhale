@@ -163,10 +163,19 @@ impl FixturePlugins {
     }
 
     pub fn manager(&self, node: PathBuf) -> Arc<ExtensionHostManager> {
+        self.manager_with_supervision(node, Default::default())
+    }
+
+    pub fn manager_with_supervision(
+        &self,
+        node: PathBuf,
+        supervision: super::SupervisionOptions,
+    ) -> Arc<ExtensionHostManager> {
         Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
             runtime: codewhale_config::extension_host::ExtensionHostRuntime::Node,
             node_override: Some(node),
             root: Some(self.root.clone()),
+            supervision,
             ..Default::default()
         }))
     }

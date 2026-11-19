@@ -580,3 +580,172 @@ fn split_unquoted_redirect(command: &str) -> Option<(&str, &str)> {
     }
     None
 }
+
+pub(super) struct DockedPromptParts {
+    pub verb: String,
+    pub subject: String,
+    pub outside_workspace: bool,
+}
+
+pub(super) fn docked_prompt_parts(
+    tool_name: &str,
+    params: &Value,
+    workspace: &std::path::Path,
+    summary: &str,
+) -> DockedPromptParts {
+    let semantic = canonical_action_alias(tool_name, params);
+    let workspace_str = workspace.to_string_lossy();
+    let repo_name = workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("repo");
+    let raw_path = param_text(params, &["path", "target", "destination"]);
+    let rel_path = raw_path
+        .as_deref()
+        .map(|raw| codewhale_util::utils::workspace_relative(raw, workspace));
+    let outside_workspace = raw_path.as_deref().is_some_and(|raw| {
+        !raw.trim().is_empty()
+            && codewhale_execpolicy::normalize_workspace_relative_path(raw, workspace_str.as_ref())
+                .is_none()
+    });
+
+    match semantic {
+        "exec_shell" | "task_shell_start" => DockedPromptParts {
+            verb: "Run".to_string(),
+            subject: param_text(params, &["command", "cmd"]).unwrap_or_else(|| summary.to_string()),
+            outside_workspace: false,
+        },
+        "write_file" => DockedPromptParts {
+            verb: if outside_workspace {
+                format!("Write outside {repo_name}")
+            } else {
+                "Write".to_string()
+            },
+            subject: rel_path.unwrap_or_else(|| summary.to_string()),
+            outside_workspace,
+        },
+        "edit_file" | "fim_edit" => DockedPromptParts {
+            verb: if outside_workspace {
+                format!("Edit outside {repo_name}")
+            } else {
+                "Edit".to_string()
+            },
+            subject: rel_path.unwrap_or_else(|| summary.to_string()),
+            outside_workspace,
+        },
+        "apply_patch" => {
+            let patch_outside =
+                match codewhale_tools::patch_preflight::preflight_apply_patch(params) {
+                    Ok(preflight) => preflight.touched_files.iter().any(|path| {
+                        codewhale_execpolicy::normalize_workspace_relative_path(
+                            path,
+                            workspace_str.as_ref(),
+                        )
+                        .is_none()
+                    }),
+                    Err(_) => false,
+                };
+            let subject = match codewhale_tools::patch_preflight::preflight_apply_patch(params) {
+                Ok(preflight) if !preflight.touched_files.is_empty() => preflight
+                    .touched_files
+                    .into_iter()
+                    .map(|p| codewhale_util::utils::workspace_relative(&p, workspace))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => rel_path.unwrap_or_else(|| summary.to_string()),
+            };
+            DockedPromptParts {
+                verb: if patch_outside {
+                    format!("Patch outside {repo_name}")
+                } else {
+                    "Patch".to_string()
+                },
+                subject,
+                outside_workspace: patch_outside,
+            }
+        }
+        "read_file" | "list_dir" => DockedPromptParts {
+            verb: if semantic == "list_dir" {
+                "List".to_string()
+            } else {
+                "Read".to_string()
+            },
+            subject: rel_path.unwrap_or_else(|| summary.to_string()),
+            outside_workspace,
+        },
+        "fetch_url" | "web.fetch" | "web_fetch" => DockedPromptParts {
+            verb: "Fetch".to_string(),
+            subject: param_text(params, &["url"]).unwrap_or_else(|| summary.to_string()),
+            outside_workspace: false,
+        },
+        "web_search" => DockedPromptParts {
+            verb: "Search".to_string(),
+            subject: param_text(params, &["query", "q"]).unwrap_or_else(|| summary.to_string()),
+            outside_workspace: false,
+        },
+        "workflow" => {
+            let goal = params
+                .get("plan")
+                .and_then(|plan| plan.get("goal"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| summary.to_string());
+            DockedPromptParts {
+                verb: "Workflow".to_string(),
+                subject: goal,
+                outside_workspace: false,
+            }
+        }
+        "agent" => DockedPromptParts {
+            verb: "Agent".to_string(),
+            subject: param_text(params, &["prompt", "task", "action"])
+                .unwrap_or_else(|| summary.to_string()),
+            outside_workspace: false,
+        },
+        name if name.starts_with("mcp_") => DockedPromptParts {
+            verb: "MCP".to_string(),
+            subject: param_text(params, &["command", "cmd", "path", "url", "query", "q"])
+                .map(|arg| format!("{name} {arg}"))
+                .unwrap_or_else(|| name.to_string()),
+            outside_workspace: false,
+        },
+        _ => {
+            let subject = param_text(
+                params,
+                &["command", "cmd", "path", "url", "q", "query", "ref_id"],
+            )
+            .map(|arg| format!("{tool_name} {arg}"))
+            .unwrap_or_else(|| {
+                if summary.trim().is_empty() {
+                    tool_name.to_string()
+                } else {
+                    summary.to_string()
+                }
+            });
+            DockedPromptParts {
+                verb: String::new(),
+                subject,
+                outside_workspace: false,
+            }
+        }
+    }
+}
+
+pub(super) fn receipt_subject(
+    tool_name: &str,
+    params: &Value,
+    workspace: &std::path::Path,
+    summary: &str,
+) -> String {
+    let parts = docked_prompt_parts(tool_name, params, workspace, summary);
+    let semantic = canonical_action_alias(tool_name, params);
+    match semantic {
+        "exec_shell" | "task_shell_start" => parts.subject,
+        "write_file" | "edit_file" | "fim_edit" | "apply_patch" => {
+            format!("{} {}", parts.verb.to_ascii_lowercase(), parts.subject)
+        }
+        _ if parts.verb.is_empty() => parts.subject,
+        _ => format!("{} {}", parts.verb.to_ascii_lowercase(), parts.subject),
+    }
+}

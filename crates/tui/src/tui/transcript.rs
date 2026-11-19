@@ -91,6 +91,7 @@ impl TranscriptBlockKind {
             HistoryCell::System { .. }
             | HistoryCell::Error { .. }
             | HistoryCell::Automation(_)
+            | HistoryCell::ApprovalReceipt(_)
             | HistoryCell::ArchivedContext { .. } => Self::Notice,
         }
     }

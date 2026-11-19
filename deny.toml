@@ -9,12 +9,29 @@ all-features = true
 # Deny unmaintained and unsound crates
 unmaintained = "all"
 unsound = "all"
-# Scoped maintenance exception; consumer and retirement criteria are documented
-# in docs/dependency-maintenance.md. No vulnerability/unsoundness ignore is added.
+# Scoped exceptions; consumer and retirement criteria are documented in
+# docs/dependency-maintenance.md.
 ignore = [
     "RUSTSEC-2025-0141",  # bincode 1.3.3: syntect's embedded syntax/theme dumps
     { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained notice only, no vulnerability; workspace-wide dependency with no safe upgrade during the 0.10.3 freeze; review by 2027-02-15 and migrate to jiff or time" },
     { id = "RUSTSEC-2026-0542", reason = "humantime 2.4.0 unmaintained only because it wraps chrono; reached solely via the cucumber 0.23 test-only dependency of codewhale-tui, which requires it; review by 2027-02-15 with the chrono migration" },
+    # heapless 0.8.0 (RUSTSEC-2026-0574..0582): reached only as a non-optional
+    # dependency edge of faster-hex 0.10.1 (<- gix-hash 0.28.1 <- gix 0.90.0,
+    # the latest gix releases) for git object-id hex. gix-hash enables faster-hex's
+    # std->alloc features, which compile out its sole heapless use behind
+    # cfg(not(feature = "alloc")); none of the flagged APIs is reachable. No
+    # fix exists in a compatible range: 0.8.0 is the sole 0.8.x release,
+    # faster-hex 1.0.0 makes heapless optional but gix-hash requires ^0.10.1.
+    # Assessment: docs/dependency-maintenance.md. Review by 2027-02-15.
+    { id = "RUSTSEC-2026-0574", reason = "heapless 0.8.0 FindMutView::pop unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0575", reason = "heapless 0.8.0 Spsc::peek unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0576", reason = "heapless 0.8.0 IndexMap::truncate unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0577", reason = "heapless 0.8.0 panicking-Drop UB path unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0578", reason = "heapless 0.8.0 SortedLinkedList::zeroize unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0579", reason = "heapless 0.8.0 Deque TryFrom impl unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0580", reason = "heapless 0.8.0 treiber stack race unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0581", reason = "heapless 0.8.0 Deque::make_contiguous unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
+    { id = "RUSTSEC-2026-0582", reason = "heapless 0.8.0 IndexMap::insert unreachable: sole dependent faster-hex compiles out all heapless use under its alloc feature, which gix-hash enables; no compatible fix (see deny.toml comment); review by 2027-02-15" },
 ]
 
 [bans]

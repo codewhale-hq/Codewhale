@@ -116,6 +116,7 @@ impl ToolSpec for SessionSearchTool {
             .unwrap_or(8)
             .clamp(1, MAX_SEARCH_RESULTS) as usize;
         let workspace = context.workspace.clone();
+        let current_session = context.state_namespace.clone();
         #[cfg(any(test, feature = "test-support"))]
         let env_ticket = crate::test_support::env_scope_ticket();
         let found = tokio::task::spawn_blocking(move || {
@@ -124,7 +125,8 @@ impl ToolSpec for SessionSearchTool {
             let manager = SessionManager::default_location()?;
             let mut sessions = manager.list_sessions()?;
             sessions.retain(|session| {
-                workspace_scope_matches(&session.workspace, &workspace)
+                session.id != current_session
+                    && workspace_scope_matches(&session.workspace, &workspace)
                     && query.as_deref().is_none_or(|query| {
                         let query = query.to_lowercase();
                         session.title.to_lowercase().contains(&query)
@@ -347,6 +349,41 @@ mod tests {
             filtered.content.contains("No prior sessions"),
             "{}",
             filtered.content
+        );
+    }
+
+    #[tokio::test]
+    async fn search_excludes_the_current_session() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _codewhale_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join("codewhale"));
+        let manager = SessionManager::default_location().expect("default manager");
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_workspace_session(&manager, "sess-current", &workspace);
+        write_workspace_session(&manager, "sess-earlier", &workspace);
+
+        let context = ToolContext::new(workspace).with_state_namespace("sess-current");
+        let result = SessionSearchTool
+            .execute(json!({}), &context)
+            .await
+            .expect("search");
+        assert!(
+            result
+                .content
+                .contains(crate::session_manager::truncate_id("sess-earlier")),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result
+                .content
+                .contains(crate::session_manager::truncate_id("sess-current")),
+            "{}",
+            result.content
         );
     }
 

@@ -70,11 +70,14 @@ enum DshSeat {
     Unsupported(&'static str),
 }
 
-const DSH_SEAT_TABLE: [(&str, DshSeat); 30] = [
+const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ("plugins.bundle.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.row.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.detail.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.actions", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.badge", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.general.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
@@ -526,13 +529,17 @@ fn mcp_server_review(
     }
 }
 
-fn file_stem(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
+async fn component_names(
+    paths: &[std::path::PathBuf],
+    extension: Option<&str>,
+    lowercase: bool,
+) -> Vec<String> {
+    codewhale_plugins::runtime::component_file_names(paths, extension, lowercase, 512)
+        .await
+        .0
 }
 
-fn review_payload(
+async fn review_payload(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginReviewPayload {
@@ -548,27 +555,9 @@ fn review_payload(
         })
         .unwrap_or_default();
     mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut commands: Vec<_> = plugin
-        .components
-        .commands
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    commands.sort();
-    let mut agents: Vec<_> = plugin
-        .components
-        .agents
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    agents.sort();
-    let mut hooks: Vec<_> = plugin
-        .components
-        .hooks
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    hooks.sort();
+    let commands = component_names(&plugin.components.commands, Some("md"), true).await;
+    let agents = component_names(&plugin.components.agents, Some("toml"), false).await;
+    let hooks = component_names(&plugin.components.hooks, None, false).await;
     let mut skills: Vec<_> = plugin
         .skill_snapshots
         .iter()
@@ -601,7 +590,7 @@ fn review_payload(
     }
 }
 
-fn plugin_detail(
+async fn plugin_detail(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginDetailResponse {
@@ -613,7 +602,7 @@ fn plugin_detail(
         staged: plugin.staged_root.is_some(),
         reviewed_at: plugin.reviewed_at.clone(),
         review_history: plugin.review_history.clone(),
-        review: review_payload(plugin, registry),
+        review: review_payload(plugin, registry).await,
     }
 }
 
@@ -696,6 +685,16 @@ fn ui_content_type(path: &FsPath) -> &'static str {
     }
 }
 
+fn is_dsh_static_ui_asset(path: &FsPath) -> bool {
+    matches!(
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "ttf")
+    )
+}
+
 fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
@@ -705,6 +704,12 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if content_type == "image/svg+xml" {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+        );
+    }
     response
 }
 
@@ -1108,7 +1113,9 @@ const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
     return out.join("/");
   }
   function resolve(from, id) {
-    var base = normalize(from.slice(0, from.lastIndexOf("/")) + "/" + id);
+    var cut = from.lastIndexOf("/");
+    var dir = cut < 0 ? "" : from.slice(0, cut) + "/";
+    var base = normalize(dir + id);
     for (var i = 0; i < probes.length; i++) {
       if (Object.prototype.hasOwnProperty.call(files, base + probes[i])) return base + probes[i];
     }
@@ -1823,7 +1830,7 @@ pub(super) async fn get_plugin(
         .get(&selector)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
-    Ok(Json(plugin_detail(&plugin, Some(&registry))))
+    Ok(Json(plugin_detail(&plugin, Some(&registry)).await))
 }
 
 pub(super) async fn get_plugin_ui(
@@ -1979,7 +1986,8 @@ pub(super) async fn get_plugin_ui_asset(
         ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
     })?;
     let content_type = ui_content_type(&relative);
-    if grant.dsh.is_some() && relative != FsPath::new(DSH_BOOTSTRAP_ENTRY) {
+    let is_dsh_bootstrap = grant.dsh.is_some() && relative == FsPath::new(DSH_BOOTSTRAP_ENTRY);
+    if grant.dsh.is_some() && !is_dsh_bootstrap && !is_dsh_static_ui_asset(&relative) {
         return Err(
             ApiError::not_found("plugin UI file is not in the reviewed client closure")
                 .with_code("plugin_ui_file_not_reviewed"),
@@ -1991,24 +1999,31 @@ pub(super) async fn get_plugin_ui_asset(
         let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
             .map_err(|_| ui_stale_revision())?;
-        let bytes = if let Some(dsh) = &grant.dsh {
+        let bytes = if is_dsh_bootstrap {
+            let dsh = grant
+                .dsh
+                .as_ref()
+                .expect("is_dsh_bootstrap requires a DSH grant");
             let verified =
                 verify_dsh_closure(&grant, &dsh.closure).map_err(|_| ui_stale_revision())?;
             dsh_bootstrap(&grant.selector, &dsh.closure, &verified)
                 .map_err(|_| ui_stale_revision())?
         } else {
-            verified_ui_file(&grant, &grant.ui_prefix.join(&relative)).map_err(
-                |error| match error {
-                    UiFileError::Missing => {
-                        ApiError::not_found("plugin UI file is not in the reviewed bundle")
-                            .with_code("plugin_ui_file_not_reviewed")
-                    }
-                    UiFileError::TooLarge => {
-                        ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
-                    }
-                    _ => ui_stale_revision(),
-                },
-            )?
+            let bundle_path = if grant.dsh.is_some() {
+                relative.clone()
+            } else {
+                grant.ui_prefix.join(&relative)
+            };
+            verified_ui_file(&grant, &bundle_path).map_err(|error| match error {
+                UiFileError::Missing => {
+                    ApiError::not_found("plugin UI file is not in the reviewed bundle")
+                        .with_code("plugin_ui_file_not_reviewed")
+                }
+                UiFileError::TooLarge => {
+                    ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
+                }
+                _ => ui_stale_revision(),
+            })?
         };
         admit_ui_grant(&state_for_asset, &grant)?;
         if state_for_asset.plugin_ui_grants.get(&revision).is_none() {
@@ -2675,7 +2690,84 @@ pub(super) async fn put_catalog_settings(
 
 #[cfg(test)]
 mod review_tests {
-    use super::mcp_server_review;
+    use super::{dsh_bootstrap, dsh_client_closure, mcp_server_review};
+
+    #[test]
+    fn dsh_bootstrap_root_entry_closure_resolves_relative_requires_in_node() {
+        let closure = dsh_client_closure(&serde_json::json!({
+            "client_closures": [{
+                "root": "",
+                "entry": "client.js",
+                "files": { "client.js": "h1", "util.js": "h2" }
+            }]
+        }))
+        .expect("authored closure");
+        let verified = vec![
+            (
+                "client.js".to_string(),
+                b"var util = require(\"./util\");\nexports.apply = function apply() { return [util.v]; };\n".to_vec(),
+            ),
+            ("util.js".to_string(), b"exports.v = 1;\n".to_vec()),
+        ];
+        let bootstrap = dsh_bootstrap("rootentry", &closure, &verified)
+            .unwrap_or_else(|_| panic!("dsh_bootstrap failed"));
+        let source = String::from_utf8(bootstrap).unwrap();
+        assert!(source.contains("\"client.js\""));
+        if let Some(out) = crate::runtime_api::tests::bootstrap_loads_in_node(&source) {
+            let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(out["apply"], "function");
+            assert_eq!(out["out"][0], 1);
+        }
+    }
+
+    #[test]
+    fn dsh_bootstrap_resolves_relative_requires_from_a_root_level_entry() {
+        let files = [
+            (
+                "client.js",
+                "var h = require('./helper'); module.exports = { apply() { return h.v; } };",
+            ),
+            ("helper.js", "module.exports = { v: 1 };"),
+        ];
+        let closure = super::DshClosure {
+            package: "@demo/root".to_string(),
+            entry: "client.js".to_string(),
+            files: files
+                .iter()
+                .map(|(path, _)| (path.to_string(), String::new()))
+                .collect(),
+            host_provided: Vec::new(),
+        };
+        let verified: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(path, text)| (path.to_string(), text.as_bytes().to_vec()))
+            .collect();
+        let bootstrap = String::from_utf8(
+            super::dsh_bootstrap("root", &closure, &verified)
+                .ok()
+                .unwrap(),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("run.js");
+        std::fs::write(
+            &script,
+            format!(
+                "var captured;\nvar window = {{ __ModuleLoader__: {{ load: function (r) {{ captured = r; }} }} }};\n{bootstrap}\nprocess.stdout.write(String(captured.factory(function () {{}}).apply()));\n"
+            ),
+        )
+        .unwrap();
+        let Ok(output) = std::process::Command::new("node").arg(&script).output() else {
+            eprintln!("node is unavailable; the bootstrap execution check was skipped");
+            return;
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "1");
+    }
 
     #[test]
     fn plugin_mcp_review_omits_url_credentials_without_changing_the_bundle() {

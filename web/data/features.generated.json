@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "943429ed1872878036c84e58a6089cd2b517dac6a82836548326624e5fcef073"
+    "sha256": "eab95b95e90cfbee623f600f3b83a5b7c3ad84860711950602d1edee90da147b"
   },
   "features": [
     {
@@ -1051,7 +1051,8 @@
       "summary": "Link a Claude Platform organization so Anthropic bills it directly; auth_mode = \"claude-org\".",
       "status": "experimental",
       "surfaces": {
-        "tui": "preview"
+        "tui": "preview",
+        "api": "preview"
       },
       "since": null,
       "flag": null,
