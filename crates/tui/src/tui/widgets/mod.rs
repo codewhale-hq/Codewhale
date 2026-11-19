@@ -689,7 +689,8 @@ impl ChatWidget {
                 &app.ui_theme,
                 app.viewport.detected_background,
             );
-        app.viewport.activity_sweep_visible = activity_sweep_visible || settle_flash_visible;
+        app.viewport.activity_sweep_visible = activity_sweep_visible;
+        app.viewport.settle_flash_visible = settle_flash_visible;
 
         // No background "highlight" for the Alt+V detail target: it used to
         // paint the target cell's spans `Color::Reset`, which is invisible on
@@ -4692,23 +4693,25 @@ mod tests {
                 is_diff: false,
             }))
         };
-        let exec = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cargo test -p codewhale-tui".to_string(),
-            description: None,
-            status: ToolStatus::Failed,
-            output: None,
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: Instant::now().checked_sub(Duration::from_secs(5)),
-            duration_ms: Some(5_000),
-            stale_elapsed_since_output_ms: None,
-            waiting: None,
-            source: ExecSource::Assistant,
-            interaction: None,
-            output_summary: None,
-        }));
+        let exec = |status| {
+            HistoryCell::Tool(ToolCell::Exec(ExecCell {
+                command: "cargo test -p codewhale-tui".to_string(),
+                description: None,
+                status,
+                output: None,
+                live_output: None,
+                shell_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+                duration_ms: Some(5_000),
+                stale_elapsed_since_output_ms: None,
+                waiting: None,
+                source: ExecSource::Assistant,
+                interaction: None,
+                output_summary: None,
+            }))
+        };
         let theme = palette::UNDERWATER_UI_THEME;
         let options = crate::tui::history::TranscriptRenderOptions::default();
         let completed = Instant::now();
@@ -4745,7 +4748,8 @@ mod tests {
         for cell in [
             generic(ToolStatus::Success),
             generic(ToolStatus::Failed),
-            exec,
+            exec(ToolStatus::Success),
+            exec(ToolStatus::Failed),
         ] {
             let (before, early, visible) = flash(&cell, Duration::from_millis(60));
             assert!(visible, "a fresh outcome flashes: {before:?}");
@@ -4776,6 +4780,26 @@ mod tests {
         let (before, running, visible) = flash(&generic(ToolStatus::Running), Duration::ZERO);
         assert!(!visible);
         assert_eq!(fg_of(&running), fg_of(&before));
+    }
+
+    #[test]
+    fn history_inserts_mid_turn_keep_settle_timestamps_on_their_entry() {
+        let mut app = create_test_app();
+        app.active_cell = Some(crate::tui::active_cell::ActiveCell::new());
+        let at = Instant::now();
+        app.active_tool_entry_completed_at.insert(0, at);
+        app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Success,
+            input_summary: None,
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        })));
+        assert_eq!(app.active_tool_entry_completed_at.get(&0), Some(&at));
+        assert_eq!(app.active_tool_entry_completed_at.len(), 1);
     }
 
     #[test]
