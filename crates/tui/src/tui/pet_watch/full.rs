@@ -976,6 +976,7 @@ mod tests {
         app.add_message(HistoryCell::Error {
             message: "Actual failure receipt".into(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         });
         assert!(paint(&mut app, 40, 12).contains("Actual failure receipt"));
         assert_eq!(app.input, "retained draft");

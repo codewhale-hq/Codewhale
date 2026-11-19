@@ -41,6 +41,40 @@ Both advisories are maintenance notices, not vulnerabilities. Remove both
 ignores when Core migrates from `chrono` to `jiff` or `time` and `cucumber` no
 longer pulls `humantime`; review them by February 15, 2027 either way.
 
+Nine `unsound` advisories against `heapless` 0.8.0 were assessed on November
+19, 2026:
+[RUSTSEC-2026-0574](https://rustsec.org/advisories/RUSTSEC-2026-0574.html)
+(`FindMutView::pop`),
+[RUSTSEC-2026-0575](https://rustsec.org/advisories/RUSTSEC-2026-0575.html)
+(`Spsc::peek` ordering),
+[RUSTSEC-2026-0576](https://rustsec.org/advisories/RUSTSEC-2026-0576.html)
+(`IndexMap::truncate`),
+[RUSTSEC-2026-0577](https://rustsec.org/advisories/RUSTSEC-2026-0577.html)
+(panicking `Drop`),
+[RUSTSEC-2026-0578](https://rustsec.org/advisories/RUSTSEC-2026-0578.html)
+(`SortedLinkedList::zeroize`),
+[RUSTSEC-2026-0579](https://rustsec.org/advisories/RUSTSEC-2026-0579.html)
+(`Deque` `TryFrom`),
+[RUSTSEC-2026-0580](https://rustsec.org/advisories/RUSTSEC-2026-0580.html)
+(treiber stack race),
+[RUSTSEC-2026-0581](https://rustsec.org/advisories/RUSTSEC-2026-0581.html)
+(`Deque::make_contiguous`), and
+[RUSTSEC-2026-0582](https://rustsec.org/advisories/RUSTSEC-2026-0582.html)
+(`IndexMap::insert`).
+`heapless` reaches the graph only as a non-optional dependency edge of
+`faster-hex` 0.10.1 via `gix-hash` 0.28.1 and `gix` 0.90.0 — the latest
+`gix` releases — which Codewhale uses for git object-id hex encoding.
+`gix-hash` builds `faster-hex` with its `std` (and therefore `alloc`) feature,
+so the crate's only `heapless` use — `heapless::{String, Vec}` behind
+`cfg(not(feature = "alloc"))` — is compiled out, and none of the flagged
+collection APIs (`IndexMap`, `Spsc`, `Deque`, `SortedLinkedList`, the treiber
+stack, `FindMutView`) is invoked. No fix exists in a compatible range: 0.8.0 is
+the sole 0.8.x release and the advisories fix in 0.9.4, `faster-hex` requires
+`^0.8`, and although `faster-hex` 1.0.0 makes `heapless` optional, `gix-hash`
+requires `^0.10.1`. Remove the ignores when `gix` moves to a `faster-hex`
+release that drops the `heapless` edge, or when a patched 0.8.x ships; review
+by February 15, 2027 either way.
+
 The Apps desktop lockfile and its platform dependencies are a separate graph;
 this Core cleanup does not resolve their maintenance or GLib qualification work.
 

@@ -617,7 +617,7 @@ mod tests {
         let reviewed = bundled_reviewed();
         reviewed.validate().expect("committed data");
         assert_eq!(reviewed.selections.len(), 189);
-        assert_eq!(reviewed.transports.len(), 123);
+        assert_eq!(reviewed.transports.len(), 112);
         let go = reviewed_transport("opencode-go", "gpt-5.6-luna").unwrap();
         assert_eq!(go.endpoint_key, "responses");
         assert_eq!(

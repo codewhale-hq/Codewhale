@@ -107,6 +107,9 @@ const MAX_CONCURRENT_CALLS: usize = 4;
 const PER_CALL_RESULT_CAP_BYTES: usize = crate::tools::truncate::SPILLOVER_THRESHOLD_BYTES;
 /// Model-visible return cap, in serialized bytes.
 const RETURN_CAP_BYTES: usize = 16 * 1024;
+const MAX_LOG_LINES: usize = 200;
+const MAX_LOG_LINE_BYTES: usize = 1024;
+const MAX_LOG_TOTAL_BYTES: usize = 8 * 1024;
 
 /// Names refused before the gate, with a message that names the supported
 /// alternative. These either need the turn loop itself (a prompt, a
@@ -1396,33 +1399,28 @@ impl ToolInvoker for CodemodeInvoker {
     }
 }
 
-/// [`WorkflowDriver`] for code-mode runs: `task()` is refused (fan-out stays
-/// with `workflow`), the token budget is unconstrained, and progress events
-/// feed the run receipt.
-pub struct CodemodeDriver {
-    events: Mutex<Vec<ProgressEvent>>,
+#[derive(Default)]
+struct CodemodeLogBuffer {
+    lines: Vec<String>,
+    total_bytes: usize,
+    dropped: usize,
 }
 
-impl Default for CodemodeDriver {
-    fn default() -> Self {
-        Self {
-            events: Mutex::new(Vec::new()),
-        }
-    }
+#[derive(Default)]
+pub struct CodemodeDriver {
+    logs: Mutex<CodemodeLogBuffer>,
 }
 
 impl CodemodeDriver {
     fn log_lines(&self) -> Vec<String> {
-        self.events
+        self.logs
             .lock()
-            .map(|events| {
-                events
-                    .iter()
-                    .filter_map(|event| match event {
-                        ProgressEvent::Log { message } => Some(message.clone()),
-                        _ => None,
-                    })
-                    .collect()
+            .map(|logs| {
+                let mut lines = logs.lines.clone();
+                if logs.dropped > 0 {
+                    lines.push(format!("... ({} log entries omitted)", logs.dropped));
+                }
+                lines
             })
             .unwrap_or_default()
     }
@@ -1445,9 +1443,31 @@ impl WorkflowDriver for CodemodeDriver {
     }
 
     fn progress(&self, event: ProgressEvent) {
-        if let Ok(mut events) = self.events.lock() {
-            events.push(event);
+        let ProgressEvent::Log { message } = event else {
+            return;
+        };
+        let Ok(mut logs) = self.logs.lock() else {
+            return;
+        };
+        if logs.dropped > 0
+            || logs.lines.len() >= MAX_LOG_LINES
+            || logs.total_bytes >= MAX_LOG_TOTAL_BYTES
+        {
+            logs.dropped = logs.dropped.saturating_add(1);
+            return;
         }
+        let line = if message.len() > MAX_LOG_LINE_BYTES {
+            format!("{}...", char_prefix(&message, MAX_LOG_LINE_BYTES - 3))
+        } else {
+            message
+        };
+        let remaining = MAX_LOG_TOTAL_BYTES.saturating_sub(logs.total_bytes);
+        if line.len() > remaining {
+            logs.dropped = logs.dropped.saturating_add(1);
+            return;
+        }
+        logs.total_bytes = logs.total_bytes.saturating_add(line.len());
+        logs.lines.push(line);
     }
 
     fn cancel_all(&self) {}
@@ -2297,5 +2317,152 @@ mod tests {
                 .is_some(),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn console_methods_populate_receipt_log_and_respect_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        let code = r#"
+            console.log("hello", { n: 1 });
+            console.info("step");
+            console.warn("careful");
+            console.error("problem");
+            console.debug("detail");
+            return "ok";
+        "#;
+        let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        let parsed = body(&result);
+        assert_eq!(parsed["body"]["return"], "ok");
+        assert_eq!(
+            parsed["log"],
+            json!([
+                r#"hello {"n":1}"#,
+                "[info] step",
+                "[warn] careful",
+                "[error] problem",
+                "[debug] detail",
+            ])
+        );
+
+        let spam_code = format!(
+            "for (let i = 0; i < {}; i++) console.log('line-' + i); return true;",
+            MAX_LOG_LINES + 25
+        );
+        let spam_result = execute_tools_tool(&json!({ "code": spam_code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(spam_result.success, "{}", spam_result.content);
+        let spam_logs = body(&spam_result)["log"].as_array().unwrap().clone();
+        assert_eq!(spam_logs.len(), MAX_LOG_LINES + 1);
+        assert_eq!(spam_logs[0], "line-0");
+        assert_eq!(spam_logs[MAX_LOG_LINES], "... (25 log entries omitted)");
+
+        let huge_line_code = format!(
+            "for (let i = 0; i < 20; i++) console.log('x'.repeat({})); return true;",
+            MAX_LOG_LINE_BYTES + 500
+        );
+        let huge_result =
+            execute_tools_tool(&json!({ "code": huge_line_code }), &registry, &context)
+                .await
+                .unwrap();
+        assert!(huge_result.success, "{}", huge_result.content);
+        let huge_logs = body(&huge_result)["log"].as_array().unwrap().clone();
+        assert_eq!(
+            huge_logs.len(),
+            (MAX_LOG_TOTAL_BYTES / MAX_LOG_LINE_BYTES) + 1
+        );
+        assert_eq!(huge_logs[0].as_str().unwrap().len(), MAX_LOG_LINE_BYTES);
+        assert!(huge_logs[0].as_str().unwrap().ends_with("..."));
+        assert!(
+            huge_logs
+                .last()
+                .and_then(Value::as_str)
+                .is_some_and(|line| line.contains("log entries omitted")),
+            "{huge_logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn url_and_search_params_work_inside_execute_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        let code = r#"
+            const u = new URL("https://example.com:8443/a/b?b=1&k=v1#frag");
+            u.searchParams.set("b", "2");
+            u.searchParams.append("k", "v2");
+            const p = new URLSearchParams("x=1&y=two+words");
+            p.delete("x");
+            return {
+                protocol: u.protocol,
+                hostname: u.hostname,
+                host: u.host,
+                port: u.port,
+                pathname: u.pathname,
+                search: u.search,
+                hash: u.hash,
+                origin: u.origin,
+                href: u.href,
+                kAll: u.searchParams.getAll("k"),
+                pStr: p.toString(),
+                pY: p.get("y"),
+            };
+        "#;
+        let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.content);
+        assert_eq!(
+            body(&result)["body"]["return"],
+            json!({
+                "protocol": "https:",
+                "hostname": "example.com",
+                "host": "example.com:8443",
+                "port": "8443",
+                "pathname": "/a/b",
+                "search": "?b=2&k=v1&k=v2",
+                "hash": "#frag",
+                "origin": "https://example.com:8443",
+                "href": "https://example.com:8443/a/b?b=2&k=v1&k=v2#frag",
+                "kAll": ["v1", "v2"],
+                "pStr": "y=two+words",
+                "pY": "two words",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn determinism_errors_in_execute_tools_avoid_workflow_wording() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::new(dir.path());
+        let registry = ToolRegistryBuilder::new().build(context.clone());
+
+        for (code, needle) in [
+            ("return Date.now();", "Date.now()"),
+            ("return new Date();", "new Date()/Date()"),
+            ("return Math.random();", "Math.random()"),
+        ] {
+            let result = execute_tools_tool(&json!({ "code": code }), &registry, &context)
+                .await
+                .unwrap();
+            assert!(!result.success, "{}", result.content);
+            let error = body(&result)["body"]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(error.contains(needle), "{error}");
+            assert!(error.contains("execute_tools"), "{error}");
+            assert!(
+                !error.contains("Workflow") && !error.contains("record/replay"),
+                "{error}"
+            );
+        }
     }
 }

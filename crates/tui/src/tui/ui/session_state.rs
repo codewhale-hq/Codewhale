@@ -20,6 +20,7 @@ pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
     app.add_message(crate::tui::history::HistoryCell::Error {
         message: message.clone(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.status_message = Some(message);
 }
@@ -584,6 +585,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
             app.add_message(crate::tui::history::HistoryCell::Error {
                 message: message.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
             });
             app.status_message = Some(message);
             return;
@@ -751,6 +753,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
         message: "Engine stopped before completing the turn. Check ~/.codewhale/crashes and retry."
             .to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.push_status_toast(
         "Engine stopped before completing the turn.",
