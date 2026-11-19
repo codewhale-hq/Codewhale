@@ -76,7 +76,7 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
     // IME commits / autocomplete on terminals with reliable bracketed
     // paste (the dominant case on iTerm2 / Ghostty / WezTerm / Windows
     // Terminal).
-    if app.bracketed_paste_seen || app.bracketed_paste_trusted {
+    if app.bracketed_paste_seen || (app.bracketed_paste_trusted && app.use_bracketed_paste) {
         return false;
     }
 
@@ -119,30 +119,26 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
             if !c.is_ascii() {
                 // IME-committed characters (Chinese, Japanese, Korean)
                 // arrive as individual KeyCode::Char events, typically with
-                // tens-of-milliseconds gaps between each committed character.
-                // Paste-burst buffering would lose characters when the IME
-                // commits slower than the burst heuristic's timing window.
-                //
-                // We still call note_plain_char + arm the suppression window
-                // so that:
-                //   1. The burst timing counter advances for non-IME fast
-                //      typing on terminals without bracketed paste support.
-                //   2. The Enter-suppression window stays open during a rapid
-                //      non-ASCII sequence, preventing premature submission.
-                // But the character is inserted directly into the composer
-                // rather than placed into the paste-burst buffer.
-                //
-                // The window is sized by how fast the characters are
-                // arriving: a lone IME candidate commit is ordinary typing
-                // and must not swallow the Enter that follows it, while a
-                // run of characters at paste speed keeps the full window.
-                // See `PasteBurst::arm_window_for_direct_char`.
-                if let Some(pending) = app.paste_burst.flush_before_modified_input() {
-                    app.insert_str(&pending);
-                }
+                // tens-of-milliseconds gaps between each committed character,
+                // so a lone commit still inserts straight into the composer.
+                // A run at paste speed is a raw paste: it buffers like an
+                // ASCII burst and keeps the full Enter-suppression window
+                // armed (#1302) while a lone commit earns the short window
+                // (`PasteBurst::arm_window_for_direct_char`).
                 let rapid_chars = app.paste_burst.note_plain_char(now);
-                app.paste_burst.arm_window_for_direct_char(now, rapid_chars);
-                app.insert_char(c);
+                if app.paste_burst.is_buffering() {
+                    app.paste_burst.append_char_to_buffer(c, now);
+                } else {
+                    if let Some(pending) = app.paste_burst.flush_before_modified_input() {
+                        app.insert_str(&pending);
+                    }
+                    if rapid_chars >= 2 {
+                        app.paste_burst.begin_buffer_from_now(c, now);
+                    } else {
+                        app.paste_burst.arm_window_for_direct_char(now, rapid_chars);
+                        app.insert_char(c);
+                    }
+                }
                 return true;
             }
 
@@ -423,9 +419,10 @@ mod tests {
             );
         }
 
-        // Non-ASCII characters are now inserted directly into the composer
-        // rather than buffered by paste burst. The Enter suppression window
-        // kept the newline from submitting prematurely.
+        // Paste-speed non-ASCII characters buffer like an ASCII burst; the
+        // Enter suppression window kept the newline from submitting
+        // prematurely and the idle flush commits the run in one insert.
+        app.flush_paste_burst_if_due(t0 + Duration::from_secs(1));
         assert_eq!(app.input, pasted);
     }
 
