@@ -5175,12 +5175,6 @@ mod tests {
                 "https://api.anthropic.com",
             ),
             (
-                ProviderKind::Anthropic,
-                "anthropic",
-                "claude-fable-5-2",
-                "https://api.anthropic.com/v1",
-            ),
-            (
                 ProviderKind::Deepseek,
                 "deepseek",
                 "deepseek-v4-flash",
@@ -5205,13 +5199,35 @@ mod tests {
                 "https://api.stepfun.ai/v1",
             ),
         ] {
-            let route = EffectiveRouteEnvelope::capture_observed(
-                provider,
-                identity,
-                model,
-                Some(base_url),
-                now,
-            );
+            let api_key_config = codewhale_runtime::config::Config::default();
+            let route = if provider == ProviderKind::Anthropic {
+                let observed = EffectiveRouteEnvelope::capture_observed(
+                    provider,
+                    identity,
+                    model,
+                    Some(base_url),
+                    now,
+                );
+                assert!(
+                    !observed.audit_frozen(&small_usage()).is_priced(),
+                    "{model} {base_url}"
+                );
+                EffectiveRouteEnvelope::from_admitted(
+                    Some(&api_key_config),
+                    &api_key_config.test_identity_for_kind(provider),
+                    model,
+                    Some(base_url),
+                    now,
+                )
+            } else {
+                EffectiveRouteEnvelope::capture_observed(
+                    provider,
+                    identity,
+                    model,
+                    Some(base_url),
+                    now,
+                )
+            };
             assert!(
                 route.provider_live_pricing.is_some(),
                 "{provider:?} {model} {base_url}"
