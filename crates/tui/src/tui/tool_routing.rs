@@ -80,6 +80,14 @@ pub(super) fn handle_tool_call_started(
         return;
     }
 
+    if semantic_name == "task_shell_wait"
+        && let Some(task_id) = plain_shell_poll_task_id(input)
+        && has_shell_origin_row(app, task_id)
+    {
+        app.ignored_tool_calls.insert(id, input.clone());
+        return;
+    }
+
     if is_exec_tool(semantic_name) {
         let command = exec_target_from_input(input);
         let source = exec_source_from_input(input);
@@ -94,7 +102,7 @@ pub(super) fn handle_tool_call_started(
                     .as_ref()
                     .is_some_and(|last| last == &command)
             {
-                app.ignored_tool_calls.insert(id);
+                app.ignored_tool_calls.insert(id, input.clone());
                 return;
             }
             if is_wait {
@@ -133,7 +141,7 @@ pub(super) fn handle_tool_call_started(
                 .as_ref()
                 .is_some_and(|last| last == &command)
         {
-            app.ignored_tool_calls.insert(id);
+            app.ignored_tool_calls.insert(id, input.clone());
             return;
         }
         if exec_is_background(input) && !is_wait {
@@ -286,30 +294,7 @@ pub(super) fn handle_tool_call_started(
         return;
     }
 
-    let mut input_summary = summarize_tool_args(input);
-    // Lead the `agent` args summary with the non-default action so renderers
-    // can tell inspections (peek/status/wait) apart from spawns without a
-    // schema change — a peek must not draw the same "delegate done" line as
-    // a launch (#4112, dogfood A5).
-    if name == "agent"
-        && let Some(action) = input.get("action").and_then(serde_json::Value::as_str)
-    {
-        let action = action.trim().to_ascii_lowercase();
-        let already_leads = input_summary
-            .as_deref()
-            .is_some_and(|summary| summary.starts_with("action:"));
-        if !action.is_empty()
-            && !already_leads
-            && action != "start"
-            && action != "spawn"
-            && action != "run"
-        {
-            input_summary = Some(match input_summary {
-                Some(rest) => format!("action: {action} {rest}"),
-                None => format!("action: {action}"),
-            });
-        }
-    }
+    let input_summary = tool_input_summary(semantic_name, name, input);
     push_active_tool_cell(
         app,
         &id,
@@ -706,6 +691,7 @@ fn fire_tool_completion_hooks(
     id: &str,
     name: &str,
     result: &Result<ToolResult, ToolError>,
+    ignored_input: Option<&serde_json::Value>,
 ) {
     let wants_after = app.hooks.has_hooks_for_event(HookEvent::ToolCallAfter);
     let wants_error = app
@@ -717,15 +703,16 @@ fn fire_tool_completion_hooks(
         return;
     }
 
-    let input = app
-        .active_tool_details
-        .get(id)
-        .or_else(|| {
-            app.tool_cells
-                .get(id)
-                .and_then(|index| app.tool_details_by_cell.get(index))
-        })
-        .map(|detail| detail.input.clone());
+    let input = ignored_input.cloned().or_else(|| {
+        app.active_tool_details
+            .get(id)
+            .or_else(|| {
+                app.tool_cells
+                    .get(id)
+                    .and_then(|index| app.tool_details_by_cell.get(index))
+            })
+            .map(|detail| detail.input.clone())
+    });
     let context = app
         .base_hook_context()
         .with_tool_name(name)
@@ -759,15 +746,36 @@ pub(super) fn handle_tool_call_complete(
     name: &str,
     result: &Result<ToolResult, ToolError>,
 ) {
-    if app.ignored_tool_calls.remove(id) {
-        // "Ignored" is a *presentation* decision: these are real settled
-        // results — repeated `wait` polls, background-shell status reads —
-        // that the transcript deliberately does not redraw. Observers still
-        // have to see them, or `tool_call_after` silently skips a whole class
-        // of completions while claiming to fire after each tool call. Fired
-        // here and returned immediately, so each id emits exactly once.
-        fire_tool_completion_hooks(app, id, name, result);
-        return;
+    let ignored_input = app.ignored_tool_calls.remove(id);
+    if let Some(input) = ignored_input.as_ref() {
+        let status = tool_status_from_result(result);
+        let folded_shell_delta = if let Ok(tool_result) = result
+            && is_shell_delta_status(tool_result)
+            && let Some(task_id) = shell_delta_task_id(tool_result, input)
+            && let Some(origin_idx) = find_shell_origin_row_index(app, task_id)
+        {
+            fold_shell_delta_into_origin_row(app, origin_idx, tool_result, status);
+            true
+        } else {
+            false
+        };
+        if status != ToolStatus::Failed || folded_shell_delta {
+            // "Ignored" is a *presentation* decision: these are real settled
+            // results — repeated `wait` polls, background-shell status reads —
+            // that the transcript deliberately does not redraw. Observers still
+            // have to see them, or `tool_call_after` silently skips a whole class
+            // of completions while claiming to fire after each tool call. Fired
+            // here and returned immediately, so each id emits exactly once;
+            // genuine tool errors fall through to the orphan-completion card.
+            record_spillover_artifact_if_any(app, id, name, result);
+            fire_tool_completion_hooks(app, id, name, result, Some(input));
+            if status != ToolStatus::Running
+                && refreshes_workspace_context_on_completion(canonical_action_alias(name, input))
+            {
+                workspace_context::refresh_now(app, Instant::now());
+            }
+            return;
+        }
     }
     // Preserve the execution/audit name while recovering the action-qualified
     // semantic name from the registered call input. Active entries and
@@ -778,7 +786,9 @@ pub(super) fn handle_tool_call_complete(
             .and_then(|cell_index| app.tool_details_by_cell.get(cell_index))
     });
     let semantic_name = detail
-        .map_or(name, |detail| canonical_action_alias(name, &detail.input))
+        .map(|detail| &detail.input)
+        .or(ignored_input.as_ref())
+        .map_or(name, |input| canonical_action_alias(name, input))
         .to_string();
     let explicit_background = detail.is_some_and(|detail| {
         exec_is_background(&detail.input)
@@ -796,7 +806,7 @@ pub(super) fn handle_tool_call_complete(
     // any of the presentation early-returns below. Firing it further down meant
     // exploring-tool completions and orphaned completions never emitted the
     // event at all, so "fires after each tool call" was not true.
-    fire_tool_completion_hooks(app, id, name, result);
+    fire_tool_completion_hooks(app, id, name, result, ignored_input.as_ref());
 
     // Results recorded by earlier engines begin with a note for the model
     // ("[approval] This tool call required approval…"). Repeating it as the
@@ -858,7 +868,12 @@ pub(super) fn handle_tool_call_complete(
     // a finalized standalone cell from the result so the user can still see
     // the output, but DO NOT touch the active cell.
     let Some(cell_index) = app.tool_cells.remove(id) else {
-        push_orphan_tool_completion(app, id, name, result);
+        push_orphan_tool_completion(app, id, name, result, ignored_input.as_ref());
+        if tool_status_from_result(result) != ToolStatus::Running
+            && refreshes_workspace_context_on_completion(&semantic_name)
+        {
+            workspace_context::refresh_now(app, Instant::now());
+        }
         return;
     };
 
@@ -1557,9 +1572,10 @@ fn history_cell_has_running_tool(cell: &HistoryCell) -> bool {
 /// dropping it) hides errors and breaks debuggability.
 ///
 /// Choice of cell type: success-only mutation metadata is sufficient to
-/// reconstruct a structured File receipt; other orphans stay generic because
-/// no input payload remains. The pager remains usable in both cases because
-/// `tool_details_by_cell` is populated with the result text.
+/// reconstruct a structured File receipt; other orphans stay generic,
+/// preserving any captured input payload when available. The pager remains
+/// usable in both cases because `tool_details_by_cell` is populated with the
+/// result text.
 ///
 /// ## Index drift
 ///
@@ -1572,7 +1588,10 @@ fn push_orphan_tool_completion(
     tool_id: &str,
     name: &str,
     result: &Result<ToolResult, ToolError>,
+    input: Option<&serde_json::Value>,
 ) {
+    let semantic_name = input.map_or(name, |input| canonical_action_alias(name, input));
+    let input_summary = input.and_then(|input| tool_input_summary(semantic_name, name, input));
     let status = tool_status_from_result(result);
     let output = match result.as_ref() {
         Ok(tool_result) => Some(summarize_tool_output(&tool_result.content)),
@@ -1605,9 +1624,9 @@ fn push_orphan_tool_completion(
         }))
     } else {
         HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            name: name.to_string(),
+            name: semantic_name.to_string(),
             status,
-            input_summary: None,
+            input_summary,
             output,
             prompts: None,
             spillover_path,
@@ -1622,7 +1641,7 @@ fn push_orphan_tool_completion(
         ToolDetailRecord {
             tool_id: tool_id.to_string(),
             tool_name: name.to_string(),
-            input: serde_json::Value::Null,
+            input: input.cloned().unwrap_or(serde_json::Value::Null),
             output: match result.as_ref() {
                 Ok(tool_result) => Some(tool_result.content.clone()),
                 Err(err) => Some(err.to_string()),
@@ -1694,6 +1713,226 @@ fn is_exec_tool(name: &str) -> bool {
             | "exec_wait"
             | "exec_interact"
     )
+}
+
+fn plain_shell_poll_task_id(input: &serde_json::Value) -> Option<&str> {
+    if input.get("task_ids").is_some_and(|ids| !ids.is_null())
+        || input.get("gate").is_some_and(|gate| !gate.is_null())
+        || codewhale_engine::tools::tasks::task_shell_wait_requests_cancel(input)
+        || input
+            .get("wait")
+            .is_some_and(|wait| !wait.is_null() && !wait.is_boolean())
+    {
+        return None;
+    }
+    input
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|task_id| !task_id.trim().is_empty())
+}
+
+fn find_shell_origin_row_index(app: &App, task_id: &str) -> Option<usize> {
+    (0..app.virtual_cell_count()).rev().find(|&index| {
+        matches!(
+            app.cell_at_virtual_index(index),
+            Some(HistoryCell::Tool(ToolCell::Exec(exec)))
+                if exec.interaction.is_none() && exec.shell_task_id.as_deref() == Some(task_id)
+        )
+    })
+}
+
+fn has_shell_origin_row(app: &App, task_id: &str) -> bool {
+    find_shell_origin_row_index(app, task_id).is_some()
+}
+
+fn is_shell_delta_status(tool_result: &ToolResult) -> bool {
+    let Some(metadata) = tool_result.metadata.as_ref() else {
+        return false;
+    };
+    metadata
+        .get("stream_delta")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && matches!(
+            metadata_status(Some(metadata)),
+            Some("Running" | "Completed" | "Failed" | "TimedOut" | "Killed")
+        )
+}
+
+fn shell_delta_task_id<'a>(
+    tool_result: &'a ToolResult,
+    input: &'a serde_json::Value,
+) -> Option<&'a str> {
+    tool_result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("task_id"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            input
+                .get("task_id")
+                .or_else(|| input.get("id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .filter(|task_id| !task_id.trim().is_empty())
+}
+
+fn fold_shell_delta_into_origin_row(
+    app: &mut App,
+    origin_idx: usize,
+    tool_result: &ToolResult,
+    status: ToolStatus,
+) {
+    let metadata = tool_result.metadata.as_ref();
+    let duration_ms = metadata
+        .and_then(|meta| meta.get("duration_ms"))
+        .and_then(serde_json::Value::as_u64);
+    let needs_update = match app.cell_at_virtual_index(origin_idx) {
+        Some(HistoryCell::Tool(ToolCell::Exec(exec))) => {
+            if status == ToolStatus::Running {
+                exec.status == ToolStatus::Running
+                    && exec.output.is_none()
+                    && duration_ms.is_some()
+                    && exec.duration_ms != duration_ms
+            } else {
+                exec.status == ToolStatus::Running || exec.output.is_none()
+            }
+        }
+        _ => false,
+    };
+    if !needs_update {
+        return;
+    }
+
+    let delta_empty = metadata.is_some_and(|meta| {
+        meta.get("stdout_len").and_then(serde_json::Value::as_u64) == Some(0)
+            && meta.get("stderr_len").and_then(serde_json::Value::as_u64) == Some(0)
+    });
+    let shown_content = codewhale_engine::core::engine::content_without_approval_note(tool_result);
+    if let Some(HistoryCell::Tool(ToolCell::Exec(exec))) = app.cell_at_virtual_index_mut(origin_idx)
+    {
+        if status == ToolStatus::Running {
+            exec.duration_ms = duration_ms;
+        } else {
+            exec.status = status;
+            exec.waiting = None;
+            if duration_ms.is_some() {
+                exec.duration_ms = duration_ms;
+            }
+            exec.stale_elapsed_since_output_ms = None;
+            if exec.output.is_none() {
+                exec.output = if delta_empty && exec.live_output.is_some() {
+                    exec.live_output.take()
+                } else {
+                    visible_tool_output(shown_content)
+                };
+                exec.output_summary = exec.output.as_deref().map(summarize_tool_output);
+                exec.live_output = None;
+            }
+        }
+    }
+    app.mark_history_updated();
+    if origin_idx >= app.history.len() {
+        app.active_cell_revision = app.active_cell_revision.wrapping_add(1);
+        if let Some(active) = app.active_cell.as_mut() {
+            active.bump_revision();
+        }
+        refresh_active_tool_completion_timestamp(app, origin_idx);
+    }
+}
+
+fn tool_input_summary(
+    semantic_name: &str,
+    name: &str,
+    input: &serde_json::Value,
+) -> Option<String> {
+    if semantic_name == "task_shell_wait" {
+        return task_shell_wait_input_summary(input);
+    }
+    let mut input_summary = summarize_tool_args(input);
+    // Lead the `agent` args summary with the non-default action so renderers
+    // can tell inspections (peek/status/wait) apart from spawns without a
+    // schema change — a peek must not draw the same "delegate done" line as
+    // a launch (#4112, dogfood A5).
+    if name == "agent"
+        && let Some(action) = input.get("action").and_then(serde_json::Value::as_str)
+    {
+        let action = action.trim().to_ascii_lowercase();
+        let already_leads = input_summary
+            .as_deref()
+            .is_some_and(|summary| summary.starts_with("action:"));
+        if !action.is_empty()
+            && !already_leads
+            && action != "start"
+            && action != "spawn"
+            && action != "run"
+        {
+            input_summary = Some(match input_summary {
+                Some(rest) => format!("action: {action} {rest}"),
+                None => format!("action: {action}"),
+            });
+        }
+    }
+    input_summary
+}
+
+fn task_shell_wait_input_summary(input: &serde_json::Value) -> Option<String> {
+    let cancel_requested = codewhale_engine::tools::tasks::task_shell_wait_requests_cancel(input);
+    let gate = input.get("gate").filter(|gate| !gate.is_null());
+    let task_ids = input.get("task_ids").filter(|ids| !ids.is_null());
+    if !cancel_requested && gate.is_none() && task_ids.is_none() {
+        return summarize_tool_args(input);
+    }
+
+    let mut parts = Vec::new();
+    if cancel_requested {
+        if input.get("cancel").and_then(serde_json::Value::as_bool) == Some(true) {
+            parts.push("stop".to_string());
+        } else if let Some(raw) = input.get("cancel") {
+            parts.push(format!("cancel: {raw}"));
+        }
+    }
+    if let Some(gate) = gate {
+        let label = gate
+            .as_str()
+            .map(str::trim)
+            .filter(|gate| !gate.is_empty())
+            .map_or_else(|| gate.to_string(), str::to_string);
+        parts.push(format!("gate: {label}"));
+    }
+    if let Some(task_ids) = task_ids {
+        if let Some(ids) = task_ids.as_array() {
+            let names: Vec<&str> = ids.iter().filter_map(serde_json::Value::as_str).collect();
+            if !names.is_empty() && names.len() == ids.len() {
+                parts.push(format!("wait {}", names.join(", ")));
+            } else {
+                parts.push(format!("task_ids: {task_ids}"));
+            }
+        } else {
+            parts.push(format!("task_ids: {task_ids}"));
+        }
+    }
+    if let Some(task_id) = input
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        parts.push(task_id.to_string());
+    }
+    if let Some(command) = input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|cmd| !cmd.is_empty())
+    {
+        parts.push(command.to_string());
+    }
+    if parts.is_empty() {
+        summarize_tool_args(input)
+    } else {
+        Some(parts.join(" · "))
+    }
 }
 
 pub(super) fn refreshes_workspace_context_on_completion(name: &str) -> bool {
@@ -2545,7 +2784,7 @@ mod tests {
         let error_log = dir.path().join("error.log");
         let script = |path: &std::path::Path| {
             format!(
-                "printf '%s\\n' \"$DEEPSEEK_TOOL_CALL_ID\" >> {}",
+                "printf '%s|%s\\n' \"$DEEPSEEK_TOOL_CALL_ID\" \"$DEEPSEEK_TOOL_ARGS\" >> {}",
                 path.display()
             )
         };
@@ -2567,32 +2806,60 @@ mod tests {
         );
 
         let id = "call_ignored_1";
-        app.ignored_tool_calls.insert(id.to_string());
+        let failed_input = json!({"task_id": "shell_1", "command": "cargo test"});
+        app.ignored_tool_calls
+            .insert(id.to_string(), failed_input.clone());
         let failed: Result<ToolResult, ToolError> = Ok(ToolResult::error("boom"));
 
-        handle_tool_call_complete(&mut app, id, "exec_shell", &failed);
+        handle_tool_call_complete(&mut app, id, "exec_shell_wait", &failed);
 
         // The presentation state still consumed the id...
-        assert!(!app.ignored_tool_calls.contains(id));
+        assert!(!app.ignored_tool_calls.contains_key(id));
         // ...and both observers saw the call, once each.
+        let expected_failed_line = format!("{id}|{}", failed_input);
         let after = hook_log_lines_eventually(&after_log, 1);
         let errors = hook_log_lines_eventually(&error_log, 1);
-        assert_eq!(after, vec![id]);
-        assert_eq!(errors, vec![id]);
+        assert_eq!(after, vec![expected_failed_line.clone()]);
+        assert_eq!(errors, vec![expected_failed_line.clone()]);
+        let orphan_index = app.history.len().saturating_sub(1);
+        let HistoryCell::Tool(ToolCell::Generic(orphan)) = &app.history[orphan_index] else {
+            panic!("expected generic orphan cell for failed ignored call");
+        };
+        assert_eq!(
+            orphan.input_summary.as_deref(),
+            Some("command: cargo test, task_id: shell_1")
+        );
+        assert_eq!(app.tool_details_by_cell[&orphan_index].input, failed_input);
 
         // A successful ignored completion fires `tool_call_after` only.
         let second = "call_ignored_2";
-        app.ignored_tool_calls.insert(second.to_string());
+        let success_input = json!({"task_id": "shell_2"});
+        app.ignored_tool_calls
+            .insert(second.to_string(), success_input.clone());
+        let spillover = dir.path().join("spillover.txt");
+        std::fs::write(&spillover, "full shell output").expect("write spillover");
         handle_tool_call_complete(
             &mut app,
             second,
-            "exec_shell",
-            &Ok(ToolResult::success("ok")),
+            "task_shell_wait",
+            &Ok(ToolResult::success("ok").with_metadata(json!({
+                "spillover_path": spillover.display().to_string(),
+            }))),
         );
+        let expected_success_line = format!("{second}|{}", success_input);
         let after = hook_log_lines_eventually(&after_log, 2);
         let errors = hook_log_lines_eventually(&error_log, 1);
-        assert_eq!(after, vec![id, second]);
-        assert_eq!(errors, vec![id]);
+        assert_eq!(
+            after,
+            vec![expected_failed_line.clone(), expected_success_line]
+        );
+        assert_eq!(errors, vec![expected_failed_line]);
+        assert!(
+            app.session_artifacts
+                .iter()
+                .any(|artifact| artifact.tool_call_id == second),
+            "ignored completion must still record spillover artifact"
+        );
     }
 
     /// #6582: hooks see a `bash` command's real exit code and status, for a

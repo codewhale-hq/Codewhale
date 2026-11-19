@@ -2454,7 +2454,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
@@ -6837,7 +6837,25 @@ impl App {
         // A detached workflow outlives the turn that started it, and a
         // foreground one is cancelled by the engine, which says so with its
         // own `run_cancelled`. Neither is marked here.
+        self.ignored_tool_calls.clear();
         self.flush_active_cell();
+    }
+
+    pub fn finalize_turn_tool_cells(
+        &mut self,
+        status: codewhale_engine::core::events::TurnOutcomeStatus,
+    ) {
+        if matches!(
+            status,
+            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
+                | codewhale_engine::core::events::TurnOutcomeStatus::Failed
+        ) {
+            self.finalize_active_cell_as_interrupted();
+            self.finalize_streaming_assistant_as_interrupted();
+        } else {
+            self.ignored_tool_calls.clear();
+            self.flush_active_cell();
+        }
     }
 
     /// Apply one event to the run it names, creating that run's state on

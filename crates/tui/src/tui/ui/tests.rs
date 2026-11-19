@@ -20788,6 +20788,24 @@ fn completed_task_shell_wait_refreshes_workspace_context_before_ttl() {
 
     let mut app = create_test_app();
     app.workspace = repo.path().to_path_buf();
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "git checkout -b feature/task-new".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_1".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let cells_before = app.virtual_cell_count();
 
     let start = Instant::now();
     crate::tui::workspace_context::refresh_if_needed(&mut app, start, true);
@@ -20823,15 +20841,28 @@ fn completed_task_shell_wait_refreshes_workspace_context_before_ttl() {
         &mut app,
         "task-shell-branch",
         "task_shell_wait",
-        &serde_json::json!({"task_id": "shell_1"}),
+        &serde_json::json!({"task_id": "shell_1", "task_ids": null}),
     );
+    assert!(app.ignored_tool_calls.contains_key("task-shell-branch"));
     handle_tool_call_complete(
         &mut app,
         "task-shell-branch",
         "task_shell_wait",
-        &ok_result("completed"),
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_1 failed after 1.0 s.\n\nSTDERR:\nexit 1".to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Failed",
+                "task_id": "shell_1",
+                "stream_delta": true,
+                "duration_ms": 1_000_u64,
+                "stdout_len": 0_u64,
+                "stderr_len": 6_u64,
+            })),
+        }),
     );
 
+    assert_eq!(app.virtual_cell_count(), cells_before);
     let refreshed = app
         .workspace_context
         .as_deref()
@@ -23819,6 +23850,390 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
     let text = rendered_text(&HistoryCell::Tool(ToolCell::Generic(generic.clone())).lines(120));
     assert!(text.contains("tool failed"), "{text}");
     assert!(!text.contains("loaded, not run"), "{text}");
+}
+
+#[test]
+fn task_shell_wait_folds_plain_polls_and_failed_deltas_into_origin_row() {
+    let mut app = create_test_app();
+    for (task_id, command) in [
+        ("shell_ab08", "cargo test --workspace"),
+        ("shell_to", "sleep 60"),
+        ("shell_dedup", "cargo check"),
+    ] {
+        app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: command.to_string(),
+            status: ToolStatus::Running,
+            output: None,
+            live_output: None,
+            shell_task_id: Some(task_id.to_string()),
+            owner_agent_id: None,
+            owner_agent_name: None,
+            started_at: None,
+            duration_ms: None,
+            stale_elapsed_since_output_ms: None,
+            waiting: None,
+            source: ExecSource::Assistant,
+            description: None,
+            interaction: None,
+            output_summary: None,
+        })));
+    }
+    handle_tool_call_started(
+        &mut app,
+        "in-flight-read",
+        "read_file",
+        &serde_json::json!({"path": "Cargo.toml"}),
+    );
+    let history_before = app.history.len();
+    let virtual_before = app.virtual_cell_count();
+
+    let poll_1_input = serde_json::json!({"task_id": "shell_ab08"});
+    let poll_2_input = serde_json::json!({
+        "task_id": "shell_ab08",
+        "task_ids": null,
+        "gate": null,
+        "cancel": false,
+    });
+    handle_tool_call_started(&mut app, "poll-1", "task_shell_wait", &poll_1_input);
+    handle_tool_call_started(&mut app, "poll-2", "task_shell_wait", &poll_2_input);
+    assert!(app.ignored_tool_calls.contains_key("poll-1"));
+    assert!(app.ignored_tool_calls.contains_key("poll-2"));
+    assert_eq!(app.virtual_cell_count(), virtual_before);
+
+    handle_tool_call_complete(
+        &mut app,
+        "poll-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_ab08 still running after 500 ms.\n\nBackground task running (no new output).".to_string(),
+            success: true,
+            metadata: Some(serde_json::json!({
+                "status": "Running",
+                "task_id": "shell_ab08",
+                "stream_delta": true,
+                "duration_ms": 500_u64,
+            })),
+        }),
+    );
+    assert_eq!(app.history.len(), history_before);
+    assert_eq!(app.virtual_cell_count(), virtual_before);
+    let HistoryCell::Tool(ToolCell::Exec(origin_after_running)) = &app.history[0] else {
+        panic!("expected origin exec cell");
+    };
+    assert_eq!(origin_after_running.status, ToolStatus::Running);
+    assert_eq!(origin_after_running.output, None);
+    assert_eq!(origin_after_running.duration_ms, Some(500));
+
+    handle_tool_call_complete(
+        &mut app,
+        "poll-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_ab08 failed after 1.4 s.\n\nSTDERR:\ntest failed".to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Failed",
+                "task_id": "shell_ab08",
+                "stream_delta": true,
+                "duration_ms": 1_400_u64,
+                "exit_code": 1,
+                "stdout_len": 0_u64,
+                "stderr_len": 11_u64,
+            })),
+        }),
+    );
+    assert_eq!(app.history.len(), history_before);
+    assert_eq!(app.virtual_cell_count(), virtual_before);
+    let HistoryCell::Tool(ToolCell::Exec(origin_after_fail)) = &app.history[0] else {
+        panic!("expected origin exec cell");
+    };
+    assert_eq!(origin_after_fail.status, ToolStatus::Failed);
+    assert!(
+        origin_after_fail
+            .output
+            .as_deref()
+            .is_some_and(|out| out.contains("test failed"))
+    );
+
+    handle_tool_call_started(
+        &mut app,
+        "poll-timeout",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_to"}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "poll-timeout",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_to timed out after 30.0 s.\n\nCommand timed out (no new output)."
+                .to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "TimedOut",
+                "task_id": "shell_to",
+                "stream_delta": true,
+                "duration_ms": 30_000_u64,
+            })),
+        }),
+    );
+    assert_eq!(app.history.len(), history_before);
+    let HistoryCell::Tool(ToolCell::Exec(timeout_origin)) = &app.history[1] else {
+        panic!("expected timeout origin exec cell");
+    };
+    assert_eq!(timeout_origin.status, ToolStatus::Failed);
+
+    app.last_exec_wait_command = Some("cargo check".to_string());
+    handle_tool_call_started(
+        &mut app,
+        "dedup-wait",
+        "exec_shell_wait",
+        &serde_json::json!({"task_id": "shell_dedup", "command": "cargo check"}),
+    );
+    assert!(app.ignored_tool_calls.contains_key("dedup-wait"));
+    handle_tool_call_complete(
+        &mut app,
+        "dedup-wait",
+        "exec_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult {
+            content: "Task shell_dedup failed after 2.0 s.\n\nSTDERR:\ncheck failed".to_string(),
+            success: false,
+            metadata: Some(serde_json::json!({
+                "status": "Failed",
+                "task_id": "shell_dedup",
+                "stream_delta": true,
+                "duration_ms": 2_000_u64,
+            })),
+        }),
+    );
+    assert_eq!(app.history.len(), history_before);
+    let HistoryCell::Tool(ToolCell::Exec(dedup_origin)) = &app.history[2] else {
+        panic!("expected dedup origin exec cell");
+    };
+    assert_eq!(dedup_origin.status, ToolStatus::Failed);
+
+    let err_poll_input = serde_json::json!({"task_id": "shell_ab08"});
+    handle_tool_call_started(&mut app, "poll-err", "task_shell_wait", &err_poll_input);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-err",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::error(
+            "unknown background task",
+        )),
+    );
+    assert_eq!(app.history.len(), history_before + 1);
+    let orphan_idx = app.history.len() - 1;
+    let HistoryCell::Tool(ToolCell::Generic(orphan)) = &app.history[orphan_idx] else {
+        panic!("expected generic orphan cell");
+    };
+    assert_eq!(orphan.status, ToolStatus::Failed);
+    assert_eq!(orphan.input_summary.as_deref(), Some("task_id: shell_ab08"));
+    assert_eq!(app.tool_details_by_cell[&orphan_idx].input, err_poll_input);
+}
+
+#[test]
+fn task_shell_wait_gate_cancel_and_task_ids_stay_visible_and_preserve_errors() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "bg-shell",
+        "exec_shell",
+        &serde_json::json!({"command": "cargo test", "background": true}),
+    );
+    handle_tool_call_complete(
+        &mut app,
+        "bg-shell",
+        "exec_shell",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Started background shell task shell_ab08.",
+        )
+        .with_metadata(serde_json::json!({
+            "status": "Running",
+            "task_id": "shell_ab08",
+        }))),
+    );
+    assert_eq!(app.last_exec_wait_command.as_deref(), Some("cargo test"));
+    let toasts_before = app.status_toasts.len();
+
+    let gate_input = serde_json::json!({
+        "task_id": "shell_ab08",
+        "wait": true,
+        "gate": "test",
+        "command": "cargo test",
+    });
+    handle_tool_call_started(&mut app, "gate-1", "task_shell_wait", &gate_input);
+    assert!(!app.ignored_tool_calls.contains_key("gate-1"));
+    let gate_cell_index = app.tool_cells["gate-1"];
+    let gate_live = rendered_text(
+        &app.cell_at_virtual_index(gate_cell_index)
+            .expect("gate cell")
+            .lines(120),
+    );
+    assert!(gate_live.contains("gate: test"), "{gate_live}");
+
+    handle_tool_call_complete(
+        &mut app,
+        "gate-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Background task running (no new output).",
+        )
+        .with_metadata(serde_json::json!({
+            "status": "Running",
+            "task_id": "shell_ab08",
+            "stream_delta": true,
+        }))),
+    );
+    assert_eq!(app.status_toasts.len(), toasts_before);
+
+    handle_tool_call_started(&mut app, "gate-2", "task_shell_wait", &gate_input);
+    assert!(!app.ignored_tool_calls.contains_key("gate-2"));
+    handle_tool_call_complete(
+        &mut app,
+        "gate-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Task shell_ab08 completed after 2.0 s.",
+        )
+        .with_metadata(serde_json::json!({
+            "status": "Completed",
+            "task_id": "shell_ab08",
+            "stream_delta": true,
+        }))),
+    );
+
+    let mut no_origin_app = create_test_app();
+    handle_tool_call_started(
+        &mut no_origin_app,
+        "gate-only",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_gate_only", "gate": "test"}),
+    );
+    handle_tool_call_complete(
+        &mut no_origin_app,
+        "gate-only",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Background task running (no new output).",
+        )
+        .with_metadata(serde_json::json!({
+            "status": "Running",
+            "task_id": "shell_gate_only",
+            "stream_delta": true,
+        }))),
+    );
+    assert!(no_origin_app.status_toasts.is_empty());
+    handle_tool_call_started(
+        &mut no_origin_app,
+        "poll-after-gate",
+        "task_shell_wait",
+        &serde_json::json!({"task_id": "shell_gate_only"}),
+    );
+    assert!(
+        !no_origin_app
+            .ignored_tool_calls
+            .contains_key("poll-after-gate")
+    );
+
+    let failure_cases = [
+        (
+            "cancel-denied",
+            serde_json::json!({"task_id": "shell_ab08", "cancel": true}),
+            Ok(codewhale_engine::tools::spec::ToolResult::error(
+                "Approval denied by user",
+            )),
+            "Approval denied by user",
+        ),
+        (
+            "cancel-bad-type",
+            serde_json::json!({"task_id": "shell_ab08", "cancel": "true"}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "invalid type for cancel",
+            )),
+            "invalid type for cancel",
+        ),
+        (
+            "cancel-with-gate",
+            serde_json::json!({"task_id": "shell_ab08", "cancel": true, "gate": "test"}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "cancel=true stops the task and cannot record a gate",
+            )),
+            "cannot record a gate",
+        ),
+        (
+            "task-ids-empty",
+            serde_json::json!({"task_ids": []}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "`task_ids` must contain at least one background shell task id.",
+            )),
+            "must contain at least one",
+        ),
+        (
+            "task-ids-bad-item",
+            serde_json::json!({"task_ids": ["shell_ab08", 42]}),
+            Err(codewhale_engine::tools::spec::ToolError::invalid_input(
+                "invalid type for task_ids",
+            )),
+            "invalid type for task_ids",
+        ),
+    ];
+
+    for (id, input, result, expected_error) in failure_cases {
+        handle_tool_call_started(&mut app, id, "task_shell_wait", &input);
+        assert!(!app.ignored_tool_calls.contains_key(id), "{id} was hidden");
+        let cell_idx = app.tool_cells[id];
+        handle_tool_call_complete(&mut app, id, "task_shell_wait", &result);
+        let rendered = rendered_text(
+            &app.cell_at_virtual_index(cell_idx)
+                .expect("failed cell")
+                .lines(120),
+        );
+        assert!(
+            rendered.contains(expected_error),
+            "{id} dropped error text: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Cancelled command"),
+            "{id} falsely rendered Cancelled command: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn ignored_tool_calls_clear_on_turn_end_error_interrupt_and_stall_recovery() {
+    let mut app = create_test_app();
+    app.ignored_tool_calls.insert(
+        "poll-complete".to_string(),
+        serde_json::json!({"task_id": "shell_1"}),
+    );
+    app.finalize_turn_tool_cells(codewhale_engine::core::events::TurnOutcomeStatus::Completed);
+    assert!(app.ignored_tool_calls.is_empty());
+
+    app.ignored_tool_calls.insert(
+        "poll-interrupt".to_string(),
+        serde_json::json!({"task_id": "shell_2"}),
+    );
+    app.finalize_active_cell_as_interrupted();
+    assert!(app.ignored_tool_calls.is_empty());
+
+    app.ignored_tool_calls.insert(
+        "poll-error".to_string(),
+        serde_json::json!({"task_id": "shell_3"}),
+    );
+    apply_engine_error_to_app(
+        &mut app,
+        codewhale_error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
+    );
+    assert!(app.ignored_tool_calls.is_empty());
+
+    app.ignored_tool_calls.insert(
+        "poll-stall".to_string(),
+        serde_json::json!({"task_id": "shell_4"}),
+    );
+    app.is_loading = true;
+    recover_stalled_runtime_turn(&mut app, "Turn stalled", StatusToastLevel::Error);
+    assert!(app.ignored_tool_calls.is_empty());
 }
 
 #[test]

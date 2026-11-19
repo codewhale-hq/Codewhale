@@ -3319,6 +3319,7 @@ pub(crate) async fn run_event_loop(
                         // A prior turn that died without its `TurnComplete`
                         // must not leak its provisional estimate into this one.
                         app.clear_pending_turn_cost();
+                        app.ignored_tool_calls.clear();
                         // A Deny is scoped to the turn it answered (UX-8).
                         end_turn_scoped_denials(app);
                         app.goal_continuation_waiting = false;
@@ -3494,20 +3495,7 @@ pub(crate) async fn run_event_loop(
                         // marks still-running entries as Failed so the user
                         // sees they were interrupted rather than the spinner
                         // hanging forever.
-                        if matches!(
-                            status,
-                            codewhale_engine::core::events::TurnOutcomeStatus::Interrupted
-                                | codewhale_engine::core::events::TurnOutcomeStatus::Failed
-                        ) {
-                            app.finalize_active_cell_as_interrupted();
-                            // Also mark the streaming Assistant cell (if any)
-                            // so partial reasoning/text isn't left with a
-                            // permanent spinner. Idempotent with the
-                            // optimistic call in the Esc handler.
-                            app.finalize_streaming_assistant_as_interrupted();
-                        } else {
-                            app.flush_active_cell();
-                        }
+                        app.finalize_turn_tool_cells(status);
                         if !newer_dispatch_owns_turn_state {
                             app.is_loading = false;
                             app.dispatch_started_at = None;

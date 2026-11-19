@@ -227,6 +227,9 @@ pub(crate) fn apply_engine_error_to_app(
             app.runtime_turn_status = Some("failed".to_string());
         }
     }
+    if !turn_remains_active {
+        app.ignored_tool_calls.clear();
+    }
     app.streaming_state.reset();
     app.streaming_message_index = None;
     app.streaming_thinking_active_entry = None;
