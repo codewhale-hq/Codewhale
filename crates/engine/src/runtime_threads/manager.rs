@@ -8671,6 +8671,18 @@ impl RuntimeThreadManager {
 
     pub async fn delete_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
         let _admission = self.session_checkpoint_guard().await;
+        let _session_lease = match self.store.load_thread(thread_id)?.session_id {
+            Some(session_id) => Some(
+                crate::session_manager::SessionManager::new(self.sessions_dir().to_path_buf())?
+                    .reserve_session_for_external_write(&session_id)
+                    .with_context(|| {
+                        format!(
+                            "thread {thread_id}'s saved session is busy (a fork or save is in progress); retry"
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         let mut active = self.active.lock().await;
         if active
             .engines
@@ -11448,11 +11460,17 @@ impl RuntimeThreadManager {
             .checked_sub(1)
             .map(|index| cloned_records[index].0.id.clone());
         self.pause_for_fork_prepare_test_hook().await;
-        let (forked, _source_lease, _target_lease) = self
+        let (forked, _source_lease, target_lease) = self
             .bind_fork_to_own_session(forked, captured_source, prefix, covered_turn_id)
             .await?;
-        self.commit_staged_fork(&source, &forked, &cloned_records, sessions_dir)
-            .await?;
+        self.commit_staged_fork(
+            &source,
+            &forked,
+            &cloned_records,
+            sessions_dir,
+            target_lease,
+        )
+        .await?;
 
         self.emit_event(
             &forked.id,
@@ -12252,7 +12270,7 @@ impl RuntimeThreadManager {
     )> {
         let (captured_source, prefix, covered_turn_id) = prepared.own_session;
         let sessions_dir = captured_source.sessions_dir.clone();
-        let (thread, _source_lease, _target_lease) = self
+        let (thread, _source_lease, target_lease) = self
             .bind_fork_to_own_session(prepared.thread, captured_source, prefix, covered_turn_id)
             .await?;
         prepared.thread = thread;
@@ -12261,6 +12279,7 @@ impl RuntimeThreadManager {
             &prepared.thread,
             &prepared.records,
             &sessions_dir,
+            target_lease,
         )
         .await?;
         if let Err(error) = self
@@ -12298,6 +12317,7 @@ impl RuntimeThreadManager {
         thread: &ThreadRecord,
         records: &[(TurnRecord, Vec<TurnItemRecord>)],
         sessions_dir: &Path,
+        target_lease: crate::session_manager::SessionLease,
     ) -> Result<()> {
         let store = self.store.clone();
         let records_owned = records.to_vec();
@@ -12308,37 +12328,70 @@ impl RuntimeThreadManager {
         .await
         .context("fork staging task failed")??;
 
+        let admission = self.session_checkpoint_guard().await;
         let commit_result: Result<()> = async {
-            let (admission, current_source) =
-                self.thread_restore_guard(&source_snapshot.id).await?;
+            let current_source = self.get_thread(&source_snapshot.id).await?;
+            self.reject_active_turns_in_workspace(&current_source.workspace)
+                .await?;
             self.ensure_accepting_execution()?;
+            let same_state = thread_execution_state_matches(source_snapshot, &current_source);
+            let only_checkpoint_filled = source_snapshot.saved_session_checkpoint.is_none()
+                && current_source.saved_session_checkpoint.is_some()
+                && {
+                    let mut tolerant = source_snapshot.clone();
+                    tolerant.saved_session_checkpoint =
+                        current_source.saved_session_checkpoint.clone();
+                    thread_execution_state_matches(&tolerant, &current_source)
+                };
             anyhow::ensure!(
-                thread_execution_state_matches(source_snapshot, &current_source)
-                    && current_source.updated_at == source_snapshot.updated_at,
+                (same_state && current_source.updated_at == source_snapshot.updated_at)
+                    || only_checkpoint_filled,
                 "source thread changed while preparing fork; source retained"
             );
-            self.store.save_thread(thread)?;
-            drop(admission);
-            Ok(())
+            let store = self.store.clone();
+            let thread = thread.clone();
+            tokio::task::spawn_blocking(move || store.save_thread(&thread))
+                .await
+                .context("fork commit task failed")?
         }
         .await;
 
-        if let Err(commit_error) = commit_result {
-            let cleanup_result = self.cleanup_unpublished_fork(
-                &thread.id,
+        let Err(commit_error) = commit_result else {
+            return Ok(());
+        };
+        let store = self.store.clone();
+        let thread_id = thread.id.clone();
+        let (cleanup_result, unpublished) = tokio::task::spawn_blocking(move || {
+            let unpublished = store
+                .thread_path(&thread_id)
+                .is_ok_and(|path| matches!(path.try_exists(), Ok(false)));
+            let result = Self::cleanup_unpublished_fork_in_store(
+                &store,
+                &thread_id,
                 &saved_turn_ids,
                 &saved_item_ids,
                 commit_error,
             );
-            if let Some(session_id) = thread.session_id.as_deref()
-                && let Ok(session_manager) =
-                    crate::session_manager::SessionManager::new(sessions_dir.to_path_buf())
-            {
-                let _ = session_manager.delete_session(session_id);
-            }
-            return cleanup_result;
+            (result, unpublished)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            (
+                Err(anyhow::anyhow!("fork cleanup task failed: {error}")),
+                false,
+            )
+        });
+        drop(admission);
+        drop(target_lease);
+        if unpublished && let Some(session_id) = thread.session_id.clone() {
+            let sessions_dir = sessions_dir.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::session_manager::SessionManager::new(sessions_dir)
+                    .and_then(|manager| manager.delete_session(&session_id))
+            })
+            .await;
         }
-        Ok(())
+        cleanup_result
     }
 
     fn stage_fork_records_in_store(
