@@ -1103,6 +1103,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 - **Windows: plugins enable again on a finalized runtime root.** The sandboxed plugin host adds its own AppContainer read and execute grant to the finalized plugin root, and Windows stored the root's inheriting read/execute entry as more than one entry; both made enabling refuse. The root now carries one non-inheriting entry, the verifier still requires a protected owner-only DACL with nothing above read and execute, and the refusal names the underlying check. Fleet ledger compaction is no longer blocked by a live appender, and a blocked checkpoint inspection is reported as such instead of clearing save health. The Windows suite has not been shown green for this change, so this is not a Windows qualification.
 
+- **Parallel tool calls without ids no longer fail the turn on a non-streaming reply:** when a provider, or a gateway in front of it, answered a non-streaming `chat/completions` request with several tool calls that carried no `id`, every call was given the same placeholder id and the whole response was then rejected for a duplicate pairing, failing the turn. Each call now gets its own fallback id, matching streaming replies.
+
 ### Security
 
 - **`tool_launcher` in a user config is refused by every command:** `codewhale model resolve`, `codewhale config`, the other CLI subcommands and the desktop's config and secrets calls now stop with the same error the Engine gives when `config.toml` sets `tool_launcher` at the top level or in a profile, instead of loading the file and exiting 0. The key is still read only from the managed configuration. (CW-8021)
