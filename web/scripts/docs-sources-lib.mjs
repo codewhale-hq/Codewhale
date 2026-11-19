@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -28,4 +28,11 @@ export function deriveAgentDocs(webDir, repoRoot) {
       return { path, sha256: createHash("sha256").update(content).digest("hex"), content };
     }),
   }));
+}
+
+export function writeAgentDocs(webDir, repoRoot) {
+  writeFileSync(
+    resolve(webDir, "data", "agent-docs.generated.json"),
+    `${JSON.stringify(deriveAgentDocs(webDir, repoRoot), null, 2)}\n`,
+  );
 }
