@@ -2094,7 +2094,9 @@ impl Expander {
                         match attached {
                             Some("") => {
                                 self.dynamic |= dynamic[at];
+                                self.dropped |= dynamic[at];
                                 if at + 1 < tokens.len() {
+                                    self.code_payload(&tokens[at + 1], dynamic[at + 1], depth);
                                     self.record(&slice_line(line, at + 1), depth + 1);
                                 }
                             }
@@ -2105,7 +2107,12 @@ impl Expander {
                                 payload.odd[0] = false;
                                 self.record(&payload, depth + 1);
                             }
-                            None => {}
+                            None => {
+                                if tokens[at].starts_with('-') {
+                                    self.dynamic |= dynamic[at];
+                                    self.dropped |= dynamic[at];
+                                }
+                            }
                         }
                     }
                 }
@@ -2326,6 +2333,9 @@ impl Expander {
                             found = Some((val.to_string(), i));
                         }
                     } else if i + 1 < opt_end {
+                        let d2 = line.dynamic[i + 1];
+                        self.dynamic |= d2;
+                        self.dropped |= d2;
                         found = Some((tokens[i + 1].clone(), i + 1));
                         i += 1;
                     }
@@ -2340,6 +2350,9 @@ impl Expander {
                         if !rest.is_empty() {
                             found = Some((rest.to_string(), i));
                         } else if i + 1 < opt_end {
+                            let d2 = line.dynamic[i + 1];
+                            self.dynamic |= d2;
+                            self.dropped |= d2;
                             found = Some((tokens[i + 1].clone(), i + 1));
                             i += 1;
                         }
@@ -2360,6 +2373,7 @@ impl Expander {
     /// Code handed to another command as a string: parse it as a command line.
     fn code_payload(&mut self, payload: &str, dynamic: bool, depth: usize) {
         self.dynamic |= dynamic;
+        self.dropped |= dynamic;
         self.expand(payload, depth + 1);
     }
 
