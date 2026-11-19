@@ -31,9 +31,13 @@ use ratatui::{
 
 use super::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
-    render_modal_footer,
+    render_panel_scroll_rail,
 };
 use crate::tui::app::App;
+use crate::tui::automation_panel::format_schedule_badge;
+use crate::tui::views::rounded::{
+    pad_selected_line, render_hairline, render_rounded_footer, render_rounded_surface,
+};
 use codewhale_engine::automation_manager::{
     AutomationExecutionOwnership, AutomationRecord, AutomationRunRecord, AutomationRunStatus,
     AutomationStatus, SharedAutomationManager,
@@ -41,6 +45,8 @@ use codewhale_engine::automation_manager::{
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_tui_kit::list_nav::wrap_index;
+use codewhale_tui_kit::menu_style;
+use unicode_width::UnicodeWidthStr;
 
 mod editor;
 use editor::{AutomationEditor, EditorAction};
@@ -392,7 +398,7 @@ impl AutomationsView {
         hints
     }
 
-    fn header_lines(&self) -> Vec<Line<'static>> {
+    fn summary_meta(&self) -> String {
         let active = self
             .rows
             .iter()
@@ -408,34 +414,34 @@ impl AutomationsView {
             .iter()
             .filter(|row| row.live_run().is_some())
             .count();
-        vec![
-            Line::from(vec![
-                Span::styled(
-                    format!("─ {} ", tr(self.locale, MessageId::AutomationListHeading)),
-                    Style::default().fg(palette::WHALE_ACTION).bold(),
-                ),
-                Span::styled(
-                    format!(
-                        "· {active} {} · {live} {}",
-                        tr(self.locale, MessageId::AutomationStatusActive),
-                        tr(self.locale, MessageId::AutomationRunStatusRunning)
-                    ),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
-            ]),
-            Line::from(Span::styled(
-                format!("  {}", tr(self.locale, MessageId::AutomationScopeNote)),
-                Style::default().fg(palette::TEXT_DIM),
-            )),
-            Line::from(self.notice.clone().unwrap_or_default()),
-        ]
+        format!(
+            "{active} {} · {live} {}",
+            tr(self.locale, MessageId::AutomationStatusActive),
+            tr(self.locale, MessageId::AutomationRunStatusRunning)
+        )
+    }
+
+    fn header_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(Span::styled(
+            tr(self.locale, MessageId::AutomationScopeNote).into_owned(),
+            Style::default().fg(palette::TEXT_MUTED),
+        ))];
+        if let Some(notice) = self.notice.as_deref().filter(|n| !n.is_empty()) {
+            lines.push(Line::from(Span::styled(
+                notice.to_string(),
+                Style::default()
+                    .fg(palette::WHALE_ACTION)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines
     }
 
     fn render_list(&self, area: Rect, buf: &mut Buffer) {
         self.list_body.set(area);
         if let Some(problem) = self.problem.as_deref() {
             Paragraph::new(Line::from(Span::styled(
-                format!("  {problem}"),
+                problem.to_string(),
                 Style::default().fg(palette::STATUS_ERROR),
             )))
             .wrap(Wrap { trim: false })
@@ -444,7 +450,7 @@ impl AutomationsView {
         }
         if self.rows.is_empty() {
             Paragraph::new(Line::from(Span::styled(
-                format!("  {}", tr(self.locale, MessageId::AutomationEmpty)),
+                tr(self.locale, MessageId::AutomationEmpty).into_owned(),
                 Style::default().fg(palette::TEXT_MUTED),
             )))
             .wrap(Wrap { trim: false })
@@ -453,18 +459,23 @@ impl AutomationsView {
         }
         let rows_visible = usize::from(area.height).max(1);
         let scroll = self.row.saturating_sub(rows_visible.saturating_sub(1));
+        let list_area =
+            render_panel_scroll_rail(area, buf, self.rows.len(), scroll, rows_visible, true);
+        self.list_body.set(list_area);
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
+        let sep = if ascii { " | " } else { " · " };
+        let width = usize::from(list_area.width);
         for (idx, row) in self.rows.iter().enumerate().skip(scroll).take(rows_visible) {
-            let y = area.y + u16::try_from(idx - scroll).unwrap_or(u16::MAX);
+            let y = list_area.y + u16::try_from(idx - scroll).unwrap_or(u16::MAX);
             let selected = idx == self.row;
-            let base = if selected {
-                Style::default().fg(palette::WHALE_ACTION).bold()
-            } else {
-                Style::default().fg(palette::TEXT_SECONDARY)
-            };
-            let (mark, mark_style) = match (row.live_run(), row.record.status) {
-                (Some(_), _) => ("●", Style::default().fg(palette::STATUS_WARNING)),
-                (None, AutomationStatus::Active) => ("○", Style::default().fg(palette::TEXT_MUTED)),
-                (None, AutomationStatus::Paused) => ("‖", Style::default().fg(palette::TEXT_DIM)),
+            let (mark, mark_color) = match (row.live_run(), row.record.status) {
+                (Some(_), _) => (if ascii { "*" } else { "●" }, palette::STATUS_WARNING),
+                (None, AutomationStatus::Active) => {
+                    (if ascii { "o" } else { "○" }, palette::STATUS_SUCCESS)
+                }
+                (None, AutomationStatus::Paused) => {
+                    (if ascii { "=" } else { "‖" }, palette::TEXT_MUTED)
+                }
             };
             let state = match (row.live_run(), row.record.status) {
                 (Some(_), _) => tr(self.locale, MessageId::AutomationRunStatusRunning),
@@ -475,64 +486,153 @@ impl AutomationsView {
                     tr(self.locale, MessageId::AutomationStatusPaused)
                 }
             };
-            let line = Line::from(vec![
-                Span::styled(if selected { "▸ " } else { "  " }, base),
-                Span::styled(format!("{mark} "), mark_style),
-                Span::styled(display_text(&row.record.name), base),
-                Span::styled(
-                    format!(
-                        "  ·  {state}  ·  {}: {}",
-                        tr(self.locale, MessageId::AutomationNextLabel),
-                        self.next_run_text(row)
+            let name = display_text(&row.record.name);
+            let schedule = format_schedule_badge(&row.record.rrule);
+            let next_label = tr(self.locale, MessageId::AutomationNextLabel);
+            let next_run = self.next_run_text(row);
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(selected);
+            let unowned_active = row.record.status == AutomationStatus::Active
+                && row
+                    .execution_ownership
+                    .is_some_and(|ownership| ownership != AutomationExecutionOwnership::Owned);
+
+            let with_schedule = format!(
+                "{pointer} {mark} {name}{sep}{state}{sep}{schedule}{sep}{next_label}: {next_run}"
+            );
+            let include_schedule = with_schedule.width() <= width;
+
+            let line = if selected {
+                let raw = if include_schedule {
+                    with_schedule
+                } else {
+                    format!("{pointer} {mark} {name}{sep}{state}{sep}{next_label}: {next_run}")
+                };
+                let clipped = codewhale_tui_kit::ui_text::truncate_line_to_width(&raw, width);
+                let sel_style = menu_style::selected_row_style();
+                pad_selected_line(
+                    Line::from(Span::styled(clipped, sel_style)),
+                    width,
+                    sel_style,
+                )
+            } else {
+                let sep_style = Style::default().fg(palette::BORDER_COLOR);
+                let mut spans = vec![
+                    Span::styled(
+                        format!("{pointer} "),
+                        Style::default().fg(palette::TEXT_MUTED),
                     ),
-                    Style::default()
-                        .fg(palette::TEXT_DIM)
-                        .add_modifier(if selected {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                ),
-            ]);
-            line.render(Rect::new(area.x, y, area.width, 1), buf);
+                    Span::styled(
+                        format!("{mark} "),
+                        Style::default()
+                            .fg(mark_color)
+                            .add_modifier(if row.live_run().is_some() {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::styled(
+                        name,
+                        Style::default()
+                            .fg(if row.record.status == AutomationStatus::Paused {
+                                palette::TEXT_MUTED
+                            } else {
+                                palette::TEXT_PRIMARY
+                            })
+                            .add_modifier(if row.live_run().is_some() {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::styled(sep, sep_style),
+                    Span::styled(state.into_owned(), Style::default().fg(mark_color)),
+                ];
+                if include_schedule {
+                    spans.push(Span::styled(sep, sep_style));
+                    spans.push(Span::styled(
+                        schedule,
+                        Style::default().fg(palette::TEXT_SOFT),
+                    ));
+                }
+                spans.push(Span::styled(sep, sep_style));
+                spans.push(Span::styled(
+                    format!("{next_label}: "),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ));
+                spans.push(Span::styled(
+                    next_run,
+                    Style::default().fg(if unowned_active {
+                        palette::STATUS_WARNING
+                    } else {
+                        palette::TEXT_MUTED
+                    }),
+                ));
+                Line::from(spans)
+            };
+            Paragraph::new(line).render(Rect::new(list_area.x, y, list_area.width, 1), buf);
         }
     }
 
     fn detail_lines(&self, row: &AutomationRow) -> Vec<Line<'static>> {
         let locale = self.locale;
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
+        let rule = if ascii { "-" } else { "─" };
+        let sep = if ascii { " | " } else { " · " };
         let label = |id: MessageId| {
             Span::styled(
-                format!("  {}  ", tr(locale, id)),
-                Style::default().fg(palette::TEXT_PRIMARY).bold(),
+                format!("{:<12} ", tr(locale, id)),
+                Style::default().fg(palette::TEXT_MUTED).bold(),
             )
         };
-        let value = |text: String| Span::styled(text, Style::default().fg(palette::TEXT_SECONDARY));
+        let value = |text: String| Span::styled(text, Style::default().fg(palette::TEXT_PRIMARY));
         let record = &row.record;
+        let (status_glyph, status_color, status_text) = match (row.live_run(), record.status) {
+            (Some(_), _) => (
+                if ascii { "*" } else { "●" },
+                palette::STATUS_WARNING,
+                tr(locale, MessageId::AutomationRunStatusRunning),
+            ),
+            (None, AutomationStatus::Active) => (
+                if ascii { "o" } else { "○" },
+                palette::STATUS_SUCCESS,
+                tr(locale, MessageId::AutomationStatusActive),
+            ),
+            (None, AutomationStatus::Paused) => (
+                if ascii { "=" } else { "‖" },
+                palette::TEXT_MUTED,
+                tr(locale, MessageId::AutomationStatusPaused),
+            ),
+        };
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("─ ", Style::default().fg(palette::WHALE_ACTION).bold()),
+                Span::styled(
+                    format!("{status_glyph} "),
+                    Style::default().fg(status_color).bold(),
+                ),
                 Span::styled(
                     display_text(&record.name),
                     Style::default().fg(palette::TEXT_PRIMARY).bold(),
                 ),
+                Span::styled(sep, Style::default().fg(palette::BORDER_COLOR)),
                 Span::styled(
-                    format!(
-                        "  ·  {}",
-                        match record.status {
-                            AutomationStatus::Active =>
-                                tr(locale, MessageId::AutomationStatusActive),
-                            AutomationStatus::Paused =>
-                                tr(locale, MessageId::AutomationStatusPaused),
-                        }
-                    ),
-                    Style::default().fg(palette::TEXT_MUTED),
+                    status_text.into_owned(),
+                    Style::default().fg(status_color).bold(),
+                ),
+                Span::styled(sep, Style::default().fg(palette::BORDER_COLOR)),
+                Span::styled(
+                    format_schedule_badge(&record.rrule),
+                    Style::default().fg(palette::TEXT_SOFT),
                 ),
             ]),
             Line::from(Span::styled(
-                format!("  {}", record.id),
-                Style::default().fg(palette::TEXT_DIM),
+                record.id.clone(),
+                Style::default().fg(palette::TEXT_MUTED),
             )),
-            Line::from(""),
+            Line::from(Span::styled(
+                rule.repeat(36),
+                Style::default().fg(palette::BORDER_COLOR),
+            )),
             Line::from(vec![
                 label(MessageId::AutomationRruleLabel),
                 value(record.rrule.clone()),
@@ -572,24 +672,24 @@ impl AutomationsView {
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("  {}", tr(locale, MessageId::AutomationPromptLabel)),
-            Style::default().fg(palette::TEXT_PRIMARY).bold(),
+            tr(locale, MessageId::AutomationPromptLabel).into_owned(),
+            Style::default().fg(palette::WHALE_ACTION).bold(),
         )));
         for line in display_text(&record.prompt).lines().take(12) {
             lines.push(Line::from(Span::styled(
-                format!("    {line}"),
-                Style::default().fg(palette::TEXT_SECONDARY),
+                format!("  {line}"),
+                Style::default().fg(palette::TEXT_SOFT),
             )));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("  {}", tr(locale, MessageId::AutomationRecentRunsLabel)),
-            Style::default().fg(palette::TEXT_PRIMARY).bold(),
+            tr(locale, MessageId::AutomationRecentRunsLabel).into_owned(),
+            Style::default().fg(palette::WHALE_ACTION).bold(),
         )));
         if let Some(error) = row.runs_error.as_deref() {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "    {} · {}",
+                    "  {}{sep}{}",
                     tr(locale, MessageId::AutomationRunsUnavailable),
                     display_text(error)
                 ),
@@ -597,37 +697,45 @@ impl AutomationsView {
             )));
         } else if row.runs.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("    {}", tr(locale, MessageId::AutomationNoRuns)),
-                Style::default().fg(palette::TEXT_DIM),
+                format!("  {}", tr(locale, MessageId::AutomationNoRuns)),
+                Style::default().fg(palette::TEXT_MUTED),
             )));
         }
         for run in &row.runs {
             let (glyph, style) = match run.status {
-                AutomationRunStatus::Queued | AutomationRunStatus::Running => {
-                    ("●", Style::default().fg(palette::STATUS_WARNING))
-                }
-                AutomationRunStatus::Completed => {
-                    ("✓", Style::default().fg(palette::STATUS_SUCCESS))
-                }
-                AutomationRunStatus::Failed => ("✗", Style::default().fg(palette::STATUS_ERROR)),
-                AutomationRunStatus::Canceled => ("–", Style::default().fg(palette::TEXT_DIM)),
+                AutomationRunStatus::Queued | AutomationRunStatus::Running => (
+                    if ascii { "*" } else { "●" },
+                    Style::default().fg(palette::STATUS_WARNING).bold(),
+                ),
+                AutomationRunStatus::Completed => (
+                    if ascii { "+" } else { "✓" },
+                    Style::default().fg(palette::STATUS_SUCCESS),
+                ),
+                AutomationRunStatus::Failed => (
+                    if ascii { "x" } else { "✗" },
+                    Style::default().fg(palette::STATUS_ERROR).bold(),
+                ),
+                AutomationRunStatus::Canceled => (
+                    if ascii { "-" } else { "–" },
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
             };
             let mut spans = vec![
-                Span::styled(format!("    {glyph} "), style),
+                Span::styled(format!("  {glyph} "), style),
                 Span::styled(
                     run.scheduled_for.format("%Y-%m-%d %H:%M UTC").to_string(),
-                    Style::default().fg(palette::TEXT_SECONDARY),
+                    Style::default().fg(palette::TEXT_PRIMARY),
                 ),
             ];
             if let Some(task) = run.task_id.as_deref() {
                 spans.push(Span::styled(
-                    format!("  ·  {} {task}", tr(locale, MessageId::AutomationTaskLabel)),
-                    Style::default().fg(palette::TEXT_DIM),
+                    format!("{sep}{} {task}", tr(locale, MessageId::AutomationTaskLabel)),
+                    Style::default().fg(palette::TEXT_MUTED),
                 ));
             }
             if let Some(error) = run.error.as_deref() {
                 spans.push(Span::styled(
-                    format!("  ·  {error}"),
+                    format!("{sep}{error}"),
                     Style::default().fg(palette::STATUS_ERROR),
                 ));
             }
@@ -846,31 +954,42 @@ impl ModalView for AutomationsView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
-        Block::default()
-            .style(
-                Style::default()
-                    .fg(palette::TEXT_PRIMARY)
-                    .bg(palette::WHALE_BG),
-            )
-            .render(area, buf);
         if let Some(editor) = &self.editor {
+            Clear.render(area, buf);
+            Block::default()
+                .style(
+                    Style::default()
+                        .fg(palette::TEXT_PRIMARY)
+                        .bg(palette::COMPOSER_BG),
+                )
+                .render(area, buf);
             editor.render(area, buf);
             return;
         }
+        let surface = render_rounded_surface(
+            area,
+            buf,
+            tr(self.locale, MessageId::AutomationListHeading),
+            Some(self.summary_meta()),
+            self.rows.iter().any(|row| row.live_run().is_some()),
+        );
         let hints = self.footer_hints();
-        let content = render_modal_footer(area, buf, &hints);
+        let content = render_rounded_footer(surface, buf, &hints);
         let header = Paragraph::new(self.header_lines()).wrap(Wrap { trim: false });
-        let header_height = u16::try_from(header.line_count(content.width))
-            .unwrap_or(u16::MAX)
-            .saturating_add(1);
+        let header_rows = u16::try_from(header.line_count(content.width)).unwrap_or(u16::MAX);
+        let show_divider = content.height >= header_rows.saturating_add(4);
+        let header_height = header_rows
+            .saturating_add(1)
+            .saturating_add(u16::from(show_divider));
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(header_height), Constraint::Min(1)])
             .split(content);
-        // Keep action feedback visible while this panel covers the transcript.
-        // Reserve wrapped rows before the New/Edit buttons, including for CJK.
-        header.render(chunks[0], buf);
+        header.render(
+            Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, header_rows),
+            buf,
+        );
+        let button_y = chunks[0].y.saturating_add(header_rows);
         let mut x = chunks[0].x;
         self.new_button.set(Rect::ZERO);
         self.edit_button.set(Rect::ZERO);
@@ -881,21 +1000,37 @@ impl ModalView for AutomationsView {
             if key == "e" && self.selected().is_none() {
                 continue;
             }
-            let text = format!("[{key} {}] ", tr(self.locale, label));
+            let text = format!("[{key} {}]", tr(self.locale, label));
             let width = u16::try_from(codewhale_tui_kit::ui_text::text_display_width(&text))
                 .unwrap_or(u16::MAX)
                 .min(chunks[0].right().saturating_sub(x));
-            let rect = Rect::new(
-                x,
-                chunks[0].y + chunks[0].height.saturating_sub(1),
-                width,
-                1,
-            );
-            Paragraph::new(text)
-                .style(Style::default().fg(palette::WHALE_ACTION))
-                .render(rect, buf);
+            let rect = Rect::new(x, button_y, width, 1);
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("[{key} "),
+                    Style::default()
+                        .fg(palette::WHALE_ACTION)
+                        .bg(palette::SURFACE_ELEVATED)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}]", tr(self.locale, label)),
+                    Style::default()
+                        .fg(palette::TEXT_PRIMARY)
+                        .bg(palette::SURFACE_ELEVATED),
+                ),
+            ]))
+            .render(rect, buf);
             hit.set(rect);
-            x += width;
+            x = x.saturating_add(width).saturating_add(1);
+        }
+        if show_divider {
+            render_hairline(
+                Rect::new(chunks[0].x, button_y.saturating_add(1), chunks[0].width, 1),
+                buf,
+                palette::BORDER_COLOR,
+                palette::COMPOSER_BG,
+            );
         }
         if self.detail_open {
             self.render_detail(chunks[1], buf);
@@ -1148,7 +1283,9 @@ mod tests {
                     view.render(area, &mut buffer);
                     let text = rendered_text(area, &buffer);
                     let compact =
-                        |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+                        |s: &str| s.chars()
+                            .filter(|c| !c.is_whitespace() && *c != '│')
+                            .collect::<String>();
                     assert!(
                         compact(&text).contains(&compact(receipt)),
                         "{locale:?}/{width}/{detail}: {text}"
