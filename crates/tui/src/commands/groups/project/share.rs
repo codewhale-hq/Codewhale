@@ -297,6 +297,7 @@ mod tests {
                 restore_points: RestorePointProjection::Unreadable {
                     reason: "local-only snapshot detail".to_string(),
                 },
+                turn_outcomes: Vec::new(),
             }
         }
 
