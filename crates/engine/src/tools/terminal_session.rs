@@ -124,7 +124,9 @@ pub enum DurableTerminalState {
 
 #[cfg(unix)]
 struct CommandState {
+    id: String,
     marker: String,
+    start_marker: String,
 }
 
 #[cfg(unix)]
@@ -988,16 +990,206 @@ fn prune_output(input: &str) -> String {
 }
 
 #[cfg(unix)]
+fn strip_zsh_prompt_marks(raw: &str) -> String {
+    if !raw.contains("\x1b[") {
+        return raw.to_string();
+    }
+    const MARKS: &[&str] = &[
+        "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m",
+        "\x1b[1m\x1b[7m#\x1b[27m\x1b[1m\x1b[0m",
+        "\x1b[7m%\x1b[27m",
+        "\x1b[7m#\x1b[27m",
+    ];
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let mut matched = None;
+        for mark in MARKS {
+            if let Some(after) = rest.strip_prefix(mark) {
+                matched = Some(after);
+                break;
+            }
+        }
+        if let Some(mut after) = matched {
+            let trimmed_spaces = after.trim_start_matches(' ');
+            if let Some(post_cr) = trimmed_spaces
+                .strip_prefix("\r \r")
+                .or_else(|| trimmed_spaces.strip_prefix('\r'))
+            {
+                after = post_cr;
+            } else if trimmed_spaces.starts_with('\n') {
+                after = trimmed_spaces;
+            }
+            rest = after;
+            continue;
+        }
+        let next_esc = rest[1..].find('\x1b').map_or(rest.len(), |idx| idx + 1);
+        out.push_str(&rest[..next_esc]);
+        rest = &rest[next_esc..];
+    }
+    out
+}
+
+#[cfg(unix)]
+fn collapse_carriage_returns(line: &str) -> String {
+    if !line.contains('\r') {
+        return line.to_string();
+    }
+    let mut buf: Vec<char> = Vec::new();
+    let mut col = 0usize;
+    for ch in line.chars() {
+        if ch == '\r' {
+            col = 0;
+        } else {
+            if col < buf.len() {
+                buf[col] = ch;
+            } else {
+                buf.push(ch);
+            }
+            col += 1;
+        }
+    }
+    if buf.iter().all(|ch| *ch == ' ') {
+        return String::new();
+    }
+    let collapsed: String = buf.into_iter().collect();
+    collapsed.trim_end_matches(' ').to_string()
+}
+
+#[cfg(unix)]
+fn normalize_pty_text(raw: &str) -> String {
+    let without_zsh = strip_zsh_prompt_marks(raw);
+    let mut stripped = String::with_capacity(without_zsh.len());
+    codewhale_sanitize::sanitize::strip_ansi_into(&without_zsh, &mut stripped);
+    let lf = stripped.replace("\r\n", "\n");
+    let mut out = String::with_capacity(lf.len());
+    for (idx, line) in lf.split('\n').enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let collapsed = collapse_carriage_returns(line);
+        for ch in collapsed.chars() {
+            if ch == '\t' || (!ch.is_control() && ch != '\x7f') {
+                out.push(ch);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn parse_completion_marker(raw: &str, marker: &str) -> Option<(i32, String)> {
+    let marker_colon = format!("{marker}:");
+    if !raw.contains(&marker_colon) {
+        return None;
+    }
+    let cleaned = normalize_pty_text(raw);
+    let needle = format!("\n{marker}:");
+    let tail = cleaned
+        .rsplit_once(&needle)
+        .map(|(_, tail)| tail)
+        .or_else(|| cleaned.strip_prefix(&marker_colon))?;
+    let (line, _) = tail.split_once('\n')?;
+    let (status, cwd) = line.split_once(':')?;
+    Some((status.trim().parse().ok()?, cwd.to_string()))
+}
+
+#[cfg(unix)]
+fn is_internal_sentinel_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix("__CODEWHALE_TERM_") else {
+        return false;
+    };
+    if let Some((prefix, tail)) = rest.split_once("__:") {
+        !prefix.is_empty()
+            && prefix.bytes().all(|b| b.is_ascii_alphanumeric())
+            && tail
+                .split_once(':')
+                .is_some_and(|(code, _)| code.trim().parse::<i32>().is_ok())
+    } else {
+        rest.ends_with("__START") || rest.ends_with("SOURCE")
+    }
+}
+
+#[cfg(unix)]
+fn strip_internal_scaffolding(input: &str) -> String {
+    if !input.contains("__CODEWHALE_TERM_") {
+        return input.to_string();
+    }
+    let has_trailing_nl = input.ends_with('\n');
+    let lines: Vec<&str> = if has_trailing_nl {
+        input[..input.len() - 1].split('\n').collect()
+    } else {
+        input.split('\n').collect()
+    };
+    let mut start = 0usize;
+    if let Some(wrapper_idx) = lines
+        .iter()
+        .position(|line| line.contains(". /dev/fd/9 9<<'__CODEWHALE_TERM_"))
+        && let Some(rel_end) = lines[wrapper_idx + 1..].iter().position(|line| {
+            line.contains("__CODEWHALE_TERM_") && line.trim_end().ends_with("SOURCE")
+        })
+    {
+        start = wrapper_idx + 1 + rel_end + 1;
+    }
+    let mut end = lines.len();
+    if let Some(rel_sentinel) = lines[start..].iter().rposition(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("__CODEWHALE_TERM_")
+            && trimmed.contains("__:")
+            && is_internal_sentinel_line(trimmed)
+    }) {
+        end = start + rel_sentinel;
+    }
+    let kept: Vec<&str> = lines[start..end]
+        .iter()
+        .copied()
+        .filter(|line| {
+            !(line.contains(". /dev/fd/9 9<<'__CODEWHALE_TERM_")
+                || (line.contains("__cw_status=") && line.contains("__CODEWHALE_TERM_"))
+                || (line.contains("heredoc>") && line.contains("__CODEWHALE_TERM_"))
+                || is_internal_sentinel_line(line))
+        })
+        .collect();
+    let mut joined = kept.join("\n");
+    if has_trailing_nl && end == lines.len() && !joined.is_empty() {
+        joined.push('\n');
+    }
+    joined
+}
+
+#[cfg(unix)]
+fn clean_pty_output(raw: &str, command: Option<&CommandState>) -> String {
+    let normalized = normalize_pty_text(raw);
+    let mut body: &str = &normalized;
+    if let Some(state) = command {
+        let start_with_nl = format!("\n{}\n", state.start_marker);
+        let start_prefix = format!("{}\n", state.start_marker);
+        let start_trailing = format!("\n{}", state.start_marker);
+        if let Some(pos) = body.find(&start_with_nl) {
+            body = &body[pos + start_with_nl.len()..];
+        } else if let Some(rest) = body.strip_prefix(&start_prefix) {
+            body = rest;
+        } else if let Some(pos) = body.find(&start_trailing) {
+            body = &body[pos + start_trailing.len()..];
+            body = body.strip_prefix('\n').unwrap_or(body);
+        }
+        let end_nl = format!("\n{}:", state.marker);
+        let end_prefix = format!("{}:", state.marker);
+        if let Some((before, _)) = body.rsplit_once(&end_nl) {
+            body = before;
+        } else if body.starts_with(&end_prefix) {
+            body = "";
+        }
+    }
+    strip_internal_scaffolding(body)
+}
+
+#[cfg(unix)]
 fn completion(session: &TerminalSession) -> Option<(i32, String)> {
     let state = session.command.as_ref()?;
     let output = output_snapshot(session);
-    let marker = format!("\n{}:", state.marker);
-    let line = output
-        .rsplit(&marker)
-        .next()
-        .and_then(|tail| tail.lines().next())?;
-    let (status, cwd) = line.split_once(':')?;
-    Some((status.parse().ok()?, cwd.to_string()))
+    parse_completion_marker(&output, &state.marker)
 }
 
 #[cfg(unix)]
@@ -1005,20 +1197,20 @@ fn start_command(session: &mut TerminalSession, command: &str) -> Result<(), Str
     if session.command.is_some() && completion(session).is_none() {
         return Err("terminal session already has a running foreground command".to_string());
     }
-    let marker = format!("__CODEWHALE_TERM_{}__", Uuid::new_v4().simple());
-    // The command must run in the CURRENT shell — a subshell would discard
-    // exactly the state (cd, exports, functions, activated envs) this tool
-    // exists to preserve (EXEC-001). Parse the source and sentinel together,
-    // but read source lines from a separate fd: interactive commands keep the
-    // PTY as stdin, and aliases defined on earlier lines expand in every shell.
-    // The random quoted delimiter prevents source expansion by the outer shell.
-    let delimiter = format!("{marker}_SOURCE");
+    let id = Uuid::new_v4().simple().to_string();
+    let marker = format!("__CODEWHALE_TERM_{id}__");
+    let start_marker = format!("{marker}START");
+    let delimiter = format!("{marker}SOURCE");
     let wrapped = format!(
-        ". /dev/fd/9 9<<'{delimiter}'; __cw_status=$?; printf '\\n{marker}:%s:%s\\n' \"$__cw_status\" \"$PWD\"\n{command}\n{delimiter}\n"
+        "printf '\\n__CODEWHALE_TERM_%s__START\\n' '{id}'; . /dev/fd/9 9<<'{delimiter}'; __cw_status=$?; printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' '{id}' \"$__cw_status\" \"$PWD\"\n{command}\n{delimiter}\n"
     );
     write_bytes(session, wrapped.as_bytes())
         .map_err(|error| format!("PTY write failed: {error}"))?;
-    session.command = Some(CommandState { marker });
+    session.command = Some(CommandState {
+        id,
+        marker,
+        start_marker,
+    });
     session.durable.state = DurableTerminalState::Running;
     session.durable.updated_at = chrono::Utc::now().to_rfc3339();
     persist_durable(&session.durable_path, &session.durable)?;
@@ -1028,11 +1220,12 @@ fn start_command(session: &mut TerminalSession, command: &str) -> Result<(), Str
 #[cfg(unix)]
 fn write_completion_sentinel(
     session: &TerminalSession,
-    marker: &str,
+    id: &str,
     status: i32,
 ) -> Result<(), String> {
-    let sentinel =
-        format!("__cw_status={status}; printf '\\n{marker}:%s:%s\\n' \"$__cw_status\" \"$PWD\"\n");
+    let sentinel = format!(
+        "__cw_status={status}; printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' '{id}' \"$__cw_status\" \"$PWD\"\n"
+    );
     write_bytes(session, sentinel.as_bytes()).map_err(|error| format!("PTY write failed: {error}"))
 }
 
@@ -1089,7 +1282,7 @@ fn wait_shared_session(
 /// abort a sentinel the shell is about to run.
 #[cfg(unix)]
 fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolError> {
-    let marker = {
+    let command_id = {
         let session = session
             .lock()
             .map_err(|_| ToolError::execution_failed("terminal session lock poisoned"))?;
@@ -1104,7 +1297,7 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
             .command
             .as_ref()
             .expect("running command checked above")
-            .marker
+            .id
             .clone()
     };
     let deadline = Instant::now() + CANCEL_CONFIRM_TIMEOUT;
@@ -1136,7 +1329,8 @@ fn cancel_shared_session(session: &SharedSession) -> Result<(i32, String), ToolE
                 last_interrupt = Instant::now();
             }
         }
-        write_completion_sentinel(&session, &marker, 130).map_err(ToolError::execution_failed)?;
+        write_completion_sentinel(&session, &command_id, 130)
+            .map_err(ToolError::execution_failed)?;
     }
 }
 
@@ -1146,19 +1340,36 @@ fn session_result(
     done: Option<(i32, String)>,
     timed_out: bool,
 ) -> ToolResult {
-    let output = prune_output(&take_output(session));
+    session_result_with_status(session, done, timed_out, None)
+}
+
+#[cfg(unix)]
+fn session_result_with_status(
+    session: &mut TerminalSession,
+    done: Option<(i32, String)>,
+    timed_out: bool,
+    status_override: Option<&str>,
+) -> ToolResult {
+    let raw = take_output(session);
+    let cleaned = clean_pty_output(&raw, session.command.as_ref());
+    let stdout = prune_output(&cleaned);
     let finished = done.is_some();
     let (exit_code, cwd) = done.map_or((None, String::new()), |(code, cwd)| (Some(code), cwd));
-    let status = if timed_out {
+    let status = status_override.unwrap_or(if timed_out {
         "timed_out"
     } else if finished {
         "completed"
     } else {
         "running"
-    };
+    });
     if !cwd.is_empty() {
         session.durable.last_known_cwd = PathBuf::from(&cwd);
     }
+    let effective_cwd = if cwd.is_empty() {
+        session.durable.last_known_cwd.display().to_string()
+    } else {
+        cwd.clone()
+    };
     session.durable.state = if timed_out || !finished {
         DurableTerminalState::Running
     } else if exit_code == Some(0) {
@@ -1178,12 +1389,21 @@ fn session_result(
             "updated_at": record.updated_at,
         })
     });
+    let content = json!({
+        "stdout": stdout,
+        "exit_code": exit_code,
+        "cwd": effective_cwd,
+        "status": status,
+        "session": session.durable.name,
+        "session_id": session.durable.session_id,
+    })
+    .to_string();
     ToolResult {
-        content: output,
+        content,
         // A successful send while the command is still running is itself a
         // successful tool operation. Completed commands still report their
         // real exit status, and timeouts remain unsuccessful.
-        success: !timed_out && (!finished || exit_code == Some(0)),
+        success: status == "canceled" || (!timed_out && (!finished || exit_code == Some(0))),
         metadata: Some(json!({
             "status": status,
             "exit_code": exit_code,
@@ -1427,10 +1647,9 @@ impl ToolSpec for TerminalCancelTool {
                 let mut session = session
                     .lock()
                     .map_err(|_| ToolError::execution_failed("terminal session lock poisoned"))?;
-                let mut result = session_result(&mut session, Some(done), false);
-                result.success = true;
+                let mut result =
+                    session_result_with_status(&mut session, Some(done), false, Some("canceled"));
                 if let Some(metadata) = result.metadata.as_mut() {
-                    metadata["status"] = json!("canceled");
                     metadata["canceled"] = json!(true);
                 }
                 Ok(result)
@@ -2292,8 +2511,79 @@ mod tests {
     fn output_is_capped_with_notice() {
         let session = fresh("test-output-cap");
         let result = run(&session, "yes x | head -n 100000", Duration::from_secs(3));
-        assert!(result.content.len() <= OUTPUT_LIMIT + 100);
-        assert!(result.content.contains("output truncated"));
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let stdout = parsed["stdout"].as_str().unwrap();
+        assert!(stdout.len() <= OUTPUT_LIMIT + 100);
+        assert!(stdout.contains("output truncated"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_run_strips_wrapper_heredoc_ansi_and_sentinel_into_clean_json() {
+        let state = CommandState {
+            id: "deadbeef1234".to_string(),
+            marker: "__CODEWHALE_TERM_deadbeef1234__".to_string(),
+            start_marker: "__CODEWHALE_TERM_deadbeef1234__START".to_string(),
+        };
+        let raw_zsh = concat!(
+            "\x1b]2;zsh\x07\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m     \r \r",
+            "user@host CW % \x1b[?2004hprintf '\\n__CODEWHALE_TERM_%s__START\\n' 'deadbeef1234'; ",
+            ". /dev/fd/9 9<<'__CODEWHALE_TERM_deadbeef1234__SOURCE'; __cw_status=$?; ",
+            "printf '\\n__CODEWHALE_TERM_%s__:%s:%s\\n' 'deadbeef1234' \"$__cw_status\" \"$PWD\"\x1b[?2004l\r\n",
+            "heredoc> \x1b[?2004hpwd && echo ok\x1b[?2004l\r\n",
+            "heredoc> \x1b[?2004h__CODEWHALE_TERM_deadbeef1234__SOURCE\x1b[?2004l\r\n",
+            "\r\n__CODEWHALE_TERM_deadbeef1234__START\r\n",
+            "\x1b]0;running\x07\x1b[32m/tmp/work\x1b[0m\r\n",
+            "col1\t\x1b[1mok\x1b[0m\r\n",
+            "\r\n__CODEWHALE_TERM_deadbeef1234__:0:/tmp/work\r\n",
+            "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m     \r \ruser@host CW % \x1b[?2004h"
+        );
+        assert_eq!(
+            parse_completion_marker(raw_zsh, &state.marker),
+            Some((0, "/tmp/work".to_string()))
+        );
+        let cleaned = clean_pty_output(raw_zsh, Some(&state));
+        assert_eq!(cleaned, "/tmp/work\ncol1\tok\n");
+        assert!(!cleaned.contains("__CODEWHALE_TERM_"));
+        assert!(!cleaned.contains("heredoc>"));
+        assert!(!cleaned.contains("/dev/fd/9"));
+        assert!(!cleaned.contains('\x1b'));
+
+        let legacy_without_start = concat!(
+            "user@host % . /dev/fd/9 9<<'__CODEWHALE_TERM_abcd__SOURCE'; __cw_status=$?; printf '\\n__CODEWHALE_TERM_abcd__:%s:%s\\n' \"$__cw_status\" \"$PWD\"\r\n",
+            "heredoc> pwd && echo ok\r\n",
+            "heredoc> __CODEWHALE_TERM_abcd__SOURCE\r\n",
+            "/tmp/work\r\nok\r\n",
+            "\r\n__CODEWHALE_TERM_abcd__:0:/tmp/work\r\n",
+            "\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m   \r \ruser@host % "
+        );
+        assert_eq!(
+            clean_pty_output(legacy_without_start, None),
+            "/tmp/work\nok\n"
+        );
+
+        let session = fresh("test-clean-pty-json");
+        let result = run(
+            &session,
+            "pwd && printf 'a\\tok\\n'",
+            Duration::from_secs(5),
+        );
+        assert!(result.success, "{}", result.content);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result.content).expect("structured json content");
+        assert_eq!(parsed["exit_code"], 0);
+        assert_eq!(parsed["status"], "completed");
+        assert_eq!(parsed["session"], "test-clean-pty-json");
+        assert!(parsed["session_id"].as_str().is_some_and(|s| !s.is_empty()));
+        let cwd = parsed["cwd"].as_str().expect("cwd");
+        assert!(!cwd.is_empty());
+        let stdout = parsed["stdout"].as_str().expect("stdout");
+        assert!(stdout.contains("a\tok"), "{stdout:?}");
+        assert!(stdout.contains(cwd), "{stdout:?} vs {cwd:?}");
+        assert!(!stdout.contains("__CODEWHALE_TERM_"), "{stdout:?}");
+        assert!(!stdout.contains("/dev/fd/9"), "{stdout:?}");
+        assert!(!stdout.contains("heredoc>"), "{stdout:?}");
+        assert!(!stdout.contains('\x1b'), "{stdout:?}");
     }
 
     /// The cursor contract the Engine byte stream rides on: offsets are

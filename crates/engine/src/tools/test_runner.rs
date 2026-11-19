@@ -3,14 +3,16 @@
 //! `cargo test` runs workspace code, so this tool follows the same explicit
 //! approval policy as the other code-executing tools.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::cargo_failure_summary::summarize_cargo_failure;
+use super::shell::{SharedShellManager, ShellOutputStream, ShellStatus};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str,
@@ -18,20 +20,54 @@ use super::spec::{
 
 use codewhale_dependencies::ExternalTool;
 
+const DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS: u64 = 30_000;
+const MAX_RUN_TESTS_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+const BACKGROUND_TESTS_TIMEOUT_MS: u64 = 600_000;
+const FOREGROUND_POLL_INITIAL_MS: u64 = 5;
+const FOREGROUND_POLL_MAX_MS: u64 = 100;
+
 /// Tool for running `cargo test` in the workspace root.
 pub struct RunTestsTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RunTestsOutput {
     success: bool,
-    exit_code: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
     stdout: String,
     stderr: String,
     command: String,
-    /// The run hit [`RUN_TESTS_TIMEOUT`] and was killed; stdout/stderr are
-    /// what it wrote until then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     timed_out: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    backgrounded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_output_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    zero_tests_matched: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tests_executed: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tests_filtered_out: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ZeroTestDetection {
+    pub zero_tests_matched: bool,
+    pub tests_executed: Option<usize>,
+    pub tests_filtered_out: Option<usize>,
+    pub runner: Option<&'static str>,
+    pub reason: Option<String>,
 }
 
 #[async_trait]
@@ -45,7 +81,7 @@ impl ToolSpec for RunTestsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Run `cargo test` in the workspace root with optional extra arguments."
+        "Run `cargo test` in the workspace root with optional extra arguments. Auto-backgrounds after 30s by default unless background=false; set background=true to detach immediately."
     }
 
     fn input_schema(&self) -> Value {
@@ -63,6 +99,16 @@ impl ToolSpec for RunTestsTool {
                 "cwd": {
                     "type": "string",
                     "description": "Optional working directory, relative to the workspace, to run `cargo test` in. Must exist inside the workspace."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "When true, start immediately as a background job and return task_id. When omitted, wait up to timeout_ms (default 30000ms) and auto-background if still running. When false, block until completion or timeout_ms."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_RUN_TESTS_TIMEOUT_MS,
+                    "description": "Foreground wait budget in milliseconds before auto-backgrounding (default 30000), or maximum blocking timeout when background=false."
                 }
             },
             "additionalProperties": false
@@ -79,12 +125,39 @@ impl ToolSpec for RunTestsTool {
         ApprovalRequirement::Required
     }
 
+    fn starts_detached_for(&self, input: &Value) -> bool {
+        input.get("background").and_then(Value::as_bool) == Some(true)
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         crate::tools::execution_envelope::enforce_tool_denial(context, self.name(), &input)?;
         let all_features = optional_bool(&input, "all_features", false)?;
         let extra_args = optional_str(&input, "args")?
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        let explicit_background = match input.get("background") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(flag)) => Some(*flag),
+            Some(_) => {
+                return Err(ToolError::invalid_input(
+                    "Field 'background' must be a boolean",
+                ));
+            }
+        };
+        let timeout_ms = match input.get("timeout_ms") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let ms = value.as_u64().ok_or_else(|| {
+                    ToolError::invalid_input("Field 'timeout_ms' must be a positive integer")
+                })?;
+                if !(1..=MAX_RUN_TESTS_TIMEOUT_MS).contains(&ms) {
+                    return Err(ToolError::invalid_input(format!(
+                        "timeout_ms must be between 1 and {MAX_RUN_TESTS_TIMEOUT_MS}"
+                    )));
+                }
+                Some(ms)
+            }
+        };
         let workdir = match optional_str(&input, "cwd")?
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -97,53 +170,724 @@ impl ToolSpec for RunTestsTool {
         if all_features {
             args.push("--all-features".to_string());
         }
+        let mut extra_tokens = Vec::new();
         if let Some(extra) = extra_args {
             let split = shlex::split(extra).ok_or_else(|| {
                 ToolError::invalid_input("Failed to parse 'args' as shell-style tokens")
             })?;
+            extra_tokens = split.clone();
             args.extend(split);
+        }
+        let filtered = has_test_filter_args(&extra_tokens);
+
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return Err(ToolError::cancelled("cargo test cancelled"));
         }
 
         let command_str = format_command(&workdir, &args);
-        let run = run_cargo(&workdir, &args, context, RUN_TESTS_TIMEOUT).await?;
-        let output = run.output;
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if run.stopped {
-            stderr.push_str(&format!(
-                "\n[run_tests: stopped after {} s; the output above is everything cargo wrote before it was killed]",
-                RUN_TESTS_TIMEOUT.as_secs()
-            ));
+        match explicit_background {
+            Some(true) => start_background_cargo(&workdir, &args, &command_str, context),
+            None => {
+                let wait =
+                    Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS));
+                run_cargo_with_auto_background(
+                    &workdir,
+                    &args,
+                    &command_str,
+                    context,
+                    wait,
+                    filtered,
+                )
+                .await
+            }
+            Some(false) => {
+                let timeout = timeout_ms
+                    .map(Duration::from_millis)
+                    .unwrap_or(RUN_TESTS_TIMEOUT);
+                let run = run_cargo(&workdir, &args, context, timeout).await?;
+                let output = run.output;
+                let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                if run.stopped {
+                    stderr.push_str(&format!(
+                        "\n[run_tests: stopped after {} s; the output above is everything cargo wrote before it was killed]",
+                        timeout.as_secs()
+                    ));
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                let exit_code = output.status.code().unwrap_or(-1);
+                finish_completed_tests(
+                    !run.stopped && output.status.success(),
+                    exit_code,
+                    stdout,
+                    stderr,
+                    command_str,
+                    run.stopped,
+                    filtered,
+                )
+            }
         }
-
-        // The whole output: the end of a cargo run is where the failures and
-        // the `test result:` line are. Size is the engine's one recoverable
-        // budget (#6508), so the failure summary sees everything.
-        run_tests_result(RunTestsOutput {
-            success: !run.stopped && output.status.success(),
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr,
-            command: command_str,
-            timed_out: run.stopped,
-        })
     }
+}
+
+fn finish_completed_tests(
+    status_ok: bool,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+    command: String,
+    timed_out: bool,
+    filtered: bool,
+) -> Result<ToolResult, ToolError> {
+    let detection = if status_ok && !timed_out {
+        detect_zero_tests_matched(&stdout, &stderr, filtered)
+    } else {
+        ZeroTestDetection::default()
+    };
+    let success = status_ok && !timed_out && !detection.zero_tests_matched;
+    let warning = detection.zero_tests_matched.then(|| {
+        detection.reason.clone().unwrap_or_else(|| {
+            "0 tests matched; verify your test filter args because a 0-test pass proves nothing"
+                .to_string()
+        })
+    });
+    run_tests_result(RunTestsOutput {
+        success,
+        exit_code: Some(exit_code),
+        stdout,
+        stderr,
+        command,
+        timed_out,
+        backgrounded: false,
+        status: None,
+        task_id: None,
+        last_output_age_ms: None,
+        progress: None,
+        zero_tests_matched: detection.zero_tests_matched,
+        tests_executed: detection.tests_executed,
+        tests_filtered_out: detection.tests_filtered_out,
+        summary: warning.clone(),
+        warning,
+    })
 }
 
 fn run_tests_result(result: RunTestsOutput) -> Result<ToolResult, ToolError> {
     let mut tool_result =
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+    let mut metadata = serde_json::Map::new();
     if let Some(summary) = summarize_cargo_failure(
         &result.command,
         &result.stdout,
         &result.stderr,
-        Some(result.exit_code),
+        result.exit_code,
     ) {
-        tool_result = tool_result.with_metadata(json!({
-            "summary": summary.summary,
-            "cargo_failure_summary": summary.to_metadata_value(),
-        }));
+        metadata.insert("summary".to_string(), json!(summary.summary));
+        metadata.insert(
+            "cargo_failure_summary".to_string(),
+            summary.to_metadata_value(),
+        );
+    }
+    if result.zero_tests_matched {
+        metadata.insert("zero_tests_matched".to_string(), json!(true));
+        if let Some(executed) = result.tests_executed {
+            metadata.insert("tests_executed".to_string(), json!(executed));
+        }
+        if let Some(filtered_out) = result.tests_filtered_out {
+            metadata.insert("tests_filtered_out".to_string(), json!(filtered_out));
+        }
+        if let Some(warning) = result.warning.as_ref()
+            && !metadata.contains_key("summary")
+        {
+            metadata.insert("summary".to_string(), json!(warning));
+        }
+    }
+    if !metadata.is_empty() {
+        tool_result = tool_result.with_metadata(Value::Object(metadata));
     }
     Ok(tool_result)
+}
+
+fn spawn_cargo_in_shell_manager(
+    workspace: &Path,
+    args: &[String],
+    context: &ToolContext,
+) -> Result<String, ToolError> {
+    if context.sandbox_backend.is_some() {
+        return Err(ToolError::not_available(
+            "this tool starts a local process, and this session runs commands in an external sandbox; run the command through the shell tool instead",
+        ));
+    }
+    let Some(cargo) = codewhale_dependencies::Cargo::resolve() else {
+        return Err(ToolError::not_available(
+            "cargo is not installed or not in PATH",
+        ));
+    };
+    let shell_command = render_cargo_shell_command(&cargo, args)?;
+    let cwd = workspace.display().to_string();
+    let mut env = HashMap::new();
+    crate::tools::shell::insert_agent_mark_env(&mut env, context);
+    let mut manager = context
+        .shell_manager
+        .lock()
+        .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+    let spawned = manager
+        .execute_with_options_env_for_session(
+            &shell_command,
+            Some(&cwd),
+            BACKGROUND_TESTS_TIMEOUT_MS,
+            true,
+            None,
+            false,
+            context.elevated_sandbox_policy.clone(),
+            env,
+            &context.state_namespace,
+        )
+        .map_err(|err| ToolError::execution_failed(format!("Failed to start cargo test: {err}")))?;
+    let task_id = spawned
+        .task_id
+        .ok_or_else(|| ToolError::execution_failed("cargo test did not return a task_id"))?;
+    let _ = manager.write_stdin(&task_id, "", true);
+    let _ = manager.tag_description(&task_id, Some(format!("cargo {}", args.join(" "))));
+    if let Some(active_task_id) = context.runtime.active_task_id.clone() {
+        let _ = manager.tag_linked_task(&task_id, Some(active_task_id));
+    }
+    Ok(task_id)
+}
+
+fn background_tests_tool_result(
+    output: RunTestsOutput,
+    context: &ToolContext,
+    detached_start: bool,
+) -> Result<ToolResult, ToolError> {
+    let task_id = output.task_id.clone();
+    let task_ids: Vec<String> = task_id.clone().into_iter().collect();
+    let child_owned = context.owner_agent_id.is_some();
+    let tool_result =
+        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+    Ok(tool_result.with_metadata(json!({
+        "backgrounded": true,
+        "detached_start": detached_start,
+        "task_id": task_id,
+        "task_ids": task_ids,
+        "auto_resume_on_completion": !child_owned,
+        "completion_surface": if child_owned {
+            "task_status_and_explicit_wait"
+        } else {
+            "runtime_event_and_task_status"
+        },
+        "background_policy": "nonblocking",
+        "poll_with": ["task_shell_wait"],
+    })))
+}
+
+fn start_background_cargo(
+    workspace: &Path,
+    args: &[String],
+    command_str: &str,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let task_id = spawn_cargo_in_shell_manager(workspace, args, context)?;
+    let summary = format!(
+        "Started cargo test in the background (task_id: {task_id}). Call `task_shell_wait` with this task_id to read output, wait for completion, or cancel."
+    );
+    background_tests_tool_result(
+        RunTestsOutput {
+            success: true,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            command: command_str.to_string(),
+            timed_out: false,
+            backgrounded: true,
+            status: Some("running".to_string()),
+            task_id: Some(task_id),
+            last_output_age_ms: None,
+            progress: None,
+            zero_tests_matched: false,
+            tests_executed: None,
+            tests_filtered_out: None,
+            warning: None,
+            summary: Some(summary),
+        },
+        context,
+        true,
+    )
+}
+
+struct ForegroundTestGuard {
+    manager: SharedShellManager,
+    task_id: String,
+    armed: bool,
+}
+
+impl Drop for ForegroundTestGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut manager = self
+            .manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(killed) = manager.kill(&self.task_id) {
+            manager.mark_cancel_reported(&killed);
+        }
+    }
+}
+
+async fn run_cargo_with_auto_background(
+    workspace: &Path,
+    args: &[String],
+    command_str: &str,
+    context: &ToolContext,
+    foreground_wait: Duration,
+    filtered: bool,
+) -> Result<ToolResult, ToolError> {
+    let task_id = spawn_cargo_in_shell_manager(workspace, args, context)?;
+    let mut guard = ForegroundTestGuard {
+        manager: context.shell_manager.clone(),
+        task_id: task_id.clone(),
+        armed: true,
+    };
+    let deadline = Instant::now() + foreground_wait;
+    let mut poll_ms = FOREGROUND_POLL_INITIAL_MS;
+
+    loop {
+        if context
+            .cancel_token
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            if let Ok(killed) = manager.kill(&task_id) {
+                manager.mark_cancel_reported(&killed);
+            }
+            guard.armed = false;
+            return Err(ToolError::cancelled("cargo test cancelled"));
+        }
+
+        let finished = {
+            let mut manager = context
+                .shell_manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+            let probe = manager
+                .read_output_chunk(&task_id, ShellOutputStream::Stdout, usize::MAX, 0, 0)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+            if probe.status == ShellStatus::Running {
+                None
+            } else {
+                let stdout = manager
+                    .read_output_chunk(&task_id, ShellOutputStream::Stdout, 0, usize::MAX, 0)
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
+                    .unwrap_or_default();
+                let stderr = manager
+                    .read_output_chunk(&task_id, ShellOutputStream::Stderr, 0, usize::MAX, 0)
+                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
+                    .unwrap_or_default();
+                Some((probe.status, probe.exit_code, stdout, stderr))
+            }
+        };
+
+        if let Some((status, exit_code, stdout, stderr)) = finished {
+            guard.armed = false;
+            let status_ok = status == ShellStatus::Completed && exit_code == Some(0);
+            return finish_completed_tests(
+                status_ok,
+                exit_code.unwrap_or(-1),
+                stdout,
+                stderr,
+                command_str.to_string(),
+                status == ShellStatus::TimedOut,
+                filtered,
+            );
+        }
+
+        if Instant::now() >= deadline {
+            guard.armed = false;
+            let (snapshot, last_output_age_ms, progress) = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                let snapshot = manager
+                    .get_output(&task_id, false, 0)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                let age = manager.last_output_age_ms(&task_id);
+                let progress = manager.running_progress(&task_id);
+                (snapshot, age, progress)
+            };
+            if snapshot.status != ShellStatus::Running {
+                let status_ok =
+                    snapshot.status == ShellStatus::Completed && snapshot.exit_code == Some(0);
+                return finish_completed_tests(
+                    status_ok,
+                    snapshot.exit_code.unwrap_or(-1),
+                    snapshot.stdout,
+                    snapshot.stderr,
+                    command_str.to_string(),
+                    snapshot.status == ShellStatus::TimedOut,
+                    filtered,
+                );
+            }
+            let summary = format!(
+                "cargo test is still running after {}ms and moved to the background (task_id: {task_id}). Call `task_shell_wait` with this task_id to read output, wait for completion, or cancel.",
+                foreground_wait.as_millis()
+            );
+            return background_tests_tool_result(
+                RunTestsOutput {
+                    success: true,
+                    exit_code: None,
+                    stdout: snapshot.stdout,
+                    stderr: snapshot.stderr,
+                    command: command_str.to_string(),
+                    timed_out: false,
+                    backgrounded: true,
+                    status: Some("running".to_string()),
+                    task_id: Some(task_id),
+                    last_output_age_ms,
+                    progress,
+                    zero_tests_matched: false,
+                    tests_executed: None,
+                    tests_filtered_out: None,
+                    warning: None,
+                    summary: Some(summary),
+                },
+                context,
+                false,
+            );
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(remaining.min(Duration::from_millis(poll_ms))).await;
+        poll_ms = (poll_ms * 2).min(FOREGROUND_POLL_MAX_MS);
+    }
+}
+
+fn render_cargo_shell_command(cargo: &str, args: &[String]) -> Result<String, ToolError> {
+    #[cfg(windows)]
+    {
+        let _ = cargo;
+        let mut parts = vec!["cargo".to_string()];
+        for arg in args {
+            if arg.is_empty()
+                || arg
+                    .bytes()
+                    .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'\'' | b'$' | b'`'))
+            {
+                parts.push(format!("'{}'", arg.replace('\'', "''")));
+            } else {
+                parts.push(arg.clone());
+            }
+        }
+        Ok(parts.join(" "))
+    }
+    #[cfg(not(windows))]
+    {
+        shlex::try_join(std::iter::once(cargo).chain(args.iter().map(String::as_str))).map_err(
+            |err| ToolError::execution_failed(format!("failed to render cargo command: {err}")),
+        )
+    }
+}
+
+pub(crate) fn has_test_filter_args(extra_tokens: &[String]) -> bool {
+    const FLAGS_WITH_VALUE: &[&str] = &[
+        "-p",
+        "--package",
+        "--bin",
+        "--example",
+        "--test",
+        "--bench",
+        "--features",
+        "-F",
+        "--target",
+        "--profile",
+        "-j",
+        "--jobs",
+        "--color",
+        "--message-format",
+        "--manifest-path",
+        "--target-dir",
+        "--config",
+    ];
+    let mut after_sep = false;
+    let mut skip_next = false;
+    for token in extra_tokens {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if !after_sep && token == "--" {
+            after_sep = true;
+            continue;
+        }
+        if after_sep {
+            if !token.starts_with('-') || matches!(token.as_str(), "--exact" | "--ignored") {
+                return true;
+            }
+            continue;
+        }
+        if token == "--test" || token.starts_with("--test=") {
+            return true;
+        }
+        if token.starts_with('-') {
+            if !token.contains('=') && FLAGS_WITH_VALUE.contains(&token.as_str()) {
+                skip_next = true;
+            }
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn parse_libtest_summary_line(line: &str) -> Option<(usize, usize, usize, usize, Option<usize>)> {
+    let rest = line.trim().strip_prefix("test result:")?;
+    let (_, counts) = rest.split_once('.')?;
+    let mut passed = None;
+    let mut failed = None;
+    let mut ignored = 0usize;
+    let mut measured = 0usize;
+    let mut filtered_out = None;
+    for part in counts.split(';') {
+        let part = part.trim();
+        if let Some(n) = part
+            .strip_suffix(" passed")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            passed = Some(n);
+        } else if let Some(n) = part
+            .strip_suffix(" failed")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            failed = Some(n);
+        } else if let Some(n) = part
+            .strip_suffix(" ignored")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            ignored = n;
+        } else if let Some(n) = part
+            .strip_suffix(" measured")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            measured = n;
+        } else if let Some(n) = part
+            .strip_suffix(" filtered out")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            filtered_out = Some(n);
+        }
+    }
+    Some((passed?, failed?, ignored, measured, filtered_out))
+}
+
+fn parse_number_before(haystack: &str, suffix: &str) -> Option<usize> {
+    let idx = haystack.find(suffix)?;
+    let prefix = haystack[..idx].trim_end();
+    let token = prefix
+        .rsplit(|c: char| !c.is_ascii_digit())
+        .next()
+        .filter(|s| !s.is_empty())?;
+    token.parse::<usize>().ok()
+}
+
+fn normalize_ascii_spaces(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn line_has_positive_pass_or_fail(lower_norm: &str) -> bool {
+    parse_number_before(lower_norm, " passed").is_some_and(|n| n > 0)
+        || parse_number_before(lower_norm, " failed").is_some_and(|n| n > 0)
+}
+
+pub(crate) fn detect_zero_tests_matched(
+    stdout: &str,
+    stderr: &str,
+    filtered: bool,
+) -> ZeroTestDetection {
+    let mut clean_stdout = String::with_capacity(stdout.len());
+    let mut clean_stderr = String::with_capacity(stderr.len());
+    codewhale_sanitize::sanitize::strip_ansi_into(stdout, &mut clean_stdout);
+    codewhale_sanitize::sanitize::strip_ansi_into(stderr, &mut clean_stderr);
+
+    let all_lines: Vec<&str> = clean_stdout.lines().chain(clean_stderr.lines()).collect();
+
+    let mut libtest_lines = 0usize;
+    let mut libtest_passed = 0usize;
+    let mut libtest_failed = 0usize;
+    let mut libtest_ignored = 0usize;
+    let mut libtest_measured = 0usize;
+    let mut libtest_filtered = 0usize;
+    let mut saw_filtered_field = false;
+    for line in &all_lines {
+        if let Some((passed, failed, ignored, measured, filtered_out)) =
+            parse_libtest_summary_line(line)
+        {
+            libtest_lines += 1;
+            libtest_passed = libtest_passed.saturating_add(passed);
+            libtest_failed = libtest_failed.saturating_add(failed);
+            libtest_ignored = libtest_ignored.saturating_add(ignored);
+            libtest_measured = libtest_measured.saturating_add(measured);
+            if let Some(fo) = filtered_out {
+                saw_filtered_field = true;
+                libtest_filtered = libtest_filtered.saturating_add(fo);
+            }
+        }
+    }
+    if libtest_lines > 0 {
+        let executed = libtest_passed
+            .saturating_add(libtest_failed)
+            .saturating_add(libtest_measured);
+        let filtered_out = saw_filtered_field.then_some(libtest_filtered);
+        if executed == 0 && libtest_failed == 0 && (libtest_filtered > 0 || filtered) {
+            return ZeroTestDetection {
+                zero_tests_matched: true,
+                tests_executed: Some(0),
+                tests_filtered_out: filtered_out,
+                runner: Some("cargo"),
+                reason: Some(format!(
+                    "0 tests executed ({libtest_filtered} filtered out, {libtest_ignored} ignored); check your test filter — a 0-test pass proves nothing"
+                )),
+            };
+        }
+        return ZeroTestDetection {
+            zero_tests_matched: false,
+            tests_executed: Some(executed),
+            tests_filtered_out: filtered_out,
+            runner: Some("cargo"),
+            reason: None,
+        };
+    }
+
+    let mut saw_nextest = false;
+    let mut nextest_run = 0usize;
+    let mut nextest_skipped = None;
+    for line in &all_lines {
+        let trimmed = line.trim();
+        if trimmed.contains("Summary [")
+            && let Some(n) = parse_number_before(trimmed, " tests run")
+                .or_else(|| parse_number_before(trimmed, " test run"))
+        {
+            saw_nextest = true;
+            nextest_run = nextest_run.saturating_add(n);
+            if let Some(sk) = parse_number_before(trimmed, " skipped") {
+                nextest_skipped = Some(nextest_skipped.unwrap_or(0usize).saturating_add(sk));
+            }
+        } else if trimmed.starts_with("Starting 0 tests across")
+            || trimmed.eq_ignore_ascii_case("error: no tests to run")
+        {
+            saw_nextest = true;
+            if let Some(sk) = parse_number_before(trimmed, " skipped") {
+                nextest_skipped = Some(nextest_skipped.unwrap_or(0usize).saturating_add(sk));
+            }
+        }
+    }
+    if saw_nextest {
+        if nextest_run == 0 {
+            return ZeroTestDetection {
+                zero_tests_matched: true,
+                tests_executed: Some(0),
+                tests_filtered_out: nextest_skipped,
+                runner: Some("nextest"),
+                reason: Some(
+                    "nextest executed 0 tests; check your test filter — a 0-test run proves nothing"
+                        .to_string(),
+                ),
+            };
+        }
+        return ZeroTestDetection {
+            zero_tests_matched: false,
+            tests_executed: Some(nextest_run),
+            tests_filtered_out: nextest_skipped,
+            runner: Some("nextest"),
+            reason: None,
+        };
+    }
+
+    let mut any_positive = false;
+    let mut saw_go_pass_or_fail = false;
+    let mut pytest_zero = false;
+    let mut pytest_deselected = None;
+    let mut js_zero = false;
+    let mut go_zero = false;
+
+    for line in &all_lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--- PASS:") || trimmed.starts_with("--- FAIL:") {
+            saw_go_pass_or_fail = true;
+            any_positive = true;
+        }
+        let lower_norm = normalize_ascii_spaces(&trimmed.to_ascii_lowercase());
+        if line_has_positive_pass_or_fail(&lower_norm) {
+            any_positive = true;
+        }
+        if lower_norm.contains("collected 0 items")
+            || lower_norm.contains("no tests ran in ")
+            || (lower_norm.contains("deselected") && lower_norm.contains("0 selected"))
+        {
+            pytest_zero = true;
+            if let Some(d) = parse_number_before(&lower_norm, " deselected") {
+                pytest_deselected = Some(d);
+            }
+        }
+        if lower_norm.contains("no tests found")
+            || lower_norm.contains("no test files found")
+            || lower_norm.contains("tests: 0 total")
+            || lower_norm.contains("0 tests passed")
+            || lower_norm == "tests 0 passed"
+            || lower_norm == "test files 0 passed"
+        {
+            js_zero = true;
+        }
+        if lower_norm.contains("testing: warning: no tests to run") {
+            go_zero = true;
+        }
+    }
+
+    if pytest_zero && !any_positive {
+        return ZeroTestDetection {
+            zero_tests_matched: true,
+            tests_executed: Some(0),
+            tests_filtered_out: pytest_deselected,
+            runner: Some("pytest"),
+            reason: Some(
+                "pytest collected/selected 0 tests; check your test filter — a 0-test run proves nothing"
+                    .to_string(),
+            ),
+        };
+    }
+    if js_zero && !any_positive {
+        return ZeroTestDetection {
+            zero_tests_matched: true,
+            tests_executed: Some(0),
+            tests_filtered_out: None,
+            runner: Some("jest/vitest"),
+            reason: Some(
+                "test runner found 0 matching tests; check your test filter — a 0-test run proves nothing"
+                    .to_string(),
+            ),
+        };
+    }
+    if go_zero && !saw_go_pass_or_fail {
+        return ZeroTestDetection {
+            zero_tests_matched: true,
+            tests_executed: Some(0),
+            tests_filtered_out: None,
+            runner: Some("go test"),
+            reason: Some(
+                "go test reported no tests to run; check your -run filter — a 0-test run proves nothing"
+                    .to_string(),
+            ),
+        };
+    }
+
+    ZeroTestDetection::default()
 }
 
 // === Helpers ===
@@ -303,7 +1047,7 @@ mod tests {
             "nested cargo test unexpectedly failed:\n{}",
             parsed.stderr
         );
-        assert_eq!(parsed.exit_code, 0);
+        assert_eq!(parsed.exit_code, Some(0));
         assert!(parsed.command.contains("cargo test"));
     }
 
@@ -341,7 +1085,7 @@ mod tests {
             "nested cargo test unexpectedly passed:\nstdout:\n{}\nstderr:\n{}",
             parsed.stdout, parsed.stderr
         );
-        assert_ne!(parsed.exit_code, 0);
+        assert!(parsed.exit_code.is_some_and(|code| code != 0));
         let metadata = result.metadata.expect("metadata");
         assert_eq!(
             metadata["cargo_failure_summary"]["kind"],
@@ -367,11 +1111,12 @@ mod tests {
         assert!(stdout.chars().count() > 40_000);
         let result = run_tests_result(RunTestsOutput {
             success: false,
-            exit_code: 101,
+            exit_code: Some(101),
             stdout: stdout.clone(),
             stderr: String::new(),
             command: "(cd /repo && cargo test)".to_string(),
             timed_out: false,
+            ..RunTestsOutput::default()
         })
         .expect("result");
 
@@ -542,5 +1287,142 @@ mod tests {
             codewhale_runtime::process_tree::wait_for_pid_exit(hung, Duration::from_secs(5)),
             "the timed-out run's process is still running"
         );
+    }
+
+    #[test]
+    fn zero_test_detector_flags_empty_filters_across_runners_and_allows_real_runs() {
+        let cargo_filtered = detect_zero_tests_matched(
+            "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s\n",
+            "",
+            true,
+        );
+        assert!(cargo_filtered.zero_tests_matched);
+        assert_eq!(cargo_filtered.tests_executed, Some(0));
+        assert_eq!(cargo_filtered.tests_filtered_out, Some(26));
+
+        let cargo_multi_target_pass = detect_zero_tests_matched(
+            "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.02s\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+            "",
+            true,
+        );
+        assert!(!cargo_multi_target_pass.zero_tests_matched);
+        assert_eq!(cargo_multi_target_pass.tests_executed, Some(5));
+
+        let cargo_unfiltered_empty = detect_zero_tests_matched(
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+            "",
+            false,
+        );
+        assert!(!cargo_unfiltered_empty.zero_tests_matched);
+
+        let nextest_zero = detect_zero_tests_matched(
+            "",
+            "\x1b[1mSummary\x1b[0m [   0.001s] 0 tests run: 0 passed, 12 skipped\n",
+            true,
+        );
+        assert!(nextest_zero.zero_tests_matched);
+        assert_eq!(nextest_zero.tests_executed, Some(0));
+        assert_eq!(nextest_zero.tests_filtered_out, Some(12));
+
+        let pytest_zero = detect_zero_tests_matched(
+            "collected 26 items / 26 deselected / 0 selected\n=== 26 deselected in 0.01s ===\n",
+            "",
+            true,
+        );
+        assert!(pytest_zero.zero_tests_matched);
+        assert_eq!(pytest_zero.tests_filtered_out, Some(26));
+
+        let pytest_collected_zero =
+            detect_zero_tests_matched("collected 0 items\n\nno tests ran in 0.00s\n", "", false);
+        assert!(pytest_collected_zero.zero_tests_matched);
+
+        let vitest_zero =
+            detect_zero_tests_matched("No test files found, exiting with code 0\n", "", true);
+        assert!(vitest_zero.zero_tests_matched);
+
+        let jest_zero =
+            detect_zero_tests_matched("No tests found, exiting with code 0\n", "", true);
+        assert!(jest_zero.zero_tests_matched);
+
+        let go_zero = detect_zero_tests_matched(
+            "testing: warning: no tests to run\nPASS\nok  \texample.com/pkg\t0.002s\n",
+            "",
+            true,
+        );
+        assert!(go_zero.zero_tests_matched);
+
+        let go_pass = detect_zero_tests_matched(
+            "--- PASS: TestOk (0.00s)\nPASS\nok  \texample.com/pkg\t0.002s\n",
+            "",
+            true,
+        );
+        assert!(!go_pass.zero_tests_matched);
+    }
+
+    #[tokio::test]
+    async fn run_tests_backgrounds_and_flags_zero_test_filters() {
+        if !cargo_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = init_cargo_project(tmp.path());
+        let ctx = ToolContext::new(&project_dir);
+
+        let zero_result = RunTestsTool
+            .execute(json!({"args": "--lib definitely_no_such_test_name"}), &ctx)
+            .await
+            .expect("zero-test execute");
+        let parsed_zero: RunTestsOutput = serde_json::from_str(&zero_result.content).expect("json");
+        assert!(
+            parsed_zero.zero_tests_matched,
+            "expected zero_tests_matched: {}",
+            zero_result.content
+        );
+        assert!(!parsed_zero.success, "{}", zero_result.content);
+        assert_eq!(parsed_zero.tests_executed, Some(0));
+        assert!(parsed_zero.tests_filtered_out.is_some_and(|n| n >= 1));
+        assert!(parsed_zero.warning.is_some());
+
+        let bg_result = RunTestsTool
+            .execute(json!({"background": true}), &ctx)
+            .await
+            .expect("background execute");
+        let parsed_bg: RunTestsOutput = serde_json::from_str(&bg_result.content).expect("json");
+        assert!(parsed_bg.success, "{}", bg_result.content);
+        assert!(parsed_bg.backgrounded);
+        assert_eq!(parsed_bg.status.as_deref(), Some("running"));
+        let bg_task_id = parsed_bg.task_id.as_deref().expect("task_id");
+        let bg_meta = bg_result.metadata.as_ref().expect("metadata");
+        assert_eq!(bg_meta["backgrounded"], json!(true));
+        assert_eq!(bg_meta["detached_start"], json!(true));
+        assert_eq!(bg_meta["task_id"], json!(bg_task_id));
+        let _ = ctx.shell_manager.lock().expect("lock").kill(bg_task_id);
+
+        let slow_lib = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn slow_test() {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+}
+"#;
+        fs::write(project_dir.join("src/lib.rs"), slow_lib).expect("write slow test");
+        let started = Instant::now();
+        let auto_bg = RunTestsTool
+            .execute(json!({"timeout_ms": 150}), &ctx)
+            .await
+            .expect("auto-background execute");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "auto-background took {:?}",
+            started.elapsed()
+        );
+        let parsed_auto: RunTestsOutput = serde_json::from_str(&auto_bg.content).expect("json");
+        assert!(parsed_auto.success, "{}", auto_bg.content);
+        assert!(parsed_auto.backgrounded, "{}", auto_bg.content);
+        assert_eq!(parsed_auto.status.as_deref(), Some("running"));
+        let auto_task_id = parsed_auto.task_id.as_deref().expect("auto task_id");
+        let _ = ctx.shell_manager.lock().expect("lock").kill(auto_task_id);
     }
 }
