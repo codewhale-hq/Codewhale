@@ -1535,24 +1535,22 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
-    pub fn with_mcp_tools(
+    pub async fn with_mcp_tools(
         mut self,
         mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
     ) -> Self {
-        // Snapshot the current tool list from the pool (non-blocking).
-        // The adapter lazily resolves at execution time via the pool.
-        if let Ok(pool) = mcp_pool.try_lock() {
-            let tool_servers = pool.resolved_tool_servers();
-            for (name, tool) in pool.all_tools() {
-                let adapter = Arc::new(McpToolAdapter {
-                    server_name: tool_servers.get(&name).cloned(),
-                    name: name.clone(),
-                    tool: tool.clone(),
-                    pool: mcp_pool.clone(),
-                });
-                self.tools.push(adapter);
-            }
+        let pool = mcp_pool.lock().await;
+        let tool_servers = pool.resolved_tool_servers();
+        for (name, tool) in pool.all_tools() {
+            let adapter = Arc::new(McpToolAdapter {
+                server_name: tool_servers.get(&name).cloned(),
+                name: name.clone(),
+                tool: tool.clone(),
+                pool: mcp_pool.clone(),
+            });
+            self.tools.push(adapter);
         }
+        drop(pool);
         self
     }
 

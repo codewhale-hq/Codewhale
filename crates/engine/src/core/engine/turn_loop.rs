@@ -2294,6 +2294,25 @@ impl Engine {
             }
 
             if blocked_error.is_none()
+                && let Some(child) = self.child_host.as_ref()
+                && !registry_has_spec
+                && McpPool::is_mcp_tool(&tool_name)
+                && (child.authority.grant.desktop
+                    || !crate::tools::subagent::is_machine_control_tool(&tool_name))
+            {
+                let reason = match self.mcp_pool.as_ref() {
+                    Some(pool) => pool
+                        .lock()
+                        .await
+                        .subagent_unavailable_tool_reason(&tool_name),
+                    None => format!(
+                        "MCP tool '{tool_name}' is unavailable to this sub-agent: the parent session has no MCP servers available to share."
+                    ),
+                };
+                blocked_error = Some(ToolError::not_available(reason));
+            }
+
+            if blocked_error.is_none()
                 && self.is_acp_turn()
                 && !registry_has_spec
                 && !McpPool::is_mcp_tool(&tool_name)

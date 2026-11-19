@@ -171,7 +171,7 @@ impl ChildAuthority {
         todos: SharedTodoList,
         plan: SharedPlanState,
     ) -> ToolRegistryBuilder {
-        let mut builder = ToolRegistryBuilder::new().with_full_agent_surface_options(
+        ToolRegistryBuilder::new().with_full_agent_surface_options(
             Some(runtime.client.clone()),
             runtime.model.clone(),
             runtime.manager.clone(),
@@ -179,11 +179,7 @@ impl ChildAuthority {
             runtime.agent_tool_surface_options.clone(),
             todos,
             plan,
-        );
-        if let Some(pool) = runtime.mcp_pool.as_ref() {
-            builder = builder.with_mcp_tools(pool.clone());
-        }
-        builder
+        )
     }
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)

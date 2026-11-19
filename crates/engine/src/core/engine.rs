@@ -6646,14 +6646,15 @@ impl Engine {
             runtime.reasoning_effort = route.reasoning_effort.clone();
             runtime.reasoning_effort_auto = route.reasoning_effort_auto;
             runtime.mcp_pool = mcp_pool.clone();
-            child
-                .authority
-                .tool_registry_builder(
-                    runtime,
-                    self.config.todos.clone(),
-                    self.config.plan_state.clone(),
-                )
-                .with_dynamic_tools(dynamic_tools)
+            let mut builder = child.authority.tool_registry_builder(
+                runtime,
+                self.config.todos.clone(),
+                self.config.plan_state.clone(),
+            );
+            if let Some(pool) = mcp_pool.as_ref() {
+                builder = builder.with_mcp_tools(Arc::clone(pool)).await;
+            }
+            builder.with_dynamic_tools(dynamic_tools)
         } else {
             self.build_turn_tool_registry_builder_for_route(
                 input_policy.mode,

@@ -2746,3 +2746,21 @@ async fn scoped_worker_convert_output_is_judged_on_the_field_it_writes() {
         );
     }
 }
+
+#[tokio::test]
+async fn subagent_mcp_tools_survive_a_busy_parent_pool() {
+    let mut pool = crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default());
+    pool.insert_test_connection("linear", &["list_issues"], None);
+    let pool = Arc::new(tokio::sync::Mutex::new(pool));
+    let held = pool.lock().await;
+    let build = tokio::spawn(ToolRegistryBuilder::new().with_mcp_tools(Arc::clone(&pool)));
+    tokio::task::yield_now().await;
+    assert!(!build.is_finished());
+    drop(held);
+    let tmp = tempdir().unwrap();
+    let registry = build
+        .await
+        .expect("builder task")
+        .build(ToolContext::new(tmp.path()));
+    assert!(registry.contains("mcp_linear_list_issues"));
+}
