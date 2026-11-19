@@ -29,6 +29,7 @@ const SENSITIVE_KEY_HINTS: &[&str] = &[
 
 /// Known opaque-token prefixes worth masking even when they appear bare (not as
 /// `key = value`). Conservative on purpose: only well-known provider/key shapes.
+#[cfg(test)]
 const SECRET_TOKEN_PREFIXES: &[&str] = &["sk-", "sk_", "ghp_", "gho_", "xoxb-", "xoxp-", "pk-"];
 
 /// The placeholder substituted for any redacted secret value.
@@ -173,42 +174,375 @@ pub fn redact_model_bound_secrets(input: &str) -> String {
     redact_secrets_with(input, RedactionPolicy::CredentialShaped)
 }
 
+const SIGNAL_PEM: u8 = 1 << 0;
+const SIGNAL_KEY_HINT: u8 = 1 << 1;
+const SIGNAL_BARE_TOKEN: u8 = 1 << 2;
+
+const ANCHOR_DASH: u8 = 1;
+const ANCHOR_UNDERSCORE: u8 = 2;
+const ANCHOR_UPPER_J: u8 = 3;
+const ANCHOR_DIGIT_9: u8 = 4;
+const ANCHOR_UPPER_I: u8 = 5;
+const ANCHOR_K: u8 = 6;
+const ANCHOR_C: u8 = 7;
+const ANCHOR_W: u8 = 8;
+const ANCHOR_Z: u8 = 9;
+
+const ANCHOR_LUT: [u8; 256] = {
+    let mut lut = [0u8; 256];
+    lut[b'-' as usize] = ANCHOR_DASH;
+    lut[b'_' as usize] = ANCHOR_UNDERSCORE;
+    lut[b'J' as usize] = ANCHOR_UPPER_J;
+    lut[b'9' as usize] = ANCHOR_DIGIT_9;
+    lut[b'I' as usize] = ANCHOR_UPPER_I;
+    lut[b'k' as usize] = ANCHOR_K;
+    lut[b'K' as usize] = ANCHOR_K;
+    lut[b'c' as usize] = ANCHOR_C;
+    lut[b'C' as usize] = ANCHOR_C;
+    lut[b'w' as usize] = ANCHOR_W;
+    lut[b'W' as usize] = ANCHOR_W;
+    lut[b'z' as usize] = ANCHOR_Z;
+    lut[b'Z' as usize] = ANCHOR_Z;
+    lut
+};
+
+#[inline]
+fn matches_dash_bare_prefix(bytes: &[u8], i: usize) -> bool {
+    if i < 2 {
+        return false;
+    }
+    match bytes[i - 1] {
+        b'k' => matches!(bytes[i - 2], b's' | b'p'),
+        b'i' => {
+            (i >= 3 && &bytes[i - 3..i - 1] == b"xa") || (i >= 5 && &bytes[i - 5..i - 1] == b"nvap")
+        }
+        b'a' | b'b' | b'r' | b's' => i >= 4 && &bytes[i - 4..i - 1] == b"xox",
+        b'p' => i >= 4 && (&bytes[i - 4..i - 1] == b"xox" || &bytes[i - 4..i - 1] == b"xap"),
+        b'x' => i >= 4 && &bytes[i - 4..i - 1] == b"ppl",
+        b't' => i >= 5 && &bytes[i - 5..i - 1] == b"glpa",
+        _ => false,
+    }
+}
+
+#[inline]
+fn matches_underscore_bare_prefix(bytes: &[u8], i: usize) -> bool {
+    if i < 2 {
+        return false;
+    }
+    match bytes[i - 1] {
+        b'k' => bytes[i - 2] == b's',
+        b'f' => bytes[i - 2] == b'h',
+        b'p' | b'o' | b'u' | b's' | b'r' => i >= 3 && &bytes[i - 3..i - 1] == b"gh",
+        b'm' => i >= 3 && &bytes[i - 3..i - 1] == b"np",
+        b't' => i >= 10 && &bytes[i - 10..i - 1] == b"github_pa",
+        _ => false,
+    }
+}
+
+#[inline]
+fn matches_upper_i_bare_prefix(bytes: &[u8], i: usize) -> bool {
+    (i >= 1 && i + 3 <= bytes.len() && bytes[i - 1] == b'A' && &bytes[i + 1..i + 3] == b"za")
+        || (i >= 2
+            && i + 2 <= bytes.len()
+            && bytes[i - 2] == b'A'
+            && matches!(bytes[i - 1], b'K' | b'S')
+            && bytes[i + 1] == b'A')
+}
+
+fn has_key_compound_prefix(bytes: &[u8]) -> bool {
+    for (j, &b) in bytes.iter().enumerate() {
+        match b {
+            b'p' | b'P' => {
+                if j >= 1
+                    && j + 2 <= bytes.len()
+                    && bytes[j - 1..j + 2].eq_ignore_ascii_case(b"api")
+                {
+                    return true;
+                }
+                if j + 7 <= bytes.len() && bytes[j..j + 7].eq_ignore_ascii_case(b"private") {
+                    return true;
+                }
+            }
+            b'c' | b'C'
+                if j >= 1
+                    && j + 5 <= bytes.len()
+                    && bytes[j - 1..j + 5].eq_ignore_ascii_case(b"access") =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn line_bounds_at(bytes: &[u8], from: usize, pos: usize) -> (usize, usize) {
+    let line_start = bytes[from..pos]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(from, |rel| from + rel + 1);
+    let line_end = bytes[pos..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(bytes.len(), |rel| pos + rel + 1);
+    (line_start, line_end)
+}
+
+fn scan_line_signals(bytes: &[u8]) -> u8 {
+    let mut signals = 0u8;
+    let mut key_prefix_checked = 0usize;
+    let mut has_key_prefix = false;
+    let all = SIGNAL_PEM | SIGNAL_KEY_HINT | SIGNAL_BARE_TOKEN;
+    for (i, &b) in bytes.iter().enumerate() {
+        let tag = ANCHOR_LUT[b as usize];
+        if tag == 0 {
+            continue;
+        }
+        match tag {
+            ANCHOR_DASH => {
+                if (signals & SIGNAL_PEM) == 0
+                    && i + 10 <= bytes.len()
+                    && bytes[i + 1] == b'-'
+                    && &bytes[i..i + 10] == b"-----BEGIN"
+                {
+                    signals |= SIGNAL_PEM;
+                }
+                if (signals & SIGNAL_BARE_TOKEN) == 0 && matches_dash_bare_prefix(bytes, i) {
+                    signals |= SIGNAL_BARE_TOKEN;
+                }
+            }
+            ANCHOR_UNDERSCORE => {
+                if (signals & SIGNAL_BARE_TOKEN) == 0 && matches_underscore_bare_prefix(bytes, i) {
+                    signals |= SIGNAL_BARE_TOKEN;
+                }
+            }
+            ANCHOR_UPPER_J => {
+                if (signals & SIGNAL_BARE_TOKEN) == 0 && i >= 2 && &bytes[i - 2..i] == b"ey" {
+                    signals |= SIGNAL_BARE_TOKEN;
+                }
+            }
+            ANCHOR_DIGIT_9 => {
+                if (signals & SIGNAL_BARE_TOKEN) == 0
+                    && i >= 3
+                    && i + 2 <= bytes.len()
+                    && &bytes[i - 3..i] == b"ya2"
+                    && bytes[i + 1] == b'.'
+                {
+                    signals |= SIGNAL_BARE_TOKEN;
+                }
+            }
+            ANCHOR_UPPER_I => {
+                if (signals & SIGNAL_BARE_TOKEN) == 0 && matches_upper_i_bare_prefix(bytes, i) {
+                    signals |= SIGNAL_BARE_TOKEN;
+                }
+            }
+            ANCHOR_K => {
+                if (signals & SIGNAL_KEY_HINT) == 0 {
+                    if i >= 2
+                        && i + 3 <= bytes.len()
+                        && bytes[i - 2..i + 3].eq_ignore_ascii_case(b"token")
+                    {
+                        signals |= SIGNAL_KEY_HINT;
+                    } else if i + 3 <= bytes.len() && bytes[i..i + 3].eq_ignore_ascii_case(b"key") {
+                        if !has_key_prefix {
+                            let start = key_prefix_checked.saturating_sub(6);
+                            if has_key_compound_prefix(&bytes[start..i]) {
+                                has_key_prefix = true;
+                            }
+                            key_prefix_checked = i;
+                        }
+                        if has_key_prefix {
+                            signals |= SIGNAL_KEY_HINT;
+                        }
+                    }
+                }
+            }
+            ANCHOR_C => {
+                if (signals & SIGNAL_KEY_HINT) == 0
+                    && i >= 2
+                    && i + 4 <= bytes.len()
+                    && bytes[i - 2..i + 4].eq_ignore_ascii_case(b"secret")
+                {
+                    signals |= SIGNAL_KEY_HINT;
+                }
+            }
+            ANCHOR_W => {
+                if (signals & SIGNAL_KEY_HINT) == 0
+                    && i >= 4
+                    && bytes[i - 4..i].eq_ignore_ascii_case(b"pass")
+                {
+                    signals |= SIGNAL_KEY_HINT;
+                }
+            }
+            ANCHOR_Z
+                if (signals & SIGNAL_KEY_HINT) == 0
+                    && i >= 7
+                    && i + 6 <= bytes.len()
+                    && bytes[i - 7..i + 6].eq_ignore_ascii_case(b"authorization") =>
+            {
+                signals |= SIGNAL_KEY_HINT;
+            }
+            _ => {}
+        }
+        if signals == all {
+            break;
+        }
+    }
+    signals
+}
+
+fn find_next_trigger_line(bytes: &[u8], from: usize) -> Option<(usize, usize, u8)> {
+    let mut key_line_start = from;
+    let mut key_line_end = 0usize;
+    let mut key_checked_to = from;
+    for i in from..bytes.len() {
+        let tag = ANCHOR_LUT[bytes[i] as usize];
+        if tag == 0 {
+            continue;
+        }
+        let hit = match tag {
+            ANCHOR_DASH => {
+                (i + 10 <= bytes.len()
+                    && bytes[i + 1] == b'-'
+                    && &bytes[i..i + 10] == b"-----BEGIN")
+                    || matches_dash_bare_prefix(bytes, i)
+            }
+            ANCHOR_UNDERSCORE => matches_underscore_bare_prefix(bytes, i),
+            ANCHOR_UPPER_J => i >= 2 && &bytes[i - 2..i] == b"ey",
+            ANCHOR_DIGIT_9 => {
+                i >= 3 && i + 2 <= bytes.len() && &bytes[i - 3..i] == b"ya2" && bytes[i + 1] == b'.'
+            }
+            ANCHOR_UPPER_I => matches_upper_i_bare_prefix(bytes, i),
+            ANCHOR_K => {
+                if i >= 2
+                    && i + 3 <= bytes.len()
+                    && bytes[i - 2..i + 3].eq_ignore_ascii_case(b"token")
+                {
+                    true
+                } else if i + 3 <= bytes.len() && bytes[i..i + 3].eq_ignore_ascii_case(b"key") {
+                    let check_from = if i < key_line_end {
+                        key_checked_to.saturating_sub(6).max(key_line_start)
+                    } else {
+                        let (ls, le) = line_bounds_at(bytes, from, i);
+                        key_line_start = ls;
+                        key_line_end = le;
+                        ls
+                    };
+                    let found = has_key_compound_prefix(&bytes[check_from..i]);
+                    key_checked_to = i;
+                    found
+                } else {
+                    false
+                }
+            }
+            ANCHOR_C => {
+                i >= 2
+                    && i + 4 <= bytes.len()
+                    && bytes[i - 2..i + 4].eq_ignore_ascii_case(b"secret")
+            }
+            ANCHOR_W => i >= 4 && bytes[i - 4..i].eq_ignore_ascii_case(b"pass"),
+            ANCHOR_Z => {
+                i >= 7
+                    && i + 6 <= bytes.len()
+                    && bytes[i - 7..i + 6].eq_ignore_ascii_case(b"authorization")
+            }
+            _ => false,
+        };
+        if hit {
+            let (line_start, line_end) = line_bounds_at(bytes, from, i);
+            let signals = scan_line_signals(&bytes[line_start..line_end]);
+            return Some((line_start, line_end, signals));
+        }
+    }
+    None
+}
+
 /// [`redact_secrets`] with an explicit [`RedactionPolicy`].
 #[must_use]
 pub fn redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
-    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut out: Option<String> = None;
+    let mut copied_until = 0usize;
+    let mut cursor = 0usize;
     let mut in_private_key_block = false;
-    let mut offset = 0;
-    for line in input.split_inclusive('\n') {
-        offset += line.len();
-        let rest_of_input = &input[offset..];
-        let body = line.strip_suffix('\n').unwrap_or(line);
-        let trimmed = body.trim();
+
+    while cursor < bytes.len() {
         if in_private_key_block {
+            let line_end = bytes[cursor..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |rel| cursor + rel + 1);
+            let line = &input[cursor..line_end];
+            let rest_of_input = &input[line_end..];
+            let body = line.strip_suffix('\n').unwrap_or(line);
+            let trimmed = body.trim();
             if trimmed.contains(PRIVATE_KEY_FOOTER) {
                 in_private_key_block = false;
-                if let Some(redacted) = redact_private_key_line(line, policy, rest_of_input) {
+                let line_signals = scan_line_signals(line.as_bytes());
+                if (line_signals & SIGNAL_PEM) != 0
+                    && let Some(redacted) = redact_private_key_line(line, policy, rest_of_input)
+                {
                     in_private_key_block = redacted.opens_block;
-                    out.push_str(&redacted.text);
-                } else {
-                    out.push_str(&redact_line(line, policy));
+                    let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+                    buf.push_str(&input[copied_until..cursor]);
+                    buf.push_str(&redacted.text);
+                    copied_until = line_end;
+                } else if line_signals != 0
+                    && let Some(redacted) = redact_line_with_signals(line, policy, line_signals)
+                {
+                    let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+                    buf.push_str(&input[copied_until..cursor]);
+                    buf.push_str(&redacted);
+                    copied_until = line_end;
                 }
             } else {
-                out.push_str(REDACTED);
+                let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+                buf.push_str(&input[copied_until..cursor]);
+                buf.push_str(REDACTED);
                 if line.ends_with('\n') {
-                    out.push('\n');
+                    buf.push('\n');
                 }
+                copied_until = line_end;
             }
+            cursor = line_end;
             continue;
         }
-        if let Some(redacted) = redact_private_key_line(line, policy, rest_of_input) {
+
+        let Some((line_start, line_end, line_signals)) = find_next_trigger_line(bytes, cursor)
+        else {
+            break;
+        };
+        let line = &input[line_start..line_end];
+        let rest_of_input = &input[line_end..];
+        if (line_signals & SIGNAL_PEM) != 0
+            && let Some(redacted) = redact_private_key_line(line, policy, rest_of_input)
+        {
             in_private_key_block = redacted.opens_block;
-            out.push_str(&redacted.text);
+            let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+            buf.push_str(&input[copied_until..line_start]);
+            buf.push_str(&redacted.text);
+            copied_until = line_end;
+            cursor = line_end;
             continue;
         }
-        out.push_str(&redact_line(line, policy));
+        if line_signals != 0
+            && let Some(redacted) = redact_line_with_signals(line, policy, line_signals)
+        {
+            let buf = out.get_or_insert_with(|| String::with_capacity(input.len()));
+            buf.push_str(&input[copied_until..line_start]);
+            buf.push_str(&redacted);
+            copied_until = line_end;
+        }
+        cursor = line_end;
     }
-    out
+
+    match out {
+        Some(mut buf) => {
+            buf.push_str(&input[copied_until..]);
+            buf
+        }
+        None => input.to_string(),
+    }
 }
 
 struct PrivateKeyLine {
@@ -255,6 +589,9 @@ fn mask_private_key_spans(
     unclosed: UnclosedPrivateKey,
     rest_of_input: &str,
 ) -> Option<(String, bool)> {
+    if !text.contains(PRIVATE_KEY_HEADER_START) {
+        return None;
+    }
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
     let mut changed = false;
@@ -470,16 +807,22 @@ fn redact_private_key_line(
         Some(rest) => (rest, "\n"),
         None => (line, ""),
     };
-    let (masked, opens_block) = mask_private_key_spans(
+    let (mut masked, opens_block) = mask_private_key_spans(
         body,
         REDACTED,
         UnclosedPrivateKey::OpensBlock,
         rest_of_input,
     )?;
-    Some(PrivateKeyLine {
-        text: redact_line(&format!("{masked}{newline}"), policy),
-        opens_block,
-    })
+    masked.push_str(newline);
+    let signals = scan_line_signals(masked.as_bytes());
+    let text = if signals != 0
+        && let Some(redacted) = redact_line_with_signals(&masked, policy, signals)
+    {
+        redacted
+    } else {
+        masked
+    };
+    Some(PrivateKeyLine { text, opens_block })
 }
 
 /// Mask the body of every private-key PEM in `text` — one-line PEMs, PEMs
@@ -490,30 +833,6 @@ fn redact_private_key_line(
 pub fn mask_private_keys(text: &str, placeholder: &str) -> Option<String> {
     mask_private_key_spans(text, placeholder, UnclosedPrivateKey::ToEnd, "")
         .map(|(masked, _)| masked)
-}
-
-fn split_horizontal_whitespace_preserving(line: &str) -> (Vec<&str>, Vec<&str>) {
-    let mut tokens = Vec::new();
-    let mut seps = Vec::new();
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let ws_start = i;
-        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
-            i += 1;
-        }
-        seps.push(&line[ws_start..i]);
-        if i == bytes.len() {
-            return (tokens, seps);
-        }
-        let tok_start = i;
-        while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t') {
-            i += 1;
-        }
-        tokens.push(&line[tok_start..i]);
-    }
-    seps.push("");
-    (tokens, seps)
 }
 
 #[derive(Clone, Copy)]
@@ -535,34 +854,148 @@ fn pop_sanitize_containers(containers: &mut Vec<SanitizeContainerArm>, token: &s
     }
 }
 
-/// Redact a single line (which may include a trailing newline).
-fn redact_line(line: &str, policy: RedactionPolicy) -> String {
-    // Preserve any trailing newline so callers keep their line structure.
+fn push_word_replacement(
+    out: &mut Option<String>,
+    copied_until: &mut usize,
+    body: &str,
+    newline_len: usize,
+    tok_start: usize,
+    tok_end: usize,
+    replacement: &str,
+) {
+    let buf = out.get_or_insert_with(|| String::with_capacity(body.len() + newline_len));
+    buf.push_str(&body[*copied_until..tok_start]);
+    buf.push_str(replacement);
+    *copied_until = tok_end;
+}
+
+fn redact_line_with_signals(
+    line: &str,
+    policy: RedactionPolicy,
+    line_signals: u8,
+) -> Option<String> {
     let (body, newline) = match line.strip_suffix('\n') {
         Some(rest) => (rest, "\n"),
         None => (line, ""),
     };
 
-    if let Some(redacted) = redact_keyed_assignment(body, policy) {
-        return format!("{redacted}{newline}");
+    let has_key_hint = (line_signals & SIGNAL_KEY_HINT) != 0;
+    let has_bare_token = (line_signals & SIGNAL_BARE_TOKEN) != 0;
+
+    if has_key_hint && let Some(mut redacted) = redact_keyed_assignment(body, policy) {
+        redacted.push_str(newline);
+        return Some(redacted);
     }
 
-    // Inline-assignment / bare-token pass: mask any whitespace-delimited word
-    // carrying a sensitive keyed value or a known bare secret prefix, plus the
-    // spaced `key = value` form that `redact_keyed_assignment` above only sees
-    // when the sensitive key owns the line's first separator.
-    let mut changed = false;
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
+    }
+
+    let mut out: Option<String> = None;
+    let mut copied_until = 0usize;
+
+    if !has_key_hint {
+        if !has_bare_token {
+            return None;
+        }
+        while i < bytes.len() {
+            let tok_start = i;
+            while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t') {
+                i += 1;
+            }
+            let tok_end = i;
+            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+                i += 1;
+            }
+            if tok_end - tok_start < 9 {
+                continue;
+            }
+            let word = &body[tok_start..tok_end];
+            let trimmed = trim_word_punctuation(word);
+            let has_structural = contains_structural_delimiter(trimmed.as_bytes());
+            if !has_structural {
+                if let Some(redacted) = mask_bare_secret_tokens(trimmed, REDACTED) {
+                    push_word_replacement(
+                        &mut out,
+                        &mut copied_until,
+                        body,
+                        newline.len(),
+                        tok_start,
+                        tok_end,
+                        &word.replace(trimmed, &redacted),
+                    );
+                } else if let Some(core) = secret_token_core(trimmed) {
+                    push_word_replacement(
+                        &mut out,
+                        &mut copied_until,
+                        body,
+                        newline.len(),
+                        tok_start,
+                        tok_end,
+                        &word.replacen(core, REDACTED, 1),
+                    );
+                }
+            } else if let Some(core) = secret_token_core(trimmed) {
+                push_word_replacement(
+                    &mut out,
+                    &mut copied_until,
+                    body,
+                    newline.len(),
+                    tok_start,
+                    tok_end,
+                    &word.replacen(core, REDACTED, 1),
+                );
+            } else if let Some(redacted) = redact_structured_word_with(trimmed, policy, true, false)
+            {
+                push_word_replacement(
+                    &mut out,
+                    &mut copied_until,
+                    body,
+                    newline.len(),
+                    tok_start,
+                    tok_end,
+                    &word.replace(trimmed, &redacted),
+                );
+            } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
+                push_word_replacement(
+                    &mut out,
+                    &mut copied_until,
+                    body,
+                    newline.len(),
+                    tok_start,
+                    tok_end,
+                    &redacted,
+                );
+            }
+        }
+        return out.map(|mut buf| {
+            buf.push_str(&body[copied_until..]);
+            buf.push_str(newline);
+            buf
+        });
+    }
+
     let mut spaced = SpacedAssignment::None;
     let mut containers: Vec<SanitizeContainerArm> = Vec::new();
-    let (words, seps) = split_horizontal_whitespace_preserving(body);
-    let mut masked: Vec<String> = Vec::with_capacity(words.len());
-    for word in &words {
+    while i < bytes.len() {
+        let tok_start = i;
+        while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t') {
+            i += 1;
+        }
+        let tok_end = i;
+        let sep_start = i;
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+            i += 1;
+        }
+        let next_sep = &body[sep_start..i];
+        let word = &body[tok_start..tok_end];
         let trimmed = trim_word_punctuation(word);
         if let SpacedAssignment::FlagValue(sensitivity) = spaced
             && !trimmed.is_empty()
         {
             if matches!(trimmed, "=" | ":") {
-                masked.push((*word).to_string());
                 spaced = SpacedAssignment::AwaitingValue(sensitivity);
                 continue;
             }
@@ -573,8 +1006,15 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                 && ((policy == RedactionPolicy::KeyBased && sensitivity == KeySensitivity::Certain)
                     || value_looks_like_credential(target))
             {
-                masked.push(word.replacen(target, REDACTED, 1));
-                changed = true;
+                push_word_replacement(
+                    &mut out,
+                    &mut copied_until,
+                    body,
+                    newline.len(),
+                    tok_start,
+                    tok_end,
+                    &word.replacen(target, REDACTED, 1),
+                );
                 continue;
             }
         }
@@ -596,7 +1036,6 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                         } else {
                             SpacedAssignment::AwaitingValue(sensitivity)
                         };
-                        masked.push((*word).to_string());
                         continue;
                     }
                 }
@@ -612,7 +1051,6 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                     .map_or(SpacedAssignment::None, |c| {
                         SpacedAssignment::AwaitingValue(c.sensitivity)
                     });
-                masked.push((*word).to_string());
                 continue;
             }
             if let Some(container) = containers.last()
@@ -620,7 +1058,6 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                 && trimmed.ends_with(':')
                 && !trimmed.ends_with("://")
             {
-                masked.push((*word).to_string());
                 spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
                 continue;
             }
@@ -631,30 +1068,41 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
             };
             match effective_policy {
                 RedactionPolicy::KeyBased => {
-                    // The value may run to the end of the line, so drop the
-                    // remainder rather than masking one word and leaking the
-                    // rest.
-                    masked.push(REDACTED.to_string());
-                    changed = true;
-                    break;
+                    let buf = out
+                        .get_or_insert_with(|| String::with_capacity(body.len() + newline.len()));
+                    buf.push_str(&body[copied_until..tok_start]);
+                    buf.push_str(REDACTED);
+                    buf.push_str(next_sep);
+                    buf.push_str(newline);
+                    return out;
                 }
                 RedactionPolicy::CredentialShaped => {
-                    // Only a credential-shaped value is hidden, and only that
-                    // word: the rest of the line stays quotable. An auth scheme
-                    // word (`Bearer`) keeps the assignment open for its token.
                     let core = credential_word_core(trimmed);
                     if is_auth_scheme_word(core) {
-                        masked.push((*word).to_string());
                         continue;
                     }
                     if value_looks_like_credential(core) {
-                        masked.push(word.replacen(core, REDACTED, 1));
-                        changed = true;
-                    } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
-                        masked.push(redacted);
-                        changed = true;
-                    } else {
-                        masked.push((*word).to_string());
+                        push_word_replacement(
+                            &mut out,
+                            &mut copied_until,
+                            body,
+                            newline.len(),
+                            tok_start,
+                            tok_end,
+                            &word.replacen(core, REDACTED, 1),
+                        );
+                    } else if has_bare_token
+                        && let Some(redacted) = mask_bare_secret_tokens(word, REDACTED)
+                    {
+                        push_word_replacement(
+                            &mut out,
+                            &mut copied_until,
+                            body,
+                            newline.len(),
+                            tok_start,
+                            tok_end,
+                            &redacted,
+                        );
                     }
                     pop_sanitize_containers(&mut containers, word);
                     spaced = containers
@@ -679,7 +1127,6 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                     .map_or(SpacedAssignment::None, |c| {
                         SpacedAssignment::AwaitingValue(c.sensitivity)
                     });
-                masked.push((*word).to_string());
                 continue;
             }
             if container.in_object
@@ -687,62 +1134,84 @@ fn redact_line(line: &str, policy: RedactionPolicy) -> String {
                 && !trimmed.ends_with("://")
                 && !trimmed[..trimmed.len() - 1].contains(['=', ':'])
             {
-                masked.push((*word).to_string());
                 spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
                 continue;
             }
         }
         let next_spaced = spaced.advance(trimmed);
-        if (!containers.is_empty() || !matches!(next_spaced, SpacedAssignment::None))
-            && let Some(redacted) = redact_inline_keyed_assignment(trimmed, policy)
+        let has_structural = contains_structural_delimiter(trimmed.as_bytes());
+        if let Some(redacted) =
+            redact_inline_keyed_assignment_with(trimmed, policy, has_bare_token, has_structural)
         {
-            changed = true;
-            masked.push(word.replace(trimmed, &redacted));
-            spaced = next_spaced;
-            if matches!(spaced, SpacedAssignment::None) {
-                pop_sanitize_containers(&mut containers, word);
-                if let Some(c) = containers.last().filter(|c| !c.in_object) {
-                    spaced = SpacedAssignment::AwaitingValue(c.sensitivity);
+            push_word_replacement(
+                &mut out,
+                &mut copied_until,
+                body,
+                newline.len(),
+                tok_start,
+                tok_end,
+                &word.replace(trimmed, &redacted),
+            );
+            if !containers.is_empty() || !matches!(next_spaced, SpacedAssignment::None) {
+                spaced = next_spaced;
+                if matches!(spaced, SpacedAssignment::None) {
+                    pop_sanitize_containers(&mut containers, word);
+                    if let Some(c) = containers.last().filter(|c| !c.in_object) {
+                        spaced = SpacedAssignment::AwaitingValue(c.sensitivity);
+                    }
                 }
+            } else {
+                spaced = SpacedAssignment::None;
             }
-            continue;
-        }
-        if let Some(redacted) = redact_inline_keyed_assignment(trimmed, policy) {
-            changed = true;
-            masked.push(word.replace(trimmed, &redacted));
+        } else if has_bare_token && let Some(core) = secret_token_core(trimmed) {
+            push_word_replacement(
+                &mut out,
+                &mut copied_until,
+                body,
+                newline.len(),
+                tok_start,
+                tok_end,
+                &word.replacen(core, REDACTED, 1),
+            );
             spaced = SpacedAssignment::None;
-        } else if let Some(core) = secret_token_core(trimmed) {
-            changed = true;
-            masked.push(word.replacen(core, REDACTED, 1));
+        } else if has_structural
+            && let Some(redacted) =
+                redact_structured_word_with(trimmed, policy, has_bare_token, true)
+        {
+            push_word_replacement(
+                &mut out,
+                &mut copied_until,
+                body,
+                newline.len(),
+                tok_start,
+                tok_end,
+                &word.replace(trimmed, &redacted),
+            );
             spaced = SpacedAssignment::None;
-        } else if let Some(redacted) = redact_structured_word(trimmed, policy) {
-            changed = true;
-            masked.push(word.replace(trimmed, &redacted));
-            spaced = SpacedAssignment::None;
-        } else if let Some(redacted) = mask_bare_secret_tokens(word, REDACTED) {
-            changed = true;
-            masked.push(redacted);
+        } else if has_bare_token
+            && has_structural
+            && let Some(redacted) = mask_bare_secret_tokens(word, REDACTED)
+        {
+            push_word_replacement(
+                &mut out,
+                &mut copied_until,
+                body,
+                newline.len(),
+                tok_start,
+                tok_end,
+                &redacted,
+            );
             spaced = SpacedAssignment::None;
         } else {
-            masked.push((*word).to_string());
-            spaced = spaced.advance(trimmed);
+            spaced = next_spaced;
         }
     }
 
-    if changed {
-        let mut out = String::with_capacity(body.len() + newline.len());
-        out.push_str(seps[0]);
-        for (idx, piece) in masked.iter().enumerate() {
-            out.push_str(piece);
-            if idx + 1 < seps.len() {
-                out.push_str(seps[idx + 1]);
-            }
-        }
-        out.push_str(newline);
-        out
-    } else {
-        format!("{body}{newline}")
-    }
+    out.map(|mut buf| {
+        buf.push_str(&body[copied_until..]);
+        buf.push_str(newline);
+        buf
+    })
 }
 
 /// Progress through a `key <space> <sep> <space> value` assignment as the
@@ -856,55 +1325,95 @@ fn credential_word_core(mut s: &str) -> &str {
     }
 }
 
-const STRUCTURAL_DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
-
-/// Compact JSON and query strings (`{"tokens":{"access_token":"eyJ…"}}`,
-/// `curl`, `jq -c`, `?access_token=…&x=1`) carry no spaces, so the word pass
-/// sees the whole document as one word whose first separator belongs to a
-/// harmless key. Split such a word on its structure and offer every member to
-/// the same keyed and bare-token checks; the delimiters are kept byte-exact.
-fn redact_structured_word(word: &str, policy: RedactionPolicy) -> Option<String> {
-    if !word.contains(STRUCTURAL_DELIMITERS) {
-        return None;
-    }
-    let mut out = String::with_capacity(word.len());
-    let mut changed = false;
-    let mut start = 0;
-    for (idx, ch) in word.match_indices(STRUCTURAL_DELIMITERS) {
-        changed |= push_structured_segment(&mut out, &word[start..idx], policy);
-        out.push_str(ch);
-        start = idx + ch.len();
-    }
-    changed |= push_structured_segment(&mut out, &word[start..], policy);
-    changed.then_some(out)
+#[inline]
+fn is_structural_delimiter_byte(b: u8) -> bool {
+    matches!(b, b'{' | b'}' | b'[' | b']' | b',' | b'&' | b'?')
 }
 
-fn push_structured_segment(out: &mut String, segment: &str, policy: RedactionPolicy) -> bool {
-    // A value an earlier pass already masked (`?token=***`) stays as it is.
+#[inline]
+fn contains_structural_delimiter(bytes: &[u8]) -> bool {
+    bytes.iter().any(|&b| is_structural_delimiter_byte(b))
+}
+
+fn redact_structured_word_with(
+    word: &str,
+    policy: RedactionPolicy,
+    has_bare_token: bool,
+    has_key_hint: bool,
+) -> Option<String> {
+    let bytes = word.as_bytes();
+    let mut out: Option<String> = None;
+    let mut copied_until = 0usize;
+    let mut start = 0usize;
+    let mut saw_delim = false;
+    for (idx, &b) in bytes.iter().enumerate() {
+        if !is_structural_delimiter_byte(b) {
+            continue;
+        }
+        saw_delim = true;
+        let segment = &word[start..idx];
+        if let Some(redacted) =
+            redact_structured_segment(segment, policy, has_bare_token, has_key_hint)
+        {
+            let buf = out.get_or_insert_with(|| String::with_capacity(word.len()));
+            buf.push_str(&word[copied_until..start]);
+            buf.push_str(&redacted);
+            copied_until = idx;
+        }
+        start = idx + 1;
+    }
+    if !saw_delim {
+        return None;
+    }
+    let tail = &word[start..];
+    if let Some(redacted) = redact_structured_segment(tail, policy, has_bare_token, has_key_hint) {
+        let buf = out.get_or_insert_with(|| String::with_capacity(word.len()));
+        buf.push_str(&word[copied_until..start]);
+        buf.push_str(&redacted);
+        copied_until = word.len();
+    }
+    out.map(|mut buf| {
+        buf.push_str(&word[copied_until..]);
+        buf
+    })
+}
+
+fn redact_structured_segment(
+    segment: &str,
+    policy: RedactionPolicy,
+    has_bare_token: bool,
+    has_key_hint: bool,
+) -> Option<String> {
+    if segment.is_empty() {
+        return None;
+    }
+    if !has_bare_token && !segment.as_bytes().iter().any(|&b| matches!(b, b'=' | b':')) {
+        return None;
+    }
     let already_masked = segment.split_once(['=', ':']).is_some_and(|(_, value)| {
         let (core, _, _) = split_value_quotes(value);
         !core.is_empty() && core.chars().all(|c| c == '*')
     });
-    if segment.is_empty() || already_masked {
-        out.push_str(segment);
-        return false;
+    if already_masked {
+        return None;
     }
-    if let Some(redacted) = redact_inline_keyed_assignment(segment, policy) {
-        out.push_str(&redacted);
-        return true;
+    if has_key_hint {
+        if let Some(redacted) =
+            redact_inline_keyed_assignment_with(segment, policy, has_bare_token, false)
+        {
+            return Some(redacted);
+        }
+    } else if has_bare_token && let Some(redacted) = mask_bare_secret_tokens(segment, REDACTED) {
+        return Some(redacted);
     }
-    let (core, _, _) = split_value_quotes(segment);
-    let core = core.trim_end_matches(['"', '\'']);
-    if !core.is_empty() && (looks_like_secret_token(core) || is_jwt_shaped(core)) {
-        out.push_str(&segment.replacen(core, REDACTED, 1));
-        return true;
+    if has_bare_token {
+        let (core, _, _) = split_value_quotes(segment);
+        let core = core.trim_end_matches(['"', '\'']);
+        if !core.is_empty() && looks_like_secret_token(core) {
+            return Some(segment.replacen(core, REDACTED, 1));
+        }
     }
-    if let Some(redacted) = mask_bare_secret_tokens(segment, REDACTED) {
-        out.push_str(&redacted);
-        return true;
-    }
-    out.push_str(segment);
-    false
+    None
 }
 
 fn trim_word_punctuation(word: &str) -> &str {
@@ -994,14 +1503,92 @@ fn is_token_metric_name(key_norm: &str) -> bool {
     })
 }
 
-/// Classify how strongly `raw` names a credential rather than prose or a token metric.
-#[must_use]
-pub fn key_sensitivity(raw: &str) -> KeySensitivity {
-    let key_norm = normalize_sensitive_key(raw);
-    // `Authorization failed: <reason>` is a status label, not a credential
-    // key; masking it hid every provider refusal reason (xAI's out-of-credits
-    // 403 rendered as `Authorization failed: [redacted]`). No credential is
-    // named for an outcome, so a key ending in one is never sensitive.
+fn raw_may_be_sensitive_key(bytes: &[u8]) -> bool {
+    if bytes.len() < 5 {
+        return false;
+    }
+    let mut saw_key_prefix = false;
+    let mut key_prefix_checked = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'k' | b'K' => {
+                if i >= 2
+                    && i + 3 <= bytes.len()
+                    && bytes[i - 2..i + 3].eq_ignore_ascii_case(b"token")
+                {
+                    return true;
+                }
+                if i + 3 <= bytes.len() && bytes[i..i + 3].eq_ignore_ascii_case(b"key") {
+                    if !saw_key_prefix {
+                        let start = key_prefix_checked.saturating_sub(6);
+                        if has_key_compound_prefix(&bytes[start..i]) {
+                            saw_key_prefix = true;
+                        }
+                        key_prefix_checked = i;
+                    }
+                    if saw_key_prefix {
+                        return true;
+                    }
+                }
+            }
+            b'c' | b'C' => {
+                if i >= 2
+                    && i + 4 <= bytes.len()
+                    && bytes[i - 2..i + 4].eq_ignore_ascii_case(b"secret")
+                {
+                    return true;
+                }
+            }
+            b'w' | b'W' => {
+                if i >= 4 && bytes[i - 4..i].eq_ignore_ascii_case(b"pass") {
+                    return true;
+                }
+            }
+            b'z' | b'Z'
+                if i >= 7
+                    && i + 6 <= bytes.len()
+                    && bytes[i - 7..i + 6].eq_ignore_ascii_case(b"authorization") =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn normalize_sensitive_key_into(raw: &[u8], buf: &mut [u8]) -> usize {
+    let mut len = 0usize;
+    let mut prev: Option<u8> = None;
+    for i in 0..raw.len() {
+        let b = raw[i];
+        if b.is_ascii_alphanumeric() {
+            let next = raw.get(i + 1).copied();
+            let starts_case_segment = b.is_ascii_uppercase()
+                && prev.is_some_and(|p| {
+                    p.is_ascii_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_ascii_uppercase() && next.is_some_and(|n| n.is_ascii_lowercase()))
+                });
+            if starts_case_segment && len > 0 && buf[len - 1] != b'_' {
+                buf[len] = b'_';
+                len += 1;
+            }
+            buf[len] = b.to_ascii_lowercase();
+            len += 1;
+        } else if len > 0 && buf[len - 1] != b'_' {
+            buf[len] = b'_';
+            len += 1;
+        }
+        prev = Some(b);
+    }
+    while len > 0 && buf[len - 1] == b'_' {
+        len -= 1;
+    }
+    len
+}
+
+fn key_sensitivity_normalized(key_norm: &str) -> KeySensitivity {
     let names_an_outcome = key_norm.rsplit('_').next().is_some_and(|last| {
         matches!(
             last,
@@ -1022,7 +1609,7 @@ pub fn key_sensitivity(raw: &str) -> KeySensitivity {
     }
     if SENSITIVE_KEY_HINTS
         .iter()
-        .any(|hint| *hint != "token" && key_matches_sensitive_hint(&key_norm, hint))
+        .any(|hint| *hint != "token" && key_matches_sensitive_hint(key_norm, hint))
     {
         return KeySensitivity::Certain;
     }
@@ -1030,10 +1617,10 @@ pub fn key_sensitivity(raw: &str) -> KeySensitivity {
         if key_norm == "tokens" {
             return KeySensitivity::IfShaped;
         }
-        if is_token_metric_name(&key_norm) {
+        if is_token_metric_name(key_norm) {
             return KeySensitivity::None;
         }
-        if key_matches_sensitive_hint(&key_norm, "token")
+        if key_matches_sensitive_hint(key_norm, "token")
             || key_norm.ends_with("tokens")
             || key_norm.ends_with("token")
             || key_norm
@@ -1044,6 +1631,24 @@ pub fn key_sensitivity(raw: &str) -> KeySensitivity {
         }
     }
     KeySensitivity::None
+}
+
+/// Classify how strongly `raw` names a credential rather than prose or a token metric.
+#[must_use]
+pub fn key_sensitivity(raw: &str) -> KeySensitivity {
+    let bytes = raw.as_bytes();
+    if !raw_may_be_sensitive_key(bytes) {
+        return KeySensitivity::None;
+    }
+    if bytes.len() <= 128 {
+        let mut buf = [0u8; 256];
+        let len = normalize_sensitive_key_into(bytes, &mut buf);
+        if let Ok(key_norm) = std::str::from_utf8(&buf[..len]) {
+            return key_sensitivity_normalized(key_norm);
+        }
+    }
+    let key_norm = normalize_sensitive_key(raw);
+    key_sensitivity_normalized(&key_norm)
 }
 
 /// Whether `raw`, normalized the way a config/env/JSON key is, matches a
@@ -1346,17 +1951,34 @@ fn redact_backslash_assignments_at(
     changed.then_some(out)
 }
 
-fn redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
-    if word.contains('\\')
-        && !word.contains(STRUCTURAL_DELIMITERS)
-        && let Some(redacted) = redact_backslash_assignments(word, policy)
-    {
-        return mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
+fn redact_inline_keyed_assignment_with(
+    word: &str,
+    policy: RedactionPolicy,
+    has_bare_token: bool,
+    has_structural: bool,
+) -> Option<String> {
+    let bytes = word.as_bytes();
+    let has_sep = bytes.iter().any(|&b| matches!(b, b'=' | b':'));
+    if has_sep {
+        if !has_structural
+            && bytes.contains(&b'\\')
+            && let Some(redacted) = redact_backslash_assignments(word, policy)
+        {
+            return if has_bare_token {
+                mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted))
+            } else {
+                Some(redacted)
+            };
+        }
+        if let Some(redacted) = redact_single_keyed_assignment(word, policy) {
+            return if has_bare_token {
+                mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted))
+            } else {
+                Some(redacted)
+            };
+        }
     }
-    if let Some(redacted) = redact_single_keyed_assignment(word, policy) {
-        return mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
-    }
-    if word.contains(STRUCTURAL_DELIMITERS) {
+    if has_structural || !has_bare_token {
         return None;
     }
     mask_bare_secret_tokens(word, REDACTED)
@@ -1500,6 +2122,10 @@ pub(crate) fn value_looks_like_credential(value: &str) -> bool {
 }
 
 fn is_jwt_shaped(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 9 || !bytes.starts_with(b"eyJ") {
+        return false;
+    }
     let mut parts = value.split('.');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(header), Some(payload), Some(signature), None) => {
@@ -1507,8 +2133,9 @@ fn is_jwt_shaped(value: &str) -> bool {
                 && payload.starts_with("eyJ")
                 && !signature.is_empty()
                 && [header, payload, signature].iter().all(|part| {
-                    part.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    part.as_bytes()
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
                 })
         }
         _ => false,
@@ -1551,7 +2178,6 @@ fn is_opaque_run(value: &str) -> bool {
 /// If `body` is a `key <sep> value` assignment with a sensitive key, return the
 /// line with the value redacted; otherwise `None`.
 fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String> {
-    // Find the first `=` or `:` that separates a key from a value.
     let sep_idx = body.find(['=', ':'])?;
     let (raw_key, rest) = body.split_at(sep_idx);
     let sep = &rest[..1];
@@ -1560,8 +2186,9 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
     let key_norm = raw_key
         .trim()
         .trim_matches(|c| matches!(c, '"' | '\'' | '[' | ']'));
-    let sensitivity = if let Some(last_word) = key_norm.split_whitespace().last()
-        && key_norm.split_whitespace().count() > 1
+    let mut ws = key_norm.split_whitespace();
+    let _first = ws.next();
+    let sensitivity = if let Some(last_word) = ws.last()
         && last_word.starts_with('-')
     {
         key_sensitivity(last_word)
@@ -1573,23 +2200,13 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
     }
 
     if policy == RedactionPolicy::CredentialShaped || sensitivity == KeySensitivity::IfShaped {
-        // Replace only the value span, keep the key bytes, separator spacing,
-        // quote style, and trailing punctuation, and only when the value is
-        // credential-shaped: the model must still be able to quote the line.
-        let value_lead_ws: String = raw_value
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .collect();
         let value_rest = raw_value.trim_start();
+        let value_lead_ws = &raw_value[..raw_value.len() - value_rest.len()];
         let value_core = value_rest.trim_end();
         let trailing_ws = &value_rest[value_core.len()..];
         let literal = value_core.trim_end_matches([',', ';']);
         let trailer = &value_core[literal.len()..];
         let (core, lead_quote, trail_quote) = split_value_quotes(literal);
-        // A value of more than one word (beyond an auth scheme and its
-        // token) is not one credential: `-H 'Authorization: Bearer sk-…'
-        // https://host && rm -rf x` would otherwise mask the whole rest of
-        // the command. The word pass below masks just the credential.
         let words = core.split_whitespace().count();
         let single_value = words <= 1
             || (words == 2
@@ -1605,19 +2222,13 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
         ));
     }
 
-    // Keep leading whitespace of the key and the original separator spacing so
-    // the redacted line reads naturally.
-    let key_lead_ws: String = raw_key.chars().take_while(|c| c.is_whitespace()).collect();
-    let value_lead_ws: String = raw_value
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .collect();
+    let key_trimmed_start = raw_key.trim_start();
+    let key_lead_ws = &raw_key[..raw_key.len() - key_trimmed_start.len()];
     let value_rest = raw_value.trim_start();
-    // If the value is empty, there is nothing to hide.
+    let value_lead_ws = &raw_value[..raw_value.len() - value_rest.len()];
     if value_rest.is_empty() {
         return None;
     }
-    // Preserve surrounding quotes so structured files stay parseable-looking.
     let quoted = value_rest.starts_with('"') || value_rest.starts_with('\'');
     let replacement = if quoted {
         format!("\"{REDACTED}\"")
@@ -1630,23 +2241,17 @@ fn redact_keyed_assignment(body: &str, policy: RedactionPolicy) -> Option<String
     ))
 }
 
-/// Provider key prefixes masked as bare words only when the rest of the word
-/// is an opaque run ([`is_opaque_token_body`]): real keys under them are
-/// random, while identifiers sharing the prefix (`hf_hub_download`,
-/// `npm_config_cache`) are not. [`CREDENTIAL_VALUE_PREFIXES`] joins them.
+#[cfg(test)]
 const BARE_OPAQUE_TOKEN_PREFIXES: &[&str] = &["xai-", "nvapi-", "gsk_", "hf_", "pplx-"];
 
-/// Whether a whitespace-delimited word is a credential on its own: a
-/// [`SECRET_TOKEN_PREFIXES`] word, a provider-prefixed opaque key, an AWS
-/// access key id, or a JWT.
 fn looks_like_secret_token(word: &str) -> bool {
     secret_token_core(word).is_some()
 }
 
-/// The credential inside `word` once markdown and prose punctuation around it
-/// is dropped (`` `xai-…` ``, `(nvapi-…)`, `AKIA…:`, a JWT ending a
-/// sentence), or `None` when the word is not a credential on its own.
 fn secret_token_core(word: &str) -> Option<&str> {
+    if word.len() < 9 {
+        return None;
+    }
     let core = word.trim_matches(|c| {
         matches!(
             c,
@@ -1657,35 +2262,146 @@ fn secret_token_core(word: &str) -> Option<&str> {
 }
 
 fn is_bare_secret_token(word: &str) -> bool {
-    SECRET_TOKEN_PREFIXES
-        .iter()
-        .any(|p| word.len() > p.len() + 6 && word.starts_with(p))
-        || CREDENTIAL_VALUE_PREFIXES
-            .iter()
-            .chain(BARE_OPAQUE_TOKEN_PREFIXES)
-            .filter(|p| !matches!(**p, "AKIA" | "ASIA"))
-            .any(|p| word.strip_prefix(p).is_some_and(is_opaque_token_body))
-        || is_aws_access_key_id(word)
-        || is_jwt_shaped(word)
+    let bytes = word.as_bytes();
+    if bytes.len() < 9 {
+        return false;
+    }
+    match bytes[0] {
+        b's' => bytes.len() > 9 && (bytes.starts_with(b"sk-") || bytes.starts_with(b"sk_")),
+        b'p' => {
+            (bytes.len() > 9 && bytes.starts_with(b"pk-"))
+                || word.strip_prefix("pplx-").is_some_and(is_opaque_token_body)
+        }
+        b'g' => {
+            (bytes.len() > 10 && (bytes.starts_with(b"ghp_") || bytes.starts_with(b"gho_")))
+                || word
+                    .strip_prefix("ghu_")
+                    .or_else(|| word.strip_prefix("ghs_"))
+                    .or_else(|| word.strip_prefix("ghr_"))
+                    .or_else(|| word.strip_prefix("gsk_"))
+                    .or_else(|| word.strip_prefix("glpat-"))
+                    .or_else(|| word.strip_prefix("github_pat_"))
+                    .is_some_and(is_opaque_token_body)
+        }
+        b'x' => {
+            (bytes.len() > 11 && (bytes.starts_with(b"xoxb-") || bytes.starts_with(b"xoxp-")))
+                || word
+                    .strip_prefix("xai-")
+                    .or_else(|| word.strip_prefix("xoxa-"))
+                    .or_else(|| word.strip_prefix("xoxr-"))
+                    .or_else(|| word.strip_prefix("xoxs-"))
+                    .or_else(|| word.strip_prefix("xapp-"))
+                    .is_some_and(is_opaque_token_body)
+        }
+        b'A' => {
+            is_aws_access_key_id(word)
+                || word.strip_prefix("AIza").is_some_and(is_opaque_token_body)
+        }
+        b'n' => word
+            .strip_prefix("npm_")
+            .or_else(|| word.strip_prefix("nvapi-"))
+            .is_some_and(is_opaque_token_body),
+        b'y' => word.strip_prefix("ya29.").is_some_and(is_opaque_token_body),
+        b'h' => word.strip_prefix("hf_").is_some_and(is_opaque_token_body),
+        b'e' => is_jwt_shaped(word),
+        _ => false,
+    }
 }
 
-/// At least 16 key characters with both a letter and a digit.
 fn is_opaque_token_body(body: &str) -> bool {
-    body.len() >= 16
-        && body
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        && body.chars().any(|c| c.is_ascii_alphabetic())
-        && body.chars().any(|c| c.is_ascii_digit())
+    let bytes = body.as_bytes();
+    if bytes.len() < 16 {
+        return false;
+    }
+    let mut has_alpha = false;
+    let mut has_digit = false;
+    for &b in bytes {
+        if b.is_ascii_alphabetic() {
+            has_alpha = true;
+        } else if b.is_ascii_digit() {
+            has_digit = true;
+        } else if !matches!(b, b'_' | b'-' | b'.') {
+            return false;
+        }
+    }
+    has_alpha && has_digit
 }
 
-/// `AKIA`/`ASIA` followed by exactly 16 upper-case letters or digits.
 fn is_aws_access_key_id(word: &str) -> bool {
-    word.len() == 20
-        && (word.starts_with("AKIA") || word.starts_with("ASIA"))
-        && word[4..]
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    let bytes = word.as_bytes();
+    bytes.len() == 20
+        && (bytes.starts_with(b"AKIA") || bytes.starts_with(b"ASIA"))
+        && bytes[4..]
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+const TOKEN_DELIM_LUT: [bool; 256] = {
+    let mut lut = [false; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let b = i as u8;
+        lut[i] = b >= 0x80
+            || b.is_ascii_whitespace()
+            || matches!(
+                b,
+                b'"' | b'\''
+                    | b'`'
+                    | b','
+                    | b';'
+                    | b'('
+                    | b')'
+                    | b'{'
+                    | b'}'
+                    | b'['
+                    | b']'
+                    | b'<'
+                    | b'>'
+                    | b'&'
+                    | b'?'
+                    | b'*'
+                    | b'|'
+                    | b'\\'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+                    | b'+'
+                    | b'#'
+                    | b'%'
+            );
+        i += 1;
+    }
+    lut
+};
+
+#[inline]
+fn bare_token_core_after(body: &str, escaped: bool) -> Option<&str> {
+    fn credential_core(body: &str) -> Option<&str> {
+        let stripped = body.trim_start_matches('-');
+        secret_token_core(stripped).or_else(|| {
+            (stripped.len() != body.len())
+                .then(|| secret_token_core(body))
+                .flatten()
+        })
+    }
+    fn after_escape(body: &str) -> &str {
+        if let Some(rest) = body.strip_prefix(['n', 'r', 't', 'b', 'f']) {
+            return rest;
+        }
+        if let Some(rest) = body.strip_prefix('u')
+            && let Some(hex) = rest.get(..4)
+            && hex.as_bytes().iter().all(u8::is_ascii_hexdigit)
+        {
+            return &rest[4..];
+        }
+        body
+    }
+    credential_core(body).or_else(|| {
+        escaped
+            .then(|| credential_core(after_escape(body)))
+            .flatten()
+    })
 }
 
 /// Whether `raw` names a credential (`api_key`, `X-Api-Key`, `DBPASSWORD`)
@@ -1699,7 +2415,27 @@ pub fn names_a_credential(raw: &str) -> bool {
 /// after `NAME=`, inside quotes, brackets or JSON, or next to non-ASCII text.
 #[must_use]
 pub fn contains_bare_secret_token(text: &str) -> bool {
-    mask_bare_secret_tokens(text, REDACTED).is_some()
+    let bytes = text.as_bytes();
+    if bytes.len() < 9 {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && TOKEN_DELIM_LUT[bytes[i] as usize] {
+            i += 1;
+        }
+        let tok_start = i;
+        while i < bytes.len() && !TOKEN_DELIM_LUT[bytes[i] as usize] {
+            i += 1;
+        }
+        if i - tok_start >= 9 {
+            let escaped = tok_start > 0 && bytes[tok_start - 1] == b'\\';
+            if bare_token_core_after(&text[tok_start..i], escaped).is_some() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Replace every standalone provider credential in `text` with
@@ -1707,88 +2443,39 @@ pub fn contains_bare_secret_token(text: &str) -> bool {
 /// holds none.
 #[must_use]
 pub fn mask_bare_secret_tokens(text: &str, placeholder: &str) -> Option<String> {
-    fn split_piece(piece: &str) -> (&str, &str) {
-        match piece.chars().next_back() {
-            Some(last) if is_token_delimiter(last) => piece.split_at(piece.len() - last.len_utf8()),
-            _ => (piece, ""),
-        }
-    }
-    fn credential_core(body: &str) -> Option<&str> {
-        secret_token_core(body.trim_start_matches('-')).or_else(|| secret_token_core(body))
-    }
-    fn after_escape(body: &str) -> &str {
-        if let Some(rest) = body.strip_prefix(['n', 'r', 't', 'b', 'f']) {
-            return rest;
-        }
-        if let Some(rest) = body.strip_prefix('u')
-            && let Some(hex) = rest.get(..4)
-            && hex.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            return &rest[4..];
-        }
-        body
-    }
-    fn core_after(body: &str, escaped: bool) -> Option<&str> {
-        credential_core(body).or_else(|| {
-            escaped
-                .then(|| credential_core(after_escape(body)))
-                .flatten()
-        })
-    }
-    let mut escaped = false;
-    let mut found = false;
-    for piece in text.split_inclusive(is_token_delimiter) {
-        let (body, tail) = split_piece(piece);
-        found |= core_after(body, escaped).is_some();
-        escaped = tail == "\\";
-    }
-    if !found {
+    let bytes = text.as_bytes();
+    if bytes.len() < 9 {
         return None;
     }
-    let mut out = String::with_capacity(text.len());
-    let mut escaped = false;
-    for piece in text.split_inclusive(is_token_delimiter) {
-        let (body, tail) = split_piece(piece);
-        match core_after(body, escaped) {
-            Some(core) => out.push_str(&body.replacen(core, placeholder, 1)),
-            None => out.push_str(body),
+    let mut out: Option<String> = None;
+    let mut copied_until = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && TOKEN_DELIM_LUT[bytes[i] as usize] {
+            i += 1;
         }
-        escaped = tail == "\\";
-        out.push_str(tail);
+        let tok_start = i;
+        while i < bytes.len() && !TOKEN_DELIM_LUT[bytes[i] as usize] {
+            i += 1;
+        }
+        if i - tok_start >= 9 {
+            let body = &text[tok_start..i];
+            let escaped = tok_start > 0 && bytes[tok_start - 1] == b'\\';
+            if let Some(core) = bare_token_core_after(body, escaped) {
+                let core_offset = core.as_ptr() as usize - body.as_ptr() as usize;
+                let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
+                buf.push_str(&text[copied_until..tok_start]);
+                buf.push_str(&body[..core_offset]);
+                buf.push_str(placeholder);
+                buf.push_str(&body[core_offset + core.len()..]);
+                copied_until = i;
+            }
+        }
     }
-    Some(out)
-}
-
-fn is_token_delimiter(c: char) -> bool {
-    !c.is_ascii()
-        || c.is_ascii_whitespace()
-        || matches!(
-            c,
-            '"' | '\''
-                | '`'
-                | ','
-                | ';'
-                | '('
-                | ')'
-                | '{'
-                | '}'
-                | '['
-                | ']'
-                | '<'
-                | '>'
-                | '&'
-                | '?'
-                | '*'
-                | '|'
-                | '\\'
-                | '='
-                | ':'
-                | '@'
-                | '/'
-                | '+'
-                | '#'
-                | '%'
-        )
+    out.map(|mut buf| {
+        buf.push_str(&text[copied_until..]);
+        buf
+    })
 }
 
 #[cfg(test)]
@@ -2406,6 +3093,714 @@ mod assigned_secret_tests {
             for out in both_policies(safe) {
                 assert_eq!(out, safe, "{safe}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fast_path_equivalence_tests {
+    use super::*;
+
+    const REF_STRUCTURAL_DELIMITERS: [char; 7] = ['{', '}', '[', ']', ',', '&', '?'];
+
+    fn ref_key_sensitivity(raw: &str) -> KeySensitivity {
+        let key_norm = normalize_sensitive_key(raw);
+        key_sensitivity_normalized(&key_norm)
+    }
+
+    fn ref_is_token_delimiter(c: char) -> bool {
+        !c.is_ascii()
+            || c.is_ascii_whitespace()
+            || matches!(
+                c,
+                '"' | '\''
+                    | '`'
+                    | ','
+                    | ';'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | '<'
+                    | '>'
+                    | '&'
+                    | '?'
+                    | '*'
+                    | '|'
+                    | '\\'
+                    | '='
+                    | ':'
+                    | '@'
+                    | '/'
+                    | '+'
+                    | '#'
+                    | '%'
+            )
+    }
+
+    fn ref_is_bare_secret_token(word: &str) -> bool {
+        SECRET_TOKEN_PREFIXES
+            .iter()
+            .any(|p| word.len() > p.len() + 6 && word.starts_with(p))
+            || CREDENTIAL_VALUE_PREFIXES
+                .iter()
+                .chain(BARE_OPAQUE_TOKEN_PREFIXES)
+                .filter(|p| !matches!(**p, "AKIA" | "ASIA"))
+                .any(|p| word.strip_prefix(p).is_some_and(is_opaque_token_body))
+            || is_aws_access_key_id(word)
+            || is_jwt_shaped(word)
+    }
+
+    fn ref_secret_token_core(word: &str) -> Option<&str> {
+        let core = word.trim_matches(|c| {
+            matches!(
+                c,
+                '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ':' | '`' | '.' | '!' | '?'
+            )
+        });
+        (!core.is_empty() && ref_is_bare_secret_token(core)).then_some(core)
+    }
+
+    fn ref_mask_bare_secret_tokens(text: &str, placeholder: &str) -> Option<String> {
+        fn split_piece(piece: &str) -> (&str, &str) {
+            match piece.chars().next_back() {
+                Some(last) if ref_is_token_delimiter(last) => {
+                    piece.split_at(piece.len() - last.len_utf8())
+                }
+                _ => (piece, ""),
+            }
+        }
+        fn credential_core(body: &str) -> Option<&str> {
+            ref_secret_token_core(body.trim_start_matches('-'))
+                .or_else(|| ref_secret_token_core(body))
+        }
+        fn after_escape(body: &str) -> &str {
+            if let Some(rest) = body.strip_prefix(['n', 'r', 't', 'b', 'f']) {
+                return rest;
+            }
+            if let Some(rest) = body.strip_prefix('u')
+                && let Some(hex) = rest.get(..4)
+                && hex.chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return &rest[4..];
+            }
+            body
+        }
+        fn core_after(body: &str, escaped: bool) -> Option<&str> {
+            credential_core(body).or_else(|| {
+                escaped
+                    .then(|| credential_core(after_escape(body)))
+                    .flatten()
+            })
+        }
+        let mut escaped = false;
+        let mut found = false;
+        for piece in text.split_inclusive(ref_is_token_delimiter) {
+            let (body, tail) = split_piece(piece);
+            found |= core_after(body, escaped).is_some();
+            escaped = tail == "\\";
+        }
+        if !found {
+            return None;
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut escaped = false;
+        for piece in text.split_inclusive(ref_is_token_delimiter) {
+            let (body, tail) = split_piece(piece);
+            match core_after(body, escaped) {
+                Some(core) => out.push_str(&body.replacen(core, placeholder, 1)),
+                None => out.push_str(body),
+            }
+            escaped = tail == "\\";
+            out.push_str(tail);
+        }
+        Some(out)
+    }
+
+    fn ref_redact_inline_keyed_assignment(word: &str, policy: RedactionPolicy) -> Option<String> {
+        if word.contains('\\')
+            && !word.contains(REF_STRUCTURAL_DELIMITERS)
+            && let Some(redacted) = redact_backslash_assignments(word, policy)
+        {
+            return ref_mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
+        }
+        if let Some(redacted) = redact_single_keyed_assignment(word, policy) {
+            return ref_mask_bare_secret_tokens(&redacted, REDACTED).or(Some(redacted));
+        }
+        if word.contains(REF_STRUCTURAL_DELIMITERS) {
+            return None;
+        }
+        ref_mask_bare_secret_tokens(word, REDACTED)
+    }
+
+    fn ref_push_structured_segment(
+        out: &mut String,
+        segment: &str,
+        policy: RedactionPolicy,
+    ) -> bool {
+        let already_masked = segment.split_once(['=', ':']).is_some_and(|(_, value)| {
+            let (core, _, _) = split_value_quotes(value);
+            !core.is_empty() && core.chars().all(|c| c == '*')
+        });
+        if segment.is_empty() || already_masked {
+            out.push_str(segment);
+            return false;
+        }
+        if let Some(redacted) = ref_redact_inline_keyed_assignment(segment, policy) {
+            out.push_str(&redacted);
+            return true;
+        }
+        let (core, _, _) = split_value_quotes(segment);
+        let core = core.trim_end_matches(['"', '\'']);
+        if !core.is_empty() && (ref_secret_token_core(core).is_some() || is_jwt_shaped(core)) {
+            out.push_str(&segment.replacen(core, REDACTED, 1));
+            return true;
+        }
+        if let Some(redacted) = ref_mask_bare_secret_tokens(segment, REDACTED) {
+            out.push_str(&redacted);
+            return true;
+        }
+        out.push_str(segment);
+        false
+    }
+
+    fn ref_redact_structured_word(word: &str, policy: RedactionPolicy) -> Option<String> {
+        if !word.contains(REF_STRUCTURAL_DELIMITERS) {
+            return None;
+        }
+        let mut out = String::with_capacity(word.len());
+        let mut changed = false;
+        let mut start = 0;
+        for (idx, ch) in word.match_indices(REF_STRUCTURAL_DELIMITERS) {
+            changed |= ref_push_structured_segment(&mut out, &word[start..idx], policy);
+            out.push_str(ch);
+            start = idx + ch.len();
+        }
+        changed |= ref_push_structured_segment(&mut out, &word[start..], policy);
+        changed.then_some(out)
+    }
+
+    fn ref_split_horizontal_whitespace_preserving(line: &str) -> (Vec<&str>, Vec<&str>) {
+        let mut tokens = Vec::new();
+        let mut seps = Vec::new();
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let ws_start = i;
+            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+                i += 1;
+            }
+            seps.push(&line[ws_start..i]);
+            if i == bytes.len() {
+                return (tokens, seps);
+            }
+            let tok_start = i;
+            while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t') {
+                i += 1;
+            }
+            tokens.push(&line[tok_start..i]);
+        }
+        seps.push("");
+        (tokens, seps)
+    }
+
+    fn ref_redact_line(line: &str, policy: RedactionPolicy) -> String {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(rest) => (rest, "\n"),
+            None => (line, ""),
+        };
+        if let Some(redacted) = redact_keyed_assignment(body, policy) {
+            return format!("{redacted}{newline}");
+        }
+        let mut changed = false;
+        let mut spaced = SpacedAssignment::None;
+        let mut containers: Vec<SanitizeContainerArm> = Vec::new();
+        let (words, seps) = ref_split_horizontal_whitespace_preserving(body);
+        let mut masked: Vec<String> = Vec::with_capacity(words.len());
+        for word in &words {
+            let trimmed = trim_word_punctuation(word);
+            if let SpacedAssignment::FlagValue(sensitivity) = spaced
+                && !trimmed.is_empty()
+            {
+                if matches!(trimmed, "=" | ":") {
+                    masked.push((*word).to_string());
+                    spaced = SpacedAssignment::AwaitingValue(sensitivity);
+                    continue;
+                }
+                spaced = SpacedAssignment::None;
+                let core = credential_word_core(trimmed);
+                let target = if core.is_empty() { trimmed } else { core };
+                if !trimmed.starts_with('-')
+                    && ((policy == RedactionPolicy::KeyBased
+                        && sensitivity == KeySensitivity::Certain)
+                        || value_looks_like_credential(target))
+                {
+                    masked.push(word.replacen(target, REDACTED, 1));
+                    changed = true;
+                    continue;
+                }
+            }
+            if let SpacedAssignment::AwaitingValue(sensitivity) = spaced
+                && !trimmed.is_empty()
+            {
+                if let Some(open) = trimmed.chars().rfind(|c| matches!(c, '[' | '{')) {
+                    let close = if open == '{' { '}' } else { ']' };
+                    if !trimmed.contains(close) && containers.len() < MAX_SANITIZE_CONTAINER_DEPTH {
+                        let in_object = open == '{';
+                        containers.push(SanitizeContainerArm {
+                            close,
+                            sensitivity,
+                            in_object,
+                        });
+                        if trimmed.chars().all(|c| matches!(c, '[' | '{' | '"' | '\'')) {
+                            spaced = if in_object {
+                                SpacedAssignment::None
+                            } else {
+                                SpacedAssignment::AwaitingValue(sensitivity)
+                            };
+                            masked.push((*word).to_string());
+                            continue;
+                        }
+                    }
+                }
+                if trimmed
+                    .chars()
+                    .all(|c| matches!(c, ']' | '}' | ',' | ';' | '"' | '\''))
+                {
+                    pop_sanitize_containers(&mut containers, word);
+                    spaced = containers
+                        .last()
+                        .filter(|c| !c.in_object)
+                        .map_or(SpacedAssignment::None, |c| {
+                            SpacedAssignment::AwaitingValue(c.sensitivity)
+                        });
+                    masked.push((*word).to_string());
+                    continue;
+                }
+                if let Some(container) = containers.last()
+                    && container.in_object
+                    && trimmed.ends_with(':')
+                    && !trimmed.ends_with("://")
+                {
+                    masked.push((*word).to_string());
+                    spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
+                    continue;
+                }
+                let effective_policy = if sensitivity == KeySensitivity::IfShaped {
+                    RedactionPolicy::CredentialShaped
+                } else {
+                    policy
+                };
+                match effective_policy {
+                    RedactionPolicy::KeyBased => {
+                        masked.push(REDACTED.to_string());
+                        changed = true;
+                        break;
+                    }
+                    RedactionPolicy::CredentialShaped => {
+                        let core = credential_word_core(trimmed);
+                        if is_auth_scheme_word(core) {
+                            masked.push((*word).to_string());
+                            continue;
+                        }
+                        if value_looks_like_credential(core) {
+                            masked.push(word.replacen(core, REDACTED, 1));
+                            changed = true;
+                        } else if let Some(redacted) = ref_mask_bare_secret_tokens(word, REDACTED) {
+                            masked.push(redacted);
+                            changed = true;
+                        } else {
+                            masked.push((*word).to_string());
+                        }
+                        pop_sanitize_containers(&mut containers, word);
+                        spaced = containers
+                            .last()
+                            .filter(|c| !c.in_object)
+                            .map_or(SpacedAssignment::None, |c| {
+                                SpacedAssignment::AwaitingValue(c.sensitivity)
+                            });
+                        continue;
+                    }
+                }
+            }
+            if let Some(container) = containers.last().copied() {
+                if trimmed
+                    .chars()
+                    .all(|c| matches!(c, ']' | '}' | ',' | ';' | '"' | '\''))
+                {
+                    pop_sanitize_containers(&mut containers, word);
+                    spaced = containers
+                        .last()
+                        .filter(|c| !c.in_object)
+                        .map_or(SpacedAssignment::None, |c| {
+                            SpacedAssignment::AwaitingValue(c.sensitivity)
+                        });
+                    masked.push((*word).to_string());
+                    continue;
+                }
+                if container.in_object
+                    && trimmed.ends_with(':')
+                    && !trimmed.ends_with("://")
+                    && !trimmed[..trimmed.len() - 1].contains(['=', ':'])
+                {
+                    masked.push((*word).to_string());
+                    spaced = SpacedAssignment::AwaitingValue(container.sensitivity);
+                    continue;
+                }
+            }
+            let next_spaced = spaced.advance(trimmed);
+            if (!containers.is_empty() || !matches!(next_spaced, SpacedAssignment::None))
+                && let Some(redacted) = ref_redact_inline_keyed_assignment(trimmed, policy)
+            {
+                changed = true;
+                masked.push(word.replace(trimmed, &redacted));
+                spaced = next_spaced;
+                if matches!(spaced, SpacedAssignment::None) {
+                    pop_sanitize_containers(&mut containers, word);
+                    if let Some(c) = containers.last().filter(|c| !c.in_object) {
+                        spaced = SpacedAssignment::AwaitingValue(c.sensitivity);
+                    }
+                }
+                continue;
+            }
+            if let Some(redacted) = ref_redact_inline_keyed_assignment(trimmed, policy) {
+                changed = true;
+                masked.push(word.replace(trimmed, &redacted));
+                spaced = SpacedAssignment::None;
+            } else if let Some(core) = ref_secret_token_core(trimmed) {
+                changed = true;
+                masked.push(word.replacen(core, REDACTED, 1));
+                spaced = SpacedAssignment::None;
+            } else if let Some(redacted) = ref_redact_structured_word(trimmed, policy) {
+                changed = true;
+                masked.push(word.replace(trimmed, &redacted));
+                spaced = SpacedAssignment::None;
+            } else if let Some(redacted) = ref_mask_bare_secret_tokens(word, REDACTED) {
+                changed = true;
+                masked.push(redacted);
+                spaced = SpacedAssignment::None;
+            } else {
+                masked.push((*word).to_string());
+                spaced = spaced.advance(trimmed);
+            }
+        }
+        if changed {
+            let mut out = String::with_capacity(body.len() + newline.len());
+            out.push_str(seps[0]);
+            for (idx, piece) in masked.iter().enumerate() {
+                out.push_str(piece);
+                if idx + 1 < seps.len() {
+                    out.push_str(seps[idx + 1]);
+                }
+            }
+            out.push_str(newline);
+            out
+        } else {
+            format!("{body}{newline}")
+        }
+    }
+
+    fn ref_redact_private_key_line(
+        line: &str,
+        policy: RedactionPolicy,
+        rest_of_input: &str,
+    ) -> Option<PrivateKeyLine> {
+        if !line.contains(PRIVATE_KEY_HEADER_START) {
+            return None;
+        }
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(rest) => (rest, "\n"),
+            None => (line, ""),
+        };
+        let (masked, opens_block) = mask_private_key_spans(
+            body,
+            REDACTED,
+            UnclosedPrivateKey::OpensBlock,
+            rest_of_input,
+        )?;
+        Some(PrivateKeyLine {
+            text: ref_redact_line(&format!("{masked}{newline}"), policy),
+            opens_block,
+        })
+    }
+
+    fn ref_redact_secrets_with(input: &str, policy: RedactionPolicy) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut in_private_key_block = false;
+        let mut offset = 0;
+        for line in input.split_inclusive('\n') {
+            offset += line.len();
+            let rest_of_input = &input[offset..];
+            let body = line.strip_suffix('\n').unwrap_or(line);
+            let trimmed = body.trim();
+            if in_private_key_block {
+                if trimmed.contains(PRIVATE_KEY_FOOTER) {
+                    in_private_key_block = false;
+                    if let Some(redacted) = ref_redact_private_key_line(line, policy, rest_of_input)
+                    {
+                        in_private_key_block = redacted.opens_block;
+                        out.push_str(&redacted.text);
+                    } else {
+                        out.push_str(&ref_redact_line(line, policy));
+                    }
+                } else {
+                    out.push_str(REDACTED);
+                    if line.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                continue;
+            }
+            if let Some(redacted) = ref_redact_private_key_line(line, policy, rest_of_input) {
+                in_private_key_block = redacted.opens_block;
+                out.push_str(&redacted.text);
+                continue;
+            }
+            out.push_str(&ref_redact_line(line, policy));
+        }
+        out
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0
+        }
+
+        fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            let idx = (self.next_u64() >> 33) as usize % items.len();
+            &items[idx]
+        }
+    }
+
+    #[test]
+    fn fast_path_is_byte_identical_to_unoptimized_reference_across_corpus() {
+        let body = "Z7qX4mNb2Vc9Lk3PwR8t";
+        let hex40 = ["3f9a8c1d2e4b5a6f", "7c8d9e0a1b2c3d4e", "5f6a7b8c"].concat();
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxIn0", "c2lnbmF0dXJl"].join(".");
+        let aws_akia = ["AKIA", "Z7QX4MNB2VC9LK3P"].concat();
+        let aws_asia = ["ASIA", "Z7QX4MNB2VC9LK3P"].concat();
+        let pem_begin = ["-----BEGIN RSA ", "PRIVATE KEY-----"].concat();
+        let pem_end = ["-----END RSA ", "PRIVATE KEY-----"].concat();
+        let long_key = format!("{}_api_key", "a".repeat(160));
+        let long_non_secret_key = format!("{}_key", "x".repeat(160));
+
+        let mut key_samples = vec![
+            String::new(),
+            "k".to_string(),
+            "key".to_string(),
+            "keys".to_string(),
+            "keyword".to_string(),
+            "api".to_string(),
+            "api_key".to_string(),
+            "APIKey".to_string(),
+            "apikey".to_string(),
+            "api-key".to_string(),
+            "X-Api-Key".to_string(),
+            "apiékey".to_string(),
+            "Aéa".to_string(),
+            "ABé".to_string(),
+            "éA".to_string(),
+            "access_key".to_string(),
+            "accessKey".to_string(),
+            "private_key".to_string(),
+            "privateKey".to_string(),
+            "secret".to_string(),
+            "client_secret".to_string(),
+            "MYSECRET".to_string(),
+            "secretary".to_string(),
+            "token".to_string(),
+            "tokens".to_string(),
+            "auth_token".to_string(),
+            "accessToken".to_string(),
+            "oauth.token".to_string(),
+            "max_tokens".to_string(),
+            "tokenBudget".to_string(),
+            "tokenizer".to_string(),
+            "password".to_string(),
+            "passwd".to_string(),
+            "DBPASSWORD".to_string(),
+            "PassWord".to_string(),
+            "passwordless".to_string(),
+            "authorization".to_string(),
+            "Authorization failed".to_string(),
+            "keyprivatekey".to_string(),
+            "key123456key".to_string(),
+            long_key.clone(),
+            long_non_secret_key.clone(),
+        ];
+        for hint in SENSITIVE_KEY_HINTS {
+            key_samples.push(hint.to_string());
+            key_samples.push(hint.to_ascii_uppercase());
+            key_samples.push(format!("my_{hint}_v1"));
+        }
+        for sample in &key_samples {
+            assert_eq!(
+                key_sensitivity(sample),
+                ref_key_sensitivity(sample),
+                "key_sensitivity mismatch for {sample:?}"
+            );
+        }
+
+        let mut cases: Vec<String> = vec![
+            String::new(),
+            "\n".to_string(),
+            "\r\n\r\n".to_string(),
+            "   \t  \n".to_string(),
+            "fn main() {\n    let x = 42;\n    println!(\"{x}\");\n}\n".to_string(),
+            "key = 1\nkeys = [1, 2, 3]\nkeyword: true\n".to_string(),
+            "api\nkey123456key = 0123456789abcdef0123456789abcdef\n".to_string(),
+            format!("key1 key2 key3 api_key={hex40}\n"),
+            format!("key1 key2 key3 private_key={hex40}\n"),
+            format!("key1 key2 key3 access_key={hex40}\n"),
+            format!("{long_key} = {hex40}\n"),
+            format!("{long_non_secret_key} = {hex40}\n"),
+            "max_tokens = 8192\ntokenizer = \"bpe\"\nAuthorization failed: out of credits\n"
+                .to_string(),
+            "note: token = foo bar baz".to_string(),
+            "note: token = foo\t\tbar\tbaz\n".to_string(),
+            "note: token = foo   ".to_string(),
+            format!("note: token = Bearer {jwt} trailing\n"),
+            format!("curl -H 'Authorization: Bearer sk-live-{body}' https://host/a?b=1 && echo ok"),
+            "sk-1234:5678".to_string(),
+            r#"{"sk-1234:5678"}"#.to_string(),
+            "sk-1234567890=***".to_string(),
+            format!("{{sk-1234567890=***,other=sk-live-{body}}}"),
+            format!("\\\\nsk-live-{body}"),
+            format!("\\nnpm_{body}"),
+            format!("\\u003cghs_{body}\\u003e"),
+            format!("\\énsk-live-{body}"),
+            format!("---sk-live-{body}"),
+            format!("密钥：sk-{body}，{jwt}！"),
+            format!("https://user:ghp_{body}@github.com/o/r.git?x=1&token={hex40}"),
+            format!("{{\"tokens\":{{\"id_token\":\"{jwt}\",\"api_key\":\"{hex40}\"}}}}"),
+            format!("{{\"api_tokens\": [ \"{hex40}\", \"short\" ]}}"),
+            format!("{{\"api_tokens\": {{ \"prod\": \"{hex40}\" }}}}"),
+            format!("{{\\\"api_key\\\":\\\"{hex40}\\\"}}"),
+            format!("{{\"stdout\":\"ok\\n\\\"api_key\\\":\\n\\\"{hex40}\\\"\"}}"),
+            format!(
+                "{pem_begin}\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\n{pem_end} GH_PAT=ghp_{body}\nafter\n"
+            ),
+            format!("cert={pem_begin}MIIEvQB{pem_end} api_key={hex40}\n"),
+            "-----BEGIN CERTIFICATE-----\nMIIc\n-----END CERTIFICATE-----\n".to_string(),
+            format!("if s.starts_with(\"{pem_begin}\") {{\n    return true;\n}}\n"),
+            format!("aws={aws_akia} and {aws_asia} and {jwt}"),
+        ];
+        for prefix in SECRET_TOKEN_PREFIXES
+            .iter()
+            .chain(CREDENTIAL_VALUE_PREFIXES)
+            .chain(BARE_OPAQUE_TOKEN_PREFIXES)
+            .filter(|p| !matches!(**p, "AKIA" | "ASIA"))
+        {
+            cases.push(format!("before {prefix}{body} after"));
+            cases.push(format!("({prefix}{body})"));
+            cases.push(format!("{{\"k\":\"{prefix}{body}\"}}"));
+            cases.push(format!("k={prefix}short"));
+        }
+
+        let atoms: &[&str] = &[
+            " ",
+            "\t",
+            "\n",
+            "\r\n",
+            "=",
+            ":",
+            "\"",
+            "'",
+            "\\\"",
+            "\\n",
+            "\\t",
+            "\\u003c",
+            "\\",
+            "{",
+            "}",
+            "[",
+            "]",
+            ",",
+            "&",
+            "?",
+            ";",
+            "(",
+            ")",
+            "-",
+            "--",
+            "***",
+            "foo",
+            "bar",
+            "baz",
+            "key",
+            "api",
+            "API",
+            "access",
+            "private",
+            "api_key",
+            "APIKey",
+            "token",
+            "tokens",
+            "max_tokens",
+            "secret",
+            "password",
+            "passwd",
+            "authorization",
+            "Bearer",
+            "failed",
+            "https://example.test/a",
+            "见",
+            "乙",
+            "é",
+            "sk-",
+            "sk_",
+            "pk-",
+            "ghp_",
+            "xai-",
+            "hf_",
+            "eyJ",
+            "AKIA",
+            "ya29.",
+            "-----BEGIN",
+            "PRIVATE KEY-----",
+            "-----END",
+            "0123456789abcdef0123456789abcdef",
+            "Z7qX4mNb2Vc9Lk3PwR8t",
+            "short",
+            "MIIEpAIBAAKCAQEAz7qX4mNb2Vc9",
+        ];
+
+        let mut rng = Lcg(0x5EED_C0DE_7347_0103);
+        for _ in 0..1500 {
+            let count = (rng.next_u64() as usize % 24) + 1;
+            let mut doc = String::new();
+            for _ in 0..count {
+                doc.push_str(rng.pick(atoms));
+            }
+            cases.push(doc);
+        }
+
+        for case in &cases {
+            for policy in [RedactionPolicy::KeyBased, RedactionPolicy::CredentialShaped] {
+                assert_eq!(
+                    redact_secrets_with(case, policy),
+                    ref_redact_secrets_with(case, policy),
+                    "redact_secrets_with({policy:?}) mismatch on {case:?}"
+                );
+            }
+            assert_eq!(
+                mask_bare_secret_tokens(case, REDACTED),
+                ref_mask_bare_secret_tokens(case, REDACTED),
+                "mask_bare_secret_tokens mismatch on {case:?}"
+            );
+            assert_eq!(
+                contains_bare_secret_token(case),
+                ref_mask_bare_secret_tokens(case, REDACTED).is_some(),
+                "contains_bare_secret_token mismatch on {case:?}"
+            );
         }
     }
 }
