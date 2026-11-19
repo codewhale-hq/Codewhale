@@ -847,9 +847,7 @@ pub(super) fn is_context_length_error_message(message: &str) -> bool {
     // truncated-output terminations, where re-sending a compacted history
     // cannot help and would hide the real error.
     let lower = message.to_lowercase();
-    lower.contains("model output truncated")
-        || lower.contains("model response incomplete")
-        || crate::llm_client::is_context_length_message(&lower)
+    crate::llm_client::is_context_length_message(&lower)
         || (lower.contains("requested") && lower.contains("tokens") && lower.contains("maximum"))
 }
 

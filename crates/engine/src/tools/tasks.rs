@@ -1013,14 +1013,15 @@ impl ToolSpec for TaskShellWaitTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![
-            ToolCapability::WritesFiles,
-            ToolCapability::RequiresApproval,
-        ]
+        vec![ToolCapability::ReadOnly, ToolCapability::WritesFiles]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Required
+    }
+
+    fn supports_parallel_for(&self, input: &Value) -> bool {
+        self.is_read_only_for(input)
     }
 
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
@@ -1698,6 +1699,8 @@ mod tests {
         }
         assert!(tool.capabilities().contains(&ToolCapability::WritesFiles));
         assert!(!tool.is_read_only());
+        assert!(tool.supports_parallel_for(&json!({"task_ids": ["shell_1", "shell_2"]})));
+        assert!(!tool.supports_parallel_for(&json!({"task_id": "shell_1", "cancel": true})));
     }
 
     #[test]

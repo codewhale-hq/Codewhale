@@ -291,15 +291,14 @@ impl ToolSpec for TodoWriteTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::WritesFiles]
+        Vec::new()
     }
 
     fn is_read_only_for(&self, _input: &serde_json::Value) -> bool {
         // This mutates only the caller's in-memory progress list. Sub-agent
         // runtimes allocate a fresh list per child, so it cannot touch the
         // workspace, Git, remote services, or a parent/sibling's state. Treat
-        // it as bounded agent-owned state for read-only authority envelopes;
-        // keep WritesFiles above for legacy/UI capability grouping.
+        // it as bounded agent-owned state for read-only authority envelopes.
         true
     }
 
@@ -316,6 +315,29 @@ impl ToolSpec for TodoWriteTool {
             .get("todos")
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'todos' array"))?;
+
+        let in_progress: Vec<usize> = todos
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                item.get("status")
+                    .and_then(|v| v.as_str())
+                    .and_then(TodoStatus::parse)
+                    == Some(TodoStatus::InProgress)
+            })
+            .map(|(index, _)| index + 1)
+            .collect();
+        if in_progress.len() > 1 {
+            return Err(ToolError::invalid_input(format!(
+                "todo_write allows exactly one in_progress item; items {} are all in_progress. \
+                 Keep the one you are working on in_progress and mark the others pending or completed.",
+                in_progress
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
 
         let mut list = TodoList::new();
 
@@ -421,9 +443,13 @@ mod tests {
             })
         ));
         assert!(
-            crate::tools::spec::ToolSpec::capabilities(&tool)
+            !crate::tools::spec::ToolSpec::capabilities(&tool)
                 .contains(&crate::tools::spec::ToolCapability::WritesFiles),
-            "legacy capability grouping remains intact"
+            "todo_write changes only the in-memory progress list"
+        );
+        assert_eq!(
+            crate::tools::spec::ToolSpec::approval_requirement(&tool),
+            crate::tools::spec::ApprovalRequirement::Auto
         );
     }
 

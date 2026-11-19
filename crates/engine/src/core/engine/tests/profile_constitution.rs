@@ -94,6 +94,12 @@ async fn profile_constitution_reaches_real_engine_requests_and_survives_history_
             .unwrap()
             .contains("withdrawn")
     );
+    engine.session.messages.clear();
+    engine.record_current_constitution().await;
+    assert!(
+        engine.session.messages.is_empty(),
+        "a withdrawal with no earlier snapshot is a no-op"
+    );
     drainer.abort();
 }
 
