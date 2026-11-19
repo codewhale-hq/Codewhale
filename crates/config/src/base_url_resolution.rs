@@ -338,7 +338,71 @@ pub fn provider_published_pricing_base_urls(provider: ProviderKind) -> Vec<&'sta
             "https://api.deepseek.com/anthropic/v1",
         ],
         ProviderKind::Custom => vec![],
-        _ => vec![default_base_url_for_provider(provider)],
+        _ => {
+            let extra: &[&'static str] = match provider {
+                ProviderKind::Anthropic => &["https://api.anthropic.com"],
+                ProviderKind::Openai => &["https://api.openai.com", "https://api.openai.com/v1"],
+                ProviderKind::Zai => &[
+                    "https://api.z.ai",
+                    "https://api.z.ai/v1",
+                    "https://api.z.ai/api/paas/v4",
+                    "https://api.z.ai/api/anthropic",
+                    "https://open.bigmodel.cn/api/paas/v4",
+                    "https://open.bigmodel.cn/api/anthropic",
+                ],
+                ProviderKind::Moonshot => &[
+                    "https://api.moonshot.ai",
+                    "https://api.moonshot.ai/v1",
+                    "https://api.moonshot.ai/anthropic",
+                    "https://api.moonshot.cn",
+                    "https://api.moonshot.cn/v1",
+                    "https://api.moonshot.cn/anthropic",
+                ],
+                ProviderKind::Minimax => &[
+                    "https://api.minimax.io",
+                    "https://api.minimax.io/v1",
+                    "https://api.minimaxi.com",
+                    "https://api.minimaxi.com/v1",
+                    "https://api.minimax.chat",
+                    "https://api.minimax.chat/v1",
+                ],
+                ProviderKind::MinimaxAnthropic => &[
+                    "https://api.minimax.io/anthropic",
+                    "https://api.minimax.io/anthropic/v1",
+                    "https://api.minimaxi.com/anthropic",
+                    "https://api.minimaxi.com/anthropic/v1",
+                    "https://api.minimax.chat/anthropic",
+                    "https://api.minimax.chat/anthropic/v1",
+                ],
+                ProviderKind::Stepfun => &[
+                    "https://api.stepfun.ai",
+                    "https://api.stepfun.ai/v1",
+                    "https://api.stepfun.com",
+                    "https://api.stepfun.com/v1",
+                ],
+                ProviderKind::XiaomiMimo => &["https://api.xiaomimimo.com/v1"],
+                ProviderKind::Volcengine => &["https://ark.cn-beijing.volces.com/api/v3"],
+                ProviderKind::Siliconflow => &[
+                    "https://api.siliconflow.com/v1",
+                    "https://api.siliconflow.cn/v1",
+                ],
+                ProviderKind::Edenai => {
+                    &["https://api.edenai.run/v3", "https://api.eu.edenai.run/v3"]
+                }
+                ProviderKind::ModelstudioTokenPlan
+                | ProviderKind::ModelstudioTokenPlanAnthropic
+                | ProviderKind::ModelstudioCodingPlan
+                | ProviderKind::ModelstudioCodingPlanAnthropic => &[
+                    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                ],
+                _ => &[],
+            };
+            let default = default_base_url_for_provider(provider);
+            let mut urls = vec![default];
+            urls.extend(extra.iter().copied().filter(|url| *url != default));
+            urls
+        }
     }
 }
 

@@ -395,12 +395,14 @@ async fn save_preset(
                     message: tr(locale, MessageId::RouterRuntimeNotReloaded)
                         .replace("{error}", &error.to_string()),
                     severity: codewhale_error_taxonomy::ErrorSeverity::Warning,
+                    code: None,
                 });
             }
         }
         Err(error) => app.add_message(HistoryCell::Error {
             message: tr(locale, MessageId::RouterNotSaved).replace("{error}", &error.to_string()),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         }),
     }
 }
