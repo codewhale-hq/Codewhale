@@ -541,7 +541,10 @@ impl AcpServer {
                             name: name.clone(),
                             input: input.clone(),
                         };
-                        updates.push(acp::SessionUpdate::ToolCall(tool_call_start(&call)));
+                        updates.push(acp::SessionUpdate::ToolCall(tool_call_start(
+                            &call,
+                            &saved.metadata.workspace,
+                        )));
                         calls.insert(key, call);
                     }
                     ContentBlock::ToolResult {
@@ -949,11 +952,43 @@ fn truncate_for_acp(content: &str) -> String {
     format!("{truncated}\n… [truncated for display; the full result was sent to the model]")
 }
 
-fn tool_call_start(call: &PendingToolCall) -> acp::ToolCall {
+fn tool_call_start(call: &PendingToolCall, workspace: &Path) -> acp::ToolCall {
+    let kind = tool_call_kind(call);
+    let path = matches!(kind, acp::ToolKind::Read | acp::ToolKind::Edit)
+        .then(|| call.input.get("path").and_then(Value::as_str))
+        .flatten()
+        .filter(|path| !path.is_empty())
+        .map(|path| workspace.join(path));
+    let diff = path
+        .as_ref()
+        .filter(|_| kind == acp::ToolKind::Edit)
+        .and_then(|path| tool_call_diff(call, path));
     acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
-        .kind(tool_call_kind(call))
+        .kind(kind)
         .status(acp::ToolCallStatus::Pending)
+        .locations(path.map(acp::ToolCallLocation::new).into_iter().collect())
+        .content(diff.map(acp::ToolCallContent::Diff).into_iter().collect())
         .raw_input((!call.input.is_null()).then(|| call.input.clone()))
+}
+
+fn tool_call_diff(call: &PendingToolCall, path: &Path) -> Option<acp::Diff> {
+    let text = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| call.input.get(*key).and_then(Value::as_str))
+    };
+    if let Some(content) = text(&["content"]) {
+        return Some(acp::Diff::new(path, content));
+    }
+    let search = text(&["search", "old_string", "old_str", "oldText", "old_text"])?;
+    let replace = text(&[
+        "replace",
+        "new_string",
+        "new_str",
+        "newText",
+        "new_text",
+        "replacement",
+    ])?;
+    Some(acp::Diff::new(path, replace).old_text(search.to_string()))
 }
 
 fn tool_call_update(
@@ -1888,6 +1923,50 @@ mod tests {
         );
         rig.close().await;
         Ok(())
+    }
+
+    #[test]
+    fn file_tool_start_names_absolute_location_and_requested_diff() {
+        let workspace = Path::new("/work/repo");
+        let start = |name: &str, input: Value| {
+            to_wire(&tool_call_start(
+                &PendingToolCall {
+                    execution_id: "call-1".to_string(),
+                    name: name.to_string(),
+                    input,
+                },
+                workspace,
+            ))
+            .expect("ACP tool call")
+        };
+        let edit = start(
+            "File",
+            json!({"action": "edit", "path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
+        );
+        assert_eq!(
+            edit["locations"],
+            json!([{"path": "/work/repo/src/lib.rs"}])
+        );
+        assert_eq!(
+            edit["content"],
+            json!([{"type": "diff", "path": "/work/repo/src/lib.rs", "oldText": "a", "newText": "b"}])
+        );
+        let write = start(
+            "write_file",
+            json!({"path": "/abs/new.txt", "content": "hi"}),
+        );
+        assert_eq!(write["locations"], json!([{"path": "/abs/new.txt"}]));
+        assert_eq!(write["content"][0]["newText"], "hi");
+        assert!(
+            write["content"][0]
+                .get("oldText")
+                .is_none_or(Value::is_null)
+        );
+        let read = start("File", json!({"action": "read", "path": "README.md"}));
+        assert_eq!(read["locations"], json!([{"path": "/work/repo/README.md"}]));
+        assert!(read.get("content").is_none_or(|c| c == &json!([])));
+        let shell = start("bash", json!({"command": "ls", "path": "x"}));
+        assert!(shell.get("locations").is_none_or(|l| l == &json!([])));
     }
 
     #[test]

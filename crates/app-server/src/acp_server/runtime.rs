@@ -20,6 +20,7 @@ struct Projection<'a> {
     session: &'a str,
     thread: &'a str,
     turn: &'a str,
+    workspace: &'a Path,
     cursor: u64,
     emit: bool,
     calls: HashMap<String, PendingToolCall>,
@@ -75,7 +76,9 @@ impl PromptRun {
         let thread_id = thread_id.to_string();
         // Subscribe before snapshot/admission; replay deduplicates by seq.
         let mut receiver = self.runtime.subscribe_events();
-        let cursor = self.runtime.get_thread_detail(&thread_id).await?.latest_seq;
+        let detail = self.runtime.get_thread_detail(&thread_id).await?;
+        let cursor = detail.latest_seq;
+        let workspace = detail.thread.workspace;
         let turn = self
             .runtime
             .start_acp_turn(
@@ -96,6 +99,7 @@ impl PromptRun {
             session: &session_id,
             thread: &thread_id,
             turn: &turn.id,
+            workspace: &workspace,
             cursor,
             emit: true,
             calls: HashMap::new(),
@@ -323,6 +327,7 @@ impl PromptRun {
         let session = projection.session;
         let thread = projection.thread;
         let turn = projection.turn;
+        let workspace = projection.workspace;
         let cursor = &mut projection.cursor;
         let calls = &mut projection.calls;
         let permissions = &mut projection.permissions;
@@ -362,7 +367,7 @@ impl PromptRun {
                     if emit {
                         out(update(
                             session,
-                            acp::SessionUpdate::ToolCall(tool_call_start(&call)),
+                            acp::SessionUpdate::ToolCall(tool_call_start(&call, workspace)),
                         ))?;
                     }
                     calls.insert(id, call);
@@ -668,6 +673,7 @@ mod tests {
                 session: &session,
                 thread: &thread,
                 turn: &turn.id,
+                workspace: Path::new("/"),
                 cursor: 0,
                 emit: true,
                 calls: HashMap::new(),
@@ -868,6 +874,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
@@ -917,6 +924,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
@@ -972,6 +980,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
