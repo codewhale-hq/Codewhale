@@ -6347,6 +6347,14 @@ impl Engine {
                             // unconditionally overwrote (#6213 T4).
                         }
                     }
+                    Delta::ThoughtSignatureDelta { thought_signature } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                            && !thought_signature.is_empty()
+                        {
+                            tool_state.thought_signature = Some(thought_signature);
+                        }
+                    }
                     Delta::CitationsDelta { .. } => {}
                     Delta::RefusalDelta { refusal } => {
                         refusal_text.push_str(&refusal);
@@ -7721,6 +7729,7 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
             Delta::SignatureDelta { signature } => !signature.is_empty(),
+            Delta::ThoughtSignatureDelta { thought_signature } => !thought_signature.is_empty(),
             Delta::ReasoningStateDelta { .. }
             | Delta::CitationsDelta { .. }
             | Delta::WebSearchCallDelta { .. }
@@ -7789,6 +7798,7 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
             Delta::SignatureDelta { signature } => signature.len(),
+            Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
             Delta::RefusalDelta { refusal } => refusal.len(),
             Delta::ReasoningStateDelta { .. }
             | Delta::CitationsDelta { .. }

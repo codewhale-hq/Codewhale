@@ -742,15 +742,57 @@ fn apply_google_reasoning_effort(
     let Some(effort) = effort else {
         return;
     };
-    let can_disable = resolve_google_route_model(model)
+    let resolved = resolve_google_route_model(model);
+    let can_disable = resolved
         .as_deref()
         .is_some_and(codewhale_models::model_can_disable_thinking);
-    let effort = match effort.trim().to_ascii_lowercase().as_str() {
+    let offering = resolved.as_deref().and_then(|wire_id| {
+        crate::provider_lake::bundled_catalog_offering_for_model(ProviderKind::Google, wire_id)
+    });
+    let declared_efforts: Option<Vec<&str>> = offering.as_ref().and_then(|row| {
+        row.reasoning_options
+            .iter()
+            .find(|option| option["type"] == "effort")
+            .and_then(|option| option["values"].as_array())
+            .map(|values| values.iter().filter_map(Value::as_str).collect())
+    });
+    let has_declared = |target: &str| {
+        declared_efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.contains(&target))
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "auto" | "automatic") {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+        return;
+    }
+    let effort = match normalized.as_str() {
         "off" | "disabled" | "none" | "false" if can_disable => "none",
-        "off" | "disabled" | "none" | "false" | "minimal" => "minimal",
-        "low" => "low",
-        "medium" | "mid" | "" => "medium",
-        "high" | "xhigh" | "max" | "highest" | "ultra" | "ultracode" => "high",
+        "off" | "disabled" | "none" | "false" | "minimal" | "minimum" => {
+            if declared_efforts.is_some() && !has_declared("minimal") && has_declared("low") {
+                "low"
+            } else {
+                "minimal"
+            }
+        }
+        "low" | "light" => "low",
+        "medium" | "mid" | "" => {
+            if declared_efforts.is_some() && !has_declared("medium") {
+                if has_declared("high") { "high" } else { "low" }
+            } else {
+                "medium"
+            }
+        }
+        "high" => "high",
+        "xhigh" | "max" | "maximum" | "highest" | "ultra" | "ultracode" => {
+            if has_declared("xhigh") {
+                "xhigh"
+            } else {
+                "high"
+            }
+        }
         _ => return,
     };
     body["reasoning_effort"] = json!(effort);
@@ -781,23 +823,24 @@ fn validate_google_thought_signature_replay(
         let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) else {
             continue;
         };
-        for call in tool_calls {
-            let missing = call
-                .pointer("/extra_content/google/thought_signature")
-                .and_then(Value::as_str)
-                .is_none();
-            if missing {
-                let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
-                if requires_signatures {
-                    anyhow::bail!(
-                        "Gemini model `{model}` requires a thought signature to replay tool call \
-                         `{id}`, but none was captured (the turn predates signature capture, or \
-                         the provider omitted it). Start a new session before using tools on \
-                         this route."
-                    );
-                }
-                unsigned_call_ids.push(id);
+        let Some(call) = tool_calls.first() else {
+            continue;
+        };
+        let missing = call
+            .pointer("/extra_content/google/thought_signature")
+            .and_then(Value::as_str)
+            .is_none();
+        if missing {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
+            if requires_signatures {
+                anyhow::bail!(
+                    "Gemini model `{model}` requires a thought signature to replay tool call \
+                     `{id}`, but none was captured (the turn predates signature capture, or \
+                     the provider omitted it). Start a new session before using tools on \
+                     this route."
+                );
             }
+            unsigned_call_ids.push(id);
         }
     }
     if !unsigned_call_ids.is_empty() {
@@ -4585,10 +4628,44 @@ fn parse_sse_chunk_with_reasoning_style(
 
             // Handle tool calls
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for tc in tool_calls {
-                    let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+                const INDEXLESS_TOOL_CALL_BASE: u32 = 1 << 30;
+                for (tc_pos, tc) in tool_calls.iter().enumerate() {
+                    let tc_index = if let Some(idx) = tc.get("index").and_then(Value::as_u64) {
+                        idx as u32
+                    } else {
+                        let has_name = tc
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| !name.trim().is_empty());
+                        match tool_indices
+                            .keys()
+                            .copied()
+                            .filter(|&k| k >= INDEXLESS_TOOL_CALL_BASE)
+                            .max()
+                        {
+                            None => INDEXLESS_TOOL_CALL_BASE,
+                            Some(latest) if has_name || tc_pos > 0 => latest.saturating_add(1),
+                            Some(latest) => latest,
+                        }
+                    };
                     let tool_block_index = match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            let idx = *entry.get();
+                            if let Some(sig) = tc
+                                .pointer("/extra_content/google/thought_signature")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                            {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: idx,
+                                    delta: Delta::ThoughtSignatureDelta {
+                                        thought_signature: sig.to_string(),
+                                    },
+                                });
+                            }
+                            idx
+                        }
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             // Close text block if transitioning to tool use
                             if *text_started {
