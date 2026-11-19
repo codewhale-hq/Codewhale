@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "eab95b95e90cfbee623f600f3b83a5b7c3ad84860711950602d1edee90da147b"
+    "sha256": "c1f7cefcc43c57c152b8580b803eb8cbf6f7809bda21141d58fe826047619a0d"
   },
   "features": [
     {
@@ -715,7 +715,7 @@
     {
       "id": "skills",
       "name": "Skill plugins",
-      "summary": "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits.",
+      "summary": "Trusted instruction packages with bundle policy and invocation controls. Model lookup lists project and Codewhale skills first and searches compatible catalogs by keyword.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
