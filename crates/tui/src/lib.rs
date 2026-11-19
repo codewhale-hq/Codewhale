@@ -12442,6 +12442,7 @@ fn review_config_with_spend_rates(
             display_name: None,
             limit: None,
             cost: None,
+            cost_currency: None,
             modalities: None,
             attachment: None,
             reasoning: None,
@@ -12453,6 +12454,7 @@ fn review_config_with_spend_rates(
             .last_mut()
             .expect("inserted review route declaration")
     };
+    row.cost_currency = None;
     row.cost = Some(codewhale_config::models_dev::ModelsDevCost {
         input: Some(rates.input_usd_per_million),
         output: Some(rates.output_usd_per_million),

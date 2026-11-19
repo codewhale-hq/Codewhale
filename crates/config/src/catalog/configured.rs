@@ -19,10 +19,12 @@ pub struct ConfiguredModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "deserialize_limit")]
     pub limit: Option<ModelsDevLimit>,
-    /// USD per million tokens, using the same shape as the catalog.
+    /// Per million tokens in `cost_currency` (USD unless declared), same shape as the catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "deserialize_cost")]
     pub cost: Option<ModelsDevCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_currency: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "deserialize_modalities")]
     pub modalities: Option<ModelsDevModalities>,
@@ -46,16 +48,37 @@ impl ConfiguredModel {
             && base_url_fingerprint(&self.base_url) == base_url_fingerprint(base_url)
     }
 
+    pub fn resolved_cost_currency(&self) -> Option<crate::pricing::Currency> {
+        match self.cost_currency.as_deref() {
+            None => Some(crate::pricing::Currency::Usd),
+            Some(raw) => {
+                if raw.chars().any(char::is_control) {
+                    return None;
+                }
+                match raw.trim().to_ascii_lowercase().as_str() {
+                    "usd" => Some(crate::pricing::Currency::Usd),
+                    "cny" => Some(crate::pricing::Currency::Cny),
+                    _ => None,
+                }
+            }
+        }
+    }
+
     /// Unknown fields stay unknown; no sibling, alias, or provider fact is
     /// inherited. Source is assigned here and cannot be supplied by the file.
     pub fn to_catalog_offering(&self) -> CatalogOffering {
+        let cost = if self.resolved_cost_currency() == Some(crate::pricing::Currency::Usd) {
+            self.cost.clone()
+        } else {
+            None
+        };
         CatalogOffering {
             provider: self.provider.clone(),
             wire_model_id: self.id.clone(),
             endpoint_key: "chat".into(),
             provider_api: Some(self.base_url.clone()),
             limit: self.limit.clone(),
-            cost: self.cost.clone(),
+            cost,
             modalities: self.modalities.clone(),
             attachment: self.attachment,
             reasoning: self.reasoning,
@@ -123,6 +146,9 @@ pub fn validate_configured_models(models: &[ConfiguredModel]) -> anyhow::Result<
                 })
         }) {
             return Err(invalid("cost"));
+        }
+        if model.resolved_cost_currency().is_none() {
+            return Err(invalid("cost_currency"));
         }
         if model.extras.keys().any(|key| {
             matches!(
@@ -225,4 +251,76 @@ fn deserialize_modalities<'de, D: Deserializer<'de>>(
     d: D,
 ) -> Result<Option<ModelsDevModalities>, D::Error> {
     deserialize_known(d, &["input", "output"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pricing::Currency;
+
+    fn parse_custom_models(toml_str: &str) -> Result<Vec<ConfiguredModel>, toml::de::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "deserialize_configured_models")]
+            custom_models: Option<Vec<ConfiguredModel>>,
+        }
+        let parsed: Wrapper = toml::from_str(toml_str)?;
+        Ok(parsed.custom_models.unwrap_or_default())
+    }
+
+    #[test]
+    fn custom_model_cost_currency_defaults_to_usd_and_supports_cny_without_usd_catalog_projection()
+    {
+        let models = parse_custom_models(
+            r#"
+[[custom_models]]
+provider = "openai"
+base_url = "https://token.sensenova.cn/v1"
+id = "deepseek-flash"
+cost_currency = "CNY"
+cost = { input = 2.0, output = 8.0, cache_read = 0.04 }
+
+[[custom_models]]
+provider = "openai"
+base_url = "https://api.example.com/v1"
+id = "usd-model"
+cost = { input = 1.0, output = 3.0 }
+"#,
+        )
+        .expect("valid custom_models with CNY and default USD");
+
+        assert_eq!(models[0].resolved_cost_currency(), Some(Currency::Cny));
+        assert!(models[0].to_catalog_offering().cost.is_none());
+
+        assert_eq!(models[1].resolved_cost_currency(), Some(Currency::Usd));
+        assert_eq!(
+            models[1]
+                .to_catalog_offering()
+                .cost
+                .as_ref()
+                .and_then(|c| c.input),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn custom_model_rejects_unknown_cost_currency() {
+        for bad in ["eur", "", "rmb\n"] {
+            let toml_str = format!(
+                r#"
+[[custom_models]]
+provider = "openai"
+base_url = "https://token.sensenova.cn/v1"
+id = "deepseek-flash"
+cost_currency = {bad:?}
+cost = {{ input = 2.0, output = 8.0 }}
+"#
+            );
+            let err = parse_custom_models(&toml_str).expect_err("unknown currency must fail");
+            assert!(
+                err.to_string().contains("cost_currency"),
+                "unexpected error for {bad:?}: {err}"
+            );
+        }
+    }
 }
