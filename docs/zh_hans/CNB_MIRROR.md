@@ -45,10 +45,12 @@ sha256sum -c codewhale-artifacts-sha256.txt --ignore-missing
 镜像由 [`Sync to CNB`](../../.github/workflows/sync-cnb.yml) GitHub Actions
 工作流维护：
 
-- **触发：** 推送到 `main`、权威 Release 发布成功后的发布工作流、每小时第 17 和
-  第 47 分钟的定时任务，或用于手动恢复的 `workflow_dispatch`。定时任务会重新镜像
-  `main`（补上没有触发工作流的推送），并在最新 GitHub Release 标签在 CNB 上缺失、
-  指向不同提交，或其 CNB 校验清单无法访问时失败；它从不推送标签。仅推送标签不会触发发布标签镜像。手动恢复标签也必须
+- **触发：** 推送到 `main`、权威 Release 发布成功后的发布工作流、在发布工作流之外发布的
+  Release 触发的 `release: published` 事件、每小时第 17 和第 47 分钟的定时任务，或用于
+  手动恢复的 `workflow_dispatch`。定时任务会重新镜像 `main`（补上没有触发工作流的推送），
+  在 CNB 缺少最新 GitHub Release 标签时经过同样的 Release 清单检查后推送它；该标签在
+  CNB 上指向不同提交或其 CNB 校验清单无法访问时失败。它从不创建标签或 Release，只复制
+  GitHub 上已发布的。仅推送标签不会触发发布标签镜像。手动恢复标签也必须
   验证 GitHub 已公开的完整资产清单及不可变的源码提交。
 - **认证：** HTTPS basic auth，用户名为 `cnb`，密码是仓库 secret
   `CNB_GIT_TOKEN`。fork 永远不会继承这个 secret，所以 `sync` 作业只在仓库所有者为

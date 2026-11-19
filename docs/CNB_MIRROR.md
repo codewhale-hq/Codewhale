@@ -50,11 +50,13 @@ The mirror is maintained by the [`Sync to CNB`](../.github/workflows/sync-cnb.ym
 GitHub Actions workflow:
 
 - **Trigger:** `push` to `main`, the release workflow after canonical publication,
-  a schedule at :17 and :47 past each hour, or `workflow_dispatch` for manual
+  the `release: published` event for a release published outside it, a
+  schedule at :17 and :47 past each hour, or `workflow_dispatch` for manual
   recovery. The schedule re-mirrors `main` (catching pushes that started no
-  workflow) and fails when the latest GitHub Release tag is missing or
-  different on CNB or its CNB checksum manifest is unreachable; it never
-  pushes a tag. A tag push alone does not mirror a release tag. Manual tag recovery
+  workflow) and pushes the latest GitHub Release tag when CNB lacks it, after
+  the same release-inventory check; it fails when that tag differs on CNB or
+  its CNB checksum manifest is unreachable. It never creates a tag or
+  release: it only copies ones already published on GitHub. A tag push alone does not mirror a release tag. Manual tag recovery
   also verifies the complete public GitHub asset inventory and immutable source.
 - **Auth:** HTTPS basic auth as user `cnb` with the `CNB_GIT_TOKEN`
   repository secret as the password. Forks never inherit the secret, so the

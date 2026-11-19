@@ -3,6 +3,8 @@ name: Sync to GitCode
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   schedule:
     - cron: "17,47 * * * *"
   workflow_dispatch: {}
@@ -27,7 +29,10 @@ permissions:
 
 jobs:
   sync:
-    if: github.repository_owner == 'codewhale-hq' && ((github.event_name != 'push' && github.event_name != 'schedule') || vars.GITCODE_MIRROR == 'enabled')
+    if: >-
+      github.repository_owner == 'codewhale-hq' &&
+      !(github.event_name == 'release' && github.event.release.prerelease) &&
+      (!contains(fromJSON('["push","schedule","release"]'), github.event_name) || vars.GITCODE_MIRROR == 'enabled')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -41,7 +46,7 @@ jobs:
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
           GITCODE_USER: ${{ vars.GITCODE_USERNAME || 'HunterBown' }}
           GITCODE_REPO: ${{ vars.GITCODE_REPOSITORY || 'HunterBown/Codewhale' }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         shell: bash
         run: |
@@ -68,19 +73,9 @@ jobs:
           elif [[ "${GITHUB_REF}" != refs/heads/main ]]; then
             echo "::error::GitCode mirrors main only; dispatch this workflow from main." >&2
             exit 1
-          elif [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+          elif [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch || "${GITHUB_EVENT_NAME}" == schedule ]]; then
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
             scripts/release/mirror-push.sh gitcode "release tags" "refs/tags/v*:refs/tags/v*"
           else
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
           fi
-
-      - name: Verify the latest release reached GitCode
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
-          ./scripts/release/verify-remote-tag.sh gitcode "${TAG}" "$(git rev-parse "refs/tags/${TAG}^{commit}")"

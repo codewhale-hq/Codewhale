@@ -5,9 +5,9 @@ name: Sync to CNB
 # releases from the Tencent-hosted mirror.
 #
 # Main pushes mirror to CNB unless the repository variable CNB_MIRROR is
-# "disabled"; release tags arrive through release.yml; a half-hourly schedule
-# re-mirrors main and fails if the latest release is missing on CNB; manual
-# dispatch is the fallback.
+# "disabled"; release tags arrive through release.yml or, for a release
+# published outside it, the release event; a half-hourly schedule re-mirrors
+# main and the latest release tag; manual dispatch is the fallback.
 #
 # Why the rewrite (v0.8.31):
 #   The previous implementation used the opaque tencentcom/git-sync Docker
@@ -23,6 +23,8 @@ name: Sync to CNB
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
   schedule:
     - cron: "17,47 * * * *"
   workflow_dispatch: {}
@@ -55,7 +57,10 @@ permissions:
 
 jobs:
   sync:
-    if: github.repository_owner == 'codewhale-hq' && ((github.event_name != 'push' && github.event_name != 'schedule') || vars.CNB_MIRROR != 'disabled')
+    if: >-
+      github.repository_owner == 'codewhale-hq' &&
+      !(github.event_name == 'release' && github.event.release.prerelease) &&
+      (!contains(fromJSON('["push","schedule","release"]'), github.event_name) || vars.CNB_MIRROR != 'disabled')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -123,7 +128,7 @@ jobs:
             scripts/release/mirror-push.sh cnb "branch ${BRANCH}" "HEAD:refs/heads/${BRANCH}" --force
           fi
 
-      - name: Verify the latest release reached CNB
+      - name: Mirror the latest release to CNB
         if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,6 +136,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ -z "$(git ls-remote --tags cnb "refs/tags/${TAG}")" ]]; then
+            node scripts/release/verify-release-inventory.js --manifest "${GITHUB_REPOSITORY}" "${TAG}"
+            scripts/release/mirror-push.sh cnb "tag ${TAG}" "refs/tags/${TAG}:refs/tags/${TAG}"
+            echo "::notice::Pushed ${TAG} to CNB; its CNB release build starts now."
+            exit 0
+          fi
           ./scripts/release/verify-remote-tag.sh cnb "${TAG}" "$(git rev-parse "refs/tags/${TAG}^{commit}")"
           if ! curl -fsSL --retry 3 -o /dev/null \
               "https://cnb.cool/codewhale.net/codewhale/-/releases/download/${TAG}/codewhale-artifacts-sha256.txt"; then
