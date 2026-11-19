@@ -1694,15 +1694,15 @@ pub async fn run_tui(
 /// Whether a composer guard owns this launch-screen Enter. Every guard is
 /// applied here, before a session exists, so a held submit never leaves the
 /// user in a new empty session.
-pub(super) fn launch_submit_held(app: &mut App, protect_paste: bool) -> bool {
+pub(super) fn launch_submit_held(app: &mut App, protect_paste: bool, now: Instant) -> bool {
     if !protect_paste
         && let Some(pending) = app.flush_paste_burst_before_modified_input_if_enabled()
     {
         app.insert_str(&pending);
     }
-    if app.startup_input_unproven || !app.composer_enter_would_submit(protect_paste) {
+    if app.startup_input_unproven || !app.composer_enter_would_submit(protect_paste, now) {
         // A paste burst, empty composer or startup integrity hold.
-        app.handle_composer_enter(protect_paste);
+        app.handle_composer_enter(protect_paste, now);
         return true;
     }
     // An oversized draft is backed up to a paste file now; if that fails the
@@ -1735,6 +1735,7 @@ async fn dispatch_launch_composer_submit(
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.launch.return_to_session {
         app.launch.dismiss();
@@ -1746,10 +1747,11 @@ async fn dispatch_launch_composer_submit(
             config,
             chord,
             protect_paste,
+            now,
         )
         .await;
     }
-    if launch_submit_held(app, protect_paste) {
+    if launch_submit_held(app, protect_paste, now) {
         return Ok(false);
     }
     let action = app.decide_composer_submit(chord);
@@ -1771,7 +1773,7 @@ async fn dispatch_launch_composer_submit(
         return Ok(false);
     }
     // The transition is applied; only now consume the draft it carries.
-    let Some(input) = app.handle_composer_enter(protect_paste) else {
+    let Some(input) = app.handle_composer_enter(protect_paste, now) else {
         return Ok(false);
     };
     if should_intercept_memory_quick_add(config, &input) {
@@ -1874,6 +1876,7 @@ async fn dispatch_session_composer_submit(
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.launch.return_to_session {
         app.launch.dismiss();
@@ -1883,7 +1886,7 @@ async fn dispatch_session_composer_submit(
         let _ = send_next_queued_message_now(app, config, engine_handle).await?;
         return Ok(false);
     }
-    if !app.composer_enter_would_submit(protect_paste) {
+    if !app.composer_enter_would_submit(protect_paste, now) {
         return Ok(false);
     }
     submit_decided_composer_input(
@@ -1894,6 +1897,7 @@ async fn dispatch_session_composer_submit(
         config,
         action,
         protect_paste,
+        now,
     )
     .await
 }
@@ -1915,11 +1919,12 @@ async fn submit_decided_composer_input(
     config: &mut Config,
     action: ComposerSubmitAction,
     protect_paste: bool,
+    now: Instant,
 ) -> Result<bool> {
     if app.pending_fresh_session.is_some() {
         if looks_like_slash_command_input(&app.input)
             && commands::pending_session_control_command(&app.input)
-            && app.composer_enter_would_submit(protect_paste)
+            && app.composer_enter_would_submit(protect_paste, now)
         {
             let input = app.input.clone();
             return execute_command_input(
@@ -1969,7 +1974,7 @@ async fn submit_decided_composer_input(
         }
     }
 
-    let Some(input) = app.handle_composer_enter(protect_paste) else {
+    let Some(input) = app.handle_composer_enter(protect_paste, now) else {
         return Ok(false);
     };
     // `# foo` quick-add (#492) — when memory is enabled, a single line
@@ -6120,6 +6125,7 @@ pub(crate) async fn run_event_loop(
                         config,
                         chord,
                         true,
+                        Instant::now(),
                     )
                     .await?
                     {
@@ -6713,6 +6719,7 @@ pub(crate) async fn run_event_loop(
                                 config,
                                 chord,
                                 key.modifiers == KeyModifiers::NONE,
+                                event_observed_at,
                             )
                             .await?
                             {
@@ -7654,6 +7661,7 @@ pub(crate) async fn run_event_loop(
                             config,
                             action,
                             false,
+                            event_observed_at,
                         )
                         .await?
                         {
@@ -7707,6 +7715,7 @@ pub(crate) async fn run_event_loop(
                         config,
                         action,
                         is_plain_enter,
+                        event_observed_at,
                     )
                     .await?
                     {
