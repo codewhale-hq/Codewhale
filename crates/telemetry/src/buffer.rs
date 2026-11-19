@@ -31,6 +31,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -40,6 +41,12 @@ pub const MAX_EVENTS: usize = 512;
 pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
+
+/// How long `with_lock` retries a busy compaction lock before giving up.
+/// `flock` has no timeout of its own, so a suspended process holding the
+/// lock would otherwise wedge every launch behind it.
+const PRIVACY_LOCK_BUDGET: Duration = Duration::from_secs(3);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Exact contents of the opt-out tombstone observed by a consent decision.
 ///
@@ -412,17 +419,26 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-/// Run `operation` holding the exclusive compaction lock, **blocking**.
+/// Run `operation` holding the exclusive compaction lock.
 ///
-/// Only startup arming and the opt-out wipe use this. They are not exit
-/// paths, so blocking is fine there and nowhere else.
+/// Startup arming, the opt-out wipe, and the spool header write use this.
+/// `flock` has no timeout of its own, so a suspended process holding the lock
+/// would wedge every launch behind it; the wait is bounded by
+/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
+/// caller treats as skip-and-continue rather than fatal.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
     let file = open_lock(root)?;
+    let deadline = Instant::now() + PRIVACY_LOCK_BUDGET;
     let mut lock = fd_lock::RwLock::new(file);
-    let _guard = lock.write().context("failed to take the telemetry lock")?;
-    operation()
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return operation(),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(LOCK_RETRY_INTERVAL),
+            Err(_) => anyhow::bail!("the telemetry compaction lock stayed busy"),
+        }
+    }
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.

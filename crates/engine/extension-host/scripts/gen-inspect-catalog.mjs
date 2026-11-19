@@ -246,6 +246,14 @@ const EVENTS_SUPPORTED = [
     options: 'prepend and global are refused.',
   },
   {
+    name: 'tools/post-execute',
+    status: 'supported',
+    mode: 'read-only observers in registration order, after the tool finishes',
+    signature: 'ctx.on(\'tools/post-execute\', async (exec: { name: string, callId: string, arguments: { is_error: boolean, duration_ms: number }, signal: AbortSignal, workspace: string, mode: string, model: string }, next: () => Promise<Abstention>) => void)',
+    summary: 'Observes a finished tool call for a reviewed native plugin. The view carries only whether the call failed and how long it took, never its output, session or agent. The return value is ignored and an error is logged, so an observer cannot change or fail the call. The listener batch has a five second deadline.',
+    options: 'prepend and global are refused.',
+  },
+  {
     name: 'agent/created',
     status: 'supported',
     mode: 'listeners of the owning plugin only',

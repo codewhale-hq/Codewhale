@@ -1595,15 +1595,15 @@ impl<'a> ComposerWidget<'a> {
 
     pub(crate) fn plan(&self, area: Rect) -> codewhale_ratatui::NativeComposerPlan {
         let frame = self.frame(false);
-        let plan = frame.plan(area);
-        if plan.source_rows.len() > plan.input_rows_budget
+        let source = frame.source_plan(area);
+        if source.rows.len() > frame.input_rows_budget(area)
             && frame.hint.is_none()
             && frame.quiet_hint.is_none()
             && composer_submit_hint(self.app, true).is_some()
         {
-            self.frame(true).plan(area)
+            self.frame(true).plan_with_source(area, source)
         } else {
-            plan
+            frame.plan_with_source(area, source)
         }
     }
 
@@ -5125,6 +5125,7 @@ mod tests {
         app.add_message(HistoryCell::Error {
             message: "验证失败 detail target".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         });
 
         let area = Rect::new(0, 0, 80, 12);
@@ -8752,6 +8753,7 @@ mod tests {
                 row: header.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
 
         assert!(events.is_empty());

@@ -5,7 +5,10 @@ pub(crate) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
     // Error detail/copy is a diagnostic boundary, not a screenshot of the
     // live wrapping. Preserve the exact source message so narrow terminals do
     // not insert newlines into hostnames, env vars, commands, or URLs.
-    if let HistoryCell::Error { message, .. } = cell {
+    if let HistoryCell::Error { message, code, .. } = cell {
+        if let Some(code) = super::display_error_code(message, code.as_deref()) {
+            return format!("[{code}] {message}");
+        }
         return message.clone();
     }
     cell.transcript_lines(width)
