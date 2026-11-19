@@ -2155,13 +2155,15 @@ impl Expander {
                             continue;
                         }
                         let is_container_run = matches!(name, "docker" | "podman") && verb == "run";
-                        let entrypoint_before = |end: usize| {
+                        let entrypoints_before = |end: usize| {
                             if !is_container_run {
-                                return None;
+                                return Vec::new();
                             }
                             let end = end.min(tokens.len()).max(verb_idx + 1);
-                            find_entrypoint(&tokens[verb_idx + 1..end], verb_idx + 1)
-                                .filter(|(value, _)| !value.is_empty())
+                            let mut found =
+                                find_entrypoints(&tokens[verb_idx + 1..end], verb_idx + 1);
+                            found.retain(|(value, _)| !value.is_empty());
+                            found
                         };
                         if is_container_run {
                             let image_spec = Wrapper {
@@ -2170,9 +2172,10 @@ impl Expander {
                             };
                             for image in resolve_wrapper_targets(tokens, verb_idx + 1, &image_spec)
                             {
-                                if image < tokens.len()
-                                    && let Some((ep_val, ep_idx)) = entrypoint_before(image)
-                                {
+                                if image >= tokens.len() {
+                                    continue;
+                                }
+                                for (ep_val, ep_idx) in entrypoints_before(image) {
                                     let combined =
                                         build_prefixed_line(&ep_val, ep_idx, line, image + 1);
                                     self.record(&combined, depth + 1);
@@ -2182,7 +2185,7 @@ impl Expander {
                         for landing in
                             resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
                         {
-                            if let Some((ep_val, ep_idx)) = entrypoint_before(landing) {
+                            for (ep_val, ep_idx) in entrypoints_before(landing) {
                                 let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
                                 self.record(&combined, depth + 1);
                             }
@@ -2948,8 +2951,8 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
-fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
-    let mut found = None;
+fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
     let mut i = 0usize;
     while i < tokens.len() {
         let token = tokens[i].as_str();
@@ -2958,13 +2961,13 @@ fn find_entrypoint(tokens: &[String], base: usize) -> Option<(String, usize)> {
         }
         if token == "--entrypoint" {
             if let Some(value) = tokens.get(i + 1) {
-                found = Some((value.clone(), base + i + 1));
+                found.push((value.clone(), base + i + 1));
             }
             i += 2;
             continue;
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
-            found = Some((val.to_string(), base + i));
+            found.push((val.to_string(), base + i));
         }
         i += 1;
     }
@@ -4240,6 +4243,22 @@ mod tests {
             ),
             (
                 "docker run --entrypoint sh alpine -c 'rm -rf /' --entrypoint=true",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm -e --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm --label --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint sh -e --entrypoint=true alpine -c 'rm -rf /'",
+                "rm -rf /",
+            ),
+            (
+                "podman run --entrypoint rm -e --entrypoint=true alpine -rf /",
                 "rm -rf /",
             ),
         ] {
