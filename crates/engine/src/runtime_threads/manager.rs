@@ -3102,6 +3102,7 @@ pub(super) struct NativeForkSource {
 
 pub struct PreparedThreadFork {
     pub(super) source_id: String,
+    pub(super) source_snapshot: ThreadRecord,
     /// The first turn the fork *drops*, when it drops any: the turn whose
     /// prompt the receipt hands back. `None` for a fork that keeps the whole
     /// conversation (a branch point at the last turn).
@@ -3608,6 +3609,9 @@ pub struct RuntimeThreadManager {
     snapshot_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<SnapshotTestPoint>>>>,
     #[cfg(any(test, feature = "test-support"))]
     update_admission_test_hook:
+        Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fork_prepare_test_hook:
         Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>>,
     #[cfg(any(test, feature = "test-support"))]
     replay_test_hook: Arc<parking_lot::Mutex<Option<mpsc::UnboundedSender<ReplayTestPoint>>>>,
@@ -4651,6 +4655,8 @@ impl RuntimeThreadManager {
             snapshot_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             update_admission_test_hook: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(any(test, feature = "test-support"))]
+            fork_prepare_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             replay_test_hook: Arc::new(parking_lot::Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
@@ -7350,6 +7356,8 @@ impl RuntimeThreadManager {
         #[cfg(any(test, feature = "test-support"))]
         let update_admission_test_hook = self.update_admission_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
+        let fork_prepare_test_hook = self.fork_prepare_test_hook.clone();
+        #[cfg(any(test, feature = "test-support"))]
         let replay_test_hook = self.replay_test_hook.clone();
         #[cfg(any(test, feature = "test-support"))]
         let test_model_client = self.test_model_client.clone();
@@ -7409,6 +7417,8 @@ impl RuntimeThreadManager {
                 snapshot_test_hook: snapshot_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 update_admission_test_hook: update_admission_test_hook.clone(),
+                #[cfg(any(test, feature = "test-support"))]
+                fork_prepare_test_hook: fork_prepare_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
                 replay_test_hook: replay_test_hook.clone(),
                 #[cfg(any(test, feature = "test-support"))]
@@ -11326,20 +11336,20 @@ impl RuntimeThreadManager {
         id: &str,
         sessions_dir: &Path,
     ) -> Result<ThreadRecord> {
-        let (admission, _) = self.thread_restore_guard(id).await?;
+        let (admission, source) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
-        let id = id.to_string();
         let dir = sessions_dir.to_path_buf();
-        tokio::spawn(async move {
-            let _admission = admission;
-            runtime.fork_thread_under_guard(&id, &dir).await
-        })
-        .await
-        .context("native fork outcome uncertain; inspect retained source and fork records")?
+        tokio::spawn(async move { runtime.fork_thread_staged(source, &dir).await })
+            .await
+            .context("native fork outcome uncertain; inspect retained source and fork records")?
     }
 
-    async fn fork_thread_under_guard(&self, id: &str, sessions_dir: &Path) -> Result<ThreadRecord> {
-        let source = self.get_thread(id).await?;
+    async fn fork_thread_staged(
+        &self,
+        source: ThreadRecord,
+        sessions_dir: &Path,
+    ) -> Result<ThreadRecord> {
         anyhow::ensure!(
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
@@ -11354,11 +11364,18 @@ impl RuntimeThreadManager {
         forked.last_read = None;
         forked.parent_thread_id = Some(source.id.clone());
 
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        // One read for every turn's items — see `prepared_items_for_turns`: a
-        // whole-thread fork visits every turn, and the per-turn scan made that
-        // quadratic over a store that only grows.
-        let mut items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, mut items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("native fork store read failed")??
+        };
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
@@ -11430,10 +11447,12 @@ impl RuntimeThreadManager {
         let covered_turn_id = covered
             .checked_sub(1)
             .map(|index| cloned_records[index].0.id.clone());
+        self.pause_for_fork_prepare_test_hook().await;
         let (forked, _source_lease, _target_lease) = self
             .bind_fork_to_own_session(forked, captured_source, prefix, covered_turn_id)
             .await?;
-        self.publish_fork(&forked, &cloned_records)?;
+        self.commit_staged_fork(&source, &forked, &cloned_records, sessions_dir)
+            .await?;
 
         self.emit_event(
             &forked.id,
@@ -11505,15 +11524,15 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context("native backtrack outcome uncertain; inspect retained source and fork records")?
@@ -11569,16 +11588,16 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let turn_id = turn_id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_at_user_turn_in_sessions_dir(&id, &turn_id, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context(
@@ -11598,16 +11617,16 @@ impl RuntimeThreadManager {
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
+        drop(admission);
         let runtime = self.clone();
         let id = id.to_string();
         let turn_id = turn_id.to_string();
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
-            let _admission = admission;
             let prepared = runtime
                 .prepare_fork_dropping_user_turn_in_sessions_dir(&id, &turn_id, &dir)
                 .await?;
-            runtime.publish_prepared_fork(prepared).await
+            runtime.publish_prepared_fork_guarded(prepared).await
         })
         .await
         .context("native backtrack outcome uncertain; inspect retained source and fork records")?
@@ -11712,12 +11731,19 @@ impl RuntimeThreadManager {
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        // Every item of every turn in one read: see `prepared_items_for_turns`.
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
 
-        // Which turns count as user turns, oldest first; the depth names one
-        // of them counting back from the end.
         let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
         if depth_from_tail >= user_turn_indices.len() {
             bail!(
@@ -11727,14 +11753,10 @@ impl RuntimeThreadManager {
             );
         }
         let target_turn_idx = user_turn_indices[user_turn_indices.len() - 1 - depth_from_tail];
-        // A depth-relative cut *drops* the turn it names — `/undo` removes the
-        // exchange a person pointed at — where a named-turn cut keeps it. That
-        // one turn is the whole difference between "undo this" and "branch
-        // after this", and it lives here rather than in either caller.
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11743,7 +11765,9 @@ impl RuntimeThreadManager {
             target_turn_idx,
             Some(target_turn_idx),
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     pub async fn prepare_fork_dropping_user_turn_in_sessions_dir(
@@ -11757,8 +11781,18 @@ impl RuntimeThreadManager {
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
         let user_turn_indices = Self::user_turn_indices(&source_turns, &items_by_turn);
         let position = user_turn_indices
             .iter()
@@ -11771,7 +11805,7 @@ impl RuntimeThreadManager {
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11780,7 +11814,9 @@ impl RuntimeThreadManager {
             target_turn_idx,
             Some(target_turn_idx),
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     pub async fn prepare_fork_at_user_turn_in_sessions_dir(
@@ -11794,14 +11830,24 @@ impl RuntimeThreadManager {
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
         );
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
+        let (source_turns, items_by_turn) = {
+            let store = self.store.clone();
+            let source_id = source.id.clone();
+            tokio::task::spawn_blocking(move || -> Result<_> {
+                let turns = store.list_turns_for_thread(&source_id)?;
+                let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
+                let items = store.list_items_for_turns_map(&turn_ids)?;
+                Ok((turns, items))
+            })
+            .await
+            .context("fork preparation store read failed")??
+        };
         let (cutoff_turn_idx, receipt_turn_idx, depth_from_tail) =
             self.fork_cut_for_user_turn(&source_turns, &items_by_turn, turn_id)?;
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;
-        self.prepare_fork_from_cutoff(
+        let prepared = self.prepare_fork_from_cutoff(
             source,
             captured_source,
             saved_prefix,
@@ -11810,7 +11856,9 @@ impl RuntimeThreadManager {
             cutoff_turn_idx,
             receipt_turn_idx,
             depth_from_tail,
-        )
+        )?;
+        self.pause_for_fork_prepare_test_hook().await;
+        Ok(prepared)
     }
 
     /// Clone the turns before `cutoff_turn_idx` into a sibling thread, and name
@@ -12119,7 +12167,8 @@ impl RuntimeThreadManager {
             .map(|index| cloned_records[index].0.id.clone());
         let own_session = (captured_source, prefix, covered_turn_id);
         Ok(PreparedThreadFork {
-            source_id: source.id,
+            source_id: source.id.clone(),
+            source_snapshot: source,
             dropped_turn_id,
             depth_from_tail,
             thread: forked,
@@ -12130,6 +12179,19 @@ impl RuntimeThreadManager {
             own_session,
             dropped_turns,
         })
+    }
+
+    async fn pause_for_fork_prepare_test_hook(&self) {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let hook = self.fork_prepare_test_hook.lock().clone();
+            if let Some(tx) = hook {
+                let (resume_tx, resume_rx) = oneshot::channel();
+                if tx.send(resume_tx).is_ok() {
+                    let _ = resume_rx.await;
+                }
+            }
+        }
     }
 
     pub async fn publish_prepared_fork(
@@ -12179,6 +12241,189 @@ impl RuntimeThreadManager {
         ))
     }
 
+    pub async fn publish_prepared_fork_guarded(
+        &self,
+        mut prepared: PreparedThreadFork,
+    ) -> Result<(
+        ThreadRecord,
+        Option<String>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
+        Option<std::num::NonZeroU32>,
+    )> {
+        let (captured_source, prefix, covered_turn_id) = prepared.own_session;
+        let sessions_dir = captured_source.sessions_dir.clone();
+        let (thread, _source_lease, _target_lease) = self
+            .bind_fork_to_own_session(prepared.thread, captured_source, prefix, covered_turn_id)
+            .await?;
+        prepared.thread = thread;
+        self.commit_staged_fork(
+            &prepared.source_snapshot,
+            &prepared.thread,
+            &prepared.records,
+            &sessions_dir,
+        )
+        .await?;
+        if let Err(error) = self
+            .emit_event(
+                &prepared.thread.id,
+                None,
+                None,
+                "thread.forked",
+                json!({
+                    "thread": prepared.thread,
+                    "source_thread_id": prepared.source_id,
+                    "backtrack_depth_from_tail": prepared.depth_from_tail,
+                    "dropped_turn_id": prepared.dropped_turn_id,
+                }),
+            )
+            .await
+        {
+            tracing::warn!(
+                thread_id = %prepared.thread.id,
+                "fork {} was saved but its thread.forked event failed: {error:#}",
+                prepared.thread.id
+            );
+        }
+        Ok((
+            prepared.thread,
+            prepared.original_user_text,
+            prepared.original_images,
+            prepared.max_output_tokens,
+        ))
+    }
+
+    async fn commit_staged_fork(
+        &self,
+        source_snapshot: &ThreadRecord,
+        thread: &ThreadRecord,
+        records: &[(TurnRecord, Vec<TurnItemRecord>)],
+        sessions_dir: &Path,
+    ) -> Result<()> {
+        let store = self.store.clone();
+        let records_owned = records.to_vec();
+        let thread_id = thread.id.clone();
+        let (saved_turn_ids, saved_item_ids) = tokio::task::spawn_blocking(move || {
+            Self::stage_fork_records_in_store(&store, &thread_id, &records_owned)
+        })
+        .await
+        .context("fork staging task failed")??;
+
+        let commit_result: Result<()> = async {
+            let (admission, current_source) =
+                self.thread_restore_guard(&source_snapshot.id).await?;
+            self.ensure_accepting_execution()?;
+            anyhow::ensure!(
+                thread_execution_state_matches(source_snapshot, &current_source)
+                    && current_source.updated_at == source_snapshot.updated_at,
+                "source thread changed while preparing fork; source retained"
+            );
+            self.store.save_thread(thread)?;
+            drop(admission);
+            Ok(())
+        }
+        .await;
+
+        if let Err(commit_error) = commit_result {
+            let cleanup_result = self.cleanup_unpublished_fork(
+                &thread.id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                commit_error,
+            );
+            if let Some(session_id) = thread.session_id.as_deref()
+                && let Ok(session_manager) =
+                    crate::session_manager::SessionManager::new(sessions_dir.to_path_buf())
+            {
+                let _ = session_manager.delete_session(session_id);
+            }
+            return cleanup_result;
+        }
+        Ok(())
+    }
+
+    fn stage_fork_records_in_store(
+        store: &RuntimeThreadStore,
+        thread_id: &str,
+        records: &[(TurnRecord, Vec<TurnItemRecord>)],
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mut saved_turn_ids = Vec::new();
+        let mut saved_item_ids = Vec::new();
+        let staging = (|| -> Result<()> {
+            let batch: Vec<&TurnItemRecord> =
+                records.iter().flat_map(|(_, items)| items.iter()).collect();
+            saved_item_ids.extend(batch.iter().map(|item| item.id.clone()));
+            store.save_items_batch(&batch)?;
+            for (turn, _) in records {
+                store.save_turn(turn)?;
+                saved_turn_ids.push(turn.id.clone());
+            }
+            Ok(())
+        })();
+        if let Err(staging_error) = staging {
+            Self::cleanup_unpublished_fork_in_store(
+                store,
+                thread_id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                staging_error,
+            )?;
+        }
+        Ok((saved_turn_ids, saved_item_ids))
+    }
+
+    fn cleanup_unpublished_fork(
+        &self,
+        thread_id: &str,
+        saved_turn_ids: &[String],
+        saved_item_ids: &[String],
+        persistence_error: anyhow::Error,
+    ) -> Result<()> {
+        Self::cleanup_unpublished_fork_in_store(
+            &self.store,
+            thread_id,
+            saved_turn_ids,
+            saved_item_ids,
+            persistence_error,
+        )
+    }
+
+    fn cleanup_unpublished_fork_in_store(
+        store: &RuntimeThreadStore,
+        thread_id: &str,
+        saved_turn_ids: &[String],
+        saved_item_ids: &[String],
+        persistence_error: anyhow::Error,
+    ) -> Result<()> {
+        let thread_path = store.thread_path(thread_id)?;
+        match thread_path.try_exists() {
+            Ok(false) => {}
+            Ok(true) => bail!(
+                "Fork publication could not be confirmed; retained its records for recovery: {persistence_error}"
+            ),
+            Err(error) => bail!(
+                "Fork publication could not be checked; retained its records for recovery: {error}"
+            ),
+        }
+        let mut cleanup_errors = Vec::new();
+        for turn_id in saved_turn_ids.iter().rev() {
+            if let Err(error) = store.remove_turn(turn_id) {
+                cleanup_errors.push(format!("remove turn {turn_id}: {error}"));
+            }
+        }
+        for item_id in saved_item_ids.iter().rev() {
+            if let Err(error) = store.remove_item(item_id) {
+                cleanup_errors.push(format!("remove item {item_id}: {error}"));
+            }
+        }
+        if cleanup_errors.is_empty() {
+            return Err(persistence_error);
+        }
+        bail!(
+            "Failed to persist fork: {persistence_error}; cleanup also failed: {}",
+            cleanup_errors.join("; ")
+        )
+    }
+
     /// Persist cloned records before publishing their thread. Until the final
     /// atomic thread write succeeds, list/get/start callers cannot observe a
     /// partial fork. Any failed write removes all unpublished clone artifacts.
@@ -12187,54 +12432,14 @@ impl RuntimeThreadManager {
         thread: &ThreadRecord,
         records: &[(TurnRecord, Vec<TurnItemRecord>)],
     ) -> Result<()> {
-        let mut saved_turn_ids = Vec::new();
-        let mut saved_item_ids = Vec::new();
-        let persistence = (|| -> Result<()> {
-            // Every cloned item in one batch. Each `save_item` fsyncs the items
-            // directory, which is right for a single record and ruinous for
-            // the hundreds a fork clones. Items first, turns next, the
-            // thread record that makes them reachable last: the commit point is
-            // unchanged, and the ids are recorded before the batch so a partial
-            // write is still cleaned up.
-            let batch: Vec<&TurnItemRecord> =
-                records.iter().flat_map(|(_, items)| items.iter()).collect();
-            saved_item_ids.extend(batch.iter().map(|item| item.id.clone()));
-            self.store.save_items_batch(&batch)?;
-            for (turn, _) in records {
-                self.store.save_turn(turn)?;
-                saved_turn_ids.push(turn.id.clone());
-            }
-            self.store.save_thread(thread)
-        })();
-
-        if let Err(persistence_error) = persistence {
-            let thread_path = self.store.thread_path(&thread.id)?;
-            match thread_path.try_exists() {
-                Ok(false) => {}
-                Ok(true) => bail!(
-                    "Fork publication could not be confirmed; retained its records for recovery: {persistence_error}"
-                ),
-                Err(error) => bail!(
-                    "Fork publication could not be checked; retained its records for recovery: {error}"
-                ),
-            }
-            let mut cleanup_errors = Vec::new();
-            for turn_id in saved_turn_ids.iter().rev() {
-                if let Err(error) = self.store.remove_turn(turn_id) {
-                    cleanup_errors.push(format!("remove turn {turn_id}: {error}"));
-                }
-            }
-            for item_id in saved_item_ids.iter().rev() {
-                if let Err(error) = self.store.remove_item(item_id) {
-                    cleanup_errors.push(format!("remove item {item_id}: {error}"));
-                }
-            }
-            if cleanup_errors.is_empty() {
-                return Err(persistence_error);
-            }
-            bail!(
-                "Failed to persist fork: {persistence_error}; cleanup also failed: {}",
-                cleanup_errors.join("; ")
+        let (saved_turn_ids, saved_item_ids) =
+            Self::stage_fork_records_in_store(&self.store, &thread.id, records)?;
+        if let Err(persistence_error) = self.store.save_thread(thread) {
+            return self.cleanup_unpublished_fork(
+                &thread.id,
+                &saved_turn_ids,
+                &saved_item_ids,
+                persistence_error,
             );
         }
         Ok(())
