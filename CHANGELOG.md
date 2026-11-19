@@ -1107,6 +1107,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **Mobile reconnects no longer invalidate each other's stream tickets:** refreshing a mobile stream ticket no longer replaces a ticket another in-flight reconnect still holds — a mobile session keeps up to 32 pending tickets like the web client instead of a single slot, so rapid reconnects stop flickering between connected and expired.
 - **LSP HTTP responses declare their position base:** `/v1/diagnostics`, `/v1/definition`, `/v1/references` and `/v1/symbols` responses now carry `position_base` (`1` for the normalized diagnostics items, `0` for the raw LSP ranges in the semantic operations) so a client no longer has to guess that 1-based inputs come back as 0-based positions.
 - **Plugin conversion names the pnpm dependency limitation instead of dropping it:** importing a source that links `node_modules` dependencies to directories (the pnpm layout) now refuses with a named explanation instead of silently omitting the linked packages from the converted bundle. Links to files inside `node_modules` (`.bin` shims) are still skipped harmlessly.
+- **External-agent tool receipts keep the reported line number:** a location an external agent attaches to a tool call is recorded as `{ path, line }` (line is optional, 1-based as ACP declares) instead of only the path, so a client can jump to the touched line.
 
 ### Security
 
