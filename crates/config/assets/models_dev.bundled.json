@@ -12454,13 +12454,6 @@
       },
       {
         "provider": "opencode-zen",
-        "id": "muse-spark-1.3-contributor-free",
-        "endpoint_key": "responses",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
         "id": "muse-spark-1.2",
         "endpoint_key": "responses",
         "default_for_provider": false,
@@ -12469,13 +12462,6 @@
       {
         "provider": "opencode-zen",
         "id": "muse-spark-1.2-contributor",
-        "endpoint_key": "responses",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "muse-spark-1.2-contributor-free",
         "endpoint_key": "responses",
         "default_for_provider": false,
         "source": "preserved reviewed exact transport snapshot; see source_receipts"
@@ -12735,69 +12721,6 @@
       {
         "provider": "opencode-zen",
         "id": "big-pickle",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "space-bunny-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "longcat-2.5-preview-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "mimo-v2.6-flash-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "mimo-v2.5-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "ling-3.0-flash-fin-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "north-mini-code-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "nemotron-3-ultra-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "nemotron-3.5-lightning-free",
-        "endpoint_key": "chat",
-        "default_for_provider": false,
-        "source": "preserved reviewed exact transport snapshot; see source_receipts"
-      },
-      {
-        "provider": "opencode-zen",
-        "id": "deepseek-v4-flash-free",
         "endpoint_key": "chat",
         "default_for_provider": false,
         "source": "preserved reviewed exact transport snapshot; see source_receipts"
