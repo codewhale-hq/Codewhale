@@ -896,11 +896,28 @@ fn copy_pnpm_private_dependencies(
     let Some(store) = target
         .ancestors()
         .skip(1)
-        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "node_modules"))
+        .take_while(|ancestor| *ancestor != canonical_root)
+        .find(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "node_modules")
+        })
     else {
         return Ok(());
     };
-    if fs::read_dir(store)?.count() < 2 {
+    let mut entries = 0usize;
+    for entry in fs::read_dir(store)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('@') {
+            entries += fs::read_dir(entry.path())?.count();
+        } else {
+            entries += 1;
+        }
+        if entries >= 2 {
+            break;
+        }
+    }
+    if entries < 2 {
         return Ok(());
     }
     if dst.join("node_modules").exists() {
@@ -1452,6 +1469,73 @@ mod tests {
             err.to_string().contains("escapes"),
             "unexpected error for escaping symlink: {err:#}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_scoped_packages_keep_same_scope_private_dependencies() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/index.js"),
+            "const foo = require('@scope/foo');\n",
+        )
+        .unwrap();
+        let store = root.join("node_modules/.pnpm");
+        let foo = store.join("@scope+foo@1.0.0/node_modules/@scope/foo");
+        let util = store.join("@scope+util@1.0.0/node_modules/@scope/util");
+        fs::create_dir_all(&foo).unwrap();
+        fs::create_dir_all(&util).unwrap();
+        fs::write(
+            foo.join("package.json"),
+            r#"{"name":"@scope/foo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            foo.join("index.js"),
+            "module.exports = require('@scope/util');\n",
+        )
+        .unwrap();
+        fs::write(
+            util.join("package.json"),
+            r#"{"name":"@scope/util","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        symlink(
+            "../../../@scope+util@1.0.0/node_modules/@scope/util",
+            store.join("@scope+foo@1.0.0/node_modules/@scope/util"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("node_modules/@scope")).unwrap();
+        symlink(
+            "../.pnpm/@scope+foo@1.0.0/node_modules/@scope/foo",
+            root.join("node_modules/@scope/foo"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![(
+                "@scope/foo".to_string(),
+                Value::Str("^1.0.0".to_string()),
+            )]),
+        )]);
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        let private_util = staged
+            .path()
+            .join("node_modules/@scope/foo/node_modules/@scope/util");
+        let meta = fs::symlink_metadata(&private_util).unwrap();
+        assert!(!meta.file_type().is_symlink() && meta.is_dir());
+        assert!(private_util.join("package.json").is_file());
     }
 
     #[cfg(unix)]
