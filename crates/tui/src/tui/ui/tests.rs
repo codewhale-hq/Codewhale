@@ -533,6 +533,7 @@ fn cjk_composer_cursor_and_mouse_geometry_agree_in_compact_and_wide_frames() {
                 row: first_cursor.1,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now()
         ));
         assert_eq!(
             app.cursor_position,
@@ -1044,7 +1045,7 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
     handle_bracketed_paste(&mut app, "/pet status");
     assert_eq!(app.input, "/pet status");
     assert!(!app.work_surface.focused);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
 }
 
 /// Windows Terminal answers an image-only clipboard with an **empty** bracketed
@@ -2190,6 +2191,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                 row: sheet.y + sheet.height / 2,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(app.viewport.pending_scroll_delta, 0);
@@ -2214,6 +2216,7 @@ fn user_input_wheel_routes_by_painted_sheet_and_preserves_side_surface_ownership
                         row: 0,
                         modifiers: KeyModifiers::NONE,
                     },
+                    Instant::now(),
                 );
                 assert_eq!(app.viewport.pending_scroll_delta, expected);
             }
@@ -2402,6 +2405,7 @@ fn approval_mouse_wheel_reviews_transcript_without_closing_card() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -2432,6 +2436,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert_eq!(
@@ -2450,6 +2455,7 @@ fn approval_wheel_preserves_work_surface_ownership() {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert!(events.is_empty());
         assert!(
@@ -4694,6 +4700,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Full-cell coverage (#6228 sends fragments down the exact-text
     // fallback): "alpha beta" spans columns 0-10, so release past it.
@@ -4705,6 +4712,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4714,6 +4722,7 @@ fn mouse_selection_autocopies_on_release_without_ctrl_c() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     // Drag-release autocopy now takes the Markdown-source path (#6156): the
@@ -4774,6 +4783,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     // Fragment coverage: "alpha beta" spans columns 0-10, so releasing at
     // column 4 cuts the cell in half and the Markdown path must decline.
@@ -4785,6 +4795,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     handle_mouse_event(
         &mut app,
@@ -4794,6 +4805,7 @@ fn mouse_selection_fragment_drag_copies_exact_text() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let copied = app
@@ -4996,7 +5008,7 @@ fn loading_mouse_filter_allows_sidebar_hover_to_clear() {
     };
 
     assert!(!should_drop_loading_mouse_motion(&app, moved));
-    handle_mouse_event(&mut app, moved);
+    handle_mouse_event(&mut app, moved, Instant::now());
 
     assert_eq!(app.sidebar_hover_tooltip, None);
     assert_eq!(app.last_mouse_pos, Some((12, 5)));
@@ -5019,7 +5031,7 @@ fn loading_mouse_filter_allows_sidebar_exit_to_clear_highlight() {
         !should_drop_loading_mouse_motion(&app, exit_left),
         "first move out of the sidebar must clear stale sidebar hover state"
     );
-    handle_mouse_event(&mut app, exit_left);
+    handle_mouse_event(&mut app, exit_left, Instant::now());
 
     assert_eq!(app.last_mouse_pos, Some((59, 5)));
     assert!(!should_drop_loading_mouse_motion(
@@ -5053,6 +5065,7 @@ fn jump_to_latest_button_click_scrolls_to_tail() {
             row: 6,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5095,6 +5108,7 @@ fn pinned_prompt_click_jumps_to_the_message_it_names() {
             row: 3,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5129,6 +5143,7 @@ fn pinned_prompt_click_only_claims_the_header_row() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5175,6 +5190,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5197,6 +5213,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.viewport.transcript_scrollbar_dragging);
 
@@ -5209,6 +5226,7 @@ fn transcript_scrollbar_gutter_starts_scrollbar_drag() {
             row: 14,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(!app.viewport.transcript_scrollbar_dragging);
@@ -5239,6 +5257,7 @@ fn left_down_inside_transcript_starts_selection() {
             row: 5,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5284,6 +5303,7 @@ fn drag_below_viewport_arms_autoscroll_down() {
             row: 12, // below area.y + area.height (= 8)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5318,6 +5338,7 @@ fn drag_above_viewport_arms_autoscroll_up() {
             row: 1,     // above area.y (= 4)
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     let state = app.viewport.selection_autoscroll.expect("autoscroll armed");
@@ -5369,6 +5390,7 @@ fn drag_back_inside_disarms_autoscroll() {
             row: 0, // inside area
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5398,6 +5420,7 @@ fn mouse_up_clears_selection_autoscroll() {
             row: 0,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(app.viewport.selection_autoscroll.is_none());
@@ -5515,6 +5538,7 @@ fn right_click_opens_context_menu() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5585,6 +5609,7 @@ fn mouse_events_do_not_mutate_transcript_behind_modal() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5618,6 +5643,7 @@ fn composer_mouse_wheel_scrolls_wrapped_draft_not_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(events.is_empty());
@@ -5651,6 +5677,7 @@ fn composer_mouse_wheel_up_moves_within_wrapped_draft() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
 
     assert!(app.cursor_position < app.input.chars().count());
@@ -5684,6 +5711,7 @@ fn composer_mouse_wheel_with_empty_draft_scrolls_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert!(
@@ -5722,6 +5750,7 @@ fn composer_mouse_wheel_at_draft_top_falls_through_to_transcript() {
             row: 12,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
 
     assert_eq!(app.cursor_position, 0, "caret was already at the top");
@@ -5808,6 +5837,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(
         app.cursor_position, 0,
@@ -5825,6 +5855,7 @@ fn composer_mouse_first_visible_character_maps_to_zero_after_prompt_gutter() {
             row: 11,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now()
     ));
     assert_eq!(app.cursor_position, 1);
 }
@@ -7270,7 +7301,7 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
 
     app.needs_redraw = false;
     let down_first = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_first);
+    handle_mouse_event(&mut app, down_first, Instant::now());
     assert!(app.needs_redraw, "mouse Down must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7284,17 +7315,18 @@ fn mouse_selection_redraws_and_retargets_reasoning_with_unchanged_revisions() {
             row: u16::MAX,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(app.needs_redraw, "click outside must clear + redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![1]);
 
     let down_second = mouse_on_cell(&app, 1, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down_second);
+    handle_mouse_event(&mut app, down_second, Instant::now());
     let _ = render_underwater_test_app(&mut app, 100, 32);
     app.needs_redraw = false;
     let drag_first = mouse_on_cell(&app, 0, MouseEventKind::Drag(MouseButton::Left));
-    handle_mouse_event(&mut app, drag_first);
+    handle_mouse_event(&mut app, drag_first, Instant::now());
     assert!(app.needs_redraw, "mouse Drag must schedule owner redraw");
     let _ = render_underwater_test_app(&mut app, 100, 32);
     assert_eq!(reasoning_hint_cells(&app), vec![0]);
@@ -7309,15 +7341,16 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
         HistoryCell::Error {
             message: "selected error".into(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
         running_exec_cell(),
     ];
     app.resync_history_revisions();
     let _ = render_underwater_test_app(&mut app, 100, 32);
     let down = mouse_on_cell(&app, 0, MouseEventKind::Down(MouseButton::Left));
-    handle_mouse_event(&mut app, down);
+    handle_mouse_event(&mut app, down, Instant::now());
     let up = mouse_on_cell(&app, 0, MouseEventKind::Up(MouseButton::Left));
-    handle_mouse_event(&mut app, up);
+    handle_mouse_event(&mut app, up, Instant::now());
 
     assert!(
         app.viewport
@@ -7498,7 +7531,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
     app.insert_str("/mcp");
     let now = Instant::now();
     app.paste_burst.extend_window(now);
-    assert!(!app.composer_enter_would_submit(true));
+    assert!(!app.composer_enter_would_submit(true, Instant::now()));
     assert!(app.composer_draft_is_submittable());
     let waiting = render_underwater_test_app(&mut app, 80, 24);
     assert!(waiting.contains("[↵]"), "{waiting}");
@@ -7509,7 +7542,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
         now + Duration::from_millis(121)
     ));
     assert!(app.needs_redraw);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
     let ready = render_underwater_test_app(&mut app, 80, 24);
     assert!(ready.contains("[↵]"), "{ready}");
     assert_eq!(app.input, "/mcp");
@@ -7638,7 +7671,7 @@ fn lone_letters_remain_composer_input_after_transcript_selection() {
         ));
         assert_eq!(app.input, ch.to_string());
         assert!(app.view_stack.is_empty());
-        assert!(app.composer_enter_would_submit(true));
+        assert!(app.composer_enter_would_submit(true, Instant::now()));
     }
 }
 
@@ -7662,7 +7695,8 @@ fn clicking_composer_releases_transcript_and_work_surface_focus() {
             column: composer.x + 3,
             row: composer.y + 1,
             modifiers: KeyModifiers::NONE,
-        }
+        },
+        Instant::now()
     ));
     assert!(!app.viewport.transcript_selection.is_active());
     assert!(!app.work_surface.focused);
@@ -8015,6 +8049,7 @@ fn error_or_interruption_transfers_reasoning_ownership_truthfully() {
         HistoryCell::Error {
             message: "provider disconnected".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -12914,7 +12949,7 @@ async fn immediate_submit_closed_mailbox_restores_composer_and_skill() {
     app.cursor_position = app.input.chars().count();
     app.active_skill = Some("keep the selected skill".to_string());
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     assert!(app.input.is_empty());
@@ -12969,7 +13004,7 @@ async fn immediate_submit_custom_provider_preflight_restores_exact_message() {
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -13084,7 +13119,7 @@ async fn immediate_submit_custom_provider_missing_key_preflight_shows_auth_next_
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -19671,6 +19706,65 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
 }
 
 #[test]
+fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manager =
+        codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
+            .expect("manager");
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "run the check"));
+    app.is_loading = true;
+    apply_engine_error_to_app(
+        &mut app,
+        codewhale_error_taxonomy::ErrorEnvelope::new(
+            codewhale_error_taxonomy::ErrorCategory::Network,
+            codewhale_error_taxonomy::ErrorSeverity::Error,
+            false,
+            "llm_network_error",
+            "SSE stream request did not receive response headers after 45s",
+        ),
+    );
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        }) if message == "SSE stream request did not receive response headers after 45s"
+            && code == "llm_network_error"
+    ));
+
+    super::event_loop::present_turn_failure(
+        &mut app,
+        codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+        None,
+    );
+    let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
+    assert_eq!(snapshot.turn_outcomes.len(), 1);
+    assert_eq!(
+        snapshot.turn_outcomes[0].code.as_deref(),
+        Some("llm_network_error")
+    );
+
+    manager.save_session(&snapshot).expect("save");
+    let loaded = manager
+        .load_session(&snapshot.metadata.id)
+        .expect("load session");
+    let mut resumed = create_test_app();
+    apply_loaded_session(&mut resumed, &mut Config::default(), &loaded).expect("resume");
+    assert!(resumed.history.iter().any(|cell| matches!(
+        cell,
+        HistoryCell::Error {
+            message,
+            code: Some(code),
+            ..
+        } if message == "SSE stream request did not receive response headers after 45s"
+            && code == "llm_network_error"
+    )));
+}
+
+#[test]
 fn turn_started_route_is_captured_before_cancel_suppression() {
     let mut app = create_test_app();
     app.suppress_stream_events_until_turn_complete = true;
@@ -22598,6 +22692,7 @@ fn visible_error_becomes_full_detail_target_ahead_of_adjacent_tool() {
             message: "Refusing insecure base URL.\nSet CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host."
                 .to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
     ];
     app.resync_history_revisions();
@@ -23251,7 +23346,11 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
     app.input = draft.clone();
     app.cursor_position = app.input.chars().count();
 
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(app.input, draft, "the full text stays in the composer");
     // The toast row sheds clauses to fit, so it carries only the short form;
     // the full reason (with the write error) lives in the transcript.
@@ -23286,17 +23385,33 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
         notes[0]
     );
     // Retrying the same held submit does not stack identical notes.
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(held_notes(&app).len(), 1);
 
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(!super::event_loop::launch_submit_held(&mut app, true));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     app.paste_burst.extend_window(Instant::now());
-    assert!(!super::event_loop::launch_submit_held(&mut app, false));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
     app.startup_input_unproven = true;
-    assert!(super::event_loop::launch_submit_held(&mut app, false));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
 }
 
@@ -23819,6 +23934,92 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
     let text = rendered_text(&HistoryCell::Tool(ToolCell::Generic(generic.clone())).lines(120));
     assert!(text.contains("tool failed"), "{text}");
     assert!(!text.contains("loaded, not run"), "{text}");
+}
+
+#[test]
+fn task_shell_wait_folds_into_its_shell_row_instead_of_adding_rows() {
+    let mut app = create_test_app();
+    app.push_history_cell(HistoryCell::Tool(ToolCell::Exec(ExecCell {
+        command: "cargo test --workspace".to_string(),
+        status: ToolStatus::Running,
+        output: None,
+        live_output: None,
+        shell_task_id: Some("shell_ab08".to_string()),
+        owner_agent_id: None,
+        owner_agent_name: None,
+        started_at: None,
+        duration_ms: None,
+        stale_elapsed_since_output_ms: None,
+        waiting: None,
+        source: ExecSource::Assistant,
+        description: None,
+        interaction: None,
+        output_summary: None,
+    })));
+    let cells_before = app.virtual_cell_count();
+
+    for id in ["poll-1", "poll-2"] {
+        handle_tool_call_started(
+            &mut app,
+            id,
+            "task_shell_wait",
+            &serde_json::json!({"task_id": "shell_ab08"}),
+        );
+        assert!(
+            app.ignored_tool_calls.contains_key(id),
+            "{id} drew its own row"
+        );
+    }
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-1",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::success(
+            "Background task running (no new output).",
+        )),
+    );
+    assert_eq!(app.virtual_cell_count(), cells_before);
+    handle_tool_call_complete(
+        &mut app,
+        "poll-2",
+        "task_shell_wait",
+        &Ok(codewhale_engine::tools::spec::ToolResult::error(
+            "unknown background task",
+        )),
+    );
+    assert_eq!(
+        app.virtual_cell_count(),
+        cells_before + 1,
+        "a failed poll still shows its error"
+    );
+
+    for input in [
+        serde_json::json!({"task_id": "shell_ab08", "cancel": true}),
+        serde_json::json!({"task_id": "shell_ab08", "gate": "test"}),
+        serde_json::json!({"task_ids": ["shell_ab08"]}),
+    ] {
+        handle_tool_call_started(&mut app, "visible", "task_shell_wait", &input);
+        assert!(
+            !app.ignored_tool_calls.contains_key("visible"),
+            "{input} must stay visible"
+        );
+        app.tool_cells.remove("visible");
+    }
+    let cancelled = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .any(|cell| {
+            matches!(
+                cell,
+                HistoryCell::Tool(ToolCell::Exec(exec))
+                    if exec.interaction.as_deref() == Some("Cancelled command shell_ab08")
+            )
+        });
+    assert!(cancelled);
 }
 
 #[test]
@@ -29918,7 +30119,11 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
     assert!(!app.is_loading);
     for (width, height) in [(80, 24), (140, 40)] {
         let frame = render_test_app(&mut app, &config, width, height);
-        let text = frame.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = frame
+            .split_whitespace()
+            .filter(|word| *word != "\u{258f}")
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             text.contains("API key not found"),
             "{width}x{height}: {text}"
@@ -32208,7 +32413,7 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
             continue;
         }
         if key.code == KeyCode::Enter {
-            submitted = app.handle_composer_enter(true);
+            submitted = app.handle_composer_enter(true, observed.observed_at);
         }
     }
 
@@ -32216,6 +32421,79 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
         submitted.as_deref(),
         Some(prompt),
         "a deliberate Enter observed 150ms after raw input must submit even when the event loop drains the backlog without delay"
+    );
+}
+
+#[test]
+fn queued_mid_stream_enter_inserts_newline_not_submit_under_backlog() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // A raw paste at the pace the real Windows Terminal harness produced:
+    // chars ~5ms apart form a burst, and its Enter lands inside the 120ms
+    // suppression window. The whole stream is queued before the loop reads
+    // it, so processing time lags the last char far beyond the window — the
+    // predicate must run on each event's observed_at or the mid-paste Enter
+    // submits (a processing-time dispatch revert fails this test).
+    let first_at = Instant::now()
+        .checked_sub(Duration::from_millis(880))
+        .expect("stale stream origin");
+    for (index, ch) in "pasted payload".chars().enumerate() {
+        tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+            Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            first_at + Duration::from_millis(index as u64 * 5),
+        )))
+        .expect("queue paste char");
+    }
+    let last_char_at = first_at + Duration::from_millis(13 * 5);
+    let enter_at = last_char_at + Duration::from_millis(40);
+    tx.send(TerminalInputMessage::Event(ObservedTerminalEvent::new(
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        enter_at,
+    )))
+    .expect("queue mid-stream Enter");
+
+    let input = TerminalInputPump {
+        rx,
+        retired_rx: Default::default(),
+        child_windows: Default::default(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let mut pending = VecDeque::new();
+    let mut app = create_test_app();
+    app.use_paste_burst_detection = true;
+    app.bracketed_paste_seen = false;
+    let mut submitted = None;
+
+    for _ in 0..="pasted payload".len() {
+        let observed = next_terminal_event(&input, &mut pending, Duration::from_millis(1))
+            .expect("read queued terminal event")
+            .expect("queued event remains");
+        let Event::Key(key) = observed.event else {
+            panic!("queued stream contains only keys");
+        };
+        flush_paste_burst_before_composer(&mut app, observed.observed_at);
+        if handle_plain_key_before_composer(&mut app, &key, observed.observed_at) {
+            continue;
+        }
+        if key.code == KeyCode::Enter {
+            submitted = app.handle_composer_enter(true, observed.observed_at);
+        }
+    }
+
+    assert_eq!(
+        submitted, None,
+        "an Enter observed inside the suppression window must not submit just because processing ran late"
+    );
+    // The absorbed newline lives in the burst buffer; a later expiry flush
+    // delivers the whole payload to the composer in order.
+    flush_paste_burst_before_composer(&mut app, enter_at + Duration::from_millis(200));
+    assert!(
+        app.input.contains("pasted payload\n"),
+        "the absorbed Enter must land as a newline after the pasted text, got {:?}",
+        app.input
     );
 }
 
@@ -33783,6 +34061,7 @@ fn focused_agent_transcript_receives_wheel_scroll_through_the_frame() {
             row: 4,
             modifiers: KeyModifiers::NONE,
         },
+        Instant::now(),
     );
     assert!(events.is_empty());
     terminal
@@ -34220,7 +34499,7 @@ fn drive_composer_events(app: &mut App, pending: &mut VecDeque<Event>) -> Option
         let Event::Key(key) = event else { continue };
         match key.code {
             KeyCode::Char(c) => app.insert_char(c),
-            KeyCode::Enter => submitted = app.handle_composer_enter(true),
+            KeyCode::Enter => submitted = app.handle_composer_enter(true, Instant::now()),
             KeyCode::Backspace => app.delete_char(),
             _ => {}
         }
@@ -34292,7 +34571,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
         "queued Enters cannot clear the hold"
     );
     assert!(
-        app.handle_composer_enter(true).is_none(),
+        app.handle_composer_enter(true, Instant::now()).is_none(),
         "the first fresh Enter explains the hold"
     );
     assert!(
@@ -34304,7 +34583,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
     );
 
     // The user has now seen it; a deliberate second Enter sends what is shown.
-    let resent = app.handle_composer_enter(true);
+    let resent = app.handle_composer_enter(true, Instant::now());
     assert_eq!(
         resent.as_deref(),
         Some("gin install /tmp/bundle\n\nsecond line\n")
@@ -34344,9 +34623,15 @@ fn startup_terminal_replies_allow_a_fresh_long_paste_to_send_once() {
     app.startup_input_unproven = !receipt.whole_line_proven();
     let prompt = "Keep the complete pasted draft: 日本語, café, العربية.\n".repeat(30);
     handle_bracketed_paste(&mut app, &prompt);
-    assert!(app.composer_enter_would_submit(true));
-    assert_eq!(app.handle_composer_enter(true), Some(prompt));
-    assert!(app.handle_composer_enter(true).is_none(), "no double send");
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
+    assert_eq!(
+        app.handle_composer_enter(true, Instant::now()),
+        Some(prompt)
+    );
+    assert!(
+        app.handle_composer_enter(true, Instant::now()).is_none(),
+        "no double send"
+    );
 }
 
 #[test]
@@ -34360,13 +34645,13 @@ fn startup_integrity_hold_keeps_send_available_for_acknowledgement() {
         "pasting cannot erase known loss"
     );
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "the send button must remain usable to acknowledge an integrity hold"
     );
-    assert!(app.handle_composer_enter(true).is_none());
+    assert!(app.handle_composer_enter(true, Instant::now()).is_none());
     assert_eq!(app.input, "gin install /tmp/bundle");
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "fresh acknowledgement can send"
     );
 }
@@ -34384,7 +34669,7 @@ fn a_command_line_that_stops_looking_like_one_is_held_not_reinterpreted() {
     // @-mention. That rewrite must never silently turn a command line into a
     // prose turn for the model (#5925).
     app.composer.pending_paste_reference = Some("@.codewhale/pastes/p.md".to_string());
-    let submitted = app.handle_composer_enter(true);
+    let submitted = app.handle_composer_enter(true, Instant::now());
     assert!(
         submitted.is_none(),
         "a claimed command is never re-read as a prose prompt"
@@ -34412,7 +34697,7 @@ fn deleting_the_leading_slash_releases_the_command_claim() {
         "the claim is released by an edit"
     );
     assert_eq!(
-        app.handle_composer_enter(true).as_deref(),
+        app.handle_composer_enter(true, Instant::now()).as_deref(),
         Some("plugin"),
         "the edited line submits normally"
     );

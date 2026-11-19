@@ -5361,6 +5361,7 @@ impl Engine {
         active_tool_names: &mut std::collections::HashSet<String>,
         hook_contexts: &std::collections::HashMap<String, String>,
         mut fleet_denial_guard: Option<&mut FleetDenialGuard>,
+        mode: AppMode,
     ) -> FleetDenialAction {
         let strict_tool_mode = tool_policy.strict_tool_mode;
         let mut denial_batch = FleetDenialBatch::default();
@@ -5380,6 +5381,26 @@ impl Engine {
             let routed_duration_ms =
                 u64::try_from(outcome.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = outcome.terminal.into_legacy_result();
+            if let Some(extension_host) = self.extension_host.as_ref().filter(|_| {
+                self.config
+                    .features
+                    .enabled(codewhale_runtime::features::Feature::ExtensionHost)
+            }) {
+                let is_error = result.as_ref().map_or(true, |output| !output.success);
+                extension_host.spawn_tool_after_hooks(
+                    crate::extension_host::protocol::HookCallPayload {
+                        name: outcome.name.clone(),
+                        call_id: outcome.id.clone(),
+                        input: serde_json::json!({
+                            "is_error": is_error,
+                            "duration_ms": routed_duration_ms,
+                        }),
+                        mode: format!("{mode:?}"),
+                        workspace: self.session.workspace.to_string_lossy().into_owned(),
+                        model: self.config.model.clone(),
+                    },
+                );
+            }
             let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
                 guard.observe(
@@ -6345,6 +6366,14 @@ impl Engine {
                             // accumulated buffer O(n²) times per tool call to
                             // produce a value that `finalize_streamed_tool_input`
                             // unconditionally overwrote (#6213 T4).
+                        }
+                    }
+                    Delta::ThoughtSignatureDelta { thought_signature } => {
+                        if let Some(&tool_idx) = current_tool_indices.get(&index)
+                            && let Some(tool_state) = tool_uses.get_mut(tool_idx)
+                            && !thought_signature.is_empty()
+                        {
+                            tool_state.thought_signature = Some(thought_signature);
                         }
                     }
                     Delta::CitationsDelta { .. } => {}
@@ -7721,6 +7750,7 @@ fn stream_event_has_actionable_content(event: &StreamEvent) -> bool {
             Delta::ThinkingDelta { thinking } => !thinking.is_empty(),
             Delta::InputJsonDelta { partial_json } => !partial_json.is_empty(),
             Delta::SignatureDelta { signature } => !signature.is_empty(),
+            Delta::ThoughtSignatureDelta { thought_signature } => !thought_signature.is_empty(),
             Delta::ReasoningStateDelta { .. }
             | Delta::CitationsDelta { .. }
             | Delta::WebSearchCallDelta { .. }
@@ -7789,6 +7819,7 @@ fn stream_event_content_bytes(event: &StreamEvent) -> usize {
             Delta::ThinkingDelta { thinking } => thinking.len(),
             Delta::InputJsonDelta { partial_json } => partial_json.len(),
             Delta::SignatureDelta { signature } => signature.len(),
+            Delta::ThoughtSignatureDelta { thought_signature } => thought_signature.len(),
             Delta::RefusalDelta { refusal } => refusal.len(),
             Delta::ReasoningStateDelta { .. }
             | Delta::CitationsDelta { .. }
@@ -7912,6 +7943,49 @@ mod tests {
             tool_choice: None,
             reasoning_effort: None,
         })
+    }
+
+    #[tokio::test]
+    async fn late_thought_signature_is_retained_on_the_target_tool() {
+        use crate::llm_client::mock::canned;
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let starts = (0..2).map(|index| {
+            Ok(StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlockStart::ToolUse {
+                    id: format!("call_{index}"),
+                    name: "read_file".into(),
+                    input: json!({}),
+                    caller: None,
+                    thought_signature: None,
+                },
+            })
+        });
+        let stream = futures_util::stream::iter(starts.chain([
+            Ok(StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::ThoughtSignatureDelta {
+                    thought_signature: "first_signature".into(),
+                },
+            }),
+            Ok(canned::message_stop()),
+        ]));
+        let outcome = engine
+            .process_stream(
+                Box::pin(stream),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            )
+            .await;
+        assert_eq!(outcome.tool_uses.len(), 2);
+        assert_eq!(
+            outcome.tool_uses[0].thought_signature.as_deref(),
+            Some("first_signature")
+        );
+        assert!(outcome.tool_uses[1].thought_signature.is_none());
     }
 
     #[tokio::test]
@@ -10040,6 +10114,7 @@ impl Engine {
                 &mut active,
                 &planned.hook_contexts,
                 None,
+                mode,
             )
             .await;
             surface.cache = self.session.tool_activation_cache.clone();

@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use codewhale_command_contract::facets::{
     CommandSessionExportContext, ConversationExportProjection, ExportBlock, ExportMessage,
-    ExportMetadata, HistoryEntry, RestorePointProjection, RestoreSnapshot, TranscriptProjection,
-    TurnHandoffProjection,
+    ExportMetadata, ExportTurnOutcome, HistoryEntry, RestorePointProjection, RestoreSnapshot,
+    TranscriptProjection, TurnHandoffProjection,
 };
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{
@@ -168,15 +168,28 @@ fn without_tool_blocks(
     mut projection: ConversationExportProjection,
 ) -> ConversationExportProjection {
     if let TranscriptProjection::Authoritative(messages) = &mut projection.transcript {
+        let mut kept_prefix = Vec::with_capacity(messages.len() + 1);
+        kept_prefix.push(0usize);
+        let mut kept = 0usize;
         messages.retain_mut(|message| {
             let before = message.blocks.len();
             message.blocks.retain(|block| !is_tool_block(block));
-            before == message.blocks.len()
+            let keep = before == message.blocks.len()
                 || message
                     .blocks
                     .iter()
-                    .any(|block| !matches!(block, ExportBlock::InternalReasoning))
+                    .any(|block| !matches!(block, ExportBlock::InternalReasoning));
+            if keep {
+                kept += 1;
+            }
+            kept_prefix.push(kept);
+            keep
         });
+        let max_index = kept_prefix.len().saturating_sub(1);
+        for outcome in &mut projection.turn_outcomes {
+            let clamped = outcome.after_message_count.min(max_index);
+            outcome.after_message_count = kept_prefix.get(clamped).copied().unwrap_or(kept);
+        }
         projection.metadata.message_count = messages.len();
     }
     projection
@@ -564,6 +577,7 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
         metadata,
         transcript,
         restore_points,
+        turn_outcomes,
     } = projection;
     let names = tool_names(&transcript);
     let mut out = String::new();
@@ -592,19 +606,75 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
 
     match transcript {
         TranscriptProjection::HistoryFallback(entries) => {
-            render_history_fallback(&mut out, &entries)
+            if entries.is_empty() && !turn_outcomes.is_empty() {
+                for outcome in &turn_outcomes {
+                    render_turn_outcome(&mut out, outcome);
+                }
+            } else {
+                render_history_fallback(&mut out, &entries);
+            }
         }
         TranscriptProjection::Authoritative(messages) => {
+            let mut outcomes = turn_outcomes.iter().peekable();
+            let message_count = messages.len();
+            render_turn_outcomes_through(&mut out, &mut outcomes, 0, message_count == 0);
             for (index, message) in messages.into_iter().enumerate() {
                 // Correlation is derived before `message` is consumed by the
                 // renderer so the render path can take ownership of its payloads.
                 let correlation = correlation_markdown(&restore_points, &message);
                 render_message(&mut out, index + 1, message, &names);
                 out.push_str(&correlation);
+                render_turn_outcomes_through(
+                    &mut out,
+                    &mut outcomes,
+                    index + 1,
+                    index + 1 == message_count,
+                );
             }
         }
     }
     out
+}
+
+fn render_turn_outcomes_through<'a, I>(
+    out: &mut String,
+    outcomes: &mut std::iter::Peekable<I>,
+    message_count: usize,
+    last: bool,
+) where
+    I: Iterator<Item = &'a ExportTurnOutcome>,
+{
+    while let Some(outcome) =
+        outcomes.next_if(|outcome| last || outcome.after_message_count <= message_count)
+    {
+        render_turn_outcome(out, outcome);
+    }
+}
+
+fn render_turn_outcome(out: &mut String, outcome: &ExportTurnOutcome) {
+    let status = inline_text(&outcome.status);
+    let status = if status.is_empty() {
+        "failed"
+    } else {
+        status.as_str()
+    };
+    let _ = writeln!(out, "## Turn outcome ({status})\n");
+    let _ = writeln!(out, "- Status: {status}");
+    let _ = writeln!(
+        out,
+        "- Ended: {}",
+        format_export_time(outcome.ended_at_unix)
+    );
+    if let Some(code) = outcome
+        .code
+        .as_deref()
+        .map(inline_text)
+        .filter(|code| !code.is_empty())
+    {
+        let _ = writeln!(out, "- Code: `{code}`");
+    }
+    out.push('\n');
+    push_sanitized_text(out, &outcome.error);
 }
 
 pub(super) const OMISSION_NOTE: &str = "Hidden instructions, internal reasoning, and reasoning signatures are omitted. Secret-like values and credential-bearing URLs are redacted as a defense in depth; review the export before sharing it.";
@@ -1041,6 +1111,7 @@ mod tests {
             },
             transcript: TranscriptProjection::Authoritative(messages),
             restore_points: RestorePointProjection::None,
+            turn_outcomes: Vec::new(),
         }
     }
 
@@ -1740,6 +1811,7 @@ No workspace restore points are recorded for this workspace, so nothing in this 
             },
             transcript: TranscriptProjection::Authoritative(Vec::new()),
             restore_points: RestorePointProjection::None,
+            turn_outcomes: Vec::new(),
         };
 
         let rendered = render_conversation(projection);
@@ -1914,5 +1986,113 @@ No workspace restore points are recorded for this workspace, so nothing in this 
             execution_result,
             "### Code-execution result\n\n- Tool call ID: exec-1\n\n```json\n{\n  \"stdout\": \"ok\"\n}\n```\n\n"
         );
+    }
+
+    #[test]
+    fn conversation_export_interleaves_redacted_turn_outcomes_at_message_positions() {
+        let mut projection = conversation_projection(vec![
+            user_message("first turn"),
+            ExportMessage {
+                is_user_role: false,
+                role: "assistant".to_string(),
+                blocks: vec![ExportBlock::ToolCall {
+                    id: "call-1".to_string(),
+                    name: "todo_write".to_string(),
+                    caller: None,
+                    input: serde_json::json!({}),
+                }],
+                prompt_snippet: None,
+            },
+            ExportMessage {
+                is_user_role: true,
+                role: "user".to_string(),
+                blocks: vec![ExportBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "ok".to_string(),
+                    is_error: false,
+                    structured: None,
+                }],
+                prompt_snippet: None,
+            },
+            user_message("second turn"),
+        ]);
+        projection.turn_outcomes = vec![
+            ExportTurnOutcome {
+                status: "failed".to_string(),
+                error: "SSE stream request failed with Authorization: Bearer super-secret-token"
+                    .to_string(),
+                code: Some("llm_network_error".to_string()),
+                ended_at_unix: 1_700_000_060,
+                after_message_count: 3,
+            },
+            ExportTurnOutcome {
+                status: "interrupted".to_string(),
+                error: "Turn stopped by operator".to_string(),
+                code: None,
+                ended_at_unix: 1_700_000_120,
+                after_message_count: 99,
+            },
+        ];
+
+        let markdown = render_conversation(projection.clone());
+        let tool_pos = markdown.find("## 3. tool").expect("tool message");
+        let first_outcome_pos = markdown
+            .find("## Turn outcome (failed)")
+            .expect("first turn outcome");
+        let second_user_pos = markdown.find("## 4. user").expect("second user message");
+        let trailing_outcome_pos = markdown
+            .find("## Turn outcome (interrupted)")
+            .expect("trailing turn outcome");
+        assert!(
+            tool_pos < first_outcome_pos
+                && first_outcome_pos < second_user_pos
+                && second_user_pos < trailing_outcome_pos,
+            "{markdown}"
+        );
+        assert!(markdown.contains("- Status: failed\n"), "{markdown}");
+        assert!(
+            markdown.contains("- Ended: 2023-11-14T22:14:20Z\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("- Code: `llm_network_error`\n"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("Authorization: [redacted]"),
+            "turn outcome secrets must be redacted: {markdown}"
+        );
+        assert!(
+            !markdown.contains("super-secret-token"),
+            "turn outcome leaked secret: {markdown}"
+        );
+        assert!(markdown.contains("Turn stopped by operator"), "{markdown}");
+
+        let no_tools = render_export(projection.clone(), ExportFormat::Markdown, false);
+        let nt_first_user = no_tools.find("## 1. user").expect("first user");
+        let nt_first_outcome = no_tools
+            .find("## Turn outcome (failed)")
+            .expect("outcome after dropped tool messages");
+        let nt_second_user = no_tools.find("## 2. user").expect("second user");
+        assert!(
+            nt_first_user < nt_first_outcome && nt_first_outcome < nt_second_user,
+            "--no-tools must keep turn outcomes at their chronological boundary: {no_tools}"
+        );
+
+        let html = render_export(projection.clone(), ExportFormat::Html, true);
+        assert!(html.contains("Turn outcome · failed"), "{html}");
+        assert!(html.contains("Code llm_network_error"), "{html}");
+        assert!(!html.contains("super-secret-token"), "{html}");
+
+        let json_raw = render_export(projection, ExportFormat::Json, true);
+        let parsed: serde_json::Value = serde_json::from_str(&json_raw).expect("valid json");
+        let outcomes = parsed["turn_outcomes"]
+            .as_array()
+            .expect("json turn_outcomes");
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0]["status"], "failed");
+        assert_eq!(outcomes[0]["code"], "llm_network_error");
+        assert_eq!(outcomes[0]["after_message_count"], 3);
+        assert!(!json_raw.contains("super-secret-token"), "{json_raw}");
     }
 }

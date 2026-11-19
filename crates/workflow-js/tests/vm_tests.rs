@@ -2642,6 +2642,263 @@ async fn tools_calls_continue_past_fifty_while_the_host_admits_them() {
     assert_eq!(result, json!(55));
 }
 
+#[tokio::test]
+async fn console_methods_route_to_driver_log_sink() {
+    let driver = Arc::new(FakeDriver::new());
+    let value = WorkflowVm::new()
+        .run_tools_script(
+            r#"
+            const cyclic = {};
+            cyclic.self = cyclic;
+            const nullProto = Object.create(null);
+            nullProto.self = nullProto;
+            console.log("hello", 42, { ok: true });
+            console.info("starting", new URL("https://example.com/a?b=1"));
+            console.warn("careful");
+            console.error(new Error("boom"));
+            console.debug("trace", cyclic, nullProto);
+            console.warn();
+            return Object.isFrozen(console);
+            "#,
+            json!(null),
+            driver.clone() as Arc<dyn codewhale_workflow_js::WorkflowDriver>,
+            Arc::new(EchoInvoker) as Arc<dyn codewhale_workflow_js::ToolInvoker>,
+            WorkflowRunCancel::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(value, json!(true));
+    assert_eq!(
+        driver.events(),
+        vec![
+            ProgressEvent::Log {
+                message: r#"hello 42 {"ok":true}"#.to_string(),
+            },
+            ProgressEvent::Log {
+                message: "[info] starting https://example.com/a?b=1".to_string(),
+            },
+            ProgressEvent::Log {
+                message: "[warn] careful".to_string(),
+            },
+            ProgressEvent::Log {
+                message: "[error] Error: boom".to_string(),
+            },
+            ProgressEvent::Log {
+                message: "[debug] trace [object Object] [object Object]".to_string(),
+            },
+            ProgressEvent::Log {
+                message: "[warn]".to_string(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn url_host_setter_keeps_an_existing_port_unless_one_is_given() {
+    let value = run_tools(
+        r#"
+        const u = new URL("https://a.example:8443/p");
+        u.host = "new.example";
+        const kept = u.href;
+        u.host = "other.example:9000";
+        return { kept, replaced: u.href };
+        "#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "kept": "https://new.example:8443/p",
+            "replaced": "https://other.example:9000/p",
+        })
+    );
+}
+
+#[tokio::test]
+async fn url_and_url_search_params_parse_resolve_and_sync() {
+    let value = run_tools(
+        r#"
+        const u = new URL("HTTPS://EXAMPLE.COM:443/a/b/../c?b=1&tag=rust+lang&tag=%E2%9C%93#top");
+        const parsed = {
+            protocol: u.protocol,
+            hostname: u.hostname,
+            host: u.host,
+            port: u.port,
+            pathname: u.pathname,
+            search: u.search,
+            hash: u.hash,
+            origin: u.origin,
+            href: u.href,
+            str: u.toString(),
+            json: JSON.stringify(u),
+            b: u.searchParams.get("b"),
+            tags: u.searchParams.getAll("tag"),
+            hasB: u.searchParams.has("b"),
+            hasMissing: u.searchParams.has("missing"),
+            sameParamsRef: u.searchParams === u.searchParams,
+        };
+
+        u.searchParams.set("b", "2");
+        u.searchParams.append("extra", "a b");
+        u.searchParams.delete("tag", "rust lang");
+        const afterParamsMutation = {
+            search: u.search,
+            href: u.href,
+            entries: Array.from(u.searchParams.entries()),
+            keys: Array.from(u.searchParams.keys()),
+            values: Array.from(u.searchParams.values()),
+            fromEntries: Object.fromEntries(u.searchParams),
+        };
+
+        const spRef = u.searchParams;
+        u.search = "?x=10&x=20";
+        const afterSearchSetter = {
+            sameRef: u.searchParams === spRef,
+            xAll: spRef.getAll("x"),
+            size: spRef.size,
+        };
+
+        const rel = new URL("../v2/items?p=1", "https://api.example.com:8443/v1/old/list");
+        const ipv6 = new URL("http://[2001:DB8::1]:8080/status");
+        const customPort = new URL("http://example.com:80/default-port");
+
+        const standalone = new URLSearchParams({ z: "last", a: "first" });
+        standalone.append("a", "second");
+        standalone.sort();
+        const standaloneOut = {
+            str: standalone.toString(),
+            getA: standalone.get("a"),
+            allA: standalone.getAll("a"),
+            hasA2: standalone.has("a", "second"),
+        };
+
+        let badThrew = false;
+        try {
+            new URL("not a valid url");
+        } catch (err) {
+            badThrew = err instanceof TypeError;
+        }
+        let badPortThrew = false;
+        try {
+            new URL("https://example.com:99999/");
+        } catch (err) {
+            badPortThrew = err instanceof TypeError;
+        }
+
+        return {
+            parsed,
+            afterParamsMutation,
+            afterSearchSetter,
+            relHref: rel.href,
+            relOrigin: rel.origin,
+            ipv6Host: ipv6.host,
+            ipv6Hostname: ipv6.hostname,
+            ipv6Port: ipv6.port,
+            customPortHref: customPort.href,
+            standaloneOut,
+            canParseGood: URL.canParse("https://example.com/ok"),
+            canParseBad: URL.canParse("relative/no-base"),
+            parseNull: URL.parse(":::"),
+            badThrew,
+            badPortThrew,
+        };
+        "#,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        value["parsed"],
+        json!({
+            "protocol": "https:",
+            "hostname": "example.com",
+            "host": "example.com",
+            "port": "",
+            "pathname": "/a/c",
+            "search": "?b=1&tag=rust+lang&tag=%E2%9C%93",
+            "hash": "#top",
+            "origin": "https://example.com",
+            "href": "https://example.com/a/c?b=1&tag=rust+lang&tag=%E2%9C%93#top",
+            "str": "https://example.com/a/c?b=1&tag=rust+lang&tag=%E2%9C%93#top",
+            "json": "\"https://example.com/a/c?b=1&tag=rust+lang&tag=%E2%9C%93#top\"",
+            "b": "1",
+            "tags": ["rust lang", "✓"],
+            "hasB": true,
+            "hasMissing": false,
+            "sameParamsRef": true,
+        })
+    );
+    assert_eq!(
+        value["afterParamsMutation"],
+        json!({
+            "search": "?b=2&tag=%E2%9C%93&extra=a+b",
+            "href": "https://example.com/a/c?b=2&tag=%E2%9C%93&extra=a+b#top",
+            "entries": [["b", "2"], ["tag", "✓"], ["extra", "a b"]],
+            "keys": ["b", "tag", "extra"],
+            "values": ["2", "✓", "a b"],
+            "fromEntries": {"b": "2", "tag": "✓", "extra": "a b"},
+        })
+    );
+    assert_eq!(
+        value["afterSearchSetter"],
+        json!({
+            "sameRef": true,
+            "xAll": ["10", "20"],
+            "size": 2,
+        })
+    );
+    assert_eq!(
+        value["relHref"],
+        json!("https://api.example.com:8443/v1/v2/items?p=1")
+    );
+    assert_eq!(value["relOrigin"], json!("https://api.example.com:8443"));
+    assert_eq!(value["ipv6Host"], json!("[2001:db8::1]:8080"));
+    assert_eq!(value["ipv6Hostname"], json!("[2001:db8::1]"));
+    assert_eq!(value["ipv6Port"], json!("8080"));
+    assert_eq!(
+        value["customPortHref"],
+        json!("http://example.com/default-port")
+    );
+    assert_eq!(
+        value["standaloneOut"],
+        json!({
+            "str": "a=first&a=second&z=last",
+            "getA": "first",
+            "allA": ["first", "second"],
+            "hasA2": true,
+        })
+    );
+    assert_eq!(value["canParseGood"], json!(true));
+    assert_eq!(value["canParseBad"], json!(false));
+    assert_eq!(value["parseNull"], json!(null));
+    assert_eq!(value["badThrew"], json!(true));
+    assert_eq!(value["badPortThrew"], json!(true));
+}
+
+#[tokio::test]
+async fn codemode_determinism_errors_name_execute_tools_instead_of_workflow() {
+    for (expr, expected_name) in [
+        ("return Date.now();", "Date.now()"),
+        ("return new Date();", "new Date()/Date()"),
+        ("return Math.random();", "Math.random()"),
+    ] {
+        let codemode_msg = script_message(run_tools(expr).await);
+        assert!(codemode_msg.contains(expected_name), "{codemode_msg}");
+        assert!(codemode_msg.contains("execute_tools"), "{codemode_msg}");
+        assert!(codemode_msg.contains("deterministic"), "{codemode_msg}");
+        assert!(
+            !codemode_msg.contains("Workflow") && !codemode_msg.contains("record/replay"),
+            "{codemode_msg}"
+        );
+
+        let driver = Arc::new(FakeDriver::new());
+        let workflow_msg = script_message(run(&driver, expr, json!(null)).await);
+        assert!(workflow_msg.contains(expected_name), "{workflow_msg}");
+        assert!(workflow_msg.contains("Workflow scripts"), "{workflow_msg}");
+    }
+}
+
 /// A platform-native absolute path for `unix_path` (`/a/b`): unchanged on
 /// Unix, `C:\a\b` on Windows, where `/a/b` has no drive and is not absolute.
 fn native_abs(unix_path: &str) -> String {

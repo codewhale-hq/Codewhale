@@ -438,6 +438,9 @@
     "std_fs": 18,
     "thread_sleep": 2
   },
+  "crates/telemetry/src/buffer.rs": {
+    "thread_sleep": 1
+  },
   "crates/telemetry/src/envelope.rs": {
     "std_fs": 2
   },
