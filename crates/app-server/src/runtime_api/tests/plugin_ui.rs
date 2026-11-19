@@ -570,7 +570,11 @@ exports.apply = function (ctx) {
     let installed = install_active(&client, &base, format!("dsh:{}", package.display())).await?;
     let name = installed["name"].as_str().unwrap().to_string();
 
-    for key in ["plugins.item", "plugins.detail.actions", "plugins.detail.badge"] {
+    for key in [
+        "plugins.item",
+        "plugins.detail.actions",
+        "plugins.detail.badge",
+    ] {
         let (status, body) = ui(
             &client,
             &base,

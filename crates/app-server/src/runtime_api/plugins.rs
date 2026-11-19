@@ -2007,18 +2007,21 @@ pub(super) async fn get_plugin_ui_asset(
             dsh_bootstrap(&grant.selector, &dsh.closure, &verified)
                 .map_err(|_| ui_stale_revision())?
         } else {
-            verified_ui_file(&grant, &grant.ui_prefix.join(&relative)).map_err(
-                |error| match error {
-                    UiFileError::Missing => {
-                        ApiError::not_found("plugin UI file is not in the reviewed bundle")
-                            .with_code("plugin_ui_file_not_reviewed")
-                    }
-                    UiFileError::TooLarge => {
-                        ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
-                    }
-                    _ => ui_stale_revision(),
-                },
-            )?
+            let bundle_path = if grant.dsh.is_some() {
+                relative.clone()
+            } else {
+                grant.ui_prefix.join(&relative)
+            };
+            verified_ui_file(&grant, &bundle_path).map_err(|error| match error {
+                UiFileError::Missing => {
+                    ApiError::not_found("plugin UI file is not in the reviewed bundle")
+                        .with_code("plugin_ui_file_not_reviewed")
+                }
+                UiFileError::TooLarge => {
+                    ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
+                }
+                _ => ui_stale_revision(),
+            })?
         };
         admit_ui_grant(&state_for_asset, &grant)?;
         if state_for_asset.plugin_ui_grants.get(&revision).is_none() {
