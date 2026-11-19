@@ -845,8 +845,9 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
         let Some((kind, identity)) = entry.provider.split_once(':') else {
             return false;
         };
-        let scope_valid = ProviderKind::parse_config_identity(kind)
-            .is_some_and(|parsed| parsed.as_str() == kind)
+        let parsed_kind =
+            ProviderKind::parse_config_identity(kind).filter(|parsed| parsed.as_str() == kind);
+        let scope_valid = parsed_kind.is_some()
             && !identity.is_empty()
             && key
                 == &ProviderCatalogCache::cache_key(&entry.provider, &entry.base_url_fingerprint);
@@ -858,6 +859,7 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
             );
             return false;
         }
+        let parsed_kind = parsed_kind.expect("validated kind");
         let entry_fingerprint = entry.base_url_fingerprint.clone();
         let entry_fetched_at = entry.fetched_at;
         let rows_before = entry.offerings.len();
@@ -869,6 +871,7 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
                     base_url_fingerprint, fetched_at
                 } if base_url_fingerprint == &entry_fingerprint && *fetched_at == entry_fetched_at)
         });
+        normalize_provider_catalog_offerings(parsed_kind, &mut entry.offerings);
         if entry.offerings.len() != rows_before {
             tracing::warn!(
                 target: "provider_catalog",
@@ -902,6 +905,36 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
         .entries
         .retain(|_, entry| !is_account_scoped_scope(&entry.provider, &entry.base_url_fingerprint));
     Some(cache)
+}
+
+fn normalize_google_wire_model_id(wire_model_id: &str) -> Option<&str> {
+    let trimmed = wire_model_id.trim();
+    const PREFIX: &str = "models/";
+    if trimmed.len() > PREFIX.len()
+        && trimmed.as_bytes()[..PREFIX.len()].eq_ignore_ascii_case(PREFIX.as_bytes())
+    {
+        let bare = trimmed[PREFIX.len()..].trim();
+        if codewhale_runtime::catalog_cache::valid_catalog_model_id(bare) {
+            return Some(bare);
+        }
+    }
+    None
+}
+
+fn normalize_provider_catalog_offerings(
+    kind: ProviderKind,
+    offerings: &mut Vec<codewhale_config::catalog::CatalogOffering>,
+) {
+    if kind != ProviderKind::Google {
+        return;
+    }
+    let mut seen = std::collections::HashSet::with_capacity(offerings.len());
+    offerings.retain_mut(|row| {
+        if let Some(bare) = normalize_google_wire_model_id(&row.wire_model_id) {
+            row.wire_model_id = bare.to_string();
+        }
+        seen.insert(row.wire_model_id.clone())
+    });
 }
 
 fn provider_cost_source_allowed(row: &codewhale_config::catalog::CatalogOffering) -> bool {
@@ -1022,13 +1055,20 @@ pub fn pin_missing_from_fresh_roster(config: &Config, provider: &str, model: &st
     if status_for_route(kind, identity, &base_url) != CatalogStatus::Fresh {
         return None;
     }
+    let normalized_pin = if kind == ProviderKind::Google {
+        normalize_google_wire_model_id(model).unwrap_or(model)
+    } else {
+        model
+    };
     let listed = cached_entry_for_route(kind, identity, &base_url)
         .ok()
         .flatten()
         .is_some_and(|entry| {
             entry.offerings.iter().any(|offering| {
                 offering.wire_model_id == model
+                    || offering.wire_model_id == normalized_pin
                     || offering.canonical_model.as_deref() == Some(model)
+                    || offering.canonical_model.as_deref() == Some(normalized_pin)
             })
         });
     Some(!listed)
@@ -1744,6 +1784,120 @@ pub fn declared_or_catalog_quote(
     }
 }
 
+fn resolve_catalog_pricing_for_dispatch(
+    provider: ProviderKind,
+    provider_identity: &str,
+    wire_model: &str,
+    lookup_model: &str,
+    base_url: &str,
+    endpoint_fingerprint: &str,
+    dispatched_at_unix: u64,
+) -> Option<OfferingPricing> {
+    let offering_pricing = |mut offering: codewhale_config::catalog::CatalogOffering| {
+        if crate::provider_lake::live_catalog_origin(provider, &offering.wire_model_id)
+            == Some(crate::provider_lake::LiveSource::ModelsDev)
+            && let codewhale_config::catalog::CatalogSource::Live { fetched_at, .. } =
+                offering.pricing_source()
+        {
+            offering.cost_source = Some(codewhale_config::catalog::CatalogSource::ModelsDevLive {
+                fetched_at: *fetched_at,
+            });
+        }
+        let pricing = OfferingPricing::from_catalog_offering_at(&offering, dispatched_at_unix)?;
+        if matches!(
+            pricing.provenance,
+            PricingProvenance::ProviderLive | PricingProvenance::ModelsDevLive
+        ) && pricing
+            .fetched_at
+            .or(pricing.effective_at)
+            .is_some_and(|effective_at| effective_at > dispatched_at_unix)
+        {
+            return Some(Err(()));
+        }
+        if pricing
+            .live_pricing_defect(
+                Some(endpoint_fingerprint),
+                Some(dispatched_at_unix),
+                DEFAULT_PROVIDER_CATALOG_TTL_SECS,
+            )
+            .is_some()
+        {
+            return None;
+        }
+        Some(Ok(pricing))
+    };
+
+    let route_offering = crate::provider_lake::catalog_offering_for_route(
+        provider,
+        provider_identity,
+        base_url,
+        wire_model,
+    )
+    .filter(|offering| offering.wire_model_id == wire_model)
+    .or_else(|| {
+        (lookup_model != wire_model)
+            .then(|| {
+                crate::provider_lake::catalog_offering_for_route(
+                    provider,
+                    provider_identity,
+                    base_url,
+                    lookup_model,
+                )
+                .filter(|offering| offering.wire_model_id == lookup_model)
+            })
+            .flatten()
+    });
+
+    if let Some(offering) = route_offering {
+        if matches!(
+            offering.pricing_source(),
+            codewhale_config::catalog::CatalogSource::CloudFacts { .. }
+        ) {
+            return None;
+        }
+        match offering_pricing(offering) {
+            Some(Ok(pricing)) => return Some(pricing),
+            Some(Err(())) => return None,
+            None => {}
+        }
+    }
+
+    if provider_owns_live_catalog(provider, base_url) {
+        if provider == ProviderKind::Openrouter {
+            return crate::provider_lake::bundled_catalog_offering_for_model(
+                provider,
+                lookup_model,
+            )
+            .and_then(|offering| {
+                OfferingPricing::from_catalog_offering_at(&offering, dispatched_at_unix)
+            });
+        }
+        return None;
+    }
+
+    if let Some(offering) = crate::provider_lake::catalog_offering_for_model_identity(
+        provider,
+        Some(provider_identity),
+        lookup_model,
+    ) {
+        if matches!(
+            offering.pricing_source(),
+            codewhale_config::catalog::CatalogSource::CloudFacts { .. }
+        ) {
+            return None;
+        }
+        match offering_pricing(offering) {
+            Some(Ok(pricing)) => return Some(pricing),
+            Some(Err(())) => return None,
+            None => {}
+        }
+    }
+
+    crate::provider_lake::bundled_catalog_offering_for_model(provider, lookup_model).and_then(
+        |offering| OfferingPricing::from_catalog_offering_at(&offering, dispatched_at_unix),
+    )
+}
+
 pub fn fresh_dispatch_pricing_quote_at(
     provider: ProviderKind,
     provider_identity: &str,
@@ -1761,22 +1915,6 @@ pub fn fresh_dispatch_pricing_quote_at(
     ) {
         return Some(quote);
     }
-    if crate::provider_lake::live_catalog_origin(provider, wire_model)
-        == Some(crate::provider_lake::LiveSource::ModelsDev)
-        && crate::provider_lake::catalog_offering_for_model_identity(
-            provider,
-            Some(provider_identity),
-            wire_model,
-        )
-        .is_some_and(|row| {
-            matches!(
-                row.source,
-                codewhale_config::catalog::CatalogSource::Live { .. }
-            )
-        })
-    {
-        return None;
-    }
     if !published_pricing_scope(provider, provider_identity, &endpoint_fingerprint) {
         if let Some(quote) = fresh_cloud_dispatch_pricing_quote_at(
             provider,
@@ -1789,42 +1927,30 @@ pub fn fresh_dispatch_pricing_quote_at(
         }
         return None;
     }
+    let trimmed_model = wire_model.trim();
+    if trimmed_model.is_empty()
+        || trimmed_model.chars().any(char::is_control)
+        || trimmed_model.eq_ignore_ascii_case("auto")
+    {
+        return None;
+    }
     let at = chrono::DateTime::from_timestamp(i64::try_from(dispatched_at_unix).ok()?, 0)?;
-    let hand =
-        codewhale_models::hand_pricing::provider_owned_hand_quote_rows(provider, wire_model, at);
-    let needs_schedule = matches!(
-        provider,
-        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
-    );
-    let catalog = crate::provider_lake::catalog_offering_for_route(
+    let resolved_model = codewhale_config::route::resolve_model(provider, trimmed_model, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.logical);
+    let lookup_model = resolved_model.as_deref().unwrap_or(trimmed_model);
+    let hand = crate::pricing::dispatch_hand_quote_rows(provider, lookup_model, base_url, at);
+    let needs_schedule = crate::pricing::hand_pricing_overrides_catalog(provider, lookup_model);
+    let catalog = resolve_catalog_pricing_for_dispatch(
         provider,
         provider_identity,
+        trimmed_model,
+        lookup_model,
         base_url,
-        wire_model,
-    )
-    .filter(|offering| offering.wire_model_id == wire_model)
-    .map(|mut offering| {
-        if crate::provider_lake::live_catalog_origin(provider, wire_model)
-            == Some(crate::provider_lake::LiveSource::ModelsDev)
-            && let codewhale_config::catalog::CatalogSource::Live { fetched_at, .. } =
-                offering.pricing_source()
-        {
-            offering.cost_source = Some(codewhale_config::catalog::CatalogSource::ModelsDevLive {
-                fetched_at: *fetched_at,
-            });
-        }
-        offering
-    })
-    .and_then(|offering| OfferingPricing::from_catalog_offering_at(&offering, dispatched_at_unix))
-    .filter(|pricing| {
-        pricing
-            .live_pricing_defect(
-                Some(&endpoint_fingerprint),
-                Some(dispatched_at_unix),
-                DEFAULT_PROVIDER_CATALOG_TTL_SECS,
-            )
-            .is_none()
-    });
+        &endpoint_fingerprint,
+        dispatched_at_unix,
+    );
     let catalog_is_live = catalog.as_ref().is_some_and(|pricing| {
         matches!(
             pricing.provenance,
@@ -1901,12 +2027,28 @@ fn fresh_cloud_dispatch_pricing_quote_at(
     }
     let snapshot = codewhale_config::cloud_facts::overlay::snapshot();
     let facts = snapshot.facts.as_ref()?;
+    let trimmed_model = wire_model.trim();
+    let lookup_model = codewhale_config::route::resolve_model(provider, trimmed_model, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.logical);
+    let lookup = lookup_model.as_deref().unwrap_or(trimmed_model);
     let offering = crate::provider_lake::catalog_offering_for_route(
         provider,
         provider_identity,
         base_url,
-        wire_model,
-    )?;
+        trimmed_model,
+    )
+    .or_else(|| {
+        (lookup != trimmed_model).then(|| {
+            crate::provider_lake::catalog_offering_for_route(
+                provider,
+                provider_identity,
+                base_url,
+                lookup,
+            )
+        })?
+    })?;
     let codewhale_config::catalog::CatalogSource::CloudFacts {
         facts_version,
         key_id,
@@ -1919,7 +2061,7 @@ fn fresh_cloud_dispatch_pricing_quote_at(
     // Provider cache files cannot authenticate a cloud price by copying a
     // source stamp. This row must be a projection of the current verified
     // overlay, with matching independent price authority and exact wire ID.
-    if offering.wire_model_id != wire_model
+    if (offering.wire_model_id != trimmed_model && offering.wire_model_id != lookup)
         || !matches!(
             offering.source,
             codewhale_config::catalog::CatalogSource::CloudFacts { .. }
@@ -1992,6 +2134,7 @@ fn record_success_for_identity(
             && codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.wire_model_id)
             && provider_cost_source_allowed(row)
     });
+    normalize_provider_catalog_offerings(kind, &mut delta.offerings);
     if delta.offerings.len() < submitted {
         tracing::warn!(
             target: "provider_catalog",
