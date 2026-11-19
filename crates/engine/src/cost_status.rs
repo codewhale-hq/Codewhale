@@ -1047,6 +1047,19 @@ impl std::fmt::Debug for NativeUsageOrigin {
     }
 }
 
+static WARNED_USAGE_PERSISTENCE_FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn should_warn_usage_persistence_failure(session_id: &str, error: &std::io::Error) -> bool {
+    let mut warned = WARNED_USAGE_PERSISTENCE_FAILURES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if warned.len() >= 256 {
+        warned.clear();
+    }
+    warned.insert(format!("{session_id}:{:?}", error.kind()))
+}
+
 impl NativeUsageOrigin {
     pub(crate) fn scope(&self) -> CostScopeToken {
         self.scope
@@ -1118,7 +1131,11 @@ impl NativeUsageOrigin {
                         &manager,
                     )
                 }) {
-                    tracing::warn!(%error, session_id = %session_id, "usage persistence failed; continuing with unknown cost");
+                    if should_warn_usage_persistence_failure(session_id, &error) {
+                        tracing::warn!(%error, session_id = %session_id, "usage persistence failed; continuing with unknown cost");
+                    } else {
+                        tracing::debug!(%error, session_id = %session_id, "usage persistence failed again; continuing with unknown cost");
+                    }
                 }
             }
             NativeUsageDestination::Runtime { owner, sink, .. } => {
