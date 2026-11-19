@@ -1159,6 +1159,14 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **Bounded release discovery:** `codewhale update` reads at most 8 MiB of
   release metadata and 4 KiB of error text, strips control characters from
   remote errors and no longer echoes malformed input.
+- **heapless unsound advisories (RUSTSEC-2026-0574 through 0582):** nine
+  advisories flag `heapless` 0.8.0 collection APIs. The crate remains in the
+  graph only as a non-optional dependency edge of `faster-hex` 0.10.1 (via
+  `gix-hash`, `gix`), whose `alloc` feature — enabled by `gix-hash` — compiles
+  out its sole `heapless` use, so none of the flagged APIs is reachable. No
+  patched release exists in a compatible range, so `cargo deny` records the
+  deferral with a February 15, 2027 review date;
+  `docs/dependency-maintenance.md` carries the assessment.
 
 ### Known limits
 
