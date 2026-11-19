@@ -8730,6 +8730,7 @@ mod tests {
                 row: header.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
 
         assert!(events.is_empty());
