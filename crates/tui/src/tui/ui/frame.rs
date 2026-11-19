@@ -675,7 +675,7 @@ fn register_clickable_chrome_for_hover(app: &App) {
     // nothing is the same defect as one that acts without lighting up.
     if let Some(composer) = app.viewport.last_composer_area
         && let Some(submit) = crate::tui::widgets::active_composer_submit_rect(app, composer)
-        && app.composer_enter_would_submit(true)
+        && app.composer_enter_would_submit(true, Instant::now())
     {
         crate::tui::hover_layer::register_rect(
             crate::tui::hover_hit::HoverTargetKind::Link,
@@ -2633,6 +2633,8 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::{
         drain_text_block, estimate_output_tokens_from_text, register_info_interaction_targets,
         render_info_row, short_title_truncate,
@@ -3447,6 +3449,7 @@ mod tests {
                     row: target.area.y,
                     modifiers: crossterm::event::KeyModifiers::NONE,
                 },
+                Instant::now(),
             );
             assert!(matches!(
                 events.as_slice(),
@@ -3606,7 +3609,8 @@ mod pet_main_tests {
                     column: cursor.0,
                     row: cursor.1,
                     modifiers: KeyModifiers::NONE,
-                }
+                },
+                Instant::now()
             ));
             assert_eq!(app.cursor_position, app.input.chars().count());
             handle_bracketed_paste(&mut app, " pasted");
@@ -3651,6 +3655,7 @@ mod pet_main_tests {
                 row: hint.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::PetHabitat));
         app.view_stack
