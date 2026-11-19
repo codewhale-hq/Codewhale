@@ -1079,3 +1079,67 @@ fn bm25_tool_search_expands_curated_synonyms_without_false_substring_hits() {
     let exact_git = super::discover_tools_with_bm25_like(&catalog, "git", 8, &active, None);
     assert_eq!(exact_git.first().map(String::as_str), Some("Git"));
 }
+
+#[test]
+fn deferred_named_batch_keeps_execute_tools_schema_minimal() {
+    let step_schema = json!({"type": "object", "properties": {
+        "target": {"type": "string", "description": "x".repeat(400)},
+        "find": {"type": "object", "properties": {"query": {"type": "string"}}}
+    }});
+    let mut batch = tool("mcp_cu_run_actions");
+    batch.description = "Run several computer-use steps.".repeat(20);
+    batch.defer_loading = Some(true);
+    batch.input_schema = json!({
+        "type": "object",
+        "required": ["steps"],
+        "properties": {"steps": {
+            "type": "array", "minItems": 1, "maxItems": 8,
+            "items": {"type": "object", "required": ["tool"], "properties": {
+                "tool": {"type": "string", "enum": ["click", "drag"]},
+                "arguments": {"type": "object", "oneOf": [step_schema.clone(), step_schema]}
+            }}
+        }}
+    });
+    let mut catalog = vec![crate::tools::codemode::execute_tools_tool_definition(), batch];
+    let members = vec!["click".to_string(), "drag".to_string()];
+    assert!(super::configure_composition_entry(
+        &mut catalog,
+        Some("mcp_cu_run_actions"),
+        &members
+    ));
+    let offered = &catalog[0].input_schema["properties"]["batch"];
+    let rendered = offered.to_string();
+    assert!(!rendered.contains("xxxxxxxx"), "{rendered}");
+    assert!(!rendered.contains("computer-use steps"), "{rendered}");
+    assert!(rendered.contains("tool_search"), "{rendered}");
+    assert!(super::offered_batch_allows(
+        &catalog,
+        "mcp_cu_run_actions",
+        &json!({"steps": [{"tool": "click", "arguments": {}}]})
+    ));
+}
+
+#[test]
+fn tool_search_ranks_first_party_names_above_mcp_description_hits() {
+    let mut run = tool("Run");
+    run.defer_loading = Some(true);
+    let mut git = tool("Git");
+    git.defer_loading = Some(true);
+    let mut computer = tool("mcp_cu_run_actions");
+    computer.description = "Run tests, run actions, run anything on the desktop.".to_string();
+    computer.defer_loading = Some(true);
+    let mut notebook = tool("mcp_db_run_notebook");
+    notebook.description = "Run a notebook".to_string();
+    notebook.defer_loading = Some(true);
+    let catalog = vec![computer, notebook, run, git];
+    let found = super::discover_tools_with_bm25_like(
+        &catalog,
+        "run tests cargo",
+        super::TOOL_SEARCH_DEFAULT_MAX_RESULTS,
+        &HashSet::new(),
+        None,
+    );
+    assert_eq!(found.first().map(String::as_str), Some("Run"), "{found:?}");
+    assert!(!found.iter().any(|name| name == "Git"), "{found:?}");
+    assert!(found.len() <= 4, "{found:?}");
+}

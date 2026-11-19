@@ -7223,10 +7223,11 @@ pub fn session_recovery_hint(workspace: &Path, current_session_id: Option<&str>)
     let manager = SessionManager::default_location().ok()?;
     let meta = manager.interrupted_workspace_session(workspace, current_session_id)?;
     Some(format!(
-        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. Use session_search/session_get to inspect it and offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
+        "A previous Codewhale session in this workspace (\"{}\", id {}, last active {}) has a recovery checkpoint — it likely ended mid-task. To inspect it, call session_get with session_id \"{}\" (load session_get with tool_search first if it is not among your tools), then offer to summarize or continue the work; resuming is the user's decision (e.g. /resume).",
         meta.title,
         truncate_id(&meta.id),
         meta.updated_at.format("%Y-%m-%d %H:%M UTC"),
+        meta.id,
     ))
 }
 

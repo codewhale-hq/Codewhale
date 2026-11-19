@@ -583,7 +583,7 @@ pub enum ShellOutputStream {
 }
 
 /// A non-consuming window of a job's raw output stream at absolute byte
-/// offsets. Unlike [`ShellManager::get_output_delta`], reading a chunk never
+/// offsets. Unlike delta polling, reading a chunk never
 /// advances anyone else's cursor, so several HTTP clients can follow the same
 /// job without splitting the stream.
 pub struct ShellOutputChunk {
@@ -3568,6 +3568,7 @@ impl ShellManager {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn get_output_delta(
         &mut self,
         task_id: &str,

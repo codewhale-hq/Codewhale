@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use encoding_rs::{CoderResult, Decoder, UTF_8};
 
-const BOUNDED_OUTPUT_MAX_LINES: usize = 2_000;
-const BOUNDED_OUTPUT_MAX_BYTES: usize = 50 * 1024;
+const BOUNDED_OUTPUT_MAX_LINES: usize = 400;
+const BOUNDED_OUTPUT_MAX_BYTES: usize = 16 * 1024;
 const BOUNDED_OUTPUT_RETAIN_BYTES: usize = BOUNDED_OUTPUT_MAX_BYTES + 4;
 
 #[derive(Debug, Clone)]

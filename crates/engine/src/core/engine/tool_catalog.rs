@@ -39,7 +39,7 @@ pub(super) use crate::tools::codemode::EXECUTE_TOOLS_TOOL_NAME;
 pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
 const TOOL_RESULT_RETRIEVAL_NAME: &str = "retrieve_tool_result";
 const TOOL_SEARCH_TYPE: &str = "tool_search_20251119";
-const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 8;
+const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 4;
 const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 
 // Crate-visible so the hook gate tests the real eager names instead of a copy.
@@ -501,17 +501,26 @@ pub(super) fn configure_composition_entry(
         && let Some(batch) = catalog.iter().find(|tool| Some(tool.name.as_str()) == name)
         && let Some((field, _)) = crate::mcp::named_batch_members(&batch.input_schema)
     {
-        let mut arguments = batch.input_schema.clone();
-        arguments["properties"][field]["items"]["properties"]["tool"]["enum"] = json!(members);
-        if !batch.defer_loading.unwrap_or(false) {
-            arguments = json!({"type":"object", "description":"Use the named batch schema shown in this request; only these step tools are offered here.",
-                "required":[field], "properties":{(field):{"type":"array","minItems":arguments["properties"][field]["minItems"].as_u64().unwrap_or(1),"maxItems":arguments["properties"][field]["maxItems"],
-                    "items":{"type":"object","required":["tool"],"properties":{"arguments":{"type":"object"},
-                        "tool":{"type":"string","enum":members}}}}}});
-        }
+        let deferred = batch.defer_loading.unwrap_or(false);
+        let bounds = &batch.input_schema["properties"][field];
+        let (arguments_description, batch_description) = if deferred {
+            (
+                format!("Step arguments follow `{}`; load its schema with {TOOL_SEARCH_NAME} before the first batch.", batch.name),
+                format!("Named step batch for `{}`.", batch.name),
+            )
+        } else {
+            (
+                "Use the named batch schema shown in this request; only these step tools are offered here.".to_string(),
+                batch.description.clone(),
+            )
+        };
+        let arguments = json!({"type":"object", "description":arguments_description,
+            "required":[field], "properties":{(field):{"type":"array","minItems":bounds["minItems"].as_u64().unwrap_or(1),"maxItems":bounds["maxItems"],
+                "items":{"type":"object","required":["tool"],"properties":{"arguments":{"type":"object"},
+                    "tool":{"type":"string","enum":members}}}}}});
         definition.description.push_str(" For a known sequence, pass batch instead of code. It runs that server's named steps in one gated call and returns a bounded result. Group known steps, including setup and their verification, in one batch. Use code if later actions depend on reading an intermediate result.");
         definition.input_schema["properties"]["batch"] = json!({
-            "type":"object", "description":batch.description,
+            "type":"object", "description":batch_description,
             "required":["tool","arguments"], "additionalProperties":false,
             "properties":{
                 "tool":{"type":"string","enum":[batch.name]},
@@ -1368,10 +1377,15 @@ fn discover_tools_with_bm25_like(
             continue;
         }
         scratch.load(tool);
+        let body_weight = if crate::mcp::McpPool::is_mcp_tool(&tool.name) {
+            3
+        } else {
+            10
+        };
         let mut score = 0i64;
         for term in &terms {
             if scratch.hay.contains(term) {
-                score += 10;
+                score += body_weight;
             }
             // Loop-invariant: lowered once by `load`, not once per term.
             if scratch.name_lower.contains(term) {
@@ -1393,8 +1407,10 @@ fn discover_tools_with_bm25_like(
         }
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let floor = scored.first().map_or(0, |(top, _)| top / 4);
     scored
         .into_iter()
+        .take_while(|(score, _)| *score >= floor)
         .take(max_results)
         .map(|(_, name)| name)
         .collect()

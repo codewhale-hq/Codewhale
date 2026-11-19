@@ -2552,7 +2552,6 @@
   "ExecPromptHelp": "Запит для моделі. Поставте -- перед запитом, який починається з - або містить прапорець exec як звичайний текст; --prompt-file - читає стандартний ввід.",
   "ExecFlagAfterPrompt": "{flag} вказано після запиту, тож його буде сприйнято як текст. Указуйте прапорці перед запитом, а якщо прапорець потрібен як звичайний текст — після --.",
   "InstructionNoticeHeader": "Постійні інструкції було скорочено або пропущено до початку цього сеансу:",
-  "InstructionNoticeFooter": "Виконайте /context report, щоб побачити повну розбивку за джерелами.",
   "InstructionNoticeMore": "…і ще {count}; повний список у /context report.",
   "InstructionNoticeLine": "інструкції: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " збережено {kept_bytes} із {total_bytes} байтів і ~{kept_tokens} із ~{total_tokens} оціночних токенів",

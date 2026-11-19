@@ -1090,7 +1090,11 @@ impl WorkingSet {
             .sorted_for_prompt()
             .into_iter()
             .filter_map(|entry| {
-                let metadata = fs::metadata(workspace.join(&entry.path)).ok()?;
+                let abs = workspace.join(&entry.path);
+                if !read_allowed(&abs) {
+                    return None;
+                }
+                let metadata = fs::metadata(abs).ok()?;
                 Some((entry, metadata.is_dir()))
             })
             .take(self.config.max_prompt_entries)
@@ -1545,10 +1549,31 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
     }
 
     let re = path_regex();
-    re.find_iter(text)
+    text.split(['\n', ';', ','])
+        .flat_map(|line| line.split(". "))
+        .filter(|clause| !is_negated_path_clause(clause))
+        .flat_map(|clause| re.find_iter(clause))
         .map(|m| m.as_str().to_string())
         .filter(|s| looks_like_path(s))
         .collect()
+}
+
+fn is_negated_path_clause(clause: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "never ",
+        "do not ",
+        "don't ",
+        "dont ",
+        "must not ",
+        "should not ",
+        "shouldn't ",
+        "off-limits",
+        "off limits",
+        "forbidden",
+        "not allowed",
+    ];
+    let lower = clause.to_lowercase();
+    MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 fn path_regex() -> &'static Regex {
@@ -1576,7 +1601,7 @@ fn path_regex() -> &'static Regex {
 
 fn summarize_repo_root(workspace: &Path) -> Option<String> {
     let key_files = detect_key_files(workspace);
-    let top_dirs = list_top_level_dirs(workspace, 8);
+    let (top_dirs, hidden_dirs) = list_top_level_dirs(workspace, 8);
 
     if key_files.is_empty() && top_dirs.is_empty() {
         return None;
@@ -1587,7 +1612,12 @@ fn summarize_repo_root(workspace: &Path) -> Option<String> {
         parts.push(format!("Key files: {}", key_files.join(", ")));
     }
     if !top_dirs.is_empty() {
-        parts.push(format!("Top-level dirs: {}", top_dirs.join(", ")));
+        let more = if hidden_dirs > 0 {
+            format!(" (+{hidden_dirs} more)")
+        } else {
+            String::new()
+        };
+        parts.push(format!("Top-level dirs: {}{more}", top_dirs.join(", ")));
     }
     Some(parts.join("\n"))
 }
@@ -1617,36 +1647,28 @@ fn detect_key_files(workspace: &Path) -> Vec<String> {
         .collect()
 }
 
-fn list_top_level_dirs(workspace: &Path, limit: usize) -> Vec<String> {
-    let mut dirs = Vec::new();
-    let entries = match fs::read_dir(workspace) {
-        Ok(entries) => entries,
-        Err(_) => return dirs,
+fn list_top_level_dirs(workspace: &Path, limit: usize) -> (Vec<String>, usize) {
+    let Ok(entries) = fs::read_dir(workspace) else {
+        return (Vec::new(), 0);
     };
-
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-
-        if name.starts_with('.') || IGNORED_ROOT_DIRS.contains(&name) {
-            continue;
-        }
-
-        if let Ok(meta) = entry.metadata()
-            && meta.is_dir()
-        {
-            dirs.push(name.to_string());
-        }
-
-        if dirs.len() >= limit {
-            break;
-        }
-    }
-
+    let mut dirs: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            if name.starts_with('.') || IGNORED_ROOT_DIRS.contains(&name.as_str()) {
+                return None;
+            }
+            entry
+                .metadata()
+                .ok()
+                .filter(fs::Metadata::is_dir)
+                .map(|_| name)
+        })
+        .collect();
     dirs.sort();
-    dirs
+    let hidden = dirs.len().saturating_sub(limit);
+    dirs.truncate(limit);
+    (dirs, hidden)
 }
 
 const IGNORED_ROOT_DIRS: &[&str] = &["target", "node_modules", "dist", "build", ".git"];
@@ -1835,6 +1857,36 @@ mod tests {
                 .as_deref()
                 .is_none_or(|block| !block.contains("src/real.rs")),
             "{after_delete:?}"
+        );
+    }
+
+    #[test]
+    fn summary_block_skips_forbidden_paths_and_lists_dirs_deterministically() {
+        let tmp = TempDir::new().expect("tempdir");
+        for dir in ["zeta", "alpha", "secrets", "beta", "gamma", "delta", "eta", "iota", "kappa"] {
+            fs::create_dir_all(tmp.path().join(dir)).expect("mkdir");
+        }
+        fs::write(tmp.path().join("secrets/STATUS.md"), "x").expect("write");
+        fs::write(tmp.path().join("alpha/keep.rs"), "x").expect("write");
+        fs::write(tmp.path().join("beta/denied.rs"), "x").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message(
+            "Fix alpha/keep.rs and beta/denied.rs. Never read secrets/STATUS.md; it is off-limits.",
+            tmp.path(),
+        );
+        let denied = tmp.path().join("beta/denied.rs");
+        let block = ws
+            .summary_block(tmp.path(), &|path| path != denied)
+            .expect("block");
+        assert!(block.contains("- alpha/keep.rs (file)"), "{block}");
+        assert!(!block.contains("secrets/STATUS.md"), "{block}");
+        assert!(!block.contains("beta/denied.rs"), "{block}");
+        assert!(
+            block.contains(
+                "Top-level dirs: alpha, beta, delta, eta, gamma, iota, kappa, secrets (+1 more)"
+            ),
+            "{block}"
         );
     }
 

@@ -2552,7 +2552,6 @@
   "ExecPromptHelp": "Lời nhắc gửi đến mô hình. Đặt -- trước lời nhắc bắt đầu bằng - hoặc chứa cờ exec dưới dạng văn bản; dùng --prompt-file - để đọc đầu vào chuẩn.",
   "ExecFlagAfterPrompt": "{flag} nằm sau lời nhắc và sẽ bị xem là văn bản. Hãy đặt cờ trước lời nhắc hoặc đặt cờ cần dùng dưới dạng văn bản sau --.",
   "InstructionNoticeHeader": "Các chỉ dẫn thường trực đã bị cắt bớt hoặc bỏ qua trước khi phiên này bắt đầu:",
-  "InstructionNoticeFooter": "Chạy /context report để xem chi tiết đầy đủ theo từng nguồn.",
   "InstructionNoticeMore": "…và {count} mục nữa; danh sách đầy đủ nằm trong /context report.",
   "InstructionNoticeLine": "chỉ dẫn: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " giữ {kept_bytes}/{total_bytes} byte và ~{kept_tokens}/~{total_tokens} token ước tính",

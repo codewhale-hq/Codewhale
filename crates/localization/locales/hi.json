@@ -2552,7 +2552,6 @@
   "ExecPromptHelp": "मॉडल को भेजने वाला प्रॉम्प्ट। - से शुरू होने वाले या exec फ़्लैग को सामान्य टेक्स्ट के रूप में रखने वाले प्रॉम्प्ट से पहले -- लगाएँ; मानक इनपुट पढ़ने के लिए --prompt-file - का उपयोग करें।",
   "ExecFlagAfterPrompt": "{flag} प्रॉम्प्ट के बाद है और टेक्स्ट माना जाएगा। फ़्लैग प्रॉम्प्ट से पहले रखें, या फ़्लैग को सामान्य टेक्स्ट के रूप में भेजने के लिए उसे -- के बाद रखें।",
   "InstructionNoticeHeader": "स्थायी निर्देश इस सत्र के शुरू होने से पहले छाँट दिए गए या छोड़ दिए गए:",
-  "InstructionNoticeFooter": "स्रोत-वार पूरा ब्योरा देखने के लिए /context report चलाएँ।",
   "InstructionNoticeMore": "…और {count} अन्य; पूरी सूची /context report में है।",
   "InstructionNoticeLine": "निर्देश: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " {total_bytes} में से {kept_bytes} बाइट और ~{total_tokens} में से ~{kept_tokens} अनुमानित टोकन रखे गए",

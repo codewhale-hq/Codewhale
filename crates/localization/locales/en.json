@@ -2552,7 +2552,6 @@
   "ExecPromptHelp": "Prompt to send to the model. Put -- before a prompt starting with - or containing a literal exec flag; use --prompt-file - to read stdin.",
   "ExecFlagAfterPrompt": "{flag} appears after the prompt and would be treated as text. Put flags before the prompt, or put literal flag text after --.",
   "InstructionNoticeHeader": "Standing instructions were trimmed or skipped before this session started:",
-  "InstructionNoticeFooter": "Run /context report for the full per-source breakdown.",
   "InstructionNoticeMore": "…and {count} more; the full list is in /context report.",
   "InstructionNoticeLine": "instructions: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " kept {kept_bytes} of {total_bytes} bytes and ~{kept_tokens} of ~{total_tokens} estimated tokens",

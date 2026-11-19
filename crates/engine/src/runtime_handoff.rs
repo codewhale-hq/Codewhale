@@ -205,6 +205,10 @@ pub fn deferred_toolbox_tools(message: &Message) -> Option<Vec<String>> {
         .collect()
 }
 
+pub fn instruction_notice_runtime_message(body: String) -> Message {
+    runtime_handoff_message_with_meta(body, RUNTIME_TURN_META)
+}
+
 /// Build the last Operate contract message an earlier build saved to history.
 pub fn operate_contract_runtime_message() -> Message {
     runtime_handoff_message_with_meta(OPERATE_CONTRACT_EVENT.to_string(), RUNTIME_TURN_META)

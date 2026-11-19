@@ -2552,7 +2552,6 @@
   "ExecPromptHelp": "Запрос для модели. Поставьте -- перед запросом, который начинается с - или содержит флаг exec как обычный текст; --prompt-file - читает стандартный ввод.",
   "ExecFlagAfterPrompt": "{flag} указан после запроса и будет воспринят как текст. Укажите флаги перед запросом, а если флаг нужен как обычный текст — после --.",
   "InstructionNoticeHeader": "Постоянные инструкции были урезаны или пропущены до начала этой сессии:",
-  "InstructionNoticeFooter": "Выполните /context report, чтобы увидеть полную разбивку по источникам.",
   "InstructionNoticeMore": "…и ещё {count}; полный список в /context report.",
   "InstructionNoticeLine": "инструкции: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " сохранено {kept_bytes} из {total_bytes} байт и ~{kept_tokens} из ~{total_tokens} оценочных токенов",
