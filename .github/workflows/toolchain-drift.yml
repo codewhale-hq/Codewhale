@@ -1,0 +1,44 @@
+name: Toolchain drift
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-drift
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  stable:
+    name: Floating stable (clippy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Install Linux system dependencies
+        run: bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
+      - name: Ubuntu build headroom
+        shell: bash
+        run: bash scripts/prepare-ubuntu-build-headroom.sh
+      - name: Toolchain versions
+        run: rustc +stable --version && cargo +stable --version
+      - name: cargo +stable clippy
+        run: |
+          cargo +stable clippy --workspace --all-targets --all-features --locked -- \
+            -D warnings \
+            -A clippy::uninlined_format_args \
+            -A clippy::too_many_arguments \
+            -A clippy::unnecessary_map_or
