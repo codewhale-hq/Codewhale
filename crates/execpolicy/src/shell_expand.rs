@@ -1807,6 +1807,7 @@ impl Expander {
         word.flush(&mut line);
         end_command(&mut commands, &mut line);
         self.dynamic |= uncertain;
+        self.dropped |= uncertain;
 
         for line in &commands {
             self.record(line, depth);
@@ -1825,12 +1826,14 @@ impl Expander {
         }
         if depth > MAX_DEPTH {
             self.dynamic = true;
+            self.dropped = true;
             return;
         }
         self.emit(tokens);
 
         let heads = command_heads(tokens);
         self.dynamic |= heads.truncated;
+        self.dropped |= heads.truncated;
         for payload in &heads.split_payloads {
             // `env -S 'cmd args'` splits its value into a command line.
             self.expand(payload, depth + 1);
@@ -2046,6 +2049,7 @@ impl Expander {
         };
         child.record(sub, depth);
         self.dynamic |= child.dropped;
+        self.dropped |= child.dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
         }
@@ -2265,6 +2269,7 @@ impl Expander {
             }
         }
         self.dynamic |= truncated;
+        self.dropped |= truncated;
     }
 
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
@@ -2313,8 +2318,13 @@ impl Expander {
                     None => (long, None),
                 };
                 if long_flags.contains(&name) {
+                    let d = line.dynamic[i];
+                    self.dynamic |= d;
+                    self.dropped |= d;
                     if let Some(val) = inline {
-                        found = Some((val.to_string(), i));
+                        if !val.is_empty() {
+                            found = Some((val.to_string(), i));
+                        }
                     } else if i + 1 < opt_end {
                         found = Some((tokens[i + 1].clone(), i + 1));
                         i += 1;
@@ -2323,6 +2333,9 @@ impl Expander {
             } else if let Some(flags) = token.strip_prefix('-') {
                 for (at, ch) in flags.char_indices() {
                     if short_flags.contains(&ch) {
+                        let d = line.dynamic[i];
+                        self.dynamic |= d;
+                        self.dropped |= d;
                         let rest = &flags[at + ch.len_utf8()..];
                         if !rest.is_empty() {
                             found = Some((rest.to_string(), i));

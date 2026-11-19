@@ -219,6 +219,11 @@ const HIDDEN_RM: &[&str] = &[
     "nix develop -c$(echo rm) x",
     "nix shell --command=`echo rm` x",
     "nix-shell -p busybox --run 'rm x'",
+    "start-stop-daemon --start --exec=$(echo rm) -- x",
+    "start-stop-daemon -x$(echo rm) -- x",
+    "start-stop-daemon --exec=`echo rm` -S",
+    "start-stop-daemon --exec=${x:-rm} -S",
+    "launchctl submit -p$(echo rm) lbl",
     "docker run --rm alpine rm x",
     "docker run --entrypoint /bin/rm alpine -rf /",
     "docker exec ctr rm x",
@@ -292,6 +297,29 @@ fn budget_commands() -> Vec<String> {
     ]
 }
 
+/// Payloads wrapped deeper than one deny-only child: an unresolved innermost
+/// layer must mark every wrapper unresolved, not just the layer that hit the
+/// budget.
+fn deep_denied() -> Vec<String> {
+    let mut inner = "rm -rf /".to_string();
+    for _ in 0..12 {
+        inner = format!(
+            "sh -c \"{}\"",
+            inner.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+    }
+    let mut flag_chain = "-x rm".to_string();
+    for _ in 0..12 {
+        flag_chain = format!("-x start-stop-daemon -- {flag_chain}");
+    }
+    vec![
+        format!("true -- {inner}"),
+        inner,
+        format!("sh -c 'start-stop-daemon {flag_chain}'"),
+        format!("start-stop-daemon {flag_chain}"),
+    ]
+}
+
 fn denied(engine: &ExecPolicyEngine, command: &str) -> bool {
     let decision = engine
         .check(context(command, AskForApproval::Never))
@@ -306,6 +334,7 @@ fn denied(engine: &ExecPolicyEngine, command: &str) -> bool {
 #[test]
 fn deny_rules_hold_against_runtime_resolved_and_reserved_word_spellings() {
     let budget = budget_commands();
+    let deep = deep_denied();
     let mut missed = Vec::new();
     for engine in deny_rm_engines() {
         for command in HIDDEN_RM
@@ -313,6 +342,7 @@ fn deny_rules_hold_against_runtime_resolved_and_reserved_word_spellings() {
             .chain(LITERAL_RM)
             .copied()
             .chain(budget.iter().map(String::as_str))
+            .chain(deep.iter().map(String::as_str))
         {
             if !denied(&engine, command) {
                 missed.push(command.chars().take(80).collect::<String>());
