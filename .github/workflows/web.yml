@@ -2,6 +2,12 @@ name: Web Frontend
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Optional exact 40-character commit SHA selected by --ref
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -27,6 +33,24 @@ jobs:
           # history, so every date collapses to the tip commit and the committed
           # facts always read as stale. ci.yml pins depth 0 for the same reason.
           fetch-depth: 0
+      - name: Verify expected commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${EXPECTED_SHA}" ]]; then
+            if [[ "${#EXPECTED_SHA}" -ne 40 || "${EXPECTED_SHA}" =~ [^0-9a-fA-F] ]]; then
+              echo "::error::expected_sha must be a full 40-character commit SHA." >&2
+              exit 1
+            fi
+            actual="$(git rev-parse HEAD)"
+            expected_normalized="$(printf '%s' "${EXPECTED_SHA}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "${actual}" != "${expected_normalized}" ]]; then
+              echo "::error::Dispatch resolved to ${actual}, not requested ${EXPECTED_SHA}." >&2
+              exit 1
+            fi
+          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -99,6 +123,24 @@ jobs:
         # while the run is queued behind the concurrency group.
         with:
           ref: ${{ github.sha }}
+      - name: Verify expected commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${EXPECTED_SHA}" ]]; then
+            if [[ "${#EXPECTED_SHA}" -ne 40 || "${EXPECTED_SHA}" =~ [^0-9a-fA-F] ]]; then
+              echo "::error::expected_sha must be a full 40-character commit SHA." >&2
+              exit 1
+            fi
+            actual="$(git rev-parse HEAD)"
+            expected_normalized="$(printf '%s' "${EXPECTED_SHA}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "${actual}" != "${expected_normalized}" ]]; then
+              echo "::error::Dispatch resolved to ${actual}, not requested ${EXPECTED_SHA}." >&2
+              exit 1
+            fi
+          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
