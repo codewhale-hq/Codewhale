@@ -2429,6 +2429,10 @@ impl OutputFiles {
 /// Walk a contained directory without following links, bounded.
 pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> Result<()> {
     let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(root)?),
+        "Source paths must not contain links or reparse points.",
+    )?;
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -2484,7 +2488,12 @@ fn relative_slash(path: &Path, root: &Path) -> String {
 
 /// Convert one skill directory or Markdown file into native skill files.
 fn skill_files(source: &Path, output: &mut OutputFiles) -> Result<String> {
-    let is_dir = source.is_dir();
+    let source_metadata = fs::symlink_metadata(source)?;
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&source_metadata),
+        "Source paths must not contain links or reparse points.",
+    )?;
+    let is_dir = source_metadata.is_dir();
     let entry = if is_dir {
         source.join("SKILL.md")
     } else {
@@ -3602,6 +3611,12 @@ pub fn convert_package_with_network(
             if child.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
+            require(
+                !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
+                    &path,
+                )?),
+                "Source paths must not contain links or reparse points.",
+            )?;
             if path.join("SKILL.md").is_file() || path.extension().is_some_and(|ext| ext == "md") {
                 skill_sources.push(path);
             }
