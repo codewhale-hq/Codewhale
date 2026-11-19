@@ -300,7 +300,7 @@ fn handle_slash_autocomplete_mouse(app: &mut App, mouse: MouseEvent) -> bool {
 
 /// Handle mouse events within the composer area.
 /// Returns true if the event was consumed.
-pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
+pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent, now: Instant) -> bool {
     if !app.view_stack.is_empty() {
         return false;
     }
@@ -365,7 +365,7 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
                 let action =
                     app.decide_composer_submit(crate::tui::app::ComposerSubmitChord::Enter);
                 if !matches!(action, crate::tui::app::ComposerSubmitAction::Noop)
-                    && (app.composer_enter_would_submit(true)
+                    && (app.composer_enter_would_submit(true, now)
                         || matches!(action, crate::tui::app::ComposerSubmitAction::SendQueuedNow))
                 {
                     app.pending_composer_submit = Some(crate::tui::app::ComposerSubmitChord::Enter);
@@ -436,7 +436,7 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
     }
 }
 
-pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
+pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent, now: Instant) -> Vec<ViewEvent> {
     if app.view_stack.top_kind() == Some(ModalKind::ContextMenu) {
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
             app.view_stack.pop();
@@ -640,7 +640,7 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEv
     }
 
     // Composer mouse events take priority over transcript.
-    if handle_composer_mouse(app, mouse) {
+    if handle_composer_mouse(app, mouse, now) {
         return Vec::new();
     }
 
@@ -2379,6 +2379,8 @@ pub(crate) fn selection_to_text(app: &App) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::{
         agent_transcript_text, build_context_menu_entries, handle_composer_mouse,
         handle_mouse_event, sidebar_click_action,
@@ -2567,6 +2569,7 @@ mod tests {
                 row: 10,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert_ne!(
             app.viewport.pending_scroll_delta, 0,
@@ -2575,14 +2578,14 @@ mod tests {
 
         // A click away from the card's rows starts no launch action.
         app.pending_launch_action = None;
-        handle_mouse_event(&mut app, left_click(60, 15));
+        handle_mouse_event(&mut app, left_click(60, 15), Instant::now());
         assert_eq!(
             app.pending_launch_action, None,
             "a click off the card must not be read as a card action"
         );
 
         // A click on a row still runs it.
-        handle_mouse_event(&mut app, left_click(4, 5));
+        handle_mouse_event(&mut app, left_click(4, 5), Instant::now());
         assert_eq!(
             app.pending_launch_action,
             Some(crate::tui::underwater::LaunchAction::NewSession),
@@ -2613,7 +2616,7 @@ mod tests {
         )];
         app.pending_launch_action = None;
 
-        handle_mouse_event(&mut app, left_click(4, 5));
+        handle_mouse_event(&mut app, left_click(4, 5), Instant::now());
         assert_eq!(
             app.pending_launch_action, None,
             "the click must not resume anything on its own"
@@ -2641,7 +2644,7 @@ mod tests {
         )];
         app.pending_launch_action = None;
 
-        handle_mouse_event(&mut app, left_click(4, 5));
+        handle_mouse_event(&mut app, left_click(4, 5), Instant::now());
         assert_eq!(
             app.pending_launch_action,
             Some(crate::tui::underwater::LaunchAction::NewSession),
@@ -2664,7 +2667,7 @@ mod tests {
         let mut app = create_test_app();
         app.launch.visible = false;
         app.needs_redraw = false;
-        handle_mouse_event(&mut app, mouse_move(12, 5));
+        handle_mouse_event(&mut app, mouse_move(12, 5), Instant::now());
         assert!(
             app.needs_redraw,
             "entering a target must repaint while idle"
@@ -2675,7 +2678,7 @@ mod tests {
         );
 
         app.needs_redraw = false;
-        handle_mouse_event(&mut app, mouse_move(40, 5));
+        handle_mouse_event(&mut app, mouse_move(40, 5), Instant::now());
         assert!(app.needs_redraw, "leaving a target must clear its popover");
         assert!(crate::tui::hover_layer::current_hover().is_none());
         crate::tui::hover_layer::clear_pointer();
@@ -2696,7 +2699,7 @@ mod tests {
             vec![(0, Rect::new(1, 20, 78, 1)), (1, Rect::new(1, 21, 78, 1))];
 
         assert!(
-            handle_composer_mouse(&mut app, left_click(5, 21)),
+            handle_composer_mouse(&mut app, left_click(5, 21), Instant::now()),
             "slash row click must be consumed by the composer"
         );
         assert_eq!(
@@ -2709,7 +2712,11 @@ mod tests {
             "select-only click must not rewrite the composer"
         );
 
-        assert!(handle_composer_mouse(&mut app, left_click(5, 21)));
+        assert!(handle_composer_mouse(
+            &mut app,
+            left_click(5, 21),
+            Instant::now()
+        ));
         assert_ne!(app.input, before, "click on the highlighted row applies it");
         assert!(
             app.input.starts_with('/'),
@@ -2741,6 +2748,7 @@ mod tests {
                 row: 20,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now()
         ));
         assert_eq!(app.slash_menu_selected, 1);
 
@@ -2752,6 +2760,7 @@ mod tests {
                 row: 20,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now()
         ));
         assert_eq!(app.slash_menu_selected, 0);
     }
@@ -2771,7 +2780,7 @@ mod tests {
         let submit = crate::tui::widgets::active_composer_submit_rect(&app, area)
             .expect("enclosed composer submit");
 
-        handle_mouse_event(&mut app, left_click(submit.x, submit.y));
+        handle_mouse_event(&mut app, left_click(submit.x, submit.y), Instant::now());
         assert_eq!(
             app.pending_composer_submit,
             Some(crate::tui::app::ComposerSubmitChord::Enter)
@@ -2780,12 +2789,12 @@ mod tests {
         assert_eq!(app.cursor_position, app.input.chars().count());
 
         app.pending_composer_submit = None;
-        handle_mouse_event(&mut app, left_click(area.x + 4, area.y + 1));
+        handle_mouse_event(&mut app, left_click(area.x + 4, area.y + 1), Instant::now());
         assert_eq!(app.pending_composer_submit, None);
 
         app.input.clear();
         app.cursor_position = 0;
-        handle_mouse_event(&mut app, left_click(submit.x, submit.y));
+        handle_mouse_event(&mut app, left_click(submit.x, submit.y), Instant::now());
         assert_eq!(app.pending_composer_submit, None);
         assert!(app.input.is_empty());
     }
@@ -2809,7 +2818,7 @@ mod tests {
                 }),
             });
 
-        handle_mouse_event(&mut app, left_click(60, 0));
+        handle_mouse_event(&mut app, left_click(60, 0), Instant::now());
 
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::ContextInspector));
         assert!(
@@ -2838,7 +2847,7 @@ mod tests {
                 inspect_detail: InspectDetail::Route,
             });
 
-        let events = handle_mouse_event(&mut app, left_click(24, 0));
+        let events = handle_mouse_event(&mut app, left_click(24, 0), Instant::now());
 
         assert!(matches!(
             events.as_slice(),

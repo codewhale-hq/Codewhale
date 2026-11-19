@@ -3281,6 +3281,7 @@ fn export_facet_is_object_safe_and_transports_every_outcome() {
             restore_points: RestorePointProjection::Recorded {
                 snapshots: vec![export_recorded_snapshot()],
             },
+            turn_outcomes: Vec::new(),
         }),
         turn: Some(TurnHandoffProjection {
             markdown: "# turn handoff".to_string(),
@@ -3397,6 +3398,7 @@ fn export_error_and_empty_states_transport_exactly() {
             restore_points: RestorePointProjection::Unreadable {
                 reason: "permission denied".to_string(),
             },
+            turn_outcomes: Vec::new(),
         }),
         recovery: Some(None),
         clipboard: Some(Err("clipboard unavailable".to_string())),
@@ -3497,6 +3499,7 @@ fn export_projection_omission_markers_carry_no_hidden_payload() {
             blocks: vec![ExportBlock::InternalReasoning, ExportBlock::ImageOmitted],
         }]),
         restore_points: RestorePointProjection::None,
+        turn_outcomes: Vec::new(),
     };
     let rendered = format!("{projection:?}");
     assert!(!rendered.contains(HIDDEN_REASONING));

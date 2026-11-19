@@ -4046,12 +4046,12 @@ fn parse_chat_message_for_route(
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for call in tool_calls {
+        for (call_index, call) in tool_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or("tool_call")
-                .to_string();
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("call_{call_index}"));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),

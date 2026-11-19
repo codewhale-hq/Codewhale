@@ -257,6 +257,7 @@ pub(crate) fn apply_engine_error_to_app(
     app.add_message(HistoryCell::Error {
         message: message.clone(),
         severity,
+        code: crate::tui::history::normalize_error_code(&envelope.code),
     });
     app.is_loading = turn_remains_active;
     if !turn_remains_active {
@@ -4849,6 +4850,7 @@ pub(crate) fn apply_loaded_session_with_goal(
             app.extend_history(std::iter::once(HistoryCell::Error {
                 message: outcome.error.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: outcome.code.clone(),
             }));
         }
     };

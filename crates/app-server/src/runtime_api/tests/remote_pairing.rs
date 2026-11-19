@@ -2223,7 +2223,7 @@ async fn an_open_sse_stream_ends_cleanly_on_withdrawal_archive_and_plugin_revoke
 async fn an_open_sse_stream_ends_cleanly_on_session_ttl_expiry() -> Result<()> {
     let (short_mobile, _nonce) = mobile::RuntimeMobileState::new_with_ttls(
         Duration::from_secs(60),
-        Duration::from_millis(1100),
+        ci_scaled(Duration::from_secs(3)),
         Duration::from_secs(60),
     );
     let Some(harness) = NodeRemoteHarness::start_with_mobile(

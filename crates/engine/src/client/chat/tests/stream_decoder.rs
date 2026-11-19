@@ -972,6 +972,59 @@ fn decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
     );
 }
 
+/// Twin of `decoder_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id`
+/// for the non-streaming `parse_chat_message` path (audit Finding V3): a
+/// `chat/completions` response whose `tool_calls` entries omit `id` used to
+/// give every call the literal fallback `"tool_call"`, so parallel calls
+/// shared one id and the whole-response admission in
+/// `validate_tool_call_ids_for_protocol` rejected the turn as a duplicate
+/// pairing id. The fallback is now indexed by the tool-call position.
+#[test]
+fn non_streaming_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id() {
+    let payload: Value = serde_json::from_str(
+        r#"{
+                "id": "chatcmpl_2",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            { "function": { "name": "grep_files", "arguments": "{\"pattern\":\"a\"}" } },
+                            { "function": { "name": "read_file", "arguments": "{\"path\":\"x\"}" } }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }"#,
+    )
+    .expect("valid response");
+
+    let parsed = parse_chat_message(&payload).expect("message parses");
+    let ids: Vec<&str> = parsed
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ids.len(),
+        2,
+        "expected two tool-use blocks for parallel tool calls; got {ids:?}"
+    );
+    assert_ne!(
+        ids[0], ids[1],
+        "parallel tool calls without upstream `id` must get distinct fallback ids; got {ids:?}"
+    );
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("distinct fallback ids pass whole-response admission");
+}
+
 #[test]
 fn decoder_preserves_upstream_tool_call_id_when_present() {
     // Counter-test to the fallback regression: when the upstream chunk

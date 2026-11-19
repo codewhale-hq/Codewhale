@@ -471,7 +471,13 @@ fn opencode_go_hint(message: &str) -> &'static str {
     if lowered.contains("codewhale auth set") {
         return "";
     }
-    if lowered.contains("opencode go") || lowered.contains("opencode.ai/go") {
+    if (lowered.contains("free usage limit")
+        || lowered.contains("freeusagelimiterror")
+        || lowered.contains("free models work in opencode"))
+        && lowered.contains("opencode")
+    {
+        " OpenCode Zen's *-free models are restricted to OpenCode's own client and fail from third-party clients like Codewhale; use a paid OpenCode Zen model or another provider, or for OpenCode Go (a separate provider with its own key) run: codewhale auth set --provider opencode-go"
+    } else if lowered.contains("opencode go") || lowered.contains("opencode.ai/go") {
         " OpenCode Go is a separate provider with its own key; run: codewhale auth set --provider opencode-go"
     } else {
         ""
@@ -2789,5 +2795,47 @@ mod tests {
             rate_limit::body_delay(&google_quota),
             Some(Duration::from_secs(42))
         );
+    }
+
+    #[test]
+    fn test_opencode_zen_free_limit_hint_explains_client_restriction() {
+        let message = "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go";
+        let rendered = LlmError::QuotaWindow {
+            message: message.into(),
+            retry_after: Some(Duration::from_secs(78867)),
+            transmission: RequestTransmission::Rejected,
+        }
+        .to_string();
+        assert!(rendered.contains("*-free"), "{rendered}");
+        assert!(rendered.contains("third-party clients"), "{rendered}");
+        assert!(rendered.contains("paid OpenCode Zen model"), "{rendered}");
+        assert_eq!(
+            rendered
+                .matches("codewhale auth set --provider opencode-go")
+                .count(),
+            1,
+            "{rendered}"
+        );
+
+        let wrapped = LlmError::RateLimited {
+            message: rendered.clone(),
+            retry_after: None,
+        }
+        .to_string();
+        assert_eq!(
+            wrapped
+                .matches("codewhale auth set --provider opencode-go")
+                .count(),
+            1,
+            "{wrapped}"
+        );
+
+        let generic = LlmError::RateLimited {
+            message: "Free usage limit reached".into(),
+            retry_after: None,
+        }
+        .to_string();
+        assert!(!generic.contains("OpenCode"), "{generic}");
+>>>>>>> e4d4df4882
     }
 }
