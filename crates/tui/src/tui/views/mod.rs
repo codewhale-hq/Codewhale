@@ -42,6 +42,7 @@ pub mod fleet_list;
 pub mod fleet_roster;
 pub mod fleet_setup;
 pub mod mode_picker;
+pub(crate) mod rounded;
 pub mod route_save_prompt;
 pub(crate) mod router_setup;
 pub mod skills_manager;

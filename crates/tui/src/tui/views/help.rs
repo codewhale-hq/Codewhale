@@ -32,10 +32,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::commands;
-use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, render_modal_footer, render_panel_scroll_rail,
-    render_underwater_surface,
+use crate::tui::views::rounded::{
+    pad_selected_line, render_rounded_footer, render_rounded_surface,
 };
+use crate::tui::views::{ActionHint, ModalKind, ModalView, ViewAction, render_panel_scroll_rail};
 use codewhale_engine::keybinding_table::KEYBINDINGS;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -1154,7 +1154,7 @@ impl ModalView for HelpView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.row_hitboxes.borrow_mut().clear();
-        let inner = render_underwater_surface(
+        let inner = render_rounded_surface(
             area,
             buf,
             format!(
@@ -1162,23 +1162,16 @@ impl ModalView for HelpView {
                 self.tr(MessageId::HelpTitle),
                 self.tr(MessageId::HelpSubtitle)
             ),
+            None,
+            !self.query.is_empty(),
         );
 
-        // The action footer wraps inside the modal body (#3732) rather than the
-        // single-line border title that silently clipped hints at narrow
-        // widths; the list renders into the content area above it. Empty hint
-        // keys keep the existing localized footer phrases as plain labels.
-        let content = render_modal_footer(
+        let content = render_rounded_footer(
             inner,
             buf,
             &[
-                // `Type to filter` is already printed in the filter row two
-                // lines above; saying it twice on one screen cost the row the
-                // footer wrapped onto at 60 columns.
                 ActionHint::new("", self.tr(MessageId::HelpFooterMove)),
                 ActionHint::new("", self.tr(MessageId::HelpFooterJump)),
-                // Directional tree controls are self-describing and avoid
-                // injecting an English-only phrase into localized Help.
                 ActionHint::new("←/→", ""),
                 ActionHint::new("", self.tr(MessageId::HelpFooterClose)),
             ],
@@ -1186,10 +1179,6 @@ impl ModalView for HelpView {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
 
-        // The filter and the size of what it selected are one fact, so they
-        // share one row: the count used to own a row of its own, and a blank
-        // spacer owned the row under it. At 60x20 that was two of the eight
-        // rows this overlay had left for content.
         let query_label = if self.query.is_empty() {
             self.tr(MessageId::HelpFilterPlaceholder).to_string()
         } else {
@@ -1204,12 +1193,8 @@ impl ModalView for HelpView {
                 .replace("{total}", &self.entries.len().to_string())
         };
         let rows = self.render_rows();
-        // Two header rows: the filter with its count, and the detail row
-        // that restates the focused entry's description at panel width.
         let visible_rows = content.height.saturating_sub(2) as usize;
         let row_start = Self::visible_row_start(&rows, self.focus.as_ref(), visible_rows.max(1));
-        // Reserve the rail before calculating column widths. Otherwise the
-        // description column writes beneath the rail on compact terminals.
         let content = render_panel_scroll_rail(
             content,
             buf,
@@ -1219,16 +1204,10 @@ impl ModalView for HelpView {
             true,
         );
 
-        // Borders and padding eat 4 cells from each side (border 1 + padding
-        // 1) × 2. The label column is measured from the labels each group
-        // holds rather than fixed at 28, and the descriptions get everything
-        // left over.
         let inner_width = content.width as usize;
         let label_cap = 28.min(inner_width.saturating_sub(8));
         let label_widths = self.label_widths(label_cap);
 
-        // Measured against the rail-adjusted width so the right-aligned count
-        // lands inside the list, not under the scroll rail.
         let gap = (content.width as usize)
             .saturating_sub(query_label.width() + match_count.width())
             .max(2);
@@ -1240,22 +1219,15 @@ impl ModalView for HelpView {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" ".repeat(gap)),
-            Span::styled(match_count, Style::default().fg(palette::TEXT_DIM)),
+            Span::styled(match_count, Style::default().fg(palette::TEXT_MUTED)),
         ]));
 
-        // A row cannot hold a command and a sentence at sixty columns, so the
-        // list sheds descriptions there rather than cutting them. That is only
-        // honest if the shed text is still reachable, so the focused entry
-        // states its description here at the full width of the panel — where
-        // most of them fit whole, and the rest shed at their own joints
-        // instead of at a column boundary. The slot keeps its row whether or
-        // not it is filled, so the list below does not jump as focus moves.
         let detail = self
             .focused_entry_detail(inner_width, label_cap, &label_widths)
             .unwrap_or_default();
         lines.push(Line::from(Span::styled(
             detail,
-            Style::default().fg(palette::TEXT_MUTED),
+            Style::default().fg(palette::TEXT_SOFT),
         )));
 
         if self.filtered.is_empty() {
@@ -1266,9 +1238,6 @@ impl ModalView for HelpView {
                     .add_modifier(Modifier::ITALIC),
             )));
         } else {
-            // `content` is the body area above the wrapping footer (the block's
-            // border, padding, and footer rows already removed), so budgeting
-            // against its height keeps selected rows clear of the footer.
             let header_lines = lines.len();
             let visible_budget = (content.height as usize)
                 .saturating_sub(header_lines)
@@ -1287,26 +1256,39 @@ impl ModalView for HelpView {
                             Rect::new(content.x, row_y, content.width, 1),
                             HelpHit::Group(key.clone()),
                         ));
-                        // The selection cursor is `▸` and the collapsed
-                        // chevron is `▸`. Printed side by side, a focused
-                        // collapsed group read `▸ ▸ Slash commands (97)` —
-                        // the same glyph twice for two different facts. The
-                        // chevron stays, because it is this row's own state;
-                        // focus is carried by the selection style, which is
-                        // what carries it on every other row here.
-                        let marker = if collapsed { "▸" } else { "▾" };
-                        let is_focused = self.focus.as_ref() == Some(&HelpHit::Group(key.clone()));
-                        let style = if is_focused {
-                            menu_style::selected_row_style()
+                        let ascii = crate::tui::color_compat::ascii_safe_enabled();
+                        let marker = if collapsed {
+                            if ascii { ">" } else { "▸" }
+                        } else if ascii {
+                            "v"
                         } else {
-                            Style::default()
-                                .fg(palette::WHALE_ACTION)
-                                .add_modifier(Modifier::BOLD)
+                            "▾"
                         };
-                        lines.push(Line::from(Span::styled(
-                            format!("{marker} {label} ({count})"),
-                            style,
-                        )));
+                        let is_focused = self.focus.as_ref() == Some(&HelpHit::Group(key.clone()));
+                        if is_focused {
+                            let sel = menu_style::selected_row_style();
+                            lines.push(pad_selected_line(
+                                Line::from(Span::styled(
+                                    format!("{marker} {label} ({count})"),
+                                    sel,
+                                )),
+                                inner_width,
+                                sel,
+                            ));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("{marker} {label} "),
+                                    Style::default()
+                                        .fg(palette::WHALE_ACTION)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("({count})"),
+                                    Style::default().fg(palette::TEXT_MUTED),
+                                ),
+                            ]));
+                        }
                     }
                     HelpRenderRow::Entry { slot, entry_idx } => {
                         let row_y = content.y.saturating_add(lines.len() as u16);
@@ -1328,19 +1310,15 @@ impl ModalView for HelpView {
                         let desc_capacity =
                             inner_width.saturating_sub(cursor.width() + label_width + 2);
                         let desc = shed_to_width(&entry.description, desc_capacity, self.locale);
-                        // The label is the string you type and the description
-                        // qualifies it. They were both TEXT_PRIMARY, so the
-                        // row said everything at one weight and the eye had
-                        // nothing to skim down.
                         let (label_style, desc_style) = if is_selected {
                             (
                                 menu_style::selected_row_style(),
-                                menu_style::selected_row_style(),
+                                menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT),
                             )
                         } else {
                             (
                                 Style::default().fg(palette::TEXT_PRIMARY),
-                                Style::default().fg(palette::TEXT_DIM),
+                                Style::default().fg(palette::TEXT_MUTED),
                             )
                         };
                         let mut spans = vec![
@@ -1350,7 +1328,12 @@ impl ModalView for HelpView {
                         if !desc.is_empty() {
                             spans.push(Span::styled(desc.to_string(), desc_style));
                         }
-                        lines.push(Line::from(spans));
+                        let line = Line::from(spans);
+                        if is_selected {
+                            lines.push(pad_selected_line(line, inner_width, desc_style));
+                        } else {
+                            lines.push(line);
+                        }
                     }
                 }
             }
@@ -2034,9 +2017,7 @@ mod tests {
             + 1;
         // The scroll rail paints the last column of every row.
         let strip_rail = |row: &str| {
-            row.trim_end_matches(['█', '│', '┃', ' '])
-                .trim()
-                .to_string()
+            row.trim_matches(['█', '│', '┃', ' ']).to_string()
         };
         let detail = strip_rail(narrow.get(detail_row).expect("detail row"));
         assert!(
@@ -2126,8 +2107,7 @@ mod tests {
         let detail = narrow
             .get(detail_row)
             .expect("detail row")
-            .trim_end_matches(['█', '│', '┃', ' '])
-            .trim()
+            .trim_matches(['█', '│', '┃', ' '])
             .to_string();
         assert!(
             description.starts_with(&detail) && !detail.is_empty(),
@@ -2434,7 +2414,7 @@ mod tests {
             );
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
             for (y, row) in rows.iter().enumerate() {
