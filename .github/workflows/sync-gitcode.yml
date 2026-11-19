@@ -73,9 +73,22 @@ jobs:
           elif [[ "${GITHUB_REF}" != refs/heads/main ]]; then
             echo "::error::GitCode mirrors main only; dispatch this workflow from main." >&2
             exit 1
-          elif [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch || "${GITHUB_EVENT_NAME}" == schedule ]]; then
+          elif [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
             scripts/release/mirror-push.sh gitcode "release tags" "refs/tags/v*:refs/tags/v*"
           else
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
           fi
+
+      - name: Mirror the latest release to GitCode
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ -z "$(git ls-remote --tags gitcode "refs/tags/${TAG}")" ]]; then
+            scripts/release/mirror-push.sh gitcode "tag ${TAG}" "refs/tags/${TAG}:refs/tags/${TAG}"
+          fi
+          ./scripts/release/verify-remote-tag.sh gitcode "${TAG}" "$(git rev-parse "refs/tags/${TAG}^{commit}")"

@@ -54,7 +54,8 @@ GitHub Actions workflow:
   schedule at :17 and :47 past each hour, or `workflow_dispatch` for manual
   recovery. The schedule re-mirrors `main` (catching pushes that started no
   workflow) and pushes the latest GitHub Release tag when CNB lacks it, after
-  the same release-inventory check; it fails when that tag differs on CNB or
+  the same release-inventory check (GitCode does the same without the
+  inventory check); it fails when that tag differs on CNB or
   its CNB checksum manifest is unreachable. It never creates a tag or
   release: it only copies ones already published on GitHub. A tag push alone does not mirror a release tag. Manual tag recovery
   also verifies the complete public GitHub asset inventory and immutable source.
