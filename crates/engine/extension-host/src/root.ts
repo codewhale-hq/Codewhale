@@ -204,19 +204,22 @@ export class HostRoot {
     // projection. Refuse instead of accepting listeners that never fire.
     const unsupportedDshLifecycle = new Set([
       'agent/pre-step', 'agent/turn-stopping',
-      'tools/post-execute', 'subagent/start', 'subagent/end',
+      'subagent/start', 'subagent/end',
     ])
     root.on('internal/listener', function (this: any, name: string, callback: any, options: any) {
       if (this[OWNER] && unsupportedDshLifecycle.has(name)) throw new Error(`DSH lifecycle ${name} is not projected by this host checkpoint`)
       if (name === 'agent/created' && options?.global) throw new Error('agent/created listeners are owner-scoped; global is unsupported')
-      if (name !== 'tools/pre-execute') return
+      if (name !== 'tools/pre-execute' && name !== 'tools/post-execute') return
       const owner: OwnerRecord | undefined = this[OWNER]
-      if (!owner) throw new Error('pre-execute listener registered outside an extension owner')
-      if (options?.prepend || options?.global) throw new Error('pre-execute listeners use core registration order; prepend/global are unsupported')
+      if (!owner) throw new Error(`${name} listener registered outside an extension owner`)
+      if (options?.prepend || options?.global) throw new Error(`${name} listeners use core registration order; prepend/global are unsupported`)
+      const description = name === 'tools/pre-execute'
+        ? 'Programmable tool admission listener'
+        : 'Read-only tool outcome observer'
       return this.effect(() => host.hookRegistrations.add(
         { owner, name, callback, disposed: false },
-        { name, description: 'Programmable tool admission listener' },
-      ), 'ctx.on("tools/pre-execute")')
+        { name, description },
+      ), `ctx.on("${name}")`)
     })
 
     // Refuse core service names before any plugin can run. The refusal does
@@ -809,6 +812,17 @@ export class HostRoot {
       throw new RpcError(ErrorCode.NotAvailable, 'hook handle is not live for this event')
     }
     const exec = hookExecution(params.payload, signal)
+    if (params.event === 'tools/post-execute') {
+      const run = ownerStorage.run(local.owner, async () => {
+        try {
+          await local.callback(exec, async () => ({ kind: 'abstain' }))
+        } catch (error) {
+          this.log('warn', `tools/post-execute listener threw: ${describeError(error)}`, local.owner)
+        }
+        return { kind: 'abstain' } as HookVerdictWire
+      })
+      return Promise.race([run, abortedBy(signal)])
+    }
     const run = ownerStorage.run(local.owner, async () => hookVerdict(
       await local.callback(exec, async () => ({ kind: 'abstain' })),
       () => {

@@ -535,3 +535,108 @@ async fn plugin_ui_native_client_serves_only_the_detail_seat_and_is_revoked() ->
     handle.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn plugin_ui_dsh_serves_reviewed_static_assets_and_detail_slots() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    let package = write_dsh_package(
+        tmp.path(),
+        "styled-detail",
+        r#"const util = require('./util');
+exports.apply = function (ctx) {
+  ctx.slot.register('plugins.item', { id: 'item' });
+  ctx.slot.register('plugins.detail.actions', { id: 'actions' });
+  ctx.slot.register('plugins.detail.badge', { id: 'badge' });
+  return util.one;
+};"#,
+    )?;
+    fs::write(
+        package.join("lib/style.css"),
+        ".badge { color: #1976d2; }\n",
+    )?;
+    fs::write(
+        package.join("lib/icon.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 8 8\"></svg>",
+    )?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+    let installed = install_active(&client, &base, format!("dsh:{}", package.display())).await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+
+    for key in ["plugins.item", "plugins.detail.actions", "plugins.detail.badge"] {
+        let (status, body) = ui(
+            &client,
+            &base,
+            &name,
+            &format!("slot=customize.plugins.detail&dsh_slot={key}"),
+        )
+        .await?;
+        assert_eq!(status, 200, "{key}: {body}");
+        assert_consumer_contract(&name, &body, "customize.plugins.detail", key);
+    }
+
+    let (status, detail) = ui(
+        &client,
+        &base,
+        &name,
+        "slot=customize.plugins.detail&dsh_slot=plugins.item",
+    )
+    .await?;
+    assert_eq!(status, 200, "{detail}");
+    let revision = detail["revision"].as_str().unwrap().to_string();
+    let asset_base = detail["base"].as_str().unwrap().to_string();
+
+    // Reviewed CSS and SVG static assets are served with safe headers.
+    let css = client
+        .get(format!("{asset_base}source/lib/style.css"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(css.status(), StatusCode::OK);
+    assert_eq!(
+        css.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/css; charset=utf-8")
+    );
+    assert!(css.text().await?.contains(".badge"));
+
+    let svg = client
+        .get(format!("{asset_base}source/lib/icon.svg"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(svg.status(), StatusCode::OK);
+    assert_eq!(
+        svg.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/svg+xml")
+    );
+    assert!(
+        svg.headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("default-src 'none'"))
+    );
+
+    // Raw JS/JSON source files remain refused for DSH grants.
+    let raw_js = client
+        .get(format!("{asset_base}source/lib/util.js"))
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(raw_js.status(), StatusCode::NOT_FOUND);
+    let body: serde_json::Value = raw_js.json().await?;
+    assert_eq!(body["error"]["code"], "plugin_ui_file_not_reviewed");
+
+    handle.abort();
+    Ok(())
+}

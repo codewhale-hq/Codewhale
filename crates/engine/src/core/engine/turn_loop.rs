@@ -5380,6 +5380,26 @@ impl Engine {
             let routed_duration_ms =
                 u64::try_from(outcome.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             let result = outcome.terminal.into_legacy_result();
+            if let Some(extension_host) = self.extension_host.as_ref().filter(|_| {
+                self.config
+                    .features
+                    .enabled(codewhale_runtime::features::Feature::ExtensionHost)
+            }) {
+                let is_error = result.as_ref().map_or(true, |output| !output.success);
+                extension_host
+                    .tool_after_hooks(crate::extension_host::protocol::HookCallPayload {
+                        name: outcome.name.clone(),
+                        call_id: outcome.id.clone(),
+                        input: serde_json::json!({
+                            "is_error": is_error,
+                            "duration_ms": routed_duration_ms,
+                        }),
+                        mode: format!("{:?}", turn.mode),
+                        workspace: self.session.workspace.to_string_lossy().into_owned(),
+                        model: self.config.model.clone(),
+                    })
+                    .await;
+            }
             let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
                 guard.observe(
