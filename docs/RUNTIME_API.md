@@ -2348,6 +2348,7 @@ degrade with an explanation otherwise.
 - `POST /v1/automations/{id}/run`
 - `POST /v1/automations/{id}/pause`
 - `POST /v1/automations/{id}/resume`
+- `POST /v1/automations/{id}/adopt`
 - `GET /v1/automations/{id}/runs?limit=20`
 
 Create and update requests accept an optional `model`. When present, each

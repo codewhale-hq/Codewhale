@@ -3715,6 +3715,45 @@ pub(crate) async fn apply_approval_decision(
         .resolve_pending_approval(&event.tool_id, approved);
     note_human_decision_delivered(app, &event.tool_id);
     app.retire_action_notices(Some(&event.tool_id));
+    if !event.timed_out
+        && let Some(subject) = event.subject
+    {
+        let (outcome, receipt_subject) = if event.decision == ReviewDecision::Approved
+            && event
+                .persistent_rules
+                .iter()
+                .any(|rule| rule.action == codewhale_execpolicy::PermissionAction::Allow)
+        {
+            let pattern = crate::tui::approval::format_allow_rules_pattern(&event.persistent_rules)
+                .unwrap_or(subject);
+            (
+                crate::tui::history::ApprovalReceiptOutcome::AlwaysAllowedInRepo,
+                pattern,
+            )
+        } else {
+            let outcome = match event.decision {
+                ReviewDecision::Approved => {
+                    crate::tui::history::ApprovalReceiptOutcome::AllowedOnce
+                }
+                ReviewDecision::ApprovedForSession => {
+                    crate::tui::history::ApprovalReceiptOutcome::AllowedInConversation
+                }
+                ReviewDecision::Denied => crate::tui::history::ApprovalReceiptOutcome::Denied,
+                ReviewDecision::Abort => unreachable!(),
+            };
+            (outcome, subject)
+        };
+        let receipt = HistoryCell::ApprovalReceipt(crate::tui::history::ApprovalReceiptCell::new(
+            outcome,
+            receipt_subject,
+        ));
+        if let Some(active_cell) = app.active_cell.as_mut() {
+            active_cell.push_untracked(receipt);
+            app.bump_active_cell_revision();
+        } else {
+            app.add_message(receipt);
+        }
+    }
     true
 }
 

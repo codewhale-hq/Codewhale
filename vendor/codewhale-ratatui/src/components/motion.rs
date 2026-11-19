@@ -177,6 +177,44 @@ fn can_blend(theme: &Theme) -> bool {
     theme.paints_grounds() && theme.depth() == ColorDepth::TrueColor
 }
 
+pub const ACTIVITY_SWEEP_TRAVEL: Duration =
+    Duration::from_millis(tokens::MOTION_SWEEP_ACTIVE_MS as u64);
+pub const ACTIVITY_SWEEP_PEAK: f32 = tokens::MOTION_SWEEP_STRENGTH;
+const ACTIVITY_SWEEP_HALF_WIDTH: f32 = tokens::MOTION_SWEEP_WIDTH_CELLS * 0.5;
+const ACTIVITY_SWEEP_LEAD: f32 = 5.0;
+
+#[must_use]
+pub fn activity_sweep_strength(elapsed: Duration, width: usize, offset: f32) -> f32 {
+    let Some(since) = elapsed.checked_sub(crate::spin::EARN_DELAY) else {
+        return 0.0;
+    };
+    let phase = since.as_millis() % tokens::MOTION_LOOP_BREATHE_MS as u128;
+    let travel = tokens::MOTION_SWEEP_ACTIVE_MS as u128;
+    if phase >= travel || width == 0 {
+        return 0.0;
+    }
+    let center = phase as f32 / travel as f32 * (width as f32 + 2.0 * ACTIVITY_SWEEP_LEAD)
+        - ACTIVITY_SWEEP_LEAD;
+    let distance = (offset - center).abs();
+    if distance >= ACTIVITY_SWEEP_HALF_WIDTH {
+        return 0.0;
+    }
+    0.5 * (1.0 + (std::f32::consts::PI * distance / ACTIVITY_SWEEP_HALF_WIDTH).cos())
+        * ACTIVITY_SWEEP_PEAK
+}
+
+#[must_use]
+pub fn activity_sweep_ink(fg: Color, ground: Color, highlight: Color, strength: f32) -> Color {
+    if strength <= 0.0 || !is_truecolor(fg) || !is_truecolor(highlight) {
+        return fg;
+    }
+    let ink = blend(highlight, fg, strength);
+    match (contrast_ratio(fg, ground), contrast_ratio(ink, ground)) {
+        (Some(before), Some(after)) if after >= before.min(4.5) => ink,
+        _ => fg,
+    }
+}
+
 pub fn paint_working_glow(
     buf: &mut Buffer,
     area: Rect,
@@ -202,14 +240,6 @@ pub fn paint_working_glow(
     if width == 0 {
         return;
     }
-    let cycle = tokens::MOTION_LOOP_BREATHE_MS as u128;
-    let active = tokens::MOTION_SWEEP_ACTIVE_MS as u128;
-    let phase = (elapsed - crate::spin::EARN_DELAY).as_millis() % cycle;
-    if phase >= active {
-        return;
-    }
-    let half_width = tokens::MOTION_SWEEP_WIDTH_CELLS;
-    let center = phase as f32 / active as f32 * (width as f32 + half_width * 2.0) - half_width;
     let mut offset = 0usize;
     for grapheme in label.graphemes(true) {
         let cells = text::width(grapheme);
@@ -220,27 +250,16 @@ pub fn paint_working_glow(
             break;
         }
         let cell = &mut buf[(area.x + offset as u16, area.y)];
-        let distance = (offset as f32 + (cells - 1) as f32 / 2.0 - center).abs();
-        let norm = (distance / half_width).min(1.0);
         let strength =
-            0.5 * (1.0 + (norm * std::f32::consts::PI).cos()) * tokens::MOTION_SWEEP_STRENGTH;
-        if strength > 0.0
-            && cell.symbol() == grapheme
-            && !grapheme.chars().all(char::is_whitespace)
-            && is_truecolor(cell.fg)
+            activity_sweep_strength(elapsed, width, offset as f32 + (cells - 1) as f32 / 2.0);
+        if strength > 0.0 && cell.symbol() == grapheme && !grapheme.chars().all(char::is_whitespace)
         {
             let ground = if is_truecolor(cell.bg) {
                 cell.bg
             } else {
                 background
             };
-            let ink = blend(highlight, cell.fg, strength);
-            if let (Some(before), Some(after)) =
-                (contrast_ratio(cell.fg, ground), contrast_ratio(ink, ground))
-                && after >= before.min(4.5)
-            {
-                cell.fg = ink;
-            }
+            cell.fg = activity_sweep_ink(cell.fg, ground, highlight, strength);
         }
         offset += cells;
     }
@@ -744,5 +763,26 @@ impl Paint for MotionDemo<'_> {
 
     fn height(&self, _width: u16, _theme: &Theme) -> u16 {
         3
+    }
+}
+
+#[cfg(test)]
+mod activity_sweep_tests {
+    use super::*;
+
+    #[test]
+    fn sweep_rests_during_the_earn_delay_and_the_end_of_each_loop() {
+        let earn = crate::spin::EARN_DELAY;
+        assert_eq!(activity_sweep_strength(earn / 2, 12, 0.0), 0.0);
+        let rest = earn + ACTIVITY_SWEEP_TRAVEL + Duration::from_millis(100);
+        for offset in 0..12 {
+            assert_eq!(activity_sweep_strength(rest, 12, offset as f32), 0.0);
+        }
+        let midway = earn + ACTIVITY_SWEEP_TRAVEL / 2;
+        let peak = activity_sweep_strength(midway, 12, 6.0);
+        assert!((peak - ACTIVITY_SWEEP_PEAK).abs() < 1e-3, "{peak}");
+        assert!(activity_sweep_strength(midway, 12, 1.0) < 0.1);
+        let next_loop = midway + Duration::from_millis(tokens::MOTION_LOOP_BREATHE_MS as u64);
+        assert_eq!(activity_sweep_strength(next_loop, 12, 6.0), peak);
     }
 }

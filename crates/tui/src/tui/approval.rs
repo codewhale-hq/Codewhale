@@ -55,13 +55,15 @@ mod view;
 pub use ask_rules::PermissionRuleSavePreview;
 #[cfg(test)]
 use ask_rules::build_save_preview as build_permission_rule_save_preview;
+pub(crate) use ask_rules::format_allow_rules_pattern;
 use ask_rules::{SAVE_PREVIEW_MAX_ENTRIES, build_save_preview};
 pub use elevation::{ElevationOption, ElevationRequest, ElevationView};
 #[cfg(test)]
 use previews::apply_patch_preview_lines;
 pub(crate) use previews::format_shell_command_for_approval;
 use previews::{
-    file_write_preview_lines, localize_detail_label, localize_preview_shell_line, param_text,
+    docked_prompt_parts, file_write_preview_lines, localize_detail_label,
+    localize_preview_shell_line, param_text, receipt_subject,
 };
 // Keep the existing module path even though production callers only construct
 // `ApprovalView`; approval characterization tests inspect its typed options.
@@ -307,6 +309,26 @@ impl ApprovalRequest {
             build_save_preview(&self.persistent_allow_rules, SAVE_PREVIEW_MAX_ENTRIES)
                 .expect("eligible allow rules are non-empty")
         })
+    }
+
+    pub(crate) fn docked_parts(&self) -> (String, String, bool) {
+        let parts = docked_prompt_parts(
+            &self.tool_name,
+            &self.params,
+            &self.workspace,
+            &self.summary,
+        );
+        (parts.verb, parts.subject, parts.outside_workspace)
+    }
+
+    #[must_use]
+    pub(crate) fn receipt_subject(&self) -> String {
+        receipt_subject(
+            &self.tool_name,
+            &self.params,
+            &self.workspace,
+            &self.summary,
+        )
     }
 
     #[must_use]

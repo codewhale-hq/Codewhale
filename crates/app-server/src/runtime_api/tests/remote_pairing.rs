@@ -189,7 +189,10 @@ impl NodeRemoteHarness {
         let offer = TestOffer::only(&[HostService::Remote]);
         let fixture = FixturePlugins::new(&[]).await;
         install_reviewed_remote_pair_plugin(&fixture)?;
-        let manager = fixture.manager(node);
+        let mut supervision = codewhale_engine::extension_host::SupervisionOptions::default();
+        supervision.ping_timeout = ci_scaled(supervision.ping_timeout);
+        supervision.hang_timeout = ci_scaled(supervision.hang_timeout);
+        let manager = fixture.manager_with_supervision(node, supervision);
         let manager_guard = TestManagerGuard::install(Arc::clone(&manager));
 
         let mut config = Config::default().with_legacy_root(

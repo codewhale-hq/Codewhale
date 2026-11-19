@@ -20,6 +20,7 @@ use codewhale_tui_kit::diff_render;
 use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 mod agent_activity;
+mod approval_receipt;
 mod archived_context;
 mod automation;
 mod checklist;
@@ -35,6 +36,7 @@ mod tool_output;
 mod tool_run;
 mod turn_fold;
 
+pub use approval_receipt::{ApprovalReceiptCell, ApprovalReceiptOutcome};
 use archived_context::{parse_archived_context, render_archived_context};
 pub use automation::{AutomationCell, AutomationCellKind};
 pub(crate) use checklist::is_checklist_tool_name;
@@ -202,6 +204,7 @@ pub enum HistoryCell {
     /// one-line bulleted card that replaced bare-String `System` receipts
     /// (AUTOMATION-VISIBILITY-SPEC §2.2).
     Automation(AutomationCell),
+    ApprovalReceipt(ApprovalReceiptCell),
     /// Live in-transcript card for sub-agent activity (issue #128). Owns
     /// either a single `DelegateCard` or a multi-worker `FanoutCard`; the
     /// UI re-binds it from the mailbox stream as envelopes arrive.
@@ -329,7 +332,19 @@ impl HistoryCell {
             | HistoryCell::Thinking { .. }
             | HistoryCell::ArchivedContext { .. }
             | HistoryCell::Automation(_)
+            | HistoryCell::ApprovalReceipt(_)
             | HistoryCell::SubAgent(_) => false,
+        }
+    }
+
+    pub(crate) fn activity_sweep(&self) -> Option<ActivitySweep> {
+        match self {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => (exec.status == ToolStatus::Running
+                && exec.waiting.is_none()
+                && exec.stale_elapsed_since_output_ms.is_none())
+            .then_some(ActivitySweep::StatusOnly),
+            HistoryCell::Tool(_) if self.has_live_motion() => Some(ActivitySweep::VerbAndStatus),
+            _ => None,
         }
     }
 
@@ -432,6 +447,7 @@ impl HistoryCell {
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
@@ -590,6 +606,7 @@ impl HistoryCell {
             }
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => {
                 render_archived_context(self, width, options.palette_mode)
             }
@@ -745,6 +762,7 @@ impl HistoryCell {
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
+            HistoryCell::ApprovalReceipt(cell) => cell.render(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(
                 self,
                 width,
@@ -1472,18 +1490,20 @@ impl ExecCell {
         };
 
         let separator = Style::default().fg(palette::TEXT_DIM);
+        let running_elapsed = (held.is_none() && self.status == ToolStatus::Running)
+            .then(|| self.started_at.and_then(running_elapsed_label))
+            .flatten();
         let state = held.or_else(|| match self.status {
             ToolStatus::Success => None,
-            ToolStatus::Running => Some(self.started_at.map_or_else(
-                || tool_status_label(ToolStatus::Running, locale).to_string(),
-                |started| running_status_label_with_elapsed(started.elapsed().as_secs(), locale),
-            )),
             status => Some(tool_status_label(status, locale).to_string()),
         });
         let mut suffix = Vec::new();
         if let Some(state) = state {
             suffix.push(Span::styled(" \u{00B7} ", separator));
             suffix.push(Span::styled(state, tool_status_style(self.status, family)));
+        }
+        if let Some(elapsed) = running_elapsed {
+            suffix.push(Span::styled(format!("  {elapsed}"), separator));
         }
         if let Some(duration) = self.finished_duration() {
             suffix.push(Span::styled(" \u{00B7} ", separator));
@@ -3259,15 +3279,9 @@ fn render_tool_header_with_family_and_summary(
     low_motion: bool,
     locale: Locale,
 ) -> Line<'static> {
-    // For long-running tools, append elapsed seconds so the user can see the
-    // call isn't stuck. Threshold matches the eye's "did this hang?" reflex
-    // — under 3s we stay quiet so quick reads/greps don't visually churn.
-    let state_owned = match (state, status, started_at) {
-        (Some(state), _, _) => state.to_string(),
-        (None, ToolStatus::Running, Some(started)) => {
-            running_status_label_with_elapsed(started.elapsed().as_secs(), locale)
-        }
-        _ => tool_status_label(status, locale).into_owned(),
+    let state_owned = match state {
+        Some(state) => state.to_string(),
+        None => tool_status_label(status, locale).into_owned(),
     };
 
     let glyph = crate::tui::widgets::tool_card::family_glyph(family);
@@ -3299,6 +3313,15 @@ fn render_tool_header_with_family_and_summary(
         spans.push(Span::styled(
             truncate_text(&summary, TOOL_HEADER_SUMMARY_LIMIT),
             Style::default().fg(palette::TEXT_MUTED),
+        ));
+    }
+    if state.is_none()
+        && status == ToolStatus::Running
+        && let Some(elapsed) = started_at.and_then(running_elapsed_label)
+    {
+        spans.push(Span::styled(
+            format!("  {elapsed}"),
+            Style::default().fg(palette::TEXT_DIM),
         ));
     }
 
@@ -3342,17 +3365,76 @@ fn normalize_header_summary(summary: &str) -> Option<String> {
     }
 }
 
-/// Build the "running" label with an elapsed-seconds badge for long-running
-/// tools. Below 3s the badge is suppressed to avoid visual churn for tools
-/// that resolve in milliseconds; at 3s and beyond the badge appears and ticks
-/// every second the tool stays in flight.
-pub(crate) fn running_status_label_with_elapsed(elapsed_secs: u64, locale: Locale) -> String {
-    let state = tool_status_label(ToolStatus::Running, locale);
-    if elapsed_secs < 3 {
-        state.into_owned()
-    } else {
-        format!("{state} ({elapsed_secs}s)")
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivitySweep {
+    VerbAndStatus,
+    StatusOnly,
+}
+
+pub(crate) fn tool_header_sweep_extent(
+    shape: ActivitySweep,
+    line: &Line<'static>,
+    line_in_cell: usize,
+) -> Option<std::ops::Range<usize>> {
+    let has_rail = line
+        .spans
+        .first()
+        .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ "));
+    match (shape, line_in_cell) {
+        (ActivitySweep::StatusOnly, 0) if has_rail => {
+            (line.spans.get(4).is_some_and(|span| span.content == " ")
+                && line
+                    .spans
+                    .get(5)
+                    .is_some_and(|span| !span.content.trim().is_empty()))
+            .then_some(5..6)
+        }
+        (ActivitySweep::StatusOnly, 0) => {
+            let status_fg = tool_glyph_color(
+                ToolStatus::Running,
+                crate::tui::widgets::tool_card::ToolFamily::Run,
+            );
+            (line.spans.len() >= 4
+                && line.spans[3].style.fg == Some(status_fg)
+                && !line.spans[3].content.trim().is_empty())
+            .then_some(3..4)
+        }
+        (ActivitySweep::StatusOnly, 1) if !has_rail => {
+            let status_fg = tool_glyph_color(
+                ToolStatus::Running,
+                crate::tui::widgets::tool_card::ToolFamily::Run,
+            );
+            line.spans
+                .first()
+                .is_some_and(|span| {
+                    span.style.fg == Some(status_fg)
+                        && !span.content.starts_with(char::is_whitespace)
+                        && !span.content.trim().is_empty()
+                })
+                .then_some(0..1)
+        }
+        (ActivitySweep::VerbAndStatus, 0) => {
+            let base = usize::from(has_rail);
+            let verb = base + 2;
+            line.spans.get(verb)?;
+            if line
+                .spans
+                .get(verb + 1)
+                .is_some_and(|span| span.content == " ")
+                && line.spans.get(verb + 2).is_some()
+            {
+                Some(verb..verb + 3)
+            } else {
+                Some(verb..verb + 1)
+            }
+        }
+        _ => None,
     }
+}
+
+pub(crate) fn running_elapsed_label(started_at: Instant) -> Option<String> {
+    let secs = started_at.elapsed().as_secs();
+    (secs >= 1).then(|| codewhale_command_contract::elapsed::format_elapsed_secs(secs))
 }
 
 pub(crate) fn stale_shell_status_label(elapsed_since_output_ms: u64, locale: Locale) -> String {

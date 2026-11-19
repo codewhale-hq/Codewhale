@@ -531,6 +531,7 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
     let manager = automations.try_lock().ok()?.clone();
     let live_owners = app.automation_panel.live_run_owners();
     Some(tokio::task::spawn_blocking(move || {
+        let execution_scope = manager.execution_scope().map(str::to_string);
         let records = match manager.list_automations() {
             Ok(records) => records,
             Err(err) => {
@@ -571,7 +572,11 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
         // fold counts by id, so dedupe before handing the scan over.
         let mut seen = std::collections::BTreeSet::new();
         runs.retain(|run| seen.insert(run.id.clone()));
-        AutomationScan { records, runs }
+        AutomationScan {
+            records,
+            runs,
+            execution_scope,
+        }
     }))
 }
 
@@ -581,9 +586,12 @@ fn start_automation_scan(app: &App, full: bool) -> Option<tokio::task::JoinHandl
 /// repaints the band.
 fn fold_automation_scan(app: &mut App, scan: &AutomationScan) -> bool {
     let session_started_at = app.session_started_at;
-    let delta = app
-        .automation_panel
-        .fold_scan(&scan.records, &scan.runs, session_started_at);
+    let delta = app.automation_panel.fold_scan_in_scope(
+        &scan.records,
+        &scan.runs,
+        session_started_at,
+        scan.execution_scope.as_deref(),
+    );
     let locale = app.ui_locale;
     for run in &delta.settled {
         app.add_message(crate::tui::automation_routing::settled_run_receipt(

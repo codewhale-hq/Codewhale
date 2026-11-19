@@ -1164,23 +1164,16 @@ fn ask_rule_save_preview_truncates_rule_list() {
 
 #[test]
 fn tab_toggles_collapsed_card_so_transcript_stays_visible() {
-    // Regression for PR #1455 / @tiger-dog: the approval modal once hid
-    // the transcript, so users had to dismiss the prompt to remember what
-    // they were approving. Tab flips between the expanded compact card
-    // and a single-line bottom banner.
     let mut view = ApprovalView::new(benign_request());
-    assert!(
-        !view.collapsed,
-        "modal must start expanded so first-time users notice it"
-    );
+    assert!(!view.details_expanded);
 
     let action = view.handle_key(create_key_event(KeyCode::Tab));
     assert!(matches!(action, ViewAction::None));
-    assert!(view.collapsed, "first Tab collapses the card");
+    assert!(view.details_expanded);
 
     let action = view.handle_key(create_key_event(KeyCode::Tab));
     assert!(matches!(action, ViewAction::None));
-    assert!(!view.collapsed, "second Tab restores the expanded card");
+    assert!(!view.details_expanded);
 }
 
 #[test]
@@ -1191,18 +1184,21 @@ fn test_approval_view_navigation() {
     view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
-
-    // Continue through the semantic default rather than dead-ending (#4755).
-    view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::Deny);
-
-    // And back through the same order the other way.
-    view.select_prev();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
-
     view.select_prev();
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    view.select_prev();
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
+
+    view.handle_key(create_key_event(KeyCode::Char('m')));
+    assert!(view.scopes_open);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    view.select_next();
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+    view.select_next();
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    view.select_prev();
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
 }
 
 #[test]
@@ -1274,6 +1270,7 @@ fn save_file_ask_rule_shortcut_emits_file_rule() {
 #[test]
 fn persistent_allow_option_approves_once_with_exact_repo_rule() {
     let mut view = ApprovalView::new(shell_request());
+    view.handle_key(create_key_event(KeyCode::Char('m')));
     render_lines(&view, 120, 40);
 
     let action = view.handle_key(create_key_event(KeyCode::Char('p')));
@@ -1296,10 +1293,6 @@ fn persistent_allow_option_approves_once_with_exact_repo_rule() {
     );
 }
 
-/// The `[2 / p]` save works only while the card shows what the rule covers:
-/// never before the first paint, never on a band too small for the save
-/// preview, never while collapsed to its banner. `s` works only once the
-/// details pager has listed what it saves.
 #[test]
 fn save_shortcuts_fail_closed_while_the_save_preview_is_off_screen() {
     let saves = |view: &mut ApprovalView| {
@@ -1307,7 +1300,7 @@ fn save_shortcuts_fail_closed_while_the_save_preview_is_off_screen() {
             KeyCode::Char('p'),
             KeyCode::Char('s'),
             KeyCode::Char('a'),
-            KeyCode::Char('2'),
+            KeyCode::Char('3'),
         ]
         .map(|code| {
             matches!(
@@ -1317,62 +1310,72 @@ fn save_shortcuts_fail_closed_while_the_save_preview_is_off_screen() {
         })
     };
     let mut view = ApprovalView::new(shell_request());
-    assert_eq!(
-        saves(&mut view),
-        [false, false, false, false],
-        "before the first paint"
-    );
+    assert_eq!(saves(&mut view), [false, false, false, false]);
 
     render_lines(&view, 120, 40);
-    assert_eq!(
-        saves(&mut view),
-        [true, false, false, true],
-        "preview on screen"
-    );
-    view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
-    assert_eq!(
-        saves(&mut view),
-        [true, true, true, true],
-        "details pager opened"
-    );
+    assert_eq!(saves(&mut view), [false, false, false, false]);
 
-    let lines = render_lines(&view, 40, 7).join("\n");
-    assert!(!lines.contains("Save:"), "{lines}");
-    assert!(!lines.contains("[2 / p]"), "{lines}");
+    view.handle_key(create_key_event(KeyCode::Char('m')));
+    let menu_lines = render_lines(&view, 120, 40).join("\n");
+    assert!(
+        menu_lines.contains(".codewhale/permissions.toml"),
+        "{menu_lines}"
+    );
+    assert_eq!(saves(&mut view), [true, false, true, true]);
+
+    view.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
+    assert_eq!(saves(&mut view), [true, true, true, true]);
+
+    let lines = render_lines(&view, 40, 1).join("\n");
+    assert!(!lines.contains(".codewhale/permissions.toml"), "{lines}");
+    assert_eq!(saves(&mut view), [false, true, true, false], "{lines}");
+
+    let short_lines = render_lines(&view, 40, 5).join("\n");
+    assert!(
+        !short_lines.contains(".codewhale/permissions.toml"),
+        "{short_lines}"
+    );
     assert_eq!(
         saves(&mut view),
         [false, true, true, false],
-        "band too small: {lines}"
+        "{short_lines}"
     );
+
+    for width in [40u16, 60, 120] {
+        let wide = render_lines(&view, width, 40).join("\n");
+        assert!(
+            wide.contains(".codewhale/permissions.toml"),
+            "width={width}: {wide}"
+        );
+        assert_eq!(saves(&mut view), [true, true, true, true], "width={width}");
+    }
 
     render_lines(&view, 120, 40);
     view.handle_key(create_key_event(KeyCode::Tab));
     render_lines(&view, 120, 40);
-    assert_eq!(
-        saves(&mut view),
-        [false, true, true, false],
-        "collapsed banner"
-    );
+    assert_eq!(saves(&mut view), [false, true, true, false]);
 }
 
-/// With the save offer hidden, arrow keys skip its row and a stale selection
-/// on it commits nothing.
 #[test]
 fn hidden_save_offer_is_skipped_by_navigation_and_enter() {
     let mut view = ApprovalView::new(shell_request());
+    view.handle_key(create_key_event(KeyCode::Char('m')));
     render_lines(&view, 120, 40);
-    view.select_prev();
+    view.select_next();
+    view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::AllowExactRepo);
 
-    render_lines(&view, 40, 7);
+    render_lines(&view, 40, 1);
     assert!(matches!(
         view.handle_key(create_key_event(KeyCode::Enter)),
         ViewAction::None
     ));
     view.select_prev();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
     view.select_next();
-    assert_eq!(view.current_option(), ApprovalOption::Deny);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
+    view.select_prev();
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
 }
 
 #[test]
@@ -1469,23 +1472,18 @@ fn mouse_click_renders_and_approves_inline_option() {
 fn tiny_localized_approval_keeps_every_action_and_hitbox() {
     const WIDTH: u16 = 40;
     const HEIGHT: u16 = 12;
-    const PERSISTENT: usize = 1;
-    let expected = [
-        ReviewDecision::Approved,
-        ReviewDecision::Approved,
-        ReviewDecision::Denied,
-    ];
 
     for &locale in Locale::shipped() {
         let rendered_view = ApprovalView::new_for_locale(destructive_request(), locale);
         let rendered = render_lines(&rendered_view, WIDTH, HEIGHT).join("\n");
-        assert_approval_key_badges_visible(&rendered);
-        assert!(
-            rendered.contains(crate::tui::shell_key_routing::tool_details_chord().as_ref()),
-            "missing details chord for {locale:?}:\n{rendered}"
-        );
+        assert!(rendered.contains("Allow"), "{locale:?}:\n{rendered}");
+        assert!(rendered.contains("Deny"), "{locale:?}:\n{rendered}");
+        assert!(rendered.contains("[d]"), "{locale:?}:\n{rendered}");
 
-        for (index, expected_decision) in expected.iter().enumerate() {
+        for (index, expected_decision) in [
+            (0usize, ReviewDecision::Approved),
+            (2usize, ReviewDecision::Denied),
+        ] {
             let mut view = ApprovalView::new_for_locale(destructive_request(), locale);
             let mut terminal =
                 Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal");
@@ -1494,44 +1492,17 @@ fn tiny_localized_approval_keeps_every_action_and_hitbox() {
                 .expect("render localized approval prompt");
 
             let hitboxes = view.row_hitboxes.borrow().clone();
-            assert_eq!(hitboxes.len(), expected.len(), "{locale:?}: {hitboxes:?}");
-            let offered = hitboxes[PERSISTENT] != ratatui::layout::Rect::default();
-            let screen = terminal.backend().buffer().clone();
-            let text: String = screen.content.iter().map(|cell| cell.symbol()).collect();
-            let squeeze = |value: &str| -> String {
-                value.chars().filter(|ch| !ch.is_whitespace()).collect()
-            };
-            assert_eq!(
-                offered,
-                squeeze(&text).contains(&squeeze(&tr(locale, MessageId::ApprovalFieldSave))),
-                "{locale:?}:\n{text}"
-            );
-            let shown: Vec<ratatui::layout::Rect> = hitboxes
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| offered || *i != PERSISTENT)
-                .map(|(_, rect)| *rect)
-                .collect();
-            for hitbox in &shown {
-                assert!(hitbox.height > 0, "{locale:?}: {hitboxes:?}");
-                assert!(hitbox.right() <= WIDTH, "{locale:?}: {hitboxes:?}");
-                assert!(hitbox.bottom() <= HEIGHT, "{locale:?}: {hitboxes:?}");
-            }
-            for pair in shown.windows(2) {
-                assert!(pair[0].bottom() <= pair[1].y, "{locale:?}: {hitboxes:?}");
-            }
-            if index == PERSISTENT && !offered {
-                assert!(
-                    matches!(
-                        view.handle_key(create_key_event(KeyCode::Char('p'))),
-                        ViewAction::None
-                    ),
-                    "{locale:?}: [2 / p] without its save preview"
-                );
-                continue;
-            }
-
+            assert_eq!(hitboxes.len(), 3, "{locale:?}: {hitboxes:?}");
             let rect = hitboxes[index];
+            assert!(
+                rect.width > 0 && rect.height > 0,
+                "{locale:?}: {hitboxes:?}"
+            );
+            assert!(
+                rect.right() <= WIDTH && rect.bottom() <= HEIGHT,
+                "{locale:?}: {hitboxes:?}"
+            );
+
             let action = view.handle_mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: rect.x,
@@ -1542,14 +1513,18 @@ fn tiny_localized_approval_keeps_every_action_and_hitbox() {
             else {
                 panic!("click {index} did not decide for {locale:?}");
             };
-            assert_eq!(decision, *expected_decision, "{locale:?} option {index}");
+            assert_eq!(decision, expected_decision, "{locale:?} option {index}");
         }
     }
 }
 
 #[test]
 fn benign_a_two_approves_for_session() {
-    for code in [KeyCode::Char('a'), KeyCode::Char('A'), KeyCode::Char('2')] {
+    let closed_two =
+        ApprovalView::new(benign_request()).handle_key(create_key_event(KeyCode::Char('2')));
+    assert!(matches!(closed_two, ViewAction::None));
+
+    for code in [KeyCode::Char('a'), KeyCode::Char('A')] {
         let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(code));
         assert!(
@@ -1563,17 +1538,26 @@ fn benign_a_two_approves_for_session() {
             "expected ApprovedForSession for {code:?}"
         );
     }
+
+    let mut menu_view = ApprovalView::new(benign_request());
+    menu_view.handle_key(create_key_event(KeyCode::Char('m')));
+    let menu_two = menu_view.handle_key(create_key_event(KeyCode::Char('2')));
+    assert!(matches!(
+        menu_two,
+        ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+            decision: ReviewDecision::ApprovedForSession,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn benign_n_d_three_all_deny() {
-    for code in [
-        KeyCode::Char('n'),
-        KeyCode::Char('N'),
-        KeyCode::Char('d'),
-        KeyCode::Char('D'),
-        KeyCode::Char('3'),
-    ] {
+    let closed_three =
+        ApprovalView::new(benign_request()).handle_key(create_key_event(KeyCode::Char('3')));
+    assert!(matches!(closed_three, ViewAction::None));
+
+    for code in [KeyCode::Char('n'), KeyCode::Char('N')] {
         let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(code));
         assert!(
@@ -1586,6 +1570,12 @@ fn benign_n_d_three_all_deny() {
             ),
             "expected Denied for {code:?}"
         );
+    }
+    for code in [KeyCode::Char('d'), KeyCode::Char('D')] {
+        let mut view = ApprovalView::new(benign_request());
+        let action = view.handle_key(create_key_event(code));
+        assert!(matches!(action, ViewAction::None));
+        assert!(view.details_expanded);
     }
 }
 
@@ -1626,18 +1616,21 @@ fn test_approval_view_navigation_keys() {
     let mut view = ApprovalView::new(benign_request());
 
     view.handle_key(create_key_event(KeyCode::Up));
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+    assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
     view.handle_key(create_key_event(KeyCode::Down));
     assert_eq!(view.current_option(), ApprovalOption::Deny);
 
-    view.handle_key(create_key_event(KeyCode::Down));
+    view.handle_key(create_key_event(KeyCode::Char('j')));
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 
-    view.handle_key(create_key_event(KeyCode::Char('j')));
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
-
     view.handle_key(create_key_event(KeyCode::Char('k')));
+    assert_eq!(view.current_option(), ApprovalOption::Deny);
+
+    view.handle_key(create_key_event(KeyCode::Char('m')));
+    view.handle_key(create_key_event(KeyCode::Down));
+    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+    view.handle_key(create_key_event(KeyCode::Up));
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
 }
 
@@ -1662,7 +1655,7 @@ fn approval_modified_chords_and_nonpress_keys_cannot_answer() {
                     KeyCode::Esc,
                 ]) {
                     let selected = view.selected;
-                    let collapsed = view.collapsed;
+                    let details_expanded = view.details_expanded;
                     assert!(
                         matches!(
                             view.handle_key(KeyEvent::new(code, modifiers)),
@@ -1671,7 +1664,7 @@ fn approval_modified_chords_and_nonpress_keys_cannot_answer() {
                         "{code:?} with {modifiers:?}"
                     );
                     assert_eq!(view.selected, selected);
-                    assert_eq!(view.collapsed, collapsed);
+                    assert_eq!(view.details_expanded, details_expanded);
                 }
             }
         }
@@ -1980,13 +1973,11 @@ fn destructive_a_requires_details_before_approving_for_session() {
 
 #[test]
 fn destructive_deny_commits_immediately() {
-    // Deny commits immediately — the user is rejecting the tool.
-    for code in [
-        KeyCode::Char('n'),
-        KeyCode::Char('N'),
-        KeyCode::Char('d'),
-        KeyCode::Char('D'),
-    ] {
+    let closed_three =
+        ApprovalView::new(destructive_request()).handle_key(create_key_event(KeyCode::Char('3')));
+    assert!(matches!(closed_three, ViewAction::None));
+
+    for code in [KeyCode::Char('n'), KeyCode::Char('N')] {
         let mut view = ApprovalView::new(destructive_request());
         let action = view.handle_key(create_key_event(code));
         assert!(
@@ -2038,11 +2029,8 @@ fn compact_rendered_text(lines: &[String]) -> String {
 }
 
 fn assert_approval_key_badges_visible(joined: &str) {
-    for badge in ["[1 / y]", "[3 / d / n]", "Esc"] {
-        assert!(
-            joined.contains(badge),
-            "missing key badge {badge}:\n{joined}"
-        );
+    for badge in ["Allow", "[▾ m]", "Deny", "[d]"] {
+        assert!(joined.contains(badge), "missing control {badge}:\n{joined}");
     }
 }
 
@@ -2108,8 +2096,10 @@ fn stderr_redirect_does_not_change_the_effect_badge() {
     ] {
         let request = run(command);
         assert_eq!(request.stakes(), ApprovalStakes::Elevated, "{command}");
-        let joined = render_lines(&ApprovalView::new(request), 100, 40).join("\n");
-        assert!(joined.contains("Runs a command"), "{command}:\n{joined}");
+        let mut view = ApprovalView::new(request);
+        view.handle_key(create_key_event(KeyCode::Char('d')));
+        let joined = render_lines(&view, 100, 40).join("\n");
+        assert!(joined.contains("Command:"), "{command}:\n{joined}");
         assert!(!joined.contains("Can't be undone"), "{command}:\n{joined}");
     }
     // A redirect does not hide a destructive command either.
@@ -2118,41 +2108,33 @@ fn stderr_redirect_does_not_change_the_effect_badge() {
 
 #[test]
 fn highlighted_option_row_names_enter() {
-    // Deny is highlighted by default (#5293). The row says so, so a newcomer
-    // sees that Enter refuses and `y` allows.
-    let tagged = |view: &ApprovalView| {
-        render_lines(view, 100, 40)
-            .into_iter()
-            .filter(|line| line.contains("(Enter)"))
-            .collect::<Vec<_>>()
-    };
-    let rows = tagged(&ApprovalView::new(shell_request()));
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert!(
-        rows[0].contains("[3 / d / n] Don't allow (Enter)"),
-        "{rows:?}"
-    );
+    let deny_view = ApprovalView::new(shell_request());
+    assert_eq!(deny_view.current_option(), ApprovalOption::Deny);
+    let deny_lines = render_lines(&deny_view, 100, 40)
+        .into_iter()
+        .filter(|line| line.contains("Deny"))
+        .collect::<Vec<_>>();
+    assert_eq!(deny_lines.len(), 1, "{deny_lines:?}");
 
-    // The tag follows the highlight; it is not a claim about Deny.
-    let rows = tagged(&ApprovalView::new_with_default_selection(
+    let allow_view = ApprovalView::new_with_default_selection(
         shell_request(),
         Locale::En,
         ApprovalDefaultSelection::AllowOnce,
-    ));
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert!(rows[0].contains("[1 / y] Allow once (Enter)"), "{rows:?}");
+    );
+    assert_eq!(allow_view.current_option(), ApprovalOption::ApproveOnce);
+    let allow_lines = render_lines(&allow_view, 100, 40)
+        .into_iter()
+        .filter(|line| line.contains("Allow"))
+        .collect::<Vec<_>>();
+    assert_eq!(allow_lines.len(), 1, "{allow_lines:?}");
 
-    // The default Deny row still fits one 40-column row in every language,
-    // so the tag never pushes a control off a narrow band.
     for &locale in Locale::shipped() {
         let view = ApprovalView::new_for_locale(shell_request(), locale);
-        let rows = tagged(&view);
-        assert_eq!(rows.len(), 1, "{locale:?}: {rows:?}");
         let narrow = render_lines(&view, 40, 40)
             .into_iter()
-            .filter(|line| line.contains("(Enter)"))
+            .filter(|line| line.contains("Deny"))
             .count();
-        assert_eq!(narrow, 1, "{locale:?}: the tag wrapped at 40 columns");
+        assert_eq!(narrow, 1, "{locale:?}");
     }
 }
 
@@ -2170,15 +2152,13 @@ fn agent_tool_is_classified_and_renders_calm() {
     assert_eq!(request.category, ToolCategory::Agent);
     assert_eq!(request.stakes(), ApprovalStakes::Elevated);
 
-    let view = ApprovalView::new(request);
-    let lines = render_lines(&view, 100, 40);
-    let joined = lines.join("\n");
-    assert!(joined.contains("Starts an agent"), "{joined}");
-    assert!(!joined.contains("Can't be undone"), "{joined}");
-    assert!(
-        !joined.contains("not classified"),
-        "agent must not render the unknown-tool warning:\n{joined}"
-    );
+    let mut view = ApprovalView::new(request);
+    let default_bar = render_lines(&view, 100, 40).join("\n");
+    assert!(!default_bar.contains("Can't be undone"), "{default_bar}");
+    assert!(default_bar.contains("Agent"), "{default_bar}");
+    view.handle_key(create_key_event(KeyCode::Char('d')));
+    let joined = render_lines(&view, 100, 40).join("\n");
+    assert!(!joined.contains("not classified"), "{joined}");
     assert!(joined.contains("Action"), "{joined}");
     assert!(joined.contains("start"), "{joined}");
     assert!(joined.contains("explore"), "{joined}");
@@ -2205,26 +2185,13 @@ fn render_benign_includes_review_badge_and_selection_hint() {
     let view = ApprovalView::new(benign_request());
     let lines = render_lines(&view, 100, 40);
     let joined = lines.join("\n");
-    assert!(
-        joined.contains("Reads only"),
-        "missing effect badge:\n{joined}"
-    );
-    // The card leads with the plain summary, workspace-relative (E6).
-    assert!(joined.contains("Read src/main.rs"), "{joined}");
+    assert!(joined.contains("Read"), "{joined}");
+    assert!(joined.contains("src/main.rs"), "{joined}");
     assert_approval_key_badges_visible(&joined);
-    // The selection prose moved into the per-option key badges; the footer
-    // keeps only the escape-hatch hints.
-    assert!(
-        joined.contains("Pg↑/↓ review"),
-        "footer controls hint missing:\n{joined}"
-    );
 }
 
 #[test]
 fn approval_footer_hints_use_muted_contrast_tier() {
-    // #3380: the footer key hints ("Pg↑/↓ review · Alt+V/⌥V details · Esc abort")
-    // must render one contrast tier above TEXT_HINT — TEXT_MUTED, the same
-    // color the app-wide ActionHint modal footers use for labels.
     use codewhale_palette as palette;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -2234,7 +2201,7 @@ fn approval_footer_hints_use_muted_contrast_tier() {
     let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
     ModalView::render(&view, Rect::new(0, 0, w, h), &mut buf);
 
-    let target: Vec<String> = "Pg↑/↓ review".chars().map(|c| c.to_string()).collect();
+    let target: Vec<String> = "[▾ m]".chars().map(|c| c.to_string()).collect();
     let mut found = None;
     for y in 0..h {
         let symbols: Vec<String> = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
@@ -2244,102 +2211,62 @@ fn approval_footer_hints_use_muted_contrast_tier() {
             }
         }
     }
-    let (x, y) = found.expect("footer key hints must be rendered");
-    assert_eq!(
-        buf[(x, y)].fg,
-        palette::TEXT_MUTED,
-        "footer key hints must use the muted (not hint) contrast tier"
-    );
+    let (x, y) = found.expect("scope menu hint must be rendered");
+    assert_eq!(buf[(x, y)].fg, palette::TEXT_MUTED);
 }
 
 #[test]
 fn render_elevated_write_is_calm_and_compact() {
-    // Ordinary state-touching work (a file write) renders as a calm ask
-    // that names its effect: no "Can't be undone" badge, no policy dossier,
-    // no impact/category taxonomy — that detail stays one details chord away.
-    let view = ApprovalView::new(destructive_request());
+    let mut view = ApprovalView::new(destructive_request());
     let lines = render_lines(&view, 100, 40);
     let joined = lines.join("\n");
-    assert!(
-        joined.contains("Changes files"),
-        "missing effect badge:\n{joined}"
-    );
-    assert!(
-        !joined.contains("Can't be undone"),
-        "routine write must not claim it is irreversible:\n{joined}"
-    );
+    assert!(joined.contains("Write"), "{joined}");
+    assert!(joined.contains("src/main.rs"), "{joined}");
+    assert!(!joined.contains("Can't be undone"), "{joined}");
     assert_approval_key_badges_visible(&joined);
-    assert!(
-        joined.contains("Pg↑/↓ review"),
-        "footer controls hint missing:\n{joined}"
-    );
-    assert!(
-        !joined.contains("Your permissions"),
-        "policy prose is critical-only:\n{joined}"
-    );
-    assert!(
-        !joined.contains("Impact:"),
-        "impact dossier is critical-only:\n{joined}"
-    );
-    assert!(
-        !joined.contains("Type:"),
-        "category taxonomy is critical-only:\n{joined}"
-    );
-    assert!(joined.contains("Write src/main.rs"), "{joined}");
+    assert!(!joined.contains("Your permissions"), "{joined}");
+    assert!(!joined.contains("Impact:"), "{joined}");
+    assert!(!joined.contains("Type:"), "{joined}");
+
+    view.handle_key(create_key_event(KeyCode::Char('d')));
+    let expanded = render_lines(&view, 100, 40).join("\n");
+    assert!(expanded.contains("Preview:"), "{expanded}");
 }
 
 #[test]
 fn render_critical_shows_warning_badge_and_policy_semantics() {
-    // Genuinely destructive work keeps the strong styling and the
-    // policy/cancel semantics.
-    let view = ApprovalView::new(critical_request());
-    let lines = render_lines(&view, 100, 40);
-    let joined = lines.join("\n");
-    assert!(
-        joined.contains("Can't be undone"),
-        "missing irreversible badge:\n{joined}"
-    );
-    assert_approval_key_badges_visible(&joined);
+    let mut view = ApprovalView::new(critical_request());
+    let bar = render_lines(&view, 100, 40).join("\n");
+    assert!(bar.contains("Can't be undone"), "{bar}");
+    assert_approval_key_badges_visible(&bar);
+    assert!(bar.contains("rm -rf"), "{bar}");
+
+    view.handle_key(create_key_event(KeyCode::Char('d')));
+    let joined = render_lines(&view, 100, 40).join("\n");
     assert!(
         joined.contains("Your settings ask you to confirm this step first"),
-        "missing permission/review-rule semantics:\n{joined}"
+        "{joined}"
     );
     assert!(
         joined.contains("Don't allow skips only this step"),
-        "missing don't-allow-vs-stop semantics:\n{joined}"
+        "{joined}"
     );
-    // Mark 4: no approval surface says Bash, MCP or abort.
     for banned in ["Bash", "MCP", "abort", "Abort"] {
         assert!(!joined.contains(banned), "{banned} on the card:\n{joined}");
     }
-    assert!(joined.contains("rm -rf"));
 }
 
 #[test]
 fn render_elevated_zh_hans_is_calm_and_localized() {
-    let view = ApprovalView::new_for_locale(destructive_request(), Locale::ZhHans);
-    let lines = render_lines(&view, 100, 40);
-    let joined = compact_rendered_text(&lines);
-    assert!(
-        joined.contains("修改文件"),
-        "missing zh effect badge:\n{joined}"
-    );
-    assert!(
-        !joined.contains("无法撤销"),
-        "routine write must not use the destructive zh badge:\n{joined}"
-    );
-    assert!(
-        joined.contains("Pg↑/↓回看"),
-        "missing zh footer controls hint:\n{joined}"
-    );
-    assert!(
-        !joined.contains("影响："),
-        "impact dossier is critical-only:\n{joined}"
-    );
-    assert!(
-        joined.contains("仅允许本次"),
-        "missing zh approve option:\n{joined}"
-    );
+    let mut view = ApprovalView::new_for_locale(destructive_request(), Locale::ZhHans);
+    let bar = render_lines(&view, 100, 40).join("\n");
+    assert!(!bar.contains("无法撤销"), "{bar}");
+    assert!(bar.contains("Allow"), "{bar}");
+
+    view.handle_key(create_key_event(KeyCode::Char('m')));
+    let joined = compact_rendered_text(&render_lines(&view, 100, 40));
+    assert!(joined.contains("Allowonce"), "{joined}");
+    assert!(joined.contains("Alwaysallowinthisrepo"), "{joined}");
 }
 
 #[test]
@@ -2347,66 +2274,34 @@ fn approval_review_and_stop_hints_stay_on_one_row_at_80_columns() {
     for &locale in Locale::shipped() {
         let view = ApprovalView::new_for_locale(destructive_request(), locale);
         let lines = render_lines(&view, 80, 40);
-        let review_rows = lines
+        let bar_rows = lines
             .iter()
-            .filter(|line| line.contains("Pg↑/↓"))
+            .filter(|line| line.contains("Allow") && line.contains("Deny"))
             .collect::<Vec<_>>();
-
-        assert_eq!(
-            review_rows.len(),
-            1,
-            "expected one approval review-hint row for {locale:?}:\n{}",
-            lines.join("\n")
-        );
-        let controls = review_rows[0];
-        assert!(
-            controls.contains("Esc"),
-            "review and stop hints wrapped for {locale:?}:\n{}",
-            lines.join("\n")
-        );
+        assert_eq!(bar_rows.len(), 1, "{locale:?}:\n{}", lines.join("\n"));
     }
 }
 
 #[test]
 fn render_critical_zh_hans_localizes_security_copy() {
-    let view = ApprovalView::new_for_locale(critical_request(), Locale::ZhHans);
-    let lines = render_lines(&view, 100, 40);
-    let joined = compact_rendered_text(&lines);
-    assert!(
-        joined.contains("无法撤销"),
-        "missing zh risk badge:\n{joined}"
-    );
-    assert!(
-        joined.contains("影响："),
-        "missing zh impact label:\n{joined}"
-    );
-    assert!(
-        joined.contains("规则："),
-        "missing zh policy semantics:\n{joined}"
-    );
-    assert!(
-        joined.contains("仅允许本次"),
-        "missing zh approve option:\n{joined}"
-    );
+    let mut view = ApprovalView::new_for_locale(critical_request(), Locale::ZhHans);
+    view.handle_key(create_key_event(KeyCode::Char('d')));
+    let joined = compact_rendered_text(&render_lines(&view, 100, 40));
+    assert!(joined.contains("无法撤销"), "{joined}");
+    assert!(joined.contains("影响："), "{joined}");
+    assert!(joined.contains("规则："), "{joined}");
 }
 
 #[test]
 fn render_takeover_card_fills_most_of_area() {
-    // The card should be wider than the old 65-cell popup whenever
-    // the terminal can hold it; this guards against a regression
-    // back to the centered popup.
     let view = ApprovalView::new(benign_request());
     let lines = render_lines(&view, 120, 40);
-    // Find the widest non-blank rendered row.
     let widest = lines
         .iter()
         .map(|l| l.trim_end_matches(' ').len())
         .max()
         .unwrap_or(0);
-    assert!(
-        widest >= 80,
-        "takeover card too narrow: widest row = {widest} cells"
-    );
+    assert!(widest >= 80, "docked bar too narrow: widest row = {widest}");
 }
 
 // ========================================================================

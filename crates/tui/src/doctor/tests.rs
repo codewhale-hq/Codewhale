@@ -482,3 +482,51 @@ api_key = "[redacted]"
 "#;
     assert!(super::config_credential_shaped_keys(raw).is_empty());
 }
+
+#[test]
+fn latest_session_route_ignores_boot_owners_and_oversized_files() {
+    use codewhale_engine::session_manager::{SessionManager, create_saved_session};
+    use codewhale_models::{ContentBlock, Message, Role};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    let sessions = dir.path().join("sessions");
+    let manager = SessionManager::new(sessions.clone()).expect("session manager");
+    let msg = Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "hi".to_string(),
+            cache_control: None,
+        }],
+    };
+    let mut session = create_saved_session(&[msg], "deepseek-flash", &workspace, 0, None);
+    session.metadata.model_provider_id = Some("google".to_string());
+    session.metadata.model = "gemini-4-hydrogen".to_string();
+    let saved_id = session.metadata.id.clone();
+    manager.save_session(&session).expect("save session");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(
+        sessions.join("session_boot_owners.json"),
+        format!("{{\"{saved_id}\": \"owner-1\"}}\n"),
+    )
+    .expect("write boot owners");
+    std::fs::write(
+        sessions.join("corrupt-newest.json"),
+        "not valid session json",
+    )
+    .expect("write corrupt");
+
+    let line = super::latest_session_route_line(&sessions, "deepseek", "deepseek-flash")
+        .expect("latest session route line");
+    assert!(line.contains("google / gemini-4-hydrogen"), "{line}");
+    assert!(
+        line.contains("differs from the configured default"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("because that session switched with /provider"),
+        "{line}"
+    );
+}

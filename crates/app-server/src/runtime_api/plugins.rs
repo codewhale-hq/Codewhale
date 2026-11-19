@@ -526,13 +526,17 @@ fn mcp_server_review(
     }
 }
 
-fn file_stem(path: &std::path::Path) -> String {
-    path.file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
+async fn component_names(
+    paths: &[std::path::PathBuf],
+    extension: Option<&str>,
+    lowercase: bool,
+) -> Vec<String> {
+    codewhale_plugins::runtime::component_file_names(paths, extension, lowercase, 512)
+        .await
+        .0
 }
 
-fn review_payload(
+async fn review_payload(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginReviewPayload {
@@ -548,27 +552,9 @@ fn review_payload(
         })
         .unwrap_or_default();
     mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut commands: Vec<_> = plugin
-        .components
-        .commands
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    commands.sort();
-    let mut agents: Vec<_> = plugin
-        .components
-        .agents
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    agents.sort();
-    let mut hooks: Vec<_> = plugin
-        .components
-        .hooks
-        .iter()
-        .map(|p| file_stem(p))
-        .collect();
-    hooks.sort();
+    let commands = component_names(&plugin.components.commands, Some("md"), true).await;
+    let agents = component_names(&plugin.components.agents, Some("toml"), false).await;
+    let hooks = component_names(&plugin.components.hooks, None, false).await;
     let mut skills: Vec<_> = plugin
         .skill_snapshots
         .iter()
@@ -601,7 +587,7 @@ fn review_payload(
     }
 }
 
-fn plugin_detail(
+async fn plugin_detail(
     plugin: &LoadedPlugin,
     registry: Option<&codewhale_plugins::PluginRegistry>,
 ) -> PluginDetailResponse {
@@ -613,7 +599,7 @@ fn plugin_detail(
         staged: plugin.staged_root.is_some(),
         reviewed_at: plugin.reviewed_at.clone(),
         review_history: plugin.review_history.clone(),
-        review: review_payload(plugin, registry),
+        review: review_payload(plugin, registry).await,
     }
 }
 
@@ -1823,7 +1809,7 @@ pub(super) async fn get_plugin(
         .get(&selector)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
-    Ok(Json(plugin_detail(&plugin, Some(&registry))))
+    Ok(Json(plugin_detail(&plugin, Some(&registry)).await))
 }
 
 pub(super) async fn get_plugin_ui(

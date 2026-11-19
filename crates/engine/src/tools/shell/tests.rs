@@ -266,6 +266,7 @@ fn contract_bash_nonzero_is_an_error_with_status_after_output() {
         None,
         false,
         None,
+        None,
         false,
         None,
     )
@@ -2785,8 +2786,9 @@ fn contract_bash_denial_surfaces_the_escalation_shape() {
     let mut result = failed_network_shell_result("", "Operation not permitted");
     result.sandbox_denied = true;
 
-    let error = finish_contract_bash_result(result, None, &ctx, None, false, None, false, None)
-        .expect_err("sandbox denial is a failed call");
+    let error =
+        finish_contract_bash_result(result, None, &ctx, None, false, None, None, false, None)
+            .expect_err("sandbox denial is a failed call");
 
     assert!(
         error
@@ -2846,6 +2848,125 @@ fn network_restricted_hint_ignores_local_failures() {
     let result = failed_network_shell_result("", "No such file or directory");
 
     assert!(shell_network_restricted_hint(&ctx, "cat missing.txt", &result).is_none());
+}
+
+#[test]
+fn readonly_denied_hint_classifies_refusals_and_ignores_success_or_bwrap() {
+    let tmp = tempdir().expect("tempdir");
+    let full_ctx = ToolContext::new(tmp.path());
+    let mut agent_ctx = ToolContext::new(tmp.path());
+    agent_ctx.shell_policy = ShellPolicy::ReadOnly;
+    agent_ctx.owner_agent_id = Some("scout-1".to_string());
+
+    let ok_rg = ShellResult {
+        task_id: None,
+        status: ShellStatus::Completed,
+        exit_code: Some(0),
+        stdout: "fail with `Operation not permitted`".to_string(),
+        stderr: String::new(),
+        duration_ms: 1,
+        stdout_len: 37,
+        stderr_len: 0,
+        stdout_omitted: 0,
+        stderr_omitted: 0,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        sandboxed: true,
+        sandbox_type: Some("seatbelt".to_string()),
+        sandbox_denied: false,
+    };
+    assert!(
+        readonly_denied_hint_for_os(&full_ctx, "rg ps docs/SANDBOX.md", &ok_rg, true).is_none()
+    );
+
+    let mut running = ok_rg.clone();
+    running.status = ShellStatus::Running;
+    running.exit_code = None;
+    assert!(readonly_denied_hint_for_os(&full_ctx, "mktemp", &running, true).is_none());
+
+    let mut bwrap_fail = failed_network_shell_result(
+        "",
+        "bwrap: Creating new namespace failed: Operation not permitted",
+    );
+    bwrap_fail.sandbox_denied = true;
+    assert!(readonly_denied_hint_for_os(&full_ctx, "ls", &bwrap_fail, false).is_none());
+
+    let ps_fail = failed_network_shell_result("", "/bin/sh: /bin/ps: Operation not permitted");
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "sh -c 'ps'", &ps_fail, true),
+        Some(READONLY_SETUID_DENIED_HINT)
+    );
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "ps aux", &ps_fail, false),
+        Some(READONLY_WRITE_DENIED_HINT)
+    );
+
+    let top_operand = failed_network_shell_result("", "zsh:1: operation not permitted: top");
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "printf x > top", &top_operand, true),
+        Some(READONLY_WRITE_DENIED_HINT)
+    );
+    assert_eq!(
+        readonly_denied_hint_for_os(&agent_ctx, "rm -rf crates/top", &top_operand, true),
+        Some(READONLY_AGENT_WRITE_DENIED_HINT)
+    );
+
+    let mktemp_fail = failed_network_shell_result(
+        "",
+        "mktemp: mkstemp failed on /var/folders/xx/T/tmp.123: Operation not permitted",
+    );
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "mktemp", &mktemp_fail, true),
+        Some(READONLY_MACOS_MKTEMP_HINT)
+    );
+    assert!(!READONLY_MACOS_MKTEMP_HINT.contains("heredocs"));
+
+    let heredoc_fail = failed_network_shell_result(
+        "",
+        "/bin/sh: cannot create temp file for here document: Operation not permitted",
+    );
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "/bin/sh -c 'cat <<EOF'", &heredoc_fail, true),
+        Some(READONLY_MACOS_HEREDOC_HINT)
+    );
+
+    let mut gh_offline = failed_network_shell_result(
+        "",
+        "- The token in keyring is invalid.\nerror connecting to api.github.com",
+    );
+    gh_offline.sandbox_denied = false;
+    assert_eq!(
+        readonly_offline_network_hint("gh auth status", &gh_offline),
+        Some(READONLY_OFFLINE_NETWORK_HINT)
+    );
+
+    let mut git_fetch_ro = failed_network_shell_result(
+        "",
+        "error: cannot open '.git/FETCH_HEAD': Read-only file system",
+    );
+    git_fetch_ro.sandbox_denied = true;
+    assert!(readonly_offline_network_hint("git fetch origin", &git_fetch_ro).is_none());
+    assert_eq!(
+        readonly_denied_hint_for_os(&full_ctx, "git fetch origin", &git_fetch_ro, false),
+        Some(READONLY_WRITE_DENIED_HINT)
+    );
+
+    let err = finish_contract_bash_result(
+        git_fetch_ro,
+        None,
+        &full_ctx,
+        None,
+        true,
+        None,
+        Some(READONLY_WRITE_DENIED_HINT),
+        false,
+        None,
+    )
+    .expect_err("denied write fails");
+    let metadata = err.metadata().expect("metadata");
+    assert_eq!(metadata["sandbox_network"], true);
+    assert!(metadata.get("sandbox_network_restricted").is_none());
+    assert_eq!(metadata["sandbox_denied_hint"], READONLY_WRITE_DENIED_HINT);
 }
 
 #[test]
@@ -4324,6 +4445,7 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
         stdout_buffer: super::new_shared_raw_output(),
         stderr_buffer: None,
         heavy_permit: None,
+        scratch: None,
         stdout_cursor: 0,
         stderr_cursor: 0,
         completion_reported: false,

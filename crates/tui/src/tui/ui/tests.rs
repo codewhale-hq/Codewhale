@@ -8754,6 +8754,7 @@ fn child_approval_card_hides_always_allow_in_repo() {
             .downcast_mut::<ApprovalView>()
             .expect("approval view");
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let _ = approval.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         approval.render(area, &mut ratatui::buffer::Buffer::empty(area));
         let action = approval.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
         assert_eq!(
@@ -8803,6 +8804,7 @@ fn file_edit_card_says_when_it_asks_for_lack_of_a_git_repository() {
             .expect("approval view");
         let area = ratatui::layout::Rect::new(0, 0, 120, 40);
         let mut buf = ratatui::buffer::Buffer::empty(area);
+        let _ = approval.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         approval.render(area, &mut buf);
         let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
         assert_eq!(
@@ -26789,9 +26791,6 @@ fn exploring_labels_follow_the_ui_locale() {
     assert_eq!(label("list_files", serde_json::json!({})), "正在列出文件");
 }
 
-// `running_status_label_with_elapsed` lives in `crate::tui::history` next to
-// the other tool-header helpers — its tests live there too.
-
 // ---- P2.4: auto-scroll churn regressions ----
 //
 // The contract: once the user scrolls away from the live tail mid-turn
@@ -28038,6 +28037,7 @@ async fn timed_out_approval_denial_reaches_the_engine_as_a_timeout() {
             approval_key: "approval-timeout-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -28080,6 +28080,7 @@ async fn approval_decision_persists_ask_rules_to_permissions_file() {
             approval_key: "approval-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: vec![rule.clone()],
+            subject: None,
         },
     )
     .await;
@@ -28138,6 +28139,7 @@ async fn approval_decision_persists_exact_workspace_allow_rule() {
             approval_key: "approval-key".to_string(),
             approval_grouping_key: "approval-group".to_string(),
             persistent_rules: vec![rule.clone()],
+            subject: None,
         },
     )
     .await;
@@ -29294,6 +29296,7 @@ async fn child_card_abort_decision_never_cancels_parent_turn() {
             approval_key: "k".to_string(),
             approval_grouping_key: "g".to_string(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -34945,6 +34948,7 @@ async fn notification_approval_settlement_retires_the_prompt_and_preserves_warni
             approval_key: "key-a".into(),
             approval_grouping_key: "group-a".into(),
             persistent_rules: Vec::new(),
+            subject: None,
         },
     )
     .await;
@@ -37118,4 +37122,138 @@ fn a_silent_background_shell_job_keeps_the_quiet_poll_for_its_whole_life() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn approval_prompt_docks_one_row_and_emits_settled_receipt() {
+    for width in [80u16, 120u16] {
+        let mut app = create_test_app();
+        app.onboarding_workspace_trust_gate = false;
+        app.onboarding = OnboardingState::None;
+        let input = serde_json::json!({ "command": "cargo test -p codewhale-tui" });
+        push_approval_request_view(
+            &mut app,
+            "call-dock",
+            "exec_shell",
+            "Run cargo test",
+            &input,
+            "approval-key",
+            "approval-group",
+            None,
+            codewhale_runtime::config::ApprovalDefaultSelection::Deny,
+            None,
+        );
+        let rendered = render_underwater_test_app(&mut app, width, 24);
+        let prompt = app
+            .viewport
+            .last_prompt_area
+            .expect("docked approval prompt area");
+        let composer = app.viewport.last_composer_area.expect("composer area");
+        assert_eq!(prompt.height, 1, "{width} cols: {prompt:?}\n{rendered}");
+        assert_eq!(
+            prompt.bottom(),
+            composer.y,
+            "{width} cols: prompt {prompt:?} must sit directly above composer {composer:?}\n{rendered}"
+        );
+        assert!(rendered.contains("Allow"), "{width} cols: {rendered}");
+        assert!(rendered.contains("Deny"), "{width} cols: {rendered}");
+    }
+
+    for (key_sequence, expected_receipt) in [
+        (
+            vec![KeyCode::Char('y')],
+            "Allowed once · cargo test -p codewhale-tui",
+        ),
+        (
+            vec![KeyCode::Char('n')],
+            "Denied · cargo test -p codewhale-tui",
+        ),
+        (
+            vec![KeyCode::Char('m'), KeyCode::Char('3')],
+            "Always allowed in this repo · cargo test -p codewhale-tui",
+        ),
+    ] {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut app = create_test_app();
+        app.workspace = tmp.path().to_path_buf();
+        app.config_path = Some(tmp.path().join("config.toml"));
+        app.onboarding_workspace_trust_gate = false;
+        app.onboarding = OnboardingState::None;
+        let input = serde_json::json!({ "command": "cargo test -p codewhale-tui" });
+        push_approval_request_view(
+            &mut app,
+            "call-receipt",
+            "exec_shell",
+            "Run cargo test",
+            &input,
+            "approval-key",
+            "approval-group",
+            None,
+            codewhale_runtime::config::ApprovalDefaultSelection::Deny,
+            None,
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let mut view = app.view_stack.pop().expect("approval view");
+        let mut emitted = None;
+        for code in key_sequence {
+            view.render(area, &mut buf);
+            if let ViewAction::EmitAndClose(event) =
+                view.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+            {
+                emitted = Some(event);
+            }
+        }
+        let Some(ViewEvent::ApprovalDecision {
+            tool_id,
+            tool_name,
+            decision,
+            timed_out,
+            approval_key,
+            approval_grouping_key,
+            persistent_rules,
+            subject,
+        }) = emitted
+        else {
+            panic!("expected ApprovalDecision for {expected_receipt}");
+        };
+        let mut config = Config::default();
+        let mut engine = mock_engine_handle();
+        let accepted = apply_approval_decision(
+            &mut app,
+            &mut engine.handle,
+            &mut config,
+            ApprovalDecisionEvent {
+                tool_id,
+                tool_name,
+                decision,
+                timed_out,
+                approval_key,
+                approval_grouping_key,
+                persistent_rules,
+                subject,
+            },
+        )
+        .await;
+        assert!(accepted);
+        let rendered = render_underwater_test_app(&mut app, 100, 24);
+        assert!(
+            rendered.contains(expected_receipt),
+            "missing receipt {expected_receipt:?}:\n{rendered}"
+        );
+    }
+
+    let sneaky = crate::tui::history::ApprovalReceiptCell::new(
+        crate::tui::history::ApprovalReceiptOutcome::AllowedOnce,
+        "echo ok\n\u{202e}rm -rf /",
+    );
+    let summary = sneaky.plain_summary();
+    assert!(!summary.contains('\n'), "{summary:?}");
+    assert!(!summary.contains('\u{202e}'), "{summary:?}");
+    assert!(summary.contains("RLO"), "{summary:?}");
+    let lines = sneaky.render(120);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let rendered_line: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(!rendered_line.contains('\u{202e}'), "{rendered_line:?}");
+    assert!(rendered_line.contains("RLO"), "{rendered_line:?}");
 }

@@ -10,11 +10,16 @@ mod binary;
 
 #[path = "../support/llm_client.rs"]
 mod llm_client;
+#[cfg(unix)]
+#[path = "../support/qa_harness/mod.rs"]
+mod qa_harness;
 // The legacy text tool-call parser lives in codewhale-core now; keep the
 // `crate::tool_parser` path the suites use.
 use codewhale_core::tool_parser;
 
 mod adaptive_evidence_acceptance;
+#[cfg(unix)]
+mod auto_review_acceptance;
 mod cache_guard;
 mod coordination_acceptance;
 mod creator_exec;

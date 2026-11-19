@@ -106,59 +106,21 @@ fn plugin_state(entry: &PluginSummaryEntry) -> &'static str {
     }
 }
 
-fn add_stem(names: &mut BTreeSet<String>, path: &FsPath, extension: Option<&str>, lowercase: bool) {
-    if let Some(wanted) = extension
-        && path.extension().and_then(|value| value.to_str()) != Some(wanted)
-    {
-        return;
-    }
-    if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-        names.insert(if lowercase {
-            stem.to_lowercase()
-        } else {
-            stem.to_string()
-        });
-    }
-}
-
 async fn component_names(
     paths: &[PathBuf],
-    extension: Option<&str>,
+    extension: Option<&'static str>,
     lowercase: bool,
     omitted: &mut bool,
 ) -> Vec<String> {
-    let mut names = BTreeSet::new();
-    for path in paths {
-        let Ok(meta) = tokio::fs::symlink_metadata(path).await else {
-            continue;
-        };
-        if meta.is_file() {
-            add_stem(&mut names, path, extension, lowercase);
-        } else if meta.is_dir()
-            && let Ok(mut entries) = tokio::fs::read_dir(path).await
-        {
-            let mut seen = 0;
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                seen += 1;
-                if seen > MAX_ADDED_NAMES {
-                    *omitted = true;
-                    break;
-                }
-                if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
-                    add_stem(&mut names, &entry.path(), extension, lowercase);
-                }
-            }
-        }
-        if names.len() >= MAX_ADDED_NAMES {
-            *omitted = true;
-            break;
-        }
-    }
-    if names.iter().any(|name| name.chars().any(char::is_control)) {
-        *omitted = true;
-        names.retain(|name| !name.chars().any(char::is_control));
-    }
-    names.into_iter().take(MAX_ADDED_NAMES).collect()
+    let (names, cut) = codewhale_plugins::runtime::component_file_names(
+        paths,
+        extension,
+        lowercase,
+        MAX_ADDED_NAMES,
+    )
+    .await;
+    *omitted |= cut;
+    names
 }
 
 async fn plugin_adds(

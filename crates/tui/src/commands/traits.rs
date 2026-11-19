@@ -562,7 +562,9 @@ mod usage_subcommand_tests {
             ),
             (
                 "automation",
-                vec!["list", "show", "print", "pause", "resume", "delete", "run"],
+                vec![
+                    "list", "show", "print", "pause", "resume", "adopt", "delete", "run",
+                ],
             ),
         ] {
             let info = get_command_info(name).expect("registered command");

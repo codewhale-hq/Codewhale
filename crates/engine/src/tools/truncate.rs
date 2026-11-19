@@ -1178,6 +1178,116 @@ fn sanitise_id(id: &str) -> Option<String> {
     }
 }
 
+#[must_use]
+pub fn json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
+#[must_use]
+pub fn shrink_json(value: serde_json::Value, budget: usize) -> (serde_json::Value, usize) {
+    if json_len(&value) <= budget {
+        return (value, 0);
+    }
+    let mut omitted = 0;
+    let value = shrink_json_inner(value, budget, &mut omitted);
+    (value, omitted.max(1))
+}
+
+fn shrink_json_inner(
+    value: serde_json::Value,
+    budget: usize,
+    omitted: &mut usize,
+) -> serde_json::Value {
+    use serde_json::Value;
+    const MIN_ENTRY_BYTES: usize = 8;
+    match value {
+        Value::String(text) => {
+            let mut keep = budget.saturating_sub(5).min(text.len());
+            loop {
+                while !text.is_char_boundary(keep) {
+                    keep -= 1;
+                }
+                let cut = Value::String(format!("{}…", &text[..keep]));
+                if keep == 0 || json_len(&cut) <= budget {
+                    *omitted += 1;
+                    return cut;
+                }
+                keep /= 2;
+            }
+        }
+        Value::Array(items) => {
+            let total = items.len();
+            let mut kept = Vec::new();
+            let mut used = 2;
+            for item in items {
+                let remaining = budget.saturating_sub(used + 1);
+                if remaining < MIN_ENTRY_BYTES {
+                    break;
+                }
+                let fits = json_len(&item) <= remaining;
+                let item = if fits {
+                    item
+                } else {
+                    shrink_json_inner(item, remaining, omitted)
+                };
+                let len = json_len(&item);
+                if len > remaining {
+                    break;
+                }
+                used += len + 1;
+                kept.push(item);
+                if !fits {
+                    break;
+                }
+            }
+            *omitted += total - kept.len();
+            Value::Array(kept)
+        }
+        Value::Object(map) => {
+            let total = map.len();
+            let mut kept = serde_json::Map::new();
+            let mut used = 2;
+            for (key, item) in map {
+                if budget.saturating_sub(used) < MIN_ENTRY_BYTES {
+                    break;
+                }
+                let key_len = json_len(&Value::String(key.clone())) + 2;
+                let remaining = budget.saturating_sub(used + key_len);
+                if remaining < MIN_ENTRY_BYTES {
+                    continue;
+                }
+                let fits = json_len(&item) <= remaining;
+                let item = if fits {
+                    item
+                } else {
+                    shrink_json_inner(item, remaining, omitted)
+                };
+                let len = json_len(&item);
+                if len > remaining {
+                    continue;
+                }
+                used += key_len + len;
+                kept.insert(key, item);
+            }
+            *omitted += total - kept.len();
+            Value::Object(kept)
+        }
+        other => other,
+    }
+}
+
 /// Override the storage roots for tests so they don't pollute the
 /// user's real `~/.codewhale/` directory. This uses explicit test hooks instead
 /// of `$HOME` because Windows home-dir resolution can ignore environment

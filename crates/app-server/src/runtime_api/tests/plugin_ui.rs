@@ -79,44 +79,44 @@ fn write_native_ui_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(bundle)
 }
 
+async fn send_json_ok(request: reqwest::RequestBuilder, step: &str) -> Result<serde_json::Value> {
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    anyhow::ensure!(status.is_success(), "{step} failed with {status}: {body}");
+    Ok(serde_json::from_str(&body)?)
+}
+
 pub(super) async fn install_active(
     client: &reqwest::Client,
     base: &str,
     source: String,
 ) -> Result<serde_json::Value> {
-    let install: serde_json::Value = client
-        .post(format!("{base}/install"))
-        .json(&serde_json::json!({ "source": source }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let install = send_json_ok(
+        client
+            .post(format!("{base}/install"))
+            .json(&serde_json::json!({ "source": source })),
+        "install plugin",
+    )
+    .await?;
     let name = install["name"]
         .as_str()
         .expect("installed name")
         .to_string();
-    let detail: serde_json::Value = client
-        .get(format!("{base}/{name}"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let detail = send_json_ok(client.get(format!("{base}/{name}")), "get plugin detail").await?;
     let token = detail["review"]["token"].as_str().unwrap().to_string();
-    client
-        .post(format!("{base}/{name}/trust"))
-        .json(&serde_json::json!({ "token": token }))
-        .send()
-        .await?
-        .error_for_status()?;
-    let enabled: serde_json::Value = client
-        .post(format!("{base}/{name}/enable"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let _ = send_json_ok(
+        client
+            .post(format!("{base}/{name}/trust"))
+            .json(&serde_json::json!({ "token": token })),
+        "trust plugin",
+    )
+    .await?;
+    let enabled = send_json_ok(
+        client.post(format!("{base}/{name}/enable")),
+        "enable plugin",
+    )
+    .await?;
     assert_eq!(enabled["state"], "active", "{enabled}");
     Ok(serde_json::json!({ "name": name, "path": detail["path"] }))
 }

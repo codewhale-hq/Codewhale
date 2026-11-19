@@ -938,7 +938,7 @@ impl WindowsDirectory {
             options
                 .access_mode(READ_CONTROL | WRITE_DAC | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES);
         }
-        let file = options.open(path)?;
+        let file = retry_windows_io(false, || options.open(path))?;
         let metadata = file.metadata()?;
         if !metadata.is_dir() || crate::path_identity::metadata_is_link_or_reparse(&metadata) {
             return Err(invalid_path());
@@ -1150,7 +1150,7 @@ impl WorkspaceFile {
             DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
         };
 
-        let mut temporary =
+        let mut temporary = retry_windows_io(false, || {
             tempfile::Builder::new()
                 .prefix(".fleet-write-")
                 .make_in(&self.directory, |path| {
@@ -1160,7 +1160,8 @@ impl WorkspaceFile {
                         .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
                         .share_mode(FILE_SHARE_READ)
                         .open(path)
-                })?;
+                })
+        })?;
         let result = (|| {
             temporary.write_all(bytes)?;
             temporary.as_file().sync_all()?;
@@ -1179,6 +1180,33 @@ impl WorkspaceFile {
                 temporary.into_temp_path().close()?;
                 Err(error)
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn retry_windows_io<T>(
+    include_permission_denied: bool,
+    mut op: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(32 | 33))
+                    || (include_permission_denied
+                        && (error.kind() == io::ErrorKind::PermissionDenied
+                            || error.raw_os_error() == Some(5))) =>
+            {
+                let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt)
+                else {
+                    return Err(error);
+                };
+                std::thread::sleep(backoff);
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1216,8 +1244,7 @@ pub fn rename_windows_opened(
         (*rename).FileNameLength = name_bytes as u32;
         std::ptr::copy_nonoverlapping(name.as_ptr(), (*rename).FileName.as_mut_ptr(), name.len());
     }
-    let mut attempt = 0;
-    loop {
+    retry_windows_io(true, || {
         let mut status = IO_STATUS_BLOCK::default();
         // SAFETY: this synchronously opened file has DELETE access;
         // every handle and buffer remains live throughout the call.
@@ -1231,16 +1258,14 @@ pub fn rename_windows_opened(
             )
         };
         if result >= 0 {
-            return Ok(());
+            Ok(())
+        } else {
+            // SAFETY: converts the returned NTSTATUS without dereferencing.
+            Err(io::Error::from_raw_os_error(unsafe {
+                RtlNtStatusToDosError(result) as i32
+            }))
         }
-        // SAFETY: converts the returned NTSTATUS without dereferencing.
-        let error = io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(result) as i32 });
-        let Some(backoff) = crate::utils::windows_publish_retry_delay(&error, attempt) else {
-            return Err(error);
-        };
-        std::thread::sleep(backoff);
-        attempt += 1;
-    }
+    })
 }
 
 /// Whether `directory`'s filesystem reports an owner and mode of its own for

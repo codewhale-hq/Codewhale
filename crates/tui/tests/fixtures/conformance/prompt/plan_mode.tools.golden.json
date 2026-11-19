@@ -500,7 +500,7 @@
   {
     "type": "tool_search_20251119",
     "name": "tool_search",
-    "description": "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Run`, `Web`, `tasks`, `workflow`, `request_user_input`, `github`, `automation`, `lsp`, `review`, `session_search`, `terminal/run`, `apply_patch`, `context_archive_search`/`context_archive_get`, connected MCP servers, and the Registry pair (`registry_sync`, `start_registry_mcp_server`). Calling one by name also loads it.",
+    "description": "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Web`, `tasks`, `request_user_input`, `github`, `automation`, `review`, `context_archive_search`, `context_archive_get`, `registry_sync`, `start_registry_mcp_server`, and tools from connected MCP servers. Calling one by name also loads it.",
     "input_schema": {
       "type": "object",
       "properties": {

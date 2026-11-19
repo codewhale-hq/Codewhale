@@ -2153,6 +2153,7 @@ pub(crate) async fn handle_view_events(
                 approval_key,
                 approval_grouping_key,
                 persistent_rules,
+                subject,
             } => {
                 let accepted = apply_approval_decision(
                     app,
@@ -2166,6 +2167,7 @@ pub(crate) async fn handle_view_events(
                         approval_key,
                         approval_grouping_key,
                         persistent_rules,
+                        subject,
                     },
                 )
                 .await;

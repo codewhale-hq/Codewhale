@@ -900,6 +900,7 @@ pub enum AutomationAction {
     Show(String),
     Pause(String),
     Resume(String),
+    Adopt(String),
     Delete {
         id: String,
         confirmation: Option<String>,
