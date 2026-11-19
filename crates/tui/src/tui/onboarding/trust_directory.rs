@@ -69,27 +69,25 @@ fn wrap_on_path_separators(text: &str, width: usize) -> Vec<String> {
 }
 
 pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
+    let accent = super::theme_or(app.ui_theme.accent_primary, palette::WHALE_ACTION);
+    let body_fg = super::theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY);
+    let soft_fg = super::theme_or(app.ui_theme.text_soft, palette::TEXT_SOFT);
+    let muted_fg = super::theme_or(app.ui_theme.text_muted, palette::TEXT_MUTED);
+    let warn_fg = super::theme_or(app.ui_theme.warning, palette::STATUS_WARNING);
+
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         app.tr(MessageId::OnboardTrustTitle).to_string(),
-        Style::default()
-            .fg(palette::WHALE_ACTION)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
-    // Prose on this screen wraps like prose on every other onboarding screen.
-    // It used to be pushed as one unwrapped line, so at 40 columns the trust
-    // question rendered as "Should Codewhale work with the instruc" — severed
-    // mid-word, with nothing marking the cut. Asking someone to grant
-    // filesystem trust while the question itself is truncated is the worst
-    // place in the product for this to happen.
     for segment in super::wrap_words(
         app.tr(MessageId::OnboardTrustQuestion).as_ref(),
         content_width,
     ) {
         lines.push(Line::from(Span::styled(
             segment,
-            Style::default().fg(palette::TEXT_PRIMARY),
+            Style::default().fg(body_fg),
         )));
     }
     let location = format!(
@@ -100,7 +98,7 @@ pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
     for segment in wrap_on_path_separators(&location, content_width) {
         lines.push(Line::from(Span::styled(
             segment,
-            Style::default().fg(palette::TEXT_MUTED),
+            Style::default().fg(soft_fg).add_modifier(Modifier::BOLD),
         )));
     }
     lines.push(Line::from(""));
@@ -111,16 +109,18 @@ pub fn lines(app: &App, content_width: usize) -> Vec<Line<'static>> {
         for segment in super::wrap_words(app.tr(id).as_ref(), content_width) {
             lines.push(Line::from(Span::styled(
                 segment,
-                Style::default().fg(palette::TEXT_MUTED),
+                Style::default().fg(muted_fg),
             )));
         }
     }
     if let Some(message) = app.status_message.as_deref() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            message.to_string(),
-            Style::default().fg(palette::STATUS_WARNING),
-        )));
+        for segment in super::wrap_words(message, content_width) {
+            lines.push(Line::from(Span::styled(
+                segment,
+                Style::default().fg(warn_fg),
+            )));
+        }
     }
     lines
 }

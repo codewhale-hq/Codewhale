@@ -8,12 +8,13 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
+use crate::tui::views::rounded::{pad_selected_line, render_rounded_footer, render_rounded_modal};
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
-    centered_modal_area, render_modal_footer, render_modal_surface,
+    centered_modal_area,
 };
 use codewhale_palette as palette;
 use codewhale_tui_kit::menu_style;
@@ -130,25 +131,16 @@ impl ModalView for FeedbackPickerView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let popup_area = centered_modal_area(area, 78, (OPTIONS.len() as u16) + 7, 44, 8);
+        let inner = render_rounded_modal(
+            area,
+            popup_area,
+            buf,
+            "Feedback",
+            Some("1-3".to_string()),
+            true,
+        );
 
-        render_modal_surface(area, popup_area, buf);
-
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                " Feedback ",
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
-        let content = render_modal_footer(
+        let content = render_rounded_footer(
             inner,
             buf,
             &[
@@ -160,9 +152,15 @@ impl ModalView for FeedbackPickerView {
 
         let mut lines = Vec::with_capacity(OPTIONS.len() + 2);
         lines.push(Line::from(""));
-        // `lines` opens with a blank row, so option `idx` paints one row lower.
         let mut hitboxes = self.row_hitboxes.borrow_mut();
         hitboxes.clear();
+
+        let label_col = OPTIONS
+            .iter()
+            .map(|o| UnicodeWidthStr::width(o.label))
+            .max()
+            .unwrap_or(0);
+        let row_width = usize::from(content.width);
 
         for (idx, option) in OPTIONS.iter().enumerate() {
             let row = content
@@ -173,33 +171,48 @@ impl ModalView for FeedbackPickerView {
                 hitboxes.push(Rect::new(content.x, row, content.width, 1));
             }
             let is_selected = idx == self.selected;
-            let row_style = if is_selected {
-                menu_style::selected_row_style()
-            } else {
-                Style::default().fg(palette::TEXT_PRIMARY)
-            };
-            let desc_style = if is_selected {
-                menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
-            } else {
-                Style::default().fg(palette::TEXT_MUTED)
-            };
             let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let lead = format!("{pointer} {}. ", option.number);
-            let description_width = usize::from(content.width).saturating_sub(
-                UnicodeWidthStr::width(lead.as_str()) + UnicodeWidthStr::width(option.label) + 4,
-            );
+            let label_pad = label_col
+                .saturating_sub(UnicodeWidthStr::width(option.label))
+                .saturating_add(3);
+            let prefix_width = UnicodeWidthStr::width(lead.as_str())
+                + UnicodeWidthStr::width(option.label)
+                + label_pad;
+            let description_width = row_width.saturating_sub(prefix_width);
             let description = codewhale_ratatui::text::truncate_words(
                 option.description,
                 description_width,
                 crate::tui::color_compat::ascii_safe_enabled(),
             );
 
-            lines.push(Line::from(vec![
-                Span::styled(lead, row_style),
-                Span::styled(option.label, row_style),
-                Span::raw("    "),
-                Span::styled(description, desc_style),
-            ]));
+            if is_selected {
+                let row_style = menu_style::selected_row_style();
+                let desc_style = menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT);
+                let line = Line::from(vec![
+                    Span::styled(lead, row_style),
+                    Span::styled(option.label, row_style),
+                    Span::styled(" ".repeat(label_pad), row_style),
+                    Span::styled(description, desc_style),
+                ]);
+                lines.push(pad_selected_line(line, row_width, desc_style));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{pointer} "),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    ),
+                    Span::styled(
+                        format!("{}. ", option.number),
+                        Style::default()
+                            .fg(palette::WHALE_ACTION)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(option.label, Style::default().fg(palette::TEXT_PRIMARY)),
+                    Span::raw(" ".repeat(label_pad)),
+                    Span::styled(description, Style::default().fg(palette::TEXT_MUTED)),
+                ]));
+            }
         }
 
         drop(hitboxes);
@@ -394,7 +407,7 @@ mod tests {
             );
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
             for (y, row) in rows.iter().enumerate() {
