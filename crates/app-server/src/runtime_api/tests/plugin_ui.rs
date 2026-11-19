@@ -63,6 +63,40 @@ fn write_dsh_package(dir: &Path, name: &str, client: &str) -> Result<PathBuf> {
     Ok(package)
 }
 
+fn write_dsh_root_entry_package(dir: &Path, name: &str) -> Result<PathBuf> {
+    let package = dir.join(name);
+    fs::create_dir_all(&package)?;
+    fs::write(
+        package.join("package.json"),
+        serde_json::json!({
+            "name": format!("@demo/{name}"),
+            "version": "1.0.0",
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        package.join("cordis.patch.yml"),
+        "- insert:\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::create_dir_all(package.join("skills/greet"))?;
+    fs::write(
+        package.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
+    )?;
+    fs::write(
+        package.join("client.js"),
+        "var util = require(\"./util\");\n\
+exports.apply = function apply(ctx) { return [util.v, [\"sidebar.right.pane.tab\"], ctx]; };\n",
+    )?;
+    fs::write(package.join("util.js"), "exports.v = 1;\n")?;
+    Ok(package)
+}
+
 fn write_native_ui_bundle(dir: &Path, name: &str) -> Result<PathBuf> {
     let bundle = write_plugin_source_bundle(dir, name)?;
     fs::write(
@@ -181,25 +215,6 @@ fn assert_consumer_contract(name: &str, minted: &serde_json::Value, seat: &str, 
             .as_str()
             .is_some_and(|r| r.starts_with('"'))
     );
-}
-
-fn bootstrap_loads_in_node(source: &str) -> Option<String> {
-    let dir = tempfile::tempdir().ok()?;
-    let script = dir.path().join("run.js");
-    let harness = format!(
-        "var captured;\nvar window = {{ __ModuleLoader__: {{ load: function (r) {{ captured = r; }} }} }};\n{source}\nvar mod = captured.factory(function (id) {{ return {{ id: id }}; }});\nprocess.stdout.write(JSON.stringify({{ id: captured.id, apply: typeof mod.apply, out: mod.apply('ctx') }}));\n"
-    );
-    fs::write(&script, harness).ok()?;
-    let output = std::process::Command::new("node")
-        .arg(&script)
-        .output()
-        .ok()?;
-    assert!(
-        output.status.success(),
-        "the served bootstrap failed under node: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[tokio::test]
@@ -408,6 +423,51 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
         .send()
         .await?;
     assert_eq!(tampered.status(), StatusCode::PRECONDITION_FAILED);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_ui_dsh_bootstrap_resolves_relative_requires_from_a_root_entry() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+    let package = write_dsh_root_entry_package(tmp.path(), "rootentry")?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let base = format!("http://{addr}/v1/apps/plugins");
+    let installed = install_active(&client, &base, format!("dsh:{}", package.display())).await?;
+    let name = installed["name"].as_str().unwrap().to_string();
+
+    let (status, panel) = ui(&client, &base, &name, "slot=workpane.panel").await?;
+    assert_eq!(status, 200, "{panel}");
+    let revision = panel["revision"].as_str().unwrap().to_string();
+    let asset_url = format!(
+        "{}{}",
+        panel["base"].as_str().unwrap(),
+        panel["entry"].as_str().unwrap()
+    );
+    let served = client
+        .get(&asset_url)
+        .header("If-Match", &revision)
+        .send()
+        .await?;
+    assert_eq!(served.status(), StatusCode::OK);
+    let bootstrap = served.text().await?;
+    assert!(bootstrap.contains("\"source/util.js\""));
+    match bootstrap_loads_in_node(&bootstrap) {
+        Some(out) => {
+            let out: serde_json::Value = serde_json::from_str(&out)?;
+            assert_eq!(out["apply"], "function");
+            assert_eq!(out["out"][0], 1);
+        }
+        None => eprintln!("node is unavailable; the bootstrap execution check was skipped"),
+    }
 
     handle.abort();
     Ok(())
