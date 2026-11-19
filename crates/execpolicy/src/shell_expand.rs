@@ -3866,12 +3866,17 @@ fn step_wrapper_option(
 
 fn launcher_verb_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
     let mut targets = resolve_wrapper_targets(tokens, start, spec);
-    for at in targets.clone() {
-        if let Some(word) = (at..tokens.len()).find(|&i| !tokens[i].is_empty())
-            && !targets.contains(&word)
-        {
-            targets.push(word);
+    let mut index = 0;
+    while index < targets.len() {
+        let at = targets[index];
+        if tokens.get(at).is_some_and(String::is_empty) {
+            for next in resolve_wrapper_targets(tokens, at + 1, spec) {
+                if !targets.contains(&next) {
+                    targets.push(next);
+                }
+            }
         }
+        index += 1;
     }
     targets.sort_unstable();
     targets
@@ -4205,6 +4210,9 @@ mod tests {
             ("npm '' '' x --call 'rm -rf /'", "rm -rf /"),
             ("docker '' run alpine rm -rf /", "rm -rf /"),
             ("nix '' develop -c rm -rf /", "rm -rf /"),
+            ("npm '' --silent exec -c 'rm -rf /'", "rm -rf /"),
+            ("docker '' -D run alpine rm -rf /", "rm -rf /"),
+            ("nix '' --offline develop -c rm -rf /", "rm -rf /"),
             ("docker -D run --entrypoint rm alpine -rf /", "rm -rf /"),
             ("docker run --entrypoint=rm alpine -rf /", "rm -rf /"),
             ("podman run -it --entrypoint rm alpine -rf /", "rm -rf /"),
