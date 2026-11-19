@@ -13,7 +13,7 @@
 #                                   is far slower than everything else here, and it
 #                                   is the one Lint step nothing else covered.
 #   scripts/preflight.sh --base REF compare feature receipts against REF
-#                                   (default: merge base with origin/main)
+#                                   (default: BEFORE_SHA if set, else merge base with origin/main)
 #
 # As a pre-push hook it runs in --check mode:
 #   ln -s ../../scripts/preflight.sh "$(git rev-parse --git-path hooks)/pre-push"
@@ -125,6 +125,12 @@ if [[ "${clippy}" == "1" ]]; then
     -A clippy::unnecessary_map_or
 fi
 
+if [[ -z "${base}" && -n "${BEFORE_SHA:-}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" && "${BEFORE_SHA}" != -* ]]; then
+  base="$(git rev-parse --verify --quiet "${BEFORE_SHA}^{commit}" 2>/dev/null || true)"
+  if [[ ! "${base}" =~ ^[0-9a-f]{40}$ ]]; then
+    base=""
+  fi
+fi
 if [[ -z "${base}" ]]; then
   base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
 fi
