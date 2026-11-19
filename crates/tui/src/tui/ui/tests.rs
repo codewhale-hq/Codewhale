@@ -32049,6 +32049,44 @@ fn translation_placeholder_keeps_a_calm_refresh_without_repainting_still_mode() 
 }
 
 #[test]
+fn status_animation_holds_still_while_transcript_is_scrolled_away() {
+    let mut app = create_test_app();
+    app.low_motion = false;
+    app.fancy_animations = true;
+    app.is_loading = true;
+    app.turn_started_at = Some(Instant::now());
+    app.viewport.working_glow_visible = true;
+    app.history.push(running_generic_tool_cell("workflow"));
+    let history_motion = history_has_live_motion(&app.history);
+
+    assert!(should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
+    assert!(!should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+
+    app.scroll_to_bottom();
+    assert!(should_tick_status_animation(
+        &app,
+        true,
+        history_motion,
+        true,
+        true
+    ));
+}
+
+#[test]
 fn background_notice_waits_for_finite_work_and_a_busy_parent() {
     use crate::tui::background_finished::{FinishedOutcome, FinishedWork};
     // #6565: `final-only` used to fire only for the last child, by raw id.

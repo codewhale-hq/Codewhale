@@ -157,6 +157,7 @@ pub(crate) fn rail_min_chat_width(idle_empty: bool) -> u16 {
 
 fn working_clock_has_glow(app: &App) -> bool {
     app.motion_policy().should_request_animation_frames()
+        && app.viewport.transcript_scroll.is_at_tail()
         && app.viewport.working_glow_visible
         && app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Full
         && !crate::tui::pet_watch::main_view(app)
@@ -336,6 +337,7 @@ pub(crate) fn should_tick_status_animation(
     translation_placeholder_has_live_motion: bool,
 ) -> bool {
     !matches!(app.motion_policy().mode(), MotionMode::Still)
+        && app.viewport.transcript_scroll.is_at_tail()
         && (app.is_loading
             || working_clock_has_glow(app)
             || composer_border_breathes(app)
