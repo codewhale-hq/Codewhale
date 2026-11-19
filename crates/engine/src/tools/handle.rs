@@ -753,6 +753,32 @@ pub(super) fn query_jsonpath_bounded(
     path: &str,
     max_bytes: usize,
 ) -> Result<(Vec<Value>, usize), String> {
+    let (current, _) = eval_jsonpath(root, path, false)?;
+    let mut counter = codewhale_util::utils::CountingWriter::new();
+    serde_json::to_writer(&mut counter, &current)
+        .map_err(|error| format!("jsonpath result measurement failed: {error}"))?;
+    let max_bytes = max_bytes.min(JSONPATH_MAX_BYTES);
+    if counter.count() > max_bytes {
+        return Err(format!(
+            "jsonpath result exceeds the {max_bytes}-byte projection budget; use a narrower projection"
+        ));
+    }
+    Ok((current.into_iter().cloned().collect(), counter.count()))
+}
+
+pub(super) fn query_jsonpath_capped(
+    root: &Value,
+    path: &str,
+) -> Result<(Vec<Value>, bool), String> {
+    let (current, match_cap_hit) = eval_jsonpath(root, path, true)?;
+    Ok((current.into_iter().cloned().collect(), match_cap_hit))
+}
+
+fn eval_jsonpath<'a>(
+    root: &'a Value,
+    path: &str,
+    truncate_on_match_cap: bool,
+) -> Result<(Vec<&'a Value>, bool), String> {
     if path.len() > JSONPATH_MAX_PATH_BYTES {
         return Err("jsonpath exceeds 4096 bytes".to_string());
     }
@@ -763,6 +789,7 @@ pub(super) fn query_jsonpath_bounded(
     let bytes = path.as_bytes();
     let mut current = vec![root];
     let mut steps = 0usize;
+    let mut match_cap_hit = false;
     while idx < bytes.len() {
         steps += 1;
         if steps > JSONPATH_MAX_STEPS {
@@ -796,7 +823,8 @@ pub(super) fn query_jsonpath_bounded(
                 let close = idx + 1 + close_rel;
                 let token = path[idx + 1..close].trim();
                 idx = close + 1;
-                current = apply_bracket_token(current, token)?;
+                current =
+                    apply_bracket_token(current, token, truncate_on_match_cap, &mut match_cap_hit)?;
             }
             other => {
                 return Err(format!(
@@ -806,35 +834,47 @@ pub(super) fn query_jsonpath_bounded(
             }
         }
     }
-    let mut counter = codewhale_util::utils::CountingWriter::new();
-    serde_json::to_writer(&mut counter, &current)
-        .map_err(|error| format!("jsonpath result measurement failed: {error}"))?;
-    let max_bytes = max_bytes.min(JSONPATH_MAX_BYTES);
-    if counter.count() > max_bytes {
-        return Err(format!(
-            "jsonpath result exceeds the {max_bytes}-byte projection budget; use a narrower projection"
-        ));
-    }
-    Ok((current.into_iter().cloned().collect(), counter.count()))
+    Ok((current, match_cap_hit))
 }
 
-fn apply_bracket_token<'a>(values: Vec<&'a Value>, token: &str) -> Result<Vec<&'a Value>, String> {
+fn apply_bracket_token<'a>(
+    values: Vec<&'a Value>,
+    token: &str,
+    truncate_on_match_cap: bool,
+    match_cap_hit: &mut bool,
+) -> Result<Vec<&'a Value>, String> {
     if token == "*" {
         let mut out = Vec::new();
-        let mut push = |item: &'a Value| -> Result<(), String> {
+        let mut push = |item: &'a Value| -> Result<bool, String> {
             if out.len() == JSONPATH_MAX_MATCHES {
+                if truncate_on_match_cap {
+                    *match_cap_hit = true;
+                    return Ok(false);
+                }
                 return Err(
                     "jsonpath exceeds 1024 intermediate matches; use a narrower projection"
                         .to_string(),
                 );
             }
             out.push(item);
-            Ok(())
+            Ok(true)
         };
-        for value in values {
+        'outer: for value in values {
             match value {
-                Value::Array(items) => items.iter().try_for_each(&mut push)?,
-                Value::Object(map) => map.values().try_for_each(&mut push)?,
+                Value::Array(items) => {
+                    for item in items {
+                        if !push(item)? {
+                            break 'outer;
+                        }
+                    }
+                }
+                Value::Object(map) => {
+                    for item in map.values() {
+                        if !push(item)? {
+                            break 'outer;
+                        }
+                    }
+                }
                 _ => {}
             }
         }

@@ -9091,7 +9091,9 @@ fn synthetic_deferred_tool(name: &str, description_bytes: usize) -> Tool {
 
 #[test]
 fn small_surface_caches_are_independent_bounded_and_revalidated() {
-    let mut catalog = (0..9)
+    let max = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES;
+    let max_bytes = crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES;
+    let mut catalog = (0..=max)
         .map(|index| synthetic_deferred_tool(&format!("deferred_{index}"), 8))
         .collect::<Vec<_>>();
     ensure_advanced_tooling(
@@ -9101,25 +9103,25 @@ fn small_surface_caches_are_independent_bounded_and_revalidated() {
         crate::core::engine::tool_catalog::ToolMode::Direct,
     );
     catalog.retain(|tool| tool.name == TOOL_SEARCH_NAME || tool.name.starts_with("deferred_"));
-    let warm = (0..9)
+    let warm = (0..=max)
         .map(|index| format!("deferred_{index}"))
         .collect::<Vec<_>>();
     let mut first = ChildSurfaceProbe::new(catalog.clone(), &warm);
     let mut second = ChildSurfaceProbe::new(catalog, &[]);
     let first_names = model_tool_names(model_request_tools(&mut first));
     assert!(first_names.contains("deferred_0"));
-    assert!(!first_names.contains("deferred_8"));
+    assert!(!first_names.contains(format!("deferred_{max}").as_str()));
     assert!(!model_tool_names(model_request_tools(&mut second)).contains("deferred_0"));
 
     first.catalog_mut().retain(|tool| tool.name != "deferred_0");
     assert!(!model_tool_names(model_request_tools(&mut first)).contains("deferred_0"));
     first
         .catalog_mut()
-        .push(synthetic_deferred_tool("oversized", 17 * 1024));
+        .push(synthetic_deferred_tool("oversized", max_bytes + 1024));
     assert!(first.hydrate("oversized", &json!({})).is_err());
 
     let mut byte_catalog = (0..3)
-        .map(|index| synthetic_deferred_tool(&format!("bytes_{index}"), 6 * 1024))
+        .map(|index| synthetic_deferred_tool(&format!("bytes_{index}"), max_bytes * 2 / 5))
         .collect::<Vec<_>>();
     ensure_advanced_tooling(
         &mut byte_catalog,
@@ -26628,14 +26630,11 @@ mod child_permission_gate {
     async fn pending_approval_longer_than_tool_timeout_is_answered_and_runs() {
         let (registry, mut rx, manager) = worker_registry(ApprovalMode::Suggest, false, true, None);
         let (receipt_store, session_id) = receipt_context(&registry);
-        // Wide margins: after approval the call spawns a real shell, which
-        // can take well over 200ms on a loaded Windows runner.
-        let tool_timeout = Duration::from_secs(2);
+        let tool_timeout = Duration::from_secs(6);
         let manager_for_answer = Arc::clone(&manager);
         let answerer = tokio::spawn(async move {
             let id = next_child_approval_id(&mut rx).await;
-            // The person takes several tool timeouts to decide.
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(8)).await;
             assert!({
                 let submitted = manager_for_answer.write().await.resolve_child_approval(
                     &id,
@@ -26649,11 +26648,21 @@ mod child_permission_gate {
                     .expect("actual child approval outcome")
             });
         });
+        let clock = PersonWaitClock::default();
+        let slow_check = tokio::spawn(async move {
+            run_tool_with_person_aware_timeout(
+                tool_timeout,
+                None,
+                &clock,
+                tokio::time::sleep(Duration::from_secs(7)),
+            )
+            .await
+        });
         let output = run_tool_with_person_aware_timeout(
             tool_timeout,
             None,
             &registry.person_wait,
-            registry.execute("agent_gate", "bash", json!({"command": "echo gated-ran"})),
+            Box::pin(registry.execute("agent_gate", "bash", json!({"command": "echo gated-ran"}))),
         )
         .await
         .expect("the approval wait never spends the tool timeout")
@@ -26661,16 +26670,7 @@ mod child_permission_gate {
         answerer.await.expect("answerer");
         assert!(output.contains("gated-ran"), "{output}");
         assert_completed_receipt(&receipt_store, &session_id, ApprovalOutcome::ApprovedOnce);
-
-        // Without a person wait the same bound still fires.
-        let clock = PersonWaitClock::default();
-        let slow = run_tool_with_person_aware_timeout(
-            tool_timeout,
-            None,
-            &clock,
-            tokio::time::sleep(Duration::from_secs(3)),
-        )
-        .await;
+        let slow = slow_check.await.expect("slow check");
         assert!(slow.is_none(), "ordinary tool work keeps its timeout");
     }
 

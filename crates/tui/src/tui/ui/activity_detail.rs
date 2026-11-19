@@ -386,6 +386,7 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         HistoryCell::Tool(_) => "Message".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -439,6 +440,7 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
         HistoryCell::Tool(_) => "Tool".to_string(),
         HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::Automation(_) => tr(app.ui_locale, MessageId::AutomationNoun).into_owned(),
+        HistoryCell::ApprovalReceipt(_) => "Approval".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -896,6 +898,7 @@ fn turn_full_conversation_lines(app: &App, start: usize, end: usize) -> Vec<Stri
             ),
             HistoryCell::Error { .. } => "[!]".to_string(),
             HistoryCell::Automation(_) => "[⏱]".to_string(),
+            HistoryCell::ApprovalReceipt(_) => "[✓]".to_string(),
             HistoryCell::System { .. } | HistoryCell::ArchivedContext { .. } => "[i]".to_string(),
         };
         if !out.is_empty() {
@@ -1163,7 +1166,9 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     &[],
                 ));
             }
-            HistoryCell::Error { message, severity } => {
+            HistoryCell::Error {
+                message, severity, ..
+            } => {
                 let summary = one_line_summary(message, 96);
                 let status = severity.to_string();
                 rows.push(timeline_row("error", &summary, Some(&status), None, &[]));
@@ -1171,6 +1176,10 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
             HistoryCell::Automation(cell) => {
                 let summary = one_line_summary(&cell.plain_summary(), 96);
                 rows.push(timeline_row("automation", &summary, None, None, &[]));
+            }
+            HistoryCell::ApprovalReceipt(cell) => {
+                let summary = one_line_summary(&cell.plain_summary(), 96);
+                rows.push(timeline_row("approval", &summary, None, None, &[]));
             }
             HistoryCell::System { content }
             | HistoryCell::ArchivedContext {

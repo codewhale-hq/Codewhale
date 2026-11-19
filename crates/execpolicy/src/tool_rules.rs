@@ -20,6 +20,7 @@ fn requires_raw_shell(name: &str) -> bool {
             | "automation_create"
             | "automation_update"
             | "automation_resume"
+            | "automation_adopt"
             | "automation_run"
             | "terminal/run"
             | "terminal/send"

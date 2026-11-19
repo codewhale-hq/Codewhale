@@ -80,6 +80,14 @@ pub(super) fn handle_tool_call_started(
         return;
     }
 
+    if semantic_name == "task_shell_wait"
+        && let Some(task_id) = plain_shell_poll_task_id(input)
+        && has_shell_origin_row(app, task_id)
+    {
+        app.ignored_tool_calls.insert(id, input.clone());
+        return;
+    }
+
     if is_exec_tool(semantic_name) {
         let command = exec_target_from_input(input);
         let source = exec_source_from_input(input);
@@ -94,7 +102,7 @@ pub(super) fn handle_tool_call_started(
                     .as_ref()
                     .is_some_and(|last| last == &command)
             {
-                app.ignored_tool_calls.insert(id);
+                app.ignored_tool_calls.insert(id, input.clone());
                 return;
             }
             if is_wait {
@@ -133,7 +141,7 @@ pub(super) fn handle_tool_call_started(
                 .as_ref()
                 .is_some_and(|last| last == &command)
         {
-            app.ignored_tool_calls.insert(id);
+            app.ignored_tool_calls.insert(id, input.clone());
             return;
         }
         if exec_is_background(input) && !is_wait {
@@ -706,6 +714,7 @@ fn fire_tool_completion_hooks(
     id: &str,
     name: &str,
     result: &Result<ToolResult, ToolError>,
+    ignored_input: Option<&serde_json::Value>,
 ) {
     let wants_after = app.hooks.has_hooks_for_event(HookEvent::ToolCallAfter);
     let wants_error = app
@@ -717,15 +726,16 @@ fn fire_tool_completion_hooks(
         return;
     }
 
-    let input = app
-        .active_tool_details
-        .get(id)
-        .or_else(|| {
-            app.tool_cells
-                .get(id)
-                .and_then(|index| app.tool_details_by_cell.get(index))
-        })
-        .map(|detail| detail.input.clone());
+    let input = ignored_input.cloned().or_else(|| {
+        app.active_tool_details
+            .get(id)
+            .or_else(|| {
+                app.tool_cells
+                    .get(id)
+                    .and_then(|index| app.tool_details_by_cell.get(index))
+            })
+            .map(|detail| detail.input.clone())
+    });
     let context = app
         .base_hook_context()
         .with_tool_name(name)
@@ -759,14 +769,24 @@ pub(super) fn handle_tool_call_complete(
     name: &str,
     result: &Result<ToolResult, ToolError>,
 ) {
-    if app.ignored_tool_calls.remove(id) {
+    let ignored_input = app.ignored_tool_calls.remove(id);
+    if let Some(input) = ignored_input.as_ref()
+        && tool_status_from_result(result) != ToolStatus::Failed
+    {
         // "Ignored" is a *presentation* decision: these are real settled
         // results — repeated `wait` polls, background-shell status reads —
         // that the transcript deliberately does not redraw. Observers still
         // have to see them, or `tool_call_after` silently skips a whole class
         // of completions while claiming to fire after each tool call. Fired
-        // here and returned immediately, so each id emits exactly once.
-        fire_tool_completion_hooks(app, id, name, result);
+        // here and returned immediately, so each id emits exactly once. A
+        // failed ignored call falls through and is drawn as an orphan.
+        record_spillover_artifact_if_any(app, id, name, result);
+        fire_tool_completion_hooks(app, id, name, result, Some(input));
+        if tool_status_from_result(result) != ToolStatus::Running
+            && refreshes_workspace_context_on_completion(canonical_action_alias(name, input))
+        {
+            workspace_context::refresh_now(app, Instant::now());
+        }
         return;
     }
     // Preserve the execution/audit name while recovering the action-qualified
@@ -796,7 +816,7 @@ pub(super) fn handle_tool_call_complete(
     // any of the presentation early-returns below. Firing it further down meant
     // exploring-tool completions and orphaned completions never emitted the
     // event at all, so "fires after each tool call" was not true.
-    fire_tool_completion_hooks(app, id, name, result);
+    fire_tool_completion_hooks(app, id, name, result, ignored_input.as_ref());
 
     // Results recorded by earlier engines begin with a note for the model
     // ("[approval] This tool call required approval…"). Repeating it as the
@@ -1693,7 +1713,31 @@ fn is_exec_tool(name: &str) -> bool {
             | "exec_shell_cancel"
             | "exec_wait"
             | "exec_interact"
+            | "task_shell_wait"
     )
+}
+
+fn plain_shell_poll_task_id(input: &serde_json::Value) -> Option<&str> {
+    if input.get("task_ids").is_some()
+        || input.get("gate").is_some_and(|gate| !gate.is_null())
+        || codewhale_engine::tools::tasks::task_shell_wait_requests_cancel(input)
+    {
+        return None;
+    }
+    input
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|task_id| !task_id.trim().is_empty())
+}
+
+fn has_shell_origin_row(app: &App, task_id: &str) -> bool {
+    (0..app.virtual_cell_count()).any(|index| {
+        matches!(
+            app.cell_at_virtual_index(index),
+            Some(HistoryCell::Tool(ToolCell::Exec(exec)))
+                if exec.interaction.is_none() && exec.shell_task_id.as_deref() == Some(task_id)
+        )
+    })
 }
 
 pub(super) fn refreshes_workspace_context_on_completion(name: &str) -> bool {
@@ -1935,6 +1979,15 @@ fn exec_target_from_input(input: &serde_json::Value) -> String {
             .or_else(|| input.get("id"))
             .and_then(|v| v.as_str())
             .map(|task_id| format!("command {task_id}"))
+            .or_else(|| {
+                let task_ids = input
+                    .get("task_ids")
+                    .and_then(serde_json::Value::as_array)?
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>();
+                (!task_ids.is_empty()).then(|| format!("commands {}", task_ids.join(", ")))
+            })
             .unwrap_or_else(|| "command".to_string())
     })
 }
@@ -1955,9 +2008,13 @@ fn exec_interaction_summary(name: &str, input: &serde_json::Value) -> Option<(St
         .or_else(|| input.get("data"))
         .and_then(|v| v.as_str());
 
-    let is_wait_tool = matches!(name, "exec_shell_wait" | "exec_wait");
+    let cancels_task_shell = name == "task_shell_wait"
+        && codewhale_engine::tools::tasks::task_shell_wait_requests_cancel(input);
+    let polls_task_shell =
+        name == "task_shell_wait" && input.get("gate").is_none_or(serde_json::Value::is_null);
+    let is_wait_tool = matches!(name, "exec_shell_wait" | "exec_wait") || polls_task_shell;
     let is_interact_tool = matches!(name, "exec_shell_interact" | "exec_interact");
-    let is_cancel_tool = name == "exec_shell_cancel";
+    let is_cancel_tool = name == "exec_shell_cancel" || cancels_task_shell;
 
     if is_cancel_tool {
         let summary = if input.get("all").and_then(serde_json::Value::as_bool) == Some(true) {
@@ -1985,13 +2042,8 @@ fn exec_interaction_summary(name: &str, input: &serde_json::Value) -> Option<(St
     }
 
     if is_wait_tool || input.get("wait").and_then(serde_json::Value::as_bool) == Some(true) {
-        if exec_command_from_input(input).is_none()
-            && let Some(task_id) = input
-                .get("task_id")
-                .or_else(|| input.get("id"))
-                .and_then(|v| v.as_str())
-        {
-            return Some((format!("Waiting for command {task_id}"), true));
+        if exec_command_from_input(input).is_none() && command != "command" {
+            return Some((format!("Waiting for {command}"), true));
         }
         return Some((format!("Waited for {command_display}"), true));
     }
@@ -2567,13 +2619,14 @@ mod tests {
         );
 
         let id = "call_ignored_1";
-        app.ignored_tool_calls.insert(id.to_string());
+        app.ignored_tool_calls
+            .insert(id.to_string(), serde_json::Value::Null);
         let failed: Result<ToolResult, ToolError> = Ok(ToolResult::error("boom"));
 
         handle_tool_call_complete(&mut app, id, "exec_shell", &failed);
 
         // The presentation state still consumed the id...
-        assert!(!app.ignored_tool_calls.contains(id));
+        assert!(!app.ignored_tool_calls.contains_key(id));
         // ...and both observers saw the call, once each.
         let after = hook_log_lines_eventually(&after_log, 1);
         let errors = hook_log_lines_eventually(&error_log, 1);
@@ -2582,7 +2635,8 @@ mod tests {
 
         // A successful ignored completion fires `tool_call_after` only.
         let second = "call_ignored_2";
-        app.ignored_tool_calls.insert(second.to_string());
+        app.ignored_tool_calls
+            .insert(second.to_string(), serde_json::Value::Null);
         handle_tool_call_complete(
             &mut app,
             second,

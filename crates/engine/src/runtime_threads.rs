@@ -6297,8 +6297,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| anyhow!("Runtime record has no basename"))?;
-    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
-        .replace(payload.as_bytes())
+    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)
+        .and_then(|file| file.replace(payload.as_bytes()))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     #[cfg(unix)]
     if let (Some(ancestor), Some(name)) = (parent.parent(), parent.file_name()) {

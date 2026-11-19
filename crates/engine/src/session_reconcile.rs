@@ -178,8 +178,17 @@ impl ReconcileSummary {
         if let Some(path) = &self.set_aside_path {
             line.push_str(&format!("; set aside under {}", path.display()));
         }
-        if !self.errors.is_empty() {
-            line.push_str(&format!("; {} errors", self.errors.len()));
+        if let Some(first) = self.errors.first() {
+            line.push_str(&format!(
+                "; {} item(s) could not be inspected and were left unchanged, first: {first}",
+                self.errors.len()
+            ));
+            if self.errors.len() > 1 {
+                line.push_str(&format!(" (+{} more)", self.errors.len() - 1));
+            }
+            line.push_str(
+                ". Nothing was lost; `codewhale doctor --repair-sessions --dry-run` lists every item",
+            );
         }
         line
     }
@@ -793,6 +802,7 @@ impl Run<'_> {
             Ok(entries) => {
                 for entry in entries {
                     match entry {
+                        Ok(entry) if entry.file_type().is_ok_and(|kind| kind.is_file()) => {}
                         Ok(entry) => roots.push(entry.path()),
                         Err(error) => references.failed(&tasks, error),
                     }

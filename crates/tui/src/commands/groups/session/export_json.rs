@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 
 use codewhale_command_contract::facets::{
-    ConversationExportProjection, ExportBlock, ExportMessage, HistoryEntry, TranscriptProjection,
+    ConversationExportProjection, ExportBlock, ExportMessage, ExportTurnOutcome, HistoryEntry,
+    TranscriptProjection,
 };
 use codewhale_sanitize::sanitize::{
     is_internal_role, redact_json, redact_url_for_display, sanitize_text,
@@ -27,6 +28,7 @@ pub(super) fn render(projection: ConversationExportProjection) -> String {
         metadata,
         transcript,
         restore_points: _,
+        turn_outcomes,
     } = projection;
     let names = tool_names(&transcript);
     let (transcript_kind, messages) = match transcript {
@@ -47,7 +49,8 @@ pub(super) fn render(projection: ConversationExportProjection) -> String {
                 .collect::<Vec<_>>(),
         ),
     };
-    let document = json!({
+    let turn_outcomes: Vec<Value> = turn_outcomes.into_iter().map(turn_outcome_json).collect();
+    let mut document = json!({
         "format": FORMAT_NAME,
         "format_version": FORMAT_VERSION,
         "generator": {
@@ -68,7 +71,34 @@ pub(super) fn render(projection: ConversationExportProjection) -> String {
         "notice": OMISSION_NOTE,
         "messages": messages,
     });
+    if !turn_outcomes.is_empty() {
+        document["turn_outcomes"] = Value::Array(turn_outcomes);
+    }
     serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn turn_outcome_json(outcome: ExportTurnOutcome) -> Value {
+    let status = sanitize_text(&outcome.status);
+    let status = if status.trim().is_empty() {
+        "failed".to_string()
+    } else {
+        status
+    };
+    let mut value = json!({
+        "status": status,
+        "ended_at": format_export_time(outcome.ended_at_unix),
+        "after_message_count": outcome.after_message_count,
+        "error": sanitize_text(&outcome.error),
+    });
+    if let Some(code) = outcome
+        .code
+        .as_deref()
+        .map(sanitize_text)
+        .filter(|code| !code.trim().is_empty())
+    {
+        value["code"] = Value::String(code);
+    }
+    value
 }
 
 fn message_json(index: usize, message: ExportMessage, names: &HashMap<String, String>) -> Value {

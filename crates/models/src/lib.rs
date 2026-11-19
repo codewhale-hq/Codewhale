@@ -672,6 +672,8 @@ pub enum Delta {
     /// of a thinking block on the native Messages stream.
     #[serde(rename = "signature_delta")]
     SignatureDelta { signature: String },
+    #[serde(rename = "thought_signature_delta")]
+    ThoughtSignatureDelta { thought_signature: String },
     /// Opaque Responses reasoning continuity, attached only when the provider
     /// returns an encrypted item on the exact originating route.
     #[serde(rename = "reasoning_state_delta")]

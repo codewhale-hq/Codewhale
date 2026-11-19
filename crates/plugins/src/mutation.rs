@@ -134,6 +134,24 @@ pub fn check_network_outcome(outcome: &PluginMutationOutcome) -> Result<()> {
 pub async fn install_from_cli_receipt(
     source: String,
     config: codewhale_runtime::config::Config,
+    registry: PluginRegistry,
+) -> Result<PluginMutationReceipt> {
+    install_cli_receipt_inner(source, None, config, registry).await
+}
+
+pub async fn install_exact_from_cli_receipt(
+    source: String,
+    expected_content_hash: String,
+    config: codewhale_runtime::config::Config,
+    registry: PluginRegistry,
+) -> Result<PluginMutationReceipt> {
+    install_cli_receipt_inner(source, Some(expected_content_hash), config, registry).await
+}
+
+async fn install_cli_receipt_inner(
+    source: String,
+    expected_content_hash: Option<String>,
+    config: codewhale_runtime::config::Config,
     mut registry: PluginRegistry,
 ) -> Result<PluginMutationReceipt> {
     let runtime = tokio::runtime::Handle::current();
@@ -145,8 +163,15 @@ pub async fn install_from_cli_receipt(
             .map(codewhale_net::network_policy::NetworkPolicy::from)
             .unwrap_or_default();
         let source = PluginInstallSource::parse(&source)?;
+        let request = match expected_content_hash {
+            Some(expected_content_hash) => PluginMutationRequest::InstallExact {
+                source,
+                expected_content_hash,
+            },
+            None => PluginMutationRequest::Install { source },
+        };
         runtime.block_on(execute(
-            PluginMutationRequest::Install { source },
+            request,
             &PluginMutationContext {
                 network: &network,
                 max_size: install::DEFAULT_MAX_SIZE_BYTES,

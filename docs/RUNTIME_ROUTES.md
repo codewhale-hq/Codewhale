@@ -76,6 +76,7 @@ registration index.
 | POST | `/v1/apps/plugins/install` |
 | GET / POST | `/v1/automations` |
 | DELETE / GET / PATCH | `/v1/automations/{id}` |
+| POST | `/v1/automations/{id}/adopt` |
 | GET | `/v1/automations/{id}/missed` |
 | PUT | `/v1/automations/{id}/missed/policy` |
 | POST | `/v1/automations/{id}/missed/run` |
@@ -277,4 +278,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 257 distinct literal paths in this table.
+The source contains 258 distinct literal paths in this table.

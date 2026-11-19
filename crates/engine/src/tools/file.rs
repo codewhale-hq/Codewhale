@@ -10,7 +10,7 @@ use super::diff_format::make_unified_diff;
 use super::rust_format::{NORMALIZED_NOTE, normalize_edit};
 use super::spec::{
     ApprovalRequirement, RichToolResult, ToolCapability, ToolContext, ToolError, ToolResult,
-    ToolSpec, lsp_diagnostics_for_paths, optional_str, optional_u64, required_str,
+    ToolSpec, optional_str, optional_u64, required_str,
 };
 use super::syntax_check::guard_edit;
 use async_trait::async_trait;
@@ -921,10 +921,7 @@ pub fn mutation_file_entry(path: &str, outcome: &str, written: Option<&[u8]>) ->
     entry
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn contract_mutation_result(
-    context: &ToolContext,
-    file_path: &Path,
+fn contract_mutation_result(
     requested_path: &str,
     before: &str,
     after: &str,
@@ -932,11 +929,8 @@ async fn contract_mutation_result(
     outcome: &str,
     summary: String,
 ) -> ToolResult {
-    let paths = [file_path.to_path_buf()];
-    let diagnostics = lsp_diagnostics_for_paths(context, &paths).await;
     ToolResult::success(summary).with_metadata(json!({
         "event": "file.mutation",
-        "lsp_diagnostics": diagnostics,
         "mutation": {
             "diff": make_unified_diff(requested_path, before, after),
             "files": [mutation_file_entry(requested_path, outcome, Some(written))],
@@ -2115,8 +2109,6 @@ impl WriteFileTool {
         let outcome = if existed_before { "updated" } else { "created" };
         let written_bytes = written.len();
         Ok(contract_mutation_result(
-            context,
-            &file_path,
             path_str,
             prior_contents.as_ref(),
             &written,
@@ -2133,8 +2125,7 @@ impl WriteFileTool {
                 ),
                 (None, None) => format!("Successfully wrote {written_bytes} bytes to {path_str}"),
             },
-        )
-        .await)
+        ))
     }
 }
 
@@ -2333,19 +2324,11 @@ impl ToolSpec for WriteFileTool {
             format!("{diff}\n{summary}")
         };
 
-        // Append LSP diagnostics for the written file when enabled (#428).
-        let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
-        let full_body = if diag_block.is_empty() {
-            body
-        } else {
-            format!("{body}\n{diag_block}")
-        };
-
         let outcome = if existed_before { "updated" } else { "created" };
         // Keep the execution-owned receipt workspace-relative even though the
         // legacy model-facing output above retains its resolved-path wording.
         let receipt_diff = make_unified_diff(path_str, &prior_contents, &written);
-        Ok(ToolResult::success(full_body).with_metadata(json!({
+        Ok(ToolResult::success(body).with_metadata(json!({
             "event": "file.mutation",
             "mutation": {
                 "diff": receipt_diff,
@@ -3107,8 +3090,6 @@ impl EditFileTool {
         drop(mutation_guard);
 
         Ok(contract_mutation_result(
-            context,
-            &file_path,
             path_str,
             &raw,
             &final_content,
@@ -3118,8 +3099,7 @@ impl EditFileTool {
                 "Successfully replaced {} block(s) in {path_str}.",
                 edits.len()
             ),
-        )
-        .await)
+        ))
     }
 }
 
@@ -3397,18 +3377,10 @@ impl ToolSpec for EditFileTool {
             format!("{diff}\n{summary}")
         };
 
-        // Append LSP diagnostics for the edited file when enabled (#428).
-        let diag_block = lsp_diagnostics_for_paths(context, &[file_path]).await;
-        let full_body = if diag_block.is_empty() {
-            body
-        } else {
-            format!("{body}\n{diag_block}")
-        };
-
         // The structured receipt uses the requested workspace path instead of
         // the resolved host path retained by the legacy model-facing body.
         let receipt_diff = make_unified_diff(path_str, &contents, &updated);
-        Ok(ToolResult::success(full_body).with_metadata(json!({
+        Ok(ToolResult::success(body).with_metadata(json!({
             "event": "file.mutation",
             "mutation": {
                 "diff": receipt_diff,

@@ -1056,10 +1056,9 @@ impl ToolContext {
         self
     }
 
-    /// Attach an LSP manager so that edit tools can auto-inject diagnostics
-    /// into their results after a successful file modification (#428).
+    /// Attach an LSP manager so the `lsp` tool can query language intelligence
+    /// and diagnostics.
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
         self.lsp_manager = Some(manager);
         self
@@ -1479,35 +1478,6 @@ impl ToolContext {
         self.large_output_router = Some(router);
         self
     }
-}
-
-/// Gather LSP diagnostics for `paths` using the manager stored in `context`,
-/// and return the rendered `<diagnostics …>` blocks joined by newlines.
-///
-/// Returns an empty string when:
-/// - `context.lsp_manager` is `None`
-/// - the manager's `enabled` flag is `false`
-/// - none of the files produce diagnostics (e.g. all clean, or language unknown)
-///
-/// This function is non-blocking by design: every failure mode (missing LSP
-/// binary, timeout, unknown language) degrades to an empty string rather than
-/// propagating an error to the caller.
-pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
-    use codewhale_lsp::render_blocks;
-
-    let manager = match context.lsp_manager.as_ref() {
-        Some(m) if m.config().enabled => m,
-        _ => return String::new(),
-    };
-
-    let mut blocks = Vec::new();
-    for (idx, path) in paths.iter().enumerate() {
-        if let Some(block) = manager.diagnostics_for(path, idx as u64).await {
-            blocks.push(block);
-        }
-    }
-
-    render_blocks(&blocks)
 }
 
 const MAX_LINK_HOPS: usize = 40;

@@ -1960,11 +1960,16 @@ const MCP_IMAGE_TEXT_PLACEHOLDER: &str = "[MCP image payload removed from text o
 /// verbatim so the model still sees the server's message (#5123-class).
 fn mcp_result_to_rich_tool_result(mut result: Value) -> RichToolResult {
     let mut content_blocks = Vec::new();
+    if let Some(object) = result.as_object_mut() {
+        object.remove("_meta");
+        object.remove("resultType");
+    }
     if let Some(items) = result.get_mut("content").and_then(Value::as_array_mut) {
         for item in items {
             let Some(object) = item.as_object_mut() else {
                 continue;
             };
+            object.remove("_meta");
             if object.get("type").and_then(Value::as_str) != Some("image") {
                 continue;
             }
