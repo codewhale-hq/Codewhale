@@ -167,7 +167,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         format!(
-            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `working_dir`/`cwd` to exec_shell",
+            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `cwd` to `bash`",
             path.display()
         )
     })?;
@@ -178,7 +178,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         return Err(anyhow!(
-            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `working_dir`/`cwd`",
+            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `cwd` to `bash`",
             path.display()
         ));
     }
@@ -8469,4 +8469,31 @@ pub fn foreground_command_requests_detach(command: &str) -> bool {
             )
         })
     })
+}
+
+#[cfg(test)]
+mod working_dir_error_tests {
+    use super::validate_shell_working_dir;
+    use tempfile::tempdir;
+
+    #[test]
+    fn working_dir_errors_name_bash_instead_of_exec_shell() {
+        let tmp = tempdir().expect("tempdir");
+        let missing = tmp.path().join("does-not-exist");
+        let missing_err = validate_shell_working_dir(&missing, true)
+            .expect_err("missing dir must fail")
+            .to_string();
+        assert!(missing_err.contains("`bash`"), "{missing_err}");
+        assert!(missing_err.contains("`cwd`"), "{missing_err}");
+        assert!(!missing_err.contains("exec_shell"), "{missing_err}");
+
+        let file = tmp.path().join("plain.txt");
+        std::fs::write(&file, "x").expect("write");
+        let not_dir_err = validate_shell_working_dir(&file, false)
+            .expect_err("file path must fail")
+            .to_string();
+        assert!(not_dir_err.contains("`bash`"), "{not_dir_err}");
+        assert!(not_dir_err.contains("`cwd`"), "{not_dir_err}");
+        assert!(!not_dir_err.contains("exec_shell"), "{not_dir_err}");
+    }
 }

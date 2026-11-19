@@ -1029,12 +1029,14 @@ impl WorkingSet {
         output: Option<&str>,
         workspace: &Path,
     ) {
-        let input_candidates = extract_paths_from_value(input, Some(tool_name));
+        let input_candidates = extract_paths_from_tool_input(tool_name, input);
         self.record_candidates(input_candidates, workspace, WorkingSetSource::ToolInput);
 
-        if let Some(text) = output {
-            let output_candidates = extract_paths_from_text(text);
-            self.record_candidates(output_candidates, workspace, WorkingSetSource::ToolOutput);
+        if is_file_mutation_tool(tool_name, input)
+            && let Some(text) = output
+        {
+            let receipt_candidates = extract_paths_from_mutation_receipt(text);
+            self.record_candidates(receipt_candidates, workspace, WorkingSetSource::ToolOutput);
         }
     }
 
@@ -1044,12 +1046,13 @@ impl WorkingSet {
     pub fn rebuild_from_messages(&mut self, messages: &[Message], workspace: &Path) {
         self.entries.clear();
         self.turn = 0;
+        let mut tool_calls: HashMap<String, (String, Value)> = HashMap::new();
 
         for message in messages {
             if message.role == "user" {
                 self.next_turn();
             }
-            let candidates = extract_paths_from_message(message);
+            let candidates = extract_paths_from_message(message, &mut tool_calls);
             if candidates.is_empty() {
                 continue;
             }
@@ -1410,18 +1413,66 @@ fn path_to_string(path: &Path) -> Option<String> {
     path.as_os_str().to_str().map(|s| s.replace('\\', "/"))
 }
 
-fn extract_paths_from_message(message: &Message) -> Vec<String> {
+fn strip_turn_meta_for_working_set(text: &str) -> String {
+    const OPEN: &str = "<turn_meta>";
+    const CLOSE: &str = "</turn_meta>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + OPEN.len()..];
+        let Some(close_rel) = after_open.find(CLOSE) else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        rest = &after_open[close_rel + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn extract_paths_from_message(
+    message: &Message,
+    tool_calls: &mut HashMap<String, (String, Value)>,
+) -> Vec<String> {
     let mut paths = Vec::new();
-    for block in &message.content {
+    let is_user = message.role == "user";
+    let skip_user_text = is_user
+        && (codewhale_models::turn_classify::is_runtime_owned_user_message(message)
+            || codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message));
+    let turn_meta_index = if is_user {
+        codewhale_models::turn_classify::turn_metadata_text(message).map(|(index, _)| index)
+    } else {
+        None
+    };
+
+    for (index, block) in message.content.iter().enumerate() {
         match block {
             ContentBlock::Text { text, .. } => {
-                paths.extend(extract_paths_from_text(text));
+                if is_user && !skip_user_text && Some(index) != turn_meta_index {
+                    let cleaned = strip_turn_meta_for_working_set(text);
+                    paths.extend(extract_paths_from_text(&cleaned));
+                }
             }
-            ContentBlock::ToolUse { input, .. } => {
-                paths.extend(extract_paths_from_value(input, None));
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                tool_calls.insert(id.clone(), (name.clone(), input.clone()));
+                paths.extend(extract_paths_from_tool_input(name, input));
             }
-            ContentBlock::ToolResult { content, .. } => {
-                paths.extend(extract_paths_from_text(content));
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => {
+                if *is_error != Some(true)
+                    && let Some((name, input)) = tool_calls.get(tool_use_id)
+                    && is_file_mutation_tool(name, input)
+                {
+                    paths.extend(extract_paths_from_mutation_receipt(content));
+                }
             }
             ContentBlock::Thinking { .. }
             | ContentBlock::ServerToolUse { .. }
@@ -1438,53 +1489,236 @@ fn extract_paths_from_message(message: &Message) -> Vec<String> {
     paths
 }
 
-fn extract_paths_from_value(value: &Value, tool_hint: Option<&str>) -> Vec<String> {
+fn tool_input_targets_workspace_files(tool_name: &str, input: &Value) -> bool {
+    match tool_name.trim() {
+        "grep_files"
+        | "grep"
+        | "search_files"
+        | "file_search"
+        | "glob"
+        | "list_dir"
+        | "project_map"
+        | "bash"
+        | "exec_shell"
+        | "Bash"
+        | "task_shell_wait"
+        | "exec_shell_wait"
+        | "exec_shell_cancel"
+        | "exec_shell_interact"
+        | "tool_search"
+        | "session_search"
+        | "session_get"
+        | "retrieve_tool_result"
+        | "load_skill"
+        | "context_archive_search"
+        | "context_archive_get"
+        | "execute_tools"
+        | "web_search"
+        | "web_fetch"
+        | "Web"
+        | "agent"
+        | "tasks"
+        | "notify"
+        | "note"
+        | "send_later"
+        | "request_user_input" => false,
+        "File" => !matches!(
+            input.get("action").and_then(Value::as_str),
+            Some("list" | "search" | "grep" | "glob" | "find")
+        ),
+        _ => true,
+    }
+}
+
+fn is_file_mutation_tool(tool_name: &str, input: &Value) -> bool {
+    match tool_name.trim() {
+        "write" | "write_file" | "edit" | "edit_file" | "apply_patch" | "fim_edit"
+        | "delete_file" | "remove_file" | "move_file" | "rename_file" => true,
+        "File" => matches!(
+            input.get("action").and_then(Value::as_str),
+            Some("write" | "edit" | "patch" | "delete" | "create" | "move" | "rename")
+        ),
+        _ => false,
+    }
+}
+
+fn is_patch_tool(tool_name: &str, input: &Value) -> bool {
+    match tool_name.trim() {
+        "apply_patch" => true,
+        "File" => matches!(input.get("action").and_then(Value::as_str), Some("patch")),
+        _ => false,
+    }
+}
+
+fn extract_paths_from_tool_input(tool_name: &str, input: &Value) -> Vec<String> {
+    if !tool_input_targets_workspace_files(tool_name, input) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    extract_paths_from_value_inner(value, tool_hint, None, &mut out);
+    extract_explicit_paths_from_value(input, is_patch_tool(tool_name, input), None, &mut out);
     out
 }
 
-fn extract_paths_from_value_inner(
+fn extract_explicit_paths_from_value(
     value: &Value,
-    tool_hint: Option<&str>,
+    allow_patch_headers: bool,
     key_hint: Option<&str>,
     out: &mut Vec<String>,
 ) {
     match value {
         Value::String(s) => {
-            let key_suggests_path = key_hint.map(key_is_path_like).unwrap_or(false);
-            if key_suggests_path || looks_like_path(s) {
-                out.extend(extract_paths_from_text(s));
-                if key_suggests_path && !s.contains('/') && !s.contains('\\') {
-                    out.push(s.to_string());
+            if key_hint.is_some_and(key_is_explicit_path_key) {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() && !trimmed.contains('\n') && !trimmed.contains('\r') {
+                    out.push(trimmed.to_string());
                 }
-            } else if tool_hint == Some("exec_shell") && s.len() < 400 {
-                out.extend(extract_paths_from_text(s));
+            } else if allow_patch_headers
+                && key_hint.is_some_and(|k| {
+                    k.eq_ignore_ascii_case("patch") || k.eq_ignore_ascii_case("diff")
+                })
+            {
+                out.extend(extract_paths_from_patch_headers(s));
             }
         }
         Value::Array(arr) => {
             for item in arr {
-                extract_paths_from_value_inner(item, tool_hint, key_hint, out);
+                extract_explicit_paths_from_value(item, allow_patch_headers, key_hint, out);
             }
         }
         Value::Object(map) => {
             for (k, v) in map {
-                extract_paths_from_value_inner(v, tool_hint, Some(k.as_str()), out);
+                extract_explicit_paths_from_value(v, allow_patch_headers, Some(k.as_str()), out);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
-fn key_is_path_like(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    lower.contains("path")
-        || lower.contains("file")
-        || lower.contains("dir")
-        || lower.contains("cwd")
-        || lower.contains("workspace")
-        || lower.contains("root")
-        || lower == "target"
+fn key_is_explicit_path_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "path"
+            | "paths"
+            | "file"
+            | "files"
+            | "file_path"
+            | "filepath"
+            | "target_path"
+            | "source_path"
+            | "destination_path"
+            | "dest_path"
+            | "old_path"
+            | "new_path"
+            | "from_path"
+            | "to_path"
+    )
+}
+
+fn extract_paths_from_patch_headers(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let candidate = rest.split('\t').next().unwrap_or(rest).trim();
+            if candidate != "/dev/null" {
+                let cleaned = candidate.strip_prefix("b/").unwrap_or(candidate);
+                if !cleaned.is_empty() {
+                    out.push(cleaned.to_string());
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("--- ") {
+            let candidate = rest.split('\t').next().unwrap_or(rest).trim();
+            if candidate != "/dev/null" {
+                let cleaned = candidate.strip_prefix("a/").unwrap_or(candidate);
+                if !cleaned.is_empty() {
+                    out.push(cleaned.to_string());
+                }
+            }
+        } else if let Some(rest) = line
+            .strip_prefix("*** Update File: ")
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .or_else(|| line.strip_prefix("*** Delete File: "))
+            .or_else(|| line.strip_prefix("*** Move to: "))
+        {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn extract_paths_from_mutation_receipt(output: &str) -> Vec<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("Error:")
+        || trimmed.starts_with("Failed")
+        || trimmed.starts_with("Refused")
+    {
+        return Vec::new();
+    }
+    if trimmed.starts_with('{')
+        && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+    {
+        let mut out = Vec::new();
+        for key in ["touched_files", "files_changed", "paths"] {
+            if let Some(items) = value.get(key).and_then(Value::as_array) {
+                for item in items {
+                    if let Some(path) = item.as_str().map(str::trim).filter(|p| !p.is_empty()) {
+                        out.push(path.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(path) = value.get("path").and_then(Value::as_str).map(str::trim)
+            && !path.is_empty()
+        {
+            out.push(path.to_string());
+        }
+        for key in ["file_summaries", "files"] {
+            if let Some(items) = value.get(key).and_then(Value::as_array) {
+                for item in items {
+                    for field in ["path", "new_path"] {
+                        if let Some(path) = item
+                            .get(field)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|p| !p.is_empty())
+                        {
+                            out.push(path.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    let mut out = extract_paths_from_patch_headers(trimmed);
+    for line in trimmed.lines() {
+        let line = line.trim();
+        let candidate = if let Some(rest) = line.strip_prefix("Wrote ") {
+            rest.split_once(" bytes to ").map(|(_, path)| path)
+        } else if let Some(rest) = line.strip_prefix("Created ") {
+            Some(rest.split(" (").next().unwrap_or(rest))
+        } else if let Some(rest) = line.strip_prefix("Replaced ") {
+            rest.split_once(" in ")
+                .map(|(_, tail)| tail.split(" (").next().unwrap_or(tail))
+        } else {
+            line.strip_prefix("Updated ")
+                .or_else(|| line.strip_prefix("Edited "))
+                .or_else(|| line.strip_prefix("Changed "))
+                .or_else(|| line.strip_prefix("Deleted "))
+                .map(|rest| rest.split(" (").next().unwrap_or(rest))
+        };
+        if let Some(path) = candidate {
+            let path = path.trim().trim_end_matches('.');
+            if !path.is_empty() && !path.contains('\n') && !path.contains('\r') {
+                out.push(path.to_string());
+            }
+        }
+    }
+    out
 }
 
 fn looks_like_path(text: &str) -> bool {
@@ -1946,20 +2180,153 @@ mod tests {
     }
 
     #[test]
-    fn extract_paths_from_message_picks_up_tool_results() {
-        let msg = Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult {
-                execution_id: None,
-                tool_use_id: "tool_1".to_string(),
-                content: "Changed src/compaction.rs".to_string(),
-                is_error: None,
-                content_blocks: None,
-            }],
-        };
+    fn observe_tool_call_ignores_search_read_outputs_and_tracks_explicit_inputs_and_mutations() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("target.rs"), "pub fn target() {}").expect("write");
+        fs::write(src.join("edited.rs"), "pub fn edited() {}").expect("write");
+        fs::write(src.join("patched.rs"), "pub fn patched() {}").expect("write");
+        fs::write(src.join("budget_handback_tests.rs"), "test").expect("write");
+        fs::write(src.join("task_ownership.rs"), "test").expect("write");
+        fs::write(src.join("test_cases_02.rs"), "test").expect("write");
+        fs::write(src.join("decoy.rs"), "decoy").expect("write");
 
-        let paths = extract_paths_from_message(&msg);
-        assert!(paths.iter().any(|p| p.contains("src/compaction.rs")));
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "grep_files",
+            &serde_json::json!({ "pattern": "budget", "path": "src" }),
+            Some(
+                "src/budget_handback_tests.rs:12:budget\nsrc/task_ownership.rs:34:budget\nsrc/test_cases_02.rs:56:budget",
+            ),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "file_search",
+            &serde_json::json!({ "query": "test" }),
+            Some("src/budget_handback_tests.rs\nsrc/test_cases_02.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "list_dir",
+            &serde_json::json!({ "path": "src" }),
+            Some("src/decoy.rs\nsrc/task_ownership.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "bash",
+            &serde_json::json!({ "command": "cargo test" }),
+            Some("FAILED src/test_cases_02.rs:99"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "tool_search",
+            &serde_json::json!({ "query": "session" }),
+            Some("src/decoy.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "session_get",
+            &serde_json::json!({ "session_id": "abc" }),
+            Some("user: check src/decoy.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "retrieve_tool_result",
+            &serde_json::json!({ "id": "1" }),
+            Some("src/decoy.rs"),
+            tmp.path(),
+        );
+
+        assert!(ws.entries.is_empty(), "{:?}", ws.entries.keys());
+
+        ws.observe_tool_call(
+            "read",
+            &serde_json::json!({ "path": "src/target.rs" }),
+            Some("mod decoy; // see src/decoy.rs and src/test_cases_02.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "edit",
+            &serde_json::json!({
+                "path": "src/edited.rs",
+                "old_string": "// src/decoy.rs",
+                "new_string": "// src/task_ownership.rs"
+            }),
+            Some("--- src/edited.rs\n+++ src/edited.rs\n@@ -1 +1 @@\n-// src/decoy.rs\n+// src/task_ownership.rs\nReplaced 1 occurrence in src/edited.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "apply_patch",
+            &serde_json::json!({
+                "patch": "--- a/src/patched.rs\n+++ b/src/patched.rs\n@@ -1 +1 @@\n-old\n+new // src/decoy.rs\n"
+            }),
+            Some(r#"{"touched_files":["src/patched.rs"],"message":"Applied patch"}"#),
+            tmp.path(),
+        );
+
+        assert!(ws.entries.contains_key("src/target.rs"));
+        assert!(ws.entries.contains_key("src/edited.rs"));
+        assert!(ws.entries.contains_key("src/patched.rs"));
+        assert!(!ws.entries.contains_key("src/budget_handback_tests.rs"));
+        assert!(!ws.entries.contains_key("src/task_ownership.rs"));
+        assert!(!ws.entries.contains_key("src/test_cases_02.rs"));
+        assert!(!ws.entries.contains_key("src/decoy.rs"));
+    }
+
+    #[test]
+    fn rebuild_from_messages_skips_grep_results_and_keeps_mutation_receipts() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("compaction.rs"), "fn c() {}").expect("write");
+        fs::write(src.join("noise.rs"), "fn n() {}").expect("write");
+
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "grep_1".to_string(),
+                        name: "grep_files".to_string(),
+                        input: serde_json::json!({ "pattern": "fn", "path": "src" }),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "patch_1".to_string(),
+                        name: "apply_patch".to_string(),
+                        input: serde_json::json!({ "patch": "" }),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        execution_id: None,
+                        tool_use_id: "grep_1".to_string(),
+                        content: "src/noise.rs:1:fn n() {}".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    },
+                    ContentBlock::ToolResult {
+                        execution_id: None,
+                        tool_use_id: "patch_1".to_string(),
+                        content: "Changed src/compaction.rs".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    },
+                ],
+            },
+        ];
+
+        let mut ws = WorkingSet::default();
+        ws.rebuild_from_messages(&messages, tmp.path());
+        assert!(ws.entries.contains_key("src/compaction.rs"));
+        assert!(!ws.entries.contains_key("src/noise.rs"));
     }
 
     #[test]

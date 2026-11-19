@@ -114,6 +114,12 @@ impl SkillRootDescriptor {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillCatalogGroup {
+    Primary,
+    External { source_label: String },
+}
+
 /// Catalog of skill roots for a workspace (+ optional HOME override for tests).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillRootCatalog {
@@ -373,6 +379,59 @@ impl SkillRootCatalog {
                     && path_is_existing_dir(&r.path)
             })
             .collect()
+    }
+
+    #[must_use]
+    pub fn classify_skill(
+        &self,
+        skill: &super::Skill,
+        workspace: &Path,
+        home_dir: Option<&Path>,
+    ) -> SkillCatalogGroup {
+        if !matches!(skill.source, super::SkillSource::Native) {
+            return SkillCatalogGroup::Primary;
+        }
+        let Some(root) = self.root_for_path(&skill.path) else {
+            return SkillCatalogGroup::Primary;
+        };
+        let workspace_is_home =
+            home_dir.is_some_and(|home| paths_refer_to_same_dir(home, workspace));
+        let is_external = matches!(root.kind, SkillRootKind::CompatibleGlobal(_))
+            || (workspace_is_home && matches!(root.kind, SkillRootKind::CompatibleProject(_)));
+        if is_external {
+            SkillCatalogGroup::External {
+                source_label: safe_display_path(&root.path, None, home_dir),
+            }
+        } else {
+            SkillCatalogGroup::Primary
+        }
+    }
+
+    fn root_for_path(&self, skill_path: &Path) -> Option<&SkillRootDescriptor> {
+        let mut best: Option<(usize, &SkillRootDescriptor)> = None;
+        for root in self.roots.iter().filter(|root| root.active_for_runtime) {
+            if skill_path.starts_with(&root.path) {
+                let depth = root.path.components().count();
+                if best.is_none_or(|(best_depth, _)| depth > best_depth) {
+                    best = Some((depth, root));
+                }
+            }
+        }
+        if let Some((_, root)) = best {
+            return Some(root);
+        }
+        let canonical = fs::canonicalize(skill_path).ok()?;
+        for root in self.roots.iter().filter(|root| root.active_for_runtime) {
+            if let Some(canonical_root) = root.canonical_path.as_ref()
+                && canonical.starts_with(canonical_root)
+            {
+                let depth = canonical_root.components().count();
+                if best.is_none_or(|(best_depth, _)| depth > best_depth) {
+                    best = Some((depth, root));
+                }
+            }
+        }
+        best.map(|(_, root)| root)
     }
 }
 
