@@ -365,7 +365,7 @@ pub(crate) fn handle_composer_mouse(app: &mut App, mouse: MouseEvent) -> bool {
                 let action =
                     app.decide_composer_submit(crate::tui::app::ComposerSubmitChord::Enter);
                 if !matches!(action, crate::tui::app::ComposerSubmitAction::Noop)
-                    && (app.composer_enter_would_submit(true)
+                    && (app.composer_enter_would_submit(true, Instant::now())
                         || matches!(action, crate::tui::app::ComposerSubmitAction::SendQueuedNow))
                 {
                     app.pending_composer_submit = Some(crate::tui::app::ComposerSubmitChord::Enter);
