@@ -1113,8 +1113,9 @@ const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
     return out.join("/");
   }
   function resolve(from, id) {
-    var slash = from.lastIndexOf("/");
-    var base = normalize((slash < 0 ? "" : from.slice(0, slash)) + "/" + id);
+    var cut = from.lastIndexOf("/");
+    var dir = cut < 0 ? "" : from.slice(0, cut) + "/";
+    var base = normalize(dir + id);
     for (var i = 0; i < probes.length; i++) {
       if (Object.prototype.hasOwnProperty.call(files, base + probes[i])) return base + probes[i];
     }
@@ -2689,7 +2690,35 @@ pub(super) async fn put_catalog_settings(
 
 #[cfg(test)]
 mod review_tests {
-    use super::mcp_server_review;
+    use super::{dsh_bootstrap, dsh_client_closure, mcp_server_review};
+
+    #[test]
+    fn dsh_bootstrap_root_entry_closure_resolves_relative_requires_in_node() {
+        let closure = dsh_client_closure(&serde_json::json!({
+            "client_closures": [{
+                "root": "",
+                "entry": "client.js",
+                "files": { "client.js": "h1", "util.js": "h2" }
+            }]
+        }))
+        .expect("authored closure");
+        let verified = vec![
+            (
+                "client.js".to_string(),
+                b"var util = require(\"./util\");\nexports.apply = function apply() { return [util.v]; };\n".to_vec(),
+            ),
+            ("util.js".to_string(), b"exports.v = 1;\n".to_vec()),
+        ];
+        let bootstrap = dsh_bootstrap("rootentry", &closure, &verified)
+            .unwrap_or_else(|_| panic!("dsh_bootstrap failed"));
+        let source = String::from_utf8(bootstrap).unwrap();
+        assert!(source.contains("\"client.js\""));
+        if let Some(out) = crate::runtime_api::tests::bootstrap_loads_in_node(&source) {
+            let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(out["apply"], "function");
+            assert_eq!(out["out"][0], 1);
+        }
+    }
 
     #[test]
     fn dsh_bootstrap_resolves_relative_requires_from_a_root_level_entry() {

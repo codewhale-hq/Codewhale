@@ -2429,6 +2429,10 @@ impl OutputFiles {
 /// Walk a contained directory without following links, bounded.
 pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> Result<()> {
     let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(root)?),
+        "Source paths must not contain links or reparse points.",
+    )?;
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -2449,16 +2453,20 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
                     .components()
                     .any(|part| part.as_os_str().to_str() == Some("node_modules"));
                 let contained_target = dependency_link
-                    && fs::canonicalize(&path).is_ok_and(|target| {
-                        target.starts_with(&canonical_root)
-                            && fs::metadata(&target)
-                                .is_ok_and(|target| target.is_file() || target.is_dir())
-                    });
-                require(
-                    contained_target,
-                    "Source paths must not contain links or reparse points.",
-                )?;
-                continue;
+                    .then(|| fs::canonicalize(&path).ok())
+                    .flatten()
+                    .filter(|target| target.starts_with(&canonical_root));
+                match contained_target {
+                    Some(target) if target.is_dir() => {
+                        return refuse(
+                            "This source links `node_modules` dependencies (pnpm-style installs); the converted bundle cannot materialize linked dependency directories. Install dependencies in a real layout, or remove `node_modules` before converting.",
+                        );
+                    }
+                    Some(target) if target.is_file() => continue,
+                    _ => {
+                        return refuse("Source paths must not contain links or reparse points.");
+                    }
+                }
             }
             visit(&path, metadata.is_dir())?;
             if metadata.is_dir() {
@@ -2480,7 +2488,12 @@ fn relative_slash(path: &Path, root: &Path) -> String {
 
 /// Convert one skill directory or Markdown file into native skill files.
 fn skill_files(source: &Path, output: &mut OutputFiles) -> Result<String> {
-    let is_dir = source.is_dir();
+    let source_metadata = fs::symlink_metadata(source)?;
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&source_metadata),
+        "Source paths must not contain links or reparse points.",
+    )?;
+    let is_dir = source_metadata.is_dir();
     let entry = if is_dir {
         source.join("SKILL.md")
     } else {
@@ -3598,6 +3611,12 @@ pub fn convert_package_with_network(
             if child.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
+            require(
+                !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
+                    &path,
+                )?),
+                "Source paths must not contain links or reparse points.",
+            )?;
             if path.join("SKILL.md").is_file() || path.extension().is_some_and(|ext| ext == "md") {
                 skill_sources.push(path);
             }
