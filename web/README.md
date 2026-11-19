@@ -153,8 +153,9 @@ web/
 Mechanical facts (version, provider list, sandbox backends, crate names,
 default model, Node engines) are never hand-written into pages:
 
-1. **Build time** — `scripts/derive-facts.mjs` runs as `prebuild` (and before
-   `npm run dev`), parses the parent repo (`Cargo.toml`, `crates/tui/src/config.rs`,
+1. **Build time** — `web/scripts/derive-facts.mjs` runs as `prebuild` (and before
+   `npm run dev`), parses the parent repo (`Cargo.toml`,
+   `crates/config/assets/provider_descriptors.json`,
    `crates/sandbox/src/lib.rs`, `npm/codewhale/package.json`) and writes
    `lib/facts.generated.ts`. Never edit that file by hand.
 2. **Published release** — `data/latest-published-release.json` records the
