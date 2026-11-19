@@ -2587,9 +2587,15 @@ mod tests {
                     .await?;
                 let v = editor.until_permission().await?;
                 assert!(
-                    v.pointer("/params/toolCall/content/0/content/text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| !text.is_empty())
+                    v.pointer("/params/toolCall/content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|item| {
+                                item.pointer("/content/text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| !text.is_empty())
+                            })
+                        })
                 );
                 let detail = manager.get_thread_detail(&thread).await?;
                 let pending = detail
