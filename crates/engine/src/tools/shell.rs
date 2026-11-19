@@ -6910,7 +6910,9 @@ impl ToolSpec for BashTool {
             // shell_env hooks are arbitrary operator-configured processes.
             // They cannot run inside the evidence-only execution boundary.
             HashMap::new()
-        } else if let Some(hook_executor) = &context.runtime.hook_executor {
+        } else if context.acp_host.is_none()
+            && let Some(hook_executor) = &context.runtime.hook_executor
+        {
             let hook_ctx = crate::hooks::HookContext::new()
                 .with_tool_context(context)
                 .with_tool_name("exec_shell")

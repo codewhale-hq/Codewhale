@@ -566,6 +566,7 @@ impl LspManager {
                     }
                     LintReadStatus::Success => Ok(serde_json::json!({
                         "file": result.file.display().to_string(),
+                        "position_base": 1,
                         "items": result.items.iter().map(|d| serde_json::json!({
                             "line": d.line, "column": d.column,
                             "severity": format!("{:?}", d.severity).to_ascii_lowercase(),
@@ -662,6 +663,7 @@ impl LspManager {
                     "file": source_path,
                     "semantic_contract_version": 1,
                     "position_encoding": "utf-16",
+                    "position_base": 0,
                     "source_revision": source_revision,
                     "document_version": reply.document_version,
                     "freshness": if reply.document_version.is_some() { "verified" } else { "unverified" },
