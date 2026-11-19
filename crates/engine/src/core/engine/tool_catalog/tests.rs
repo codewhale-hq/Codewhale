@@ -1100,7 +1100,10 @@ fn deferred_named_batch_keeps_execute_tools_schema_minimal() {
             }}
         }}
     });
-    let mut catalog = vec![crate::tools::codemode::execute_tools_tool_definition(), batch];
+    let mut catalog = vec![
+        crate::tools::codemode::execute_tools_tool_definition(),
+        batch,
+    ];
     let members = vec!["click".to_string(), "drag".to_string()];
     assert!(super::configure_composition_entry(
         &mut catalog,

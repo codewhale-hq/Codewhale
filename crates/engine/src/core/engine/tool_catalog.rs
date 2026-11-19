@@ -505,7 +505,10 @@ pub(super) fn configure_composition_entry(
         let bounds = &batch.input_schema["properties"][field];
         let (arguments_description, batch_description) = if deferred {
             (
-                format!("Step arguments follow `{}`; load its schema with {TOOL_SEARCH_NAME} before the first batch.", batch.name),
+                format!(
+                    "Step arguments follow `{}`; load its schema with {TOOL_SEARCH_NAME} before the first batch.",
+                    batch.name
+                ),
                 format!("Named step batch for `{}`.", batch.name),
             )
         } else {

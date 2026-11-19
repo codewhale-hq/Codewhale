@@ -456,7 +456,10 @@ fn load_handoff_block(workspace: &Path) -> Option<String> {
             .find(|&i| trimmed.is_char_boundary(i))
             .unwrap_or(0)];
         let kept = window.rfind('\n').map_or(window, |end| &window[..end]);
-        format!("{}\n\n[Relay shortened here; read `{shown}` for the rest.]", kept.trim_end())
+        format!(
+            "{}\n\n[Relay shortened here; read `{shown}` for the rest.]",
+            kept.trim_end()
+        )
     } else {
         trimmed.to_string()
     };
@@ -3816,7 +3819,10 @@ mod tests {
             "relay must fit its fragment, got {} bytes",
             block.len()
         );
-        assert!(block.contains("read `.codewhale/handoff.md` for the rest"), "{block}");
+        assert!(
+            block.contains("read `.codewhale/handoff.md` for the rest"),
+            "{block}"
+        );
         let before_note = block.split("\n\n[Relay shortened").next().unwrap();
         assert!(before_note.ends_with("with detail"), "{before_note}");
     }

@@ -1863,7 +1863,9 @@ mod tests {
     #[test]
     fn summary_block_skips_forbidden_paths_and_lists_dirs_deterministically() {
         let tmp = TempDir::new().expect("tempdir");
-        for dir in ["zeta", "alpha", "secrets", "beta", "gamma", "delta", "eta", "iota", "kappa"] {
+        for dir in [
+            "zeta", "alpha", "secrets", "beta", "gamma", "delta", "eta", "iota", "kappa",
+        ] {
             fs::create_dir_all(tmp.path().join(dir)).expect("mkdir");
         }
         fs::write(tmp.path().join("secrets/STATUS.md"), "x").expect("write");
