@@ -714,6 +714,7 @@ fn node_modules_has_symlinks(package_root: &Path) -> Result<bool> {
 fn copy_regular_file(
     src_path: &Path,
     dst_path: &Path,
+    canonical_root: Option<&Path>,
     file_count: &mut usize,
     total_bytes: &mut u64,
 ) -> Result<()> {
@@ -721,7 +722,10 @@ fn copy_regular_file(
     if *file_count > MAX_UNPACKED_FILES {
         bail!("DSH package exceeds the {MAX_UNPACKED_FILES}-file budget");
     }
-    let mut src_file = codewhale_util::bundle_file::open_bundle_file(src_path)?;
+    let mut src_file = match canonical_root.filter(|root| src_path.starts_with(root)) {
+        Some(root) => codewhale_util::fs_confined::open_read(root, src_path)?,
+        None => codewhale_util::bundle_file::open_bundle_file(src_path)?,
+    };
     let mut dst_file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -819,11 +823,28 @@ fn copy_dir_inner(
                     active_dirs,
                     file_count,
                     total_bytes,
-                );
+                )
+                .and_then(|()| {
+                    copy_pnpm_private_dependencies(
+                        &target,
+                        &dst_path,
+                        depth + 1,
+                        canonical_root,
+                        active_dirs,
+                        file_count,
+                        total_bytes,
+                    )
+                });
                 active_dirs.remove(&target);
                 res?;
             } else if target_meta.is_file() {
-                copy_regular_file(&target, &dst_path, file_count, total_bytes)?;
+                copy_regular_file(
+                    &target,
+                    &dst_path,
+                    Some(canonical_root),
+                    file_count,
+                    total_bytes,
+                )?;
             } else {
                 bail!(
                     "non-regular file `{}` is not permitted in DSH packages",
@@ -845,7 +866,13 @@ fn copy_dir_inner(
                 total_bytes,
             )?;
         } else if meta.is_file() {
-            copy_regular_file(&src_path, &dst_path, file_count, total_bytes)?;
+            copy_regular_file(
+                &src_path,
+                &dst_path,
+                Some(canonical_root),
+                file_count,
+                total_bytes,
+            )?;
         } else {
             bail!(
                 "non-regular file `{}` is not permitted in DSH packages",
@@ -854,6 +881,44 @@ fn copy_dir_inner(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_pnpm_private_dependencies(
+    target: &Path,
+    dst: &Path,
+    depth: usize,
+    canonical_root: &Path,
+    active_dirs: &mut BTreeSet<PathBuf>,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    let Some(store) = target.parent().filter(|parent| {
+        parent
+            .file_name()
+            .is_some_and(|name| name == "node_modules")
+    }) else {
+        return Ok(());
+    };
+    if fs::read_dir(store)?.count() < 2 {
+        return Ok(());
+    }
+    if dst.join("node_modules").exists() {
+        bail!(
+            "pnpm package `{}` has both its own node_modules and private dependencies; this layout is not supported in DSH packages",
+            target.display()
+        );
+    }
+    copy_dir_inner(
+        store,
+        &dst.join("node_modules"),
+        depth,
+        canonical_root,
+        true,
+        active_dirs,
+        file_count,
+        total_bytes,
+    )
 }
 
 fn unpack_tarball(
@@ -1241,6 +1306,58 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn pnpm_alias_materialization_keeps_private_transitive_dependencies() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/index.js"), "const foo = require('foo');\n").unwrap();
+        let store = root.join("node_modules/.pnpm");
+        let foo = store.join("foo@1.0.0/node_modules/foo");
+        let bar = store.join("bar@1.0.0/node_modules/bar");
+        fs::create_dir_all(&foo).unwrap();
+        fs::create_dir_all(&bar).unwrap();
+        fs::write(
+            foo.join("package.json"),
+            r#"{"name":"foo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(foo.join("index.js"), "module.exports = require('bar');\n").unwrap();
+        fs::write(
+            bar.join("package.json"),
+            r#"{"name":"bar","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        symlink(
+            "../../bar@1.0.0/node_modules/bar",
+            store.join("foo@1.0.0/node_modules/bar"),
+        )
+        .unwrap();
+        symlink(
+            ".pnpm/foo@1.0.0/node_modules/foo",
+            root.join("node_modules/foo"),
+        )
+        .unwrap();
+
+        let manifest = Value::Map(vec![(
+            "dependencies".to_string(),
+            Value::Map(vec![("foo".to_string(), Value::Str("^1.0.0".to_string()))]),
+        )]);
+        let deny_policy = NetworkPolicy {
+            default: Decision::Deny.into(),
+            ..NetworkPolicy::default()
+        };
+        let staged = maybe_stage_with_dependencies(root, &manifest, &[], &deny_policy)
+            .unwrap()
+            .expect("pnpm symlinks should trigger symlink-free materialization");
+        let private_bar = staged.path().join("node_modules/foo/node_modules/bar");
+        let meta = fs::symlink_metadata(&private_bar).unwrap();
+        assert!(!meta.file_type().is_symlink() && meta.is_dir());
+        assert!(private_bar.join("package.json").is_file());
+    }
+
     #[test]
     fn confined_pnpm_symlinks_in_node_modules_materialize_offline_and_escapes_refuse() {
         use std::os::unix::fs::symlink;
