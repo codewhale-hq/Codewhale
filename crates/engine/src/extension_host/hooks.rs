@@ -1,12 +1,13 @@
 //! Programmable admission listeners reuse the native strict hook fold.
 //! The host returns proposals, never tool or approval authority.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::protocol::{CoreRequest, HookCallPayload, HookEvaluateParams, HookVerdictWire};
-use super::{HostAttachment, ManagerShared};
+use super::{ExtensionHostManager, HostAttachment, ManagerShared};
 use crate::hooks::HookResult;
 
 const HOOK_DEADLINE: Duration = Duration::from_secs(5);
@@ -119,13 +120,21 @@ impl HostAttachment {
         results
     }
 
-    pub async fn tool_after_hooks(&self, payload: HookCallPayload) {
-        let shared = &self.manager.shared;
+    pub fn spawn_tool_after_hooks(&self, payload: HookCallPayload) {
+        let manager = Arc::clone(&self.manager);
+        let id = self.id;
+        tokio::spawn(async move { tool_after_hooks(manager, id, payload).await });
+    }
+}
+
+async fn tool_after_hooks(manager: Arc<ExtensionHostManager>, id: u64, payload: HookCallPayload) {
+    {
+        let shared = &manager.shared;
         let desired = shared
             .attachments
             .lock()
             .expect("attachments lock")
-            .get(&self.id)
+            .get(&id)
             .map(|state| state.selection.clone())
             .unwrap_or_default();
         let hooks: Vec<_> = shared

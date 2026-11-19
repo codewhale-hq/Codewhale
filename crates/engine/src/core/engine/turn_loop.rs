@@ -5387,8 +5387,8 @@ impl Engine {
                     .enabled(codewhale_runtime::features::Feature::ExtensionHost)
             }) {
                 let is_error = result.as_ref().map_or(true, |output| !output.success);
-                extension_host
-                    .tool_after_hooks(crate::extension_host::protocol::HookCallPayload {
+                extension_host.spawn_tool_after_hooks(
+                    crate::extension_host::protocol::HookCallPayload {
                         name: outcome.name.clone(),
                         call_id: outcome.id.clone(),
                         input: serde_json::json!({
@@ -5398,8 +5398,8 @@ impl Engine {
                         mode: format!("{mode:?}"),
                         workspace: self.session.workspace.to_string_lossy().into_owned(),
                         model: self.config.model.clone(),
-                    })
-                    .await;
+                    },
+                );
             }
             let plugin_change = extract_verified_plugin_change(&outcome.name, &result);
             if let Some(guard) = fleet_denial_guard.as_deref_mut() {
