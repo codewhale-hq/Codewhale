@@ -292,7 +292,9 @@ pub enum ToolGate {
 pub enum ToolGateVerdict {
     Allowed,
     Denied,
-    Unavailable,
+    TimedOut,
+    #[serde(alias = "unavailable")]
+    Failed,
 }
 
 /// One event emitted by the core engine to every consumer (TUI, CLI,
@@ -1847,5 +1849,29 @@ mod tests {
         // An older producer that predates the field: the absent key defaults.
         let back: EventMsg = serde_json::from_value(value).unwrap();
         assert_eq!(back, none);
+    }
+
+    #[test]
+    fn tool_gate_verdict_distinguishes_timed_out_and_failed_with_unavailable_alias() {
+        assert_eq!(
+            serde_json::to_string(&ToolGateVerdict::TimedOut).unwrap(),
+            r#""timed_out""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolGateVerdict::Failed).unwrap(),
+            r#""failed""#
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolGateVerdict>(r#""timed_out""#).unwrap(),
+            ToolGateVerdict::TimedOut
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolGateVerdict>(r#""failed""#).unwrap(),
+            ToolGateVerdict::Failed
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolGateVerdict>(r#""unavailable""#).unwrap(),
+            ToolGateVerdict::Failed
+        );
     }
 }

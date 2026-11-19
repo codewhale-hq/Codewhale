@@ -292,6 +292,13 @@ fn user_shell_turn_outcome(
 
 // === Types ===
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalResponder {
+    Person,
+    #[default]
+    Nobody,
+}
+
 /// Configuration for the engine
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -559,6 +566,7 @@ pub struct EngineConfig {
     /// A positive duration is one absolute deadline for that wait.
     pub user_input_timeout: Option<Duration>,
     pub user_input_responder: bool,
+    pub approval_responder: ApprovalResponder,
     /// Per-turn step allowance while a goal is active (#5994). Hosts opt in
     /// with their resolved `[goal] max_steps`; `None` keeps the ordinary
     /// `max_steps` ceiling for goal turns too — which is what exec/worker
@@ -700,6 +708,7 @@ impl Default for EngineConfig {
             user_input_limits: crate::tools::user_input::UserInputLimits::default(),
             user_input_timeout: None,
             user_input_responder: false,
+            approval_responder: ApprovalResponder::Nobody,
             goal_max_steps: None,
             // Mirrors `Config::prefers_bwrap`: on unless explicitly opted out.
             prefer_bwrap: true,

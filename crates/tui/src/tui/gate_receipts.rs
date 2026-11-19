@@ -38,15 +38,15 @@ pub fn tool_gate_receipt(
         (ToolGate::AutoReviewGuardian, ToolGateVerdict::Denied) => {
             MessageId::AutoReviewReceiptGuardianDenied
         }
-        (ToolGate::AutoReviewGuardian, ToolGateVerdict::Unavailable) => {
+        (ToolGate::AutoReviewGuardian, ToolGateVerdict::TimedOut | ToolGateVerdict::Failed) => {
             MessageId::AutoReviewReceiptGuardianUnavailable
         }
-        // The deterministic engine only surfaces blocks; an allow it proved
-        // safe stays silent and an unavailable deterministic verdict does not
-        // exist (the engine always answers).
         (
             ToolGate::AutoReviewDeterministic,
-            ToolGateVerdict::Denied | ToolGateVerdict::Allowed | ToolGateVerdict::Unavailable,
+            ToolGateVerdict::Denied
+            | ToolGateVerdict::Allowed
+            | ToolGateVerdict::TimedOut
+            | ToolGateVerdict::Failed,
         ) => MessageId::AutoReviewReceiptDeterministicBlocked,
     };
     let mut rendered = fill(
@@ -266,7 +266,7 @@ mod tests {
             Locale::En,
             "File",
             ToolGate::AutoReviewGuardian,
-            ToolGateVerdict::Unavailable,
+            ToolGateVerdict::TimedOut,
             None,
             None,
             "guardian request timed out",
@@ -362,7 +362,7 @@ mod tests {
             Locale::En,
             "File",
             ToolGate::AutoReviewGuardian,
-            ToolGateVerdict::Unavailable,
+            ToolGateVerdict::Failed,
             None,
             Some("gpt-5.6"),
             "timed out",

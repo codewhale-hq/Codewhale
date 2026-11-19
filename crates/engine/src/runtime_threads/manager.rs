@@ -16149,6 +16149,11 @@ source_usage_records: Default::default(),
                 features.enabled(codewhale_runtime::features::Feature::PluginCreator);
             let engine_cfg = EngineConfig {
                 user_input_responder: true,
+                approval_responder: if self.owner_surface_attached {
+                    crate::core::engine::ApprovalResponder::Person
+                } else {
+                    crate::core::engine::ApprovalResponder::Nobody
+                },
                 session_checkpoint_backend: Some(
                     crate::core::events::SessionCheckpointProjection::RuntimeReceiptRedacted,
                 ),

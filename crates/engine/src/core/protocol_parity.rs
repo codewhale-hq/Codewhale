@@ -245,7 +245,8 @@ fn verdict_to_wire(verdict: ToolGateVerdict) -> wire::ToolGateVerdict {
     match verdict {
         ToolGateVerdict::Allowed => wire::ToolGateVerdict::Allowed,
         ToolGateVerdict::Denied => wire::ToolGateVerdict::Denied,
-        ToolGateVerdict::Unavailable => wire::ToolGateVerdict::Unavailable,
+        ToolGateVerdict::TimedOut => wire::ToolGateVerdict::TimedOut,
+        ToolGateVerdict::Failed => wire::ToolGateVerdict::Failed,
     }
 }
 
@@ -1710,7 +1711,7 @@ mod tests {
                 tool_id: "c3".into(),
                 tool_name: "bash".into(),
                 gate: ToolGate::AutoReviewGuardian,
-                decision: ToolGateVerdict::Unavailable,
+                decision: ToolGateVerdict::TimedOut,
                 risk: None,
                 reviewer_model: None,
                 reason: "timeout".into(),

@@ -1233,13 +1233,11 @@ impl ToolGate {
 /// What a permission gate decided for one proposed tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolGateVerdict {
-    /// The call may run without a user prompt.
     Allowed,
-    /// The call was refused with a stated rationale.
     Denied,
-    /// The gate could not produce a verdict (timeout, transport error,
-    /// unparseable answer) and the call was denied, fail closed.
-    Unavailable,
+    TimedOut,
+    #[serde(alias = "unavailable")]
+    Failed,
 }
 
 impl ToolGateVerdict {
@@ -1248,7 +1246,8 @@ impl ToolGateVerdict {
         match self {
             Self::Allowed => "allowed",
             Self::Denied => "denied",
-            Self::Unavailable => "unavailable",
+            Self::TimedOut => "timed_out",
+            Self::Failed => "failed",
         }
     }
 }

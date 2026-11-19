@@ -30,7 +30,34 @@ use tokio_util::sync::CancellationToken;
 const REVIEWER_TIMEOUT: Duration = Duration::from_secs(90);
 const REVIEWER_MAX_OUTPUT_TOKENS: u32 = 4096;
 
-/// The reviewer's answer, with failure modes separated from explicit denials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewerFailureKind {
+    Transport,
+    Unparseable,
+    Incomplete,
+    OverBudget,
+}
+
+impl ReviewerFailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Unparseable => "unparseable",
+            Self::Incomplete => "incomplete",
+            Self::OverBudget => "over_budget",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transport => "transport error",
+            Self::Unparseable => "unparseable answer",
+            Self::Incomplete => "incomplete answer",
+            Self::OverBudget => "review context over budget",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewerOutcome {
     Allow {
@@ -41,8 +68,11 @@ pub enum ReviewerOutcome {
         risk: ReviewerRiskLevel,
         reason: String,
     },
-    /// Timeout, transport error, or unparseable answer. Always a denial.
-    Unavailable {
+    TimedOut {
+        reason: String,
+    },
+    Failed {
+        kind: ReviewerFailureKind,
         reason: String,
     },
     Cancelled,
@@ -53,7 +83,8 @@ impl ReviewerOutcome {
         match self {
             Self::Allow { .. } => "allow",
             Self::Deny { .. } => "deny",
-            Self::Unavailable { .. } => "unavailable",
+            Self::TimedOut { .. } => "timed_out",
+            Self::Failed { .. } => "failed",
             Self::Cancelled => "cancelled",
         }
     }
@@ -61,7 +92,19 @@ impl ReviewerOutcome {
     pub fn audit_risk(&self) -> Option<&'static str> {
         match self {
             Self::Allow { risk, .. } | Self::Deny { risk, .. } => Some(risk.as_str()),
-            Self::Unavailable { .. } | Self::Cancelled => None,
+            Self::TimedOut { .. } | Self::Failed { .. } | Self::Cancelled => None,
+        }
+    }
+
+    pub fn is_review_failure(&self) -> bool {
+        matches!(self, Self::TimedOut { .. } | Self::Failed { .. })
+    }
+
+    pub fn failure_prompt_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::TimedOut { .. } => Some("timed out"),
+            Self::Failed { kind, .. } => Some(kind.label()),
+            Self::Allow { .. } | Self::Deny { .. } | Self::Cancelled => None,
         }
     }
 
@@ -82,8 +125,12 @@ impl ReviewerOutcome {
                     rule.or(Some("guardian")),
                 ),
             )),
-            Self::Unavailable { reason } => Err(ToolError::permission_denied(format!(
-                "Auto-Review guardian unavailable ({reason}); the call was denied (fail closed). Try again once the reviewer is reachable, or the person can switch Permissions to Ask where a prompt can be answered."
+            Self::TimedOut { reason } => Err(ToolError::permission_denied(format!(
+                "Auto-Review could not complete (timed out: {reason}). This is a review failure, not a determination that the action is unsafe. Do not bypass the approval check; retry once, resolve the error, or ask the user."
+            ))),
+            Self::Failed { kind, reason } => Err(ToolError::permission_denied(format!(
+                "Auto-Review could not complete (failed: {}: {reason}). This is a review failure, not a determination that the action is unsafe. Do not bypass the approval check; retry once, resolve the error, or ask the user.",
+                kind.as_str()
             ))),
             Self::Cancelled => Err(ToolError::cancelled(
                 "Auto-Review guardian request cancelled",
@@ -92,34 +139,60 @@ impl ReviewerOutcome {
     }
 }
 
-/// One guardian review and its provider usage, when a request was dispatched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewerResult {
     pub outcome: ReviewerOutcome,
     pub usage: Option<Usage>,
     pub reviewer_model: String,
+    pub attempts: u8,
 }
 
 impl ReviewerResult {
-    fn finish(outcome: ReviewerOutcome, usage: Option<Usage>, reviewer_model: String) -> Self {
+    fn finish(
+        outcome: ReviewerOutcome,
+        usage: Option<Usage>,
+        reviewer_model: String,
+        attempts: u8,
+    ) -> Self {
         Self {
             outcome,
             usage,
             reviewer_model,
+            attempts,
         }
     }
 
-    fn unavailable(
+    fn timed_out(
         reason: impl Into<String>,
         usage: Option<Usage>,
         reviewer_model: String,
+        attempts: u8,
     ) -> Self {
         Self::finish(
-            ReviewerOutcome::Unavailable {
+            ReviewerOutcome::TimedOut {
                 reason: reason.into(),
             },
             usage,
             reviewer_model,
+            attempts,
+        )
+    }
+
+    fn failed(
+        kind: ReviewerFailureKind,
+        reason: impl Into<String>,
+        usage: Option<Usage>,
+        reviewer_model: String,
+        attempts: u8,
+    ) -> Self {
+        Self::finish(
+            ReviewerOutcome::Failed {
+                kind,
+                reason: reason.into(),
+            },
+            usage,
+            reviewer_model,
+            attempts,
         )
     }
 }
@@ -237,12 +310,35 @@ async fn consult_reviewer_inner(
     cancel_token: &CancellationToken,
     person_approved_retry: bool,
 ) -> ReviewerResult {
+    consult_reviewer_inner_with_timeout(
+        client,
+        configured_model,
+        system_policy,
+        context_text,
+        cancel_token,
+        person_approved_retry,
+        REVIEWER_TIMEOUT,
+    )
+    .await
+}
+
+async fn consult_reviewer_inner_with_timeout(
+    client: &dyn ModelClient,
+    configured_model: Option<&str>,
+    system_policy: &str,
+    context_text: &str,
+    cancel_token: &CancellationToken,
+    person_approved_retry: bool,
+    total_timeout: Duration,
+) -> ReviewerResult {
     let model = resolve_reviewer_model(configured_model, client);
     if context_text.len() > MAX_REVIEW_CONTEXT_BYTES {
-        return ReviewerResult::unavailable(
+        return ReviewerResult::failed(
+            ReviewerFailureKind::OverBudget,
             "the exact review context exceeded the guardian limit",
             None,
             model,
+            0,
         );
     }
     let deepseek = client.provider_name() == codewhale_config::ProviderKind::Deepseek.as_str();
@@ -271,24 +367,60 @@ async fn consult_reviewer_inner(
         title: None,
     };
     if cancel_token.is_cancelled() {
-        return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model);
+        return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model, 0);
     }
-    let response = tokio::select! {
-        biased;
-        _ = cancel_token.cancelled() => {
-            return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model);
+    let deadline = tokio::time::Instant::now() + total_timeout;
+    let per_attempt_timeout = total_timeout / 2;
+    let mut attempts: u8 = 0;
+    loop {
+        attempts = attempts.saturating_add(1);
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return ReviewerResult::timed_out("the reviewer timed out", None, model, attempts);
         }
-        response = tokio::time::timeout(REVIEWER_TIMEOUT, client.create_message_uncached(request)) => response,
-    };
-    let response = match response {
-        Err(_) => return ReviewerResult::unavailable("the reviewer timed out", None, model),
-        Ok(Err(_)) => {
-            return ReviewerResult::unavailable("the reviewer request failed", None, model);
+        let attempt_deadline = if attempts == 1 {
+            (now + per_attempt_timeout).min(deadline)
+        } else {
+            deadline
+        };
+        let response = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                return ReviewerResult::finish(ReviewerOutcome::Cancelled, None, model, attempts);
+            }
+            response = tokio::time::timeout_at(attempt_deadline, client.create_message_uncached(request.clone())) => response,
+        };
+        match response {
+            Err(_) => {
+                if attempts < 2
+                    && tokio::time::Instant::now() < deadline
+                    && !cancel_token.is_cancelled()
+                {
+                    continue;
+                }
+                return ReviewerResult::timed_out("the reviewer timed out", None, model, attempts);
+            }
+            Ok(Err(_)) => {
+                if attempts < 2
+                    && tokio::time::Instant::now() < deadline
+                    && !cancel_token.is_cancelled()
+                {
+                    continue;
+                }
+                return ReviewerResult::failed(
+                    ReviewerFailureKind::Transport,
+                    "the reviewer request failed",
+                    None,
+                    model,
+                    attempts,
+                );
+            }
+            Ok(Ok(response)) => {
+                let outcome = verdict_from_response(&response, person_approved_retry);
+                return ReviewerResult::finish(outcome, Some(response.usage), model, attempts);
+            }
         }
-        Ok(Ok(response)) => response,
-    };
-    let outcome = verdict_from_response(&response, person_approved_retry);
-    ReviewerResult::finish(outcome, Some(response.usage), model)
+    }
 }
 
 fn verdict_from_response(
@@ -296,7 +428,8 @@ fn verdict_from_response(
     person_approved_retry: bool,
 ) -> ReviewerOutcome {
     if is_incomplete_stop_reason(response.stop_reason.as_deref()) {
-        return ReviewerOutcome::Unavailable {
+        return ReviewerOutcome::Failed {
+            kind: ReviewerFailureKind::Incomplete,
             reason: "the reviewer answer was incomplete".to_string(),
         };
     }
@@ -333,7 +466,8 @@ fn verdict_from_response(
             risk,
             reason,
         }) => ReviewerOutcome::Deny { risk, reason },
-        Some(_) | None => ReviewerOutcome::Unavailable {
+        Some(_) | None => ReviewerOutcome::Failed {
+            kind: ReviewerFailureKind::Unparseable,
             reason: format!("the reviewer answer was unparseable ({} chars)", text.len()),
         },
     }
@@ -508,8 +642,12 @@ mod tests {
             consult_reviewer(&malformed, "context", &CancellationToken::new()).await;
         assert!(matches!(
             malformed_result.outcome,
-            ReviewerOutcome::Unavailable { .. }
+            ReviewerOutcome::Failed {
+                kind: ReviewerFailureKind::Unparseable,
+                ..
+            }
         ));
+        assert_eq!(malformed_result.attempts, 1);
         assert!(malformed_result.usage.is_some());
 
         let incomplete = MockLlmClient::new(Vec::new());
@@ -523,7 +661,8 @@ mod tests {
             consult_reviewer(&incomplete, "context", &CancellationToken::new())
                 .await
                 .outcome,
-            ReviewerOutcome::Unavailable {
+            ReviewerOutcome::Failed {
+                kind: ReviewerFailureKind::Incomplete,
                 reason: "the reviewer answer was incomplete".to_string()
             }
         );
@@ -548,15 +687,20 @@ mod tests {
         assert!(!deny.contains("do not work around"), "{deny}");
         assert!(!deny.contains("Full Access"), "{deny}");
 
-        let unavailable = ReviewerOutcome::Unavailable {
+        let timed_out = ReviewerOutcome::TimedOut {
             reason: "timeout".to_string(),
         }
         .into_tool_result("bash")
         .unwrap_err()
         .to_string();
-        assert!(unavailable.contains("Permissions to Ask"), "{unavailable}");
-        assert!(!unavailable.contains("Full Access"), "{unavailable}");
-        assert!(!unavailable.contains("do not work around"), "{unavailable}");
+        assert!(
+            timed_out.contains(
+                "This is a review failure, not a determination that the action is unsafe"
+            ),
+            "{timed_out}"
+        );
+        assert!(!timed_out.contains("Full Access"), "{timed_out}");
+        assert!(!timed_out.contains("do not work around"), "{timed_out}");
     }
 
     #[tokio::test]
@@ -568,6 +712,7 @@ mod tests {
         let result = consult_reviewer(&mock, "context", &cancel).await;
 
         assert_eq!(result.outcome, ReviewerOutcome::Cancelled);
+        assert_eq!(result.attempts, 0);
         assert!(result.usage.is_none());
         assert_eq!(mock.call_count(), 0);
     }
@@ -581,12 +726,70 @@ mod tests {
 
         assert_eq!(
             result.outcome,
-            ReviewerOutcome::Unavailable {
+            ReviewerOutcome::Failed {
+                kind: ReviewerFailureKind::OverBudget,
                 reason: "the exact review context exceeded the guardian limit".to_string()
             }
         );
+        assert_eq!(result.attempts, 0);
         assert!(result.usage.is_none());
         assert_eq!(mock.call_count(), 0);
+    }
+
+    struct StallingReviewerClient {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelClient for StallingReviewerClient {
+        fn provider_name(&self) -> &str {
+            "openai"
+        }
+
+        fn model(&self) -> &str {
+            "gpt-5.6"
+        }
+
+        async fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> anyhow::Result<MessageResponse> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            unreachable!()
+        }
+
+        async fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> anyhow::Result<crate::llm_client::StreamEventBox> {
+            unreachable!()
+        }
+
+        async fn health_check(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_retries_once_then_reports_timed_out() {
+        let client = StallingReviewerClient {
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let result = consult_reviewer_inner_with_timeout(
+            &client,
+            None,
+            DEFAULT_GUARDIAN_POLICY,
+            "context",
+            &CancellationToken::new(),
+            false,
+            Duration::from_millis(80),
+        )
+        .await;
+        assert_eq!(result.attempts, 2);
+        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(matches!(result.outcome, ReviewerOutcome::TimedOut { .. }));
     }
 
     struct RouteStubClient {

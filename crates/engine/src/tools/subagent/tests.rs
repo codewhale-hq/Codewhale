@@ -26982,7 +26982,7 @@ mod child_permission_gate {
             let receipts = drain_gate_receipts(&mut rx);
             assert_eq!(receipts.len(), 1, "{receipts:?}");
             assert_eq!(receipts[0].0, ToolGate::AutoReviewGuardian);
-            assert_eq!(receipts[0].1, ToolGateVerdict::Unavailable);
+            assert_eq!(receipts[0].1, ToolGateVerdict::Failed);
         }
     }
 
@@ -27151,11 +27151,16 @@ mod child_permission_gate {
             .execute("agent_gate", "bash", json!({"command": "echo built | cat"}))
             .await
             .expect_err("an unavailable guardian denies");
-        assert!(err.to_string().contains("fail closed"), "{err}");
+        assert!(
+            err.to_string().contains(
+                "This is a review failure, not a determination that the action is unsafe"
+            ),
+            "{err}"
+        );
         let receipts = drain_gate_receipts(&mut rx);
         assert_eq!(receipts.len(), 1, "{receipts:?}");
         assert_eq!(receipts[0].0, ToolGate::AutoReviewGuardian);
-        assert_eq!(receipts[0].1, ToolGateVerdict::Unavailable);
+        assert_eq!(receipts[0].1, ToolGateVerdict::Failed);
         assert!(receipts[0].2.is_none());
     }
 
@@ -29863,7 +29868,7 @@ async fn auto_review_subagent_return_check_outage_prepends_could_not_review_warn
             e,
             Event::ToolGateDecision {
                 gate: crate::core::events::ToolGate::AutoReviewGuardian,
-                decision: crate::core::events::ToolGateVerdict::Unavailable,
+                decision: crate::core::events::ToolGateVerdict::Failed,
                 tool_name,
                 ..
             } if tool_name == "subagent_return"

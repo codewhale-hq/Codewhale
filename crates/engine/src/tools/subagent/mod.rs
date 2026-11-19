@@ -17727,8 +17727,8 @@ async fn apply_auto_review_return_check(
         match context_result {
             Err(reason) => (
                 format_subagent_return_warning_unavailable(reason),
-                ToolGateVerdict::Unavailable,
-                "unavailable",
+                ToolGateVerdict::Failed,
+                "failed",
                 None,
                 Some(resolve_reviewer_model(configured_model, &runtime.client)),
                 Some("guardian-unavailable"),
@@ -17776,10 +17776,20 @@ async fn apply_auto_review_return_check(
                         reason,
                         review.usage,
                     ),
-                    ReviewerOutcome::Unavailable { reason } => (
+                    ReviewerOutcome::TimedOut { reason } => (
                         format_subagent_return_warning_unavailable(&reason),
-                        ToolGateVerdict::Unavailable,
-                        "unavailable",
+                        ToolGateVerdict::TimedOut,
+                        "timed_out",
+                        None,
+                        Some(review.reviewer_model),
+                        Some("guardian-unavailable"),
+                        reason,
+                        review.usage,
+                    ),
+                    ReviewerOutcome::Failed { reason, .. } => (
+                        format_subagent_return_warning_unavailable(&reason),
+                        ToolGateVerdict::Failed,
+                        "failed",
                         None,
                         Some(review.reviewer_model),
                         Some("guardian-unavailable"),
@@ -17790,8 +17800,8 @@ async fn apply_auto_review_return_check(
                         let reason = "the return review was cancelled".to_string();
                         (
                             format_subagent_return_warning_unavailable(&reason),
-                            ToolGateVerdict::Unavailable,
-                            "unavailable",
+                            ToolGateVerdict::Failed,
+                            "failed",
                             None,
                             Some(review.reviewer_model),
                             Some("guardian-unavailable"),

@@ -1047,6 +1047,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         .clamp(1, codewhale_runtime::config::MAX_SUBAGENTS);
     EngineConfig {
         user_input_responder: true,
+        approval_responder: codewhale_engine::core::engine::ApprovalResponder::Person,
         session_checkpoint_backend: Some(
             codewhale_engine::core::events::SessionCheckpointProjection::Exact,
         ),

@@ -5173,21 +5173,15 @@ pub(crate) async fn run_event_loop(
                         let is_block = matches!(
                             decision,
                             codewhale_engine::core::events::ToolGateVerdict::Denied
-                                | codewhale_engine::core::events::ToolGateVerdict::Unavailable
+                                | codewhale_engine::core::events::ToolGateVerdict::TimedOut
+                                | codewhale_engine::core::events::ToolGateVerdict::Failed
                         );
                         let is_auto_review_gate = matches!(
                             gate,
                             codewhale_engine::core::events::ToolGate::AutoReviewDeterministic
                                 | codewhale_engine::core::events::ToolGate::AutoReviewGuardian
                         );
-                        let verdict_label = match decision {
-                            codewhale_engine::core::events::ToolGateVerdict::Unavailable => {
-                                "unavailable"
-                            }
-                            codewhale_engine::core::events::ToolGateVerdict::Denied => "denied",
-                            codewhale_engine::core::events::ToolGateVerdict::Allowed => "allowed",
-                        }
-                        .to_string();
+                        let verdict_label = decision.as_str().to_string();
                         let receipt_hint_id = if agent_id.is_none() {
                             if is_block {
                                 let summary =

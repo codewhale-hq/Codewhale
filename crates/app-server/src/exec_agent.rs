@@ -750,6 +750,7 @@ pub async fn run_exec_agent(
         ),
         user_input_timeout: execution_config.user_input_timeout(),
         user_input_responder: false,
+        approval_responder: codewhale_engine::core::engine::ApprovalResponder::Nobody,
         goal_max_steps: None,
         tools: if fleet_authority_active {
             None
