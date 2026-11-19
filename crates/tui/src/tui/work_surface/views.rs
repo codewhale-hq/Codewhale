@@ -176,6 +176,7 @@ fn heading(id: &str, label: String) -> WorkRow {
 /// the one action that exists as a command, `/compact`.
 pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
     let Some((used, max, percent)) = crate::tui::ui::context_usage_snapshot(app) else {
+        app.work_surface.latest_rows.clear();
         return Vec::new();
     };
     let used = u64::try_from(used).unwrap_or(0);

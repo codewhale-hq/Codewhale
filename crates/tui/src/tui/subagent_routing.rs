@@ -16,9 +16,11 @@ use crate::tui::widgets::agent_card::{
 use crate::tui::workspace_context;
 use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::AppMode;
+use codewhale_engine::agent_roster::{AgentRosterRow, RosterState, one_line, result_headline};
+use codewhale_engine::core::events::AgentProgressEventMeta;
 use codewhale_engine::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use codewhale_engine::tools::subagent::{
-    AgentWorkerStatus, MailboxMessage, SubAgentResult, SubAgentStatus,
+    AgentRunUsage, AgentWorkerStatus, MailboxMessage, SubAgentResult, SubAgentStatus,
     subagent_progress_tool_display_name,
 };
 
@@ -191,6 +193,499 @@ pub(crate) fn worker_status_for_terminal_projection(status: &SubAgentStatus) -> 
         SubAgentStatus::Interrupted(_) => AgentWorkerStatus::Interrupted,
         SubAgentStatus::Failed(_) | SubAgentStatus::BudgetExhausted => AgentWorkerStatus::Failed,
         SubAgentStatus::Cancelled => AgentWorkerStatus::Cancelled,
+    }
+}
+
+fn ensure_roster_scope(app: &mut App, owner_session_id: &str) -> bool {
+    if owner_session_id.is_empty() || app.current_session_id.as_deref() != Some(owner_session_id) {
+        return false;
+    }
+    if app.agent_roster_session_id.as_deref() != Some(owner_session_id) {
+        app.agent_roster.clear();
+        app.agent_roster_session_id = Some(owner_session_id.to_string());
+    }
+    true
+}
+
+fn roster_display_name(app: &App, agent_id: &str, candidate: Option<&str>) -> String {
+    candidate
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != agent_id)
+        .map(str::to_string)
+        .or_else(|| {
+            app.agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.display_name.as_deref())
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && *name != agent_id)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            app.agent_label_map
+                .get(agent_id)
+                .filter(|label| !label.trim().is_empty() && *label != agent_id)
+                .cloned()
+        })
+        .unwrap_or_else(|| "agent".to_string())
+}
+
+fn sanitized_roster_model(model: &str) -> String {
+    let clean = codewhale_runtime::safe_label::sanitize_persisted_route_label(model);
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        bound_agent_activity_text(trimmed)
+    }
+}
+
+pub(crate) fn upsert_roster_spawn(
+    app: &mut App,
+    owner_session_id: &str,
+    agent_id: &str,
+    prompt_summary: &str,
+    worker_status: Option<AgentWorkerStatus>,
+    parent_run_id: Option<&str>,
+    model: &str,
+    display_name: Option<&str>,
+) {
+    if !ensure_roster_scope(app, owner_session_id) {
+        return;
+    }
+    let status = worker_status.unwrap_or(AgentWorkerStatus::Running);
+    let state = RosterState::from_worker(status);
+    let name = roster_display_name(app, agent_id, display_name);
+    let model = sanitized_roster_model(model);
+    let activity = (!prompt_summary.trim().is_empty()).then(|| one_line(prompt_summary));
+    if let Some(existing) = app
+        .agent_roster
+        .iter_mut()
+        .find(|row| row.worker_id == agent_id)
+    {
+        if existing.display_name.trim().is_empty()
+            || existing.display_name == "agent"
+            || App::is_agent_counter_placeholder(&existing.display_name)
+        {
+            existing.display_name = name;
+        }
+        if !model.is_empty() {
+            existing.model = model;
+        }
+        if existing.parent_run_id.is_none() {
+            existing.parent_run_id = parent_run_id.map(str::to_string);
+        }
+        if !existing.state.is_terminal() && existing.state != RosterState::Parked {
+            existing.status = status;
+            existing.state = state;
+            if existing.activity.is_none() {
+                existing.activity = activity;
+            }
+        }
+        return;
+    }
+    app.agent_roster.push(AgentRosterRow {
+        worker_id: agent_id.to_string(),
+        display_name: name,
+        model,
+        state,
+        status,
+        activity,
+        outcome: None,
+        millis: None,
+        input_tokens: None,
+        output_tokens: None,
+        cost_microusd: None,
+        steps_taken: 0,
+        parent_run_id: parent_run_id.map(str::to_string),
+        run_id: agent_id.to_string(),
+    });
+}
+
+pub(crate) fn upsert_roster_progress(
+    app: &mut App,
+    owner_session_id: &str,
+    agent_id: &str,
+    display: &str,
+    activity: &AgentProgressEventMeta,
+    parent_run_id: Option<&str>,
+) {
+    if !ensure_roster_scope(app, owner_session_id) {
+        return;
+    }
+    let status = activity.worker_status;
+    let state = RosterState::from_worker(status);
+    let line = (!display.trim().is_empty()).then(|| one_line(display));
+    let name = roster_display_name(app, agent_id, None);
+    let model = app
+        .agent_progress_meta
+        .get(agent_id)
+        .and_then(|meta| meta.resolved_model.clone())
+        .unwrap_or_default();
+    if let Some(existing) = app
+        .agent_roster
+        .iter_mut()
+        .find(|row| row.worker_id == agent_id)
+    {
+        if existing.parent_run_id.is_none() {
+            existing.parent_run_id = parent_run_id.map(str::to_string);
+        }
+        if (existing.model.is_empty() || existing.model == "unknown") && !model.is_empty() {
+            existing.model = model;
+        }
+        if !existing.state.is_terminal() && existing.state != RosterState::Parked {
+            existing.status = status;
+            existing.state = state;
+            if line.is_some() {
+                existing.activity = line;
+            }
+            if let Some(step) = activity.step {
+                existing.steps_taken = existing.steps_taken.max(step);
+            }
+        }
+        return;
+    }
+    app.agent_roster.push(AgentRosterRow {
+        worker_id: agent_id.to_string(),
+        display_name: name,
+        model,
+        state,
+        status,
+        activity: line,
+        outcome: None,
+        millis: None,
+        input_tokens: None,
+        output_tokens: None,
+        cost_microusd: None,
+        steps_taken: activity.step.unwrap_or(0),
+        parent_run_id: parent_run_id.map(str::to_string),
+        run_id: agent_id.to_string(),
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn upsert_roster_terminal(
+    app: &mut App,
+    owner_session_id: &str,
+    agent_id: &str,
+    outcome: Option<&SubAgentStatus>,
+    result: &str,
+    parent_run_id: Option<&str>,
+    usage: Option<&AgentRunUsage>,
+    display_name: Option<&str>,
+    elapsed_ms: Option<u64>,
+) {
+    if !ensure_roster_scope(app, owner_session_id) {
+        return;
+    }
+    let parked = app
+        .agent_progress_meta
+        .get(agent_id)
+        .and_then(|meta| meta.current_activity.as_ref())
+        .is_some_and(|activity| activity.status == AgentCurrentActivityStatus::Parked)
+        || app
+            .subagent_cache
+            .iter()
+            .find(|agent| agent.agent_id == agent_id)
+            .is_some_and(subagent_is_parked);
+    let worker_status = outcome
+        .map(worker_status_for_terminal_projection)
+        .unwrap_or(AgentWorkerStatus::Interrupted);
+    let state = if parked {
+        RosterState::Parked
+    } else {
+        RosterState::from_worker(worker_status)
+    };
+    let bounded_result = bound_agent_activity_text(result);
+    let activity = result_headline(&bounded_result)
+        .map(|headline| one_line(&headline))
+        .filter(|line| !line.is_empty());
+    let outcome_text = (!bounded_result.trim().is_empty()).then_some(bounded_result);
+    let name = roster_display_name(app, agent_id, display_name);
+    let model = app
+        .agent_progress_meta
+        .get(agent_id)
+        .and_then(|meta| meta.resolved_model.clone())
+        .or_else(|| {
+            app.subagent_cache
+                .iter()
+                .find(|agent| agent.agent_id == agent_id)
+                .map(|agent| sanitized_roster_model(&agent.model))
+        })
+        .unwrap_or_default();
+    let step = app
+        .agent_progress_meta
+        .get(agent_id)
+        .and_then(|meta| meta.current_activity.as_ref())
+        .and_then(|activity| activity.step)
+        .or_else(|| {
+            app.subagent_cache
+                .iter()
+                .find(|agent| agent.agent_id == agent_id)
+                .map(|agent| agent.steps_taken)
+        });
+    if let Some(existing) = app
+        .agent_roster
+        .iter_mut()
+        .find(|row| row.worker_id == agent_id)
+    {
+        if let Some(name) = display_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && *name != agent_id)
+        {
+            existing.display_name = name.to_string();
+        } else if existing.display_name.trim().is_empty()
+            || existing.display_name == "agent"
+            || App::is_agent_counter_placeholder(&existing.display_name)
+        {
+            existing.display_name = name;
+        }
+        if (existing.model.is_empty() || existing.model == "unknown") && !model.is_empty() {
+            existing.model = model;
+        }
+        if existing.parent_run_id.is_none() {
+            existing.parent_run_id = parent_run_id.map(str::to_string);
+        }
+        if existing.state != RosterState::Parked
+            || matches!(
+                state,
+                RosterState::Done | RosterState::Failed | RosterState::Cancelled
+            )
+        {
+            existing.status = worker_status;
+            existing.state = state;
+        }
+        if activity.is_some() {
+            existing.activity = activity;
+        }
+        if outcome_text.is_some() {
+            existing.outcome = outcome_text;
+        }
+        if elapsed_ms.is_some() {
+            existing.millis = elapsed_ms;
+        }
+        if let Some(usage) = usage {
+            if usage.input_tokens.is_some() {
+                existing.input_tokens = usage.input_tokens;
+            }
+            if usage.output_tokens.is_some() {
+                existing.output_tokens = usage.output_tokens;
+            }
+            if usage.cost_microusd.is_some() {
+                existing.cost_microusd = usage.cost_microusd;
+            }
+        }
+        if let Some(step) = step {
+            existing.steps_taken = existing.steps_taken.max(step);
+        }
+        return;
+    }
+    app.agent_roster.push(AgentRosterRow {
+        worker_id: agent_id.to_string(),
+        display_name: name,
+        model,
+        state,
+        status: worker_status,
+        activity,
+        outcome: outcome_text,
+        millis: elapsed_ms,
+        input_tokens: usage.and_then(|u| u.input_tokens),
+        output_tokens: usage.and_then(|u| u.output_tokens),
+        cost_microusd: usage.and_then(|u| u.cost_microusd),
+        steps_taken: step.unwrap_or(0),
+        parent_run_id: parent_run_id.map(str::to_string),
+        run_id: agent_id.to_string(),
+    });
+}
+
+pub(crate) fn upsert_roster_from_mailbox(
+    app: &mut App,
+    owner_session_id: &str,
+    message: &MailboxMessage,
+) {
+    if matches!(
+        message,
+        MailboxMessage::FileWrites { .. } | MailboxMessage::WorkState { .. }
+    ) {
+        return;
+    }
+    if !ensure_roster_scope(app, owner_session_id) {
+        return;
+    }
+    let agent_id = message.agent_id();
+    match message {
+        MailboxMessage::Started { agent_type, .. } => {
+            upsert_roster_spawn(
+                app,
+                owner_session_id,
+                agent_id,
+                "",
+                Some(AgentWorkerStatus::Running),
+                None,
+                "",
+                Some(agent_type.as_str()),
+            );
+        }
+        MailboxMessage::ChildSpawned { parent_id, .. } => {
+            upsert_roster_spawn(
+                app,
+                owner_session_id,
+                agent_id,
+                "",
+                Some(AgentWorkerStatus::Starting),
+                Some(parent_id.as_str()),
+                "",
+                None,
+            );
+        }
+        MailboxMessage::TokenUsage { record, route, .. } => {
+            let route = record
+                .as_ref()
+                .filter(|record| record.settlement.is_some())
+                .map_or(route.as_ref(), |record| &record.usage.route);
+            let model = sanitized_roster_model(&route.model);
+            if !model.is_empty()
+                && let Some(existing) = app
+                    .agent_roster
+                    .iter_mut()
+                    .find(|row| row.worker_id == agent_id)
+                && (existing.model.is_empty() || existing.model == "unknown")
+            {
+                existing.model = model;
+            }
+        }
+        MailboxMessage::ToolCallStarted {
+            tool_name, step, ..
+        } => {
+            if let Some(existing) = app
+                .agent_roster
+                .iter_mut()
+                .find(|row| row.worker_id == agent_id)
+                && !existing.state.is_terminal()
+                && existing.state != RosterState::Parked
+            {
+                let tool =
+                    bound_agent_activity_text(subagent_progress_tool_display_name(tool_name));
+                existing.status = AgentWorkerStatus::RunningTool;
+                existing.state = RosterState::Running;
+                existing.activity = Some(format!("step {step} · {tool}"));
+                existing.steps_taken = existing.steps_taken.max(*step);
+            }
+        }
+        MailboxMessage::ToolCallCompleted { step, .. } => {
+            if let Some(existing) = app
+                .agent_roster
+                .iter_mut()
+                .find(|row| row.worker_id == agent_id)
+                && !existing.state.is_terminal()
+                && existing.state != RosterState::Parked
+            {
+                existing.status = AgentWorkerStatus::Running;
+                existing.state = RosterState::Running;
+                existing.steps_taken = existing.steps_taken.max(*step);
+            }
+        }
+        MailboxMessage::Progress { status, .. } => {
+            let line = one_line(&bound_agent_activity_text(status));
+            if !line.is_empty()
+                && let Some(existing) = app
+                    .agent_roster
+                    .iter_mut()
+                    .find(|row| row.worker_id == agent_id)
+                && !existing.state.is_terminal()
+                && existing.state != RosterState::Parked
+            {
+                existing.activity = Some(line);
+            }
+        }
+        MailboxMessage::Completed { summary, .. } => {
+            let elapsed_ms = app
+                .agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.started_at)
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            upsert_roster_terminal(
+                app,
+                owner_session_id,
+                agent_id,
+                Some(&SubAgentStatus::Completed),
+                summary,
+                None,
+                None,
+                None,
+                elapsed_ms,
+            );
+        }
+        MailboxMessage::Failed { error, .. } => {
+            let elapsed_ms = app
+                .agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.started_at)
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            upsert_roster_terminal(
+                app,
+                owner_session_id,
+                agent_id,
+                Some(&SubAgentStatus::Failed(error.clone())),
+                error,
+                None,
+                None,
+                None,
+                elapsed_ms,
+            );
+        }
+        MailboxMessage::Interrupted { reason, .. } => {
+            let elapsed_ms = app
+                .agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.started_at)
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            let existing_settled = app
+                .agent_roster
+                .iter()
+                .find(|row| row.worker_id == agent_id)
+                .is_some_and(|row| row.state.is_terminal() || row.state == RosterState::Parked);
+            if !existing_settled {
+                upsert_roster_terminal(
+                    app,
+                    owner_session_id,
+                    agent_id,
+                    Some(&SubAgentStatus::Interrupted(reason.clone())),
+                    reason,
+                    None,
+                    None,
+                    None,
+                    elapsed_ms,
+                );
+                if let Some(existing) = app
+                    .agent_roster
+                    .iter_mut()
+                    .find(|row| row.worker_id == agent_id)
+                    && existing.state != RosterState::Parked
+                {
+                    existing.status = AgentWorkerStatus::WaitingForUser;
+                    existing.state = RosterState::Waiting;
+                }
+            }
+        }
+        MailboxMessage::Cancelled { .. } => {
+            let elapsed_ms = app
+                .agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.started_at)
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            upsert_roster_terminal(
+                app,
+                owner_session_id,
+                agent_id,
+                Some(&SubAgentStatus::Cancelled),
+                "",
+                None,
+                None,
+                None,
+                elapsed_ms,
+            );
+        }
+        MailboxMessage::FileWrites { .. } | MailboxMessage::WorkState { .. } => {}
     }
 }
 
@@ -679,7 +1174,14 @@ fn bounded_mailbox_message(message: &MailboxMessage) -> MailboxMessage {
 fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
     let agent_id = message.agent_id().to_string();
     let meta = app.agent_progress_meta.entry(agent_id).or_default();
-    meta.last_progress_at = Some(Instant::now());
+    let now = Instant::now();
+    meta.last_progress_at = Some(now);
+    if matches!(
+        message,
+        MailboxMessage::Started { .. } | MailboxMessage::ChildSpawned { .. }
+    ) {
+        meta.started_at.get_or_insert(now);
+    }
     if let MailboxMessage::TokenUsage {
         record,
         route,
