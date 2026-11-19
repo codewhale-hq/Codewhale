@@ -1044,7 +1044,7 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
     handle_bracketed_paste(&mut app, "/pet status");
     assert_eq!(app.input, "/pet status");
     assert!(!app.work_surface.focused);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
 }
 
 /// Windows Terminal answers an image-only clipboard with an **empty** bracketed
@@ -7499,7 +7499,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
     app.insert_str("/mcp");
     let now = Instant::now();
     app.paste_burst.extend_window(now);
-    assert!(!app.composer_enter_would_submit(true));
+    assert!(!app.composer_enter_would_submit(true, Instant::now()));
     assert!(app.composer_draft_is_submittable());
     let waiting = render_underwater_test_app(&mut app, 80, 24);
     assert!(waiting.contains("[↵]"), "{waiting}");
@@ -7510,7 +7510,7 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
         now + Duration::from_millis(121)
     ));
     assert!(app.needs_redraw);
-    assert!(app.composer_enter_would_submit(true));
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
     let ready = render_underwater_test_app(&mut app, 80, 24);
     assert!(ready.contains("[↵]"), "{ready}");
     assert_eq!(app.input, "/mcp");
@@ -7639,7 +7639,7 @@ fn lone_letters_remain_composer_input_after_transcript_selection() {
         ));
         assert_eq!(app.input, ch.to_string());
         assert!(app.view_stack.is_empty());
-        assert!(app.composer_enter_would_submit(true));
+        assert!(app.composer_enter_would_submit(true, Instant::now()));
     }
 }
 
@@ -12916,7 +12916,7 @@ async fn immediate_submit_closed_mailbox_restores_composer_and_skill() {
     app.cursor_position = app.input.chars().count();
     app.active_skill = Some("keep the selected skill".to_string());
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     assert!(app.input.is_empty());
@@ -12971,7 +12971,7 @@ async fn immediate_submit_custom_provider_preflight_restores_exact_message() {
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -13086,7 +13086,7 @@ async fn immediate_submit_custom_provider_missing_key_preflight_shows_auth_next_
     app.input = "preserve 用户 input".to_string();
     app.cursor_position = app.input.chars().count();
     let input = app
-        .handle_composer_enter(true)
+        .handle_composer_enter(true, Instant::now())
         .expect("non-empty composer should submit");
     let queued = build_queued_message(&mut app, input);
     let (_engine, handle) =
@@ -23313,7 +23313,11 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
     app.input = draft.clone();
     app.cursor_position = app.input.chars().count();
 
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(app.input, draft, "the full text stays in the composer");
     // The toast row sheds clauses to fit, so it carries only the short form;
     // the full reason (with the write error) lives in the transcript.
@@ -23348,17 +23352,33 @@ fn launch_submit_holds_oversized_draft_before_creating_a_session() {
         notes[0]
     );
     // Retrying the same held submit does not stack identical notes.
-    assert!(super::event_loop::launch_submit_held(&mut app, true));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     assert_eq!(held_notes(&app).len(), 1);
 
     app.input = "hello".to_string();
     app.cursor_position = app.input.chars().count();
-    assert!(!super::event_loop::launch_submit_held(&mut app, true));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        true,
+        Instant::now()
+    ));
     app.paste_burst.extend_window(Instant::now());
-    assert!(!super::event_loop::launch_submit_held(&mut app, false));
+    assert!(!super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
     app.startup_input_unproven = true;
-    assert!(super::event_loop::launch_submit_held(&mut app, false));
+    assert!(super::event_loop::launch_submit_held(
+        &mut app,
+        false,
+        Instant::now()
+    ));
     assert_eq!(app.input, "hello");
 }
 
@@ -32274,7 +32294,7 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
             continue;
         }
         if key.code == KeyCode::Enter {
-            submitted = app.handle_composer_enter(true);
+            submitted = app.handle_composer_enter(true, Instant::now());
         }
     }
 
@@ -34286,7 +34306,7 @@ fn drive_composer_events(app: &mut App, pending: &mut VecDeque<Event>) -> Option
         let Event::Key(key) = event else { continue };
         match key.code {
             KeyCode::Char(c) => app.insert_char(c),
-            KeyCode::Enter => submitted = app.handle_composer_enter(true),
+            KeyCode::Enter => submitted = app.handle_composer_enter(true, Instant::now()),
             KeyCode::Backspace => app.delete_char(),
             _ => {}
         }
@@ -34358,7 +34378,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
         "queued Enters cannot clear the hold"
     );
     assert!(
-        app.handle_composer_enter(true).is_none(),
+        app.handle_composer_enter(true, Instant::now()).is_none(),
         "the first fresh Enter explains the hold"
     );
     assert!(
@@ -34370,7 +34390,7 @@ fn startup_that_cannot_account_for_its_bytes_keeps_the_line_in_the_composer() {
     );
 
     // The user has now seen it; a deliberate second Enter sends what is shown.
-    let resent = app.handle_composer_enter(true);
+    let resent = app.handle_composer_enter(true, Instant::now());
     assert_eq!(
         resent.as_deref(),
         Some("gin install /tmp/bundle\n\nsecond line\n")
@@ -34410,9 +34430,15 @@ fn startup_terminal_replies_allow_a_fresh_long_paste_to_send_once() {
     app.startup_input_unproven = !receipt.whole_line_proven();
     let prompt = "Keep the complete pasted draft: 日本語, café, العربية.\n".repeat(30);
     handle_bracketed_paste(&mut app, &prompt);
-    assert!(app.composer_enter_would_submit(true));
-    assert_eq!(app.handle_composer_enter(true), Some(prompt));
-    assert!(app.handle_composer_enter(true).is_none(), "no double send");
+    assert!(app.composer_enter_would_submit(true, Instant::now()));
+    assert_eq!(
+        app.handle_composer_enter(true, Instant::now()),
+        Some(prompt)
+    );
+    assert!(
+        app.handle_composer_enter(true, Instant::now()).is_none(),
+        "no double send"
+    );
 }
 
 #[test]
@@ -34426,13 +34452,13 @@ fn startup_integrity_hold_keeps_send_available_for_acknowledgement() {
         "pasting cannot erase known loss"
     );
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "the send button must remain usable to acknowledge an integrity hold"
     );
-    assert!(app.handle_composer_enter(true).is_none());
+    assert!(app.handle_composer_enter(true, Instant::now()).is_none());
     assert_eq!(app.input, "gin install /tmp/bundle");
     assert!(
-        app.composer_enter_would_submit(true),
+        app.composer_enter_would_submit(true, Instant::now()),
         "fresh acknowledgement can send"
     );
 }
@@ -34450,7 +34476,7 @@ fn a_command_line_that_stops_looking_like_one_is_held_not_reinterpreted() {
     // @-mention. That rewrite must never silently turn a command line into a
     // prose turn for the model (#5925).
     app.composer.pending_paste_reference = Some("@.codewhale/pastes/p.md".to_string());
-    let submitted = app.handle_composer_enter(true);
+    let submitted = app.handle_composer_enter(true, Instant::now());
     assert!(
         submitted.is_none(),
         "a claimed command is never re-read as a prose prompt"
@@ -34478,7 +34504,7 @@ fn deleting_the_leading_slash_releases_the_command_claim() {
         "the claim is released by an edit"
     );
     assert_eq!(
-        app.handle_composer_enter(true).as_deref(),
+        app.handle_composer_enter(true, Instant::now()).as_deref(),
         Some("plugin"),
         "the edited line submits normally"
     );
