@@ -42,14 +42,11 @@ pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
 
-/// How long startup arming retries a busy compaction lock before skipping.
+/// How long `with_lock` retries a busy compaction lock before giving up.
 /// `flock` has no timeout of its own, so a suspended process holding the
-/// lock would otherwise wedge every launch.
-#[cfg(not(test))]
-const ARM_LOCK_BUDGET: Duration = Duration::from_secs(3);
-#[cfg(test)]
-const ARM_LOCK_BUDGET: Duration = Duration::from_millis(200);
-const ARM_LOCK_RETRY: Duration = Duration::from_millis(25);
+/// lock would otherwise wedge every launch behind it.
+const PRIVACY_LOCK_BUDGET: Duration = Duration::from_secs(3);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Exact contents of the opt-out tombstone observed by a consent decision.
 ///
@@ -422,17 +419,26 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-/// Run `operation` holding the exclusive compaction lock, **blocking**.
+/// Run `operation` holding the exclusive compaction lock.
 ///
-/// Only startup arming and the opt-out wipe use this. They are not exit
-/// paths, so blocking is fine there and nowhere else.
+/// Startup arming, the opt-out wipe, and the spool header write use this.
+/// `flock` has no timeout of its own, so a suspended process holding the lock
+/// would wedge every launch behind it; the wait is bounded by
+/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
+/// caller treats as skip-and-continue rather than fatal.
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
     let file = open_lock(root)?;
+    let deadline = Instant::now() + PRIVACY_LOCK_BUDGET;
     let mut lock = fd_lock::RwLock::new(file);
-    let _guard = lock.write().context("failed to take the telemetry lock")?;
-    operation()
+    loop {
+        match lock.try_write() {
+            Ok(_guard) => return operation(),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(LOCK_RETRY_INTERVAL),
+            Err(_) => anyhow::bail!("the telemetry compaction lock stayed busy"),
+        }
+    }
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
@@ -558,30 +564,10 @@ pub fn wipe(root: &Path) -> Result<()> {
 pub(crate) fn arm(
     root: &Path,
     observed_generation: Option<&TombstoneGeneration>,
-    permission_still_enabled: impl Fn() -> bool,
+    permission_still_enabled: impl FnOnce() -> bool,
 ) -> Result<()> {
     ensure_dir(root)?;
-    // The compaction lock is an flock: a suspended process holding it never
-    // releases it, and every launch arms telemetry, so a blocking wait here
-    // wedges the whole CLI. Bound the wait and skip arming instead.
-    let deadline = Instant::now() + ARM_LOCK_BUDGET;
-    loop {
-        match try_with_lock_in_turn(root, || {
-            arm_locked(root, observed_generation, &permission_still_enabled)
-        })? {
-            Some(()) => return Ok(()),
-            None if Instant::now() < deadline => std::thread::sleep(ARM_LOCK_RETRY),
-            None => anyhow::bail!("the telemetry compaction lock stayed busy"),
-        }
-    }
-}
-
-fn arm_locked(
-    root: &Path,
-    observed_generation: Option<&TombstoneGeneration>,
-    permission_still_enabled: &dyn Fn() -> bool,
-) -> Result<()> {
-    {
+    with_lock(root, || {
         let current_generation = tombstone_generation(root)?;
         if current_generation.as_ref() != observed_generation {
             anyhow::bail!("telemetry permission changed before arming");
@@ -596,5 +582,5 @@ fn arm_locked(
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
         }
         truncate(&buffer_path(root))
-    }
+    })
 }
