@@ -4403,12 +4403,12 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
                     },
                 };
             }
-            if matches!(name, "rcfile" | "init-file") && inline.is_none() {
-                index += 1;
-            }
             if dynamic[index] && command.is_empty() {
                 command.push(index);
                 command.push(index + 1);
+            }
+            if matches!(name, "rcfile" | "init-file") && inline.is_none() {
+                index += 1;
             }
         } else if !options_done
             && token.len() > 1

@@ -343,6 +343,10 @@ const HIDDEN_RM: &[&str] = &[
     "true -- find . -exec$X rm {} \\;",
     "true -- screen -$X rm x",
     "true -- launchctl submit $X",
+    // `--rcfile`-final lines: the separated-value skip must not index past
+    // the end of the line.
+    "bash --rcfile",
+    "nu --init-file",
 ];
 
 /// Literal spellings that were already denied and must stay denied.
