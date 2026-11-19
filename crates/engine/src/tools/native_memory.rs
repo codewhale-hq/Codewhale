@@ -62,6 +62,9 @@ impl ToolSpec for MemorySearchTool {
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
     }
+    fn supports_parallel(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let store = store(context)?;
         let root = context.workspace.clone();
@@ -102,6 +105,9 @@ impl ToolSpec for MemoryGetTool {
     }
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
+    }
+    fn supports_parallel(&self) -> bool {
+        true
     }
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let store = store(context)?;

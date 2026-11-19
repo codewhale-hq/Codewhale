@@ -744,6 +744,7 @@ pub struct ToolExecutionState {
     pub browser_tool: Option<String>,
     pub child_activation: Option<Arc<crate::tools::subagent::ChildActivationRequest>>,
     pub strict_workspace_confinement: bool,
+    pub mcp_parallel_reads: bool,
 }
 
 impl std::ops::Deref for ToolContext {
@@ -853,6 +854,7 @@ impl ToolContext {
                 browser_tool: None,
                 child_activation: None,
                 strict_workspace_confinement: false,
+                mcp_parallel_reads: true,
             }),
         }
     }

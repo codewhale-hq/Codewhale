@@ -383,6 +383,10 @@ impl ToolSpec for TasksTool {
         }
     }
 
+    fn supports_parallel_for(&self, input: &Value) -> bool {
+        self.is_read_only_for(input)
+    }
+
     fn refusal_before_approval(&self, input: &Value, context: &ToolContext) -> Option<ToolResult> {
         if context.auto_approve || self.resolve_action(input).ok()? != "gate_run" {
             return None;
@@ -1035,6 +1039,10 @@ impl ToolSpec for TaskShellWaitTool {
         // Recording a gate writes task evidence and `cancel` kills a process;
         // neither is a read-only poll.
         input.get("gate").is_none_or(Value::is_null) && !task_shell_wait_requests_cancel(input)
+    }
+
+    fn supports_parallel_for(&self, input: &Value) -> bool {
+        self.is_read_only_for(input)
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

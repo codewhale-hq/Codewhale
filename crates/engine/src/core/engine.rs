@@ -8967,6 +8967,18 @@ impl Engine {
         // this turn was authorized under, so the work cannot silently run wider
         // or narrower than the session that asked for it.
         ctx.approval_mode = authority.approval_mode;
+        ctx.mcp_parallel_reads = self
+            .config
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.mcp_parallel_reads)
+            .or_else(|| {
+                self.api_config
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.mcp_parallel_reads)
+            })
+            .unwrap_or(true);
 
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the
@@ -12538,6 +12550,20 @@ pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
+pub(super) const MAX_PARALLEL_SHELL_EXEC_CAP: usize = 32;
+
+pub(super) fn resolve_max_parallel_shell_exec(
+    configured: Option<usize>,
+    env_override: Option<&str>,
+) -> usize {
+    let parsed_env = env_override
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|&value| value > 0);
+    parsed_env
+        .or(configured.filter(|&value| value > 0))
+        .unwrap_or(MAX_PARALLEL_SHELL_EXEC)
+        .clamp(1, MAX_PARALLEL_SHELL_EXEC_CAP)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_active_native_tool_names() -> &'static [&'static str] {
