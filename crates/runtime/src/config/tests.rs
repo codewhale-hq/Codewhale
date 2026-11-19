@@ -12034,11 +12034,11 @@ fn canonical_stream_config_env_clamps_and_keepalive_disable() {
 
 #[test]
 fn canonical_stream_config_profile_merges_independent_keys() {
-    let config = parse_config_file("[stream]\nmax_resumes=7\ntcp_keepalive_secs=41\n[profiles.mobile.stream]\nopen_timeout_secs=180\n").unwrap();
+    let config = parse_config_file("[stream]\nmax_resumes=7\ntcp_keepalive_secs=41\n[profiles.mobile.stream]\nopen_timeout_secs=240\n").unwrap();
     let resolved = apply_profile(config, Some("mobile")).unwrap();
     assert_eq!(resolved.stream_retry_limits().max_resumes, 7);
     assert_eq!(resolved.tcp_keepalive(), Some(Duration::from_secs(41)));
-    assert_eq!(resolved.stream_open_timeout(), Duration::from_secs(180));
+    assert_eq!(resolved.stream_open_timeout(), Duration::from_secs(240));
 }
 
 #[test]
