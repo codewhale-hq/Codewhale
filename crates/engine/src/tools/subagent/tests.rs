@@ -13420,6 +13420,7 @@ fn subagent_done_sentinel_format_is_well_formed() {
     assert_eq!(parsed["agent_id"], "agent_xyz");
     assert_eq!(parsed["status"], "completed");
     assert_eq!(parsed["agent_type"], "general");
+    assert_eq!(parsed["name"], subagent_result_display_name(&res));
     assert_eq!(parsed["summary_location"], "previous_line");
     // issue #2652: a complete (non-truncated) summary is tagged as such.
     assert_eq!(parsed["summary_kind"], "complete");

@@ -12,8 +12,9 @@ use serde_json::{Value, json};
 
 use super::{
     COMPLETED_AGENT_RETENTION, NEEDS_PERSON_WAIT_NOTE, ParentMailReceipt, SharedSubAgentManager,
-    SubAgentRuntime, SubAgentStatus, parse_agent_ref, subagent_session_projection,
-    subagent_status_name, take_new_needs_person, wait_for_subagents_from_input,
+    SubAgentRuntime, SubAgentStatus, parse_agent_ref, subagent_result_display_name,
+    subagent_session_projection, subagent_status_name, take_new_needs_person,
+    wait_for_subagents_from_input,
 };
 use crate::tools::registry::ToolRegistryBuilder;
 use crate::tools::spec::{
@@ -810,7 +811,7 @@ async fn wait_for_all_children(
                 // "nothing to join" that hides what the caller asked about.
                 let settled = json!({
                     "agent_id": snapshot.agent_id,
-                    "name": snapshot.name,
+                    "name": subagent_result_display_name(&snapshot),
                     "status": subagent_status_name(&snapshot.status),
                     "steps_taken": snapshot.steps_taken,
                 });
@@ -852,13 +853,13 @@ async fn wait_for_all_children(
                     Ok(snapshot) if snapshot.status == SubAgentStatus::Running => {
                         still_running.push(json!({
                             "agent_id": snapshot.agent_id,
-                            "name": snapshot.name,
+                            "name": subagent_result_display_name(&snapshot),
                             "status": "running",
                         }));
                     }
                     Ok(snapshot) => settled.push(json!({
                         "agent_id": snapshot.agent_id,
-                        "name": snapshot.name,
+                        "name": subagent_result_display_name(&snapshot),
                         "status": subagent_status_name(&snapshot.status),
                         "steps_taken": snapshot.steps_taken,
                     })),

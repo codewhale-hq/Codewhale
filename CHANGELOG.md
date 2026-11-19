@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Read-only tools run in one parallel wave:** `read`, `read_media`, `Git` status/diff/log, read-only `bash`, `load_skill`, `retrieve_tool_result`, session/memory/archive lookups, `Web` search and fetch, read-only MCP tools and `tool_search` no longer fall back to a global exclusive lock, so a batch of reads runs together while writes, mutating shell, background starts and a second `tool_search` keep their barriers. `task_shell_wait` with `task_ids` claims only the listed tasks. `[tools] max_parallel_shell_exec` (default 4, maximum 32) bounds concurrent shell commands in one wave.
 - **Sub-agents no longer carry the whole skill index:** child system prompts stop embedding every installed skill name, description and shadow warning (often 10–15K tokens per spawn); a child finds skills through `load_skill` with a query, the same way the parent does.
 - **Smaller `agent(action="roster")`:** the cost-basis caveat is stated once at the top level instead of on every member and profile row, and with no Fleet selected the empty `models` list now says that any routable model is accepted for unpinned roles.
+- **One sub-agent name across `wait` and completion notices:** `agent(action="wait")` and the sub-agent done and failed notices now report the same display name the TUI shows, instead of the raw `agent_<id>` in one place and a generated whale name in the other.
 
 ## [0.10.3] - 2026-11-18
 

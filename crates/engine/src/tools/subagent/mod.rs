@@ -15815,7 +15815,7 @@ async fn wait_result_payload(
         .map(|snapshot| {
             json!({
                 "agent_id": snapshot.agent_id,
-                "name": snapshot.name,
+                "name": subagent_result_display_name(snapshot),
                 "status": subagent_status_name(&snapshot.status),
             })
         })
@@ -18349,7 +18349,7 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, truncated: bool)
         "agent_id": agent_id,
         // Whale name — a stable, human-friendly handle the orchestrator can use
         // to refer to this child in its own reasoning/output.
-        "name": res.nickname,
+        "name": subagent_result_display_name(res),
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
@@ -18402,7 +18402,7 @@ fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
         "event": "subagent.failed",
         "priority": "high",
         "agent_id": res.agent_id,
-        "name": res.nickname.as_deref().unwrap_or(&res.name),
+        "name": subagent_result_display_name(res),
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "failure_class": subagent_failure_class(&res.status, error),
