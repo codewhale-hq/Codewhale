@@ -1795,6 +1795,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 // Restore may have queued a legacy configuration notice.
                 // Admit it first so the confirmed resume remains the latest
                 // toast instead of being immediately covered on the next draw.
@@ -1916,6 +1917,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 if is_full_reset {
                     persist_full_reset_snapshot(app);
                 }
