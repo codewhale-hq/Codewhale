@@ -1230,22 +1230,24 @@ impl Engine {
         completions
             .into_iter()
             .map(|mut completion| {
-                let tool_call_id =
-                    format!("background-shell-completion-{}", completion.event.task_id);
-                let artifact_id =
-                    codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
-                let bytes = completion.artifact_bytes();
-                match codewhale_runtime::artifacts::write_session_artifact_immutable(
-                    &self.session.id,
-                    &artifact_id,
-                    &bytes,
-                ) {
-                    Ok(_) => completion.event.evidence_ref = Some(artifact_id),
-                    Err(error) => tracing::warn!(
-                        task_id = %completion.event.task_id,
-                        %error,
-                        "background shell completion evidence could not be retained"
-                    ),
+                if completion.needs_evidence_artifact() {
+                    let tool_call_id =
+                        format!("background-shell-completion-{}", completion.event.task_id);
+                    let artifact_id =
+                        codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
+                    let bytes = completion.artifact_bytes();
+                    match codewhale_runtime::artifacts::write_session_artifact_immutable(
+                        &self.session.id,
+                        &artifact_id,
+                        &bytes,
+                    ) {
+                        Ok(_) => completion.event.evidence_ref = Some(artifact_id),
+                        Err(error) => tracing::warn!(
+                            task_id = %completion.event.task_id,
+                            %error,
+                            "background shell completion evidence could not be retained"
+                        ),
+                    }
                 }
                 completion.event
             })

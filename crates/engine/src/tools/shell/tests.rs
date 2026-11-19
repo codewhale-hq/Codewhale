@@ -269,6 +269,7 @@ fn contract_bash_nonzero_is_an_error_with_status_after_output() {
         None,
         false,
         None,
+        None,
     )
     .expect_err("nonzero must be a failed tool call");
     assert!(
@@ -2786,9 +2787,10 @@ fn contract_bash_denial_surfaces_the_escalation_shape() {
     let mut result = failed_network_shell_result("", "Operation not permitted");
     result.sandbox_denied = true;
 
-    let error =
-        finish_contract_bash_result(result, None, &ctx, None, false, None, None, false, None)
-            .expect_err("sandbox denial is a failed call");
+    let error = finish_contract_bash_result(
+        result, None, &ctx, None, false, None, None, false, None, None,
+    )
+    .expect_err("sandbox denial is a failed call");
 
     assert!(
         error
@@ -2960,6 +2962,7 @@ fn readonly_denied_hint_classifies_refusals_and_ignores_success_or_bwrap() {
         None,
         Some(READONLY_WRITE_DENIED_HINT),
         false,
+        None,
         None,
     )
     .expect_err("denied write fails");
@@ -6513,4 +6516,143 @@ async fn lowercase_bash_persists_description_respects_cwd_and_supports_backgroun
         legacy.metadata.as_ref().unwrap()["description"],
         "legacy run label"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_bash_large_output_persists_session_artifact_readable_via_retrieve_tool_result()
+{
+    use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
+
+    let _artifact_lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    struct ArtifactRootReset(Option<PathBuf>);
+    impl Drop for ArtifactRootReset {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+        }
+    }
+
+    let workspace = tempdir().expect("workspace");
+    let _artifact_root = ArtifactRootReset(
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            workspace.path().join("sessions"),
+        )),
+    );
+
+    let base_ctx = ToolContext::new(workspace.path()).with_state_namespace("session-fg-art");
+    assert!(!base_ctx.trust_mode);
+    assert!(!base_ctx.auto_approve);
+
+    let ctx_lowercase = base_ctx.clone().with_origin_tool_call_id("call-fg-large-1");
+    let lowercase_cmd = "printf 'START_MARKER_0\\n'; i=1; while [ $i -le 1100 ]; do printf 'pad-a-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' \"$i\"; i=$((i+1)); done; printf 'MID_MARKER_PAST_30KB\\n'; while [ $i -le 2200 ]; do printf 'pad-b-%04d-yyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n' \"$i\"; i=$((i+1)); done; printf 'END_MARKER_TAIL\\n'";
+    let lowercase_result = LowercaseBashTool
+        .execute(json!({"command": lowercase_cmd}), &ctx_lowercase)
+        .await
+        .expect("large foreground bash");
+    assert!(lowercase_result.success, "{}", lowercase_result.content);
+    assert!(lowercase_result.content.contains("END_MARKER_TAIL"));
+    assert!(!lowercase_result.content.contains("START_MARKER_0"));
+    assert!(!lowercase_result.content.contains("codewhale-bash-"));
+    assert!(!lowercase_result.content.contains("/var/folders/"));
+    assert!(lowercase_result.content.contains("art_call-fg-large-1"));
+    assert!(lowercase_result.content.contains("retrieve_tool_result"));
+    assert!(lowercase_result.content.len() < 60_000);
+    let lc_meta = lowercase_result.metadata.expect("lowercase metadata");
+    assert_eq!(lc_meta["artifact_id"], "art_call-fg-large-1");
+    assert_eq!(lc_meta["artifact_session_id"], "session-fg-art");
+    assert_eq!(lc_meta["truncated"], true);
+    assert!(
+        lc_meta["original_byte_count"]
+            .as_u64()
+            .expect("original byte count")
+            > 60_000
+    );
+
+    for marker in ["START_MARKER_0", "MID_MARKER_PAST_30KB", "END_MARKER_TAIL"] {
+        let retrieved = RetrieveToolResultTool
+            .execute(
+                json!({
+                    "ref": "art_call-fg-large-1",
+                    "mode": "query",
+                    "query": marker,
+                }),
+                &base_ctx,
+            )
+            .await
+            .expect("retrieve foreground bash artifact");
+        assert!(
+            retrieved.content.contains(marker),
+            "expected {marker} in retrieved output: {}",
+            retrieved.content
+        );
+    }
+
+    let ctx_bash = base_ctx.clone().with_origin_tool_call_id("call-fg-large-2");
+    let bash_cmd = "printf 'BASH_START_MARKER\\n'; i=1; while [ $i -le 700 ]; do printf 'row-%04d-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n' \"$i\"; i=$((i+1)); done; printf 'BASH_MID_PAST_30KB\\n'; while [ $i -le 1400 ]; do printf 'row-%04d-wwwwwwwwwwwwwwwwwwwwwwwwwwwwww\\n' \"$i\"; i=$((i+1)); done; printf 'BASH_END_MARKER\\n'";
+    let bash_result = BashTool::new("Bash")
+        .execute(json!({"command": bash_cmd}), &ctx_bash)
+        .await
+        .expect("large foreground BashTool");
+    assert!(bash_result.success, "{}", bash_result.content);
+    assert!(bash_result.content.contains("BASH_START_MARKER"));
+    assert!(bash_result.content.contains("BASH_END_MARKER"));
+    assert!(!bash_result.content.contains("BASH_MID_PAST_30KB"));
+    assert!(bash_result.content.contains("art_call-fg-large-2"));
+    assert!(bash_result.content.contains("retrieve_tool_result"));
+    let bash_meta = bash_result.metadata.expect("bash metadata");
+    assert_eq!(bash_meta["artifact_id"], "art_call-fg-large-2");
+    assert!(
+        bash_meta["original_byte_count"]
+            .as_u64()
+            .expect("original byte count")
+            > 50_000
+    );
+
+    let mid = RetrieveToolResultTool
+        .execute(
+            json!({
+                "ref": "art_call-fg-large-2",
+                "mode": "query",
+                "query": "BASH_MID_PAST_30KB",
+            }),
+            &base_ctx,
+        )
+        .await
+        .expect("retrieve BashTool omitted middle");
+    assert!(
+        mid.content.contains("BASH_MID_PAST_30KB"),
+        "{}",
+        mid.content
+    );
+
+    let ctx_fail = base_ctx.clone().with_origin_tool_call_id("call-fg-large-3");
+    let fail_err = LowercaseBashTool
+        .execute(
+            json!({"command": format!("{lowercase_cmd}; exit 2")}),
+            &ctx_fail,
+        )
+        .await
+        .expect_err("nonzero foreground bash returns error");
+    let fail_text = fail_err.to_string();
+    assert!(fail_text.contains("art_call-fg-large-3"), "{fail_text}");
+    assert!(fail_text.contains("retrieve_tool_result"), "{fail_text}");
+    assert!(!fail_text.contains("codewhale-bash-"), "{fail_text}");
+    assert_eq!(
+        fail_err.metadata().expect("fail metadata")["artifact_id"],
+        "art_call-fg-large-3"
+    );
+    let fail_retrieved = RetrieveToolResultTool
+        .execute(
+            json!({
+                "ref": "art_call-fg-large-3",
+                "mode": "query",
+                "query": "MID_MARKER_PAST_30KB",
+            }),
+            &base_ctx,
+        )
+        .await
+        .expect("retrieve failing bash artifact");
+    assert!(fail_retrieved.content.contains("MID_MARKER_PAST_30KB"));
 }
