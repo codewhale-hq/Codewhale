@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-18T01:38:00.686Z",
+  "generatedAt": "2026-11-18T23:42:11.988Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -351,6 +351,30 @@ export const FACTS: RepoFacts = {
   ],
   "models": [
     {
+      "id": "gemini-4-neon",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-18"
+    },
+    {
+      "id": "gpt-6.2-astra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-17"
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-17"
+    },
+    {
       "id": "gemini-4-hydrogen",
       "provider": "Google",
       "contextWindow": 1048576,
@@ -379,6 +403,14 @@ export const FACTS: RepoFacts = {
       "provider": "Anthropic",
       "contextWindow": 1000000,
       "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-09"
+    },
+    {
+      "id": "muse-ember-1.0",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": 524288,
       "reasoning": true,
       "addedAt": "2026-11-09"
     },

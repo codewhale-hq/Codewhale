@@ -2016,6 +2016,34 @@
         "thought_signatures_required": true,
         "thinking_can_disable": false,
         "family": "Google"
+      },
+      "muse-ember-1.0": {
+        "source": "models.dev meta/muse-ember-1.0, discovered 2026-11-18; unreviewed",
+        "context_window": 1048576,
+        "max_output": 524288,
+        "reasoning": true,
+        "family": "Meta"
+      },
+      "gpt-6.2-astra": {
+        "source": "models.dev openai/gpt-6.2-astra, discovered 2026-11-18; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAi"
+      },
+      "gpt-6.2-sol": {
+        "source": "models.dev openai/gpt-6.2-sol, discovered 2026-11-18; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAi"
+      },
+      "gemini-4-neon": {
+        "source": "models.dev google/gemini-4-neon, discovered 2026-11-18; unreviewed",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "family": "Google"
       }
     },
     "openai_reasoning_ids": {
@@ -3984,6 +4012,38 @@
         "added_at": "2026-11-12",
         "aliases": [
           "gemini-4-hydrogen"
+        ]
+      },
+      {
+        "id": "muse-ember-1.0",
+        "label": "Meta",
+        "added_at": "2026-11-09",
+        "aliases": [
+          "muse-ember-1.0"
+        ]
+      },
+      {
+        "id": "gpt-6.2-astra",
+        "label": "OpenAI",
+        "added_at": "2026-11-17",
+        "aliases": [
+          "gpt-6.2-astra"
+        ]
+      },
+      {
+        "id": "gpt-6.2-sol",
+        "label": "OpenAI",
+        "added_at": "2026-11-17",
+        "aliases": [
+          "gpt-6.2-sol"
+        ]
+      },
+      {
+        "id": "gemini-4-neon",
+        "label": "Google",
+        "added_at": "2026-11-18",
+        "aliases": [
+          "gemini-4-neon"
         ]
       }
     ],
