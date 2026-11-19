@@ -2141,6 +2141,7 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
         // with the signal handler installed below so both exit paths leave
         // the terminal in the same well-defined state.
         crate::tui::ui::emergency_restore_terminal();
+        crate::tui::ui::mark_terminal_restored_by_panic();
 
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             s.to_string()

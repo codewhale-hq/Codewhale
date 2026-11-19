@@ -211,6 +211,16 @@ pub(crate) fn live_alt_screen() -> bool {
     LIVE_ALT_SCREEN.load(Ordering::Acquire)
 }
 
+static RESTORED_BY_PANIC: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_terminal_restored_by_panic() {
+    RESTORED_BY_PANIC.store(true, Ordering::Release);
+}
+
+pub(crate) fn take_terminal_restored_by_panic() -> bool {
+    RESTORED_BY_PANIC.swap(false, Ordering::AcqRel)
+}
+
 /// Enter the alternate screen and, only once the escape went out, record it
 /// as live. Every alternate-screen entry in the crate goes through here so
 /// `live_alt_screen()` never says a screen the terminal is not on.

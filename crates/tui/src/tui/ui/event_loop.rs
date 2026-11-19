@@ -2255,6 +2255,21 @@ pub(crate) async fn run_event_loop(
             terminal_repaint = FrameRepaint::Clear;
         }
 
+        if !event_broker.is_paused()
+            && require_foreground_terminal_owner().is_ok()
+            && take_terminal_restored_by_panic()
+        {
+            resume_terminal(
+                terminal,
+                app.use_alt_screen(),
+                app.use_mouse_capture,
+                app.use_bracketed_paste,
+                app.synchronized_output_enabled,
+            )?;
+            app.needs_redraw = true;
+            terminal_repaint = FrameRepaint::Clear;
+        }
+
         // The background session-store repair's one-line result (#6144).
         if let Some(notice) = codewhale_engine::session_reconcile::take_pending_notice() {
             app.push_status_toast(notice, StatusToastLevel::Info, None);
