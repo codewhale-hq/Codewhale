@@ -791,6 +791,39 @@ impl ChildAuthority {
         }
     }
 
+    pub fn can_admit_any_mcp_tool(&self) -> bool {
+        self.grant.surface != codewhale_agent_contract::worker_profile::ToolSurface::Evidence
+            && self.grant.network
+            && !self.grant.scope.as_ref().is_some_and(Vec::is_empty)
+            && !self.is_tool_denied("mcp*")
+    }
+
+    pub async fn admitted_mcp_servers(
+        self: &Arc<Self>,
+        runtime: &SubAgentRuntime,
+    ) -> HashSet<String> {
+        if !self.can_admit_any_mcp_tool() {
+            return HashSet::new();
+        }
+        let Some(pool) = runtime.mcp_pool.as_ref() else {
+            return HashSet::new();
+        };
+        let routes = {
+            let guard = pool.lock().await;
+            guard.resolved_tool_servers()
+        };
+        if routes.is_empty() {
+            return HashSet::new();
+        }
+        let mcp_registry = ToolRegistryBuilder::new()
+            .with_mcp_tools(Arc::clone(pool))
+            .build(self.context());
+        self.tools_for_model(&mcp_registry, &self.agent_type)
+            .into_iter()
+            .filter_map(|tool| routes.get(&tool.name).cloned())
+            .collect()
+    }
+
     pub fn tools_for_model(&self, registry: &ToolRegistry, agent_type: &FleetRole) -> Vec<Tool> {
         // Filter the full registry in deny-first order. These catalog filters
         // reduce accidental exposure, but are never the authority boundary:
@@ -1632,10 +1665,11 @@ pub(super) async fn run_child_agent(
     parking: Option<Arc<std::sync::atomic::AtomicBool>>,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
+    let allow_mcp = !matches!(agent_type, FleetRole::Scout | FleetRole::Reviewer);
     let (runtime, attachment) = if runtime.cancel_token.is_cancelled() {
         (runtime.clone(), None)
     } else {
-        prepare_child_membership(runtime, &assignment, &agent_id).await?
+        prepare_child_membership(runtime, &assignment, &agent_id, allow_mcp).await?
     };
     let (owner_agent_name, executed_actions) = {
         let manager = runtime.manager.read().await;
@@ -1710,6 +1744,11 @@ pub(super) async fn run_child_agent(
         &agent_type,
         &system,
         fork.as_ref(),
+    );
+    let admitted_mcp_servers = authority.admitted_mcp_servers(&runtime).await;
+    crate::core::engine::filter_messages_mcp_server_instructions(
+        &mut seed,
+        &admitted_mcp_servers,
     );
     let initial = seed
         .pop()
@@ -2191,6 +2230,7 @@ async fn prepare_child_membership(
     runtime: &SubAgentRuntime,
     assignment: &SubAgentAssignment,
     agent_id: &str,
+    allow_mcp: bool,
 ) -> Result<(
     SubAgentRuntime,
     Option<crate::extension_host::HostAttachment>,
@@ -2231,7 +2271,7 @@ async fn prepare_child_membership(
                 .context
                 .clone()
                 .with_plugin_registry(attachment.plugin_view());
-            if let Some(parent_pool) = runtime.mcp_pool.as_ref() {
+            if allow_mcp && let Some(parent_pool) = runtime.mcp_pool.as_ref() {
                 let mut pool = parent_pool
                     .lock()
                     .await

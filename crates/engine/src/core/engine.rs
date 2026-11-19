@@ -12502,6 +12502,8 @@ pub use context::compact_tool_result_for_route_with_window;
 /// Public so external hosts/wrappers can reuse the engine's input-budget math
 /// (see `context_input_budget_for_route`'s doc) instead of re-deriving it.
 pub use context::context_input_budget_for_route;
+pub use context::tool_result_context_view;
+pub(crate) use context::filter_messages_mcp_server_instructions;
 #[cfg(test)]
 use context::route_context_budget_for_provider;
 #[cfg(test)]

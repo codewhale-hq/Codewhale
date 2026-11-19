@@ -8178,8 +8178,8 @@ async fn route_resolution_matrix_uses_explicit_model_strength_routes() {
             requested_route: ModelRoute::Inherit,
             expected_route: ModelRoute::Inherit,
             expected_model: "deepseek-v4-pro",
-            expected_reasoning: Some("max"),
-            expected_tuning_effort: Some(ReasoningEffort::Max),
+            expected_reasoning: Some("high"),
+            expected_tuning_effort: Some(ReasoningEffort::High),
         },
         RouteCase {
             agent_type: FleetRole::Scout,
@@ -16627,7 +16627,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
 /// *some* `CodewhaleClient` because `SubAgentRuntime.client` isn't
 /// `Option<...>`. `Config::default()` is enough — `CodewhaleClient::new`
 /// only validates that an API key field exists, not that the key works.
-fn stub_runtime_for_provider(provider: &str) -> SubAgentRuntime {
+pub(super) fn stub_runtime_for_provider(provider: &str) -> SubAgentRuntime {
     let mut runtime = stub_runtime();
     let (client, config) = stub_client_for_provider(provider);
     runtime.client = client;
@@ -19254,7 +19254,11 @@ fn format_step_counter_keeps_concrete_budgets() {
 
 #[test]
 fn child_step_limits_preserve_the_owners_allowance() {
-    assert_eq!(resolve_max_steps(FleetRole::Scout, None, None), 0);
+    assert_eq!(
+        resolve_max_steps(FleetRole::Scout, None, None),
+        WorkerRuntimeProfile::EXPLORE_MAX_STEPS
+    );
+    assert_eq!(resolve_max_steps(FleetRole::Worker, None, None), 0);
     assert_eq!(resolve_max_steps(FleetRole::Scout, Some(0), Some(90)), 90);
     assert_eq!(resolve_max_steps(FleetRole::Builder, Some(7), None), 7);
     assert_eq!(
@@ -24135,7 +24139,8 @@ async fn spawn_receipt_compacts_and_verbose_restores_the_archive() {
     assert!(compact.get("checkpoint").is_none());
     assert!(compact.get("artifacts").is_none());
     assert!(compact.get("takeover").is_none());
-    assert!(compact.get("transcript_handle").is_none());
+    assert!(compact["transcript_handle"].is_object());
+    assert_eq!(compact["role"], json!("explore"));
     assert!(compact.get("verification").is_none());
     assert_eq!(compact["child_route"]["model_id"], json!("glm-5"));
     // The poll path must survive compaction — a spawn ack's one job is
@@ -24150,8 +24155,8 @@ async fn spawn_receipt_compacts_and_verbose_restores_the_archive() {
         "{compact}"
     );
     assert!(
-        compact_len < 1_024,
-        "compact spawn receipt must stay under 1KB, got {compact_len}B (full: {full_len}B)"
+        compact_len <= lifecycle::COMPACT_SPAWN_BYTES,
+        "compact spawn receipt must stay within budget, got {compact_len}B (full: {full_len}B)"
     );
     assert!(
         full_len > compact_len,
