@@ -587,6 +587,65 @@ fn stepfun_payg_pricing(model: &str) -> Option<ModelPricing> {
     }
 }
 
+pub(crate) fn hand_pricing_overrides_catalog(provider: ProviderKind, model: &str) -> bool {
+    matches!(
+        provider,
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    ) || (matches!(
+        provider,
+        ProviderKind::Minimax | ProviderKind::MinimaxAnthropic
+    ) && model.eq_ignore_ascii_case("minimax-m3"))
+        || (provider == ProviderKind::Xai && is_grok_tiered(model))
+        || (provider == ProviderKind::Anthropic && model.eq_ignore_ascii_case("claude-sonnet-5"))
+}
+
+pub(crate) fn dispatch_hand_quote_rows(
+    provider: ProviderKind,
+    model: &str,
+    base_url: &str,
+    recorded_at: DateTime<Utc>,
+) -> Option<(OfferingPricing, Option<OfferingPricing>)> {
+    if provider == ProviderKind::Stepfun {
+        let pricing = pricing_for_billing_surface(
+            provider,
+            model,
+            billing_surface_for_route(provider, Some(base_url)),
+        )?;
+        let mut primary = currency_offering_pricing(pricing.usd, Currency::Usd);
+        primary.provider = provider.as_str().into();
+        primary.wire_model_id = model.into();
+        return Some((primary, None));
+    }
+    let normalized = model.trim();
+    let model_lower = normalized.to_ascii_lowercase();
+    let direct_deepseek = matches!(
+        provider,
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    );
+    let lookup = if direct_deepseek
+        && matches!(model_lower.as_str(), "deepseek-chat" | "deepseek-reasoner")
+    {
+        let retirement = DateTime::parse_from_rfc3339(DEEPSEEK_ALIAS_RETIREMENT_UTC)
+            .ok()?
+            .with_timezone(&Utc);
+        if recorded_at >= retirement {
+            return None;
+        }
+        "deepseek-v4-flash"
+    } else if direct_deepseek
+        && matches!(
+            model_lower.as_str(),
+            "flash-vision" | "deepseek-v4flashvisionexp"
+        )
+        && recorded_at < deepseek_flash_effective_from()
+    {
+        "deepseek-v4-flash-vision-exp"
+    } else {
+        normalized
+    };
+    provider_owned_hand_quote_rows(provider, lookup, recorded_at)
+}
+
 fn pricing_for_billing_surface(
     provider: ProviderKind,
     model: &str,
@@ -1385,12 +1444,37 @@ fn verified_catalog_offering(
     recorded_at: DateTime<Utc>,
     allow_cloud_catalog: bool,
 ) -> VerifiedOffering {
-    let Some(mut offering) = crate::provider_lake::catalog_offering_for_model_identity(
+    let allows_bundled_fallback = !matches!(
+        provider,
+        ProviderKind::Custom
+            | ProviderKind::OpenaiCodex
+            | ProviderKind::Codewhale
+            | ProviderKind::Concentrate
+            | ProviderKind::Openrouter
+    );
+    let mut offering = match crate::provider_lake::catalog_offering_for_model_identity(
         provider,
         provider_identity,
         catalog_model,
-    ) else {
-        return VerifiedOffering::Absent;
+    ) {
+        Some(offering)
+            if allows_bundled_fallback
+                && offering.cost.is_none()
+                && offering.cost_source.is_none() =>
+        {
+            crate::provider_lake::bundled_catalog_offering_for_model(provider, catalog_model)
+                .unwrap_or(offering)
+        }
+        Some(offering) => offering,
+        None if allows_bundled_fallback => {
+            let Some(bundled) =
+                crate::provider_lake::bundled_catalog_offering_for_model(provider, catalog_model)
+            else {
+                return VerifiedOffering::Absent;
+            };
+            bundled
+        }
+        None => return VerifiedOffering::Absent,
     };
     if allow_cloud_catalog
         && let codewhale_config::catalog::CatalogSource::CloudFacts {
@@ -1678,6 +1762,13 @@ pub fn audit_turn_cost_for_route_on_endpoint_for_identity_at(
         return TurnCostAudit::unpriced(UnpricedReason::UnestablishedEndpoint);
     }
     if let Some((pricing, secondary)) = frozen_pricing {
+        let catalog_model =
+            resolved_pricing_model(provider, model).unwrap_or_else(|| model.trim().to_string());
+        if direct_openai_long_context_tier_is_unpriced(provider, &catalog_model, usage.input_tokens)
+            && pricing.context_tiers.is_empty()
+        {
+            return TurnCostAudit::unpriced(UnpricedReason::UnrepresentedTier);
+        }
         return audit_pricing_pair(pricing, secondary, usage);
     }
     if reviewed_provider_live {
@@ -2117,16 +2208,44 @@ pub fn model_rate_label(
     if !has_pricing_for_provider(provider, model) {
         return None;
     }
-    let pricing = pricing_for_model(model)?;
-    let rates = match currency {
-        CostCurrency::Usd => pricing.usd,
-        CostCurrency::Cny => pricing.cny?,
+    let now = Utc::now();
+    let catalog_model = resolved_pricing_model(provider, model)?;
+    let format_hand = |pricing: ModelPricing| -> Option<String> {
+        let rates = match currency {
+            CostCurrency::Usd => pricing.usd,
+            CostCurrency::Cny => pricing.cny?,
+        };
+        Some(format!(
+            "in {} · out {}",
+            format_cost_amount(rates.input_cache_miss_per_million, currency),
+            format_cost_amount(rates.output_per_million, currency),
+        ))
     };
-    Some(format!(
-        "in {} · out {}",
-        format_cost_amount(rates.input_cache_miss_per_million, currency),
-        format_cost_amount(rates.output_per_million, currency),
-    ))
+    if hand_pricing_overrides_catalog(provider, &catalog_model)
+        && let Some(pricing) = provider_owned_hand_pricing_at(provider, &catalog_model, now)
+    {
+        return format_hand(pricing);
+    }
+    if currency == CostCurrency::Usd
+        && let VerifiedOffering::Usable(offering)
+        | VerifiedOffering::DegradedToBundled { offering, .. } =
+            verified_catalog_offering(provider, None, &catalog_model, None, now, true)
+        && let Some(pricing) = OfferingPricing::from_catalog_offering_at(
+            &offering,
+            u64::try_from(now.timestamp()).unwrap_or(0),
+        )
+        && !pricing.rate_withheld
+        && pricing.currency == Currency::Usd
+        && let (Some(input), Some(output)) = (pricing.input_per_million, pricing.output_per_million)
+    {
+        return Some(format!(
+            "in {} · out {}",
+            format_cost_amount(input, currency),
+            format_cost_amount(output, currency),
+        ));
+    }
+    let pricing = provider_owned_hand_pricing_at(provider, &catalog_model, now)?;
+    format_hand(pricing)
 }
 
 /// Format a cost amount for compact display in the chosen currency.
@@ -5405,31 +5524,61 @@ mod tests {
         let usage = Usage {
             input_tokens: 100_000,
             output_tokens: 10_000,
-            input_audio_tokens: Some(0),
             ..Usage::default()
         };
-        let bare = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
-            ProviderKind::Google,
-            Some("google"),
-            "gemini-4-hydrogen",
-            None,
-            &usage,
-            now,
-            false,
-            None,
-        );
-        let prefixed = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
-            ProviderKind::Google,
-            Some("google"),
-            "models/gemini-4-hydrogen",
-            None,
-            &usage,
-            now,
-            false,
-            None,
-        );
-        assert!(bare.estimate.is_some());
-        assert_eq!(prefixed, bare);
+        for (bare_id, prefixed_id, expected_usd, expected_label) in [
+            (
+                "gemini-4-hydrogen",
+                "models/gemini-4-hydrogen",
+                0.225,
+                "in $1.50 · out $7.50",
+            ),
+            (
+                "gemini-4-carbon",
+                "models/gemini-4-carbon",
+                0.30,
+                "in $2.00 · out $10.00",
+            ),
+        ] {
+            let bare = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
+                ProviderKind::Google,
+                Some("google"),
+                bare_id,
+                None,
+                &usage,
+                now,
+                false,
+                None,
+            );
+            let prefixed = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
+                ProviderKind::Google,
+                Some("google"),
+                prefixed_id,
+                None,
+                &usage,
+                now,
+                false,
+                None,
+            );
+            let estimate = bare.estimate.expect("google gemini-4 model must price");
+            assert!(
+                (estimate.usd - expected_usd).abs() < 1e-12,
+                "{bare_id}: {bare:?}"
+            );
+            assert_eq!(prefixed, bare);
+            assert_eq!(
+                model_rate_label(ProviderKind::Google, bare_id, CostCurrency::Usd).as_deref(),
+                Some(expected_label)
+            );
+            assert_eq!(
+                model_rate_label(ProviderKind::Google, prefixed_id, CostCurrency::Usd).as_deref(),
+                Some(expected_label)
+            );
+            assert_eq!(
+                model_rate_label(ProviderKind::Google, bare_id, CostCurrency::Cny),
+                None
+            );
+        }
 
         let auto_audit = audit_turn_cost_for_provider_on_endpoint_for_identity_at(
             ProviderKind::Google,
