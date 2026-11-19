@@ -1942,3 +1942,187 @@ fn deepseek_chat_web_tools_latest_reminder_replay_and_sse_parity() {
             && usage.as_ref().and_then(|u| u.safety_tokens) == Some(5)
     )));
 }
+
+#[test]
+fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_cleanly() {
+    let sse_chunks = [
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "id": "call_g1",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                            "extra_content": { "google": { "thought_signature": "sig_first" } }
+                        },
+                        {
+                            "id": "call_g2",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+                        }
+                    ]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_g3",
+                        "type": "function",
+                        "function": { "name": "grep_files", "arguments": "{\"pattern\":" }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "function": { "arguments": "\"foo\"}" },
+                        "extra_content": { "google": { "thought_signature": "sig_late" } }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ];
+    let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
+    let events = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+
+    let starts: Vec<(u32, String, Option<String>)> = events
+        .into_iter()
+        .filter_map(|ev| match ev {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block:
+                    ContentBlockStart::ToolUse {
+                        id,
+                        thought_signature,
+                        ..
+                    },
+            } => Some((index, id, thought_signature)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            (0, "call_g1".to_string(), Some("sig_first".to_string())),
+            (1, "call_g2".to_string(), None),
+            (2, "call_g3".to_string(), None),
+        ]
+    );
+
+    let events2 = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    assert!(events2.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            index: 2,
+            delta: Delta::ThoughtSignatureDelta { thought_signature },
+        } if thought_signature == "sig_late"
+    )));
+
+    let replay_messages = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_g1",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                "extra_content": { "google": { "thought_signature": "sig_first" } }
+            },
+            {
+                "id": "call_g2",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+            }
+        ]
+    })];
+    crate::client::chat::validate_google_thought_signature_replay(
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-4-hydrogen",
+        &replay_messages,
+    )
+    .expect("parallel Gemini tool calls carry thought_signature only on tool_calls[0]");
+
+    let missing_first = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_unsigned",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            },
+            {
+                "id": "call_second",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" },
+                "extra_content": { "google": { "thought_signature": "sig_wrong_slot" } }
+            }
+        ]
+    })];
+    assert!(
+        crate::client::chat::validate_google_thought_signature_replay(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-4-hydrogen",
+            &missing_first,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn google_reasoning_effort_honors_hydrogen_xhigh_and_gemini4_low_floor() {
+    let url = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+    let mut hydrogen_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_xhigh,
+        url,
+        "gemini-4-hydrogen",
+        Some("xhigh"),
+    );
+    assert_eq!(hydrogen_xhigh["reasoning_effort"], "xhigh");
+
+    let mut carbon_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut carbon_xhigh,
+        url,
+        "gemini-4-carbon",
+        Some("xhigh"),
+    );
+    assert_eq!(carbon_xhigh["reasoning_effort"], "high");
+
+    let mut hydrogen_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_off,
+        url,
+        "gemini-4-hydrogen",
+        Some("off"),
+    );
+    assert_eq!(hydrogen_off["reasoning_effort"], "low");
+
+    let mut flash_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut flash_off,
+        url,
+        "gemini-2.5-flash",
+        Some("off"),
+    );
+    assert_eq!(flash_off["reasoning_effort"], "none");
+}

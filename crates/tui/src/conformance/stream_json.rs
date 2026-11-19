@@ -189,6 +189,9 @@ fn delta_json(delta: &Delta) -> Value {
         Delta::SignatureDelta { signature } => {
             json!({ "type": "signature_delta", "signature": signature })
         }
+        Delta::ThoughtSignatureDelta { thought_signature } => {
+            json!({ "type": "thought_signature_delta", "thought_signature": thought_signature })
+        }
         Delta::ReasoningStateDelta { state } => json!({
             "type": "reasoning_state_delta",
             "state": serde_json::to_value(state).expect("OpaqueReasoningState serializes"),
