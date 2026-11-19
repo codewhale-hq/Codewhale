@@ -361,6 +361,10 @@
           "canonical": "google/gemini-4-hydrogen"
         },
         {
+          "id": "gemini-4-neon",
+          "canonical": "google/gemini-4-neon"
+        },
+        {
           "id": "gemini-flash-latest"
         },
         {
@@ -430,6 +434,10 @@
         }
       ],
       "models": [
+        {
+          "id": "muse-ember-1.0",
+          "canonical": "meta/muse-ember-1.0"
+        },
         {
           "id": "muse-spark-1.1",
           "canonical": "meta/muse-spark-1.1"
@@ -935,6 +943,14 @@
         {
           "id": "gpt-6.1-terra",
           "canonical": "openai/gpt-6.1-terra"
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "canonical": "openai/gpt-6.2-astra"
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "canonical": "openai/gpt-6.2-sol"
         }
       ],
       "transport": "chat-completions"

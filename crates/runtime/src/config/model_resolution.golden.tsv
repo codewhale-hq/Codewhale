@@ -370,6 +370,7 @@ google	gemini-3.8-flash	alias-target+offering	gemini-3.8-flash	gemini-3.8-flash	
 google	gemini-4-argon	alias-target+offering	gemini-4-argon	gemini-4-argon	gemini-4-argon	gemini-4-argon	gemini-4-argon	gemini-4-argon	google/gemini-4-argon	gemini-4-argon	chat	1048576	route_canonical
 google	gemini-4-carbon	offering	gemini-4-carbon	gemini-4-carbon	gemini-4-carbon	gemini-4-carbon	gemini-4-carbon	gemini-4-carbon	google/gemini-4-carbon	gemini-4-carbon	chat	1048576	route_canonical
 google	gemini-4-hydrogen	alias-target+offering	gemini-4-hydrogen	gemini-4-hydrogen	gemini-4-hydrogen	gemini-4-hydrogen	gemini-4-hydrogen	gemini-4-hydrogen	google/gemini-4-hydrogen	gemini-4-hydrogen	chat	1048576	route_canonical
+google	gemini-4-neon	offering	gemini-4-neon	gemini-4-neon	gemini-4-neon	gemini-4-neon	gemini-4-neon	gemini-4-neon	google/gemini-4-neon	gemini-4-neon	chat	1048576	route_canonical
 google	gemini-flash-latest	offering	gemini-flash-latest	gemini-flash-latest	gemini-flash-latest	gemini-flash-latest	gemini-flash-latest	gemini-flash-latest	-	gemini-flash-latest	chat	1048576	route_canonical
 google	gemini-flash-lite-latest	offering	gemini-flash-lite-latest	gemini-flash-lite-latest	gemini-flash-lite-latest	gemini-flash-lite-latest	gemini-flash-lite-latest	gemini-flash-lite-latest	-	gemini-flash-lite-latest	chat	1048576	route_canonical
 google	gemma-4-26b-a4b-it	offering	gemma-4-26b-a4b-it	gemma-4-26b-a4b-it	gemma-4-26b-a4b-it	gemma-4-26b-a4b-it	gemma-4-26b-a4b-it	gemma-4-26b-a4b-it	-	gemma-4-26b-a4b-it	chat	262144	route_canonical
@@ -420,17 +421,22 @@ longcat	longcat-2.0	alias-key	LongCat-2.0	LongCat-2.0	LongCat-2.0	LongCat-2.0	Lo
 longcat	longcat/LongCat-2.0	variant-provider-prefix	longcat/LongCat-2.0	longcat/LongCat-2.0	longcat/LongCat-2.0	longcat/LongCat-2.0	longcat/LongCat-2.0	longcat/LongCat-2.0	-	longcat/LongCat-2.0	chat	-	route_canonical
 longcat	models/LongCat-2.0	variant-models-prefix	models/LongCat-2.0	models/LongCat-2.0	models/LongCat-2.0	models/LongCat-2.0	models/LongCat-2.0	models/LongCat-2.0	-	models/LongCat-2.0	chat	-	route_canonical
 longcat	totally-unknown-model-x	unknown	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	-	totally-unknown-model-x	chat	-	route_canonical
-meta	"  muse-spark-1.1  "	variant-whitespace	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	meta/muse-spark-1.1	muse-spark-1.1	chat	1048576	route_canonical
+meta	"  muse-ember-1.0  "	variant-whitespace	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	meta/muse-ember-1.0	muse-ember-1.0	chat	1048576	route_canonical
+meta	"  muse-spark-1.1  "	carried	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	meta/muse-spark-1.1	muse-spark-1.1	chat	1048576	route_canonical
 meta	"  muse-spark-1.3  "	variant-whitespace	muse-spark-1.3	muse-spark-1.3	muse-spark-1.3	muse-spark-1.3	muse-spark-1.3	muse-spark-1.3	meta/muse-spark-1.3	muse-spark-1.3	chat	1048576	route_canonical
-meta	MUSE-SPARK-1.1	variant-uppercase	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	-	MUSE-SPARK-1.1	chat	-	route_canonical
+meta	MUSE-EMBER-1.0	variant-uppercase	MUSE-EMBER-1.0	MUSE-EMBER-1.0	MUSE-EMBER-1.0	MUSE-EMBER-1.0	MUSE-EMBER-1.0	MUSE-EMBER-1.0	-	MUSE-EMBER-1.0	chat	-	route_canonical
+meta	MUSE-SPARK-1.1	carried	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	MUSE-SPARK-1.1	-	MUSE-SPARK-1.1	chat	-	route_canonical
 meta	MUSE-SPARK-1.3	variant-uppercase	MUSE-SPARK-1.3	MUSE-SPARK-1.3	MUSE-SPARK-1.3	MUSE-SPARK-1.3	MUSE-SPARK-1.3	MUSE-SPARK-1.3	-	MUSE-SPARK-1.3	chat	-	route_canonical
 meta	auto	sentinel-auto	auto	auto	auto	auto	auto	auto	meta/muse-spark-1.3	muse-spark-1.3	chat	1048576	route_canonical,route_wire
 meta	deepseek-v4-pro	foreign-deepseek	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	-	deepseek-v4-pro	chat	-	route_canonical
-meta	meta/muse-spark-1.1	variant-provider-prefix	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	muse-spark-1.1	chat	1048576	route_wire
+meta	meta/muse-ember-1.0	variant-provider-prefix	meta/muse-ember-1.0	meta/muse-ember-1.0	meta/muse-ember-1.0	meta/muse-ember-1.0	meta/muse-ember-1.0	meta/muse-ember-1.0	meta/muse-ember-1.0	muse-ember-1.0	chat	1048576	route_wire
+meta	meta/muse-spark-1.1	carried	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	meta/muse-spark-1.1	muse-spark-1.1	chat	1048576	route_wire
 meta	meta/muse-spark-1.3	variant-provider-prefix	meta/muse-spark-1.3	meta/muse-spark-1.3	meta/muse-spark-1.3	meta/muse-spark-1.3	meta/muse-spark-1.3	meta/muse-spark-1.3	meta/muse-spark-1.3	muse-spark-1.3	chat	1048576	route_wire
-meta	models/muse-spark-1.1	variant-models-prefix	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	-	models/muse-spark-1.1	chat	-	route_canonical
+meta	models/muse-ember-1.0	variant-models-prefix	models/muse-ember-1.0	models/muse-ember-1.0	models/muse-ember-1.0	models/muse-ember-1.0	models/muse-ember-1.0	models/muse-ember-1.0	-	models/muse-ember-1.0	chat	-	route_canonical
+meta	models/muse-spark-1.1	carried	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	models/muse-spark-1.1	-	models/muse-spark-1.1	chat	-	route_canonical
 meta	models/muse-spark-1.3	variant-models-prefix	models/muse-spark-1.3	models/muse-spark-1.3	models/muse-spark-1.3	models/muse-spark-1.3	models/muse-spark-1.3	models/muse-spark-1.3	-	models/muse-spark-1.3	chat	-	route_canonical
 meta	muse	carried	muse	muse	muse	muse	muse	muse	-	muse	chat	-	route_canonical
+meta	muse-ember-1.0	offering	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	muse-ember-1.0	meta/muse-ember-1.0	muse-ember-1.0	chat	1048576	route_canonical
 meta	muse-spark	carried	muse-spark	muse-spark	muse-spark	muse-spark	muse-spark	muse-spark	-	muse-spark	chat	-	route_canonical
 meta	muse-spark-1.1	offering	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	muse-spark-1.1	meta/muse-spark-1.1	muse-spark-1.1	chat	1048576	route_canonical
 meta	muse-spark-1.2	alias-target+offering	muse-spark-1.2	muse-spark-1.2	muse-spark-1.2	muse-spark-1.2	muse-spark-1.2	muse-spark-1.2	meta/muse-spark-1.2	muse-spark-1.2	chat	1048576	route_canonical
@@ -695,6 +701,8 @@ openai	gpt-6-luna	offering	gpt-6-luna	gpt-6-luna	gpt-6-luna	gpt-6-luna	gpt-6-lun
 openai	gpt-6-sol	offering	gpt-6-sol	gpt-6-sol	gpt-6-sol	gpt-6-sol	gpt-6-sol	gpt-6-sol	openai/gpt-6-sol	gpt-6-sol	chat	1050000	route_canonical
 openai	gpt-6.1-sol	offering	gpt-6.1-sol	gpt-6.1-sol	gpt-6.1-sol	gpt-6.1-sol	gpt-6.1-sol	gpt-6.1-sol	openai/gpt-6.1-sol	gpt-6.1-sol	chat	1050000	route_canonical
 openai	gpt-6.1-terra	offering	gpt-6.1-terra	gpt-6.1-terra	gpt-6.1-terra	gpt-6.1-terra	gpt-6.1-terra	gpt-6.1-terra	openai/gpt-6.1-terra	gpt-6.1-terra	chat	1050000	route_canonical
+openai	gpt-6.2-astra	offering	gpt-6.2-astra	gpt-6.2-astra	gpt-6.2-astra	gpt-6.2-astra	gpt-6.2-astra	gpt-6.2-astra	openai/gpt-6.2-astra	gpt-6.2-astra	chat	1050000	route_canonical
+openai	gpt-6.2-sol	offering	gpt-6.2-sol	gpt-6.2-sol	gpt-6.2-sol	gpt-6.2-sol	gpt-6.2-sol	gpt-6.2-sol	openai/gpt-6.2-sol	gpt-6.2-sol	chat	1050000	route_canonical
 openai	gpt53-codex	carried	gpt53-codex	gpt53-codex	gpt53-codex	gpt53-codex	gpt53-codex	gpt53-codex	-	gpt53-codex	chat	-	route_canonical
 openai	gpt56	carried	gpt56	gpt56	gpt56	gpt56	gpt56	gpt56	-	gpt56	chat	-	route_canonical
 openai	gpt56-luna	carried	gpt56-luna	gpt56-luna	gpt56-luna	gpt56-luna	gpt56-luna	gpt56-luna	-	gpt56-luna	chat	-	route_canonical
