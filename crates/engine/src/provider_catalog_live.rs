@@ -871,7 +871,7 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
                     base_url_fingerprint, fetched_at
                 } if base_url_fingerprint == &entry_fingerprint && *fetched_at == entry_fetched_at)
         });
-        normalize_provider_catalog_offerings(parsed_kind, &mut entry.offerings);
+        normalize_provider_catalog_offerings(parsed_kind, &entry_fingerprint, &mut entry.offerings);
         if entry.offerings.len() != rows_before {
             tracing::warn!(
                 target: "provider_catalog",
@@ -923,9 +923,14 @@ fn normalize_google_wire_model_id(wire_model_id: &str) -> Option<&str> {
 
 fn normalize_provider_catalog_offerings(
     kind: ProviderKind,
+    fingerprint: &str,
     offerings: &mut Vec<codewhale_config::catalog::CatalogOffering>,
 ) {
-    if kind != ProviderKind::Google {
+    if kind != ProviderKind::Google
+        || !codewhale_config::provider_published_pricing_base_urls(kind)
+            .iter()
+            .any(|url| base_url_fingerprint(url) == fingerprint)
+    {
         return;
     }
     let mut seen = std::collections::HashSet::with_capacity(offerings.len());
@@ -2134,7 +2139,7 @@ fn record_success_for_identity(
             && codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.wire_model_id)
             && provider_cost_source_allowed(row)
     });
-    normalize_provider_catalog_offerings(kind, &mut delta.offerings);
+    normalize_provider_catalog_offerings(kind, &delta.base_url_fingerprint, &mut delta.offerings);
     if delta.offerings.len() < submitted {
         tracing::warn!(
             target: "provider_catalog",
@@ -2210,6 +2215,31 @@ pub fn reset_cache_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_models_prefix_is_stripped_only_on_the_official_endpoint() {
+        let rows = || {
+            vec![codewhale_config::catalog::CatalogOffering {
+                provider: "google".into(),
+                wire_model_id: "models/acme-chat".into(),
+                ..Default::default()
+            }]
+        };
+        let mut proxy = rows();
+        normalize_provider_catalog_offerings(
+            ProviderKind::Google,
+            &base_url_fingerprint("https://proxy.example/v1"),
+            &mut proxy,
+        );
+        assert_eq!(proxy[0].wire_model_id, "models/acme-chat");
+        let mut official = rows();
+        normalize_provider_catalog_offerings(
+            ProviderKind::Google,
+            &base_url_fingerprint(ProviderKind::Google.provider().default_base_url()),
+            &mut official,
+        );
+        assert_eq!(official[0].wire_model_id, "acme-chat");
+    }
     use crate::test_support::{EnvVarGuard, lock_test_env};
     use codewhale_config::ProviderKind;
     use codewhale_config::catalog::{CatalogOffering, CatalogSource};
