@@ -537,8 +537,6 @@ fn has_clean_bundled_package_json(root: &Path, dep_name: &str) -> Result<bool> {
             Err(err) => return Err(err.into()),
         };
         if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
-            // Only confined directory symlinks inside `node_modules/` (such as
-            // pnpm's `node_modules/.pnpm/...` layout) are eligible.
             if idx == 0 {
                 return Ok(false);
             }
@@ -1275,8 +1273,6 @@ mod tests {
             seeds.is_empty(),
             "confined pnpm symlinked dependency should count as bundled"
         );
-        // Even with NetworkPolicy denying all network access, offline pnpm symlink
-        // materialization produces a symlink-free staged copy.
         let deny_policy = NetworkPolicy {
             default: Decision::Deny.into(),
             ..NetworkPolicy::default()
@@ -1292,7 +1288,6 @@ mod tests {
         );
         assert!(materialized_zod.join("package.json").is_file());
 
-        // An escaping symlink inside node_modules must be refused.
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("package.json"), r#"{"name":"evil"}"#).unwrap();
         symlink(outside.path(), root.join("node_modules/evil")).unwrap();

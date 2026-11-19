@@ -158,6 +158,7 @@ impl Engine {
                 } else {
                     progress.fleet_denial_guard.as_mut()
                 },
+                progress.mode,
             )
             .await;
 

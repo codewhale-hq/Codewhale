@@ -5361,6 +5361,7 @@ impl Engine {
         active_tool_names: &mut std::collections::HashSet<String>,
         hook_contexts: &std::collections::HashMap<String, String>,
         mut fleet_denial_guard: Option<&mut FleetDenialGuard>,
+        mode: AppMode,
     ) -> FleetDenialAction {
         let strict_tool_mode = tool_policy.strict_tool_mode;
         let mut denial_batch = FleetDenialBatch::default();
@@ -5394,7 +5395,7 @@ impl Engine {
                             "is_error": is_error,
                             "duration_ms": routed_duration_ms,
                         }),
-                        mode: format!("{:?}", turn.mode),
+                        mode: format!("{mode:?}"),
                         workspace: self.session.workspace.to_string_lossy().into_owned(),
                         model: self.config.model.clone(),
                     })
@@ -10060,6 +10061,7 @@ impl Engine {
                 &mut active,
                 &planned.hook_contexts,
                 None,
+                mode,
             )
             .await;
             surface.cache = self.session.tool_activation_cache.clone();
