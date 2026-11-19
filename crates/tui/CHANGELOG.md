@@ -1105,6 +1105,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **ACP tool cards settle when an external agent finishes them:** a tool call reported by an external agent over ACP no longer stays pinned as pending after it completes — the completion update now matches the external agent's own tool call id, so the card closes with its status and result.
 - **ACP sessions no longer run `shell_env` hooks:** shell calls inside an ACP-driven session no longer launch operator-configured `shell_env` hook processes, matching the documented rule that the ACP surface fires no hooks. Terminal, desktop, and runtime API sessions still run them.
 - **Mobile reconnects no longer invalidate each other's stream tickets:** refreshing a mobile stream ticket no longer replaces a ticket another in-flight reconnect still holds — a mobile session keeps up to 32 pending tickets like the web client instead of a single slot, so rapid reconnects stop flickering between connected and expired.
+- **LSP HTTP responses declare their position base:** `/v1/diagnostics`, `/v1/definition`, `/v1/references` and `/v1/symbols` responses now carry `position_base` (`1` for the normalized diagnostics items, `0` for the raw LSP ranges in the semantic operations) so a client no longer has to guess that 1-based inputs come back as 0-based positions.
 
 ### Security
 
