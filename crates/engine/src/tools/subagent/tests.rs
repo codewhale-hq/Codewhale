@@ -30215,6 +30215,27 @@ fn child_inherits_parent_instructions_once_with_scope_cap() {
 }
 
 #[test]
+fn read_only_role_with_write_brief_is_refused_naming_writer_roles() {
+    let runtime = stub_runtime();
+    let request = parse_spawn_request(&json!({
+        "prompt": "write the receipt",
+        "type": "test",
+        "deliverables": ["receipts/run.json"],
+    }))
+    .expect("parse");
+    let err = refuse_write_brief_for_read_only_role(&runtime, &request, None)
+        .expect_err("read-only role with deliverables must refuse at start")
+        .to_string();
+    assert!(err.contains("type=test cannot write files"), "{err}");
+    assert!(err.contains("deliverables"), "{err}");
+    assert!(err.contains("type=general"), "{err}");
+    assert!(err.contains("type=implement"), "{err}");
+    let ok =
+        parse_spawn_request(&json!({"prompt": "run the gates", "type": "test"})).expect("parse");
+    refuse_write_brief_for_read_only_role(&runtime, &ok, None).expect("no write brief");
+}
+
+#[test]
 fn child_capability_block_states_workspace_worktree_and_blocker_rule() {
     let mut runtime = stub_runtime();
     runtime.isolated_worktree = true;

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Sub-agents inherit your instructions and know their capabilities:** every child now starts with the user and project instructions pinned for the parent session (each scope capped at 64 KiB, given once even to forked children) and an identity block stating its workspace, isolated worktree and branch, file/shell/network/delegation grants and approval posture, with the rule to return a missing capability to the parent as a BLOCKER with the exact command instead of working around it.
 - **Worktree guidance for write-capable sub-agents:** `general`, `implement` and `custom` children are told to work in their own worktree (one agent per worktree, based on current upstream main), never switch or reset a shared checkout, commit coherent slices and report branch and SHA, and leave pushing, merging and cleanup to the parent.
+- **Clearer sub-agent start refusals:** a read-only role given `deliverables`, `write_roots`, `exact_files` or `coordination_contracts` is refused before it starts, naming the roles and saved profiles that can write; a task model that conflicts with a role or profile pin now names the roles and profiles that accept that model; and invalid-input feedback for tools with large schemas lists required fields and property names instead of echoing the whole schema.
 
 ## [0.10.3] - 2026-11-18
 
