@@ -566,8 +566,8 @@ pub struct TuiConfig {
     /// stream error; omitted/zero defaults to5 and other values clamp to1..=50.
     pub stream_max_errors: Option<u32>,
     /// #6700: wait for SSE response headers, in seconds. Omitted or `0`
-    /// fall back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then 45; values
-    /// clamp to `5..=300`.
+    /// fall back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then 180; values
+    /// clamp to `5..=600`.
     pub stream_open_timeout_secs: Option<u64>,
     /// #6700: TCP/TLS connect timeout for the model HTTP client, in seconds.
     /// Omitted or `0` resolve to the default (30); values clamp to `1..=300`.

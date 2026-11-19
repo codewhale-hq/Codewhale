@@ -754,7 +754,7 @@ codewhale config migrate --prefer table       # resolve a conflict: keep the tab
 - `DEEPSEEK_HTTP_HEADERS`(自定义模型请求头，逗号分隔 `name=value` 对)
 - `DEEPSEEK_DEFAULT_TEXT_MODEL`(`DEEPSEEK_MODEL` 的额外旧别名)
 - `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS`(流空闲超时秒数；默认 `900`，钳制到 `1..=3600`)
-- `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS`(连接建立 + 响应头等待秒数；默认 `45`，钳制到 `5..=300`；区别于每块空闲超时；设置了 `tui.stream_open_timeout_secs` 时以它为准)
+- `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS`(连接建立 + 响应头等待秒数；默认 `180`，钳制到 `5..=600`；区别于每块空闲超时；设置了 `tui.stream_open_timeout_secs` 时以它为准)
 - `CODEWHALE_CACHE_MAXIMAL`(`1`/`true`/`on`/`yes`)——缓存最大化上下文模式(#528)。开启时，Repo Working Set 块把顶层活动文件的**完整当前内容**物化(materialize)到每回合的系统提示中(确定性顺序，字节有界)，而不是只列出路径。这些文件未变化时该块保持字节稳定，这样 DeepSeek 的 KV 前缀缓存能持续命中；编辑文件会从该块开始缓存未命中。默认关闭(仅路径列表)。字节上限默认每文件 24 KB / 总计 96 KB。
 - `NVIDIA_API_KEY` 或 `NVIDIA_NIM_API_KEY`（provider 为 `nvidia-nim` 时使用）
 - `NVIDIA_NIM_BASE_URL`、`NIM_BASE_URL` 或 `NVIDIA_BASE_URL`
@@ -1458,7 +1458,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `tui.stream_max_errors`（int，可选，默认 `5`）：为配置兼容保留；`0` 使用默认值，正值钳制到 `1..=50`。无论该值是多少，Core 都会在第一个结果不明的读取错误或错误帧处结束流。
 
-- `tui.stream_open_timeout_secs`（int，可选，默认 `45`）：等待流式请求响应头的时间（含连接建立）。响应头停滞会以结果未知结束，不会改用 HTTP/1.1 重发。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=300`。
+- `tui.stream_open_timeout_secs`（int，可选，默认 `180`）：等待流式请求响应头的时间（含连接建立）。响应头停滞会以结果未知结束，不会改用 HTTP/1.1 重发。省略或为 `0` 时回退到 `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`，再回退到默认值；值钳制到 `5..=600`。
 
 - `tui.connect_timeout_secs`（int，可选，默认 `30`）：模型 HTTP 客户端的 TCP/TLS 连接超时。省略或为 `0` 使用默认值；值钳制到 `1..=300`。
 
@@ -1483,7 +1483,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 | `[stream]` 键 | 默认值 | 有效行为 | 旧 `[tui]` 回退键 |
 | --- | --- | --- | --- |
-| `open_timeout_secs` | 45 | 正数限制到 5–300；0 或省略时回退到环境变量/默认值 | `stream_open_timeout_secs` |
+| `open_timeout_secs` | 180 | 正数限制到 5–600；0 或省略时回退到环境变量/默认值 | `stream_open_timeout_secs` |
 | `chunk_timeout_secs` | 900 | 0 使用默认值；正数限制到 1–3600 | `stream_chunk_timeout_secs` |
 | `max_resumes` | 3 | 仅恢复有证据的发出前瞬时连接故障；0 禁用，最大 10 | `stream_max_resumes` |
 | `max_transparent_retries` | 2 | 兼容值；流中断永不自动重发推理 | `stream_max_transparent_retries` |

@@ -1600,7 +1600,7 @@ on live traffic):
 
 - **A cold model looks broken.** The first call to a model the provider has not
   loaded can take 90 to 150 seconds, then drop to a second or less once warm.
-  Raise `[stream].open_timeout_secs` (default 45 seconds, at most 300) before reading a timeout as "model unavailable".
+  Raise `[stream].open_timeout_secs` (default 180 seconds, at most 600) before reading a timeout as "model unavailable".
 - **Listed is not callable.** A catalog entry can be visible and still fail
   every call. The same error text on every attempt (for example a "resources
   busy" 502) is not transient: a genuinely busy upstream returns successes in
