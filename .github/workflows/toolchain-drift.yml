@@ -1,9 +1,5 @@
 name: Toolchain drift
 
-# Weekly check of the workspace against floating stable Rust, so a new
-# release's lints and Cargo changes show up here before anyone moves the
-# rust-toolchain.toml pin (CURRENT_DECISIONS §189). Report-only: it never
-# edits the pin or blocks main.
 on:
   schedule:
     - cron: '23 7 * * 1'
