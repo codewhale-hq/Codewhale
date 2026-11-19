@@ -329,9 +329,11 @@ impl RuntimeMobileState {
         session
             .stream_tickets
             .retain(|issued| now < issued.expires_at);
-        let Some(index) = session.stream_tickets.iter().position(|issued| {
-            constant_time_eq(stream_ticket.as_bytes(), issued.nonce.as_bytes())
-        }) else {
+        let Some(index) = session
+            .stream_tickets
+            .iter()
+            .position(|issued| constant_time_eq(stream_ticket.as_bytes(), issued.nonce.as_bytes()))
+        else {
             return false;
         };
         session.stream_tickets.remove(index);
