@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -105,6 +106,7 @@ def main() -> int:
 
     def has_anchor(page: str, fragment: str) -> bool:
         known = anchors_of(page, cache)
+        fragment = urllib.parse.unquote(fragment)
         return fragment in known or fragment.lower() in known
 
     for page in pages:
@@ -119,8 +121,11 @@ def main() -> int:
                 repo_match = REPO_URL.match(target)
                 if repo_match:
                     path = repo_match.group(1).rstrip("/")
+                    fragment = target.partition("#")[2]
                     if path in tracked:
                         inbound[path].add(page)
+                        if fragment and path.endswith(".md") and not has_anchor(path, fragment):
+                            bad_anchor.append((page, target))
                     elif path not in dirs:
                         broken.append((page, target))
                 continue
