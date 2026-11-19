@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use encoding_rs::{CoderResult, Decoder, UTF_8};
@@ -9,16 +9,78 @@ const BOUNDED_OUTPUT_MAX_LINES: usize = 2_000;
 const BOUNDED_OUTPUT_MAX_BYTES: usize = 50 * 1024;
 const BOUNDED_OUTPUT_RETAIN_BYTES: usize = BOUNDED_OUTPUT_MAX_BYTES + 4;
 
+#[derive(Debug, Clone)]
+pub(super) struct SessionArtifactSpec {
+    pub(super) session_id: String,
+    pub(super) artifact_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PersistedShellArtifact {
+    pub(super) artifact_id: String,
+    pub(super) session_id: String,
+    pub(super) absolute_path: PathBuf,
+    pub(super) relative_path: PathBuf,
+    pub(super) byte_size: u64,
+    pub(super) digest: String,
+}
+
+pub(super) fn persist_shell_output_artifact(
+    session_id: &str,
+    origin_tool_call_id: Option<&str>,
+    fallback_key: &str,
+    raw_bytes: &[u8],
+) -> io::Result<PersistedShellArtifact> {
+    if !codewhale_runtime::artifacts::is_valid_session_id(session_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "session artifact storage is unavailable without a valid session id",
+        ));
+    }
+    let raw_id = origin_tool_call_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(fallback_key);
+    let artifact_id = codewhale_runtime::artifacts::artifact_id_for_tool_call(raw_id);
+    persist_shell_bytes_with_spec(
+        &SessionArtifactSpec {
+            session_id: session_id.to_string(),
+            artifact_id,
+        },
+        raw_bytes,
+    )
+}
+
+fn persist_shell_bytes_with_spec(
+    spec: &SessionArtifactSpec,
+    raw_bytes: &[u8],
+) -> io::Result<PersistedShellArtifact> {
+    let (absolute_path, relative_path) =
+        codewhale_runtime::artifacts::write_session_artifact_immutable(
+            &spec.session_id,
+            &spec.artifact_id,
+            raw_bytes,
+        )?;
+    let digest = codewhale_runtime::hashing::sha256_hex(raw_bytes);
+    Ok(PersistedShellArtifact {
+        artifact_id: spec.artifact_id.clone(),
+        session_id: spec.session_id.clone(),
+        absolute_path,
+        relative_path,
+        byte_size: raw_bytes.len().try_into().unwrap_or(u64::MAX),
+        digest,
+    })
+}
+
 #[derive(Debug)]
 pub(super) struct BoundedOutputSnapshot {
     pub(super) content: String,
     pub(super) total_bytes: usize,
     pub(super) retained_bytes: usize,
     pub(super) truncated: bool,
+    pub(super) persisted_artifact: Option<PersistedShellArtifact>,
 }
 
-/// One decoded, arrival-ordered stream: complete output goes to disk while
-/// memory retains only enough tail bytes for the 2,000-line/50KiB result bound.
 pub(super) struct BoundedOutputAccumulator {
     tail: VecDeque<u8>,
     tail_newlines: usize,
@@ -32,21 +94,16 @@ pub(super) struct BoundedOutputAccumulator {
     stream_finished: bool,
     stream_error: Option<String>,
     temp: Option<tempfile::NamedTempFile>,
-    full_output_path: Option<PathBuf>,
-    /// Why the on-disk spill file could not be created (disk full, descriptor
-    /// exhaustion, unwritable temp dir). The stream still runs and the bounded
-    /// tail is still delivered; only "Full output: <path>" is unavailable.
+    session_artifact: Option<SessionArtifactSpec>,
+    persisted_artifact: Option<PersistedShellArtifact>,
     spill_unavailable: Option<String>,
 }
 
 impl BoundedOutputAccumulator {
-    /// Build an accumulator whose complete-output spill file lives in
-    /// `spill_dir` (`None` = process temp dir). Never fails: when the spill
-    /// file cannot be created (disk full, `EMFILE`, missing temp dir) the
-    /// command still runs and the bounded tail is still returned — the spill
-    /// is a convenience, not a precondition for executing `echo ok`. Tests
-    /// pass a nonexistent dir to fault-inject the failure.
-    pub(super) fn new_in(spill_dir: Option<&std::path::Path>) -> Self {
+    pub(super) fn new_in(
+        spill_dir: Option<&Path>,
+        session_artifact: Option<SessionArtifactSpec>,
+    ) -> Self {
         let mut builder = tempfile::Builder::new();
         builder.prefix("codewhale-bash-");
         let temp = match spill_dir {
@@ -76,7 +133,8 @@ impl BoundedOutputAccumulator {
             stream_finished: false,
             stream_error: None,
             temp,
-            full_output_path: None,
+            session_artifact,
+            persisted_artifact: None,
             spill_unavailable,
         }
     }
@@ -244,20 +302,74 @@ impl BoundedOutputAccumulator {
         Ok((String::from_utf8_lossy(&bytes).into_owned(), omitted))
     }
 
-    /// First line of a delta that lost `omitted` bytes to the memory bound:
-    /// how many, and where the complete output is (or why it is not kept).
-    pub(super) fn omitted_notice(&self, omitted: usize) -> String {
-        let location = self
-            .full_output_path
-            .as_deref()
-            .or_else(|| self.temp.as_ref().map(tempfile::NamedTempFile::path));
-        match (location, self.spill_unavailable.as_deref()) {
-            (Some(path), _) => format!(
-                "[{omitted} bytes of earlier output not retained in memory. Full output: {}]\n",
-                path.display()
+    fn persist_temp_to_session_artifact(&mut self) -> io::Result<()> {
+        let Some(mut temp) = self.temp.take() else {
+            return Ok(());
+        };
+        let Some(spec) = self.session_artifact.as_ref() else {
+            self.spill_unavailable =
+                Some("session artifact storage is unavailable without an active session".into());
+            return Ok(());
+        };
+        temp.flush()?;
+        let mut raw_bytes = Vec::new();
+        temp.as_file_mut().seek(SeekFrom::Start(0))?;
+        temp.as_file_mut().read_to_end(&mut raw_bytes)?;
+        match persist_shell_bytes_with_spec(spec, &raw_bytes) {
+            Ok(artifact) => {
+                self.persisted_artifact = Some(artifact);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %spec.session_id,
+                    artifact_id = %spec.artifact_id,
+                    "shell output session artifact could not be written; keeping bounded tail only"
+                );
+                self.spill_unavailable = Some(spill_unavailable_reason(&error));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn read_full_bytes(&self) -> Option<Vec<u8>> {
+        if let Some(artifact) = self.persisted_artifact.as_ref() {
+            return std::fs::read(&artifact.absolute_path).ok();
+        }
+        let temp = self.temp.as_ref()?;
+        let mut file = temp.as_file().try_clone().ok()?;
+        file.seek(SeekFrom::Start(0)).ok()?;
+        let mut raw_bytes = Vec::new();
+        file.read_to_end(&mut raw_bytes).ok()?;
+        Some(raw_bytes)
+    }
+
+    pub(super) fn release_temp(&mut self) {
+        self.temp.take();
+    }
+
+    pub(super) fn persisted_artifact(&self) -> Option<PersistedShellArtifact> {
+        self.persisted_artifact.clone()
+    }
+
+    pub(super) fn omitted_notice(&mut self, omitted: usize) -> String {
+        if self.stream_finished && self.persisted_artifact.is_none() && self.temp.is_some() {
+            let _ = self.persist_temp_to_session_artifact();
+        }
+        match (
+            self.persisted_artifact.as_ref(),
+            self.spill_unavailable.as_deref(),
+        ) {
+            (Some(artifact), _) => format!(
+                "[{omitted} bytes of earlier output not retained in memory. Full output saved as artifact {}; {}]\n",
+                artifact.artifact_id,
+                crate::tools::truncate::spillover_recovery_instruction(Some(&artifact.artifact_id)),
             ),
             (None, Some(reason)) => format!(
                 "[{omitted} bytes of earlier output not retained in memory. Full output was not persisted: {reason}]\n"
+            ),
+            (None, None) if self.temp.is_some() && self.session_artifact.is_some() => format!(
+                "[{omitted} bytes of earlier output not retained in memory; full output will be saved as a session artifact when the command finishes]\n"
             ),
             (None, None) => {
                 format!("[{omitted} bytes of earlier output not retained in memory]\n")
@@ -277,20 +389,16 @@ impl BoundedOutputAccumulator {
             + usize::from(selected.last().is_some_and(|byte| *byte != b'\n'));
         let mut content = String::from_utf8(selected).expect("stream decoder emits valid UTF-8");
 
-        if finalize && self.stream_finished && self.full_output_path.is_none() {
+        if finalize && self.stream_finished && self.persisted_artifact.is_none() {
             if truncated {
-                if let Some(mut temp) = self.temp.take() {
-                    temp.flush()?;
-                    let (_, path) = temp.keep().map_err(|error| error.error)?;
-                    self.full_output_path = Some(path);
-                }
+                self.persist_temp_to_session_artifact()?;
             } else {
                 self.temp.take();
             }
         }
-        if truncated && finalize && self.full_output_path.is_none() {
+        if truncated && finalize && self.persisted_artifact.is_none() {
             let reason = self.spill_unavailable.as_deref().unwrap_or(
-                "the output stream did not close cleanly, so the spill file was not kept",
+                "the output stream did not close cleanly, so the full output artifact was not saved",
             );
             content.push_str(&format!(
                 "\n\n[Showing the last {} of {} lines ({} limit). Full output was not persisted: {reason}]",
@@ -300,15 +408,17 @@ impl BoundedOutputAccumulator {
             ));
         } else if truncated
             && finalize
-            && let Some(path) = self.full_output_path.as_ref()
+            && let Some(artifact) = self.persisted_artifact.as_ref()
         {
+            let recovery =
+                crate::tools::truncate::spillover_recovery_instruction(Some(&artifact.artifact_id));
             if partial_line {
                 content.push_str(&format!(
-                    "\n\n[Showing last {} of line {} (line is {}). Full output: {}]",
+                    "\n\n[Showing last {} of line {} (line is {}). Full output saved as artifact {}; {recovery}]",
                     Self::format_size(retained_bytes),
                     total_lines,
                     Self::format_size(self.current_line_bytes),
-                    path.display()
+                    artifact.artifact_id,
                 ));
             } else {
                 let start = total_lines.saturating_sub(kept_lines) + 1;
@@ -318,8 +428,8 @@ impl BoundedOutputAccumulator {
                     String::new()
                 };
                 content.push_str(&format!(
-                    "\n\n[Showing lines {start}-{total_lines} of {total_lines}{limit}. Full output: {}]",
-                    path.display()
+                    "\n\n[Showing lines {start}-{total_lines} of {total_lines}{limit}. Full output saved as artifact {}; {recovery}]",
+                    artifact.artifact_id,
                 ));
             }
         }
@@ -328,17 +438,13 @@ impl BoundedOutputAccumulator {
             total_bytes: self.total_bytes,
             retained_bytes,
             truncated,
+            persisted_artifact: self.persisted_artifact.clone(),
         })
     }
 
     #[cfg(test)]
     pub(super) fn retained_memory_bytes(&self) -> usize {
         self.tail.len()
-    }
-
-    #[cfg(test)]
-    pub(super) fn full_output_path(&self) -> Option<&std::path::Path> {
-        self.full_output_path.as_deref()
     }
 }
 
@@ -610,10 +716,47 @@ pub(super) fn tail_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         BOUNDED_OUTPUT_MAX_BYTES, BOUNDED_OUTPUT_MAX_LINES, BOUNDED_OUTPUT_RETAIN_BYTES,
-        BoundedOutputAccumulator, RAW_STREAM_MAX_BYTES, RawOutputBuffer, SharedRawOutput,
-        tail_from_buffer, take_delta_from_buffer,
+        BoundedOutputAccumulator, RAW_STREAM_MAX_BYTES, RawOutputBuffer, SessionArtifactSpec,
+        SharedRawOutput, tail_from_buffer, take_delta_from_buffer,
     };
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    struct TestArtifactRootGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<PathBuf>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl TestArtifactRootGuard {
+        fn new() -> Self {
+            let lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let dir = tempfile::tempdir().expect("tempdir");
+            let previous = codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+                dir.path().join("sessions"),
+            ));
+            Self {
+                _lock: lock,
+                previous,
+                _dir: dir,
+            }
+        }
+    }
+
+    impl Drop for TestArtifactRootGuard {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.previous.take());
+        }
+    }
+
+    fn test_artifact_spec(name: &str) -> SessionArtifactSpec {
+        SessionArtifactSpec {
+            session_id: "session-test".to_string(),
+            artifact_id: codewhale_runtime::artifacts::artifact_id_for_tool_call(name),
+        }
+    }
 
     fn raw(bytes: &[u8]) -> SharedRawOutput {
         let mut buffer = RawOutputBuffer::new();
@@ -790,23 +933,41 @@ mod tests {
 
     #[test]
     fn bounded_output_keeps_last_two_thousand_complete_lines() {
+        let _root = TestArtifactRootGuard::new();
         let source = (0..=BOUNDED_OUTPUT_MAX_LINES)
             .map(|index| format!("line-{index}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut output = BoundedOutputAccumulator::new_in(None);
+        let mut output =
+            BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("lines-2001")));
         output.append(source.as_bytes()).expect("append");
         output.finish().expect("finish");
         let snapshot = output.snapshot(true).expect("snapshot");
         assert!(snapshot.truncated);
         assert!(snapshot.content.starts_with("line-1\n"));
         assert!(snapshot.content.contains("Showing lines 2-2001 of 2001"));
+        assert!(snapshot.content.contains("retrieve_tool_result"));
+        assert!(!snapshot.content.contains("codewhale-bash-"));
+        let artifact = snapshot.persisted_artifact.expect("session artifact");
+        assert_eq!(artifact.artifact_id, "art_lines-2001");
+        assert_eq!(
+            std::fs::read(&artifact.absolute_path).expect("read artifact"),
+            source.as_bytes()
+        );
     }
 
     #[test]
     fn bounded_output_streams_raw_full_output_and_bounds_decoded_tail() {
+        let _root = TestArtifactRootGuard::new();
         let raw = vec![0xFF; 2 * 1024 * 1024];
-        let mut output = BoundedOutputAccumulator::new_in(None);
+        let mut output =
+            BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("raw-2mb")));
+        let scratch_path = output
+            .temp
+            .as_ref()
+            .expect("scratch temp")
+            .path()
+            .to_path_buf();
         for chunk in raw.chunks(4_096) {
             output.append(chunk).expect("append");
             assert!(output.retained_memory_bytes() <= BOUNDED_OUTPUT_MAX_BYTES + 4);
@@ -816,18 +977,17 @@ mod tests {
         assert!(snapshot.truncated);
         assert!(snapshot.retained_bytes <= BOUNDED_OUTPUT_MAX_BYTES);
         assert!(snapshot.content.contains('\u{FFFD}'));
-        let path = output
-            .full_output_path()
-            .expect("full output")
-            .to_path_buf();
-        assert_eq!(std::fs::read(&path).expect("read full output"), raw);
-        drop(output);
-        std::fs::remove_file(path).expect("remove full output");
+        assert!(!scratch_path.exists());
+        let artifact = snapshot.persisted_artifact.expect("session artifact");
+        assert_eq!(
+            std::fs::read(&artifact.absolute_path).expect("read full output"),
+            raw
+        );
     }
 
     #[test]
     fn bounded_output_delta_since_returns_only_new_bytes() {
-        let mut output = BoundedOutputAccumulator::new_in(None);
+        let mut output = BoundedOutputAccumulator::new_in(None, None);
         output.append(b"first\n").expect("append");
         let cursor = output.total_bytes();
         assert_eq!(output.delta_since(0).expect("delta").0, "first\n");
@@ -841,10 +1001,7 @@ mod tests {
             (String::new(), 0)
         );
 
-        // Past the memory bound: the dropped span is counted, and a clipped
-        // multi-byte character at the front is not emitted as garbage.
-        let mut output = BoundedOutputAccumulator::new_in(None);
-        // One ASCII byte first puts the retained tail's front mid-character.
+        let mut output = BoundedOutputAccumulator::new_in(None, None);
         output.append(b"a").expect("append");
         output
             .append("é".repeat(BOUNDED_OUTPUT_MAX_BYTES).as_bytes())
@@ -856,53 +1013,67 @@ mod tests {
         assert!(delta.len() <= BOUNDED_OUTPUT_RETAIN_BYTES);
     }
 
-    /// The notice for dropped delta bytes says where the full output is.
     #[test]
-    fn bounded_output_omitted_notice_points_at_the_spill_file() {
-        let output = BoundedOutputAccumulator::new_in(None);
-        let spill = output
-            .temp
-            .as_ref()
-            .expect("spill file")
-            .path()
-            .display()
-            .to_string();
+    fn bounded_output_omitted_notice_names_session_artifact_not_temp_path() {
+        let _root = TestArtifactRootGuard::new();
+        let mut output =
+            BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("omitted-delta")));
         let notice = output.omitted_notice(42);
         assert!(notice.starts_with("[42 bytes"), "{notice}");
-        assert!(notice.contains(&spill), "{notice}");
+        assert!(notice.contains("session artifact"), "{notice}");
+        assert!(!notice.contains("codewhale-bash-"), "{notice}");
+
+        output.append(b"payload").expect("append");
+        output.finish().expect("finish");
+        let finished_notice = output.omitted_notice(42);
+        assert!(
+            finished_notice.contains("art_omitted-delta"),
+            "{finished_notice}"
+        );
+        assert!(
+            finished_notice.contains("retrieve_tool_result"),
+            "{finished_notice}"
+        );
+        assert!(
+            !finished_notice.contains("codewhale-bash-"),
+            "{finished_notice}"
+        );
 
         let missing = tempfile::tempdir().expect("tempdir").path().join("gone");
-        let unspilled = BoundedOutputAccumulator::new_in(Some(&missing));
+        let mut unspilled =
+            BoundedOutputAccumulator::new_in(Some(&missing), Some(test_artifact_spec("unspilled")));
         let notice = unspilled.omitted_notice(7);
         assert!(notice.contains("not persisted"), "{notice}");
     }
 
     #[test]
     fn bounded_output_huge_terminal_line_matches_upstream_notice() {
+        let _root = TestArtifactRootGuard::new();
         let mut source = vec![b'x'; BOUNDED_OUTPUT_MAX_BYTES + 1_024];
         source.push(b'\n');
-        let mut output = BoundedOutputAccumulator::new_in(None);
+        let mut output =
+            BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("huge-line")));
         output.append(&source).expect("append");
         output.finish().expect("finish");
         let snapshot = output.snapshot(true).expect("snapshot");
         assert!(snapshot.content.contains("Showing last 50.0KB of line 1"));
         assert!(snapshot.content.contains("line is 0B"));
-        let path = output
-            .full_output_path()
-            .expect("full output")
-            .to_path_buf();
-        drop(output);
-        std::fs::remove_file(path).expect("remove full output");
+        assert!(snapshot.content.contains("art_huge-line"));
+        assert!(snapshot.content.contains("retrieve_tool_result"));
+        assert!(!snapshot.content.contains("codewhale-bash-"));
+        let artifact = snapshot.persisted_artifact.expect("session artifact");
+        assert_eq!(
+            std::fs::read(&artifact.absolute_path).expect("read artifact"),
+            source
+        );
     }
 
     #[test]
     fn spill_failure_is_soft_and_names_the_reason() {
-        // A missing spill dir simulates a full or broken temp volume: the
-        // stream still runs, the tail is still delivered, and the notice says
-        // why "Full output: <path>" is absent instead of failing the command.
         let missing =
             std::env::temp_dir().join(format!("codewhale-missing-spill-{}", std::process::id()));
-        let mut output = BoundedOutputAccumulator::new_in(Some(&missing));
+        let mut output =
+            BoundedOutputAccumulator::new_in(Some(&missing), Some(test_artifact_spec("missing-1")));
         let reason = output.spill_unavailable().expect("spill unavailable");
         assert!(!reason.is_empty(), "reason must name the io error");
 
@@ -911,13 +1082,14 @@ mod tests {
         let short = output.snapshot(true).expect("snapshot");
         assert_eq!(short.content, "ok\n");
         assert!(!short.truncated);
-        assert!(output.full_output_path().is_none());
+        assert!(short.persisted_artifact.is_none());
 
         let source = (0..=BOUNDED_OUTPUT_MAX_LINES)
             .map(|index| format!("line-{index}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut output = BoundedOutputAccumulator::new_in(Some(&missing));
+        let mut output =
+            BoundedOutputAccumulator::new_in(Some(&missing), Some(test_artifact_spec("missing-2")));
         output.append(source.as_bytes()).expect("append");
         output.finish().expect("finish");
         let snapshot = output.snapshot(true).expect("snapshot");
@@ -929,7 +1101,7 @@ mod tests {
             snapshot.content
         );
         assert!(!snapshot.content.contains("Full output: "));
-        assert!(output.full_output_path().is_none());
+        assert!(snapshot.persisted_artifact.is_none());
     }
 
     #[test]
