@@ -347,6 +347,33 @@ const HIDDEN_RM: &[&str] = &[
     // the end of the line.
     "bash --rcfile",
     "nu --init-file",
+    // Quoting pins a runtime-resolved word to one argv entry, but a quoted
+    // word in verb, action, option, or operand position can still resolve to
+    // a dangerous flag or payload.
+    "find . \"$X\" rm {} +",
+    "ssh \"$X\" host",
+    "ssh -o 'ProxyCommand=rm x' host",
+    "ssh -oProxyCommand='rm x' host",
+    "ssh -o 'PermitLocalCommand=yes' -o 'LocalCommand=rm x' host",
+    "docker \"$X\" --entrypoint=/bin/rm alpine",
+    "docker run \"$X\" alpine",
+    "docker exec \"$X\" ctr rm",
+    "docker exec \"$CTR\" rm",
+    "tmux \"$X\" 'rm x'",
+    "npm \"$X\" -c 'rm x'",
+    "launchctl \"$X\" 501 rm",
+    "nix \"$X\" --command rm",
+    "poetry \"$X\" rm",
+    "uv \"$X\" 'rm x'",
+    "pipx \"$X\" 'rm x'",
+    "bundle \"$X\" 'rm x'",
+    "npm exec -- \"$X\"",
+    "env -- \"$X\" rm",
+    "sudo \"$X\" -u root rm",
+    // A `--` tail is still command-shaped under heads whose operands are
+    // scripts (`s///e`, `system()`).
+    "sed -- \"$X\"",
+    "awk -- \"$X\"",
 ];
 
 /// Literal spellings that were already denied and must stay denied.

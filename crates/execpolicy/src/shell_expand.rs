@@ -1858,11 +1858,18 @@ impl Expander {
                 self.emit(&tokens[head + 1..]);
             }
             // A command word (or a wrapper word before it) that the shell
-            // rewrites at run time cannot be matched against any rule.
+            // rewrites at run time cannot be matched against any rule. A
+            // quoted word an option consumed under every reading is exempt:
+            // it stays one argv entry in value position.
             if tokens[..=head]
                 .iter()
                 .zip(&dynamic)
-                .any(|(token, dynamic)| *dynamic && !is_env_assignment(token))
+                .enumerate()
+                .any(|(at, (token, dynamic))| {
+                    *dynamic
+                        && !is_env_assignment(token)
+                        && !(line.quoted[at] && heads.consumed[at])
+                })
             {
                 self.dynamic = true;
             }
@@ -2029,12 +2036,20 @@ impl Expander {
         }
         for at in 0..tokens.len() {
             if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
-                self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
+                let inert = heads
+                    .heads
+                    .iter()
+                    .rev()
+                    .find(|&&head| head < at)
+                    .is_some_and(|&head| {
+                        INERT_DASH_DASH_HEADS.contains(&command_name(&tokens[head]).as_str())
+                    });
+                self.record_extra_deny(&slice_line(line, at + 1), inert, depth + 1);
             }
         }
     }
 
-    fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
+    fn record_extra_deny(&mut self, sub: &Line, inert: bool, depth: usize) {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
             self.dynamic = true;
             self.dropped = true;
@@ -2056,15 +2071,9 @@ impl Expander {
             deny_only: true,
         };
         child.record(sub, depth);
-        // A quoted expansion stays a single candidate the child emitted; an
-        // unquoted one can split, so the candidate list itself is unknowable.
-        let splits = sub
-            .words
-            .iter()
-            .zip(&sub.dynamic)
-            .zip(&sub.quoted)
-            .any(|((_, dynamic), quoted)| *dynamic && !*quoted);
-        self.dynamic |= child.dropped | (child.dynamic && splits);
+        // Under an inert head (`echo`, `grep`) the words after `--` are
+        // operands, never commands, so their dynamic bits cannot propagate.
+        self.dynamic |= child.dropped | (!inert && child.dynamic);
         self.dropped |= child.dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
@@ -2187,6 +2196,13 @@ impl Expander {
                 }
             }
             "ssh" => {
+                // `-o` payloads run even when the remote command is skipped
+                // (`ssh -N -o ProxyCommand=…` still executes it locally).
+                for (payload, payload_dynamic) in
+                    ssh_option_payloads(&tokens[head + 1..], &dynamic[head + 1..])
+                {
+                    self.code_payload(&payload, payload_dynamic, depth);
+                }
                 if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
@@ -2270,7 +2286,6 @@ impl Expander {
                             find_entrypoints(
                                 &tokens[verb_idx + 1..end],
                                 &dynamic[verb_idx + 1..],
-                                &line.quoted[verb_idx + 1..],
                                 verb_idx + 1,
                             )
                         };
@@ -2510,11 +2525,15 @@ impl Expander {
         let tokens = &line.words;
         let mut index = head + 1;
         while index < tokens.len() {
-            if line.dynamic[index] && (!line.quoted[index] || tokens[index].starts_with('-')) {
-                // A runtime-resolved word could split into `-exec …` or
-                // resolve to a glued `-exec`/`-ok` flag the scan cannot see.
-                self.dynamic = true;
-                self.dropped = true;
+            if line.dynamic[index] {
+                // A runtime-resolved word could be `-exec`, with the words
+                // after it as the payload the scan cannot attribute to it.
+                self.record(&slice_line(line, index + 1), depth + 1);
+                if !line.quoted[index] {
+                    // An unquoted word can also split into several words.
+                    self.dynamic = true;
+                    self.dropped = true;
+                }
             }
             if matches!(
                 tokens[index].as_str(),
@@ -3084,6 +3103,79 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
 ];
 
+/// Heads that never execute their operands: under them the words after a
+/// `--` separator are plain data, so runtime-resolved words cannot smuggle
+/// commands. `true`, `false`, `xargs`, `command`, wrappers and launchers are
+/// deliberately absent — their `--` tails remain command-shaped. `sed`,
+/// `awk` and friends are absent too: the operand is a script, and
+/// `s///e` / `system()` run shell code.
+const INERT_DASH_DASH_HEADS: &[&str] = &[
+    "[",
+    "basename",
+    "base64",
+    "cat",
+    "chgrp",
+    "chmod",
+    "chown",
+    "comm",
+    "cp",
+    "cut",
+    "date",
+    "dd",
+    "df",
+    "diff",
+    "dirname",
+    "du",
+    "echo",
+    "egrep",
+    "fgrep",
+    "file",
+    "grep",
+    "groups",
+    "gunzip",
+    "gzip",
+    "head",
+    "hexdump",
+    "hostname",
+    "id",
+    "less",
+    "ln",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "more",
+    "mv",
+    "od",
+    "printenv",
+    "printf",
+    "pwd",
+    "readlink",
+    "realpath",
+    "rgrep",
+    "rmdir",
+    "seq",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
+    "sort",
+    "stat",
+    "strings",
+    "tail",
+    "tar",
+    "tee",
+    "test",
+    "touch",
+    "tr",
+    "uname",
+    "uniq",
+    "wc",
+    "whoami",
+    "xxd",
+    "yes",
+];
+
 fn slice_line(line: &Line, start: usize) -> Line {
     Line {
         words: line.words[start..].to_vec(),
@@ -3118,10 +3210,27 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
+/// Does this token take a separated value under the `docker run`/`podman
+/// run` grammar? Its next word is then a value, never the image.
+fn docker_run_takes_value(token: &str) -> bool {
+    if let Some(long) = token.strip_prefix("--") {
+        match long.split_once('=') {
+            Some(_) => false,
+            None => DOCKER_RUN_SPEC.long_values.contains(&long),
+        }
+    } else {
+        token.len() > 1
+            && token.starts_with('-')
+            && token
+                .chars()
+                .next_back()
+                .is_some_and(|flag| DOCKER_RUN_SPEC.short_values.contains(flag))
+    }
+}
+
 fn find_entrypoints(
     tokens: &[String],
     dynamic: &[bool],
-    quoted: &[bool],
     base: usize,
 ) -> Vec<(String, usize, bool)> {
     let mut found = Vec::new();
@@ -3138,12 +3247,57 @@ fn find_entrypoints(
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
             found.push((val.to_string(), base + i, dynamic[i]));
-        } else if dynamic[i] && (!quoted[i] || token.starts_with('-')) && token != "--entrypoint" {
+        } else if dynamic[i] {
+            // A runtime-resolved word in image or option position can
+            // resolve to `--entrypoint=…`; quoting does not prevent that.
             found.push((String::new(), base + i, true));
+        }
+        if !dynamic[i] && docker_run_takes_value(token) {
+            i += 1;
         }
         i += 1;
     }
     found
+}
+
+/// `ssh -o` option values that carry command payloads: `ProxyCommand`
+/// always runs locally on connect; `LocalCommand` only when
+/// `PermitLocalCommand=yes` is also set.
+fn ssh_option_payloads(args: &[String], dynamic: &[bool]) -> Vec<(String, bool)> {
+    let mut payloads = Vec::new();
+    let mut local = Vec::new();
+    let mut permit_local = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        let token = args[i].as_str();
+        let option = if token == "-o" {
+            i += 1;
+            args.get(i)
+                .map(|value| (value.as_str(), dynamic.get(i).copied().unwrap_or(false)))
+        } else {
+            token
+                .strip_prefix("-o")
+                .filter(|rest| !rest.is_empty())
+                .map(|rest| (rest, dynamic[i]))
+        };
+        if let Some((option, option_dynamic)) = option {
+            let (name, value) = match option.split_once(['=', ' ']) {
+                Some((name, value)) => (name, value),
+                None => (option, ""),
+            };
+            match name.to_ascii_lowercase().as_str() {
+                "proxycommand" => payloads.push((value.to_string(), option_dynamic)),
+                "localcommand" => local.push((value.to_string(), option_dynamic)),
+                "permitlocalcommand" => permit_local |= value.eq_ignore_ascii_case("yes"),
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if permit_local {
+        payloads.extend(local);
+    }
+    payloads
 }
 
 fn ssh_skips_remote_command(args: &[String], dynamic: &[bool]) -> bool {
@@ -4129,7 +4283,10 @@ fn resolve_wrapper_targets(
                 operands,
                 options_done,
             } => {
-                if dynamic[index] && (tokens[index].starts_with('-') || !quoted[index]) {
+                // Quoting pins a word to one argv entry, but a runtime value
+                // in a step position can still resolve to a flag, a verb, or
+                // an option whose arity differs from what was walked.
+                if dynamic[index] {
                     *truncated = true;
                 }
                 if steps.iter().flatten().any(|&next_idx| {
@@ -4147,7 +4304,7 @@ fn resolve_wrapper_targets(
                 }
             }
             WrapperStep::Landing => {
-                if dynamic[index] && !quoted[index] {
+                if dynamic[index] {
                     *truncated = true;
                 }
                 if !landings.contains(&index) {
@@ -4178,6 +4335,10 @@ struct Heads {
     /// A word the option walk consumed is only known at run time, so the
     /// walk's landings may differ from the ones found here.
     uncertain: bool,
+    /// Indices every walk reading consumed as option values. A quoted
+    /// runtime-resolved word there stays one argv entry and can never be a
+    /// command head.
+    consumed: Vec<bool>,
 }
 
 /// Every index in `tokens` that may be a command word, walking leading
@@ -4205,6 +4366,7 @@ fn command_heads(tokens: &[String], dynamic: &[bool], quoted: &[bool]) -> Heads 
     let mut payloads = Vec::new();
     let mut truncated = false;
     let mut uncertain = false;
+    let mut consumed = vec![false; tokens.len()];
     let mut seen = HashSet::new();
     let mut stack = vec![(0usize, State::Command)];
     while let Some((index, state)) = stack.pop() {
@@ -4258,10 +4420,21 @@ fn command_heads(tokens: &[String], dynamic: &[bool], quoted: &[bool]) -> Heads 
                         options_done,
                     } => {
                         // A runtime-resolved option word can decide how many
-                        // words are consumed; an unquoted one can also split
-                        // into extra flags or commands.
-                        if dynamic[index] && (token.starts_with('-') || !quoted[index]) {
+                        // words are consumed; quoting does not stop it
+                        // resolving to a flag or verb. Words a value option
+                        // consumed under every reading cannot be commands,
+                        // though an unquoted one can still split.
+                        if dynamic[index] {
                             uncertain = true;
+                        }
+                        if let Some(min_next) = steps.iter().flatten().min().copied() {
+                            for consumed in consumed
+                                .iter_mut()
+                                .take(min_next.min(tokens.len()))
+                                .skip(index + 1)
+                            {
+                                *consumed = true;
+                            }
                         }
                         if steps.iter().flatten().any(|&next_idx| {
                             (index + 1..next_idx.min(tokens.len()))
@@ -4286,10 +4459,9 @@ fn command_heads(tokens: &[String], dynamic: &[bool], quoted: &[bool]) -> Heads 
                         }
                     }
                     WrapperStep::Landing => {
-                        // A quoted landing is still one word and is reported
-                        // as a command head; an unquoted one can split and
-                        // move every landing the walk found.
-                        if dynamic[index] && !quoted[index] {
+                        // A quoted landing is still one word, but a runtime
+                        // value in command position must fail closed.
+                        if dynamic[index] {
                             uncertain = true;
                         }
                         if is_scalar_operand(token) {
@@ -4314,6 +4486,7 @@ fn command_heads(tokens: &[String], dynamic: &[bool], quoted: &[bool]) -> Heads 
         split_payloads: payloads,
         truncated,
         uncertain,
+        consumed,
     }
 }
 
