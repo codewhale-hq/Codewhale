@@ -9942,8 +9942,14 @@ async fn run_plugins_import_dsh_cli(
             println!("  Commands: {}", fmt_list(&conversion.commands));
             println!("  Agents: {}", fmt_list(&conversion.agents));
             println!("  Hooks: {}", fmt_list(&conversion.hooks));
-            println!("  Remote MCP servers: {}", fmt_list(&conversion.remote_servers));
-            println!("  Local MCP servers: {}", fmt_list(&conversion.local_servers));
+            println!(
+                "  Remote MCP servers: {}",
+                fmt_list(&conversion.remote_servers)
+            );
+            println!(
+                "  Local MCP servers: {}",
+                fmt_list(&conversion.local_servers)
+            );
             println!("  Network hosts: {}", fmt_list(&conversion.network_hosts));
             if !conversion.native_rows.is_empty() {
                 println!("  Native host code: {}", fmt_list(&conversion.native_rows));
@@ -9967,7 +9973,9 @@ async fn run_plugins_import_dsh_cli(
             }
             println!("  Content hash: {content_hash}");
             println!();
-            println!("Nothing was installed. To import exactly this bundle (disabled and untrusted):");
+            println!(
+                "Nothing was installed. To import exactly this bundle (disabled and untrusted):"
+            );
             println!(
                 "  codewhale plugins import dsh approve {} {}",
                 canonical.display(),

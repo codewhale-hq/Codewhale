@@ -752,8 +752,7 @@ fn copy_dir_no_symlinks(
     total_bytes: &mut u64,
 ) -> Result<()> {
     let root_meta = fs::symlink_metadata(src)?;
-    if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta)
-        || !root_meta.is_dir()
+    if codewhale_util::path_identity::metadata_is_link_or_reparse(&root_meta) || !root_meta.is_dir()
     {
         bail!("symlinks and reparse points are not permitted in DSH packages");
     }
@@ -799,7 +798,9 @@ fn copy_dir_inner(
                 bail!("symlinks and reparse points are not permitted in DSH packages");
             }
             let target = fs::canonicalize(&src_path).map_err(|_| {
-                anyhow::anyhow!("broken symlink inside node_modules is not permitted in DSH packages")
+                anyhow::anyhow!(
+                    "broken symlink inside node_modules is not permitted in DSH packages"
+                )
             })?;
             if !target.starts_with(canonical_root) {
                 bail!("symlink inside node_modules escapes the DSH package root");
@@ -854,7 +855,6 @@ fn copy_dir_inner(
     }
     Ok(())
 }
-
 
 fn unpack_tarball(
     bytes: &[u8],
@@ -1261,7 +1261,11 @@ mod tests {
         )
         .unwrap();
         fs::write(pnpm_pkg.join("index.js"), "module.exports = { z: 1 };\n").unwrap();
-        symlink(".pnpm/zod@4.0.0/node_modules/zod", root.join("node_modules/zod")).unwrap();
+        symlink(
+            ".pnpm/zod@4.0.0/node_modules/zod",
+            root.join("node_modules/zod"),
+        )
+        .unwrap();
 
         let manifest = Value::Map(vec![(
             "dependencies".to_string(),
