@@ -1724,7 +1724,7 @@ impl Expander {
                     i += 1;
                     if c == '\n' && !heredocs.is_empty() {
                         let shell_stdin = commands.iter().any(|line| {
-                            command_heads(&line.words, &line.dynamic)
+                            command_heads(&line.words, &line.dynamic, &line.quoted)
                                 .heads
                                 .iter()
                                 .any(|&head| {
@@ -1834,9 +1834,9 @@ impl Expander {
         }
         self.emit(tokens);
 
-        let heads = command_heads(tokens, &line.dynamic);
-        self.dynamic |= heads.truncated;
-        self.dropped |= heads.truncated;
+        let heads = command_heads(tokens, &line.dynamic, &line.quoted);
+        self.dynamic |= heads.truncated | heads.uncertain;
+        self.dropped |= heads.truncated | heads.uncertain;
         for (payload, payload_dynamic) in &heads.split_payloads {
             // `env -S 'cmd args'` splits its value into a command line.
             self.code_payload(payload, *payload_dynamic, depth);
@@ -1993,6 +1993,11 @@ impl Expander {
                         let payload_dynamic = dynamic[at + 1..].iter().any(|dynamic| *dynamic)
                             || payload.contains(['%', '!', '^']);
                         self.code_payload(&payload, payload_dynamic, depth);
+                    } else if dynamic[head + 1..].iter().any(|dynamic| *dynamic) {
+                        // A runtime-resolved word could be the `/c` flag or
+                        // split into `/c` plus its payload.
+                        self.dynamic = true;
+                        self.dropped = true;
                     }
                 }
                 "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
@@ -2051,7 +2056,15 @@ impl Expander {
             deny_only: true,
         };
         child.record(sub, depth);
-        self.dynamic |= child.dropped;
+        // A quoted expansion stays a single candidate the child emitted; an
+        // unquoted one can split, so the candidate list itself is unknowable.
+        let splits = sub
+            .words
+            .iter()
+            .zip(&sub.dynamic)
+            .zip(&sub.quoted)
+            .any(|((_, dynamic), quoted)| *dynamic && !*quoted);
+        self.dynamic |= child.dropped | (child.dynamic && splits);
         self.dropped |= child.dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
@@ -2073,6 +2086,7 @@ impl Expander {
                 for verb_idx in launcher_verb_targets(
                     tokens,
                     dynamic,
+                    &line.quoted,
                     head + 1,
                     &NIX_GLOBAL_SPEC,
                     &mut truncated,
@@ -2115,10 +2129,8 @@ impl Expander {
                                 self.record(&payload, depth + 1);
                             }
                             None => {
-                                if tokens[at].starts_with('-') {
-                                    self.dynamic |= dynamic[at];
-                                    self.dropped |= dynamic[at];
-                                }
+                                self.dynamic |= dynamic[at];
+                                self.dropped |= dynamic[at];
                             }
                         }
                     }
@@ -2151,6 +2163,7 @@ impl Expander {
                     for verb_idx in launcher_verb_targets(
                         tokens,
                         dynamic,
+                        &line.quoted,
                         head + 1,
                         &EMPTY_WRAPPER_SPEC,
                         &mut truncated,
@@ -2174,12 +2187,17 @@ impl Expander {
                 }
             }
             "ssh" => {
-                if ssh_skips_remote_command(&tokens[head + 1..]) {
+                if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                for landing in
-                    resolve_wrapper_targets(tokens, dynamic, head + 1, &SSH_SPEC, &mut truncated)
-                {
+                for landing in resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SSH_SPEC,
+                    &mut truncated,
+                ) {
                     if landing < tokens.len() {
                         let rest = &tokens[landing..];
                         let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
@@ -2191,12 +2209,17 @@ impl Expander {
                 }
             }
             "screen" => {
-                if screen_attaches_only(&tokens[head + 1..]) {
+                if screen_attaches_only(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                for landing in
-                    resolve_wrapper_targets(tokens, dynamic, head + 1, &SCREEN_SPEC, &mut truncated)
-                {
+                for landing in resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SCREEN_SPEC,
+                    &mut truncated,
+                ) {
                     if landing < tokens.len() {
                         self.record(&slice_line(line, landing), depth + 1);
                     }
@@ -2210,6 +2233,7 @@ impl Expander {
                     for verb_idx in launcher_verb_targets(
                         tokens,
                         dynamic,
+                        &line.quoted,
                         head + 1,
                         &EMPTY_WRAPPER_SPEC,
                         &mut truncated,
@@ -2226,6 +2250,7 @@ impl Expander {
                     for verb_idx in launcher_verb_targets(
                         tokens,
                         dynamic,
+                        &line.quoted,
                         head + 1,
                         launcher.global,
                         &mut truncated,
@@ -2245,6 +2270,7 @@ impl Expander {
                             find_entrypoints(
                                 &tokens[verb_idx + 1..end],
                                 &dynamic[verb_idx + 1..],
+                                &line.quoted[verb_idx + 1..],
                                 verb_idx + 1,
                             )
                         };
@@ -2256,6 +2282,7 @@ impl Expander {
                             for image in resolve_wrapper_targets(
                                 tokens,
                                 dynamic,
+                                &line.quoted,
                                 verb_idx + 1,
                                 &image_spec,
                                 &mut truncated,
@@ -2278,6 +2305,7 @@ impl Expander {
                         for landing in resolve_wrapper_targets(
                             tokens,
                             dynamic,
+                            &line.quoted,
                             verb_idx + 1,
                             launcher.subcmd,
                             &mut truncated,
@@ -2401,6 +2429,9 @@ impl Expander {
                     self.dynamic = true;
                     self.dropped = true;
                 }
+            } else if line.dynamic[i] {
+                self.dynamic = true;
+                self.dropped = true;
             }
             i += 1;
         }
@@ -2479,6 +2510,12 @@ impl Expander {
         let tokens = &line.words;
         let mut index = head + 1;
         while index < tokens.len() {
+            if line.dynamic[index] && (!line.quoted[index] || tokens[index].starts_with('-')) {
+                // A runtime-resolved word could split into `-exec …` or
+                // resolve to a glued `-exec`/`-ok` flag the scan cannot see.
+                self.dynamic = true;
+                self.dropped = true;
+            }
             if matches!(
                 tokens[index].as_str(),
                 "-exec" | "-execdir" | "-ok" | "-okdir"
@@ -3084,6 +3121,7 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
 fn find_entrypoints(
     tokens: &[String],
     dynamic: &[bool],
+    quoted: &[bool],
     base: usize,
 ) -> Vec<(String, usize, bool)> {
     let mut found = Vec::new();
@@ -3100,7 +3138,7 @@ fn find_entrypoints(
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
             found.push((val.to_string(), base + i, dynamic[i]));
-        } else if token.starts_with('-') && dynamic[i] && token != "--entrypoint" {
+        } else if dynamic[i] && (!quoted[i] || token.starts_with('-')) && token != "--entrypoint" {
             found.push((String::new(), base + i, true));
         }
         i += 1;
@@ -3108,10 +3146,13 @@ fn find_entrypoints(
     found
 }
 
-fn ssh_skips_remote_command(args: &[String]) -> bool {
+fn ssh_skips_remote_command(args: &[String], dynamic: &[bool]) -> bool {
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i].as_str();
+        if dynamic[i] {
+            return false;
+        }
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             return false;
         }
@@ -3131,12 +3172,15 @@ fn ssh_skips_remote_command(args: &[String]) -> bool {
     false
 }
 
-fn screen_attaches_only(args: &[String]) -> bool {
+fn screen_attaches_only(args: &[String], dynamic: &[bool]) -> bool {
     let mut has_m = false;
     let mut attach = false;
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i].as_str();
+        if dynamic[i] {
+            return false;
+        }
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             break;
         }
@@ -3232,7 +3276,7 @@ fn option_payloads(
             } else {
                 Some((value.to_string(), dynamic[at]))
             });
-        } else if dynamic[at] && token.starts_with('-') {
+        } else if dynamic[at] {
             payloads.push((String::new(), true));
         }
     }
@@ -4032,16 +4076,17 @@ fn step_wrapper_option(
 fn launcher_verb_targets(
     tokens: &[String],
     dynamic: &[bool],
+    quoted: &[bool],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
 ) -> Vec<usize> {
-    let mut targets = resolve_wrapper_targets(tokens, dynamic, start, spec, truncated);
+    let mut targets = resolve_wrapper_targets(tokens, dynamic, quoted, start, spec, truncated);
     let mut index = 0;
     while index < targets.len() {
         let at = targets[index];
         if tokens.get(at).is_some_and(String::is_empty) {
-            for next in resolve_wrapper_targets(tokens, dynamic, at + 1, spec, truncated) {
+            for next in resolve_wrapper_targets(tokens, dynamic, quoted, at + 1, spec, truncated) {
                 if !targets.contains(&next) {
                     targets.push(next);
                 }
@@ -4056,6 +4101,7 @@ fn launcher_verb_targets(
 fn resolve_wrapper_targets(
     tokens: &[String],
     dynamic: &[bool],
+    quoted: &[bool],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
@@ -4083,12 +4129,27 @@ fn resolve_wrapper_targets(
                 operands,
                 options_done,
             } => {
+                if dynamic[index] && (tokens[index].starts_with('-') || !quoted[index]) {
+                    *truncated = true;
+                }
+                if steps.iter().flatten().any(|&next_idx| {
+                    (index + 1..next_idx.min(tokens.len())).any(|at| dynamic[at] && !quoted[at])
+                }) {
+                    *truncated = true;
+                }
                 for next_idx in steps.into_iter().flatten() {
                     stack.push((next_idx, operands, options_done));
                 }
             }
-            WrapperStep::Stop => {}
+            WrapperStep::Stop => {
+                if dynamic[index] {
+                    *truncated = true;
+                }
+            }
             WrapperStep::Landing => {
+                if dynamic[index] && !quoted[index] {
+                    *truncated = true;
+                }
                 if !landings.contains(&index) {
                     landings.push(index);
                 }
@@ -4114,6 +4175,9 @@ struct Heads {
     split_payloads: Vec<(String, bool)>,
     /// The walk ran out of states before every reading was explored.
     truncated: bool,
+    /// A word the option walk consumed is only known at run time, so the
+    /// walk's landings may differ from the ones found here.
+    uncertain: bool,
 }
 
 /// Every index in `tokens` that may be a command word, walking leading
@@ -4125,7 +4189,7 @@ struct Heads {
 /// take a value, a bare number after a wrapper) both readings are kept,
 /// because an extra candidate only makes deny matching stricter while a
 /// missing one is a bypass.
-fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
+fn command_heads(tokens: &[String], dynamic: &[bool], quoted: &[bool]) -> Heads {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum State {
         /// At a command word position.
@@ -4140,6 +4204,7 @@ fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
     let mut heads = Vec::new();
     let mut payloads = Vec::new();
     let mut truncated = false;
+    let mut uncertain = false;
     let mut seen = HashSet::new();
     let mut stack = vec![(0usize, State::Command)];
     while let Some((index, state)) = stack.pop() {
@@ -4192,6 +4257,18 @@ fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
                         operands,
                         options_done,
                     } => {
+                        // A runtime-resolved option word can decide how many
+                        // words are consumed; an unquoted one can also split
+                        // into extra flags or commands.
+                        if dynamic[index] && (token.starts_with('-') || !quoted[index]) {
+                            uncertain = true;
+                        }
+                        if steps.iter().flatten().any(|&next_idx| {
+                            (index + 1..next_idx.min(tokens.len()))
+                                .any(|at| dynamic[at] && !quoted[at])
+                        }) {
+                            uncertain = true;
+                        }
                         for next_idx in steps.into_iter().flatten() {
                             stack.push((
                                 next_idx,
@@ -4203,8 +4280,18 @@ fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
                             ));
                         }
                     }
-                    WrapperStep::Stop => {}
+                    WrapperStep::Stop => {
+                        if dynamic[index] {
+                            uncertain = true;
+                        }
+                    }
                     WrapperStep::Landing => {
+                        // A quoted landing is still one word and is reported
+                        // as a command head; an unquoted one can split and
+                        // move every landing the walk found.
+                        if dynamic[index] && !quoted[index] {
+                            uncertain = true;
+                        }
                         if is_scalar_operand(token) {
                             stack.push((
                                 index + 1,
@@ -4226,6 +4313,7 @@ fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
         heads,
         split_payloads: payloads,
         truncated,
+        uncertain,
     }
 }
 
@@ -4318,6 +4406,10 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
             if matches!(name, "rcfile" | "init-file") && inline.is_none() {
                 index += 1;
             }
+            if dynamic[index] && command.is_empty() {
+                command.push(index);
+                command.push(index + 1);
+            }
         } else if !options_done
             && token.len() > 1
             && (token.starts_with('-') || token.starts_with('+'))
@@ -4328,6 +4420,10 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
             } else {
                 flags.find('c')
             };
+            if code_at.is_none() && dynamic[index] && command.is_empty() {
+                command.push(index);
+                command.push(index + 1);
+            }
             if let Some(code_at) = code_at
                 && token.starts_with('-')
                 && command.is_empty()
