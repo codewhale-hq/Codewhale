@@ -2155,23 +2155,26 @@ impl Expander {
                             continue;
                         }
                         let is_container_run = matches!(name, "docker" | "podman") && verb == "run";
-                        let entrypoint = if is_container_run {
-                            find_entrypoint(&tokens[verb_idx + 1..], verb_idx + 1)
-                        } else {
-                            None
+                        let entrypoint_before = |end: usize| {
+                            if !is_container_run {
+                                return None;
+                            }
+                            let end = end.min(tokens.len()).max(verb_idx + 1);
+                            find_entrypoint(&tokens[verb_idx + 1..end], verb_idx + 1)
+                                .filter(|(value, _)| !value.is_empty())
                         };
-                        if let Some((ep_val, ep_idx)) = entrypoint.as_ref()
-                            && !ep_val.is_empty()
-                        {
+                        if is_container_run {
                             let image_spec = Wrapper {
                                 operands: 0,
                                 ..*launcher.subcmd
                             };
                             for image in resolve_wrapper_targets(tokens, verb_idx + 1, &image_spec)
                             {
-                                if image < tokens.len() {
+                                if image < tokens.len()
+                                    && let Some((ep_val, ep_idx)) = entrypoint_before(image)
+                                {
                                     let combined =
-                                        build_prefixed_line(ep_val, *ep_idx, line, image + 1);
+                                        build_prefixed_line(&ep_val, ep_idx, line, image + 1);
                                     self.record(&combined, depth + 1);
                                 }
                             }
@@ -2179,10 +2182,8 @@ impl Expander {
                         for landing in
                             resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
                         {
-                            if let Some((ep_val, ep_idx)) = entrypoint.as_ref()
-                                && !ep_val.is_empty()
-                            {
-                                let combined = build_prefixed_line(ep_val, *ep_idx, line, landing);
+                            if let Some((ep_val, ep_idx)) = entrypoint_before(landing) {
+                                let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
                                 self.record(&combined, depth + 1);
                             }
                             if landing < tokens.len() {
@@ -4227,6 +4228,18 @@ mod tests {
             ),
             (
                 "docker run --entrypoint=true --entrypoint=rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run --entrypoint rm alpine -rf / --entrypoint true",
+                "rm -rf / --entrypoint true",
+            ),
+            (
+                "podman run --entrypoint=rm alpine -rf / --entrypoint=true",
+                "rm -rf / --entrypoint=true",
+            ),
+            (
+                "docker run --entrypoint sh alpine -c 'rm -rf /' --entrypoint=true",
                 "rm -rf /",
             ),
         ] {
