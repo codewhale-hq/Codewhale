@@ -106,7 +106,7 @@ fn verify_expected_hash(
     Err(ToolError::execution_failed(format!(
         "File `{action}` refused: {path_str} changed since it was read. \
          expected_hash was {expected} but the file is now {actual}, so nothing was written. \
-         Recovery: call File with action=\"read\" path=\"{path_str}\" to get the current contents \
+         Recovery: re-read the file with `read` (path=\"{path_str}\") to get the current contents \
          and its content_hash, then retry with the new hash."
     )))
 }
@@ -921,6 +921,93 @@ pub fn mutation_file_entry(path: &str, outcome: &str, written: Option<&[u8]>) ->
     entry
 }
 
+const CONTRACT_DIFF_MAX_LINES: usize = 120;
+const CONTRACT_DIFF_MAX_BYTES: usize = 6 * 1024;
+const CONTRACT_CREATE_PREVIEW_MAX_LINES: usize = 24;
+const CONTRACT_CREATE_PREVIEW_MAX_BYTES: usize = 1536;
+
+fn truncate_utf8_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn format_contract_mutation_content(
+    summary: &str,
+    outcome: &str,
+    after: &str,
+    diff: &str,
+) -> String {
+    let trimmed = diff.trim_end_matches('\n');
+    if trimmed.is_empty() {
+        return summary.to_string();
+    }
+    let (max_lines, max_bytes) = if outcome == "created" {
+        (
+            CONTRACT_CREATE_PREVIEW_MAX_LINES,
+            CONTRACT_CREATE_PREVIEW_MAX_BYTES,
+        )
+    } else {
+        (CONTRACT_DIFF_MAX_LINES, CONTRACT_DIFF_MAX_BYTES)
+    };
+    let mut total_lines = 0usize;
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in trimmed.lines() {
+        total_lines += 1;
+        if line.starts_with('+') && !line.starts_with("+++ ") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("--- ") {
+            removed += 1;
+        }
+    }
+    if total_lines <= max_lines && trimmed.len() <= max_bytes {
+        return format!("{summary}\n{trimmed}");
+    }
+    let mut preview = String::new();
+    let mut kept_lines = 0usize;
+    for line in trimmed.lines() {
+        if kept_lines >= max_lines {
+            break;
+        }
+        let sep = usize::from(!preview.is_empty());
+        if preview.len() + sep + line.len() > max_bytes {
+            if preview.is_empty() {
+                preview.push_str(truncate_utf8_prefix(line, max_bytes));
+                preview.push_str("...");
+                kept_lines = 1;
+            }
+            break;
+        }
+        if !preview.is_empty() {
+            preview.push('\n');
+        }
+        preview.push_str(line);
+        kept_lines += 1;
+    }
+    let note = if outcome == "created" {
+        format!(
+            "... (diff truncated: created file has {} lines, {} bytes; showing {kept_lines} of {total_lines} diff lines)",
+            after.lines().count(),
+            after.len()
+        )
+    } else {
+        format!(
+            "... (diff truncated: showing {kept_lines} of {total_lines} lines; +{added}/-{removed} changed lines total)"
+        )
+    };
+    if preview.is_empty() {
+        format!("{summary}\n{note}")
+    } else {
+        format!("{summary}\n{preview}\n{note}")
+    }
+}
+
 fn contract_mutation_result(
     requested_path: &str,
     before: &str,
@@ -929,10 +1016,12 @@ fn contract_mutation_result(
     outcome: &str,
     summary: String,
 ) -> ToolResult {
-    ToolResult::success(summary).with_metadata(json!({
+    let diff = make_unified_diff(requested_path, before, after);
+    let content = format_contract_mutation_content(&summary, outcome, after, &diff);
+    ToolResult::success(content).with_metadata(json!({
         "event": "file.mutation",
         "mutation": {
-            "diff": make_unified_diff(requested_path, before, after),
+            "diff": diff,
             "files": [mutation_file_entry(requested_path, outcome, Some(written))],
             "renames": []
         }
@@ -2662,34 +2751,33 @@ fn contract_fuzzy_offsets(original: &str, normalized: &str) -> Option<Vec<(usize
     (rebuilt == normalized).then_some(offsets)
 }
 
-fn remap_fuzzy_edits(
+fn remap_single_fuzzy_edit(
     original: &str,
     normalized: &str,
-    edits: &[ResolvedContractEdit],
-    offset: usize,
-) -> Option<Vec<ResolvedContractEdit>> {
+    fuzzy_start: usize,
+    fuzzy_end: usize,
+    norm_offset: usize,
+    orig_offset: usize,
+) -> Option<(usize, usize, usize)> {
     let offsets = contract_fuzzy_offsets(original, normalized)?;
-    let mut remapped = edits
-        .iter()
-        .map(|edit| {
-            let (start, end) = (edit.start - offset, edit.end - offset);
-            let first = offsets.partition_point(|entry| entry.0 < start);
-            let last = offsets.partition_point(|entry| entry.0 <= end);
-            let start = offsets.get(first).filter(|entry| entry.0 == start)?.1;
-            let end = offsets[..last].last().filter(|entry| entry.0 == end)?.1;
-            Some(ResolvedContractEdit {
-                start,
-                end,
-                ..edit.clone()
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    for index in 1..remapped.len() {
-        let next_start = remapped[index].start;
-        let previous = &mut remapped[index - 1];
-        previous.end = previous.end.min(next_start);
-    }
-    Some(remapped)
+    let (rel_start, rel_end) = (fuzzy_start - norm_offset, fuzzy_end - norm_offset);
+    let first_start = offsets.partition_point(|entry| entry.0 < rel_start);
+    let first_end = offsets.partition_point(|entry| entry.0 < rel_end);
+    let last_end = offsets.partition_point(|entry| entry.0 <= rel_end);
+    let start = offsets
+        .get(first_start)
+        .filter(|entry| entry.0 == rel_start)?
+        .1;
+    let tight_end = offsets.get(first_end).filter(|entry| entry.0 == rel_end)?.1;
+    let greedy_end = offsets[..last_end]
+        .last()
+        .filter(|entry| entry.0 == rel_end)?
+        .1;
+    Some((
+        orig_offset + start,
+        orig_offset + tight_end,
+        orig_offset + greedy_end,
+    ))
 }
 
 fn text_matches(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
@@ -2702,15 +2790,43 @@ fn text_matches(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
-fn contract_edit_not_found(path: &str, index: usize, total: usize) -> ToolError {
-    if total == 1 {
-        ToolError::execution_failed(format!(
+fn contract_edit_not_found(
+    base: &str,
+    old_text: &str,
+    path: &str,
+    index: usize,
+    total: usize,
+    has_raw_bytes: bool,
+) -> ToolError {
+    let header = if total == 1 {
+        format!(
             "Could not find the exact text in {path}. The old text must match exactly including all whitespace and newlines."
-        ))
+        )
     } else {
-        ToolError::execution_failed(format!(
+        format!(
             "Could not find edits[{index}] in {path}. The oldText must match exactly including all whitespace and newlines."
-        ))
+        )
+    };
+    let display_base: Cow<'_, str> = if has_raw_bytes {
+        Cow::Owned(
+            base.chars()
+                .map(|ch| {
+                    if is_raw_byte_placeholder(ch) {
+                        '\u{FFFD}'
+                    } else {
+                        ch
+                    }
+                })
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(base)
+    };
+    let hint = nearest_match_hint(display_base.as_ref(), old_text, false, false);
+    if hint.is_empty() {
+        ToolError::execution_failed(header)
+    } else {
+        ToolError::execution_failed(format!("{header}\n{}", hint.trim_end()))
     }
 }
 
@@ -2857,14 +2973,15 @@ fn line_spans(text: &str) -> Vec<(usize, usize)> {
 
 fn touched_line_range(
     spans: &[(usize, usize)],
-    edit: &ResolvedContractEdit,
+    match_start: usize,
+    match_end: usize,
 ) -> Result<(usize, usize), ToolError> {
     let start = spans
         .iter()
-        .position(|(line_start, line_end)| edit.start >= *line_start && edit.start < *line_end)
+        .position(|(line_start, line_end)| match_start >= *line_start && match_start < *line_end)
         .ok_or_else(|| ToolError::execution_failed("edit match fell outside the file"))?;
     let mut end = start;
-    while end < spans.len() && spans[end].1 < edit.end {
+    while end < spans.len() && spans[end].1 < match_end {
         end += 1;
     }
     if end >= spans.len() {
@@ -2875,41 +2992,193 @@ fn touched_line_range(
     Ok((start, end + 1))
 }
 
-fn apply_fuzzy_edits_preserving_other_lines(
-    original: &str,
-    normalized: &str,
-    edits: &[ResolvedContractEdit],
+struct MappedContractEdit {
+    index: usize,
+    start: usize,
+    end: usize,
+    tight_end: usize,
+    replacement: String,
+}
+
+enum ResolvedEditKind {
+    Exact {
+        start: usize,
+        end: usize,
+    },
+    Fuzzy {
+        fuzzy_start: usize,
+        fuzzy_end: usize,
+    },
+}
+
+struct PendingContractEdit {
+    index: usize,
+    replacement: String,
+    kind: ResolvedEditKind,
+}
+
+fn normalized_offset_in_original(original: &str, byte_offset: usize) -> usize {
+    let prefix = &original[..byte_offset];
+    let rest_of_line = original[byte_offset..]
+        .split('\n')
+        .next()
+        .unwrap_or_default();
+    if rest_of_line.trim_end().is_empty() {
+        normalize_contract_fuzzy(prefix).len()
+    } else {
+        let mut with_sentinel = String::with_capacity(prefix.len() + 1);
+        with_sentinel.push_str(prefix);
+        with_sentinel.push('a');
+        normalize_contract_fuzzy(&with_sentinel)
+            .len()
+            .saturating_sub(1)
+    }
+}
+
+fn finalize_mapped_edits(
+    mut edits: Vec<MappedContractEdit>,
+    path: &str,
+) -> Result<Vec<ResolvedContractEdit>, ToolError> {
+    edits.sort_by_key(|edit| (edit.start, edit.tight_end, edit.end));
+    for index in 1..edits.len() {
+        let next_start = edits[index].start;
+        let next_index = edits[index].index;
+        let previous = &mut edits[index - 1];
+        if previous.tight_end > next_start {
+            return Err(ToolError::execution_failed(format!(
+                "edits[{}] and edits[{}] overlap in {path}; merge them or target separate regions",
+                previous.index, next_index
+            )));
+        }
+        if previous.end > next_start {
+            previous.end = next_start;
+        }
+    }
+    Ok(edits
+        .into_iter()
+        .map(|edit| ResolvedContractEdit {
+            index: edit.index,
+            start: edit.start,
+            end: edit.end,
+            replacement: edit.replacement,
+        })
+        .collect())
+}
+
+fn apply_mixed_contract_edits(
+    base: &str,
+    fuzzy_base: &str,
+    pending: Vec<PendingContractEdit>,
+    path: &str,
     has_raw_bytes: bool,
 ) -> Result<String, ToolError> {
-    let original_lines = lines_with_endings(original);
-    let original_spans = line_spans(original);
-    let spans = line_spans(normalized);
-    if original_lines.len() != spans.len() {
+    let original_lines = lines_with_endings(base);
+    let original_spans = line_spans(base);
+    let fuzzy_spans = line_spans(fuzzy_base);
+    if original_lines.len() != fuzzy_spans.len() {
         return Err(ToolError::execution_failed(
             "fuzzy edit could not preserve the file's untouched lines",
         ));
     }
 
-    #[derive(Debug)]
+    struct PlacedEdit {
+        start_line: usize,
+        end_line: usize,
+        sort_pos: usize,
+        pending: PendingContractEdit,
+        mapped: Option<MappedContractEdit>,
+    }
+
+    let mut placed = Vec::with_capacity(pending.len());
+    let mut all_mapped = true;
+    for item in pending {
+        match item.kind {
+            ResolvedEditKind::Exact { start, end } => {
+                let (start_line, end_line) = touched_line_range(&original_spans, start, end)?;
+                let mapped = MappedContractEdit {
+                    index: item.index,
+                    start,
+                    end,
+                    tight_end: end,
+                    replacement: item.replacement.clone(),
+                };
+                placed.push(PlacedEdit {
+                    start_line,
+                    end_line,
+                    sort_pos: start,
+                    pending: item,
+                    mapped: Some(mapped),
+                });
+            }
+            ResolvedEditKind::Fuzzy {
+                fuzzy_start,
+                fuzzy_end,
+            } => {
+                let (start_line, end_line) =
+                    touched_line_range(&fuzzy_spans, fuzzy_start, fuzzy_end)?;
+                let orig_start = original_spans[start_line].0;
+                let orig_end = original_spans[end_line - 1].1;
+                let norm_start = fuzzy_spans[start_line].0;
+                let norm_end = fuzzy_spans[end_line - 1].1;
+                let mapped = remap_single_fuzzy_edit(
+                    &base[orig_start..orig_end],
+                    &fuzzy_base[norm_start..norm_end],
+                    fuzzy_start,
+                    fuzzy_end,
+                    norm_start,
+                    orig_start,
+                )
+                .map(|(start, tight_end, end)| MappedContractEdit {
+                    index: item.index,
+                    start,
+                    end,
+                    tight_end,
+                    replacement: item.replacement.clone(),
+                });
+                if mapped.is_none() {
+                    all_mapped = false;
+                }
+                let sort_pos = mapped.as_ref().map_or(fuzzy_start, |m| m.start);
+                placed.push(PlacedEdit {
+                    start_line,
+                    end_line,
+                    sort_pos,
+                    pending: item,
+                    mapped,
+                });
+            }
+        }
+    }
+
+    if all_mapped {
+        let mapped = placed
+            .into_iter()
+            .filter_map(|item| item.mapped)
+            .collect::<Vec<_>>();
+        let resolved = finalize_mapped_edits(mapped, path)?;
+        return apply_resolved_edits(base, &resolved, 0, has_raw_bytes);
+    }
+
+    placed.sort_by_key(|item| (item.start_line, item.end_line, item.sort_pos));
+
     struct Group {
         start_line: usize,
         end_line: usize,
-        edits: Vec<ResolvedContractEdit>,
+        items: Vec<PlacedEdit>,
     }
 
     let mut groups: Vec<Group> = Vec::new();
-    for edit in edits {
-        let (start_line, end_line) = touched_line_range(&spans, edit)?;
+    for item in placed {
         if let Some(group) = groups.last_mut()
-            && start_line < group.end_line
+            && item.start_line < group.end_line
         {
-            group.end_line = group.end_line.max(end_line);
-            group.edits.push(edit.clone());
+            group.end_line = group.end_line.max(item.end_line);
+            group.items.push(item);
         } else {
             groups.push(Group {
-                start_line,
-                end_line,
-                edits: vec![edit.clone()],
+                start_line: item.start_line,
+                end_line: item.end_line,
+                items: vec![item],
             });
         }
     }
@@ -2921,21 +3190,68 @@ fn apply_fuzzy_edits_preserving_other_lines(
         for line in &original_lines[original_line..group.start_line] {
             append_contract_text(&mut result, &mut encoded_size, line, has_raw_bytes)?;
         }
-        let group_start = spans[group.start_line].0;
-        let group_end = spans[group.end_line - 1].1;
-        let group_original =
-            &original[original_spans[group.start_line].0..original_spans[group.end_line - 1].1];
-        let group_normalized = &normalized[group_start..group_end];
-        let replacement =
-            match remap_fuzzy_edits(group_original, group_normalized, &group.edits, group_start) {
-                Some(edits) => apply_resolved_edits(group_original, &edits, 0, has_raw_bytes)?,
-                None => apply_resolved_edits(
-                    group_normalized,
-                    &group.edits,
-                    group_start,
-                    has_raw_bytes,
-                )?,
-            };
+        let group_orig_start = original_spans[group.start_line].0;
+        let group_orig_end = original_spans[group.end_line - 1].1;
+        let group_original = &base[group_orig_start..group_orig_end];
+        let replacement = if group.items.iter().all(|item| item.mapped.is_some()) {
+            let mapped = group
+                .items
+                .into_iter()
+                .filter_map(|item| item.mapped)
+                .collect::<Vec<_>>();
+            let resolved = finalize_mapped_edits(mapped, path)?;
+            apply_resolved_edits(group_original, &resolved, group_orig_start, has_raw_bytes)?
+        } else {
+            let group_norm_start = fuzzy_spans[group.start_line].0;
+            let group_norm_end = fuzzy_spans[group.end_line - 1].1;
+            let group_normalized = &fuzzy_base[group_norm_start..group_norm_end];
+            let mut resolved = group
+                .items
+                .into_iter()
+                .map(|item| match item.pending.kind {
+                    ResolvedEditKind::Fuzzy {
+                        fuzzy_start,
+                        fuzzy_end,
+                    } => Ok(ResolvedContractEdit {
+                        index: item.pending.index,
+                        start: fuzzy_start - group_norm_start,
+                        end: fuzzy_end - group_norm_start,
+                        replacement: item.pending.replacement,
+                    }),
+                    ResolvedEditKind::Exact { start, end } => {
+                        let norm_start =
+                            normalized_offset_in_original(group_original, start - group_orig_start);
+                        let norm_end =
+                            normalized_offset_in_original(group_original, end - group_orig_start);
+                        if norm_start > norm_end
+                            || norm_end > group_normalized.len()
+                            || !group_normalized.is_char_boundary(norm_start)
+                            || !group_normalized.is_char_boundary(norm_end)
+                        {
+                            return Err(ToolError::execution_failed(
+                                "fuzzy edit could not preserve the file's untouched lines",
+                            ));
+                        }
+                        Ok(ResolvedContractEdit {
+                            index: item.pending.index,
+                            start: norm_start,
+                            end: norm_end,
+                            replacement: item.pending.replacement,
+                        })
+                    }
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?;
+            resolved.sort_by_key(|edit| (edit.start, edit.end));
+            for pair in resolved.windows(2) {
+                if pair[0].end > pair[1].start {
+                    return Err(ToolError::execution_failed(format!(
+                        "edits[{}] and edits[{}] overlap in {path}; merge them or target separate regions",
+                        pair[0].index, pair[1].index
+                    )));
+                }
+            }
+            apply_resolved_edits(group_normalized, &resolved, 0, has_raw_bytes)?
+        };
         append_contract_text(&mut result, &mut encoded_size, &replacement, has_raw_bytes)?;
         original_line = group.end_line;
     }
@@ -2951,73 +3267,93 @@ fn apply_contract_edits(
     path: &str,
     has_raw_bytes: bool,
 ) -> Result<String, ToolError> {
-    let fuzzy_base = normalize_contract_fuzzy(base);
-    let initial = edits
-        .iter()
-        .map(|edit| {
-            if base.contains(&edit.old_text) {
-                Ok(false)
-            } else if fuzzy_base.contains(&normalize_contract_fuzzy(&edit.old_text)) {
-                Ok(true)
-            } else {
-                Err(contract_edit_not_found(path, edit.index, edits.len()))
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let use_fuzzy = initial.into_iter().any(|used| used);
-    let replacement_base = if use_fuzzy { fuzzy_base.as_str() } else { base };
+    let mut fuzzy_base: Option<String> = None;
+    let mut pending = Vec::with_capacity(edits.len());
+    let mut any_fuzzy = false;
 
-    let mut resolved = Vec::with_capacity(edits.len());
     for edit in edits {
-        let exact = text_matches(replacement_base, &edit.old_text);
+        let exact = text_matches(base, &edit.old_text);
+        if exact.len() == 1 {
+            let (start, end) = exact[0];
+            pending.push(PendingContractEdit {
+                index: edit.index,
+                replacement: edit.new_text.clone(),
+                kind: ResolvedEditKind::Exact { start, end },
+            });
+            continue;
+        }
+        if exact.len() > 1 {
+            return Err(contract_edit_duplicate(
+                path,
+                edit.index,
+                edits.len(),
+                exact.len(),
+            ));
+        }
+
+        let fuzzy = fuzzy_base.get_or_insert_with(|| normalize_contract_fuzzy(base));
         let fuzzy_old = normalize_contract_fuzzy(&edit.old_text);
-        let fuzzy_occurrences = text_matches(&fuzzy_base, &fuzzy_old).len();
-        if fuzzy_occurrences > 1 {
+        let fuzzy_matches = text_matches(fuzzy, &fuzzy_old);
+        let Some(&(fuzzy_start, fuzzy_end)) = fuzzy_matches.first() else {
+            return Err(contract_edit_not_found(
+                base,
+                &edit.old_text,
+                path,
+                edit.index,
+                edits.len(),
+                has_raw_bytes,
+            ));
+        };
+        if fuzzy_matches.len() > 1 {
             return Err(contract_edit_duplicate(
                 path,
                 edit.index,
                 edits.len(),
-                fuzzy_occurrences,
+                fuzzy_matches.len(),
             ));
         }
-        let matches = if exact.is_empty() {
-            text_matches(replacement_base, &fuzzy_old)
-        } else {
-            exact
-        };
-        let Some(&(start, end)) = matches.first() else {
-            return Err(contract_edit_not_found(path, edit.index, edits.len()));
-        };
-        if matches.len() > 1 {
-            return Err(contract_edit_duplicate(
-                path,
-                edit.index,
-                edits.len(),
-                matches.len(),
-            ));
-        }
-        resolved.push(ResolvedContractEdit {
+        any_fuzzy = true;
+        pending.push(PendingContractEdit {
             index: edit.index,
-            start,
-            end,
             replacement: edit.new_text.clone(),
+            kind: ResolvedEditKind::Fuzzy {
+                fuzzy_start,
+                fuzzy_end,
+            },
         });
     }
 
-    resolved.sort_by_key(|edit| (edit.start, edit.end));
-    for pair in resolved.windows(2) {
-        if pair[0].end > pair[1].start {
-            return Err(ToolError::execution_failed(format!(
-                "edits[{}] and edits[{}] overlap in {path}; merge them or target separate regions",
-                pair[0].index, pair[1].index
-            )));
-        }
-    }
-
-    let updated = if use_fuzzy {
-        apply_fuzzy_edits_preserving_other_lines(base, replacement_base, &resolved, has_raw_bytes)?
+    let updated = if any_fuzzy {
+        apply_mixed_contract_edits(
+            base,
+            fuzzy_base.as_deref().unwrap_or_default(),
+            pending,
+            path,
+            has_raw_bytes,
+        )?
     } else {
-        apply_resolved_edits(replacement_base, &resolved, 0, has_raw_bytes)?
+        let mut resolved = pending
+            .into_iter()
+            .map(|item| match item.kind {
+                ResolvedEditKind::Exact { start, end } => ResolvedContractEdit {
+                    index: item.index,
+                    start,
+                    end,
+                    replacement: item.replacement,
+                },
+                ResolvedEditKind::Fuzzy { .. } => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        resolved.sort_by_key(|edit| (edit.start, edit.end));
+        for pair in resolved.windows(2) {
+            if pair[0].end > pair[1].start {
+                return Err(ToolError::execution_failed(format!(
+                    "edits[{}] and edits[{}] overlap in {path}; merge them or target separate regions",
+                    pair[0].index, pair[1].index
+                )));
+            }
+        }
+        apply_resolved_edits(base, &resolved, 0, has_raw_bytes)?
     };
     if updated == base {
         return Err(ToolError::execution_failed(format!(
@@ -3179,7 +3515,7 @@ impl ToolSpec for EditFileTool {
             let char_count = search.chars().count();
             let line_count = search.lines().count();
             return Err(ToolError::invalid_input(format!(
-                "search and replace are identical ({char_count} chars, {line_count} lines), so no change is possible. This usually means `replace` was copied verbatim from `search` instead of carrying the intended edits. Recovery: re-read the file with File action=\"read\", then retry with a `replace` that is genuinely different from `search`; for large multi-line rewrites prefer apply_patch with a unified diff."
+                "search and replace are identical ({char_count} chars, {line_count} lines), so no change is possible. This usually means `replace` was copied verbatim from `search` instead of carrying the intended edits. Recovery: re-read the file with `read`, then retry with a `replace` that is genuinely different from `search`; for large multi-line rewrites prefer apply_patch with a unified diff."
             )));
         }
         if search.is_empty() {
@@ -3249,7 +3585,7 @@ impl ToolSpec for EditFileTool {
                             // missed; show the first lines of the search text
                             // so it can compare against the file's contents.
                             return Err(ToolError::execution_failed(format!(
-                                "Search string not found in {}. The search text starts with:\n{}\n{}Recovery: retry with the search copied from the lines above, or call File with action=\"read\" path=\"{path_str}\" to inspect the current contents.",
+                                "Search string not found in {}. The search text starts with:\n{}\n{}Recovery: retry with the search copied from the lines above, or call `read` with path=\"{path_str}\" to inspect the current contents.",
                                 file_path.display(),
                                 preview_search_for_error(search),
                                 nearest_match_hint(
@@ -3263,7 +3599,7 @@ impl ToolSpec for EditFileTool {
                         [(start, end)] => ((*start, *end), Some("punctuation")),
                         _ => {
                             return Err(ToolError::execution_failed(format!(
-                                "File `edit` search is non-unique after punctuation normalization: matched {} locations in {}. Recovery: call File with action=\"read\" path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                                "File `edit` search is non-unique after punctuation normalization: matched {} locations in {}. Recovery: call `read` with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                                 punct_matches.len(),
                                 file_path.display()
                             )));
@@ -3272,7 +3608,7 @@ impl ToolSpec for EditFileTool {
                 }
                 _ => {
                     return Err(ToolError::execution_failed(format!(
-                        "File `edit` search is non-unique after indentation normalization: matched {} locations in {}. Recovery: call File with action=\"read\" path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                        "File `edit` search is non-unique after indentation normalization: matched {} locations in {}. Recovery: call `read` with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                         indent_matches.len(),
                         file_path.display()
                     )));
@@ -3281,7 +3617,7 @@ impl ToolSpec for EditFileTool {
         } else if exact_count > 1 {
             return Err(ToolError::execution_failed(format!(
                 "File `edit` search is non-unique: matched {} locations in {}. \
-                 Recovery: call File with action=\"read\" path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                 Recovery: call `read` with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                 exact_count,
                 file_path.display()
             )));
@@ -3548,10 +3884,6 @@ fn preprocessor_directive(line: &str) -> Option<&str> {
 /// The file region most like a search that did not match (#6542), with
 /// 1-based line numbers and a note on whitespace / line-ending differences,
 /// so the next edit can copy the real text instead of re-reading the file.
-///
-/// Known limitation: candidates are anchored on the search's first
-/// non-blank line, so a search whose first line is also wrong may report
-/// no similar region even when later lines exist in the file.
 fn nearest_match_hint(
     contents: &str,
     search: &str,
@@ -3578,17 +3910,38 @@ fn nearest_match_hint(
     };
     let window = search_lines.len().min(file_lines.len()).max(1);
 
-    let mut anchors: Vec<(f32, usize)> = file_lines
+    let mut anchor_indices = vec![anchor];
+    if let Some(longest) = search_lines
         .iter()
         .enumerate()
-        .filter(|(index, line)| *index >= anchor && !line.trim().is_empty())
-        .map(|(index, line)| (line_ratio(search_lines[anchor], line), index - anchor))
-        .collect();
-    anchors.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let best = anchors
+        .filter(|(idx, line)| *idx != anchor && !line.trim().is_empty())
+        .max_by_key(|(_, line)| line.trim().len())
+        .map(|(idx, _)| idx)
+    {
+        anchor_indices.push(longest);
+    }
+
+    let mut candidate_starts = std::collections::BTreeSet::new();
+    for anchor_idx in anchor_indices {
+        let mut anchors: Vec<(f32, usize)> = file_lines
+            .iter()
+            .enumerate()
+            .filter(|(index, line)| *index >= anchor_idx && !line.trim().is_empty())
+            .map(|(index, line)| {
+                (
+                    line_ratio(search_lines[anchor_idx], line),
+                    index - anchor_idx,
+                )
+            })
+            .collect();
+        anchors.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, start) in anchors.into_iter().take(8) {
+            candidate_starts.insert(start);
+        }
+    }
+    let best = candidate_starts
         .into_iter()
-        .take(8)
-        .map(|(_, start)| {
+        .map(|start| {
             let end = (start + window).min(file_lines.len());
             let score = search_lines
                 .iter()
@@ -3615,6 +3968,16 @@ fn nearest_match_hint(
         return hint;
     };
     let region = &file_lines[start..end];
+    if let Some(offset) = search_lines
+        .iter()
+        .zip(region.iter())
+        .position(|(want, have)| want != have)
+    {
+        notes.push(format!(
+            "first differing line is line {}",
+            start + offset + 1
+        ));
+    }
     let strip_trailing = |lines: &[&str]| -> Vec<String> {
         lines
             .iter()

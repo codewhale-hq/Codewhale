@@ -50,6 +50,20 @@ impl GitTool {
         required_action(input, self.name, Self::ACTIONS)
     }
 
+    fn allowed_params(action: &str) -> Option<&'static [&'static str]> {
+        match action {
+            "status" | "commit_plan" => Some(&["path"]),
+            "diff" => Some(&["path", "cached", "unified", "rev", "base", "target"]),
+            "log" => Some(&["path", "max_count", "author", "since", "until"]),
+            "show" => Some(&["rev", "path", "patch", "stat", "unified"]),
+            "blame" => Some(&["path", "rev", "start_line", "max_lines", "porcelain"]),
+            "fetch" => Some(&["remote", "refspecs", "path"]),
+            "merge_tree" => Some(&["ours", "theirs", "base", "path"]),
+            "review_scope" => Some(&["query", "rev", "ours", "theirs"]),
+            _ => None,
+        }
+    }
+
     fn strip_action(&self, input: Value) -> Result<Value, ToolError> {
         let mut input = input;
         if let Some(obj) = input.as_object_mut() {
@@ -121,7 +135,7 @@ impl ToolSpec for GitTool {
                 },
                 "rev": {
                     "type": "string",
-                    "description": "Revision to show (action=show) or blame against (action=blame)"
+                    "description": "Revision or range to diff (action=diff, e.g. main..HEAD or HEAD~3), show (action=show), blame against (action=blame), or resolve (action=review_scope)"
                 },
                 "patch": {
                     "type": "boolean",
@@ -162,7 +176,11 @@ impl ToolSpec for GitTool {
                 },
                 "base": {
                     "type": "string",
-                    "description": "Optional merge base (--merge-base); omit and git finds the bases itself (action=merge_tree)"
+                    "description": "Base revision to diff from (action=diff), or optional merge base (--merge-base, action=merge_tree)"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Target revision to diff to; requires base (action=diff)"
                 }
             },
             "required": ["action"]
@@ -170,7 +188,11 @@ impl ToolSpec for GitTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::ReadOnly, ToolCapability::Sandboxable]
+        vec![
+            ToolCapability::Network,
+            ToolCapability::Sandboxable,
+            ToolCapability::RequiresApproval,
+        ]
     }
 
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
@@ -204,6 +226,13 @@ impl ToolSpec for GitTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let action = self.required_action(&input)?;
         let input = self.strip_action(input)?;
+        let Some(allowed) = Self::allowed_params(&action) else {
+            return Err(ToolError::invalid_input(format!(
+                "Unknown Git action \"{action}\"; nothing was run. Pass one of: {}.",
+                Self::ACTIONS.join(", ")
+            )));
+        };
+        validate_action_params(&action, &input, allowed)?;
 
         match action.as_str() {
             "status" => GitStatusTool.execute(input, context).await,
@@ -215,12 +244,31 @@ impl ToolSpec for GitTool {
             "fetch" => GitFetchTool.execute(input, context).await,
             "merge_tree" => GitMergeTreeTool.execute(input, context).await,
             "review_scope" => review_scope(input, context).await,
-            other => Err(ToolError::invalid_input(format!(
-                "Unknown Git action \"{other}\"; nothing was run. Pass one of: {}.",
-                Self::ACTIONS.join(", ")
-            ))),
+            _ => unreachable!(),
         }
     }
+}
+
+fn validate_action_params(action: &str, input: &Value, allowed: &[&str]) -> Result<(), ToolError> {
+    let Some(object) = input.as_object() else {
+        return Err(ToolError::invalid_input(
+            "Git tool input must be a JSON object, e.g. {\"action\": \"status\"}",
+        ));
+    };
+    let mut unexpected: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect();
+    if unexpected.is_empty() {
+        return Ok(());
+    }
+    unexpected.sort_unstable();
+    Err(ToolError::invalid_input(format!(
+        "Unexpected parameter(s) for Git action=\"{action}\": {}. Allowed parameters for \"{action}\": {}.",
+        unexpected.join(", "),
+        allowed.join(", ")
+    )))
 }
 
 fn apply_review_git_options(command: &mut std::process::Command, args: Vec<String>) {
@@ -516,5 +564,178 @@ mod tests {
             .map(|value| value.as_str().expect("string"))
             .collect();
         assert_eq!(advertised, GitTool::ACTIONS);
+    }
+
+    #[test]
+    fn capabilities_reflect_fetch_while_keeping_inspection_actions_read_only() {
+        let tool = GitTool::new("Git");
+        let caps = tool.capabilities();
+        assert!(!caps.contains(&ToolCapability::ReadOnly), "{caps:?}");
+        assert!(!tool.is_read_only());
+        assert!(caps.contains(&ToolCapability::Network), "{caps:?}");
+        assert!(caps.contains(&ToolCapability::Sandboxable), "{caps:?}");
+
+        for action in [
+            "status",
+            "diff",
+            "log",
+            "show",
+            "blame",
+            "commit_plan",
+            "merge_tree",
+            "review_scope",
+        ] {
+            assert!(
+                tool.is_read_only_for(&json!({"action": action})),
+                "{action} must stay read-only"
+            );
+        }
+        assert!(!tool.is_read_only_for(&json!({"action": "fetch"})));
+    }
+
+    #[tokio::test]
+    async fn diff_supports_rev_base_target_and_rejects_flag_injection() {
+        if !<codewhale_dependencies::Git as codewhale_dependencies::ExternalTool>::available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.name", "t"]);
+        run(&["config", "user.email", "t@example.com"]);
+
+        std::fs::write(tmp.path().join("a.txt"), "one\n").expect("write a");
+        std::fs::write(tmp.path().join("b.txt"), "b1\n").expect("write b");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "c1"]);
+
+        std::fs::write(tmp.path().join("a.txt"), "two\n").expect("write a");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "c2"]);
+
+        std::fs::write(tmp.path().join("a.txt"), "three\n").expect("write a");
+        std::fs::write(tmp.path().join("b.txt"), "b2\n").expect("write b");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "c3"]);
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = GitTool::new("Git");
+
+        let rev_diff = tool
+            .execute(json!({"action": "diff", "rev": "HEAD~1..HEAD"}), &ctx)
+            .await
+            .expect("rev range diff");
+        assert!(rev_diff.success, "{}", rev_diff.content);
+        assert!(rev_diff.content.contains("-two"), "{}", rev_diff.content);
+        assert!(rev_diff.content.contains("+three"), "{}", rev_diff.content);
+        assert!(rev_diff.content.contains("+b2"), "{}", rev_diff.content);
+
+        let base_target = tool
+            .execute(
+                json!({
+                    "action": "diff",
+                    "base": "HEAD~2",
+                    "target": "HEAD~1",
+                    "path": "a.txt"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("base..target diff");
+        assert!(base_target.success, "{}", base_target.content);
+        assert!(
+            base_target.content.contains("-one"),
+            "{}",
+            base_target.content
+        );
+        assert!(
+            base_target.content.contains("+two"),
+            "{}",
+            base_target.content
+        );
+        assert!(
+            !base_target.content.contains("b.txt"),
+            "{}",
+            base_target.content
+        );
+
+        let three_dot = tool
+            .execute(json!({"action": "diff", "rev": "HEAD~1...HEAD"}), &ctx)
+            .await
+            .expect("three-dot diff");
+        assert!(three_dot.success, "{}", three_dot.content);
+        assert!(
+            three_dot.content.contains("+three"),
+            "{}",
+            three_dot.content
+        );
+
+        let pwn_path = tmp.path().join("should_not_exist");
+        let pwn_flag = format!("--output={}", pwn_path.display());
+        for bad in [
+            json!({"action": "diff", "rev": pwn_flag}),
+            json!({"action": "diff", "rev": format!(" --output={}", pwn_path.display())}),
+            json!({"action": "diff", "rev": format!("HEAD~1..--output={}", pwn_path.display())}),
+            json!({"action": "diff", "rev": "HEAD\0--ext-diff"}),
+            json!({"action": "diff", "base": "--ext-diff"}),
+            json!({"action": "diff", "base": "HEAD~1", "target": "--output=/tmp/pwn"}),
+            json!({"action": "diff", "base": "/etc/passwd", "target": "/etc/hosts"}),
+            json!({"action": "diff", "target": "HEAD"}),
+            json!({"action": "diff", "rev": "HEAD~1..HEAD", "base": "HEAD~1"}),
+            json!({"action": "diff", "rev": "HEAD~1..HEAD", "cached": true}),
+            json!({"action": "diff", "base": "HEAD~1", "target": "HEAD", "cached": true}),
+        ] {
+            let error = tool
+                .execute(bad.clone(), &ctx)
+                .await
+                .expect_err(&format!("must reject {bad}"));
+            assert!(
+                matches!(error, ToolError::InvalidInput(_)),
+                "expected invalid_input for {bad}, got {error:?}"
+            );
+        }
+        assert!(!pwn_path.exists());
+    }
+
+    #[tokio::test]
+    async fn per_action_parameter_validation_rejects_cross_action_keys() {
+        let schema = GitTool::new("Git").input_schema();
+        let props = schema["properties"]
+            .as_object()
+            .expect("Git schema properties");
+        for action in GitTool::ACTIONS {
+            let allowed = GitTool::allowed_params(action)
+                .unwrap_or_else(|| panic!("missing allowed_params for {action}"));
+            for key in allowed {
+                assert!(
+                    props.contains_key(*key),
+                    "allowed param {key} for {action} missing from schema"
+                );
+            }
+        }
+
+        let status_err = err(json!({"action": "status", "rev": "HEAD"})).await;
+        assert!(status_err.contains("rev"), "{status_err}");
+        assert!(status_err.contains("Allowed parameters"), "{status_err}");
+        assert!(status_err.contains("path"), "{status_err}");
+
+        let diff_err = err(json!({"action": "diff", "ours": "main", "theirs": "HEAD"})).await;
+        assert!(diff_err.contains("ours, theirs"), "{diff_err}");
+        assert!(diff_err.contains("rev, base, target"), "{diff_err}");
+
+        let log_err = err(json!({"action": "log", "cached": true})).await;
+        assert!(log_err.contains("cached"), "{log_err}");
+        assert!(log_err.contains("max_count"), "{log_err}");
     }
 }

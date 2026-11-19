@@ -602,9 +602,13 @@ async fn primitive_edit_applies_disjoint_matches_against_original() {
         "ALPHA-LONG\nbeta\ng\n"
     );
     assert_eq!(
-        result.content,
-        "Successfully replaced 2 block(s) in doc.txt."
+        result.content.lines().next(),
+        Some("Successfully replaced 2 block(s) in doc.txt.")
     );
+    assert!(result.content.contains("-alpha"), "{}", result.content);
+    assert!(result.content.contains("+ALPHA-LONG"), "{}", result.content);
+    assert!(result.content.contains("-gamma"), "{}", result.content);
+    assert!(result.content.contains("+g"), "{}", result.content);
 }
 
 #[tokio::test]

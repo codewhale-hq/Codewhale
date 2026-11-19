@@ -597,9 +597,16 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     .await
     .expect("edit");
     assert_eq!(
-        result.content,
-        "Successfully replaced 1 block(s) in doc.txt."
+        result.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in doc.txt.")
     );
+    assert!(
+        result.content.contains("--- a/doc.txt"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains("-beta"), "{}", result.content);
+    assert!(result.content.contains("+two"), "{}", result.content);
     assert_eq!(
         std::fs::read(&path).expect("updated"),
         "\u{FEFF}one\r\ntwo\r\n".as_bytes()
@@ -1170,4 +1177,244 @@ async fn contract_read_admits_only_an_image_the_user_attached_from_outside_the_w
             .await
             .expect_err("an outside image the user never attached stays refused");
     assert!(matches!(error, ToolError::PathEscape { .. }), "{error:?}");
+}
+
+#[tokio::test]
+async fn contract_edit_returns_bounded_unified_diff_and_truncates_large_diffs() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+
+    let rs_path = temporary.path().join("sample.rs");
+    std::fs::write(&rs_path, "fn main() {\n    let x = 1;\n}\n").expect("fixture");
+    let small = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "sample.rs",
+            "edits": [{"oldText": "let x = 1;", "newText": "let   x=2;"}]
+        }),
+        &context,
+    )
+    .await
+    .expect("small edit");
+    assert_eq!(
+        small.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in sample.rs.")
+    );
+    assert!(
+        small.content.contains("--- a/sample.rs"),
+        "{}",
+        small.content
+    );
+    assert!(
+        small.content.contains("+++ b/sample.rs"),
+        "{}",
+        small.content
+    );
+    assert!(
+        small.content.contains("-    let x = 1;"),
+        "{}",
+        small.content
+    );
+    let final_rs = std::fs::read_to_string(&rs_path).expect("read rs");
+    let expected_line = final_rs
+        .lines()
+        .find(|line| line.contains('2'))
+        .expect("updated line");
+    assert!(
+        small.content.contains(&format!("+{expected_line}")),
+        "{}",
+        small.content
+    );
+
+    let big_before: String = (0..220).map(|i| format!("before_line_{i:03}\n")).collect();
+    let big_after: String = (0..220).map(|i| format!("after_line_{i:03}\n")).collect();
+    let big_path = temporary.path().join("big.txt");
+    std::fs::write(&big_path, &big_before).expect("fixture");
+    let big = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "big.txt",
+            "edits": [{"oldText": big_before, "newText": big_after}]
+        }),
+        &context,
+    )
+    .await
+    .expect("large edit");
+    assert_eq!(
+        big.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in big.txt.")
+    );
+    assert!(big.content.contains("diff truncated:"), "{}", big.content);
+    assert!(big.content.contains("+220/-220"), "{}", big.content);
+    assert!(
+        big.content.len() <= CONTRACT_DIFF_MAX_BYTES + 512,
+        "content too large: {}",
+        big.content.len()
+    );
+    let full_meta_diff = big.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("diff string");
+    assert!(full_meta_diff.contains("+after_line_219"));
+
+    let created_body: String = (0..180).map(|i| format!("created_line_{i:03}\n")).collect();
+    let created = WriteFileTool::execute_contract_write(
+        json!({"path": "brand_new.txt", "content": created_body}),
+        &context,
+    )
+    .await
+    .expect("create large file");
+    assert!(
+        created.content.starts_with("Successfully wrote "),
+        "{}",
+        created.content
+    );
+    assert!(
+        created.content.contains("created file has 180 lines"),
+        "{}",
+        created.content
+    );
+    assert!(
+        created.content.len() <= CONTRACT_CREATE_PREVIEW_MAX_BYTES + 512,
+        "created content too large: {}",
+        created.content.len()
+    );
+
+    let updated = WriteFileTool::execute_contract_write(
+        json!({"path": "sample.rs", "content": "fn main() {\n    let x = 99;\n}\n"}),
+        &context,
+    )
+    .await
+    .expect("update existing file");
+    assert!(
+        updated.content.starts_with("Successfully wrote "),
+        "{}",
+        updated.content
+    );
+    assert!(
+        updated.content.contains("+    let x = 99;"),
+        "{}",
+        updated.content
+    );
+}
+
+#[test]
+fn apply_contract_edits_accepts_unique_exact_match_despite_fuzzy_ambiguity() {
+    let base = "let a = \"hi\";\nlet a = “hi”;\n";
+    let updated = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "let a = \"hi\";".to_string(),
+            new_text: "let a = \"bye\";".to_string(),
+        }],
+        "quotes.rs",
+        false,
+    )
+    .expect("unique exact match must succeed even when fuzzy matches 2");
+    assert_eq!(updated, "let a = \"bye\";\nlet a = “hi”;\n");
+
+    let ws_base = "line one\nline one   \n";
+    let ws_updated = apply_contract_edits(
+        ws_base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "line one\n".to_string(),
+            new_text: "LINE ONE\n".to_string(),
+        }],
+        "spaces.txt",
+        false,
+    )
+    .expect("unique exact match with trailing-space twin must succeed");
+    assert_eq!(ws_updated, "LINE ONE\nline one   \n");
+}
+
+#[test]
+fn apply_contract_edits_uses_fuzzy_fallback_per_edit_without_mutating_exact_items() {
+    let base = "alpha “keep”   \nmid\nShe said “hello”—today.\n";
+    let updated = apply_contract_edits(
+        base,
+        &[
+            ContractEdit {
+                index: 0,
+                old_text: "alpha".to_string(),
+                new_text: "ALPHA".to_string(),
+            },
+            ContractEdit {
+                index: 1,
+                old_text: "She said \"hello\"-today.".to_string(),
+                new_text: "She said hello.".to_string(),
+            },
+        ],
+        "mixed.txt",
+        false,
+    )
+    .expect("mixed exact + fuzzy batch");
+    assert_eq!(updated, "ALPHA “keep”   \nmid\nShe said hello.\n");
+
+    let overlap = apply_contract_edits(
+        "She said “hello” today\n",
+        &[
+            ContractEdit {
+                index: 0,
+                old_text: "She said".to_string(),
+                new_text: "He said".to_string(),
+            },
+            ContractEdit {
+                index: 1,
+                old_text: "said \"hello\"".to_string(),
+                new_text: "whispered hi".to_string(),
+            },
+        ],
+        "overlap.txt",
+        false,
+    )
+    .expect_err("overlapping exact and fuzzy edits must fail");
+    assert!(overlap.to_string().contains("overlap"), "{overlap}");
+}
+
+#[test]
+fn contract_edit_not_found_includes_closest_match_snippet() {
+    let base = "fn alpha() {\n    let count = 1;\n    println!(\"{count}\");\n}\n";
+    let error = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "fn alpha() {\n    let count = 2;\n    println!(\"{count}\");\n}".to_string(),
+            new_text: "fn alpha() {}".to_string(),
+        }],
+        "src/lib.rs",
+        false,
+    )
+    .expect_err("mismatch must fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("Could not find the exact text in src/lib.rs."),
+        "{message}"
+    );
+    assert!(message.contains("Closest match (lines 1-4"), "{message}");
+    assert!(message.contains("2\t    let count = 1;"), "{message}");
+    assert!(
+        message.contains("first differing line is line 2"),
+        "{message}"
+    );
+
+    let first_line_wrong = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "// stale comment\n    let count = 1;\n    println!(\"{count}\");\n}"
+                .to_string(),
+            new_text: "fn beta() {}".to_string(),
+        }],
+        "src/lib.rs",
+        false,
+    )
+    .expect_err("first-line mismatch must fail");
+    let first_msg = first_line_wrong.to_string();
+    assert!(
+        first_msg.contains("Closest match (lines 1-4"),
+        "{first_msg}"
+    );
+    assert!(
+        first_msg.contains("first differing line is line 1"),
+        "{first_msg}"
+    );
 }
