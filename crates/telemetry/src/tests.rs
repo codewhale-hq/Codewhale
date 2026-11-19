@@ -2431,6 +2431,7 @@ fn arming_skips_a_busy_privacy_lock_instead_of_wedging_the_launch() {
     buffer::ensure_dir(&root).expect("telemetry root");
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(buffer::lock_path(&root))
         .expect("open lock");
