@@ -1415,8 +1415,11 @@ impl Expander {
         if joined.is_empty()
             || self.seen.contains(&joined)
             || self.seen_extra_deny.contains(&joined)
-            || self.extra_deny.len() >= MAX_COMMANDS
         {
+            return;
+        }
+        if self.extra_deny.len() >= MAX_COMMANDS {
+            self.dynamic = true;
             return;
         }
         self.seen_extra_deny.insert(joined.clone());
@@ -2017,6 +2020,7 @@ impl Expander {
 
     fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
+            self.dynamic = true;
             return;
         }
         let mut child = Expander {
@@ -2057,13 +2061,39 @@ impl Expander {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
-                    if matches!(verb, "develop" | "shell")
-                        && let Some(at) = (verb_idx + 1..tokens.len())
-                            .take_while(|&i| tokens[i] != "--")
-                            .find(|&i| matches!(tokens[i].as_str(), "-c" | "--command"))
-                        && at + 1 < tokens.len()
-                    {
-                        self.record(&slice_line(line, at + 1), depth + 1);
+                    if !matches!(verb, "develop" | "shell") {
+                        continue;
+                    }
+                    for at in verb_idx + 1..tokens.len() {
+                        if tokens[at] == "--" {
+                            break;
+                        }
+                        let attached = if let Some(long) = tokens[at].strip_prefix("--") {
+                            match long.split_once('=') {
+                                Some(("command", value)) => Some(value),
+                                None if long == "command" => Some(""),
+                                _ => None,
+                            }
+                        } else {
+                            tokens[at]
+                                .strip_prefix('-')
+                                .and_then(|flags| flags.find('c').map(|off| &flags[off + 1..]))
+                        };
+                        match attached {
+                            Some("") => {
+                                if at + 1 < tokens.len() {
+                                    self.record(&slice_line(line, at + 1), depth + 1);
+                                }
+                            }
+                            Some(attached) => {
+                                self.code_payload(attached, dynamic[at], depth);
+                                let mut payload = slice_line(line, at);
+                                payload.words[0] = attached.to_string();
+                                payload.odd[0] = false;
+                                self.record(&payload, depth + 1);
+                            }
+                            None => {}
+                        }
                     }
                 }
             }

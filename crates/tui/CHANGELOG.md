@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Denied-command bypass through `nix develop`/`nix shell` `--command=` spelling:** command policy only recognized a separated `-c 'cmd'`/`--command 'cmd'` after `nix develop` or `nix shell`, so `nix develop --command='rm -rf /'` (and attached short forms such as `-crm`) hid the payload from deny rules and a denied command could run when approval prompts are disabled. Attached spellings now emit the payload for deny matching like the separated form already did.
+- **Command policy fails closed when `--` deny candidates overflow:** a line with more than 256 `--`-separated segments previously dropped the extra deny targets silently; the expansion is now marked unresolved, so with deny rules in force it asks or is refused instead of letting the unchecked tail through.
+
 ## [0.10.3] - 2026-11-18
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
