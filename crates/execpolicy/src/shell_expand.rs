@@ -2048,9 +2048,12 @@ impl Expander {
         depth: usize,
     ) {
         let tokens = &line.words;
+        let mut truncated = false;
         match name {
             "nix" => {
-                for verb_idx in launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC) {
+                for verb_idx in
+                    launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC, &mut truncated)
+                {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
@@ -2088,7 +2091,9 @@ impl Expander {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 } else {
-                    for verb_idx in launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
+                    {
                         if tokens
                             .get(verb_idx)
                             .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
@@ -2111,7 +2116,8 @@ impl Expander {
                 if ssh_skips_remote_command(&tokens[head + 1..]) {
                     return;
                 }
-                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC) {
+                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated)
+                {
                     if landing < tokens.len() {
                         let rest = &tokens[landing..];
                         let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
@@ -2126,7 +2132,9 @@ impl Expander {
                 if screen_attaches_only(&tokens[head + 1..]) {
                     return;
                 }
-                for landing in resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC) {
+                for landing in
+                    resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC, &mut truncated)
+                {
                     if landing < tokens.len() {
                         self.record(&slice_line(line, landing), depth + 1);
                     }
@@ -2137,7 +2145,9 @@ impl Expander {
             }
             _ => {
                 if name == "launchctl" {
-                    for verb_idx in launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC) {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
+                    {
                         if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
                         }
@@ -2147,7 +2157,9 @@ impl Expander {
                     if launcher.program != name {
                         continue;
                     }
-                    for verb_idx in launcher_verb_targets(tokens, head + 1, launcher.global) {
+                    for verb_idx in
+                        launcher_verb_targets(tokens, head + 1, launcher.global, &mut truncated)
+                    {
                         let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                             continue;
                         };
@@ -2170,8 +2182,12 @@ impl Expander {
                                 operands: 0,
                                 ..*launcher.subcmd
                             };
-                            for image in resolve_wrapper_targets(tokens, verb_idx + 1, &image_spec)
-                            {
+                            for image in resolve_wrapper_targets(
+                                tokens,
+                                verb_idx + 1,
+                                &image_spec,
+                                &mut truncated,
+                            ) {
                                 if image >= tokens.len() {
                                     continue;
                                 }
@@ -2182,9 +2198,12 @@ impl Expander {
                                 }
                             }
                         }
-                        for landing in
-                            resolve_wrapper_targets(tokens, verb_idx + 1, launcher.subcmd)
-                        {
+                        for landing in resolve_wrapper_targets(
+                            tokens,
+                            verb_idx + 1,
+                            launcher.subcmd,
+                            &mut truncated,
+                        ) {
                             for (ep_val, ep_idx) in entrypoints_before(landing) {
                                 let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
                                 self.record(&combined, depth + 1);
@@ -2206,6 +2225,7 @@ impl Expander {
                 }
             }
         }
+        self.dynamic |= truncated;
     }
 
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
@@ -3871,13 +3891,18 @@ fn step_wrapper_option(
     WrapperStep::Landing
 }
 
-fn launcher_verb_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
-    let mut targets = resolve_wrapper_targets(tokens, start, spec);
+fn launcher_verb_targets(
+    tokens: &[String],
+    start: usize,
+    spec: &Wrapper,
+    truncated: &mut bool,
+) -> Vec<usize> {
+    let mut targets = resolve_wrapper_targets(tokens, start, spec, truncated);
     let mut index = 0;
     while index < targets.len() {
         let at = targets[index];
         if tokens.get(at).is_some_and(String::is_empty) {
-            for next in resolve_wrapper_targets(tokens, at + 1, spec) {
+            for next in resolve_wrapper_targets(tokens, at + 1, spec, truncated) {
                 if !targets.contains(&next) {
                     targets.push(next);
                 }
@@ -3889,12 +3914,21 @@ fn launcher_verb_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec
     targets
 }
 
-fn resolve_wrapper_targets(tokens: &[String], start: usize, spec: &Wrapper) -> Vec<usize> {
+fn resolve_wrapper_targets(
+    tokens: &[String],
+    start: usize,
+    spec: &Wrapper,
+    truncated: &mut bool,
+) -> Vec<usize> {
     let mut landings = Vec::new();
     let mut seen = HashSet::new();
     let mut stack = vec![(start, spec.operands, false)];
     while let Some((index, operands, options_done)) = stack.pop() {
-        if !seen.insert((index, operands, options_done)) || seen.len() >= MAX_HEAD_STATES {
+        if !seen.insert((index, operands, options_done)) {
+            continue;
+        }
+        if seen.len() >= MAX_HEAD_STATES {
+            *truncated = true;
             continue;
         }
         if index >= tokens.len() {
@@ -4208,6 +4242,16 @@ mod tests {
         assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
         assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
         assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
+    }
+
+    #[test]
+    fn launcher_option_walk_past_state_limit_is_dynamic() {
+        for prefix in ["docker run", "npm", "nix"] {
+            let flags = "-e A ".repeat(1000);
+            let command = format!("{prefix} {flags}alpine rm -rf /");
+            assert!(expand_for_platform(&command, false).dynamic, "{prefix}");
+        }
+        assert!(!expand_for_platform("docker run -e A alpine rm -rf /", false).dynamic);
     }
 
     #[test]
