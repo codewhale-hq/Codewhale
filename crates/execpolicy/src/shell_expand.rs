@@ -1302,6 +1302,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny: Vec::new(),
         seen: HashSet::new(),
         seen_extra_deny: HashSet::new(),
+        extra_deny_dropped: false,
         deny_suffix_depths: HashMap::new(),
         literal_backslashes: windows,
         dynamic: false,
@@ -1337,6 +1338,7 @@ struct Expander {
     extra_deny: Vec<String>,
     seen: HashSet<String>,
     seen_extra_deny: HashSet<String>,
+    extra_deny_dropped: bool,
     deny_suffix_depths: HashMap<String, usize>,
     literal_backslashes: bool,
     dynamic: bool,
@@ -1417,8 +1419,11 @@ impl Expander {
         if joined.is_empty()
             || self.seen.contains(&joined)
             || self.seen_extra_deny.contains(&joined)
-            || self.extra_deny.len() >= MAX_COMMANDS
         {
+            return;
+        }
+        if self.extra_deny.len() >= MAX_COMMANDS {
+            self.extra_deny_dropped = true;
             return;
         }
         self.seen_extra_deny.insert(joined.clone());
@@ -2040,6 +2045,7 @@ impl Expander {
             extra_deny: Vec::new(),
             seen: HashSet::new(),
             seen_extra_deny: HashSet::new(),
+            extra_deny_dropped: false,
             deny_suffix_depths: std::mem::take(&mut self.deny_suffix_depths),
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
@@ -2051,8 +2057,12 @@ impl Expander {
         };
         child.record(sub, depth);
         self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
+        let child_dropped = child.extra_deny_dropped;
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
+        }
+        if child_dropped || self.extra_deny_dropped {
+            self.deny_suffix_depths.clear();
         }
     }
 
@@ -4225,6 +4235,24 @@ mod tests {
                 "{prefix}"
             );
         }
+    }
+
+    #[test]
+    fn capped_extra_deny_still_finds_deny_after_repeated_suffix() {
+        let pads = (1..=253)
+            .map(|i| format!("p{i}"))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let payload = format!("{pads} ; y -- sudo rm -rf /");
+        let seeds = format!("\"bash -c {payload}\" ; {pads} ; \"y -- sudo rm -rf /\"");
+        let command =
+            format!("{seeds} ; x -- bash -c \"{payload}\" ; x -- bash -c 'w -- sudo rm -rf /'");
+        let expansion = expand_for_platform(&command, false);
+        assert!(
+            expansion.deny_commands().any(|cmd| cmd == "rm -rf /"),
+            "rm -rf / missing from {:?}",
+            expansion.deny_commands().collect::<Vec<_>>()
+        );
     }
 
     #[test]
