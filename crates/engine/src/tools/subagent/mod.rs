@@ -15071,6 +15071,7 @@ impl ToolSpec for AgentTool {
                         ).await);
                     }
                 }
+                let no_fleet_models = matches!(&selected_models, Ok(models) if models.is_empty());
                 let payload = json!({
                     "action": "roster",
                     "count": members.len(),
@@ -15080,7 +15081,12 @@ impl ToolSpec for AgentTool {
                     "models": model_rows,
                     "model_total_count": selected_models.as_ref().map_or(0, Vec::len),
                     "model_load_error": selected_models.err().map(|error| error.to_string()),
-                    "model_help": "Choose an exact model selector with an unpinned type. The session model is allowed for unpinned roles. Model rows describe the selected route independently of role pins. Empty models retains current-provider model/strength choices. Manual role and saved profile pins remain exact.",
+                    "model_help": if no_fleet_models {
+                        "No Fleet is selected, so there are no model rows: an unpinned role accepts the session model or any provider/model this session can route. Manual role and saved profile pins remain exact."
+                    } else {
+                        "Choose an exact model selector with an unpinned type. The session model is allowed for unpinned roles. Model rows describe the selected route independently of role pins. Manual role and saved profile pins remain exact."
+                    },
+                    "cost_basis": "route cost_class uses current uncached text input/output rates; other token classes, tools and future usage may differ",
                     "profiles": profiles,
                     "profile_count": profiles.len(),
                     "profile_total_count": roster.members().iter().filter(|member| member.origin != crate::fleet::roster::ProfileOrigin::BuiltIn).count(),
@@ -20889,7 +20895,6 @@ async fn resolved_spawn_roster_entry(
                 "capability_badges": capabilities.as_ref().map(|facts| &facts.badges),
                 "capability_source": capabilities.as_ref().map(|facts| facts.provenance),
                 "cost_class": cost_class,
-                "cost_basis": "current uncached text input/output rates; other token classes, tools and future usage may differ",
                 "unpriced_reason": audit.unpriced_reason.map(|reason| reason.label()),
                 "reachability": "unverified",
             });
