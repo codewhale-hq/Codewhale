@@ -1998,9 +1998,17 @@ impl App {
     ///
     /// Outside both cases the call falls through to [`Self::submit_input`]
     /// unchanged so normal Enter-to-send behaviour is preserved.
-    pub fn handle_composer_enter(&mut self, protect_paste: bool) -> Option<String> {
+    ///
+    /// `now` must be the Enter event's observed timestamp, not a fresh
+    /// `Instant::now()`: `PasteBurst` records char times in event-observed
+    /// time, so a processing-time probe measures staleness as arrival gap
+    /// *plus* whatever input backlog the loop is carrying. On a loaded
+    /// runner that lag alone can exceed the stream window mid-paste, which
+    /// turns a pasted newline into a submit — the failure the real
+    /// Windows Terminal clipboard harness showed (24 lines joined, or a
+    /// mid-paste modal eating the next lines).
+    pub fn handle_composer_enter(&mut self, protect_paste: bool, now: Instant) -> Option<String> {
         if protect_paste && self.use_paste_burst_detection {
-            let now = Instant::now();
             if self
                 .paste_burst
                 .newline_should_insert_instead_of_submit(now)
@@ -2023,12 +2031,12 @@ impl App {
     /// same two predicates `handle_composer_enter` acts on — the burst
     /// window and the trimmed-empty buffer — without mutating anything.
     #[must_use]
-    pub fn composer_enter_would_submit(&self, protect_paste: bool) -> bool {
+    pub fn composer_enter_would_submit(&self, protect_paste: bool, now: Instant) -> bool {
         if protect_paste
             && self.use_paste_burst_detection
             && self
                 .paste_burst
-                .newline_should_insert_instead_of_submit(Instant::now())
+                .newline_should_insert_instead_of_submit(now)
         {
             return false;
         }
