@@ -263,10 +263,6 @@ impl ToolActivationCache {
                 delta.rejected.push(name.clone());
                 continue;
             }
-            if self.names.contains(name) {
-                batch.push(name.clone());
-                continue;
-            }
             let protected = self
                 .names
                 .iter()
@@ -279,14 +275,12 @@ impl ToolActivationCache {
                 continue;
             }
             batch.push(name.clone());
+            if self.names.contains(name) {
+                continue;
+            }
             self.names.push_back(name.clone());
             while Self::exceeds_budget(&self.names.iter().cloned().collect::<Vec<_>>(), measure)? {
-                let keep = batch
-                    .iter()
-                    .chain(requested.iter())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let Some(index) = self.eviction_candidate(&keep) else {
+                let Some(index) = self.eviction_candidate(&batch) else {
                     break;
                 };
                 if let Some(evicted) = self.names.remove(index) {
@@ -310,6 +304,7 @@ impl ToolActivationCache {
             .cloned()
             .collect();
         delta.evicted.retain(|name| !retained.contains(name));
+        delta.held.retain(|name| !retained.contains(name));
         delta.evicted.sort();
         delta.evicted.dedup();
         delta.rejected.sort();
