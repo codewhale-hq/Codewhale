@@ -2694,6 +2694,28 @@ async fn console_methods_route_to_driver_log_sink() {
 }
 
 #[tokio::test]
+async fn url_host_setter_keeps_an_existing_port_unless_one_is_given() {
+    let value = run_tools(
+        r#"
+        const u = new URL("https://a.example:8443/p");
+        u.host = "new.example";
+        const kept = u.href;
+        u.host = "other.example:9000";
+        return { kept, replaced: u.href };
+        "#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "kept": "https://new.example:8443/p",
+            "replaced": "https://other.example:9000/p",
+        })
+    );
+}
+
+#[tokio::test]
 async fn url_and_url_search_params_parse_resolve_and_sync() {
     let value = run_tools(
         r#"

@@ -1108,7 +1108,10 @@
         const parsed = parseHostAndPort(raw, state.protocol, allowEmpty);
         if (state.protocol === "file:" && parsed.port !== "") return;
         state.hostname = parsed.hostname;
-        state.port = parsed.port;
+        const portGiven = raw.startsWith("[")
+          ? raw.slice(raw.indexOf("]") + 1).startsWith(":")
+          : raw.indexOf(":") !== -1;
+        if (portGiven) state.port = parsed.port;
       } catch (_) {}
     }
 
