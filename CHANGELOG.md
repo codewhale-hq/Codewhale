@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Exported conversations preserve failed/interrupted turn outcomes and error cards show typed error codes:** `/export` (including clipboard / `last-copy.md` recovery copies, Markdown, HTML, and JSON exports) now interleaves failed and interrupted turn outcomes at their `after_message_count` positions with `status`, `ended_at`, optional typed error `code`, and secret-redacted error text, keeping `--no-tools` positions aligned. TUI error cards and error-cell copy/pager output now display the typed error code (for example `[llm_network_error]` or `[llm_rate_limited]`) in muted styling without duplicating codes already in the message, and `SavedTurnOutcome` persists optional `code` backwards-compatibly so resumed error cards and exports retain it. (#7328)
+
 ## [0.10.3] - 2026-11-18
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
