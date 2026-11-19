@@ -40,36 +40,19 @@ Run `/mode` to open the mode picker, or switch directly with `/mode work` or
 `/mode plan`. `operate` and its spellings still parse, as Work, and say that
 Operate was retired, so an older setting or script never errors.
 
-The picker has two groups. **Conversation mode** lists the modes the Engine
-offers, Standard mode and Creator mode, each with a one-line description; a
-mode that cannot be used yet is listed, disabled, with its reason. **Permissions**
-holds Work and Plan, still on `1` and `2`; the conversation modes have no
-number keys. A conversation's mode is chosen before its first message and is
-fixed after it: `/mode creator` or the picker's first group changes a blank
-conversation in place, and after the first message the picker shows the group
-as locked and `/mode creator` is refused with a note to start a new
-conversation. `/new` starts a Standard conversation, `/new creator` starts a
-Creator mode conversation (`--force` still combines). Resume, `/load`, `/fork`
-and `/clear` keep the conversation's saved mode, and the mode name appears in the
-footer when it is not Standard. A mode never changes a permission: Creator
-mode in Plan is still Plan. `codewhale` and `codewhale exec` take
-`--conversation-mode <MODE>` to start a new session in a mode; with `--resume`,
-`--session-id` or `--continue` it must match the session's saved mode, or the
-run exits with code 2 before any model call.
+### Conversation modes
 
-In Creator mode, read-only `plugin_manager` queries run across postures with zero
-prompts, whereas state-changing plugin calls (`install_bundle`, `remove_bundle`,
-`set_bundle`, `set_plugin`) are prepared read-only on `ToolExecutionPlan` and
-gated by the engine before execution. Inside-workspace local changes route
-through Auto-Review's guardian/allow-rules and Full Access (recording the agent
-posture in plugin state), while outside-scope changes — paths outside the
-project, remote specs or local bundles with unresolved npm dependencies (which
-never fetch before approval and land disabled and untrusted), bundles declaring
-stdio MCP connectors or hooks while shell execution is disabled, person-approved
-plugins, and built-in switches — skip the guardian and ask the person directly
-on the approval card even in Auto-Review and Full Access; `Plan`, `sandbox_mode =
-"read-only"`, `Never`, `Background`, sub-agents, and `execute_tools` refuse
-changing plugin calls.
+The `/mode` picker has two groups. **Permissions** holds Work and Plan, on `1`
+and `2`. **Conversation mode** lists the modes the Engine offers, Standard and
+Creator mode, each with a one-line description; a mode that cannot be used yet
+is listed, disabled, with its reason. Conversation modes have no number keys.
+
+A conversation's mode is chosen before its first message and is fixed after
+it. A mode never changes a permission: Creator mode in Plan is still Plan.
+How to start a Creator mode conversation, what it loads and how its plugin
+changes are approved are in [Creator mode](CREATOR_MODE.md).
+
+### Plan and Work
 
 - **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `grep_files`, `bash`, `agent`, `todo_write`, `present`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
@@ -161,9 +144,9 @@ and clear it with `thread/goal/clear`. Clients should not call `thread/goal/set`
 it is omitted from capability discovery while `goal_execution` is `false` and is
 refused with a typed `interactive_execution_unsupported` error before changing
 the goal; starting goals uses the full Runtime HTTP API (`docs/RUNTIME_API.md`).
-That persisted record carries `active`, `paused`, `blocked`, `usage_limited`,
-`budget_limited`, or `complete` status plus token/time accounting fields for
-clients that need thread resume semantics.
+That persisted record carries `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
+or `complete` status plus token/time accounting fields for clients that need
+thread resume semantics.
 
 ## Mode Persistence
 
@@ -231,8 +214,8 @@ the way out instead of disappearing with the alternate screen.
 Permission posture controls tool approval and whether a turn may pause for a
 missing user decision. It is one layer of the full
 [authorization order](AUTHORIZATION_ORDER.md), not a bypass for tool admission,
-repository law, or sandbox enforcement. Step it with the `Shift+Tab` dial, or edit it
-at runtime:
+repository law, or [sandbox](SANDBOX.md) enforcement. Step it with the
+`Shift+Tab` dial, or edit it at runtime:
 
 ```text
 /config
@@ -254,159 +237,13 @@ Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
   repository law and the safety floor still force a card. This is Claude
   Code's `acceptEdits`. ACP sessions run it as Ask, because ACP turns never
   apply the in-folder edit rule.
-- `auto` (**Auto-Review**): reviews tool calls automatically. Deliberate user
-  questions remain available in interactive sessions through `request_user_input`;
-  a question parks the turn until answered, canceled, or its configured timeout
-  expires. Headless `exec` withholds that tool because it has no responder.
-  Tool safety holds remain separate from user questions. Each turn carries an
-  engine-minted run origin (`Interactive` only when started or steered directly
-  from the owner's active TUI composer or signed-in owner runtime composer with
-  an owner surface attached; `Headless` for `exec` and ACP runs, including
-  `approval_policy = "auto"`; `Background` for detached starts, detached
-  children, tasks, automations, and delayed `send_later` runs) and an owner
-  presence signal (`owner_present`), neither of which can be supplied by a
-  host or request field. Two layers decide approvals. The **deterministic
-  floor** (configured block rules plus the built-in safety floor) allows
-  proven-safe calls (including explicit routine workspace test and build
-  commands with trailing `2>&1` or `>/dev/null` and a single `head`, `tail`,
-  or literal `grep` filter — excluding `cargo run`, non-routine `make` targets,
-  `git add`, `git commit`, discard flags, or your own block rules), hard-blocks
-  package and release publishing (`npm publish`, `cargo publish`, `gh release`,
-  and release tools) as well as destructive unattended work (`Background`,
-  `Headless`, or any turn where `owner_present` is false) and any unattended
-  repository push or tag mutation (`!owner_present`), holds repository-remote
-  pushes in interactive sessions (`owner_present`) plus named soft rules
-  (`force-push`, `git-tag`, `deploy-branch`, `git-discard`, `infra-destroy`,
-  `ci-or-pr-bypass`, `print-credentials`, `secret-commit`, and `deploy-wrapper`)
-  and writes, edits, deletes, or moves targeting `AGENTS.md`, `CLAUDE.md`, or
-  loaded instruction files for guardian review ahead of `auto_review.allow`
-  rules, holds file or shell writes targeting protected repository,
-  credential, IDE/agent, workflow, shell startup, or autostart paths
-  (`.git`, `.codewhale/`, `.vscode/`, `.claude/`, `.mcp.json`, `.claude.json`,
-  `.github/workflows/`, `.gitconfig`, `.config/gh/hosts.yml`, shell rc/profile
-  files, `Library/LaunchAgents/`, `.config/autostart/`, `.cargo/config.toml`,
-  `.config/fish/`, `.config/systemd/user/`, and Windows `Startup`, including
-  symlink and path-alias targets) for guardian review ahead of narrow allow
-  rules and routine checks, evaluates bounded workspace writes in non-git
-  folders as safe only when local snapshots are enabled (`snapshots_enabled`)
-  and the workspace root is not `/` or a user home/top-level folder (while
-  still routing file deletions or full-file empties in non-git folders to
-  guardian review, and leaving Accept Edits' git-work-tree carve-out
-  unchanged), includes `.claude.json` and `.config/gh/hosts.yml` in the
-  `print-credentials` rule, prompts once per Auto-Review session when an
-  interactive owner can confirm the first shell read resolving outside the
-  workspace (ignoring standard pseudo-devices such as `/dev/null`, routing
-  unattended/non-prompting runs to the guardian, and resetting when leaving
-  Auto-Review or rewinding/resetting the session), and holds critical-path
-  deletions (filesystem root, home folder, the project root or any ancestor of
-  it, and `.git` folders) so interactive sessions with `owner_present` ask you
-  while unattended or headless sessions refuse; the built-in floor is never
-  model-reviewed and never waits for an approval card on other holds or
-  unattended work.
-  Fallback holds — calls the deterministic engine could not prove safe,
-  interactive repository pushes, outbound web requests, and named soft-rule
-  holds — escalate to a one-shot **model reviewer** that returns risk,
-  allow/deny, and a rationale using `auto_review.reviewer_model` (when unset, it
-  picks a capable model on the session's active provider route when matched or
-  falls back to the session model without switching providers or accounts).
-  Soft-rule holds carry the rule name in hold observations, block reasons, and
-  receipts and require an explicit request from you for that action rather than
-  broad instructions. The reviewer receives
-  structured untrusted-evidence JSON containing the exact `proposed_tool_call`
-  (including `description`), deterministic observations (including
-  `person_approved_retry` and any triggering `soft_rule`), redacted earlier
-  non-read `recent_actions` from the current turn, optional `approved_plan`,
-  optional user/managed-configured `environment` scope entries (project
-  `.codewhale/config.toml` overlays cannot set or modify
-  `auto_review.environment`), pinned `project_instructions` captured
-  at session start with separate user and repository labels and SHA-256 hashes
-  (never re-read from disk mid-session), and typed `person_messages` from the
-  conversation owner newest first (on subagent turns, inherited from the root
-  conversation rather than child briefs; empty on agent-created `Background`
-  threads). On runtime threads the owner composer is the signed-in web client
-  or a runtime-token caller that names `"client": "desktop"` (or `tui`/`web`)
-  on the turn or steer request; other Runtime API callers record nothing. Attached `@file` bodies, skill instructions, expanded context, tool
-  outputs, and assistant prose are never passed to the reviewer. Context is
-  capped at 64 KiB; the current request and exact proposed call are never
-  truncated (exceeding the cap alone fails closed as unavailable), and under
-  budget pressure repository instructions, user instructions, and then oldest
-  middle `person_messages` trim first while preserving the earliest typed limit
-  and latest request. High or critical risk cannot auto-run unless you approve a
-  one-use retry of that exact call, and an explicit guardian denial still
-  blocks even then. It has no tools, remembers no rules, and makes a single
-  request with a fail-closed result on incomplete or malformed output, timeout,
-  cancellation, or provider failure. Every Auto-Review block names the rule and
-  reason and invites either another route or, on interactive owner-present
-  blocks eligible for retry, one-use owner approval of that exact call via the
-  block receipt (`r` in an empty composer), `/permissions blocked`, or the
-  Runtime API (`POST /v1/threads/{id}/auto-review/approve`). Each retry grant is
-  bound to the exact canonical `(tool_name, call_digest)`, is consumed once on
-  retry, still passes every non-Auto-Review gate (hooks, typed permissions, repo
-  law, deterministic floor, and sandbox), never extends to children or extension
-  calls, and clears when leaving Auto-Review or resetting the conversation. When
-  `owner_present` is true (and not a child worker), 3 consecutive blocks, 20
-  total blocks in the conversation, or 3 consecutive unavailable reviewer checks
-  switches Permissions to Ask (`AutoReviewPaused`) and continues in Ask
-  (switching back to Auto-Review resets the counters). Unattended runs
-  (`owner_present` false) never fall back to Ask; they continue past blocks and
-  end as interrupted with a blocked-actions summary at 20 total blocks or 10
-  consecutive unavailable reviewer checks. An allowed review resets consecutive
-  block and unavailable counts, while an explicit guardian denial resets the
-  consecutive unavailable count. Headless `exec` turns consult the model
-  guardian for fallback non-destructive holds while applying the deterministic
-  unattended rules to destructive work; ACP turns use deterministic rules only
-  and refuse guardian consultation.
-  When `owner_present` is true (an interactive TUI or owner runtime surface
-  turn), non-extension forced prompts — typed `permissions.toml` `ask` rules, `tool_call_before`
-  hook `ask`, prompt-only tools such as Computer Use consent and script cards, and
-  repo-law holds that require a person — open the
-  normal approval card instead of being waived or failing closed, unless a hard
-  block (`hidden_unicode` or a configured `auto_review.block` rule) applies; on
-  runtime threads, only the owner's surface (`desktop`, `tui`, or `web`) may
-  answer such a card. Held extension calls in Auto-Review route through the
-  Auto-Review reviewer with their host-minted plugin identity and never clear via
-  routine tiers or allow rules (while independent typed rules, hook holds, and
-  safety-floor blocks still apply). When `owner_present` is false (`Background`, `Headless`,
-  or unattached turns), unattended and headless runs never open an approval card,
-  refuse forced prompts naming the rule without registering a pending approval,
-  and block repo-law holds that require a person.
-
-The LLM reviewer is closest to OpenAI Codex's experimental Auto-Review at
-commit [`6fc6b9d6d2580d62622fc9884b5f5707f6505a5e`](https://github.com/openai/codex/tree/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e).
-Codex's [guardian entry point](https://github.com/openai/codex/blob/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e/codex-rs/core/src/guardian/mod.rs)
-reconstructs full conversation transcripts and runs a dedicated review session.
-Codewhale passes only Rust-recorded owner `person_messages`, optional approved
-plan text, redacted earlier non-read actions, session-pinned instructions,
-deterministic observations, and the exact `proposed_tool_call` within a 64 KiB
-cap, paired with a 90-second deadline, fail-closed result, and per-turn denial
-circuit breaker. It excludes assistant prose and tool outputs and does not copy
-Codex's transcript reconstruction, user-authorization score, reviewer tools,
-retries, persistent review session, or denial ledger.
-
-Kimi Code at commit
-[`1414d4602898f406e540b23342cb18db23ff9efc`](https://github.com/MoonshotAI/kimi-code/tree/1414d4602898f406e540b23342cb18db23ff9efc)
-also has no LLM reviewer. Its ordered
-[permission policy](https://github.com/MoonshotAI/kimi-code/blob/1414d4602898f406e540b23342cb18db23ff9efc/packages/agent-core-v2/src/agent/permissionPolicy/permissionPolicyService.ts)
-applies explicit deny rules and then its
-[Auto policy](https://github.com/MoonshotAI/kimi-code/blob/1414d4602898f406e540b23342cb18db23ff9efc/packages/agent-core-v2/src/agent/permissionPolicy/policies/auto-mode-approve.ts)
-returns `approve` directly. Codewhale uses the deterministic floor and guardian
-described above, while keeping deliberate user questions available.
-
-The sandbox and escalation baseline is grounded in DeepSeek Harness
-`0.1.0-rc.5` at
-commit [`47f943859bef60e4160492346772ded9b24f765a`](https://github.com/deepseek-ai/deepseek-harness/tree/47f943859bef60e4160492346772ded9b24f765a):
-its [sandbox contract](https://github.com/deepseek-ai/deepseek-harness/blob/47f943859bef60e4160492346772ded9b24f765a/docs/subsystems/sandbox.md)
-defines per-call `read-only`, `workspace-write`, and `danger-full-access`
-boundaries and forbids silent unconfined fallback; its
-[approval contract](https://github.com/deepseek-ai/deepseek-harness/blob/47f943859bef60e4160492346772ded9b24f765a/docs/subsystems/approval.md)
-grants only `allowed-once` and fails closed on rejection, cancellation, or an
-unavailable answerer; and its
-[sandbox result contract](https://github.com/deepseek-ai/deepseek-harness/blob/47f943859bef60e4160492346772ded9b24f765a/packages/shell/bash-sandbox/README.md)
-tells the model to retry a denied command exactly once with the narrowest wider
-mode plus a justification. DeepSeek Harness does not add an LLM reviewer to
-that path. Codewhale's autonomous posture adds only the single stateless
-guardian request described above; deterministic hard blocks remain
-non-bypassable in the reviewing postures.
+- `auto` (**Auto-Review**): Codewhale reviews each tool call instead of
+  asking. A deterministic floor allows proven-safe calls and blocks publishing
+  and destructive unattended work; anything it cannot prove safe goes to a
+  one-shot model reviewer that fails closed. Every block names its rule and
+  reason, and repeated blocks switch an attended session to Ask. The rules,
+  what the reviewer sees, retries, unattended runs and the design references
+  are in [Auto-Review](AUTO_REVIEW.md).
 - `bypass` (**Full Access**): ordinary tool calls do not show approval prompts,
   while deliberate user questions remain available. The deterministic
   Auto-Review floor is skipped — publish-like commands, destructive
@@ -431,22 +268,9 @@ Children inherit the session posture faithfully rather than a bare
 auto-approve bit:
 
 - **Auto-Review**: a worker's held call goes through the same deterministic
-  policy (proven-safe calls run; publish-like and destructive background work
-  is hard-blocked) and, for holds it cannot prove safe, the same one-shot
-  model guardian using the child's own session client. No prompt is ever
-  opened for a child; an unavailable guardian denies, fail closed. When a child
-  returns to an Auto-Review parent after running one or more tool calls, the
-  guardian reviews its executed action list once (tool names and compacted,
-  redacted call inputs only — never tool results or child report prose)
-  against the root owner messages (`person_messages`), approved plan, and
-  pinned project instructions. If the reviewer flags a concern or cannot run
-  (unavailable, timed out, cancelled, or over the guardian context budget),
-  the engine prepends a sanitized `[Auto-Review warning: ...]` banner at the
-  top of the report delivered back to the parent. Auto-Review blocks from
-  child calls and return reviews are recorded in the parent's blocked-actions
-  list (`/permissions blocked` and `GET /v1/threads/{id}/auto-review/blocks`)
-  as `[sub-agent <id>]` entries with retry approval disallowed
-  (`approvable: false`).
+  floor and one-shot reviewer as the parent's. No prompt is ever opened for a
+  child, and its blocks are recorded in the parent's blocked-actions list. See
+  [Auto-Review](AUTO_REVIEW.md#sub-agents-and-fleet-workers).
 - **Ask** and **Accept Edits**: a call the role may delegate runs. A held call is raised as an
   approval prompt in the parent's UI (`agent:<id>:approval:<n>`) when the
   host is an interactive TUI; the worker waits visibly (`waiting for user`)
