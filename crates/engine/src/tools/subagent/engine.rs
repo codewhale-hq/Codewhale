@@ -1650,20 +1650,23 @@ pub(super) async fn run_child_agent(
             });
         (name, manager.executed_actions_handle(&agent_id))
     };
-    let identity = format!(
-        "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
-        if runtime.worker_profile.permissions.write {
-            "you may edit files; keep to what this task assigns"
-        } else {
-            "read-only"
-        }
-    );
+    let branch_workspace = runtime.context.workspace.clone();
+    let branch = tokio::task::spawn_blocking(move || current_git_branch(&branch_workspace))
+        .await
+        .ok()
+        .flatten();
     let mut authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
         agent_id.clone(),
-        owner_agent_name,
+        owner_agent_name.clone(),
         allowed_tools.clone(),
+    );
+    let identity = subagent_capability_block(
+        &owner_agent_name,
+        &runtime,
+        &authority.grant,
+        branch.as_deref(),
     );
     if let Some(actions) = executed_actions
         && let Some(auth) = Arc::get_mut(&mut authority)
@@ -1714,6 +1717,12 @@ pub(super) async fn run_child_agent(
     let initial = seed
         .pop()
         .ok_or_else(|| anyhow!("child assignment has no task message"))?;
+    if let Some(section) =
+        subagent_inherited_instructions_section(&runtime.parent_pinned_project_instructions)
+    {
+        system.push_str("\n\n");
+        system.push_str(&section);
+    }
     let content = initial
         .content
         .iter()

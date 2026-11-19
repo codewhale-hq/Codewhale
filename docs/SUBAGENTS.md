@@ -218,6 +218,14 @@ real isolated worktree may proceed in parallel. A `custom` role requires
 explicit write-capable authority to claim writes; otherwise it starts
 read-only.
 
+Every write-capable child (`general`, `implement`, `custom`) is told how to
+work in a checkout: use its own worktree (the isolated one it was given, or
+ask the parent for `worktree=true` when others may write the same checkout),
+one agent per worktree, base new work on current upstream main, never switch,
+reset, stash or clean a shared checkout, commit coherent slices in its own
+worktree and report branch and SHA, and leave pushing, merging and cleanup to
+the parent unless the brief assigns them.
+
 Read-only is not file-only. A normally write-capable agent narrowed with
 `write_authority: "read_only"` keeps the existing classifier-bounded inspection
 shell when its parent permits it: Git history/status, search, and allowed `gh`
@@ -1037,6 +1045,28 @@ not contain `### BLOCKERS`.
 
 The parent reads `EVIDENCE` as a working set for the next turn, so
 scouts and reviewers should be precise here.
+
+## What a child knows at start
+
+A child's system prompt carries, after its role contract, memory and skills:
+
+- **Inherited instructions.** The same user-level and project-level
+  instructions pinned for the parent session (`AGENTS.md`/`CLAUDE.md` chain,
+  rules, constitution), each scope capped at 64 KiB with a truncation marker
+  pointing back to the source file. They are already within the parent's
+  instruction budget; the cap protects a child on a smaller context window.
+  A forked child receives them once, in its system prompt, not again in the
+  forked context block. They narrow behaviour only; they never widen the
+  child's permissions.
+- **Identity and capabilities.** Its workspace path, whether it is an isolated
+  worktree and on which branch, its file, shell, network and delegation grants
+  (resolved from the same grant the tool registry enforces), whether an
+  approval prompt can be answered for it, and the rule that a step needing a
+  missing capability comes back to the parent as a BLOCKER with the exact
+  command or edit, instead of a workaround.
+
+Both sit in the child's frozen system prefix: they are fixed for that child's
+lifetime and do not change its KV-cache prefix between turns.
 
 ## Memory and the `remember` tool (#489)
 

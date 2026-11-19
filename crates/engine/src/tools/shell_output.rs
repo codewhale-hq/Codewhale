@@ -239,7 +239,7 @@ fn is_summary_line(line: &str) -> bool {
     false
 }
 
-fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
+pub(crate) fn char_boundary_at_or_before(text: &str, max_bytes: usize) -> usize {
     if max_bytes >= text.len() {
         return text.len();
     }
