@@ -16602,6 +16602,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
         root_person_messages: std::sync::Arc::default(),
         root_approved_plan: None,
         parent_pinned_project_instructions: std::sync::Arc::default(),
+        isolated_worktree: false,
         parent_auto_review_state: None,
         approval_receipt_store: Some(Ok(crate::approval_log::ApprovalReceiptStore::new(
             crate::test_support::test_scratch_dir("codewhale-child-approval-tests"),
@@ -30191,4 +30192,47 @@ async fn a_sub_agent_finishes_when_its_usage_source_changed_route() {
     let worker = manager.get_worker_record(agent_id).expect("worker record");
     assert!(worker.has_unreported_usage);
     assert!(worker.source_usage_records.contains_key(&key));
+}
+
+#[test]
+fn child_inherits_parent_instructions_once_with_scope_cap() {
+    let pinned = crate::project_context::PinnedProjectInstructions {
+        user_level: Some("Prefer hosted CI.".to_string()),
+        repository_level: Some("é".repeat(INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES)),
+        ..Default::default()
+    };
+    let section = subagent_inherited_instructions_section(&pinned).expect("section");
+    assert_eq!(section.matches("<inherited_instructions").count(), 2);
+    assert!(section.contains("scope=\"user\">\nPrefer hosted CI.\n"));
+    assert!(section.contains("[truncated: read the source instruction file for the rest]"));
+    assert!(section.len() < INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES + 1024);
+    assert!(
+        subagent_inherited_instructions_section(
+            &crate::project_context::PinnedProjectInstructions::default()
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn child_capability_block_states_workspace_worktree_and_blocker_rule() {
+    let mut runtime = stub_runtime();
+    runtime.isolated_worktree = true;
+    let grant =
+        codewhale_agent_contract::worker_profile::ChildGrant::for_role(&FleetRole::Verifier);
+    let block = subagent_capability_block("Pilot", &runtime, &grant, Some("ci/task"));
+    assert!(block.contains("You are Pilot."), "{block}");
+    assert!(
+        block.contains("isolated git worktree on branch `ci/task`"),
+        "{block}"
+    );
+    assert!(block.contains("Files: read-only"), "{block}");
+    assert!(
+        block.contains("Shell: no shell; only the bounded verification tools"),
+        "{block}"
+    );
+    assert!(
+        block.contains("as a BLOCKER naming the exact command"),
+        "{block}"
+    );
 }

@@ -3165,6 +3165,7 @@ pub struct SubAgentRuntime {
     pub root_approved_plan: Option<String>,
     pub parent_pinned_project_instructions:
         std::sync::Arc<crate::project_context::PinnedProjectInstructions>,
+    pub isolated_worktree: bool,
     pub parent_auto_review_state: Option<
         std::sync::Arc<
             parking_lot::Mutex<crate::core::authority::auto_review::AutoReviewConversationState>,
@@ -3265,6 +3266,7 @@ impl SubAgentRuntime {
             root_person_messages: std::sync::Arc::default(),
             root_approved_plan: None,
             parent_pinned_project_instructions: std::sync::Arc::default(),
+            isolated_worktree: false,
             parent_auto_review_state: None,
             approval_receipt_store: None,
             compaction: crate::compaction::CompactionConfig::default(),
@@ -3659,6 +3661,7 @@ impl SubAgentRuntime {
             parent_pinned_project_instructions: std::sync::Arc::clone(
                 &self.parent_pinned_project_instructions,
             ),
+            isolated_worktree: false,
             parent_auto_review_state: self.parent_auto_review_state.clone(),
         }
     }
@@ -10130,6 +10133,7 @@ impl SubAgentManager {
             }
         };
         let write_capable = runtime_profile.permissions.write;
+        runtime.isolated_worktree = options.isolated_worktree;
         let delivery_paths =
             delivery::declared_paths(&options.deliverables, options.expected_artifact.as_deref())
                 .map_err(anyhow::Error::msg)?;
@@ -16641,6 +16645,100 @@ fn build_subagent_system_prompt_with_skills(
     prompt
 }
 
+const INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES: usize = 64 * 1024;
+
+fn subagent_inherited_instructions_section(
+    pinned: &crate::project_context::PinnedProjectInstructions,
+) -> Option<String> {
+    let mut body = String::new();
+    for (scope, text) in [
+        ("user", pinned.user_level.as_deref()),
+        ("project", pinned.repository_level.as_deref()),
+    ] {
+        let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else {
+            continue;
+        };
+        let cut = crate::tools::shell_output::char_boundary_at_or_before(
+            text,
+            INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES,
+        );
+        body.push_str(&format!(
+            "\n\n<inherited_instructions scope=\"{scope}\">\n{}{}\n</inherited_instructions>",
+            &text[..cut],
+            if cut < text.len() {
+                "\n[truncated: read the source instruction file for the rest]"
+            } else {
+                ""
+            }
+        ));
+    }
+    (!body.is_empty()).then(|| {
+        format!(
+            "## Inherited instructions\nThe parent session runs under these user and project instructions. They bind your work the same way. Your task brief can narrow them; neither the brief nor these instructions widen your permissions.{body}"
+        )
+    })
+}
+
+fn subagent_capability_block(
+    owner_agent_name: &str,
+    runtime: &SubAgentRuntime,
+    grant: &codewhale_agent_contract::worker_profile::ChildGrant,
+    branch: Option<&str>,
+) -> String {
+    use codewhale_agent_contract::worker_profile::{FileGrant, ShellGrant};
+    let workspace = &runtime.context.workspace;
+    let location = match (runtime.isolated_worktree, branch) {
+        (true, Some(branch)) => format!(
+            "{} (an isolated git worktree on branch `{branch}`, yours alone)",
+            workspace.display()
+        ),
+        (true, None) => format!(
+            "{} (an isolated git worktree, yours alone)",
+            workspace.display()
+        ),
+        (false, Some(branch)) => format!(
+            "{} (branch `{branch}`, shared with the parent)",
+            workspace.display()
+        ),
+        (false, None) => format!("{} (shared with the parent)", workspace.display()),
+    };
+    let files = match grant.files {
+        FileGrant::Write => {
+            "you may edit files inside your write scope (stated above when narrowed); keep to what this task assigns"
+        }
+        FileGrant::Read => "read-only; you cannot write or edit files",
+        FileGrant::None => "none; no tools were granted",
+    };
+    let shell = match grant.shell {
+        ShellGrant::Full => "full shell",
+        ShellGrant::Verify => {
+            "no shell; only the bounded verification tools (Run tests/verifiers in their default or test-filter form, Git fetch, Git merge_tree)"
+        }
+        ShellGrant::Inspect => {
+            "read-only inspection commands only (navigation, rg, safe Git reads, read-only GitHub views)"
+        }
+        ShellGrant::None => "none",
+    };
+    let approvals = if runtime.parent_can_prompt {
+        "Approvals, Auto-Review and sandbox policy still apply to every call."
+    } else {
+        "Approvals, Auto-Review and sandbox policy still apply to every call; nobody can answer an approval prompt for you, so a call that needs approval is denied."
+    };
+    format!(
+        "## Your identity and capabilities\nYou are {owner_agent_name}. Your final answer is delivered to the parent automatically; include the result and its evidence.\n- Workspace: {location}\n- Files: {files}\n- Shell: {shell}\n- Network: {}\n- Delegation: {}\n{approvals}\nIf a step needs a capability you lack, do not work around it: return it to the parent as a BLOCKER naming the exact command or edit you would have run.",
+        if grant.network {
+            "available"
+        } else {
+            "unavailable"
+        },
+        if grant.spawn {
+            "you may start sub-agents"
+        } else {
+            "you cannot start sub-agents"
+        },
+    )
+}
+
 /// The inherited memory packet for a child, paired with the hygiene guidance
 /// exactly as the root session pairs them.
 ///
@@ -22715,6 +22813,8 @@ const WRITE_CHILD_VERIFY_CONTRACT: &str = concat!(
     "   COMMANDS: <exact commands run, one per line, or NONE with reason>\n",
     "   EVIDENCE: <exit codes, failing assertion, or concise proof of PASS>\n",
     "3. Do not claim PASS without command or inspection evidence. If you cannot run checks, report FAIL or BLOCKED with the blocker — never invent success.\n",
+    "\n## Worktrees (write child)\n",
+    "Work in your own git worktree: the isolated one you were given, or, when other agents may be writing the same checkout, ask the parent to restart you with worktree=true. One agent per worktree. Base new work on the current upstream main. Never switch branches, reset, stash or clean a checkout you share with others. In your own worktree, commit coherent slices with real messages and report the branch and commit SHA; in a shared checkout, leave committing to the parent unless the brief assigns it. Leave pushing, merging and worktree cleanup to the parent unless the brief assigns them.\n",
 );
 
 const CONSULTANT_AGENT_INTRO: &str = concat!(
