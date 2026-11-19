@@ -1682,4 +1682,19 @@ mod tests {
         assert_eq!(delta.refusal.as_deref(), Some("Policy blocked output"));
         assert!(delta.stop_details.is_some());
     }
+
+    #[test]
+    fn offline_seed_models_resolve_limits_and_reasoning() {
+        for (model, context, output) in [
+            ("gemini-4-neon", 1_048_576, 65_536),
+            ("gpt-6.2-astra", 1_050_000, 128_000),
+            ("gpt-6.2-sol", 1_050_000, 128_000),
+            ("muse-ember-1.0", 1_048_576, 524_288),
+        ] {
+            assert_eq!(context_window_for_model(model), Some(context), "{model}");
+            assert_eq!(max_output_tokens_for_model(model), Some(output), "{model}");
+            assert!(model_supports_reasoning(model), "{model}");
+        }
+        assert!(!model_can_disable_thinking("gemini-4-neon"));
+    }
 }
