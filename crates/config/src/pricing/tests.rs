@@ -573,3 +573,130 @@ fn token_class_labels_and_counts_stay_aligned_with_token_usage() {
         ]
     );
 }
+
+#[test]
+fn text_usage_prices_multimodal_and_equal_rate_reasoning_while_distinct_reasoning_fails_closed() {
+    let gemini_carbon = OfferingPricing {
+        provider: "google".into(),
+        wire_model_id: "gemini-4-carbon".into(),
+        currency: Currency::Usd,
+        input_per_million: Some(2.0),
+        output_per_million: Some(10.0),
+        cache_read_per_million: Some(0.1),
+        input_audio_per_million: Some(2.0),
+        provenance: PricingProvenance::ModelsDevBundled,
+        ..Default::default()
+    };
+    let text_turn = TokenUsage {
+        input: 4_963,
+        output: 46,
+        cache_read: 131_324,
+        ..Default::default()
+    };
+    let carbon_cost = gemini_carbon
+        .estimate_cost(&text_turn)
+        .expect("equal-rate input_audio must not block text turns");
+    let expected_carbon = 4_963.0 * 2e-6 + 131_324.0 * 0.1e-6 + 46.0 * 10e-6;
+    assert!(
+        (carbon_cost - expected_carbon).abs() < 1e-12,
+        "{carbon_cost} != {expected_carbon}"
+    );
+
+    let flash_lite = OfferingPricing {
+        provider: "google".into(),
+        wire_model_id: "gemini-3.1-flash-lite".into(),
+        currency: Currency::Usd,
+        input_per_million: Some(0.25),
+        output_per_million: Some(1.5),
+        cache_read_per_million: Some(0.025),
+        input_audio_per_million: Some(0.5),
+        provenance: PricingProvenance::ModelsDevBundled,
+        ..Default::default()
+    };
+    let plain_text = TokenUsage {
+        input: 1_000_000,
+        output: 100_000,
+        ..Default::default()
+    };
+    assert!(
+        (flash_lite
+            .estimate_cost(&plain_text)
+            .expect("text turn on audio-capable model prices")
+            - 0.4)
+            .abs()
+            < 1e-12
+    );
+    let audio_turn = TokenUsage {
+        input: 1_000_000,
+        output: 0,
+        input_audio: Some(400_000),
+        ..Default::default()
+    };
+    assert!(
+        (flash_lite
+            .estimate_cost(&audio_turn)
+            .expect("explicit audio tokens bill at audio rate")
+            - (0.6 * 0.25 + 0.4 * 0.5))
+            .abs()
+            < 1e-12
+    );
+    let audio_with_cache = TokenUsage {
+        input: 1_000_000,
+        cache_read: 100_000,
+        input_audio: Some(400_000),
+        ..Default::default()
+    };
+    assert_eq!(
+        flash_lite.quote_cost(&audio_with_cache),
+        Err(PricingQuoteError::MissingUsage(TokenClass::InputAudio))
+    );
+
+    let equal_reasoning = OfferingPricing {
+        provider: "openrouter".into(),
+        wire_model_id: "google/gemini-4-carbon".into(),
+        currency: Currency::Usd,
+        input_per_million: Some(2.0),
+        output_per_million: Some(10.0),
+        reasoning_per_million: Some(10.0),
+        input_audio_per_million: Some(2.0),
+        provenance: PricingProvenance::ModelsDevLive,
+        ..Default::default()
+    };
+    assert!(
+        (equal_reasoning
+            .estimate_cost(&plain_text)
+            .expect("equal reasoning/output rate prices without reasoning breakdown")
+            - 3.0)
+            .abs()
+            < 1e-12
+    );
+
+    let distinct_reasoning = OfferingPricing {
+        provider: "openrouter".into(),
+        wire_model_id: "perplexity/sonar-deep-research".into(),
+        currency: Currency::Usd,
+        input_per_million: Some(2.0),
+        output_per_million: Some(8.0),
+        reasoning_per_million: Some(3.0),
+        provenance: PricingProvenance::ModelsDevLive,
+        ..Default::default()
+    };
+    assert_eq!(
+        distinct_reasoning.quote_cost(&plain_text),
+        Err(PricingQuoteError::MissingUsage(TokenClass::Reasoning))
+    );
+    let with_reasoning = TokenUsage {
+        input: 0,
+        output: 1_000_000,
+        reasoning: Some(600_000),
+        ..Default::default()
+    };
+    assert!(
+        (distinct_reasoning
+            .estimate_cost(&with_reasoning)
+            .expect("reported reasoning breakdown prices at distinct rate")
+            - (0.4 * 8.0 + 0.6 * 3.0))
+            .abs()
+            < 1e-12
+    );
+}

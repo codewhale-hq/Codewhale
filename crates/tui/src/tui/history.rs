@@ -173,6 +173,7 @@ pub enum HistoryCell {
     Error {
         message: String,
         severity: codewhale_error_taxonomy::ErrorSeverity,
+        code: Option<String>,
     },
     Thinking {
         content: String,
@@ -436,9 +437,11 @@ impl HistoryCell {
                 &escape_note_backslashes(content),
                 width,
             ),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, true)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, true),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -601,9 +604,11 @@ impl HistoryCell {
                 lines
             }
             HistoryCell::System { .. } => self.lines(width),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, true)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, true),
             HistoryCell::SubAgent(cell) => cell.lines(width),
             HistoryCell::Automation(cell) => cell.render(width),
             HistoryCell::ApprovalReceipt(cell) => cell.render(width),
@@ -744,9 +749,11 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { .. } => self.lines(width),
-            HistoryCell::Error { message, severity } => {
-                render_error_message(message, *severity, width, false)
-            }
+            HistoryCell::Error {
+                message,
+                severity,
+                code,
+            } => render_error_message(message, *severity, code.as_deref(), width, false),
             HistoryCell::Thinking {
                 content,
                 streaming,
@@ -3195,6 +3202,42 @@ fn error_body_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style 
     Style::default().fg(color)
 }
 
+pub(crate) fn normalize_error_code(code: &str) -> Option<String> {
+    let trimmed = code.trim().trim_matches(['[', ']']).trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub(crate) fn display_error_code<'a>(message: &str, code: Option<&'a str>) -> Option<&'a str> {
+    let code = code?.trim().trim_matches(['[', ']']).trim();
+    if code.is_empty() || contains_code_token(message, code) {
+        return None;
+    }
+    Some(code)
+}
+
+fn contains_code_token(message: &str, code: &str) -> bool {
+    let lower_message = message.to_ascii_lowercase();
+    let lower_code = code.to_ascii_lowercase();
+    let is_token_char = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let bytes = lower_message.as_bytes();
+    let mut start = 0;
+    while let Some(offset) = lower_message[start..].find(&lower_code) {
+        let match_start = start + offset;
+        let match_end = match_start + lower_code.len();
+        let left_ok = match_start == 0 || !is_token_char(bytes[match_start - 1]);
+        let right_ok = match_end == bytes.len() || !is_token_char(bytes[match_end]);
+        if left_ok && right_ok {
+            return true;
+        }
+        start = match_start
+            + lower_message[match_start..]
+                .chars()
+                .next()
+                .map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// Render an engine error without markdown interpretation. The live transcript
 /// advertises the dedicated full-error pager once the error wraps past four
 /// rows: terminal height, scroll position, and adjacent tool cards can
@@ -3204,6 +3247,7 @@ fn error_body_style(severity: codewhale_error_taxonomy::ErrorSeverity) -> Style 
 fn render_error_message(
     message: &str,
     severity: codewhale_error_taxonomy::ErrorSeverity,
+    code: Option<&str>,
     width: u16,
     show_full_error_affordance: bool,
 ) -> Vec<Line<'static>> {
@@ -3214,12 +3258,52 @@ fn render_error_message(
     let label = error_label_text(severity);
     let label_style = error_label_style(severity);
     let body_style = error_body_style(severity);
+    let badge = display_error_code(message, code).map(|value| format!("[{value}]"));
     let prefix_width = UnicodeWidthStr::width(label);
     let content_width = width.saturating_sub(2 + prefix_width as u16).max(1);
-    let mut lines: Vec<_> = message
-        .split('\n')
-        .flat_map(|line| wrap_plain_line(line, body_style, content_width))
-        .collect();
+    let mut lines: Vec<Line<'static>> = match badge {
+        None => message
+            .split('\n')
+            .flat_map(|line| wrap_plain_line(line, body_style, content_width))
+            .collect(),
+        Some(badge) => {
+            let badge_style = Style::default().fg(palette::TEXT_MUTED);
+            let badge_width = UnicodeWidthStr::width(badge.as_str());
+            let mut raw_lines = message.split('\n');
+            let first_raw = raw_lines.next().unwrap_or("");
+            let mut lines = Vec::new();
+            let remaining_on_first = (content_width as usize).saturating_sub(badge_width + 1);
+            if remaining_on_first >= 12 {
+                let mut head_len = None;
+                for_each_wrapped_text(first_raw, remaining_on_first, |part| {
+                    if head_len.is_none() {
+                        head_len = Some(part.len());
+                    }
+                });
+                let split = head_len.unwrap_or(first_raw.len());
+                let head = &first_raw[..split];
+                let tail = &first_raw[split..];
+                let mut first_spans = vec![Span::styled(badge, badge_style)];
+                if !head.is_empty() {
+                    first_spans.push(Span::raw(" "));
+                    first_spans.push(Span::styled(head.to_string(), body_style));
+                }
+                lines.push(Line::from(first_spans));
+                if !tail.is_empty() {
+                    lines.extend(wrap_plain_line(tail, body_style, content_width));
+                }
+            } else {
+                lines.push(Line::from(Span::styled(badge, badge_style)));
+                if !first_raw.is_empty() {
+                    lines.extend(wrap_plain_line(first_raw, body_style, content_width));
+                }
+            }
+            for line in raw_lines {
+                lines.extend(wrap_plain_line(line, body_style, content_width));
+            }
+            lines
+        }
+    };
     if let Some(first) = lines.get_mut(0) {
         first.spans.insert(0, Span::raw(" "));
         first.spans.insert(0, Span::styled(label, label_style));
@@ -3430,6 +3514,44 @@ pub(crate) fn tool_header_sweep_extent(
         }
         _ => None,
     }
+}
+
+pub(crate) fn tool_header_settle_spans(tool: &ToolCell, line: &Line<'static>) -> Vec<usize> {
+    let base = usize::from(
+        line.spans
+            .first()
+            .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ ")),
+    );
+    let mut spans = vec![base];
+    let family_header = line.spans.get(base + 1).is_some_and(|span| {
+        span.content.ends_with(' ') && is_tool_family_glyph(span.content.trim_end())
+    });
+    match (tool, tool.status()) {
+        (ToolCell::Exec(_), Some(status)) if !family_header => {
+            let status_fg =
+                tool_glyph_color(status, crate::tui::widgets::tool_card::ToolFamily::Run);
+            spans.extend((base + 2..line.spans.len()).find(|index| {
+                line.spans[*index].style.fg == Some(status_fg)
+                    && line.spans[index - 1].content == " \u{00B7} "
+            }));
+        }
+        _ => {
+            spans.push(base + 1);
+            if line
+                .spans
+                .get(base + 3)
+                .is_some_and(|span| span.content == " ")
+            {
+                spans.push(base + 4);
+            }
+        }
+    }
+    spans.retain(|index| {
+        line.spans
+            .get(*index)
+            .is_some_and(|span| !span.content.trim().is_empty())
+    });
+    spans
 }
 
 pub(crate) fn running_elapsed_label(started_at: Instant) -> Option<String> {

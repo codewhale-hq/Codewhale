@@ -118,6 +118,6 @@ cargo clippy -p codewhale-tui --lib
 | `crates/lsp/src/registry.rs` | +Php 变体、检测、服务器映射、测试 |
 | `crates/lsp/src/lib.rs` | +CustomLspDef、LspConfig.custom、LspManager 自定义回退 |
 | `crates/lsp/src/client.rs` | spawn 接受 &str language_id |
-| `crates/tui/src/config.rs` | LspConfigToml.custom + into_runtime |
+| `crates/runtime/src/config.rs` | LspConfigToml.custom + into_runtime |
 | `crates/config/src/lib.rs` | LspConfigToml.custom + CustomLspDef |
 | `config.example.toml` | PHP 文档 + 自定义扩展示例 |

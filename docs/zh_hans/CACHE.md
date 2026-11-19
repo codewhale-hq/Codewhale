@@ -40,7 +40,7 @@
 | 操作 | 原因 |
 | --- | --- |
 | `/model`（SetModel） | `change:model` |
-| 模式切换（agent/plan/operate/yolo） | `change:mode` |
+| 模式切换（Plan 或 Work） | `change:mode` |
 | 目标设置 / 暂停 / 恢复 / 清除 / 状态 | `change:goal` |
 | 回合中途的工具表面变更（延迟工具的加入/移除、工具搜索激活、运行时 MCP 工具抵达） | `change:tool_surface` |
 | 会话同步 / 恢复（SyncSession） | `resume` |

@@ -1307,7 +1307,6 @@ pub enum SidebarRowAction {
     Command(String),
     /// Put a destructive command in the composer instead of executing it.
     /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
     PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so
@@ -2454,7 +2453,7 @@ pub struct App {
     /// when their tools complete.
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
+    pub ignored_tool_calls: HashMap<String, serde_json::Value>,
     /// Last exec wait command shown (for duplicate suppression)
     pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell

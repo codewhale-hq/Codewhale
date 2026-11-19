@@ -675,7 +675,21 @@ impl ChatWidget {
                     app.viewport.detected_background,
                 )
             });
-        app.viewport.activity_sweep_visible = activity_sweep_visible;
+        let settle_flash_visible = crate::tui::ui::motion::activity_sweep_allowed(app)
+            && apply_settle_flash(
+                &mut lines,
+                top,
+                line_meta,
+                &app.collapsed_cell_map,
+                app.history.len(),
+                sweep_entries,
+                &app.active_tool_entry_completed_at,
+                std::time::Instant::now(),
+                app.theme_id,
+                &app.ui_theme,
+                app.viewport.detected_background,
+            );
+        app.viewport.activity_sweep_visible = activity_sweep_visible || settle_flash_visible;
 
         // No background "highlight" for the Alt+V detail target: it used to
         // paint the target cell's spans `Color::Reset`, which is invisible on
@@ -1581,15 +1595,15 @@ impl<'a> ComposerWidget<'a> {
 
     pub(crate) fn plan(&self, area: Rect) -> codewhale_ratatui::NativeComposerPlan {
         let frame = self.frame(false);
-        let plan = frame.plan(area);
-        if plan.source_rows.len() > plan.input_rows_budget
+        let source = frame.source_plan(area);
+        if source.rows.len() > frame.input_rows_budget(area)
             && frame.hint.is_none()
             && frame.quiet_hint.is_none()
             && composer_submit_hint(self.app, true).is_some()
         {
-            self.frame(true).plan(area)
+            self.frame(true).plan_with_source(area, source)
         } else {
-            plan
+            frame.plan_with_source(area, source)
         }
     }
 
@@ -3192,6 +3206,107 @@ pub(crate) fn apply_activity_sweep(
     visible
 }
 
+const SETTLE_FLASH_DURATION: Duration =
+    Duration::from_millis((codewhale_ratatui::tokens::MOTION_DURATION_PANEL_MS * 2.0) as u64);
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_settle_flash(
+    lines: &mut [Line<'static>],
+    top: usize,
+    line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
+    history_len: usize,
+    active_entries: &[HistoryCell],
+    completed_at: &std::collections::HashMap<usize, std::time::Instant>,
+    now: std::time::Instant,
+    theme_id: palette::ThemeId,
+    ui_theme: &palette::UiTheme,
+    detected_background: Option<Color>,
+) -> bool {
+    if completed_at.is_empty() {
+        return false;
+    }
+    let effective_ground = palette::effective_surface(ui_theme.surface_bg, detected_background);
+    let mut visible = false;
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let Some(TranscriptLineMeta::CellLine {
+            cell_index,
+            line_in_cell: 0,
+            ..
+        }) = line_meta.get(top + idx)
+        else {
+            continue;
+        };
+        let original = original_index_map
+            .get(*cell_index)
+            .copied()
+            .unwrap_or(*cell_index);
+        let Some(entry) = original.checked_sub(history_len) else {
+            continue;
+        };
+        let Some(since) = completed_at
+            .get(&entry)
+            .map(|at| now.saturating_duration_since(*at))
+            .filter(|since| *since < SETTLE_FLASH_DURATION)
+        else {
+            continue;
+        };
+        let Some(HistoryCell::Tool(tool)) = active_entries.get(entry) else {
+            continue;
+        };
+        let ink = match tool.status() {
+            Some(ToolStatus::Success) => ui_theme.tool_success,
+            Some(ToolStatus::Failed) => ui_theme.tool_failed,
+            _ => continue,
+        };
+        if !matches!(ink, Color::Rgb(..)) {
+            continue;
+        }
+        let settle_spans = crate::tui::history::tool_header_settle_spans(tool, line);
+        let progress = since.as_secs_f32() / SETTLE_FLASH_DURATION.as_secs_f32();
+        let strength = codewhale_ratatui::ACTIVITY_SWEEP_PEAK
+            * (1.0 - codewhale_ratatui::MotionEasing::EaseOut.apply(progress));
+        for index in settle_spans {
+            let Some(span) = line.spans.get_mut(index) else {
+                continue;
+            };
+            let Some(fg) = span.style.fg else {
+                continue;
+            };
+            let Some(ground) = span
+                .style
+                .bg
+                .map(|bg| {
+                    palette::adapt_bg_for_palette_mode(
+                        palette::adapt_bg_for_theme(bg, theme_id, ui_theme),
+                        ui_theme.mode,
+                    )
+                })
+                .filter(|bg| palette::resolvable_rgb(*bg).is_some())
+                .or(effective_ground)
+            else {
+                continue;
+            };
+            let mapped = palette::adapt_fg_for_palette_mode(
+                palette::adapt_fg_for_theme(fg, theme_id, ui_theme),
+                ground,
+                ui_theme.mode,
+            );
+            let target = if mapped == ink {
+                ui_theme.text_body
+            } else {
+                ink
+            };
+            let next = codewhale_ratatui::activity_sweep_ink(mapped, ground, target, strength);
+            if next != mapped {
+                span.style = span.style.fg(next);
+                visible = true;
+            }
+        }
+    }
+    visible
+}
+
 fn sweep_span_extent(
     line: &mut Line<'static>,
     extent: std::ops::Range<usize>,
@@ -4167,16 +4282,17 @@ use codewhale_ratatui::native_composer_wrap_text as wrap_text;
 mod tests {
     use super::{
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
-        ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_composer_submit_rect,
-        active_entry_revision, apply_activity_sweep, apply_selection_to_line, apply_send_flash,
-        approval_palette, approval_truncation_hint, build_empty_state_lines,
-        composer_content_geometry, composer_empty_hint_text, composer_height, composer_inner_area,
-        composer_max_height, composer_submit_hint, composer_top_padding, cursor_row_col,
-        empty_composer_visual_rows, enclosed_composer_panel_fits, fish_flee_offset, fish_heading,
-        fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
-        placeholder_visual_lines, push_command_entry, receipt_is_settling, revision_in_domain,
-        should_render_empty_state, slash_completion_hints, test_native_ocean_caps,
-        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        ChatWidget, ComposerWidget, Renderable, SETTLE_FLASH_DURATION, SlashMenuEntry,
+        active_composer_submit_rect, active_entry_revision, apply_activity_sweep,
+        apply_selection_to_line, apply_send_flash, apply_settle_flash, approval_palette,
+        approval_truncation_hint, build_empty_state_lines, composer_content_geometry,
+        composer_empty_hint_text, composer_height, composer_inner_area, composer_max_height,
+        composer_submit_hint, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
+        enclosed_composer_panel_fits, fish_flee_offset, fish_heading, fish_mark,
+        history_entry_revision, layout_input, layout_input_with_scroll, placeholder_visual_lines,
+        push_command_entry, receipt_is_settling, revision_in_domain, should_render_empty_state,
+        slash_completion_hints, test_native_ocean_caps, tool_run_summary_revision,
+        wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -4563,6 +4679,149 @@ mod tests {
     }
 
     #[test]
+    fn settled_tool_rows_flash_their_outcome_ink_once() {
+        let generic = |status| {
+            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "grep_files".to_string(),
+                status,
+                input_summary: Some("pattern: TODO, path: crates".to_string()),
+                output: None,
+                prompts: None,
+                spillover_path: None,
+                output_summary: None,
+                is_diff: false,
+            }))
+        };
+        let exec = |status| {
+            HistoryCell::Tool(ToolCell::Exec(ExecCell {
+                command: "cargo test -p codewhale-tui".to_string(),
+                description: None,
+                status,
+                output: None,
+                live_output: None,
+                shell_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+                duration_ms: Some(5_000),
+                stale_elapsed_since_output_ms: None,
+                waiting: None,
+                source: ExecSource::Assistant,
+                interaction: None,
+                output_summary: None,
+            }))
+        };
+        let theme = palette::UNDERWATER_UI_THEME;
+        let options = crate::tui::history::TranscriptRenderOptions::default();
+        let completed = Instant::now();
+        let flash = |cell: &HistoryCell,
+                     options: crate::tui::history::TranscriptRenderOptions,
+                     after: Duration| {
+            let mut rendered = cell.lines_with_options(100, options);
+            let meta: Vec<TranscriptLineMeta> = (0..rendered.len())
+                .map(|line_in_cell| TranscriptLineMeta::CellLine {
+                    cell_index: 0,
+                    line_in_cell,
+                    copy_prefix_width: 0,
+                    copy_separator_after: codewhale_tui_kit::ui_text::CopyLineSeparator::Newline,
+                })
+                .collect();
+            let mut flashed = rendered.clone();
+            let visible = apply_settle_flash(
+                &mut flashed,
+                0,
+                &meta,
+                &[0],
+                0,
+                std::slice::from_ref(cell),
+                &std::collections::HashMap::from([(0, completed)]),
+                completed + after,
+                palette::ThemeId::Underwater,
+                &theme,
+                None,
+            );
+            (rendered.remove(0), flashed.remove(0), visible)
+        };
+        let fg_of = |line: &Line<'static>| -> Vec<Option<Color>> {
+            line.spans.iter().map(|span| span.style.fg).collect()
+        };
+
+        for cell in [
+            generic(ToolStatus::Success),
+            generic(ToolStatus::Failed),
+            exec(ToolStatus::Success),
+            exec(ToolStatus::Failed),
+        ] {
+            let (before, early, visible) = flash(&cell, options, Duration::from_millis(60));
+            assert!(visible, "a fresh outcome flashes: {before:?}");
+            assert_eq!(early.spans.len(), before.spans.len());
+            let summary = before
+                .spans
+                .iter()
+                .position(|span| span.content.contains("TODO") || span.content.contains("cargo"))
+                .expect("summary or command present");
+            let status_word = before
+                .spans
+                .iter()
+                .position(|span| span.content == " \u{00B7} ")
+                .expect("status separator present")
+                - 1;
+            let (before_fg, early_fg) = (fg_of(&before), fg_of(&early));
+            assert_ne!(
+                early_fg[..summary],
+                before_fg[..summary],
+                "the outcome mark lights"
+            );
+            assert_ne!(
+                early_fg[status_word], before_fg[status_word],
+                "the status word lights"
+            );
+            assert_eq!(
+                early_fg[summary..],
+                before_fg[summary..],
+                "the summary and command never flash"
+            );
+            let (_, settled, visible) = flash(&cell, options, SETTLE_FLASH_DURATION);
+            assert!(!visible);
+            assert_eq!(
+                fg_of(&settled),
+                fg_of(&before),
+                "the flash leaves no residue"
+            );
+        }
+
+        let calm = crate::tui::history::TranscriptRenderOptions {
+            calm_mode: true,
+            ..options
+        };
+        for cell in [exec(ToolStatus::Success), exec(ToolStatus::Failed)] {
+            let (before, early, visible) = flash(&cell, calm, Duration::from_millis(60));
+            assert!(visible, "a fresh outcome flashes: {before:?}");
+            let (before_fg, early_fg) = (fg_of(&before), fg_of(&early));
+            let changed: Vec<usize> = (0..before_fg.len())
+                .filter(|index| early_fg[*index] != before_fg[*index])
+                .collect();
+            let mut expected = vec![0];
+            if let Some(status) = before
+                .spans
+                .iter()
+                .position(|span| span.content == "failed")
+            {
+                expected.push(status);
+            }
+            assert_eq!(
+                changed, expected,
+                "calm rows light the mark and the outcome word only: {before:?}"
+            );
+        }
+
+        let (before, running, visible) =
+            flash(&generic(ToolStatus::Running), options, Duration::ZERO);
+        assert!(!visible);
+        assert_eq!(fg_of(&running), fg_of(&before));
+    }
+
+    #[test]
     fn activity_sweep_and_breath_stop_under_reduced_motion() {
         let mut app = create_test_app();
         app.ui_theme = palette::UNDERWATER_UI_THEME;
@@ -4580,6 +4839,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
             assert_eq!(crate::tui::ui::motion::composer_live_border(&app), first);
         }
+    }
+
+    #[test]
+    fn composer_border_holds_still_while_the_transcript_is_scrolled_away() {
+        let mut app = create_test_app();
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll = codewhale_tui_kit::scrolling::TranscriptScroll::at_line(0);
+        assert!(!crate::tui::ui::motion::composer_border_breathes(&app));
+
+        app.viewport.transcript_scroll =
+            codewhale_tui_kit::scrolling::TranscriptScroll::to_bottom();
+        assert!(crate::tui::ui::motion::composer_border_breathes(&app));
     }
 
     #[test]
@@ -4848,6 +5125,7 @@ mod tests {
         app.add_message(HistoryCell::Error {
             message: "验证失败 detail target".to_string(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         });
 
         let area = Rect::new(0, 0, 80, 12);
@@ -8475,6 +8753,7 @@ mod tests {
                 row: header.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
 
         assert!(events.is_empty());

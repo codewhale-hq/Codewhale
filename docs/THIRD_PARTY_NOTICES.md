@@ -17,7 +17,7 @@ the licence obligation travels with the code rather than with a package.
 - **Author:** Mario Zechner
 - **Licence:** MIT
 - **Used in:** `crates/runtime/src/credentials/` and
-  `crates/tui/src/config/credential_resolve.rs`
+  `crates/runtime/src/config/credential_resolve.rs`
 - **What was taken:** the design of `packages/ai/src/auth/` — one type-tagged
   credential per provider, `modify` as the only serialized write path, a single
   stated precedence rule enforced in one place, an injectable auth context, and
