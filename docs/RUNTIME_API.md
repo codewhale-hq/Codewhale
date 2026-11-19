@@ -913,6 +913,13 @@ produced.
 
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
+A read or edit tool call names its file in `locations` as an absolute path
+(relative paths resolve against the session workspace). A file write or edit
+start carries an ACP `diff` of the requested text: `oldText` is the edit's
+search text and is absent for a write, so it is not a whole-file before image
+and `apply_patch` has none. The same diff leads the content of the call's
+permission request and completion update, so the editor keeps showing it. Shell output arrives as text content; ACP has no
+editor-owned `terminal` content on this transport.
 `session/request_permission` correlates a private JSON-RPC ID to the same
 Runtime-minted pending approval and Core execution ID. When a plugin tool asks
 the core to run a tool that needs approval (`exec.core`), the request is shown
