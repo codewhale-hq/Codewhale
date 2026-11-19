@@ -3267,10 +3267,15 @@ a remote request on the local machine.
 **LSP** (workspace language intelligence, APPS-93)
 - `GET /v1/lsp` — capability: `enabled`, supported `languages` with their
   server commands, `custom_languages`, operations, poll and diagnostic caps
-- `GET /v1/diagnostics?path=` — file diagnostics
-- `GET /v1/definition?path=&line=&character=` (1-based)
-- `GET /v1/references?path=&line=&character=` (1-based)
-- `GET /v1/symbols?path=&query=` — empty query returns document symbols
+- `GET /v1/diagnostics?path=` — file diagnostics (`items[].line`/`column` are
+  1-based; response carries `position_base: 1`)
+- `GET /v1/definition?path=&line=&character=` (1-based input; `locations[].range`
+  and `result` keep raw 0-based LSP positions, `position_base: 0`,
+  `position_encoding: "utf-16"`)
+- `GET /v1/references?path=&line=&character=` (same input/output position
+  contract as `/v1/definition`)
+- `GET /v1/symbols?path=&query=` — empty query returns document symbols (same
+  0-based output positions as `/v1/definition`)
 
 One lazily-built workspace-level `LspManager` serves these; engine threads
 keep their own per-thread managers for the post-edit hook, and a server that
