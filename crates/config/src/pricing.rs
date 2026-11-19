@@ -522,20 +522,6 @@ impl OfferingPricing {
         None
     }
 
-    /// Per-million price for one canonical class, when published.
-    #[must_use]
-    pub fn price_per_million(&self, class: TokenClass) -> Option<f64> {
-        match class {
-            TokenClass::Input => self.input_per_million,
-            TokenClass::Output => self.output_per_million,
-            TokenClass::CacheRead => self.cache_read_per_million,
-            TokenClass::CacheWrite => self.cache_write_per_million,
-            TokenClass::Reasoning => self.reasoning_per_million,
-            TokenClass::InputAudio => self.input_audio_per_million,
-            TokenClass::OutputAudio => self.output_audio_per_million,
-        }
-    }
-
     /// Classes this turn actually used that carry no published price.
     ///
     /// Non-empty means [`Self::estimate_cost`] fails closed for this usage; the
