@@ -2,7 +2,7 @@ name: Sync to GitCode
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'ci/release-prep-*']
   release:
     types: [published]
   schedule:
@@ -70,8 +70,10 @@ jobs:
             ./scripts/release/verify-remote-tag.sh \
               "https://github.com/${GITHUB_REPOSITORY}.git" "${RELEASE_TAG}" "${SOURCE_SHA}"
             scripts/release/mirror-push.sh gitcode "tag ${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          elif [[ "${GITHUB_REF}" == refs/heads/ci/release-prep-* ]]; then
+            scripts/release/mirror-push.sh gitcode "branch ${GITHUB_REF#refs/heads/}" "HEAD:${GITHUB_REF}" --force
           elif [[ "${GITHUB_REF}" != refs/heads/main ]]; then
-            echo "::error::GitCode mirrors main only; dispatch this workflow from main." >&2
+            echo "::error::GitCode mirrors main and ci/release-prep-* only." >&2
             exit 1
           elif [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
@@ -80,6 +82,15 @@ jobs:
             scripts/release/mirror-push.sh gitcode "main" HEAD:refs/heads/main --force
           fi
 
+
+      - name: Mirror release-prep branches to GitCode
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ref in $(git for-each-ref --format='%(refname:strip=3)' 'refs/remotes/origin/ci/release-prep-*'); do
+            scripts/release/mirror-push.sh gitcode "branch ${ref}" "refs/remotes/origin/${ref}:refs/heads/${ref}" --force
+          done
       - name: Mirror the latest release to GitCode
         if: github.event_name == 'schedule'
         env:

@@ -22,7 +22,7 @@ name: Sync to CNB
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'ci/release-prep-*']
   release:
     types: [published]
   schedule:
@@ -128,6 +128,15 @@ jobs:
             scripts/release/mirror-push.sh cnb "branch ${BRANCH}" "HEAD:refs/heads/${BRANCH}" --force
           fi
 
+
+      - name: Mirror release-prep branches to CNB
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ref in $(git for-each-ref --format='%(refname:strip=3)' 'refs/remotes/origin/ci/release-prep-*'); do
+            scripts/release/mirror-push.sh cnb "branch ${ref}" "refs/remotes/origin/${ref}:refs/heads/${ref}" --force
+          done
       - name: Mirror the latest release to CNB
         if: github.event_name == 'schedule'
         env:
