@@ -1705,7 +1705,7 @@ pub(super) async fn run_child_agent(
         auth.executed_actions = actions;
     }
     let mut system =
-        build_subagent_system_prompt_with_skills(&agent_type, &assignment, &runtime.context);
+        build_subagent_system_prompt_with_memory(&agent_type, &assignment, &runtime.context);
     if let Some(persona) = runtime
         .activation
         .as_ref()
