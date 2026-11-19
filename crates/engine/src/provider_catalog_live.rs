@@ -423,7 +423,9 @@ impl ProviderLivePricingQuote {
             || self.wire_model != wire_model
             || self.endpoint_fingerprint != endpoint_fingerprint
             || self.catalog_fetched_at > dispatched_at_unix
-            || self.currency != Currency::Usd
+            || !(self.currency == Currency::Usd
+                || (self.currency == Currency::Cny
+                    && self.provenance == PricingProvenance::UserOverride))
         {
             return None;
         }
@@ -1675,11 +1677,12 @@ pub fn configured_dispatch_pricing_quote_at(
         .iter()
         .find(|row| row.id == model && row.matches_route(identity, base_url))?;
     let cost = declared.cost.clone().unwrap_or_default();
+    let currency = declared.resolved_cost_currency()?;
     let pricing = OfferingPricing {
         provider: identity.to_string(),
         wire_model_id: model.to_string(),
         canonical_model: None,
-        currency: Currency::Usd,
+        currency,
         input_per_million: cost.input,
         output_per_million: cost.output,
         cache_read_per_million: cost.cache_read,
@@ -3313,5 +3316,71 @@ mod tests {
             Some(false)
         );
         reset_cache_for_test();
+    }
+
+    #[test]
+    fn configured_custom_model_cny_currency_freezes_and_audits_in_cny_only() {
+        let base_url = "https://token.sensenova.cn/v1";
+        let fingerprint = base_url_fingerprint(base_url);
+        let at = now_unix();
+        let recorded_at = chrono::DateTime::from_timestamp(at as i64, 0).expect("timestamp");
+        let models = vec![codewhale_config::catalog::configured::ConfiguredModel {
+            provider: "openai".to_string(),
+            base_url: base_url.to_string(),
+            id: "deepseek-flash".to_string(),
+            display_name: None,
+            limit: None,
+            cost: Some(codewhale_config::models_dev::ModelsDevCost {
+                input: Some(2.0),
+                output: Some(8.0),
+                cache_read: Some(0.04),
+                ..Default::default()
+            }),
+            cost_currency: Some("cny".to_string()),
+            modalities: None,
+            attachment: None,
+            reasoning: None,
+            tool_call: None,
+            structured_output: None,
+            extras: Default::default(),
+        }];
+
+        let quote = configured_dispatch_pricing_quote_at(
+            &models,
+            ProviderKind::Openai,
+            "openai",
+            "deepseek-flash",
+            base_url,
+            at,
+        )
+        .expect("CNY custom_models quote");
+        assert_eq!(quote.currency, Currency::Cny);
+        let encoded = serde_json::to_string(&quote).expect("serialize CNY quote");
+        let decoded: ProviderLivePricingQuote =
+            serde_json::from_str(&encoded).expect("deserialize CNY quote");
+        assert_eq!(decoded, quote);
+
+        let usage = codewhale_models::Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            prompt_cache_hit_tokens: Some(500_000),
+            prompt_cache_miss_tokens: Some(500_000),
+            ..Default::default()
+        };
+        let audit = crate::pricing::audit_turn_cost_for_route_on_endpoint_for_identity_at(
+            ProviderKind::Openai,
+            Some("openai"),
+            "deepseek-flash",
+            crate::pricing::billing_surface_for_route(ProviderKind::Openai, Some(base_url)),
+            Some(&fingerprint),
+            Some(&decoded),
+            &usage,
+            recorded_at,
+        );
+        assert!(audit.cny_priced, "{audit:?}");
+        assert!(!audit.usd_priced, "{audit:?}");
+        let estimate = audit.estimate.expect("priced CNY estimate");
+        assert_eq!(estimate.usd, 0.0);
+        assert!((estimate.cny - 5.02).abs() < 1e-12, "got {}", estimate.cny);
     }
 }
