@@ -295,7 +295,7 @@ pub fn escape_mcp_guidance(text: &str) -> String {
 
 /// A server name is configuration text, not markup: neutralize whatever could
 /// close an attribute, forge an envelope, or start a new line.
-fn sanitize_mcp_server_name(server: &str) -> String {
+pub(crate) fn sanitize_mcp_server_name(server: &str) -> String {
     server
         .chars()
         .map(|ch| {

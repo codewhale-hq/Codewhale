@@ -163,33 +163,60 @@ fn summarize_subagent_status(status: &serde_json::Value, lossy: &mut bool) -> St
     status.to_string()
 }
 
+fn compact_transcript_handle_text(value: &serde_json::Value) -> Option<String> {
+    let raw = value.get("transcript_handle").or_else(|| {
+        value
+            .get("snapshot")
+            .and_then(|s| s.get("transcript_handle"))
+    })?;
+    if let Some(text) = raw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(text.to_string());
+    }
+    if raw.is_object() {
+        let mut handle = raw.clone();
+        if let Some(preview) = handle.get("repr_preview").and_then(Value::as_str) {
+            handle["repr_preview"] = Value::String(summarize_text(preview, 120));
+        }
+        return serde_json::to_string(&handle).ok();
+    }
+    None
+}
+
 fn summarize_subagent_snapshot(
     snapshot: &serde_json::Value,
     index: usize,
     result_limit: usize,
     lossy: &mut bool,
 ) -> String {
-    if let Some(inner) = snapshot.get("snapshot") {
-        return summarize_subagent_snapshot(inner, index, result_limit, lossy);
-    }
+    let transcript_handle = compact_transcript_handle_text(snapshot);
+    let target = snapshot.get("snapshot").unwrap_or(snapshot);
 
-    let Some(obj) = snapshot.as_object() else {
+    let Some(obj) = target.as_object() else {
         return format!(
             "- item {index}: {}",
-            keep_text(&snapshot.to_string(), result_limit, lossy)
+            keep_text(&target.to_string(), result_limit, lossy)
         );
     };
 
     let agent_id = obj
         .get("agent_id")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| snapshot.get("agent_id").and_then(serde_json::Value::as_str))
         .unwrap_or("unknown");
     let agent_type = obj
         .get("agent_type")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| obj.get("role").and_then(serde_json::Value::as_str))
+        .or_else(|| snapshot.get("role").and_then(serde_json::Value::as_str))
+        .or_else(|| {
+            snapshot
+                .pointer("/child_route/canonical_role")
+                .and_then(serde_json::Value::as_str)
+        })
         .unwrap_or("agent");
     let status = obj
         .get("status")
+        .or_else(|| snapshot.get("status"))
         .map(|status| summarize_subagent_status(status, lossy))
         .unwrap_or_else(|| "unknown".to_string());
     let objective = obj
@@ -205,8 +232,41 @@ fn summarize_subagent_snapshot(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| keep_text(s, result_limit, lossy));
-    let steps = obj.get("steps_taken").and_then(serde_json::Value::as_u64);
+    let steps = obj
+        .get("steps_taken")
+        .or_else(|| obj.get("steps"))
+        .and_then(serde_json::Value::as_u64);
     let duration_ms = obj.get("duration_ms").and_then(serde_json::Value::as_u64);
+    let workspace = obj
+        .get("workspace")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            snapshot
+                .get("workspace")
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            snapshot
+                .pointer("/worker_record/spec/workspace")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let git_branch = obj
+        .get("git_branch")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            snapshot
+                .get("git_branch")
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            snapshot
+                .pointer("/worker_record/spec/git_branch")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let mut lines = vec![format!("- {agent_id} ({agent_type}) status={status}")];
     if let Some(objective) = objective {
@@ -225,28 +285,94 @@ fn summarize_subagent_snapshot(
             .unwrap_or_else(|| "?".to_string());
         lines.push(format!("  stats: steps={steps}, duration_ms={duration_ms}"));
     }
+    if let Some(workspace) = workspace {
+        lines.push(format!("  workspace: {workspace}"));
+    }
+    if let Some(git_branch) = git_branch {
+        lines.push(format!("  git_branch: {git_branch}"));
+    }
+    if let Some(handle) = transcript_handle {
+        lines.push(format!("  transcript_handle: {handle}"));
+    }
     lines.join("\n")
 }
 
 /// Guidance heading every summarized sub-agent result. It names only tools
 /// the model can call: `read` and `bash` are eager, and `handle_read` is
 /// deferred, so it carries its activation path (#6747).
+fn subagent_summary_guidance_for(has_transcript_handle: bool) -> String {
+    if has_transcript_handle {
+        format!(
+            "Child results are self-reports; verify side effects with `read` (or `bash`, e.g. `git status`, where available) before claiming success.\n\
+             Use `handle_read` on `transcript_handle` for bounded transcript slices when the returned summary is not enough; {}.\n",
+            crate::tools::handle::HANDLE_READ_ACTIVATION_HINT
+        )
+    } else {
+        format!(
+            "Child results are self-reports; verify side effects with `read` (or `bash`, e.g. `git status`, where available) before claiming success.\n\
+             Use `handle_read` for bounded transcript slices when the returned summary is not enough; {}.\n",
+            crate::tools::handle::HANDLE_READ_ACTIVATION_HINT
+        )
+    }
+}
+
+#[cfg(test)]
 pub fn subagent_summary_guidance() -> String {
-    format!(
-        "Child results are self-reports; verify side effects with `read` (or `bash`, e.g. `git status`, where available) before claiming success.\n\
-         Use `handle_read` on `transcript_handle` for bounded transcript slices when the returned summary is not enough; {}.\n",
-        crate::tools::handle::HANDLE_READ_ACTIVATION_HINT
+    subagent_summary_guidance_for(true)
+}
+
+fn is_subagent_control_action(action: &str) -> bool {
+    matches!(
+        action,
+        "start"
+            | "peek"
+            | "status"
+            | "cancel"
+            | "wait"
+            | "roster"
+            | "message"
+            | "followup"
+            | "interrupt"
+            | "claim"
+            | "release"
     )
+}
+
+fn status_is_in_flight(value: &serde_json::Value) -> bool {
+    value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|status| {
+            matches!(
+                status.trim().to_ascii_lowercase().as_str(),
+                "running" | "starting" | "queued" | "model_wait" | "tool_wait"
+            )
+        })
 }
 
 /// A payload is a sub-agent snapshot when it carries the identity/status shape
 /// this summarizer knows how to render (`agent_id`/`agent_type`, optionally
 /// wrapped in a `snapshot` field).
 fn looks_like_subagent_snapshot(value: &serde_json::Value) -> bool {
-    let value = value.get("snapshot").unwrap_or(value);
-    value
-        .as_object()
-        .is_some_and(|obj| obj.contains_key("agent_id") || obj.contains_key("agent_type"))
+    if value
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_subagent_control_action)
+    {
+        return false;
+    }
+    let inner = value.get("snapshot").unwrap_or(value);
+    let Some(obj) = inner.as_object() else {
+        return false;
+    };
+    if !(obj.contains_key("agent_id") || obj.contains_key("agent_type")) {
+        return false;
+    }
+    let has_result = obj
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty());
+    has_result || !(status_is_in_flight(inner) || status_is_in_flight(value))
 }
 
 /// Sub-agent snapshots shown in full before the rest are only counted.
@@ -257,13 +383,28 @@ const SUBAGENT_RESULT_MIN_CHARS: usize = 1_600;
 fn compact_subagent_tool_result_for_context(
     tool_name: &str,
     raw: &str,
+    metadata: Option<&Value>,
     budget: usize,
 ) -> Option<ContextSummary> {
     if tool_name != "agent" {
         return None;
     }
+    if metadata
+        .and_then(|meta| meta.get("action"))
+        .and_then(Value::as_str)
+        .is_some_and(is_subagent_control_action)
+    {
+        return None;
+    }
 
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if parsed
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(is_subagent_control_action)
+    {
+        return None;
+    }
     let snapshots: Vec<&serde_json::Value> = match &parsed {
         serde_json::Value::Array(items) => items.iter().collect(),
         serde_json::Value::Object(_) => vec![&parsed],
@@ -289,8 +430,12 @@ fn compact_subagent_tool_result_for_context(
     let shown = snapshots.len().min(SUBAGENT_SNAPSHOTS_SHOWN);
     let result_limit = (budget / 2 / shown.max(1)).max(SUBAGENT_RESULT_MIN_CHARS);
     let mut lossy = snapshots.len() > SUBAGENT_SNAPSHOTS_SHOWN;
+    let has_transcript_handle = snapshots
+        .iter()
+        .take(SUBAGENT_SNAPSHOTS_SHOWN)
+        .any(|snapshot| compact_transcript_handle_text(snapshot).is_some());
     let mut out = String::from("[sub-agent result summarized for parent context]\n");
-    out.push_str(&subagent_summary_guidance());
+    out.push_str(&subagent_summary_guidance_for(has_transcript_handle));
     for (idx, snapshot) in snapshots.iter().enumerate() {
         if idx >= SUBAGENT_SNAPSHOTS_SHOWN {
             out.push_str(&format!(
@@ -311,6 +456,106 @@ fn compact_subagent_tool_result_for_context(
         text: out.trim_end().to_string(),
         lossy,
     })
+}
+
+fn mcp_server_is_admitted(
+    rendered_name: &str,
+    admitted_servers: &std::collections::HashSet<String>,
+) -> bool {
+    admitted_servers.contains(rendered_name)
+        || admitted_servers.iter().any(|candidate| {
+            crate::runtime_handoff::sanitize_mcp_server_name(candidate) == rendered_name
+        })
+}
+
+pub(crate) fn filter_mcp_server_instructions_message(
+    message: &codewhale_models::Message,
+    admitted_servers: &std::collections::HashSet<String>,
+) -> Option<codewhale_models::Message> {
+    if let Some(body) = crate::runtime_handoff::mcp_server_instructions_display(message) {
+        if admitted_servers.is_empty() {
+            return None;
+        }
+        const OPEN_PREFIX: &str = "<mcp_server_instructions server=\"";
+        const OPEN_SUFFIX: &str = "\">\n";
+        const CLOSE_TAG: &str = "\n</mcp_server_instructions>";
+        let mut kept = Vec::new();
+        let mut total = 0usize;
+        let mut cursor = body;
+        while let Some(start) = cursor.find(OPEN_PREFIX) {
+            let after_prefix = &cursor[start + OPEN_PREFIX.len()..];
+            let Some(name_end) = after_prefix.find(OPEN_SUFFIX) else {
+                break;
+            };
+            let server = &after_prefix[..name_end];
+            let after_open = &after_prefix[name_end + OPEN_SUFFIX.len()..];
+            let Some(body_end) = after_open.find(CLOSE_TAG) else {
+                break;
+            };
+            let text = &after_open[..body_end];
+            total += 1;
+            if mcp_server_is_admitted(server, admitted_servers) {
+                kept.push((server.to_string(), text.to_string()));
+            }
+            cursor = &after_open[body_end + CLOSE_TAG.len()..];
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        if kept.len() == total {
+            return Some(message.clone());
+        }
+        return Some(crate::runtime_handoff::mcp_server_instructions_runtime_message(&kept));
+    }
+
+    if let Some(body) = crate::runtime_handoff::mcp_configured_servers_display(message) {
+        if admitted_servers.is_empty() {
+            return None;
+        }
+        let mut kept = Vec::new();
+        let mut total = 0usize;
+        for line in body.lines() {
+            let Some(rest) = line.strip_prefix("- ") else {
+                continue;
+            };
+            let Some((server, status_label)) = rest.rsplit_once(": ") else {
+                continue;
+            };
+            let status = match status_label {
+                "authorization_required" => codewhale_mcp::ModelServerStatus::AuthorizationRequired,
+                "failed" => codewhale_mcp::ModelServerStatus::Failed,
+                "connecting" => codewhale_mcp::ModelServerStatus::Connecting,
+                "unknown" => codewhale_mcp::ModelServerStatus::Unknown,
+                "connected" => codewhale_mcp::ModelServerStatus::Connected,
+                "configured" => codewhale_mcp::ModelServerStatus::Configured,
+                _ => continue,
+            };
+            total += 1;
+            if mcp_server_is_admitted(server, admitted_servers) {
+                kept.push((server.to_string(), status));
+            }
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        if kept.len() == total {
+            return Some(message.clone());
+        }
+        return Some(crate::runtime_handoff::mcp_configured_servers_runtime_message(&kept));
+    }
+
+    Some(message.clone())
+}
+
+pub(crate) fn filter_messages_mcp_server_instructions(
+    messages: &mut Vec<codewhale_models::Message>,
+    admitted_servers: &std::collections::HashSet<String>,
+) {
+    let original = std::mem::take(messages);
+    *messages = original
+        .into_iter()
+        .filter_map(|message| filter_mcp_server_instructions_message(&message, admitted_servers))
+        .collect();
 }
 
 fn json_text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -703,7 +948,7 @@ pub fn tool_result_context_view_with_window(
     let recovery_path = recovery.as_ref().map(|recovery| recovery.path);
     let retrieval_ref = recovery.as_ref().and_then(|recovery| recovery.artifact_id);
 
-    let summary = compact_subagent_tool_result_for_context(tool_name, raw, budget)
+    let summary = compact_subagent_tool_result_for_context(tool_name, raw, metadata, budget)
         .or_else(|| compact_structured_tool_result_for_context(tool_name, raw, metadata, budget));
     if let Some(summary) = summary {
         return summary_view(summary, budget, recovery.as_ref());
@@ -946,7 +1191,15 @@ pub(super) fn is_image_input_rejection_message(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_image_input_rejection_message;
+    use super::{
+        filter_messages_mcp_server_instructions, is_image_input_rejection_message,
+        tool_result_context_view,
+    };
+    use crate::tools::spec::ToolResult;
+    use codewhale_config::ProviderKind;
+    use codewhale_models::{ContentBlock, Message, Role};
+    use serde_json::json;
+    use std::collections::HashSet;
 
     #[test]
     fn image_rejection_classifier_matches_provider_400s() {
@@ -961,5 +1214,276 @@ mod tests {
         assert!(!is_image_input_rejection_message(
             "This model's maximum context length is 131072 tokens."
         ));
+    }
+
+    #[test]
+    fn compact_subagent_control_actions_pass_through_without_self_report_wrapper() {
+        let handle = json!({
+            "kind": "var_handle",
+            "session_id": "agent:agent_abc12345",
+            "name": "transcript",
+            "type_name": "json",
+            "length": 128,
+            "repr_preview": "{}",
+            "sha256": "deadbeef"
+        });
+        let cases = [
+            (
+                "start",
+                json!({
+                    "action": "start",
+                    "agent_id": "agent_abc12345",
+                    "role": "explore",
+                    "name": "Blue",
+                    "status": "running",
+                    "transcript_handle": handle,
+                }),
+            ),
+            (
+                "peek",
+                json!({
+                    "action": "peek",
+                    "agent_id": "agent_abc12345",
+                    "role": "explore",
+                    "status": "tool_wait",
+                    "steps": 3,
+                    "duration_ms": 1200,
+                    "activity": "reading src/lib.rs",
+                    "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+                    "transcript_handle": handle,
+                    "recent_events": [{"seq": 1, "status": "tool_wait", "tool_name": "read"}],
+                }),
+            ),
+            (
+                "status",
+                json!({
+                    "action": "status",
+                    "agent_id": "agent_abc12345",
+                    "role": "explore",
+                    "status": "completed",
+                    "steps": 5,
+                    "duration_ms": 4200,
+                    "activity": "finished",
+                    "usage": {"input_tokens": 200, "output_tokens": 40, "total_tokens": 240},
+                    "summary": "Found the bug.",
+                    "transcript_handle": handle,
+                    "detail_bounded": true,
+                }),
+            ),
+            (
+                "cancel",
+                json!({
+                    "action": "cancel",
+                    "agent_id": "agent_abc12345",
+                    "role": "explore",
+                    "status": "cancelled",
+                    "steps": 4,
+                    "duration_ms": 3000,
+                    "usage": {"input_tokens": 150, "output_tokens": 30, "total_tokens": 180},
+                    "transcript_handle": handle,
+                    "cancelled_by_parent": true,
+                }),
+            ),
+        ];
+
+        for (action, payload) in cases {
+            let raw = payload.to_string();
+            let result = ToolResult::success(raw.clone()).with_metadata(json!({"action": action}));
+            let view = tool_result_context_view(
+                ProviderKind::Deepseek,
+                "deepseek-v3.2-128k",
+                None,
+                "agent",
+                &result,
+            );
+            assert!(!view.needs_full_output_artifact, "{action}");
+            assert_eq!(view.text, raw, "{action}");
+            assert!(
+                !view
+                    .text
+                    .contains("[sub-agent result summarized for parent context]"),
+                "{action}"
+            );
+            assert!(
+                !view.text.contains("Child results are self-reports"),
+                "{action}"
+            );
+            assert!(view.text.contains("transcript_handle"), "{action}");
+            assert!(view.text.contains("\"explore\""), "{action}");
+        }
+    }
+
+    #[test]
+    fn compact_subagent_completed_snapshot_only_mentions_transcript_handle_when_rendered() {
+        let without_handle = ToolResult::success(
+            json!({
+                "agent_id": "agent_done1",
+                "agent_type": "explore",
+                "status": "Completed",
+                "result": "Found three call sites.",
+                "steps_taken": 4,
+                "duration_ms": 1500
+            })
+            .to_string(),
+        );
+        let view_without = tool_result_context_view(
+            ProviderKind::Deepseek,
+            "deepseek-v3.2-128k",
+            None,
+            "agent",
+            &without_handle,
+        );
+        assert!(
+            view_without
+                .text
+                .contains("[sub-agent result summarized for parent context]")
+        );
+        assert!(!view_without.text.contains("transcript_handle"));
+
+        let with_handle = ToolResult::success(
+            json!({
+                "agent_id": "agent_done2",
+                "role": "explore",
+                "status": "Completed",
+                "transcript_handle": {
+                    "kind": "var_handle",
+                    "session_id": "agent:agent_done2",
+                    "name": "full_transcript",
+                    "type_name": "json",
+                    "length": 42,
+                    "repr_preview": "ok",
+                    "sha256": "abc123"
+                },
+                "snapshot": {
+                    "agent_id": "agent_done2",
+                    "agent_type": "explore",
+                    "status": "Completed",
+                    "result": "Found three call sites.",
+                    "steps_taken": 4,
+                    "duration_ms": 1500
+                }
+            })
+            .to_string(),
+        );
+        let view_with = tool_result_context_view(
+            ProviderKind::Deepseek,
+            "deepseek-v3.2-128k",
+            None,
+            "agent",
+            &with_handle,
+        );
+        assert!(view_with.text.contains("agent_done2 (explore)"));
+        assert!(view_with.text.contains("transcript_handle:"));
+        assert!(view_with.text.contains("agent:agent_done2"));
+    }
+
+    #[test]
+    fn compact_subagent_snapshot_preserves_worktree_workspace_and_git_branch() {
+        let output = ToolResult::success(
+            json!({
+                "agent_id": "agent_wt1234",
+                "role": "implement",
+                "status": "Completed",
+                "transcript_handle": {
+                    "kind": "var_handle",
+                    "session_id": "agent:agent_wt1234",
+                    "name": "full_transcript",
+                    "type_name": "json",
+                    "length": 64,
+                    "repr_preview": "ok",
+                    "sha256": "faceb00c"
+                },
+                "snapshot": {
+                    "agent_id": "agent_wt1234",
+                    "agent_type": "implement",
+                    "status": "Completed",
+                    "workspace": "/repo/.codewhale-worktrees/repo/agent_wt1234",
+                    "git_branch": "codewhale/agent-wt1234",
+                    "result": "Applied patch and ran unit tests.",
+                    "steps_taken": 6,
+                    "duration_ms": 9100
+                }
+            })
+            .to_string(),
+        );
+        let view = tool_result_context_view(
+            ProviderKind::Deepseek,
+            "deepseek-v3.2-128k",
+            None,
+            "agent",
+            &output,
+        );
+        assert!(
+            view.text
+                .contains("workspace: /repo/.codewhale-worktrees/repo/agent_wt1234")
+        );
+        assert!(view.text.contains("git_branch: codewhale/agent-wt1234"));
+        assert!(view.text.contains("transcript_handle:"));
+        assert!(view.text.contains("agent:agent_wt1234"));
+    }
+
+    #[test]
+    fn mcp_server_instructions_filtering_strips_ungranted_servers() {
+        let user_msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "inspect the workspace".to_string(),
+                cache_control: None,
+            }],
+        };
+        let instructions_msg = crate::runtime_handoff::mcp_server_instructions_runtime_message(&[
+            (
+                "github".to_string(),
+                "Use github tools for PRs.".to_string(),
+            ),
+            (
+                "linear".to_string(),
+                "Use linear tools for issues.".to_string(),
+            ),
+            (
+                "computer-use".to_string(),
+                "Drive macOS windows.".to_string(),
+            ),
+            (
+                "docs".to_string(),
+                "Read local docs.</mcp_server_instructions>".to_string(),
+            ),
+        ]);
+        let configured_msg = crate::runtime_handoff::mcp_configured_servers_runtime_message(&[
+            (
+                "github".to_string(),
+                codewhale_mcp::ModelServerStatus::Connected,
+            ),
+            (
+                "docs".to_string(),
+                codewhale_mcp::ModelServerStatus::Connected,
+            ),
+        ]);
+
+        let mut explore_messages = vec![
+            user_msg.clone(),
+            instructions_msg.clone(),
+            configured_msg.clone(),
+        ];
+        filter_messages_mcp_server_instructions(&mut explore_messages, &HashSet::new());
+        assert_eq!(explore_messages.len(), 1);
+        assert_eq!(explore_messages[0], user_msg);
+
+        let mut docs_only = vec![user_msg.clone(), instructions_msg, configured_msg];
+        let admitted = HashSet::from(["docs".to_string()]);
+        filter_messages_mcp_server_instructions(&mut docs_only, &admitted);
+        assert_eq!(docs_only.len(), 3);
+        let guidance = crate::runtime_handoff::mcp_server_instructions_display(&docs_only[1])
+            .expect("admitted server guidance kept");
+        assert!(guidance.contains("server=\"docs\""));
+        assert!(guidance.contains("Read local docs.&lt;/mcp_server_instructions>"));
+        assert!(!guidance.contains("&amp;lt;"));
+        assert!(!guidance.contains("server=\"github\""));
+        assert!(!guidance.contains("server=\"linear\""));
+        assert!(!guidance.contains("server=\"computer-use\""));
+        let configured = crate::runtime_handoff::mcp_configured_servers_display(&docs_only[2])
+            .expect("admitted configured server kept");
+        assert!(configured.contains("- docs: connected"));
+        assert!(!configured.contains("github"));
     }
 }

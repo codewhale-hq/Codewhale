@@ -534,8 +534,9 @@ max_admitted = 200
 # Operator-selected Runtime delegation depth. Omit to leave it uncapped.
 # This explicit value restricts descendants to six levels.
 max_depth = 6
-# Omitted or zero model-step budget is unbounded. Set a positive value only
-# when an operator deliberately wants a per-child cap.
+# Omitted or zero model-step budget is unbounded, except `explore` children,
+# which default to 24 steps. Set a positive value only when an operator
+# deliberately wants a per-child cap; it also replaces the explore default.
 default_max_steps = 0
 default_wall_time_secs = 0
 
@@ -648,7 +649,9 @@ Models should specify the task, write scope, deliverables and acceptance criteri
 not guess how many turns or minutes completion will require.
 
 An operator can deliberately set `[subagents] default_max_steps` or
-`default_wall_time_secs`. Omission or zero means no limit. Positive owner
+`default_wall_time_secs`. Omission or zero means no limit, except that
+`explore` children default to a 24-step ceiling and to at most `medium`
+inherited reasoning effort (an explicit `thinking` value still wins). Positive owner
 limits and role, parent and saved-run bounds remain authoritative; a child
 cannot remove them. There is no additional 2,000-turn or 24-hour child ceiling.
 Continuations preserve an existing run's remaining steps and absolute deadline.
