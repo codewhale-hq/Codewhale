@@ -259,6 +259,7 @@ fn ordinary_cell_fold_preserves_body_metadata_and_full_exports() {
         HistoryCell::Error {
             message: content.clone(),
             severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            code: None,
         },
         HistoryCell::Tool(ToolCell::Exec(tool)),
     ];
@@ -1826,6 +1827,7 @@ fn error_severity_ranks_stay_visually_distinguishable() {
         let cell = HistoryCell::Error {
             message: "Authentication failed: invalid API key".to_string(),
             severity,
+            code: None,
         };
         let lines = cell.lines(80);
         assert!(!lines.is_empty(), "{severity:?} must render a line");
@@ -1857,6 +1859,7 @@ fn error_severity_ranks_stay_visually_distinguishable() {
     let cell = HistoryCell::Error {
         message: "Authentication failed: invalid API key".to_string(),
         severity: ErrorSeverity::Error,
+        code: None,
     };
     let body_fg = cell
         .lines(80)
@@ -1875,6 +1878,7 @@ fn error_guidance_keeps_recovery_commands_on_their_own_line() {
         message: "DeepSeek API key not found.\nSave it:\n  codewhale auth set --provider deepseek"
             .to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     };
     for width in [80, 140] {
         let lines = cell.lines(width);
@@ -1905,6 +1909,7 @@ Set CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host.";
     let cell = HistoryCell::Error {
         message: recovery.to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     };
 
     let live_text = lines_text(&cell.lines(48));
@@ -1920,6 +1925,72 @@ Set CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host.";
     assert!(
         transcript_text.contains("192.168.1.25"),
         "the offending host must survive verbatim: {transcript_text}"
+    );
+}
+
+#[test]
+fn error_envelope_code_renders_muted_badge_without_duplication() {
+    let cell = HistoryCell::Error {
+        message: "SSE stream request did not receive response headers after 45s".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: Some("llm_network_error".to_string()),
+    };
+
+    let lines = cell.lines(80);
+    let rendered = lines_text(&lines);
+    assert!(rendered.contains("Error [llm_network_error]"), "{rendered}");
+    assert!(rendered.contains("after 45s"), "{rendered}");
+    for line in &lines {
+        assert!(line.width() <= 80, "line overflowed 80 cols: {line:?}");
+    }
+    let badge_span = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == "[llm_network_error]")
+        .expect("muted error code badge");
+    let label_span = &lines[0].spans[0];
+    assert_eq!(badge_span.style.fg, Some(codewhale_palette::TEXT_MUTED));
+    assert_ne!(badge_span.style.fg, label_span.style.fg);
+    assert_eq!(
+        crate::tui::history::text::history_cell_to_text(&cell, 80),
+        "[llm_network_error] SSE stream request did not receive response headers after 45s"
+    );
+
+    let narrow = cell.lines(28);
+    let narrow_text = lines_text(&narrow);
+    assert!(narrow_text.contains("[llm_network_error]"), "{narrow_text}");
+    assert!(narrow_text.contains("after 45s"), "{narrow_text}");
+    for line in &narrow {
+        assert!(
+            line.width() <= 28,
+            "narrow line overflowed 28 cols: {line:?}"
+        );
+    }
+
+    let already_tagged = HistoryCell::Error {
+        message: "Provider failed [llm_rate_limited]: retry in 10s".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Warning,
+        code: Some("llm_rate_limited".to_string()),
+    };
+    let tagged_text = lines_text(&already_tagged.lines(100));
+    assert_eq!(
+        tagged_text.matches("llm_rate_limited").count(),
+        1,
+        "code already present in message must not duplicate: {tagged_text}"
+    );
+    assert_eq!(
+        crate::tui::history::text::history_cell_to_text(&already_tagged, 100),
+        "Provider failed [llm_rate_limited]: retry in 10s"
+    );
+
+    let substring_non_match = HistoryCell::Error {
+        message: "Invalid statement from provider".to_string(),
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: Some("state".to_string()),
+    };
+    assert!(
+        lines_text(&substring_non_match.lines(80)).contains("[state]"),
+        "partial word match must not suppress badge"
     );
 }
 
