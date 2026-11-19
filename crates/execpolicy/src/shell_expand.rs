@@ -2959,12 +2959,10 @@ fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
         if token == "--" {
             break;
         }
-        if token == "--entrypoint" {
-            if let Some(value) = tokens.get(i + 1) {
-                found.push((value.clone(), base + i + 1));
-            }
-            i += 2;
-            continue;
+        if token == "--entrypoint"
+            && let Some(value) = tokens.get(i + 1)
+        {
+            found.push((value.clone(), base + i + 1));
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
             found.push((val.to_string(), base + i));
@@ -4259,6 +4257,14 @@ mod tests {
             ),
             (
                 "podman run --entrypoint rm -e --entrypoint=true alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "docker run -e --entrypoint --entrypoint rm alpine -rf /",
+                "rm -rf /",
+            ),
+            (
+                "podman run -l --entrypoint --entrypoint sh alpine -c 'rm -rf /'",
                 "rm -rf /",
             ),
         ] {
