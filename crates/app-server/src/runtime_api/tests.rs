@@ -29853,3 +29853,22 @@ async fn anthropic_connect_reports_a_declined_link() -> Result<()> {
     handle.abort();
     Ok(())
 }
+
+pub(super) fn bootstrap_loads_in_node(source: &str) -> Option<String> {
+    let dir = tempfile::tempdir().ok()?;
+    let script = dir.path().join("run.js");
+    let harness = format!(
+        "var captured;\nvar window = {{ __ModuleLoader__: {{ load: function (r) {{ captured = r; }} }} }};\n{source}\nvar mod = captured.factory(function (id) {{ return {{ id: id }}; }});\nprocess.stdout.write(JSON.stringify({{ id: captured.id, apply: typeof mod.apply, out: mod.apply('ctx') }}));\n"
+    );
+    fs::write(&script, harness).ok()?;
+    let output = std::process::Command::new("node")
+        .arg(&script)
+        .output()
+        .ok()?;
+    assert!(
+        output.status.success(),
+        "the served bootstrap failed under node: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
