@@ -9873,12 +9873,19 @@ async fn run_plugins_import_dsh_cli(
         }
         [path] if *path != "approve" => {
             let package_path = PathBuf::from(path);
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            let policy = codewhale_plugins::activation::extension_host_policy_enabled();
             let (canonical, conversion, content_hash) = tokio::task::spawn_blocking(move || {
+                let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
                 let canonical = package_path.canonicalize().with_context(|| {
                     format!("DSH package not found at {}", package_path.display())
                 })?;
                 let (conversion, content_hash) =
-                    codewhale_plugins::install::preview_dsh(&canonical)?;
+                    codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)?;
                 Ok::<_, anyhow::Error>((canonical, conversion, content_hash))
             })
             .await
@@ -9920,22 +9927,26 @@ async fn run_plugins_import_dsh_cli(
                 println!("{}", serde_json::to_string_pretty(&payload)?);
                 return Ok(());
             }
-            let pkg_label = conversion.source_package.as_deref().unwrap_or("unnamed");
+            let pkg_label =
+                plugin_cli_text(conversion.source_package.as_deref().unwrap_or("unnamed"));
             let version_suffix = conversion
                 .source_version
                 .as_deref()
-                .map(|v| format!("@{v}"))
+                .map(|v| format!("@{}", plugin_cli_text(v)))
                 .unwrap_or_default();
             println!(
                 "DeepSeek Harness package {pkg_label}{version_suffix} -> plugin '{}'",
-                conversion.plugin_name
+                plugin_cli_text(&conversion.plugin_name)
             );
-            println!("  Source: {}", canonical.display());
+            println!(
+                "  Source: {}",
+                plugin_cli_text(&canonical.to_string_lossy())
+            );
             let fmt_list = |items: &[String]| {
                 if items.is_empty() {
                     "none".to_string()
                 } else {
-                    items.join(", ")
+                    plugin_cli_text(&items.join(", "))
                 }
             };
             println!("  Skills: {}", fmt_list(&conversion.skills));
@@ -9962,13 +9973,13 @@ async fn run_plugins_import_dsh_cli(
             } else {
                 println!("  Skipped ({}):", manual_ports.len());
                 for line in &manual_ports {
-                    println!("    - {line}");
+                    println!("    - {}", plugin_cli_text(line));
                 }
             }
             if !conversion.diagnostics.is_empty() {
                 println!("  Diagnostics:");
                 for line in &conversion.diagnostics {
-                    println!("    - {line}");
+                    println!("    - {}", plugin_cli_text(line));
                 }
             }
             println!("  Content hash: {content_hash}");
@@ -9978,7 +9989,10 @@ async fn run_plugins_import_dsh_cli(
             );
             println!(
                 "  codewhale plugins import dsh approve {} {}",
-                canonical.display(),
+                plugin_cli_text(&format!(
+                    "'{}'",
+                    canonical.to_string_lossy().replace('\'', "'\\''")
+                )),
                 content_hash
             );
             Ok(())
