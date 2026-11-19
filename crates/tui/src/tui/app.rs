@@ -1044,6 +1044,7 @@ impl Default for ComposerState {
 pub struct ViewportState {
     pub(crate) working_glow_visible: bool,
     pub(crate) activity_sweep_visible: bool,
+    pub(crate) settle_flash_visible: bool,
     pub(crate) detected_background: Option<ratatui::style::Color>,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
@@ -1122,6 +1123,7 @@ impl Default for ViewportState {
         Self {
             working_glow_visible: false,
             activity_sweep_visible: false,
+            settle_flash_visible: false,
             detected_background: None,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
@@ -6699,17 +6701,6 @@ impl App {
                 *cell_index = cell_index.saturating_add(added);
             }
         }
-        self.active_tool_entry_completed_at =
-            std::mem::take(&mut self.active_tool_entry_completed_at)
-                .into_iter()
-                .map(|(index, at)| {
-                    if index >= boundary {
-                        (index.saturating_add(added), at)
-                    } else {
-                        (index, at)
-                    }
-                })
-                .collect();
     }
 
     pub fn cell_at_virtual_index_mut(&mut self, index: usize) -> Option<&mut HistoryCell> {

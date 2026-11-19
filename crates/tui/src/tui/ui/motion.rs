@@ -235,6 +235,7 @@ pub(crate) fn composer_live_border(app: &App) -> Option<ratatui::style::Color> {
 fn activity_motion_visible(app: &App) -> bool {
     activity_sweep_allowed(app)
         && (app.viewport.activity_sweep_visible
+            || app.viewport.settle_flash_visible
             || working_clock_has_glow(app)
             || composer_border_breathes(app))
 }

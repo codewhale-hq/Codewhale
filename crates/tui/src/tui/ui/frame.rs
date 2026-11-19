@@ -1646,6 +1646,7 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
     app.viewport.working_glow_visible = false;
     app.viewport.activity_sweep_visible = false;
+    app.viewport.settle_flash_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
