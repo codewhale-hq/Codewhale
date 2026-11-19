@@ -1229,6 +1229,10 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
             | "git_review_scope"
             | "project"
             | "diagnostics"
+            | "load_skill"
+            | "tool_search"
+            | "handle_read"
+            | "retrieve_tool_result"
     ) || name.starts_with("read_")
         || name.starts_with("list_")
         || name.starts_with("get_")
@@ -2058,5 +2062,17 @@ mod tests {
             TurnAuthority::for_tui_surface(AppMode::Agent, false, false, false, ApprovalMode::Auto);
         assert_eq!(tui.run_origin(), RunOrigin::Interactive);
         assert!(tui.owner_present());
+    }
+
+    #[test]
+    fn tool_category_keeps_deferred_read_only_tools_safe() {
+        for name in [
+            "load_skill",
+            "tool_search",
+            "handle_read",
+            "retrieve_tool_result",
+        ] {
+            assert_eq!(get_tool_category(name), ToolCategory::Safe, "{name}");
+        }
     }
 }
