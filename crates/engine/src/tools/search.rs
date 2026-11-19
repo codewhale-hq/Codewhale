@@ -41,6 +41,53 @@ pub struct GrepMatch {
     pub context_after: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrepMode {
+    Matches,
+    FilesOnly,
+    Count,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GrepFileCount {
+    file: String,
+    count: usize,
+}
+
+fn default_exclude_patterns() -> Vec<String> {
+    vec![
+        "node_modules".to_string(),
+        "node_modules/*".to_string(),
+        ".git".to_string(),
+        ".git/*".to_string(),
+        "target".to_string(),
+        "target/*".to_string(),
+        "*.min.js".to_string(),
+        "*.min.css".to_string(),
+        "dist".to_string(),
+        "dist/*".to_string(),
+        "build".to_string(),
+        "build/*".to_string(),
+        "__pycache__".to_string(),
+        "__pycache__/*".to_string(),
+        ".venv".to_string(),
+        ".venv/*".to_string(),
+        "venv".to_string(),
+        "venv/*".to_string(),
+    ]
+}
+
+fn parse_grep_mode(input: &Value) -> Result<GrepMode, ToolError> {
+    match optional_str(input, "mode")? {
+        None | Some("matches") => Ok(GrepMode::Matches),
+        Some("files_only") => Ok(GrepMode::FilesOnly),
+        Some("count") => Ok(GrepMode::Count),
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "Invalid grep_files mode \"{other}\"; expected one of: \"matches\", \"files_only\", \"count\""
+        ))),
+    }
+}
+
 /// Tool for searching files using regex patterns
 pub struct GrepFilesTool;
 
@@ -55,7 +102,7 @@ impl ToolSpec for GrepFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for a regex pattern in workspace files. The pure-Rust search skips common non-code directories by default and returns matching lines with context."
+        "Search for a regex pattern in workspace files. The pure-Rust search skips common non-code directories by default (additional exclude globs append unless replace_default_excludes=true). Supports mode=\"matches\" (default, 0 context lines unless context_lines is set), \"files_only\", and \"count\"."
     }
 
     fn input_schema(&self) -> Value {
@@ -78,11 +125,20 @@ impl ToolSpec for GrepFilesTool {
                 "exclude": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Glob patterns for files to exclude (e.g., ['*.min.js', 'node_modules/*'])"
+                    "description": "Extra exclusion globs appended to defaults (unless replace_default_excludes=true)."
+                },
+                "replace_default_excludes": {
+                    "type": "boolean",
+                    "description": "If true, exclude replaces the default non-code directory exclusions instead of appending (default: false)."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["matches", "files_only", "count"],
+                    "description": "Output mode: \"matches\" (default, matching lines), \"files_only\" (unique matching file paths), or \"count\" (per-file match counts)."
                 },
                 "context_lines": {
                     "type": "integer",
-                    "description": "Number of context lines before and after each match (default: 2)"
+                    "description": "Context lines before and after each match (default: 0)."
                 },
                 "case_insensitive": {
                     "type": "boolean",
@@ -90,7 +146,7 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 100)"
+                    "description": "Max matches (or files in files_only/count) to return (default: 100)."
                 }
             },
             "required": ["pattern"]
@@ -113,10 +169,12 @@ impl ToolSpec for GrepFilesTool {
 
         let pattern_str = required_str(&input, "pattern")?;
         let path_str = optional_str(&input, "path")?.unwrap_or(".");
-        let context_lines = usize::try_from(optional_u64(&input, "context_lines", 2)?)
+        let context_lines = usize::try_from(optional_u64(&input, "context_lines", 0)?)
             .unwrap_or(usize::MAX)
             .min(1000);
         let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
+        let replace_default_excludes = optional_bool(&input, "replace_default_excludes", false)?;
+        let mode = parse_grep_mode(&input)?;
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
             .unwrap_or(MAX_RESULTS);
 
@@ -131,41 +189,22 @@ impl ToolSpec for GrepFilesTool {
             })
             .unwrap_or_default();
 
-        // Parse exclude patterns
-        let exclude_patterns: Vec<String> =
-            input.get("exclude").and_then(|v| v.as_array()).map_or_else(
-                || {
-                    // Default exclusions for common non-code directories.
-                    // Bare directory names skip the directory traversal entirely;
-                    // `dir/*` filters files inside if the directory is already
-                    // being walked (belt-and-suspenders — see #2200).
-                    vec![
-                        "node_modules".to_string(),
-                        "node_modules/*".to_string(),
-                        ".git".to_string(),
-                        ".git/*".to_string(),
-                        "target".to_string(),
-                        "target/*".to_string(),
-                        "*.min.js".to_string(),
-                        "*.min.css".to_string(),
-                        "dist".to_string(),
-                        "dist/*".to_string(),
-                        "build".to_string(),
-                        "build/*".to_string(),
-                        "__pycache__".to_string(),
-                        "__pycache__/*".to_string(),
-                        ".venv".to_string(),
-                        ".venv/*".to_string(),
-                        "venv".to_string(),
-                        "venv/*".to_string(),
-                    ]
-                },
-                |arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                },
-            );
+        let caller_excludes: Vec<String> = input
+            .get("exclude")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let exclude_patterns = if replace_default_excludes {
+            caller_excludes
+        } else {
+            let mut patterns = default_exclude_patterns();
+            patterns.extend(caller_excludes);
+            patterns
+        };
 
         // Build regex
         let regex_pattern = if case_insensitive {
@@ -199,6 +238,8 @@ impl ToolSpec for GrepFilesTool {
             // Files are never materialized in a big Vec and file contents are
             // read line-by-line, so memory stays bounded by the result set.
             let mut results: Vec<GrepMatch> = Vec::new();
+            let mut matched_files: Vec<String> = Vec::new();
+            let mut file_counts: Vec<GrepFileCount> = Vec::new();
             let mut files_searched = 0;
             let mut total_matches = 0;
             // Set when the cap stopped the search before it covered the whole
@@ -215,7 +256,12 @@ impl ToolSpec for GrepFilesTool {
                 cancel_token,
                 follow_symlinks,
                 &mut |file_path| {
-                    if truncated || results.len() >= max_results {
+                    let budget_reached = match mode {
+                        GrepMode::Matches => results.len() >= max_results,
+                        GrepMode::FilesOnly => matched_files.len() >= max_results,
+                        GrepMode::Count => file_counts.len() >= max_results,
+                    };
+                    if truncated || budget_reached {
                         truncated = true;
                         return Ok(WalkControl::Stop);
                     }
@@ -241,51 +287,116 @@ impl ToolSpec for GrepFilesTool {
                         .to_string_lossy()
                         .to_string();
 
-                    let budget = max_results.saturating_sub(results.len());
-                    let (file_matches, overflowed) = match search_file_streaming(
-                        file_path,
-                        &relative_path,
-                        &regex,
-                        context_lines,
-                        budget,
-                        cancel_token,
-                    )? {
-                        FileScan::Scanned {
-                            matches,
-                            overflowed,
-                        } => (matches, overflowed),
-                        FileScan::NotText => return Ok(WalkControl::Continue),
-                        FileScan::Unreadable => {
-                            unreadable_files += 1;
-                            return Ok(WalkControl::Continue);
-                        }
-                    };
+                    match mode {
+                        GrepMode::Matches => {
+                            let budget = max_results.saturating_sub(results.len());
+                            let (file_matches, overflowed) = match search_file_streaming(
+                                file_path,
+                                &relative_path,
+                                &regex,
+                                context_lines,
+                                budget,
+                                cancel_token,
+                            )? {
+                                FileScan::Scanned {
+                                    matches,
+                                    overflowed,
+                                } => (matches, overflowed),
+                                FileScan::NotText => return Ok(WalkControl::Continue),
+                                FileScan::Unreadable => {
+                                    unreadable_files += 1;
+                                    return Ok(WalkControl::Continue);
+                                }
+                            };
 
-                    files_searched += 1;
-                    total_matches += file_matches.len();
-                    results.extend(file_matches);
-                    if overflowed {
-                        truncated = true;
-                        return Ok(WalkControl::Stop);
+                            files_searched += 1;
+                            total_matches += file_matches.len();
+                            results.extend(file_matches);
+                            if overflowed {
+                                truncated = true;
+                                return Ok(WalkControl::Stop);
+                            }
+                        }
+                        GrepMode::FilesOnly => {
+                            let matched =
+                                match scan_file_match_count(file_path, &regex, true, cancel_token)?
+                                {
+                                    FileCountScan::Scanned(count) => count > 0,
+                                    FileCountScan::NotText => return Ok(WalkControl::Continue),
+                                    FileCountScan::Unreadable => {
+                                        unreadable_files += 1;
+                                        return Ok(WalkControl::Continue);
+                                    }
+                                };
+                            files_searched += 1;
+                            if matched {
+                                matched_files.push(relative_path);
+                            }
+                        }
+                        GrepMode::Count => {
+                            let count = match scan_file_match_count(
+                                file_path,
+                                &regex,
+                                false,
+                                cancel_token,
+                            )? {
+                                FileCountScan::Scanned(count) => count,
+                                FileCountScan::NotText => return Ok(WalkControl::Continue),
+                                FileCountScan::Unreadable => {
+                                    unreadable_files += 1;
+                                    return Ok(WalkControl::Continue);
+                                }
+                            };
+                            files_searched += 1;
+                            if count > 0 {
+                                total_matches += count;
+                                file_counts.push(GrepFileCount {
+                                    file: relative_path,
+                                    count,
+                                });
+                            }
+                        }
                     }
                     Ok(WalkControl::Continue)
                 },
             )?;
 
-            let matches_json: Vec<Value> = results
-                .iter()
-                .map(|item| grep_match_to_json(item, context_lines))
-                .collect();
-
-            // Build result. When context_lines == 1, return the single context
-            // line as a string instead of a one-item array. That keeps the common
-            // "show just the adjacent line" case easy for model callers to read.
-            let mut output = json!({
-                "matches": matches_json,
-                "total_matches": total_matches,
-                "files_searched": files_searched,
-                "truncated": truncated,
-            });
+            let mut output = match mode {
+                GrepMode::Matches => {
+                    let matches_json: Vec<Value> = results
+                        .iter()
+                        .map(|item| grep_match_to_json(item, context_lines))
+                        .collect();
+                    json!({
+                        "matches": matches_json,
+                        "total_matches": total_matches,
+                        "files_searched": files_searched,
+                        "truncated": truncated,
+                    })
+                }
+                GrepMode::FilesOnly => {
+                    matched_files.sort_unstable();
+                    let total_files = matched_files.len();
+                    json!({
+                        "files": matched_files,
+                        "total_files": total_files,
+                        "files_searched": files_searched,
+                        "truncated": truncated,
+                    })
+                }
+                GrepMode::Count => {
+                    file_counts
+                        .sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.file.cmp(&b.file)));
+                    let total_files = file_counts.len();
+                    json!({
+                        "counts": file_counts,
+                        "total_matches": total_matches,
+                        "total_files": total_files,
+                        "files_searched": files_searched,
+                        "truncated": truncated,
+                    })
+                }
+            };
             if truncated {
                 output["max_results"] = json!(max_results);
             }
@@ -350,7 +461,13 @@ fn grep_timeout(timeout: Duration) -> ToolError {
 }
 
 fn grep_match_to_json(item: &GrepMatch, context_lines: usize) -> Value {
-    if context_lines == 1 {
+    if context_lines == 0 {
+        json!({
+            "file": item.file,
+            "line_number": item.line_number,
+            "line": item.line,
+        })
+    } else if context_lines == 1 {
         json!({
             "file": item.file,
             "line_number": item.line_number,
@@ -361,6 +478,55 @@ fn grep_match_to_json(item: &GrepMatch, context_lines: usize) -> Value {
     } else {
         json!(item)
     }
+}
+
+enum FileCountScan {
+    Scanned(usize),
+    NotText,
+    Unreadable,
+}
+
+fn scan_file_match_count(
+    path: &Path,
+    regex: &Regex,
+    stop_after_first: bool,
+    cancel_token: Option<&CancellationToken>,
+) -> Result<FileCountScan, ToolError> {
+    let Ok(file) = fs::File::open(path) else {
+        return Ok(FileCountScan::Unreadable);
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let mut raw: Vec<u8> = Vec::new();
+    let mut count = 0usize;
+
+    loop {
+        raw.clear();
+        let n = match reader.read_until(b'\n', &mut raw) {
+            Ok(n) => n,
+            Err(_) => return Ok(FileCountScan::Unreadable),
+        };
+        if n == 0 {
+            break;
+        }
+        check_cancelled(cancel_token)?;
+
+        let mut end = raw.len();
+        if raw[..end].ends_with(b"\n") {
+            end -= 1;
+            if raw[..end].ends_with(b"\r") {
+                end -= 1;
+            }
+        }
+        let Ok(line) = std::str::from_utf8(&raw[..end]) else {
+            return Ok(FileCountScan::NotText);
+        };
+
+        if (!stop_after_first || count == 0) && regex.is_match(line) {
+            count += 1;
+        }
+    }
+
+    Ok(FileCountScan::Scanned(count))
 }
 
 /// Search a single file line-by-line with a small ring buffer for

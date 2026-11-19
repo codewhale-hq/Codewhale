@@ -235,6 +235,8 @@ pub(super) const SEARCH_CONTENT_PARAMS: ActionParams = params(
         "path",
         "include",
         "exclude",
+        "replace_default_excludes",
+        "mode",
         "context_lines",
         "case_insensitive",
         "max_results",
@@ -986,27 +988,35 @@ struct ContractReadWindow {
     line_truncated: bool,
 }
 
-/// Build the model-visible window from the selected slice: each
-/// line is first truncated to [`READ_MAX_LINE_CHARS`] chars with a marker
-/// suffix, then counted as its UTF-8 byte length plus one joiner byte
-/// against `max_bytes`; the first line that would cross the cap stops the
-/// window and is not shown. Lines are never cut mid-line for bytes, so a
-/// giant first line returns its truncated form instead of dead-ending.
-fn contract_read_window(content: &str, max_bytes: usize) -> ContractReadWindow {
+fn contract_read_window(
+    content: &str,
+    first_line: usize,
+    selected_lines: usize,
+    last_line_has_lf: bool,
+    max_bytes: usize,
+) -> ContractReadWindow {
     let mut window = ContractReadWindow {
         content: String::new(),
         shown_lines: 0,
         truncated_by_bytes: false,
         line_truncated: false,
     };
-    if content.is_empty() {
+    if selected_lines == 0 {
         return window;
     }
     let mut output_bytes = 0usize;
-    for line in content.split('\n') {
+    for (idx, raw_line) in content.split('\n').take(selected_lines).enumerate() {
+        let has_lf = idx + 1 < selected_lines || last_line_has_lf;
+        let line = if has_lf {
+            raw_line.strip_suffix('\r').unwrap_or(raw_line)
+        } else {
+            raw_line
+        };
         let (text, truncated) = truncate_read_line(line);
-        let bytes = text.len() + usize::from(window.shown_lines > 0);
-        if output_bytes.saturating_add(bytes) > max_bytes {
+        let line_no = first_line + idx;
+        let rendered = format!("{line_no}: {text}");
+        let bytes = rendered.len() + usize::from(window.shown_lines > 0);
+        if window.shown_lines > 0 && output_bytes.saturating_add(bytes) > max_bytes {
             window.truncated_by_bytes = true;
             break;
         }
@@ -1014,7 +1024,7 @@ fn contract_read_window(content: &str, max_bytes: usize) -> ContractReadWindow {
         if window.shown_lines > 0 {
             window.content.push('\n');
         }
-        window.content.push_str(&text);
+        window.content.push_str(&rendered);
         window.shown_lines += 1;
         window.line_truncated |= truncated;
     }
@@ -1047,10 +1057,24 @@ impl ReadFileTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<RichToolResult, ToolError> {
-        reject_primitive_unknown(&input, "read", &["path", "offset", "limit"])?;
+        Self::execute_contract_read_with_pdf(
+            input,
+            context,
+            super::pdf::PdfTextCommand::system(Some(context)),
+        )
+        .await
+    }
+
+    async fn execute_contract_read_with_pdf(
+        input: Value,
+        context: &ToolContext,
+        pdf_command: super::pdf::PdfTextCommand<'_>,
+    ) -> Result<RichToolResult, ToolError> {
+        reject_primitive_unknown(&input, "read", &["path", "offset", "limit", "pages"])?;
         let path_str = required_str(&input, "path")?;
         let offset = contract_nonnegative_int(&input, "offset")?;
         let limit = contract_nonnegative_int(&input, "limit")?;
+        let pages = optional_str(&input, "pages")?;
         if limit.is_some_and(|limit| limit > READ_LIMIT_LINES) {
             return Err(ToolError::execution_failed(format!(
                 "limit must be less than or equal to {READ_LIMIT_LINES}"
@@ -1090,6 +1114,13 @@ impl ReadFileTool {
         let size_bytes = bytes.len();
         check_file_operation_cancelled(context)?;
         if let Some(mime_type) = primitive_image_mime(&bytes) {
+            if context.route_capabilities.image_input
+                == codewhale_config::route::CapabilityState::Unsupported
+            {
+                return Err(ToolError::execution_failed(
+                    "read: the active model route does not support image input. Switch to a route marked vision-capable with /model, or configure the route's image_input capability, then try again.",
+                ));
+            }
             // Decoding and any downscale are CPU-bound; keep them off the
             // runtime worker (#6149).
             let prepared = tokio::task::spawn_blocking(move || {
@@ -1108,12 +1139,43 @@ impl ReadFileTool {
             ));
         }
 
-        // The small-contract reader decodes non-image buffers as UTF-8 text with replacement
-        // characters instead of refusing the whole read on one invalid byte.
-        let text = String::from_utf8_lossy(&bytes);
-        // Count and select with byte boundaries, without a pointer per newline.
-        let line_count = text.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let text: Cow<'_, str> = if has_pdf_extension(&file_path) || bytes.starts_with(b"%PDF") {
+            Cow::Owned(
+                extract_pdf_result(&file_path, pages, pdf_command)
+                    .await?
+                    .content,
+            )
+        } else {
+            String::from_utf8_lossy(&bytes)
+        };
+        let (effective, ended_with_newline) = match text.strip_suffix('\n') {
+            Some(without_lf) => (without_lf.strip_suffix('\r').unwrap_or(without_lf), true),
+            None => (text.as_ref(), false),
+        };
+        let line_count = if text.is_empty() {
+            0
+        } else {
+            effective.bytes().filter(|byte| *byte == b'\n').count() + 1
+        };
         let requested_offset = offset.unwrap_or(1);
+        if line_count == 0 {
+            if requested_offset > 1 {
+                return Err(ToolError::execution_failed(format!(
+                    "Offset {requested_offset} is beyond end of file (0 lines total)"
+                )));
+            }
+            let output = format!("[lines 0-0 of 0 | {size_bytes} bytes | truncated=false]");
+            context.note_file_read(&file_path);
+            return Ok(RichToolResult::plain(
+                ToolResult::success(output).with_metadata(json!({
+                    "evidence_routing": "inline",
+                    "read_budget_bytes": max_bytes,
+                    "size": size_bytes,
+                    "truncated": false,
+                    "line_count": 0
+                })),
+            ));
+        }
         let start = requested_offset.saturating_sub(1);
         if start >= line_count {
             return Err(ToolError::execution_failed(format!(
@@ -1123,7 +1185,8 @@ impl ReadFileTool {
         let start_byte = if start == 0 {
             0
         } else {
-            text.match_indices('\n')
+            effective
+                .match_indices('\n')
                 .nth(start - 1)
                 .expect("line count validated offset")
                 .0
@@ -1133,13 +1196,21 @@ impl ReadFileTool {
         let end_byte = if selected_lines == 0 {
             start_byte
         } else {
-            text[start_byte..]
+            effective[start_byte..]
                 .match_indices('\n')
                 .nth(selected_lines - 1)
-                .map_or(text.len(), |(index, _)| start_byte + index)
+                .map_or(effective.len(), |(index, _)| start_byte + index)
         };
-        let selected_content = &text[start_byte..end_byte];
-        let window = contract_read_window(selected_content, max_bytes);
+        let selected_content = &effective[start_byte..end_byte];
+        let first_display = start + 1;
+        let last_line_has_lf = start + selected_lines < line_count || ended_with_newline;
+        let window = contract_read_window(
+            selected_content,
+            first_display,
+            selected_lines,
+            last_line_has_lf,
+            max_bytes,
+        );
         // Truncated means the file holds more than this response shows: the
         // byte cap stopped the window, a line was char-truncated, or the
         // selected range stopped before EOF. A whole file that fits is
@@ -1147,8 +1218,19 @@ impl ReadFileTool {
         let truncated = window.truncated_by_bytes
             || window.line_truncated
             || start + selected_lines < line_count;
-        let first_display = start + 1;
-        let mut output = window.content;
+        let header = if window.shown_lines == 0 {
+            format!("[lines 0-0 of {line_count} | {size_bytes} bytes | truncated={truncated}]")
+        } else {
+            let last_display = first_display + window.shown_lines - 1;
+            format!(
+                "[lines {first_display}-{last_display} of {line_count} | {size_bytes} bytes | truncated={truncated}]"
+            )
+        };
+        let mut output = if window.shown_lines == 0 {
+            header
+        } else {
+            format!("{header}\n{}", window.content)
+        };
 
         // Continuation speaks only in lines: the next offset is the whole
         // instruction.
@@ -1875,12 +1957,15 @@ async fn read_image_via_ocr(
     )))
 }
 
+fn has_pdf_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
 /// Detect an existing PDF by extension or by sniffing `%PDF` magic bytes.
 async fn is_pdf(path: &Path) -> Result<bool, ToolError> {
-    let extension_matches = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+    let extension_matches = has_pdf_extension(path);
     let mut file = tokio::fs::File::open(path).await.map_err(|error| {
         ToolError::execution_failed(format!("Failed to read {}: {error}", path.display()))
     })?;
@@ -1969,16 +2054,11 @@ fn clean_pdf_text(raw: &str) -> String {
     }
 }
 
-async fn read_pdf_if_detected(
+async fn extract_pdf_result(
     path: &Path,
     pages: Option<&str>,
     command: super::pdf::PdfTextCommand<'_>,
-) -> Result<Option<ToolResult>, ToolError> {
-    if !is_pdf(path).await? {
-        return Ok(None);
-    }
-    // Validate the `pages` spec once, up front, so both extractor paths
-    // surface the same error shape on bad input.
+) -> Result<ToolResult, ToolError> {
     let page_range = match pages {
         Some(spec) => match parse_pages_arg(spec) {
             Some((start, end)) => Some((start, end)),
@@ -1991,9 +2071,18 @@ async fn read_pdf_if_detected(
         None => None,
     };
 
-    read_pdf_with_command(path, page_range, command)
-        .await
-        .map(Some)
+    read_pdf_with_command(path, page_range, command).await
+}
+
+async fn read_pdf_if_detected(
+    path: &Path,
+    pages: Option<&str>,
+    command: super::pdf::PdfTextCommand<'_>,
+) -> Result<Option<ToolResult>, ToolError> {
+    if !is_pdf(path).await? {
+        return Ok(None);
+    }
+    extract_pdf_result(path, pages, command).await.map(Some)
 }
 
 async fn read_pdf_with_command(

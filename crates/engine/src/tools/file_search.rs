@@ -2,14 +2,13 @@
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::{GlobBuilder, GlobMatcher, GlobSetBuilder};
 use ignore::{WalkBuilder, WalkState};
-use serde::Serialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -27,13 +26,13 @@ const SHALLOW_PASS_DEPTH: usize = 4;
 #[derive(Debug, Default)]
 struct FileSearchOutcome {
     matches: Vec<FileSearchMatch>,
+    total_matches: usize,
     stopped_after: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct FileSearchMatch {
     path: String,
-    name: String,
     score: f64,
 }
 
@@ -50,7 +49,7 @@ impl ToolSpec for FileSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Find workspace files by name, path, or glob (e.g. src/**/*.rs). Space-separated terms must all match. Literal matches rank above fuzzy matches; results are capped. Respects ignore files and skips build/dependency directories by default. Use extensions to filter suffixes."
+        "Find workspace files by name, path, or glob (e.g. src/**/*.rs). Space-separated terms must all match. Literal matches rank above fuzzy matches; results return {files, total_matches, truncated}. Respects ignore files and skips build/dependency directories by default. Use extensions to filter suffixes."
     }
 
     fn input_schema(&self) -> Value {
@@ -142,15 +141,23 @@ impl ToolSpec for FileSearchTool {
 }
 
 fn file_search_result(outcome: FileSearchOutcome) -> Result<ToolResult, serde_json::Error> {
+    let files: Vec<String> = outcome.matches.into_iter().map(|m| m.path).collect();
+    let truncated = outcome.stopped_after.is_some() || outcome.total_matches > files.len();
     let Some(stopped_after) = outcome.stopped_after else {
-        return ToolResult::json(&outcome.matches);
+        return ToolResult::json(&json!({
+            "files": files,
+            "total_matches": outcome.total_matches,
+            "truncated": truncated,
+        }));
     };
     let seconds = stopped_after.as_secs().max(1);
     let note = format!(
         "partial: stopped after {seconds}s before the whole tree was searched; these are the best matches found so far. Narrow `path` or the query for complete results."
     );
     Ok(ToolResult::json(&json!({
-        "matches": outcome.matches,
+        "files": files,
+        "total_matches": outcome.total_matches,
+        "truncated": true,
         "partial": true,
         "note": note,
     }))?
@@ -436,16 +443,17 @@ fn search_files(
             .replace('\\', "/");
         Some(FileSearchMatch {
             path: shown_path,
-            name,
             score,
         })
     };
     let run_pass = |builder: &WalkBuilder, max_depth: Option<usize>| {
         let ranked = Mutex::new(Vec::with_capacity(limit));
+        let total_matches = AtomicUsize::new(0);
         let deeper = AtomicBool::new(false);
         builder.build_parallel().run(|| {
             let match_path = &match_path;
             let ranked = &ranked;
+            let total_matches = &total_matches;
             let deadline_hit = &deadline_hit;
             let deeper = &deeper;
             Box::new(move |entry| {
@@ -469,6 +477,7 @@ fn search_files(
                     return WalkState::Continue;
                 }
                 if let Some(found) = match_path(entry.path()) {
+                    total_matches.fetch_add(1, AtomicOrdering::Relaxed);
                     let mut results = ranked.lock().unwrap_or_else(PoisonError::into_inner);
                     insert_ranked(&mut results, found, limit);
                 }
@@ -477,33 +486,38 @@ fn search_files(
         });
         (
             ranked.into_inner().unwrap_or_else(PoisonError::into_inner),
+            total_matches.into_inner(),
             deadline_hit.load(AtomicOrdering::Relaxed),
             deeper.into_inner(),
         )
     };
-    let outcome = |matches, stopped: bool| FileSearchOutcome {
+    let outcome = |matches, total_matches, stopped: bool| FileSearchOutcome {
         matches,
+        total_matches,
         stopped_after: stopped.then(|| started.elapsed()),
     };
 
     builder.max_depth(Some(SHALLOW_PASS_DEPTH));
-    let (shallow, stopped, deeper) = run_pass(&builder, Some(SHALLOW_PASS_DEPTH));
+    let (shallow, shallow_total, stopped, deeper) = run_pass(&builder, Some(SHALLOW_PASS_DEPTH));
     check_cancelled(cancel_token)?;
     if stopped || !deeper {
-        return Ok(outcome(shallow, stopped));
+        return Ok(outcome(shallow, shallow_total, stopped));
     }
 
     builder.max_depth(None);
-    let (mut full, stopped, _) = run_pass(&builder, None);
+    let (mut full, full_total, stopped, _) = run_pass(&builder, None);
     check_cancelled(cancel_token)?;
-    if stopped {
+    let total_matches = if stopped {
         for found in shallow {
             if !full.iter().any(|existing| existing.path == found.path) {
                 insert_ranked(&mut full, found, limit);
             }
         }
-    }
-    Ok(outcome(full, stopped))
+        full_total.max(shallow_total).max(full.len())
+    } else {
+        full_total
+    };
+    Ok(outcome(full, total_matches, stopped))
 }
 
 fn insert_ranked(results: &mut Vec<FileSearchMatch>, found: FileSearchMatch, limit: usize) {
@@ -740,14 +754,16 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        assert!(
-            matches
-                .as_array()
-                .expect("matches")
-                .iter()
-                .any(|item| item.get("path").and_then(Value::as_str) == Some("needle.txt"))
-        );
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let files: Vec<&str> = body["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(files.contains(&"needle.txt"));
+        assert_eq!(body["total_matches"], json!(1));
+        assert_eq!(body["truncated"], json!(false));
         assert!(!result.content.contains("fixtures/needle.txt"));
     }
 
@@ -773,14 +789,16 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        assert!(
-            matches
-                .as_array()
-                .expect("matches")
-                .iter()
-                .any(|item| item.get("path").and_then(Value::as_str) == Some("needle.txt"))
-        );
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let files: Vec<&str> = body["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(files.contains(&"needle.txt"));
+        assert_eq!(body["total_matches"], json!(1));
+        assert_eq!(body["truncated"], json!(false));
         assert!(!result.content.contains("target/needle.txt"));
         assert!(!result.content.contains("nested_needle.txt"));
     }
@@ -801,17 +819,19 @@ mod tests {
             .await
             .expect("execute");
 
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        let paths: Vec<&str> = matches
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let paths: Vec<&str> = body["files"]
             .as_array()
-            .expect("matches")
+            .expect("files")
             .iter()
-            .filter_map(|item| item.get("path").and_then(Value::as_str))
+            .filter_map(Value::as_str)
             .collect();
         // `build/**` hides the build directory, not same-prefix siblings.
         assert!(paths.contains(&"build.rs"), "{paths:?}");
         assert!(paths.contains(&"builders/build_x.rs"), "{paths:?}");
         assert!(!paths.contains(&"build/build_out.rs"), "{paths:?}");
+        assert_eq!(body["total_matches"], json!(2));
+        assert_eq!(body["truncated"], json!(false));
     }
 
     #[tokio::test]
@@ -1015,11 +1035,44 @@ mod tests {
         assert!(result.success);
         let body: Value = serde_json::from_str(&result.content).expect("partial json");
         assert_eq!(body["partial"], json!(true));
-        assert!(body["matches"].is_array());
+        assert_eq!(body["truncated"], json!(true));
+        assert!(body["files"].is_array());
+        assert!(body["total_matches"].is_u64());
         assert!(
             body["note"]
                 .as_str()
                 .is_some_and(|note| note.contains("Narrow `path`"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_file_search_reports_total_matches_and_truncation_at_limit() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let deep = root.join("a").join("b").join("c").join("d").join("e");
+        std::fs::create_dir_all(&deep).expect("mkdir deep");
+        for idx in 1..=4 {
+            std::fs::write(root.join(format!("item_{idx}.rs")), "fn x() {}\n").expect("write");
+        }
+        std::fs::write(deep.join("item_5.rs"), "fn x() {}\n").expect("write deep");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let capped = FileSearchTool
+            .execute(json!({"query": "item", "limit": 2}), &ctx)
+            .await
+            .expect("capped execute");
+        let capped_body: Value = serde_json::from_str(&capped.content).expect("capped json");
+        assert_eq!(capped_body["files"].as_array().expect("files").len(), 2);
+        assert_eq!(capped_body["total_matches"], json!(5));
+        assert_eq!(capped_body["truncated"], json!(true));
+
+        let exact = FileSearchTool
+            .execute(json!({"query": "item", "limit": 5}), &ctx)
+            .await
+            .expect("exact execute");
+        let exact_body: Value = serde_json::from_str(&exact.content).expect("exact json");
+        assert_eq!(exact_body["files"].as_array().expect("files").len(), 5);
+        assert_eq!(exact_body["total_matches"], json!(5));
+        assert_eq!(exact_body["truncated"], json!(false));
     }
 }

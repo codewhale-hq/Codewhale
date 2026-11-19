@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Core `read`, `file_search`, and `grep_files` model-facing contracts:** `read` now returns a model-visible header (`[lines X-Y of Z | N bytes | truncated=...]`) with 1-based line numbers (`N: <line>`), supports PDF `pages` extraction via `pdftotext`, fails fast with a route-capability error when reading images on text-only routes (and points to `read_media` for crop/detail inspection), and retains internal paging metadata; `file_search` now returns a compact `{files, total_matches, truncated}` object with truthful match counts and limit truncation; `grep_files` now appends caller `exclude` globs to default non-code exclusions unless `replace_default_excludes=true`, defaults `context_lines` to `0`, and adds `mode` (`"matches"`, `"files_only"`, `"count"`).
+
 ## [0.10.3] - 2026-11-18
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.

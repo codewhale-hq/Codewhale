@@ -368,7 +368,10 @@ async fn test_grep_files_streaming_stops_at_max_results() {
 
     let tool = GrepFilesTool;
     let result = tool
-        .execute(json!({"pattern": "needle", "max_results": 5}), &ctx)
+        .execute(
+            json!({"pattern": "needle", "max_results": 5, "context_lines": 2}),
+            &ctx,
+        )
         .await
         .expect("execute");
 
@@ -660,4 +663,131 @@ fn pathological_globs_stay_bounded() {
         "took {:?}",
         started.elapsed()
     );
+}
+
+#[tokio::test]
+async fn grep_files_defaults_to_zero_context_and_appends_excludes() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::create_dir_all(tmp.path().join("target").join("debug")).expect("mkdir target");
+    fs::create_dir_all(tmp.path().join("fixtures")).expect("mkdir fixtures");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir src");
+    fs::write(
+        tmp.path().join("target").join("debug").join("gen.rs"),
+        "before\nneedle\nafter\n",
+    )
+    .expect("write target");
+    fs::write(
+        tmp.path().join("fixtures").join("skip.rs"),
+        "before\nneedle\nafter\n",
+    )
+    .expect("write fixtures");
+    fs::write(
+        tmp.path().join("src").join("lib.rs"),
+        "before\nneedle\nafter\n",
+    )
+    .expect("write src");
+
+    let appended = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "exclude": ["fixtures/**"]}),
+            &ctx,
+        )
+        .await
+        .expect("append excludes");
+    let appended: Value = serde_json::from_str(&appended.content).expect("json");
+    let matches = appended["matches"].as_array().expect("matches");
+    assert_eq!(matches.len(), 1, "{appended}");
+    assert_eq!(
+        matches[0]["file"].as_str().unwrap().replace('\\', "/"),
+        "src/lib.rs"
+    );
+    assert!(matches[0].get("context_before").is_none(), "{appended}");
+    assert!(matches[0].get("context_after").is_none(), "{appended}");
+
+    let replaced = GrepFilesTool
+        .execute(
+            json!({
+                "pattern": "needle",
+                "exclude": ["fixtures/**"],
+                "replace_default_excludes": true
+            }),
+            &ctx,
+        )
+        .await
+        .expect("replace excludes");
+    let replaced: Value = serde_json::from_str(&replaced.content).expect("json");
+    let mut files: Vec<String> = replaced["matches"]
+        .as_array()
+        .expect("matches")
+        .iter()
+        .filter_map(|m| m["file"].as_str().map(|path| path.replace('\\', "/")))
+        .collect();
+    files.sort_unstable();
+    assert_eq!(files, vec!["src/lib.rs", "target/debug/gen.rs"]);
+}
+
+#[tokio::test]
+async fn grep_files_supports_files_only_and_count_modes() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fs::write(tmp.path().join("a.rs"), "needle\nneedle\nneedle\n").expect("write a");
+    fs::write(tmp.path().join("b.rs"), "needle\nother\n").expect("write b");
+    fs::write(tmp.path().join("c.rs"), "nothing here\n").expect("write c");
+
+    let files_only = GrepFilesTool
+        .execute(json!({"pattern": "needle", "mode": "files_only"}), &ctx)
+        .await
+        .expect("files_only");
+    let files_only: Value = serde_json::from_str(&files_only.content).expect("json");
+    assert_eq!(files_only["files"], json!(["a.rs", "b.rs"]));
+    assert_eq!(files_only["total_files"], json!(2));
+    assert_eq!(files_only["truncated"], json!(false));
+    assert!(files_only.get("matches").is_none(), "{files_only}");
+
+    let files_only_capped = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "mode": "files_only", "max_results": 1}),
+            &ctx,
+        )
+        .await
+        .expect("files_only capped");
+    let files_only_capped: Value = serde_json::from_str(&files_only_capped.content).expect("json");
+    assert_eq!(files_only_capped["files"].as_array().unwrap().len(), 1);
+    assert_eq!(files_only_capped["total_files"], json!(1));
+    assert_eq!(files_only_capped["truncated"], json!(true));
+
+    let count = GrepFilesTool
+        .execute(json!({"pattern": "needle", "mode": "count"}), &ctx)
+        .await
+        .expect("count");
+    let count: Value = serde_json::from_str(&count.content).expect("json");
+    assert_eq!(
+        count["counts"],
+        json!([
+            {"file": "a.rs", "count": 3},
+            {"file": "b.rs", "count": 1}
+        ])
+    );
+    assert_eq!(count["total_matches"], json!(4));
+    assert_eq!(count["total_files"], json!(2));
+    assert_eq!(count["truncated"], json!(false));
+
+    let count_capped = GrepFilesTool
+        .execute(
+            json!({"pattern": "needle", "mode": "count", "max_results": 1}),
+            &ctx,
+        )
+        .await
+        .expect("count capped");
+    let count_capped: Value = serde_json::from_str(&count_capped.content).expect("json");
+    assert_eq!(count_capped["counts"].as_array().unwrap().len(), 1);
+    assert_eq!(count_capped["total_files"], json!(1));
+    assert_eq!(count_capped["truncated"], json!(true));
+
+    let invalid = GrepFilesTool
+        .execute(json!({"pattern": "needle", "mode": "bogus"}), &ctx)
+        .await
+        .expect_err("invalid mode must fail");
+    assert!(invalid.to_string().contains("bogus"), "{invalid}");
 }
