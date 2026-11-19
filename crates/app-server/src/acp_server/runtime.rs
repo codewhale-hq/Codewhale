@@ -385,6 +385,7 @@ impl PromptRun {
                     session,
                     acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                         call,
+                        workspace,
                         acp::ToolCallStatus::InProgress,
                         None,
                         &[],
@@ -414,6 +415,7 @@ impl PromptRun {
                         session,
                         acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                             &call,
+                            workspace,
                             status,
                             item.get("detail").and_then(Value::as_str),
                             &blocks,
@@ -473,7 +475,13 @@ impl PromptRun {
                         .title(title)
                         .kind(tool_call_kind(shown_call))
                         .raw_input((!shown_call.input.is_null()).then(|| shown_call.input.clone()))
-                        .content(vec![acp::ToolCallContent::from(text)]);
+                        .content(
+                            tool_call_requested_diff(shown_call, workspace)
+                                .map(acp::ToolCallContent::Diff)
+                                .into_iter()
+                                .chain([acp::ToolCallContent::from(text)])
+                                .collect(),
+                        );
                     if !nested {
                         fields = fields.status(acp::ToolCallStatus::Pending);
                     }

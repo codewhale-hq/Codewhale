@@ -562,6 +562,7 @@ impl AcpServer {
                                 );
                             updates.push(acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                                 &call,
+                                &saved.metadata.workspace,
                                 status,
                                 Some(&detail),
                                 &[],
@@ -952,22 +953,44 @@ fn truncate_for_acp(content: &str) -> String {
     format!("{truncated}\n… [truncated for display; the full result was sent to the model]")
 }
 
-fn tool_call_start(call: &PendingToolCall, workspace: &Path) -> acp::ToolCall {
-    let kind = tool_call_kind(call);
-    let path = matches!(kind, acp::ToolKind::Read | acp::ToolKind::Edit)
-        .then(|| call.input.get("path").and_then(Value::as_str))
+fn tool_call_location(call: &PendingToolCall, workspace: &Path) -> Option<PathBuf> {
+    matches!(
+        tool_call_kind(call),
+        acp::ToolKind::Read | acp::ToolKind::Edit
+    )
+    .then(|| {
+        ["path", "file_path", "filePath"]
+            .iter()
+            .find_map(|key| call.input.get(*key).and_then(Value::as_str))
+    })
+    .flatten()
+    .filter(|path| !path.is_empty())
+    .map(|path| workspace.join(path))
+}
+
+fn tool_call_requested_diff(call: &PendingToolCall, workspace: &Path) -> Option<acp::Diff> {
+    (tool_call_kind(call) == acp::ToolKind::Edit)
+        .then(|| tool_call_location(call, workspace))
         .flatten()
-        .filter(|path| !path.is_empty())
-        .map(|path| workspace.join(path));
-    let diff = path
-        .as_ref()
-        .filter(|_| kind == acp::ToolKind::Edit)
-        .and_then(|path| tool_call_diff(call, path));
+        .and_then(|path| tool_call_diff(call, &path))
+}
+
+fn tool_call_start(call: &PendingToolCall, workspace: &Path) -> acp::ToolCall {
     acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
-        .kind(kind)
+        .kind(tool_call_kind(call))
         .status(acp::ToolCallStatus::Pending)
-        .locations(path.map(acp::ToolCallLocation::new).into_iter().collect())
-        .content(diff.map(acp::ToolCallContent::Diff).into_iter().collect())
+        .locations(
+            tool_call_location(call, workspace)
+                .map(acp::ToolCallLocation::new)
+                .into_iter()
+                .collect(),
+        )
+        .content(
+            tool_call_requested_diff(call, workspace)
+                .map(acp::ToolCallContent::Diff)
+                .into_iter()
+                .collect(),
+        )
         .raw_input((!call.input.is_null()).then(|| call.input.clone()))
 }
 
@@ -993,13 +1016,15 @@ fn tool_call_diff(call: &PendingToolCall, path: &Path) -> Option<acp::Diff> {
 
 fn tool_call_update(
     call: &PendingToolCall,
+    workspace: &Path,
     status: acp::ToolCallStatus,
     content: Option<&str>,
     rich_blocks: &[codewhale_tools::ToolResultContentBlock],
 ) -> acp::ToolCallUpdate {
     let mut fields = acp::ToolCallUpdateFields::new().status(status);
     if content.is_some() || !rich_blocks.is_empty() {
-        let mut blocks = Vec::with_capacity(rich_blocks.len() + usize::from(content.is_some()));
+        let mut blocks = Vec::with_capacity(rich_blocks.len() + 2);
+        blocks.extend(tool_call_requested_diff(call, workspace).map(acp::ToolCallContent::Diff));
         if let Some(content) = content {
             blocks.push(acp::ToolCallContent::from(truncate_for_acp(content)));
         }
@@ -1967,6 +1992,23 @@ mod tests {
         assert!(read.get("content").is_none_or(|c| c == &json!([])));
         let shell = start("bash", json!({"command": "ls", "path": "x"}));
         assert!(shell.get("locations").is_none_or(|l| l == &json!([])));
+        let aliased = start("write", json!({"file_path": "a.txt", "content": "x"}));
+        assert_eq!(aliased["locations"], json!([{"path": "/work/repo/a.txt"}]));
+        let completed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "exec-edit".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "src/lib.rs", "search": "a", "replace": "b"}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+        ))
+        .expect("ACP update");
+        assert_eq!(completed["content"][0]["type"], "diff");
+        assert_eq!(completed["content"][0]["newText"], "b");
+        assert_eq!(completed["content"][1]["content"]["text"], "edited");
     }
 
     #[test]
@@ -1978,6 +2020,7 @@ mod tests {
         };
         let update = to_wire(&tool_call_update(
             &call,
+            Path::new("/"),
             acp::ToolCallStatus::Completed,
             Some("screenshot captured"),
             &[codewhale_tools::ToolResultContentBlock::Image {
