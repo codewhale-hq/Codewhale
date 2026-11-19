@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+brush-parser.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 regex = "1.11"
 serde.workspace = true
