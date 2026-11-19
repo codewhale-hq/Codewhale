@@ -913,6 +913,13 @@ produced.
 
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
+A read or edit tool call names its file in `locations` as an absolute path
+(relative paths resolve against the session workspace). A file write or edit
+start carries an ACP `diff` of the requested text: `oldText` is the edit's
+search text and is absent for a write, so it is not a whole-file before image
+and `apply_patch` has none. The same diff leads the content of the call's
+permission request and completion update, so the editor keeps showing it. Shell output arrives as text content; ACP has no
+editor-owned `terminal` content on this transport.
 `session/request_permission` correlates a private JSON-RPC ID to the same
 Runtime-minted pending approval and Core execution ID. When a plugin tool asks
 the core to run a tool that needs approval (`exec.core`), the request is shown
@@ -3267,10 +3274,15 @@ a remote request on the local machine.
 **LSP** (workspace language intelligence, APPS-93)
 - `GET /v1/lsp` — capability: `enabled`, supported `languages` with their
   server commands, `custom_languages`, operations, poll and diagnostic caps
-- `GET /v1/diagnostics?path=` — file diagnostics
-- `GET /v1/definition?path=&line=&character=` (1-based)
-- `GET /v1/references?path=&line=&character=` (1-based)
-- `GET /v1/symbols?path=&query=` — empty query returns document symbols
+- `GET /v1/diagnostics?path=` — file diagnostics (`items[].line`/`column` are
+  1-based; response carries `position_base: 1`)
+- `GET /v1/definition?path=&line=&character=` (1-based input; `locations[].range`
+  and `result` keep raw 0-based LSP positions, `position_base: 0`,
+  `position_encoding: "utf-16"`)
+- `GET /v1/references?path=&line=&character=` (same input/output position
+  contract as `/v1/definition`)
+- `GET /v1/symbols?path=&query=` — empty query returns document symbols (same
+  0-based output positions as `/v1/definition`)
 
 One lazily-built workspace-level `LspManager` serves these; engine threads
 keep their own per-thread managers for the post-edit hook, and a server that

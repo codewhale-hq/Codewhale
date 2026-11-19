@@ -192,6 +192,7 @@ pub(crate) fn composer_border_breathes(app: &App) -> bool {
     composer_border_lit(app)
         && activity_sweep_allowed(app)
         && !app.viewport.activity_sweep_visible
+        && app.viewport.transcript_scroll.is_at_tail()
         && !decision_prompt_waiting(app)
         && matches!(app.ui_theme.border, ratatui::style::Color::Rgb(..))
         && matches!(app.ui_theme.status_working, ratatui::style::Color::Rgb(..))
@@ -337,6 +338,7 @@ pub(crate) fn should_tick_status_animation(
         && (app.is_loading
             || working_clock_has_glow(app)
             || composer_border_breathes(app)
+            || app.viewport.activity_sweep_visible
             || has_running_agents
             || app.is_compacting
             || app.is_purging
