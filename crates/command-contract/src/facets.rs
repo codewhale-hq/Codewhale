@@ -1997,12 +1997,22 @@ pub enum RestorePointProjection {
     Recorded { snapshots: Vec<RestoreSnapshot> },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportTurnOutcome {
+    pub status: String,
+    pub error: String,
+    pub code: Option<String>,
+    pub ended_at_unix: i64,
+    pub after_message_count: usize,
+}
+
 /// Full conversation projection (D3/D8/D9).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConversationExportProjection {
     pub metadata: ExportMetadata,
     pub transcript: TranscriptProjection,
     pub restore_points: RestorePointProjection,
+    pub turn_outcomes: Vec<ExportTurnOutcome>,
 }
 
 /// Turn-handoff projection (D2).

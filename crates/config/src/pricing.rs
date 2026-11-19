@@ -612,36 +612,22 @@ impl OfferingPricing {
         {
             return Err(PricingQuoteError::InvalidUsage);
         }
-        for (class, tokens, rate, total) in [
-            (
-                TokenClass::Reasoning,
-                usage.reasoning,
-                cost.reasoning,
-                usage.output,
-            ),
-            (
-                TokenClass::InputAudio,
-                usage.input_audio,
-                cost.input_audio,
-                total_input,
-            ),
-            (
-                TokenClass::OutputAudio,
-                usage.output_audio,
-                cost.output_audio,
-                usage.output,
-            ),
-        ] {
-            if rate.is_some() && tokens.is_none() && total > 0 {
-                return Err(PricingQuoteError::MissingUsage(class));
-            }
+        if cost.reasoning.is_some()
+            && cost.reasoning != cost.output
+            && usage.reasoning.is_none()
+            && usage.output > 0
+        {
+            return Err(PricingQuoteError::MissingUsage(TokenClass::Reasoning));
         }
-        if audio_input > 0 && (usage.cache_read > 0 || usage.cache_write > 0) {
+        if audio_input > 0
+            && cost.input_audio != cost.input
+            && (usage.cache_read > 0 || usage.cache_write > 0)
+        {
             return Err(PricingQuoteError::MissingUsage(TokenClass::InputAudio));
         }
         billable.input = usage.input - audio_input;
         billable.output = usage.output - audio_output;
-        if cost.reasoning.is_some() {
+        if cost.reasoning.is_some() && usage.reasoning.is_some() {
             billable.output -= reasoning;
         } else {
             billable.reasoning = None;
