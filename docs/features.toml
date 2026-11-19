@@ -563,7 +563,7 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skill plugins"
-summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits."
+summary = "Trusted instruction packages with bundle policy and invocation controls. Model lookup lists project and Codewhale skills first and searches compatible catalogs by keyword."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"

@@ -5504,7 +5504,7 @@ impl Engine {
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
-                            Some(&output_for_context),
+                            output.success.then_some(output_for_context.as_str()),
                             &self.session.workspace,
                         );
                         let category = crate::core::authority::get_tool_category_for_call(
@@ -5617,7 +5617,7 @@ impl Engine {
                     self.session.working_set.observe_tool_call(
                         &tool_name_for_ws,
                         &tool_input,
-                        Some(&error),
+                        None,
                         &self.session.workspace,
                     );
                     if let Some(model_call) = outcome.model_call {

@@ -9,6 +9,9 @@
 use crate::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
+use codewhale_models::turn_classify::{
+    UserTurnPromptKind, classify_user_turn_prompt, turn_metadata_text,
+};
 use codewhale_models::{ContentBlock, Message};
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -1029,12 +1032,14 @@ impl WorkingSet {
         output: Option<&str>,
         workspace: &Path,
     ) {
-        let input_candidates = extract_paths_from_value(input, Some(tool_name));
+        let input_candidates = extract_paths_from_tool_input(tool_name, input);
         self.record_candidates(input_candidates, workspace, WorkingSetSource::ToolInput);
 
-        if let Some(text) = output {
-            let output_candidates = extract_paths_from_text(text);
-            self.record_candidates(output_candidates, workspace, WorkingSetSource::ToolOutput);
+        if is_patch_tool(tool_name, input)
+            && let Some(text) = output
+        {
+            let receipt_candidates = extract_paths_from_mutation_receipt(text);
+            self.record_candidates(receipt_candidates, workspace, WorkingSetSource::ToolOutput);
         }
     }
 
@@ -1044,12 +1049,14 @@ impl WorkingSet {
     pub fn rebuild_from_messages(&mut self, messages: &[Message], workspace: &Path) {
         self.entries.clear();
         self.turn = 0;
+        let mut patch_calls = HashSet::new();
 
         for message in messages {
-            if message.role == "user" {
+            let prompt_kind = classify_user_turn_prompt(message);
+            if prompt_kind != UserTurnPromptKind::NotPrompt {
                 self.next_turn();
             }
-            let candidates = extract_paths_from_message(message);
+            let candidates = extract_paths_from_message(message, prompt_kind, &mut patch_calls);
             if candidates.is_empty() {
                 continue;
             }
@@ -1410,81 +1417,107 @@ fn path_to_string(path: &Path) -> Option<String> {
     path.as_os_str().to_str().map(|s| s.replace('\\', "/"))
 }
 
-fn extract_paths_from_message(message: &Message) -> Vec<String> {
+fn extract_paths_from_message<'a>(
+    message: &'a Message,
+    prompt_kind: UserTurnPromptKind,
+    patch_calls: &mut HashSet<&'a str>,
+) -> Vec<String> {
+    let metadata_index = turn_metadata_text(message).map(|(index, _)| index);
     let mut paths = Vec::new();
-    for block in &message.content {
+    for (index, block) in message.content.iter().enumerate() {
         match block {
-            ContentBlock::Text { text, .. } => {
+            ContentBlock::Text { text, .. }
+                if prompt_kind == UserTurnPromptKind::Editable
+                    && metadata_index != Some(index)
+                    && !codewhale_core::prefix_cache::is_context_update_envelope(text.trim()) =>
+            {
                 paths.extend(extract_paths_from_text(text));
             }
-            ContentBlock::ToolUse { input, .. } => {
-                paths.extend(extract_paths_from_value(input, None));
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                patch_calls.remove(id.as_str());
+                if is_patch_tool(name, input) {
+                    patch_calls.insert(id);
+                }
+                paths.extend(extract_paths_from_tool_input(name, input));
             }
-            ContentBlock::ToolResult { content, .. } => {
-                paths.extend(extract_paths_from_text(content));
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } if patch_calls.remove(tool_use_id.as_str()) && *is_error != Some(true) => {
+                paths.extend(extract_paths_from_mutation_receipt(content));
             }
-            ContentBlock::Thinking { .. }
-            | ContentBlock::ServerToolUse { .. }
-            | ContentBlock::ToolSearchToolResult { .. }
-            | ContentBlock::CodeExecutionToolResult { .. }
-            | ContentBlock::WebSearchToolResult { .. }
-            | ContentBlock::WebFetchToolResult { .. }
-            | ContentBlock::WebSearchCall { .. }
-            | ContentBlock::ServerToolCalls { .. }
-            | ContentBlock::File { .. }
-            | ContentBlock::ImageUrl { .. } => {}
+            _ => {}
         }
     }
     paths
 }
 
-fn extract_paths_from_value(value: &Value, tool_hint: Option<&str>) -> Vec<String> {
-    let mut out = Vec::new();
-    extract_paths_from_value_inner(value, tool_hint, None, &mut out);
-    out
+fn is_patch_tool(tool_name: &str, input: &Value) -> bool {
+    tool_name == "apply_patch" || (tool_name == "File" && input["action"] == "patch")
 }
 
-fn extract_paths_from_value_inner(
-    value: &Value,
-    tool_hint: Option<&str>,
-    key_hint: Option<&str>,
-    out: &mut Vec<String>,
-) {
-    match value {
-        Value::String(s) => {
-            let key_suggests_path = key_hint.map(key_is_path_like).unwrap_or(false);
-            if key_suggests_path || looks_like_path(s) {
-                out.extend(extract_paths_from_text(s));
-                if key_suggests_path && !s.contains('/') && !s.contains('\\') {
-                    out.push(s.to_string());
-                }
-            } else if tool_hint == Some("exec_shell") && s.len() < 400 {
-                out.extend(extract_paths_from_text(s));
-            }
-        }
-        Value::Array(arr) => {
-            for item in arr {
-                extract_paths_from_value_inner(item, tool_hint, key_hint, out);
-            }
-        }
-        Value::Object(map) => {
-            for (k, v) in map {
-                extract_paths_from_value_inner(v, tool_hint, Some(k.as_str()), out);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+fn extract_paths_from_tool_input(tool_name: &str, input: &Value) -> Vec<String> {
+    if tool_name == "present" {
+        return input["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
     }
+
+    let patch = is_patch_tool(tool_name, input);
+    let targets_path = patch
+        || match tool_name {
+            "read" | "read_file" | "read_media" | "write" | "write_file" | "edit" | "edit_file"
+            | "fim_edit" | "lsp" => true,
+            "File" => matches!(input["action"].as_str(), Some("read" | "write" | "edit")),
+            _ => false,
+        };
+    if !targets_path {
+        return Vec::new();
+    }
+
+    let mut paths: Vec<_> = input["path"]
+        .as_str()
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    if patch {
+        paths.extend(
+            input["replace"]
+                .as_array()
+                .or_else(|| input["changes"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry["path"].as_str().map(str::to_owned)),
+        );
+    }
+    paths
 }
 
-fn key_is_path_like(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    lower.contains("path")
-        || lower.contains("file")
-        || lower.contains("dir")
-        || lower.contains("cwd")
-        || lower.contains("workspace")
-        || lower.contains("root")
-        || lower == "target"
+fn extract_paths_from_mutation_receipt(output: &str) -> Vec<String> {
+    let json = output
+        .split_once("\n\n[hook context] ")
+        .map_or(output, |(json, _)| json);
+    let Ok(receipt) = serde_json::from_str::<Value>(json) else {
+        return Vec::new();
+    };
+    if receipt["success"] != true {
+        return Vec::new();
+    }
+    receipt["touched_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn looks_like_path(text: &str) -> bool {
@@ -1946,20 +1979,155 @@ mod tests {
     }
 
     #[test]
-    fn extract_paths_from_message_picks_up_tool_results() {
-        let msg = Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult {
-                execution_id: None,
-                tool_use_id: "tool_1".to_string(),
-                content: "Changed src/compaction.rs".to_string(),
-                is_error: None,
-                content_blocks: None,
-            }],
-        };
+    fn observe_tool_call_ignores_search_read_outputs_and_tracks_explicit_inputs_and_mutations() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("target.rs"), "pub fn target() {}").expect("write");
+        fs::write(src.join("edited.rs"), "pub fn edited() {}").expect("write");
+        fs::write(src.join("patched.rs"), "pub fn patched() {}").expect("write");
+        fs::write(src.join("budget_handback_tests.rs"), "test").expect("write");
+        fs::write(src.join("task_ownership.rs"), "test").expect("write");
+        fs::write(src.join("test_cases_02.rs"), "test").expect("write");
+        fs::write(src.join("decoy.rs"), "decoy").expect("write");
 
-        let paths = extract_paths_from_message(&msg);
-        assert!(paths.iter().any(|p| p.contains("src/compaction.rs")));
+        let mut ws = WorkingSet::default();
+        ws.observe_tool_call(
+            "grep_files",
+            &serde_json::json!({ "pattern": "budget", "path": "src" }),
+            Some(
+                "src/budget_handback_tests.rs:12:budget\nsrc/task_ownership.rs:34:budget\nsrc/test_cases_02.rs:56:budget",
+            ),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "file_search",
+            &serde_json::json!({ "query": "test" }),
+            Some("src/budget_handback_tests.rs\nsrc/test_cases_02.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "list_dir",
+            &serde_json::json!({ "path": "src" }),
+            Some("src/decoy.rs\nsrc/task_ownership.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "bash",
+            &serde_json::json!({ "command": "cargo test" }),
+            Some("FAILED src/test_cases_02.rs:99"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "tool_search",
+            &serde_json::json!({ "query": "session" }),
+            Some("src/decoy.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "session_get",
+            &serde_json::json!({ "session_id": "abc" }),
+            Some("user: check src/decoy.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "retrieve_tool_result",
+            &serde_json::json!({ "id": "1" }),
+            Some("src/decoy.rs"),
+            tmp.path(),
+        );
+
+        assert!(ws.entries.is_empty(), "{:?}", ws.entries.keys());
+
+        ws.observe_tool_call(
+            "read",
+            &serde_json::json!({ "path": "src/target.rs" }),
+            Some("mod decoy; // see src/decoy.rs and src/test_cases_02.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "edit",
+            &serde_json::json!({
+                "path": "src/edited.rs",
+                "edits": [{"oldText": "// src/decoy.rs", "newText": "// src/task_ownership.rs"}]
+            }),
+            Some("--- src/edited.rs\n+++ src/edited.rs\n@@ -1 +1 @@\n-// src/decoy.rs\n+// src/task_ownership.rs\nReplaced 1 occurrence in src/edited.rs"),
+            tmp.path(),
+        );
+        ws.observe_tool_call(
+            "apply_patch",
+            &serde_json::json!({
+                "patch": "--- a/src/patched.rs\n+++ b/src/patched.rs\n@@ -1 +1 @@\n-old\n+new // src/decoy.rs\n"
+            }),
+            Some(r#"{"success":true,"touched_files":["src/patched.rs"],"message":"Applied patch"}"#),
+            tmp.path(),
+        );
+
+        assert!(ws.entries.contains_key("src/target.rs"));
+        assert!(ws.entries.contains_key("src/edited.rs"));
+        assert!(ws.entries.contains_key("src/patched.rs"));
+        assert!(!ws.entries.contains_key("src/budget_handback_tests.rs"));
+        assert!(!ws.entries.contains_key("src/task_ownership.rs"));
+        assert!(!ws.entries.contains_key("src/test_cases_02.rs"));
+        assert!(!ws.entries.contains_key("src/decoy.rs"));
+    }
+
+    #[test]
+    fn rebuild_from_messages_skips_grep_results_and_keeps_mutation_receipts() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("compaction.rs"), "fn c() {}").expect("write");
+        fs::write(src.join("noise.rs"), "fn n() {}").expect("write");
+
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "grep_1".to_string(),
+                        name: "grep_files".to_string(),
+                        input: serde_json::json!({ "pattern": "fn", "path": "src" }),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "patch_1".to_string(),
+                        name: "apply_patch".to_string(),
+                        input: serde_json::json!({ "patch": "" }),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        execution_id: None,
+                        tool_use_id: "grep_1".to_string(),
+                        content: r#"{"success":true,"touched_files":["src/noise.rs"]}"#.to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    },
+                    ContentBlock::ToolResult {
+                        execution_id: None,
+                        tool_use_id: "patch_1".to_string(),
+                        content: "{\"success\":true,\"touched_files\":[\"src/compaction.rs\"]}\n\n[hook context] src/noise.rs".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    },
+                ],
+            },
+        ];
+
+        let mut ws = WorkingSet::default();
+        ws.rebuild_from_messages(&messages, tmp.path());
+        assert_eq!(ws.turn, 0);
+        assert!(ws.entries.contains_key("src/compaction.rs"));
+        assert!(!ws.entries.contains_key("src/noise.rs"));
     }
 
     #[test]
