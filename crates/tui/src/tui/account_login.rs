@@ -19,13 +19,13 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
+    widgets::{Padding, Paragraph, Widget, Wrap},
 };
 
 use crate::tui::shell_key_routing::{ShellBindingId, binding};
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
-    render_modal_footer, render_modal_surface,
+    ActionHint, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent, centered_modal_area,
+    render_modal_footer, render_rounded_modal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,7 +341,6 @@ impl ModalView for AccountLoginView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let popup = self.occupied_region(area);
-        render_modal_surface(area, popup, buf);
         let title = if self.signing_out {
             MessageId::AccountLogoutTitle
         } else if self.connecting_models && self.url.is_none() {
@@ -349,14 +348,12 @@ impl ModalView for AccountLoginView {
         } else {
             MessageId::AccountLoginTitle
         };
-        let block = Block::default()
-            .title(tr(self.locale, title).into_owned())
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-        let inner = block.inner(popup);
-        block.render(popup, buf);
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup,
+            buf,
+            SurfaceFrame::new(tr(self.locale, title)).padding(Padding::uniform(1)),
+        );
         let dismiss_id = if self.signing_out {
             MessageId::CtxInspActionClose
         } else {
@@ -456,12 +453,16 @@ impl ModalView for AccountLoginView {
                     })
                     .unwrap_or_else(|| tr(self.locale, dismiss_id).into_owned());
                 let rect = Rect::new(content.x, content.y + row as u16, content.width, 1);
-                let style = if index == self.selected {
+                let is_selected = index == self.selected;
+                let style = if is_selected {
                     codewhale_tui_kit::menu_style::selected_row_style()
                 } else {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
-                Paragraph::new(label).style(style).render(rect, buf);
+                let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+                Paragraph::new(format!(" {pointer} {label}"))
+                    .style(style)
+                    .render(rect, buf);
                 buttons.push((index, rect));
             }
             return;
@@ -512,10 +513,14 @@ impl ModalView for AccountLoginView {
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(selected);
             let chord = shortcut.map(|id| binding(id).footer_chord).unwrap_or("");
-            Paragraph::new(format!("{chord}  {}", tr(self.locale, *id)))
-                .style(style)
-                .render(rect, buf);
+            let line = if chord.is_empty() {
+                format!(" {pointer} {}", tr(self.locale, *id))
+            } else {
+                format!(" {pointer} {chord}  {}", tr(self.locale, *id))
+            };
+            Paragraph::new(line).style(style).render(rect, buf);
             buttons.push((*index, rect));
         }
     }
@@ -686,15 +691,13 @@ impl ModalView for ConnectionSetupView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let popup = self.occupied_region(area);
-        render_modal_surface(area, popup, buf);
-        let block = Block::default()
-            .title(tr(self.locale, MessageId::ConnectionSetupTitle).into_owned())
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-        let inner = block.inner(popup);
-        block.render(popup, buf);
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup,
+            buf,
+            SurfaceFrame::new(tr(self.locale, MessageId::ConnectionSetupTitle))
+                .padding(Padding::uniform(1)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -733,17 +736,27 @@ impl ModalView for ConnectionSetupView {
                 content.width,
                 height,
             );
-            let style = if self.selected == index {
+            let is_selected = self.selected == index;
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+            let style = if is_selected {
                 codewhale_tui_kit::menu_style::selected_row_style()
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
+            let detail_style = if is_selected {
+                codewhale_tui_kit::menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
+            } else {
+                Style::default().fg(palette::TEXT_MUTED)
+            };
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    tr(self.locale, label).into_owned(),
+                    format!(" {pointer} {}", tr(self.locale, label)),
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
-                Line::from(tr(self.locale, detail).into_owned()),
+                Line::from(Span::styled(
+                    format!("   {}", tr(self.locale, detail)),
+                    detail_style,
+                )),
             ])
             .style(style)
             .wrap(Wrap { trim: false })

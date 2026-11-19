@@ -25,7 +25,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 use crate::tui::settings_picker::{
@@ -33,8 +33,8 @@ use crate::tui::settings_picker::{
     SettingsPickerLayout, handle_nav_key,
 };
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_panel_scroll_rail, render_underwater_surface,
+    ActionHint, ModalKind, ModalThemeScope, ModalView, SurfaceFrame, ViewAction, ViewEvent,
+    render_modal_footer, render_panel_scroll_rail, render_surface_frame, render_vertical_divider,
 };
 use codewhale_config::settings_schema::DEFAULT_TUI_THEME;
 use codewhale_localization::{Locale, MessageId, tr};
@@ -336,16 +336,22 @@ impl ModalView for ThemePickerView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.row_hitboxes.borrow_mut().clear();
-        // The live selection has already been swapped under us via
-        // ThemeSelectionUpdated.
-        // so we pull the *current* preview's UiTheme from the cursor row to
-        // skin the modal chrome. That way the popup itself shifts color as
-        // the cursor moves, matching what the background will look like
-        // after Enter. We keep the live `surface_bg` (not the shared ink) and
-        // the bare `Clear` so the preview backdrop reads as intended.
         let live = self.ui_theme_for_selection(self.selected_theme_name());
-        let inner =
-            render_underwater_surface(area, buf, tr(self.locale, MessageId::ThemeSurfaceTitle));
+        let _theme_scope = ModalThemeScope::enter(Some(live));
+        let source_count = self.controller.visible().len();
+        let selected_visible = self.controller.selected_visible();
+        let pill = format!(
+            "{}/{}",
+            selected_visible.saturating_add(1).min(source_count.max(1)),
+            source_count
+        );
+        let (inner, _) = render_surface_frame(
+            area,
+            buf,
+            SurfaceFrame::new(tr(self.locale, MessageId::ThemeSurfaceTitle))
+                .theme(live)
+                .right_pill(pill, Style::default().fg(live.text_muted)),
+        );
 
         let content = render_modal_footer(
             inner,
@@ -357,31 +363,21 @@ impl ModalView for ThemePickerView {
             ],
         );
 
-        // Theme rows prefer list-when-narrow; layout still drives scroll math.
-        let _layout = SettingsPickerLayout::resolve(content, 34, self.controller.selected_option());
+        let layout = SettingsPickerLayout::resolve(content, 34, self.controller.selected_option());
+        let show_detail = layout.detail.is_some();
+        let list_area = layout.list;
 
-        let mut lines: Vec<Line> = Vec::with_capacity(self.controller.visible().len() + 2);
-        lines.push(Line::from(""));
-
-        let header_rows = lines.len();
-        let visible_rows = usize::from(content.height)
-            .saturating_sub(header_rows)
-            .max(1);
-        let source_count = self.controller.visible().len();
+        let visible_rows = usize::from(list_area.height).max(1);
         let number_width = source_count.to_string().len();
-        let selected_visible = self.controller.selected_visible();
         let max_start = source_count.saturating_sub(visible_rows);
         let start = selected_visible
             .saturating_sub(visible_rows.saturating_sub(1))
             .min(max_start);
-        let content = render_panel_scroll_rail(
-            content,
-            buf,
-            source_count.saturating_add(header_rows),
-            start,
-            visible_rows,
-            true,
-        );
+        let list_area =
+            render_panel_scroll_rail(list_area, buf, source_count, start, visible_rows, true);
+
+        let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
+        let label_col_width = if show_detail { 18 } else { 20 };
 
         for (visible_idx, &source_idx) in self
             .controller
@@ -391,20 +387,31 @@ impl ModalView for ThemePickerView {
             .skip(start)
             .take(visible_rows)
         {
-            let row_y = content.y.saturating_add(lines.len() as u16);
-            self.row_hitboxes
-                .borrow_mut()
-                .push((Rect::new(content.x, row_y, content.width, 1), source_idx));
+            let row_y = list_area.y.saturating_add(lines.len() as u16);
+            let row_rect = Rect::new(list_area.x, row_y, list_area.width, 1);
+            self.row_hitboxes.borrow_mut().push((row_rect, source_idx));
             let option = self
                 .controller
                 .options()
                 .get(source_idx)
                 .expect("visible source index must reference an option");
             let is_selected = visible_idx == selected_visible;
+            let is_saved = option.id.as_ref() == self.original_theme_name;
+            if is_selected {
+                buf.set_style(row_rect, Style::default().bg(live.selection_bg));
+            }
             let row_style = if is_selected {
                 menu_style::theme_selected_row_style(&live)
             } else {
                 Style::default().fg(live.text_body)
+            };
+            let saved_style = if is_selected {
+                Style::default()
+                    .fg(live.status_working)
+                    .bg(live.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(live.success)
             };
             let tagline_style = if is_selected {
                 Style::default().fg(live.text_muted).bg(live.selection_bg)
@@ -419,12 +426,18 @@ impl ModalView for ThemePickerView {
             } else {
                 Style::default().fg(live.text_hint)
             };
+            let spacer_style = if is_selected {
+                Style::default().bg(live.selection_bg)
+            } else {
+                Style::default()
+            };
             let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+            let saved_mark = if is_saved {
+                codewhale_tui_kit::glyphs::CURRENT
+            } else {
+                " "
+            };
 
-            // 3-cell color swatch per row using the candidate theme's own
-            // accent + panel + border colors so the picker doubles as a
-            // legend. The underwater row shows its water column; use the
-            // cached resolver so `System` doesn't repeat `UiTheme::detect()`.
             let row_theme = self.ui_theme_for_selection(option.id.as_ref());
             let swatch_colors = match crate::tui::ocean::OceanRamp::for_theme(&row_theme) {
                 Some(ramp) => [
@@ -446,27 +459,134 @@ impl ModalView for ThemePickerView {
                 .into_iter()
                 .map(|color| Span::styled("  ", Style::default().bg(color)));
 
-            let mut spans: Vec<Span> = Vec::with_capacity(8);
+            let label_text = codewhale_tui_kit::ui_text::semantic_truncate(
+                option.label.as_ref(),
+                label_col_width,
+            );
+            let label_pad = " ".repeat(
+                label_col_width
+                    .saturating_sub(codewhale_tui_kit::ui_text::text_display_width(&label_text)),
+            );
+
+            let mut spans: Vec<Span> = Vec::with_capacity(11);
             spans.push(Span::styled(format!(" {pointer} "), row_style));
+            spans.push(Span::styled(format!("{saved_mark} "), saved_style));
             spans.push(Span::styled(
                 format!("{:>number_width$}. ", visible_idx + 1),
                 number_style,
             ));
-            spans.push(Span::styled(format!("{:<22}", option.label), row_style));
+            spans.push(Span::styled(format!("{label_text}{label_pad}"), row_style));
             spans.extend(swatch);
-            spans.push(Span::raw("  "));
 
-            let prefix_width = Line::from(spans.clone()).width();
-            let tagline = codewhale_tui_kit::ui_text::semantic_truncate(
-                option.summary.as_ref(),
-                usize::from(content.width).saturating_sub(prefix_width),
-            );
-            spans.push(Span::styled(tagline, tagline_style));
+            if !show_detail {
+                spans.push(Span::styled("  ", spacer_style));
+                let prefix_width = Line::from(spans.clone()).width();
+                let tagline = codewhale_tui_kit::ui_text::semantic_truncate(
+                    option.summary.as_ref(),
+                    usize::from(list_area.width).saturating_sub(prefix_width),
+                );
+                spans.push(Span::styled(tagline, tagline_style));
+            }
 
             lines.push(Line::from(spans));
         }
 
-        Paragraph::new(lines).render(content, buf);
+        Paragraph::new(lines).render(list_area, buf);
+
+        if let Some(detail) = layout.detail {
+            let divider_x = layout.list.right();
+            if divider_x < detail.x {
+                render_vertical_divider(
+                    Rect::new(divider_x, detail.y, 1, detail.height),
+                    buf,
+                    live.border,
+                );
+            }
+            let detail_inner = Rect {
+                x: detail.x.saturating_add(1),
+                width: detail.width.saturating_sub(1),
+                ..detail
+            };
+            if detail_inner.width >= 16 && detail_inner.height >= 4 {
+                if let Some(option) = self.controller.selected_option() {
+                    let is_saved = option.id.as_ref() == self.original_theme_name;
+                    let mut preview_lines: Vec<Line> = Vec::new();
+                    let mut header_spans = vec![Span::styled(
+                        option.label.as_ref().to_string(),
+                        Style::default()
+                            .fg(live.accent_primary)
+                            .add_modifier(Modifier::BOLD),
+                    )];
+                    if is_saved {
+                        header_spans.push(Span::raw("  "));
+                        header_spans.push(Span::styled(
+                            format!("{} active", codewhale_tui_kit::glyphs::CURRENT),
+                            Style::default().fg(live.success),
+                        ));
+                    } else {
+                        header_spans.push(Span::raw("  "));
+                        header_spans.push(Span::styled(
+                            "live preview",
+                            Style::default().fg(live.text_muted),
+                        ));
+                    }
+                    preview_lines.push(Line::from(header_spans));
+                    preview_lines.push(Line::from(Span::styled(
+                        option.detail.as_ref().to_string(),
+                        Style::default().fg(live.text_body),
+                    )));
+                    preview_lines.push(Line::from(""));
+                    preview_lines.push(Line::from(Span::styled(
+                        "Palette",
+                        Style::default()
+                            .fg(live.text_muted)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("  ", Style::default().bg(live.surface_bg)),
+                        Span::styled(" Surface  ", Style::default().fg(live.text_muted)),
+                        Span::styled("  ", Style::default().bg(live.composer_bg)),
+                        Span::styled(" Panel  ", Style::default().fg(live.text_muted)),
+                        Span::styled("  ", Style::default().bg(live.selection_bg)),
+                        Span::styled(" Selection", Style::default().fg(live.text_muted)),
+                    ]));
+                    preview_lines.push(Line::from(vec![
+                        Span::styled(
+                            codewhale_tui_kit::glyphs::CURRENT,
+                            Style::default().fg(live.accent_primary),
+                        ),
+                        Span::styled(" Accent  ", Style::default().fg(live.text_body)),
+                        Span::styled(
+                            codewhale_tui_kit::glyphs::CURRENT,
+                            Style::default().fg(live.success),
+                        ),
+                        Span::styled(" Ready  ", Style::default().fg(live.text_body)),
+                        Span::styled("◆", Style::default().fg(live.warning)),
+                        Span::styled(" Notice  ", Style::default().fg(live.text_body)),
+                        Span::styled("✕", Style::default().fg(live.error_fg)),
+                        Span::styled(" Error", Style::default().fg(live.text_body)),
+                    ]));
+                    preview_lines.push(Line::from(""));
+                    preview_lines.push(Line::from(Span::styled(
+                        "Sample",
+                        Style::default()
+                            .fg(live.text_muted)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("Primary text ", Style::default().fg(live.text_body)),
+                        Span::styled("· muted metadata", Style::default().fg(live.text_muted)),
+                    ]));
+                    preview_lines.push(Line::from(Span::styled(
+                        " ▸ Selected row highlight ",
+                        menu_style::theme_selected_row_style(&live),
+                    )));
+                    Paragraph::new(preview_lines)
+                        .wrap(Wrap { trim: false })
+                        .render(detail_inner, buf);
+                }
+            }
+        }
     }
 }
 
