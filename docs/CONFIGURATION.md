@@ -1499,7 +1499,7 @@ Remaining variables:
 - `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
 - `DEEPSEEK_DEFAULT_TEXT_MODEL` (extra legacy alias of `DEEPSEEK_MODEL`)
 - `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` (stream idle timeout in seconds; default `900`, clamped to `1..=3600`)
-- `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` (connection setup + response-header wait in seconds; default `45`, clamped to `5..=300`; distinct from the per-chunk idle timeout; `stream.open_timeout_secs` (legacy `tui.stream_open_timeout_secs` fallback) wins when positive)
+- `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` (connection setup + response-header wait in seconds; default `180`, clamped to `5..=600`; distinct from the per-chunk idle timeout; `stream.open_timeout_secs` (legacy `tui.stream_open_timeout_secs` fallback) wins when positive)
 - `CODEWHALE_CACHE_MAXIMAL` (`1`/`true`/`on`/`yes`) — cache-maximal context mode (#528). When on, the Repo Working Set block materializes the **full current contents** of the top active files into the system prompt each turn (deterministic order, byte-bounded), instead of only listing their paths. The block stays byte-stable while those files are unchanged so DeepSeek's KV prefix cache keeps hitting; editing a file cache-misses from its block onward. Off by default (path list only). Byte caps default to 24 KB per file / 96 KB total.
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (when provider is `nvidia-nim`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
@@ -3049,7 +3049,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `tui.stream_max_resumes` (int, optional, default `3`): turn-level recovery after a proven transient connection failure before request dispatch. `0` disables this additional recovery; values clamp to `0..=10`. Missing response headers, empty or partial streams, sleep and network drops never authorize inference replay.
 - `tui.stream_max_transparent_retries` (int, optional, default `2`): retained for configuration compatibility, clamped to `0..=10`. Interrupted streams no longer trigger transparent inference reissues, including before visible content.
 - `tui.stream_max_errors` (int, optional, default `5`): retained for configuration compatibility; `0` selects the default and positive values clamp to `1..=50`. Core ends an uncertain stream on its first read error or error frame regardless of this value.
-- `tui.stream_open_timeout_secs` (int, optional, default `45`): wait for a streaming request's response headers (connection setup included). A header stall ends with an unknown outcome and does not replay over HTTP/1.1. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=300`.
+- `tui.stream_open_timeout_secs` (int, optional, default `180`): wait for a streaming request's response headers (connection setup included). A header stall ends with an unknown outcome and does not replay over HTTP/1.1. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=600`.
 - `tui.connect_timeout_secs` (int, optional, default `30`): TCP/TLS connect timeout for the model HTTP client. Omitted or `0` uses the default; values clamp to `1..=300`.
 - `tui.force_http1` (bool, optional, default `false`): pin the model HTTP client to HTTP/1.1, for provider edges or proxies that mishandle long-lived HTTP/2 streams. `CODEWHALE_FORCE_HTTP1=1` does the same; either one pins.
 - `tui.stream_max_content_mb` (int, optional, default `10`) and `tui.stream_max_duration_secs` (int, optional, default `1800`): per-step caps on one stream's accumulated content and wall-clock duration. `0` selects the default; values clamp to `1..=512` MB and `10..=86400` seconds.
@@ -3069,7 +3069,7 @@ not persist defaults. Set or unset individual fields with, for example,
 
 | `[stream]` key | Default | Accepted behavior | Legacy `[tui]` fallback |
 | --- | --- | --- | --- |
-| `open_timeout_secs` | 45 | Positive values clamp to 5–300; 0 or omission falls through to the environment/default | `stream_open_timeout_secs` |
+| `open_timeout_secs` | 180 | Positive values clamp to 5–600; 0 or omission falls through to the environment/default | `stream_open_timeout_secs` |
 | `chunk_timeout_secs` | 900 | 0 selects default; positive values clamp to 1–3600 | `stream_chunk_timeout_secs` |
 | `max_resumes` | 3 | Proven transient pre-dispatch recovery only; 0 disables, maximum 10 | `stream_max_resumes` |
 | `max_transparent_retries` | 2 | Compatibility value; interrupted streams never reissue inference | `stream_max_transparent_retries` |
