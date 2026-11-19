@@ -48,7 +48,7 @@
 //! grammar, which finds their command words but not every cmd.exe or
 //! PowerShell construct.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Maximum nesting depth followed through substitutions and `-c` payloads.
 const MAX_DEPTH: usize = 8;
@@ -1302,6 +1302,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny: Vec::new(),
         seen: HashSet::new(),
         seen_extra_deny: HashSet::new(),
+        deny_suffix_depths: HashMap::new(),
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
@@ -1336,6 +1337,7 @@ struct Expander {
     extra_deny: Vec<String>,
     seen: HashSet<String>,
     seen_extra_deny: HashSet<String>,
+    deny_suffix_depths: HashMap<String, usize>,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
@@ -2019,12 +2021,26 @@ impl Expander {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
             return;
         }
+        let key = format!(
+            "{}{:?}",
+            self.literal_backslashes,
+            (&sub.words, &sub.dynamic, &sub.odd, &sub.quoted)
+        );
+        if self
+            .deny_suffix_depths
+            .get(&key)
+            .is_some_and(|&seen| seen <= depth)
+        {
+            return;
+        }
+        self.deny_suffix_depths.insert(key, depth);
         let mut child = Expander {
             out: Vec::new(),
             out_words: Vec::new(),
             extra_deny: Vec::new(),
             seen: HashSet::new(),
             seen_extra_deny: HashSet::new(),
+            deny_suffix_depths: std::mem::take(&mut self.deny_suffix_depths),
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
             nested: false,
@@ -2034,6 +2050,7 @@ impl Expander {
             deny_only: true,
         };
         child.record(sub, depth);
+        self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
         }
@@ -4191,6 +4208,23 @@ mod tests {
 
     fn contains(command: &str, expected: &str) -> bool {
         expand(command).iter().any(|target| target == expected)
+    }
+
+    #[test]
+    fn repeated_double_dash_expands_in_bounded_time() {
+        for prefix in ["echo", "npm"] {
+            let command = format!("{prefix} {}rm -rf /", "-- ".repeat(40));
+            let started = std::time::Instant::now();
+            let expansion = expand_for_platform(&command, false);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "{prefix}"
+            );
+            assert!(
+                expansion.deny_commands().any(|cmd| cmd == "rm -rf /"),
+                "{prefix}"
+            );
+        }
     }
 
     #[test]
