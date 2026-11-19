@@ -70,11 +70,14 @@ enum DshSeat {
     Unsupported(&'static str),
 }
 
-const DSH_SEAT_TABLE: [(&str, DshSeat); 30] = [
+const DSH_SEAT_TABLE: [(&str, DshSeat); 33] = [
     ("plugins.bundle.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.row.config", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.tab", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("plugins.detail.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.actions", DshSeat::Seat(PLUGIN_UI_SLOT)),
+    ("plugins.detail.badge", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.section", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.plugin.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
     ("settings.general.item", DshSeat::Seat(PLUGIN_UI_SLOT)),
@@ -682,6 +685,16 @@ fn ui_content_type(path: &FsPath) -> &'static str {
     }
 }
 
+fn is_dsh_static_ui_asset(path: &FsPath) -> bool {
+    matches!(
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("css" | "svg" | "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "ttf")
+    )
+}
+
 fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
@@ -691,6 +704,12 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if content_type == "image/svg+xml" {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"),
+        );
+    }
     response
 }
 
@@ -1965,7 +1984,8 @@ pub(super) async fn get_plugin_ui_asset(
         ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
     })?;
     let content_type = ui_content_type(&relative);
-    if grant.dsh.is_some() && relative != FsPath::new(DSH_BOOTSTRAP_ENTRY) {
+    let is_dsh_bootstrap = grant.dsh.is_some() && relative == FsPath::new(DSH_BOOTSTRAP_ENTRY);
+    if grant.dsh.is_some() && !is_dsh_bootstrap && !is_dsh_static_ui_asset(&relative) {
         return Err(
             ApiError::not_found("plugin UI file is not in the reviewed client closure")
                 .with_code("plugin_ui_file_not_reviewed"),
@@ -1977,24 +1997,31 @@ pub(super) async fn get_plugin_ui_asset(
         let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
         codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
             .map_err(|_| ui_stale_revision())?;
-        let bytes = if let Some(dsh) = &grant.dsh {
+        let bytes = if is_dsh_bootstrap {
+            let dsh = grant
+                .dsh
+                .as_ref()
+                .expect("is_dsh_bootstrap requires a DSH grant");
             let verified =
                 verify_dsh_closure(&grant, &dsh.closure).map_err(|_| ui_stale_revision())?;
             dsh_bootstrap(&grant.selector, &dsh.closure, &verified)
                 .map_err(|_| ui_stale_revision())?
         } else {
-            verified_ui_file(&grant, &grant.ui_prefix.join(&relative)).map_err(
-                |error| match error {
-                    UiFileError::Missing => {
-                        ApiError::not_found("plugin UI file is not in the reviewed bundle")
-                            .with_code("plugin_ui_file_not_reviewed")
-                    }
-                    UiFileError::TooLarge => {
-                        ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
-                    }
-                    _ => ui_stale_revision(),
-                },
-            )?
+            let bundle_path = if grant.dsh.is_some() {
+                relative.clone()
+            } else {
+                grant.ui_prefix.join(&relative)
+            };
+            verified_ui_file(&grant, &bundle_path).map_err(|error| match error {
+                UiFileError::Missing => {
+                    ApiError::not_found("plugin UI file is not in the reviewed bundle")
+                        .with_code("plugin_ui_file_not_reviewed")
+                }
+                UiFileError::TooLarge => {
+                    ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
+                }
+                _ => ui_stale_revision(),
+            })?
         };
         admit_ui_grant(&state_for_asset, &grant)?;
         if state_for_asset.plugin_ui_grants.get(&revision).is_none() {

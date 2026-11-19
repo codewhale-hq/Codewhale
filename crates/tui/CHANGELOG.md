@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DSH plugin parity gaps closed:** `codewhale plugins import dsh <PATH>` reviews a DeepSeek Harness package and `codewhale plugins import dsh approve <PATH> <HASH>` installs exactly that reviewed content, disabled and untrusted; DSH plugins may now listen on `tools/post-execute` as read-only observers that see the tool name and call id, whether the call failed and how long it took, plus the session's workspace, mode and model — never the call's arguments or output; the `plugins.item`, `plugins.detail.actions` and `plugins.detail.badge` client slots render on the plugin detail seat; reviewed CSS, SVG, image and font files in a DSH client are served (SVG under a sandboxing content security policy); and pnpm-style confined `node_modules` directory symlinks are materialized into a symlink-free staged copy at install.
+
 ## [0.10.3] - 2026-11-18
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.

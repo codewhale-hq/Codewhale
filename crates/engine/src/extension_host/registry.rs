@@ -1324,8 +1324,14 @@ impl OwnerRegistry {
     fn register_hook(&mut self, params: &RegisterParams) -> Result<u64, String> {
         self.check_scope(&params.owner, params.scope.as_ref(), false)?;
         params.check_spec()?;
-        if params.spec.name != "tools/pre-execute" {
-            return Err("only `tools/pre-execute` admission listeners are supported".to_string());
+        if !matches!(
+            params.spec.name.as_str(),
+            "tools/pre-execute" | "tools/post-execute"
+        ) {
+            return Err(
+                "only `tools/pre-execute` and `tools/post-execute` listeners are supported"
+                    .to_string(),
+            );
         }
         let entry = self
             .current(&params.owner)
