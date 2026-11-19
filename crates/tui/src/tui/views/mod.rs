@@ -1,8 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
-    layout::{Position, Rect},
-    style::{Modifier, Style},
+    layout::{Alignment, Position, Rect},
+    style::{Color, Modifier, Style},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
@@ -95,12 +96,208 @@ pub enum ModalKind {
     RouterSetup,
 }
 
-/// Clear and paint a modal popup with an opaque surface.
-///
-/// Older modals often called `Clear` only, which left reset-background blank
-/// cells that could read as translucent on terminals with a non-default app
-/// background. This helper makes the popup area explicit and keeps the small
-/// shadow from inheriting stale transcript glyphs.
+thread_local! {
+    static ACTIVE_MODAL_THEME: Cell<Option<palette::UiTheme>> = const { Cell::new(None) };
+}
+
+pub(crate) struct ModalThemeScope(Option<palette::UiTheme>);
+
+impl ModalThemeScope {
+    pub(crate) fn enter(theme: Option<palette::UiTheme>) -> Self {
+        let previous = ACTIVE_MODAL_THEME.with(|slot| slot.replace(theme));
+        Self(previous)
+    }
+}
+
+impl Drop for ModalThemeScope {
+    fn drop(&mut self) {
+        ACTIVE_MODAL_THEME.with(|slot| slot.set(self.0));
+    }
+}
+
+pub(crate) fn modal_border_set() -> border::Set<'static> {
+    if crate::tui::color_compat::ascii_safe_enabled() {
+        border::Set {
+            top_left: "+",
+            top_right: "+",
+            bottom_left: "+",
+            bottom_right: "+",
+            vertical_left: "|",
+            vertical_right: "|",
+            horizontal_top: "-",
+            horizontal_bottom: "-",
+        }
+    } else {
+        border::ROUNDED
+    }
+}
+
+fn active_modal_theme() -> Option<palette::UiTheme> {
+    ACTIVE_MODAL_THEME.with(Cell::get)
+}
+
+pub(crate) fn active_modal_surface_bg() -> Color {
+    active_modal_theme()
+        .filter(|theme| theme.composer_bg != Color::Reset)
+        .map_or(palette::WHALE_BG, |theme| theme.composer_bg)
+}
+
+pub(crate) fn active_modal_backdrop_bg() -> Color {
+    active_modal_theme()
+        .filter(|theme| theme.surface_bg != Color::Reset)
+        .map_or(palette::WHALE_BG, |theme| theme.surface_bg)
+}
+
+pub(crate) fn active_modal_border_color() -> Color {
+    active_modal_theme()
+        .filter(|theme| theme.border != Color::Reset)
+        .map_or(palette::BORDER_COLOR, |theme| theme.border)
+}
+
+pub(crate) fn active_modal_accent_color() -> Color {
+    active_modal_theme()
+        .filter(|theme| theme.accent_primary != Color::Reset)
+        .map_or(palette::WHALE_ACTION, |theme| theme.accent_primary)
+}
+
+pub(crate) struct SurfaceFrame<'a> {
+    pub(crate) title: Cow<'a, str>,
+    pub(crate) right_pill: Option<(Cow<'a, str>, Style)>,
+    pub(crate) bottom_right: Option<(Cow<'a, str>, Style)>,
+    pub(crate) theme_override: Option<palette::UiTheme>,
+    pub(crate) padding: Option<Padding>,
+}
+
+impl<'a> SurfaceFrame<'a> {
+    pub(crate) fn new(title: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            title: title.into(),
+            right_pill: None,
+            bottom_right: None,
+            theme_override: None,
+            padding: None,
+        }
+    }
+
+    pub(crate) fn right_pill(mut self, text: impl Into<Cow<'a, str>>, style: Style) -> Self {
+        self.right_pill = Some((text.into(), style));
+        self
+    }
+
+    pub(crate) fn bottom_right(mut self, text: impl Into<Cow<'a, str>>, style: Style) -> Self {
+        self.bottom_right = Some((text.into(), style));
+        self
+    }
+
+    pub(crate) fn theme(mut self, theme: palette::UiTheme) -> Self {
+        self.theme_override = Some(theme);
+        self
+    }
+
+    pub(crate) fn padding(mut self, padding: Padding) -> Self {
+        self.padding = Some(padding);
+        self
+    }
+}
+
+fn surface_colors(theme_override: Option<palette::UiTheme>) -> (Color, Color, Color, Color, Color) {
+    if let Some(theme) = theme_override {
+        let backdrop = theme.surface_bg;
+        let fill = if theme.composer_bg != Color::Reset {
+            theme.composer_bg
+        } else {
+            backdrop
+        };
+        let border_fg = if theme.border != Color::Reset {
+            theme.border
+        } else {
+            palette::BORDER_COLOR
+        };
+        let accent = if theme.accent_primary != Color::Reset {
+            theme.accent_primary
+        } else {
+            palette::WHALE_ACTION
+        };
+        let text = if theme.text_body != Color::Reset {
+            theme.text_body
+        } else {
+            palette::TEXT_PRIMARY
+        };
+        return (backdrop, fill, border_fg, accent, text);
+    }
+    (
+        active_modal_backdrop_bg(),
+        active_modal_surface_bg(),
+        active_modal_border_color(),
+        active_modal_accent_color(),
+        palette::TEXT_PRIMARY,
+    )
+}
+
+fn render_framed_block(
+    rect: Rect,
+    buf: &mut Buffer,
+    frame: SurfaceFrame<'_>,
+    default_padding: Padding,
+) -> (Rect, Option<Rect>) {
+    let (_, fill_bg, border_fg, accent_fg, text_fg) = surface_colors(frame.theme_override);
+    let inner_border_span = usize::from(rect.width.saturating_sub(4));
+    let mut right_pill_hitbox = None;
+    let right_pill_rendered = frame.right_pill.and_then(|(text, style)| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || inner_border_span < 12 {
+            return None;
+        }
+        let max_pill = (inner_border_span / 2).max(4);
+        let fitted = codewhale_tui_kit::ui_text::semantic_truncate(trimmed, max_pill);
+        let pill_w = UnicodeWidthStr::width(fitted.as_str());
+        if pill_w == 0 || pill_w + 6 > inner_border_span {
+            return None;
+        }
+        let formatted = format!(" {fitted} ");
+        let total_w = u16::try_from(UnicodeWidthStr::width(formatted.as_str())).unwrap_or(0);
+        let x = rect.right().saturating_sub(total_w.saturating_add(2));
+        right_pill_hitbox = Some(Rect::new(x, rect.y, total_w, 1));
+        Some((formatted, style))
+    });
+    let reserved_right = right_pill_rendered
+        .as_ref()
+        .map_or(0, |(text, _)| UnicodeWidthStr::width(text.as_str()) + 2);
+    let title_budget = inner_border_span.saturating_sub(reserved_right + 2);
+    let trimmed_title = frame.title.trim();
+    let title_text = codewhale_tui_kit::ui_text::semantic_truncate(trimmed_title, title_budget);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(modal_border_set())
+        .border_style(Style::default().fg(border_fg).bg(fill_bg))
+        .style(Style::default().fg(text_fg).bg(fill_bg))
+        .padding(frame.padding.unwrap_or(default_padding));
+    if !title_text.is_empty() {
+        block = block.title_top(Line::from(Span::styled(
+            format!(" {title_text} "),
+            Style::default().fg(accent_fg).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some((pill, style)) = right_pill_rendered {
+        block = block.title_top(Line::from(Span::styled(pill, style)).alignment(Alignment::Right));
+    }
+    if let Some((bottom, style)) = frame.bottom_right {
+        let trimmed = bottom.trim();
+        if !trimmed.is_empty() && inner_border_span >= 8 {
+            let fitted = codewhale_tui_kit::ui_text::semantic_truncate(
+                trimmed,
+                inner_border_span.saturating_sub(2),
+            );
+            block = block.title_bottom(
+                Line::from(Span::styled(format!(" {fitted} "), style)).alignment(Alignment::Right),
+            );
+        }
+    }
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    (inner, right_pill_hitbox)
+}
+
 pub(crate) fn render_modal_surface(area: Rect, popup_area: Rect, buf: &mut Buffer) {
     let shadow_x = popup_area.x.saturating_add(1);
     let shadow_y = popup_area.y.saturating_add(1);
@@ -125,26 +322,36 @@ pub(crate) fn render_modal_surface(area: Rect, popup_area: Rect, buf: &mut Buffe
             );
     }
 
+    let fill_bg = active_modal_surface_bg();
     Clear.render(popup_area, buf);
     Block::default()
-        .style(
-            Style::default()
-                .fg(palette::TEXT_PRIMARY)
-                .bg(palette::WHALE_BG),
-        )
+        .style(Style::default().fg(palette::TEXT_PRIMARY).bg(fill_bg))
         .render(popup_area, buf);
 }
 
-/// Paint a full-screen underwater instrument surface and return its body.
-///
-/// Secondary rooms use one title hairline and one bottom action rail instead
-/// of a centered generic card. A one-cell outer margin is retained when the
-/// terminal can afford it; compact panes use every cell.
-pub(crate) fn render_underwater_surface(
+pub(crate) fn render_rounded_card(
+    rect: Rect,
+    buf: &mut Buffer,
+    frame: SurfaceFrame<'_>,
+) -> (Rect, Option<Rect>) {
+    render_framed_block(rect, buf, frame, Padding::new(1, 1, 0, 0))
+}
+
+pub(crate) fn render_rounded_modal(
+    area: Rect,
+    popup_area: Rect,
+    buf: &mut Buffer,
+    frame: SurfaceFrame<'_>,
+) -> (Rect, Option<Rect>) {
+    render_modal_surface(area, popup_area, buf);
+    render_rounded_card(popup_area, buf, frame)
+}
+
+pub(crate) fn render_surface_frame(
     area: Rect,
     buf: &mut Buffer,
-    title: impl Into<String>,
-) -> Rect {
+    frame: SurfaceFrame<'_>,
+) -> (Rect, Option<Rect>) {
     let margin_x = u16::from(area.width >= 44);
     let margin_y = u16::from(area.height >= 24);
     let surface = Rect {
@@ -153,37 +360,56 @@ pub(crate) fn render_underwater_surface(
         width: area.width.saturating_sub(margin_x.saturating_mul(2)),
         height: area.height.saturating_sub(margin_y.saturating_mul(2)),
     };
+    let (backdrop_bg, fill_bg, _, _, text_fg) = surface_colors(frame.theme_override);
     Clear.render(area, buf);
     Block::default()
-        .style(
-            Style::default()
-                .fg(palette::TEXT_PRIMARY)
-                .bg(palette::WHALE_BG),
-        )
+        .style(Style::default().fg(text_fg).bg(backdrop_bg))
         .render(area, buf);
-    // Ratatui clips long block titles at the border edge without signalling
-    // that anything is missing. Reserve the corner cells and semantic-ellipsis
-    // the title so compact terminals still read as intentional instruments.
-    let title_width = usize::from(surface.width.saturating_sub(4));
-    let title = codewhale_tui_kit::ui_text::semantic_truncate(&title.into(), title_width);
-    let block = Block::default()
-        .title(Line::from(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(palette::WHALE_ACTION)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Style::default().fg(palette::BORDER_COLOR))
-        .style(
-            Style::default()
-                .fg(palette::TEXT_PRIMARY)
-                .bg(palette::WHALE_BG),
-        )
-        .padding(Padding::new(1, 1, u16::from(area.height >= 24), 0));
-    let inner = block.inner(surface);
-    block.render(surface, buf);
-    inner
+    if surface != area {
+        Block::default()
+            .style(Style::default().fg(text_fg).bg(fill_bg))
+            .render(surface, buf);
+    }
+    let pad_x = u16::from(surface.width >= 44);
+    render_framed_block(surface, buf, frame, Padding::new(pad_x, pad_x, 0, 0))
+}
+
+pub(crate) fn render_underwater_surface(
+    area: Rect,
+    buf: &mut Buffer,
+    title: impl Into<String>,
+) -> Rect {
+    render_surface_frame(area, buf, SurfaceFrame::new(title.into())).0
+}
+
+pub(crate) fn render_modal_rule(area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let symbol = if crate::tui::color_compat::ascii_safe_enabled() {
+        "-"
+    } else {
+        "─"
+    };
+    let style = Style::default().fg(active_modal_border_color());
+    for x in area.left()..area.right() {
+        buf[(x, area.y)].set_symbol(symbol).set_style(style);
+    }
+}
+
+pub(crate) fn render_vertical_divider(area: Rect, buf: &mut Buffer, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let symbol = if crate::tui::color_compat::ascii_safe_enabled() {
+        "|"
+    } else {
+        "│"
+    };
+    let style = Style::default().fg(color);
+    for y in area.top()..area.bottom() {
+        buf[(area.x, y)].set_symbol(symbol).set_style(style);
+    }
 }
 
 /// Render wrapped detail text scrolled by *rendered* rows and return the
@@ -233,17 +459,16 @@ pub(crate) fn render_panel_scroll_rail(
     } else {
         palette::TEXT_DIM
     };
+    let ascii = crate::tui::color_compat::ascii_safe_enabled();
+    let (thumb_sym, track_sym) = if ascii { ("#", "|") } else { ("█", "│") };
+    let track_color = active_modal_border_color();
     for local_y in 0..area.height {
         let y = area.y.saturating_add(local_y);
         let local = usize::from(local_y);
         let is_thumb = local >= thumb_top && local < thumb_top + thumb_height;
         buf[(rail_x, y)]
-            .set_symbol(if is_thumb { "█" } else { "│" })
-            .set_style(Style::default().fg(if is_thumb {
-                thumb_color
-            } else {
-                palette::BORDER_COLOR
-            }));
+            .set_symbol(if is_thumb { thumb_sym } else { track_sym })
+            .set_style(Style::default().fg(if is_thumb { thumb_color } else { track_color }));
     }
     Rect {
         width: area.width.saturating_sub(1),
@@ -252,11 +477,12 @@ pub(crate) fn render_panel_scroll_rail(
 }
 
 fn render_modal_backdrop(area: Rect, buf: &mut Buffer) {
+    let bg = active_modal_backdrop_bg();
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             buf[(x, y)]
                 .set_symbol(" ")
-                .set_style(Style::default().bg(palette::WHALE_BG));
+                .set_style(Style::default().bg(bg));
         }
     }
 }
@@ -313,18 +539,27 @@ impl ActionHint {
         }
     }
 
-    /// Display columns this hint occupies: ` key ` (key padded by a space on
-    /// each side) followed by the label.
     fn width(&self) -> usize {
-        UnicodeWidthStr::width(self.key.as_ref()) + 2 + UnicodeWidthStr::width(self.label.as_ref())
+        let key_w = UnicodeWidthStr::width(self.key.as_ref());
+        let label_w = UnicodeWidthStr::width(self.label.as_ref());
+        if label_w == 0 {
+            key_w
+        } else {
+            key_w + 1 + label_w
+        }
     }
 
     fn spans(&self) -> [Span<'static>; 2] {
+        let key_text = if self.label.is_empty() {
+            self.key.clone().into_owned()
+        } else {
+            format!("{} ", self.key)
+        };
         [
             Span::styled(
-                format!(" {} ", self.key),
+                key_text,
                 Style::default()
-                    .fg(palette::WHALE_ACTION)
+                    .fg(active_modal_accent_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -335,20 +570,17 @@ impl ActionHint {
     }
 }
 
-/// Lay out action hints into one or more lines that each fit within `width`.
-///
-/// Hints are packed greedily; when the next hint would overflow the current row
-/// the layout starts a new row rather than truncating. No action is ever
-/// dropped or clipped (a single hint wider than `width` is emitted alone, which
-/// only happens at degenerate widths below the modal minimums). This is the
-/// shared replacement for the single-line `title_bottom` footers that silently
-/// pushed actions off-screen.
 pub(crate) fn action_footer_lines(hints: &[ActionHint], width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width);
     if hints.is_empty() || width == 0 {
         return Vec::new();
     }
-    const GAP: usize = 1;
+    let sep = if crate::tui::color_compat::ascii_safe_enabled() {
+        "  "
+    } else {
+        " · "
+    };
+    let gap = UnicodeWidthStr::width(sep);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current: Vec<Span<'static>> = Vec::new();
     let mut current_width = 0usize;
@@ -357,15 +589,15 @@ pub(crate) fn action_footer_lines(hints: &[ActionHint], width: u16) -> Vec<Line<
         let needed = if current.is_empty() {
             hint_width
         } else {
-            current_width + GAP + hint_width
+            current_width + gap + hint_width
         };
         if !current.is_empty() && needed > width {
             lines.push(Line::from(std::mem::take(&mut current)));
             current_width = 0;
         }
         if !current.is_empty() {
-            current.push(Span::raw(" ".repeat(GAP)));
-            current_width += GAP;
+            current.push(Span::styled(sep, Style::default().fg(palette::TEXT_DIM)));
+            current_width += gap;
         }
         current.extend(hint.spans());
         current_width += hint_width;
@@ -1592,6 +1824,7 @@ impl ViewStack {
         // visible instead of blacking out the screen. Full-screen modals keep
         // the default `occupied_region` of the entire frame, so their backdrop
         // is unchanged.
+        let _theme_scope = ModalThemeScope::enter(self.focus_texture_theme);
         for view in &self.views {
             let view_area = self.effective_area_for(view.as_ref(), area);
             let region = view.occupied_region(view_area);
@@ -2343,7 +2576,6 @@ const CONFIG_SCOPE_COLUMN_WIDTH: usize = 7;
 const CONFIG_ROW_PREFIX_WIDTH: usize = 2;
 /// The two two-column gaps painted between key, value, and affordance.
 const CONFIG_COLUMN_GAPS_WIDTH: usize = 4;
-/// Affordance glyph column (`[x]`, `‹ ›`, `✎`, `›`, `⊘`) plus its gap.
 const CONFIG_AFFORDANCE_COLUMN_WIDTH: usize = 5;
 /// List width below which the scope badge sheds in favour of the value.
 const CONFIG_SCOPE_BADGE_MIN_WIDTH: usize = 60;
@@ -4504,8 +4736,22 @@ impl ModalView for ConfigView {
             widgets::{Paragraph, Widget},
         };
 
-        let inner =
-            render_underwater_surface(area, buf, self.tr(MessageId::ConfigModalTitle).to_string());
+        let right_pill = if let Some(edit) = self.editing.as_ref() {
+            edit.scope.label(self.locale).into_owned()
+        } else {
+            let matches = self.matching_row_indices().len();
+            format!(
+                "{} · {matches}/{}",
+                self.category.label(self.locale),
+                self.rows.len()
+            )
+        };
+        let (inner, _) = render_surface_frame(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::ConfigModalTitle))
+                .right_pill(right_pill, Style::default().fg(palette::TEXT_MUTED)),
+        );
         self.last_input_anchor.set(None);
         let mut choice_rail = None;
         let mut value_line_row = None;
@@ -4915,9 +5161,9 @@ fn setting_affordance(kind: SettingKind, on: Option<bool>) -> &'static str {
     match kind {
         SettingKind::Boolean => {
             if on == Some(true) {
-                "[x]"
+                codewhale_tui_kit::glyphs::CURRENT
             } else {
-                "[ ]"
+                codewhale_tui_kit::glyphs::AVAILABLE
             }
         }
         SettingKind::Choice => "‹ ›",
@@ -5350,16 +5596,14 @@ impl ConfigView {
         } else {
             hint
         };
-        lines.push(Line::from(Span::styled(description.into_owned(), muted)));
+        lines.push(Line::from(Span::styled(description.into_owned(), primary)));
         lines.push(Line::from(Span::styled(
             self.activation_copy(row),
-            Style::default().fg(palette::TEXT_HINT),
+            Style::default().fg(palette::TEXT_MUTED),
         )));
         lines
     }
 
-    /// One-row fold of the detail for surfaces too narrow for the pane: the
-    /// activation copy first, then the lanes that still fit.
     fn setting_detail_summary(&self, row: &ConfigRow) -> String {
         let activation = self.activation_copy(row);
         let label = config_label_for_key_for_locale(self.locale, &row.key);
@@ -5394,10 +5638,14 @@ impl ConfigView {
         if x < area.x || x >= area.right() {
             return;
         }
+        let symbol = if crate::tui::color_compat::ascii_safe_enabled() {
+            "|"
+        } else {
+            "│"
+        };
+        let style = Style::default().fg(active_modal_border_color());
         for y in area.top()..area.bottom() {
-            buf[(x, y)]
-                .set_symbol("│")
-                .set_style(Style::default().fg(palette::BORDER_COLOR));
+            buf[(x, y)].set_symbol(symbol).set_style(style);
         }
     }
 
@@ -5416,10 +5664,6 @@ impl ConfigView {
             .render(area, buf);
     }
 
-    /// Paint the three-pane shell into the surface body.
-    /// The active tab's groups, in schema order, with the group holding the
-    /// selected row lit. It is the same projection the centre list paints as
-    /// headings — at ≥100 columns it also gets a column of its own.
     fn render_group_column(&self, area: Rect, buf: &mut Buffer) {
         let selected_group = self
             .selected_row_index()
@@ -5430,15 +5674,15 @@ impl ConfigView {
             let selected = Some(group) == selected_group;
             let style = if selected {
                 Style::default()
-                    .fg(palette::WHALE_ACTION)
+                    .fg(active_modal_accent_color())
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
             };
             lines.push(Line::from(vec![
                 Span::styled(
-                    if selected { "❯ " } else { "  " },
-                    Style::default().fg(palette::WHALE_ACTION),
+                    format!("{} ", codewhale_tui_kit::glyphs::selection_marker(selected)),
+                    Style::default().fg(active_modal_accent_color()),
                 ),
                 Span::styled(
                     fit_config_column(
@@ -5529,8 +5773,6 @@ impl ConfigView {
         let match_count = self.matching_row_indices().len();
 
         let compact = inner.width < 50;
-        // Keys and symbols stay legible in one row; the search field above
-        // already explains typing. Shed verbose copy before editable content.
         let ascii_safe = crate::tui::color_compat::ascii_safe_enabled();
         let compact_hints = if ascii_safe {
             [
@@ -5547,42 +5789,37 @@ impl ConfigView {
                 ActionHint::new("Esc", "×"),
             ]
         };
-        // Reserve the action footer by its actual wrapped height so no list
-        // row silently falls off the bottom on compact terminals.
-        let footer_height = |id: MessageId| -> usize {
-            wrapped_footer_lines(&self.tr(id), inner.width, Style::default()).len()
-        };
+        let normal_hints = [
+            ActionHint::new("↑↓", self.tr(MessageId::PickerActionMove)),
+            ActionHint::new("Enter", self.tr(MessageId::ConfigActionEdit)),
+            ActionHint::new("Tab", self.tr(MessageId::PickerActionSwitch)),
+            ActionHint::new(
+                "Esc",
+                if !self.filter.is_empty() {
+                    self.tr(MessageId::PickerActionClear)
+                } else {
+                    self.tr(MessageId::SessionsActionClose)
+                },
+            ),
+        ];
         let footer_lines = if compact {
             1
-        } else if !self.filter.is_empty() {
-            footer_height(MessageId::ConfigFooterFiltered)
         } else {
-            footer_height(MessageId::ConfigFooterScrollable)
-                .max(footer_height(MessageId::ConfigFooterDefault))
+            action_footer_lines(&normal_hints, inner.width).len()
         }
         .max(1);
         let content_height = usize::from(inner.height).saturating_sub(footer_lines);
 
-        // Header: the tab row over the search line. The tabs are always the
-        // top row — a settings panel that hides which tab you are on is the
-        // thing this layout exists to fix.
-        const HEADER_LINES: usize = 2;
-        // ≥100 columns spends 18 cells on the groups column and a detail
-        // pane; below that the tab row and the in-list group headings carry
-        // the same structure at 80 columns.
+        let show_header_rule = !compact && content_height >= 10;
+        let header_lines: usize = 2 + usize::from(show_header_rule);
         let show_detail = inner.width >= CONFIG_SHELL_DETAIL_MIN_WIDTH;
-        // Bottom band: the selected row's sentence, then a preview of the
-        // footer these settings paint. The preview sheds first on short
-        // terminals; the sentence holds while two list lines remain.
-        let preview_lines = usize::from(content_height >= HEADER_LINES + 10);
+        let preview_lines = usize::from(content_height >= header_lines + 10);
         let sentence_lines = if compact {
-            usize::from(content_height >= HEADER_LINES + 3)
-        } else if content_height.saturating_sub(HEADER_LINES + preview_lines) >= 3 {
-            // Without a detail pane the band also carries the lanes that pane
-            // would have shown, on a second line so neither is truncated away.
+            usize::from(content_height >= header_lines + 3)
+        } else if content_height.saturating_sub(header_lines + preview_lines) >= 3 {
             if show_detail {
                 1
-            } else if content_height >= HEADER_LINES + 9 {
+            } else if content_height >= header_lines + 9 {
                 3
             } else {
                 2
@@ -5592,7 +5829,7 @@ impl ConfigView {
         };
         let bottom_lines = sentence_lines + preview_lines;
         let body_height = content_height
-            .saturating_sub(HEADER_LINES + bottom_lines)
+            .saturating_sub(header_lines + bottom_lines)
             .max(1);
         self.last_visible_rows.set(body_height);
         let use_rail = show_detail && body_height >= 3;
@@ -5603,7 +5840,7 @@ impl ConfigView {
                 .min(inner.bottom().saturating_sub(y))
         };
         let header = Rect {
-            height: clamp_height(inner.y, HEADER_LINES),
+            height: clamp_height(inner.y, header_lines),
             ..inner
         };
         let body = Rect {
@@ -5618,10 +5855,7 @@ impl ConfigView {
         };
         let panes = config_shell_panes(body, use_rail);
 
-        // Selection-anchored scroll: the row being manipulated always renders.
         let list_line_budget = usize::from(body.height).max(1);
-        // A section caption costs itself plus a blank spacer, except at the
-        // top of the window where no spacer is painted.
         let item_line_cost = |item: &ConfigListItem, first: bool| match item {
             ConfigListItem::Section(_) if first => 1usize,
             ConfigListItem::Section(_) => 2usize,
@@ -5648,56 +5882,71 @@ impl ConfigView {
             }
         }
         let end = visible_end(start);
-        let scrollable = start > 0 || end < items.len();
         self.last_render_scroll.set(start);
 
-        // Header.
-        let search_value = if self.filter.is_empty() {
-            self.tr(MessageId::ConfigSearchPlaceholder).to_string()
+        let search_line = if self.filter.is_empty() {
+            Line::from(vec![
+                Span::styled(
+                    self.tr(MessageId::ConfigSearchLabel),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+                Span::styled(
+                    self.tr(MessageId::ConfigSearchPlaceholder).into_owned(),
+                    Style::default().fg(palette::TEXT_DIM),
+                ),
+                Span::styled(
+                    format!("  ({match_count}/{})", self.rows.len()),
+                    Style::default().fg(palette::TEXT_DIM),
+                ),
+            ])
         } else {
-            self.filter.clone()
+            Line::from(vec![
+                Span::styled(
+                    self.tr(MessageId::ConfigSearchLabel),
+                    Style::default()
+                        .fg(active_modal_accent_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    self.filter.clone(),
+                    Style::default()
+                        .fg(palette::TEXT_PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  ({match_count}/{})", self.rows.len()),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+            ])
         };
-        let search_line = Line::from(vec![
-            Span::styled(
-                self.tr(MessageId::ConfigSearchLabel),
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-            Span::raw(search_value),
-            Span::styled(
-                format!("  ({match_count}/{})", self.rows.len()),
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-        ]);
         *self.last_rail_hitboxes.borrow_mut() = Vec::new();
         if header.height > 0 {
             let nav_row = Rect {
                 height: 1,
                 ..header
             };
-            {
-                let strip_style = CategoryNavStyle {
-                    selected: menu_style::selected_row_style(),
-                    normal: Style::default().fg(palette::TEXT_MUTED),
-                    marker: Style::default().fg(palette::TEXT_HINT),
-                    ascii_safe,
-                };
-                let strip = render_settings_category_strip(
-                    nav_row,
-                    buf,
-                    self.category,
-                    self.locale,
-                    strip_style,
-                    self.hovered_rail,
-                    self.hovered_nav,
-                );
-                *self.last_rail_hitboxes.borrow_mut() = strip.chips;
-                *self.last_nav_controls.borrow_mut() = strip
-                    .previous
-                    .map(|rect| (rect, NavStep::Previous))
-                    .into_iter()
-                    .chain(strip.next.map(|rect| (rect, NavStep::Next)))
-                    .collect();
-            }
+            let strip_style = CategoryNavStyle {
+                selected: menu_style::selected_row_style(),
+                normal: Style::default().fg(palette::TEXT_MUTED),
+                marker: Style::default().fg(palette::TEXT_HINT),
+                ascii_safe,
+            };
+            let strip = render_settings_category_strip(
+                nav_row,
+                buf,
+                self.category,
+                self.locale,
+                strip_style,
+                self.hovered_rail,
+                self.hovered_nav,
+            );
+            *self.last_rail_hitboxes.borrow_mut() = strip.chips;
+            *self.last_nav_controls.borrow_mut() = strip
+                .previous
+                .map(|rect| (rect, NavStep::Previous))
+                .into_iter()
+                .chain(strip.next.map(|rect| (rect, NavStep::Next)))
+                .collect();
         }
         if header.height > 1 {
             Paragraph::new(search_line).render(
@@ -5720,21 +5969,29 @@ impl ConfigView {
                     .set(Some((x, header.y.saturating_add(1))));
             }
         }
+        if show_header_rule && header.height > 2 {
+            render_modal_rule(
+                Rect {
+                    y: header.y.saturating_add(2),
+                    height: 1,
+                    ..header
+                },
+                buf,
+            );
+        }
 
-        // Groups column: the active tab's `ui.group` names, the one holding
-        // the selected row lit.
         if let Some(column) = panes.groups {
             self.render_group_column(column, buf);
             Self::render_pane_divider(body, buf, column.right());
         }
 
-        // List.
         let list =
             render_panel_scroll_rail(panes.list, buf, items.len(), start, list_line_budget, true);
         let (key_column_width, value_column_width, scope_column_width) =
             self.table_column_widths(usize::from(list.width));
         let mut lines: Vec<Line> = Vec::new();
         let mut row_hitboxes = Vec::new();
+        let accent = active_modal_accent_color();
         for item in &items[start..end] {
             match item {
                 ConfigListItem::Section(section) => {
@@ -5743,10 +6000,7 @@ impl ConfigView {
                     }
                     lines.push(Line::from(Span::styled(
                         format!("  {}", section.label(self.locale)),
-                        Style::default()
-                            .fg(palette::TEXT_HINT)
-                            .bold()
-                            .add_modifier(Modifier::UNDERLINED),
+                        Style::default().fg(palette::TEXT_MUTED).bold(),
                     )));
                 }
                 ConfigListItem::Row(idx) => {
@@ -5757,24 +6011,31 @@ impl ConfigView {
                     if line_y >= list.bottom() {
                         break;
                     }
-                    row_hitboxes.push((
-                        Rect {
-                            x: list.x,
-                            y: line_y,
-                            width: list.width,
-                            height: 1,
-                        },
-                        *idx,
-                    ));
+                    let row_rect = Rect {
+                        x: list.x,
+                        y: line_y,
+                        width: list.width,
+                        height: 1,
+                    };
+                    row_hitboxes.push((row_rect, *idx));
                     let selected = *idx == self.selected;
-                    // Hover tints but never steals the keyboard selection.
                     let hovered = !selected && self.hovered_row == Some(*idx);
+                    if selected {
+                        buf.set_style(row_rect, menu_style::selected_row_bg_style());
+                    } else if hovered {
+                        buf.set_style(row_rect, menu_style::hovered_row_style());
+                    }
                     let style = if selected {
                         menu_style::selected_row_style()
+                    } else if hovered {
+                        menu_style::hovered_row_style().fg(if row.editable {
+                            palette::TEXT_PRIMARY
+                        } else {
+                            palette::TEXT_MUTED
+                        })
                     } else if row.editable {
                         Style::default().fg(palette::TEXT_PRIMARY)
                     } else {
-                        // Read-only rows look distinct from editable ones.
                         Style::default()
                             .fg(palette::TEXT_MUTED)
                             .add_modifier(Modifier::DIM)
@@ -5792,53 +6053,118 @@ impl ConfigView {
                         (key_column_width, value_column_width)
                     };
                     let key = fit_config_column(&label, key_width);
-                    let value = fit_config_column(&self.row_display_value(row), value_width);
+                    let display_value = self.row_display_value(row);
                     let kind = self.editor_kind(row);
                     let on = (kind == SettingKind::Boolean)
                         .then(|| canonical_config_choice(&row.key, row.edit_value()) == "true");
                     let affordance = setting_affordance(kind, on);
-                    // Action and diagnostic rows are not persisted facts, so
-                    // they carry no scope badge.
                     let badge = match row.facts.kind {
                         ConfigRowKind::Setting if scope_column_width > 0 => {
                             row.scope.label(self.locale)
                         }
                         _ => Cow::Borrowed(""),
                     };
-                    let rail = if selected { "❯" } else { " " };
-                    let mut line = Line::from(vec![
-                        Span::styled(
-                            rail,
-                            if selected {
-                                style
+                    let rail = codewhale_tui_kit::glyphs::selection_marker(selected);
+                    let rail_style = if selected {
+                        menu_style::selected_row_style_with_fg(accent)
+                    } else if hovered {
+                        menu_style::hovered_row_style().fg(palette::TEXT_DIM)
+                    } else {
+                        Style::default().fg(palette::TEXT_DIM)
+                    };
+                    let mut spans = vec![
+                        Span::styled(format!("{rail} "), rail_style),
+                        Span::styled(format!("{key}  "), style),
+                    ];
+                    if let Some(is_on) = on {
+                        let dot_fg = if is_on {
+                            palette::STATUS_SUCCESS
+                        } else {
+                            palette::TEXT_DIM
+                        };
+                        let dot_style = if selected {
+                            if is_on {
+                                menu_style::selected_row_style_with_fg(palette::STATUS_SUCCESS)
                             } else {
-                                Style::default().fg(palette::TEXT_DIM)
-                            },
-                        ),
-                        Span::styled(format!("{key}  {value}  "), style),
-                        Span::styled(
-                            format!("{affordance:<3}  "),
+                                menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
+                            }
+                        } else if hovered {
+                            menu_style::hovered_row_style().fg(dot_fg)
+                        } else {
+                            Style::default().fg(dot_fg)
+                        };
+                        let pill_style = if selected {
+                            style
+                        } else if hovered {
+                            menu_style::hovered_row_style().fg(if is_on {
+                                palette::STATUS_SUCCESS
+                            } else {
+                                palette::TEXT_MUTED
+                            })
+                        } else if is_on {
+                            Style::default().fg(palette::STATUS_SUCCESS).bold()
+                        } else {
+                            Style::default().fg(palette::TEXT_MUTED)
+                        };
+                        let fitted_text =
+                            fit_config_column(&display_value, value_width.saturating_sub(2));
+                        spans.push(Span::styled(format!("{affordance} "), dot_style));
+                        spans.push(Span::styled(format!("{fitted_text}  "), pill_style));
+                        spans.push(Span::styled(
+                            "     ",
                             if selected {
-                                style
-                            } else if row.editable {
-                                Style::default().fg(palette::WHALE_ACTION)
+                                menu_style::selected_row_bg_style()
+                            } else if hovered {
+                                menu_style::hovered_row_style()
                             } else {
                                 Style::default()
-                                    .fg(palette::TEXT_DIM)
-                                    .add_modifier(Modifier::DIM)
                             },
-                        ),
-                        Span::styled(
-                            badge.into_owned(),
-                            if selected {
-                                style
-                            } else {
-                                Style::default()
-                                    .fg(palette::TEXT_HINT)
-                                    .add_modifier(Modifier::DIM)
-                            },
-                        ),
-                    ]);
+                        ));
+                    } else {
+                        let value = fit_config_column(&display_value, value_width);
+                        let value_style = if selected {
+                            style
+                        } else if hovered {
+                            menu_style::hovered_row_style().fg(palette::TEXT_PRIMARY)
+                        } else if kind == SettingKind::Choice
+                            && row.editable
+                            && !display_value.starts_with('(')
+                        {
+                            Style::default().fg(accent)
+                        } else if row.editable {
+                            Style::default().fg(palette::TEXT_PRIMARY)
+                        } else {
+                            Style::default()
+                                .fg(palette::TEXT_MUTED)
+                                .add_modifier(Modifier::DIM)
+                        };
+                        let affordance_style = if selected {
+                            style
+                        } else if hovered {
+                            menu_style::hovered_row_style().fg(accent)
+                        } else if row.editable {
+                            Style::default().fg(palette::TEXT_MUTED)
+                        } else {
+                            Style::default()
+                                .fg(palette::TEXT_DIM)
+                                .add_modifier(Modifier::DIM)
+                        };
+                        spans.push(Span::styled(format!("{value}  "), value_style));
+                        spans.push(Span::styled(format!("{affordance:<3}  "), affordance_style));
+                    }
+                    spans.push(Span::styled(
+                        badge.into_owned(),
+                        if selected {
+                            menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
+                        } else if hovered {
+                            menu_style::hovered_row_style().fg(palette::TEXT_HINT)
+                        } else {
+                            Style::default()
+                                .fg(palette::TEXT_HINT)
+                                .add_modifier(Modifier::DIM)
+                        },
+                    ));
+                    let mut line = Line::from(spans);
                     if selected {
                         line.style = menu_style::selected_row_bg_style();
                     } else if hovered {
@@ -5868,23 +6194,16 @@ impl ConfigView {
             .style(Style::default().fg(palette::TEXT_PRIMARY))
             .render(list, buf);
 
-        // Detail.
         if let Some(detail) = panes.detail {
             Self::render_pane_divider(body, buf, detail.x.saturating_sub(1));
             self.render_setting_detail(detail, buf);
         }
 
-        // Status row: an explicit status wins; otherwise the selected row's
-        // activation copy, with the detail facts folded in when no pane
-        // shows them.
         let sentence_height = u16::try_from(sentence_lines)
             .unwrap_or(0)
             .min(bottom.height);
         if sentence_height > 0 {
             let selected_row = self.selected_row_index().and_then(|idx| self.rows.get(idx));
-            // The band says what the selected setting *is*: the schema's
-            // sentence, in one plain line. A live status or an active filter
-            // is more urgent and takes the row while it lasts.
             let bottom_text = if let Some(status) = self.status.as_ref() {
                 status.clone()
             } else if let Some(row) = selected_row.filter(|_| compact) {
@@ -5915,8 +6234,6 @@ impl ConfigView {
                 ),
                 Style::default().fg(palette::TEXT_MUTED),
             ))];
-            // With a detail pane the lanes are already on screen; without one
-            // the band's second line carries what that pane would have shown.
             Paragraph::new(band).render(
                 Rect {
                     height: 1,
@@ -5956,22 +6273,10 @@ impl ConfigView {
             );
         }
 
-        let footer = if !self.filter.is_empty() {
-            self.tr(MessageId::ConfigFooterFiltered)
-        } else if scrollable {
-            self.tr(MessageId::ConfigFooterScrollable)
-        } else {
-            self.tr(MessageId::ConfigFooterDefault)
-        };
         if compact {
             render_modal_footer(inner, buf, &compact_hints);
         } else {
-            render_modal_text_footer(
-                inner,
-                buf,
-                &footer,
-                Style::default().fg(palette::TEXT_MUTED),
-            );
+            render_modal_footer(inner, buf, &normal_hints);
         }
     }
 }
@@ -10814,7 +11119,7 @@ context_window = 131072
 
         let dump = render_dump(&view, 120, 32);
         assert!(
-            dump.contains("❯ Display"),
+            dump.contains("▸ Display"),
             "groups column lists the active tab's groups:\n{dump}"
         );
         for label in [
@@ -11310,7 +11615,7 @@ context_window = 131072
                 &view,
                 &format!("pointer · {} chip, row selected", target.label(Locale::En)),
             );
-            assert!(dump.contains("❯"), "{w}x{h} selected row marker:\n{dump}");
+            assert!(dump.contains("▸"), "{w}x{h} selected row marker:\n{dump}");
             let second = click(&mut view, row_rect.x + 1, row_rect.y);
             let row = &view.rows[row_idx];
             match (row.editable, row.facts.command) {

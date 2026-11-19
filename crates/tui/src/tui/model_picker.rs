@@ -17,7 +17,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 use codewhale_config::catalog::{CatalogSource, CatalogStatus};
@@ -28,8 +28,9 @@ use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::provider_picker::ProviderOffer;
 use crate::tui::views::fleet_detail::{FleetRouteSelection, FleetRouteTarget};
 use crate::tui::views::{
-    ActionHint, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_underwater_surface,
+    ActionHint, ListDetailLayout, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent,
+    active_modal_accent_color, active_modal_border_color, render_modal_footer, render_modal_rule,
+    render_panel_scroll_rail, render_surface_frame,
 };
 use codewhale_config::ProviderKind;
 use codewhale_config::catalog::reviewed::constants::DEEPSEEK_ALIAS_REPLACEMENT;
@@ -821,13 +822,25 @@ impl ModelPickerView {
             .map(|index| &self.model_rows[*index])
             .collect();
         let route_labels = route_labels_for_rows(&visible);
-        // The default view is ordered by section (current, pinned, recent,
-        // defaults), so family headers would split it; only the catalog groups.
         let grouped =
             self.sort.is_none() && query.is_empty() && self.view == ModelListView::Catalog;
         let provider_groups = self
             .sort
             .is_some_and(|sort| sort.column == ModelSortColumn::Provider);
+        let configured_sections =
+            if self.sort.is_none() && query.is_empty() && self.view == ModelListView::Configured {
+                let mut distinct: Vec<DefaultSection> = Vec::new();
+                for row in &visible {
+                    if let Some((section, _)) = row.default_rank
+                        && !distinct.contains(&section)
+                    {
+                        distinct.push(section);
+                    }
+                }
+                distinct.len() >= 2
+            } else {
+                false
+            };
         let mut rows: Vec<_> = visible
             .iter()
             .map(|row| (row, pin_for_row(&self.pinned_models, row)))
@@ -841,23 +854,33 @@ impl ModelPickerView {
                             .unwrap_or_else(|| row_provider_label(row).to_string())
                     })
                     .unwrap_or_default();
-                // Pinned rows sort above every group, so they draw no family
-                // header: otherwise the family's header repeats where its
-                // unpinned rows begin.
-                let group = if provider_groups {
-                    Some(route.clone())
+                let (group, group_scoped_by_route) = if provider_groups {
+                    (Some(route.clone()), true)
+                } else if configured_sections {
+                    let label = row.default_rank.map(|(section, _)| match section {
+                        DefaultSection::Current => MessageId::ModelPickerSectionCurrent,
+                        DefaultSection::Pinned => MessageId::ModelPickerSectionPinned,
+                        DefaultSection::Recent => MessageId::ModelPickerSectionRecent,
+                        DefaultSection::ProviderDefault => MessageId::ModelPickerSectionProviders,
+                        DefaultSection::Roster => MessageId::ModelPickerSectionMore,
+                    });
+                    let label = label.map(|id| tr(self.locale, id).into_owned());
+                    (label, false)
                 } else {
-                    (grouped && pin.is_none())
-                        .then(|| {
-                            row.provider.and_then(|provider| {
-                                catalog_family_for_identity(
-                                    provider,
-                                    row.provider_identity.as_deref(),
-                                    &row.id,
-                                )
+                    (
+                        (grouped && pin.is_none())
+                            .then(|| {
+                                row.provider.and_then(|provider| {
+                                    catalog_family_for_identity(
+                                        provider,
+                                        row.provider_identity.as_deref(),
+                                        &row.id,
+                                    )
+                                })
                             })
-                        })
-                        .flatten()
+                            .flatten(),
+                        true,
+                    )
                 };
                 PaneRow {
                     primary: if self.purpose != ModelPickerPurpose::Session
@@ -876,10 +899,6 @@ impl ModelPickerView {
                     meta: if row.provider.is_none() {
                         vec![row.hint.clone()]
                     } else {
-                        // A pin or Fleet membership leads the chips so a squeezed
-                        // row never sheds it: without it ⇧P / ⇧F changed nothing
-                        // the person could see (#6500). A not-listed notice still
-                        // leads when there is no pin.
                         let mut chips = model_row_meta_chips(row);
                         if let Some(not_listed) = &row.not_listed {
                             chips.insert(
@@ -900,6 +919,7 @@ impl ModelPickerView {
                         chips
                     },
                     group,
+                    group_scoped_by_route,
                     active: row.id == self.initial_model
                         && model_row_matches_route(
                             row,
@@ -1548,8 +1568,10 @@ impl ModelPickerView {
         Paragraph::new(Line::from(picker_row_spans(
             &row,
             " ",
+            " ",
             usize::from(area.width),
             columns,
+            style,
             style,
             style,
         )))
@@ -1583,8 +1605,6 @@ impl ModelPickerView {
         state: PaneRenderState,
     ) {
         self.pane_hitboxes.borrow_mut().push((area, state.pane));
-        // A short stacked picker gives the focused pane the working space.
-        // The other pane remains a clickable summary with its actual choice.
         if area.height == 1 && !state.focused {
             let summary = rows.get(state.selected).map_or_else(
                 || title.to_string(),
@@ -1610,69 +1630,77 @@ impl ModelPickerView {
         };
         let visible_height = usize::from(area.height.saturating_sub(header_height));
         let (start, end) = pane_row_window(state.selected, rows, visible_height);
-        let title = if rows.len() > visible_height && visible_height > 0 {
+        let title_badge = if rows.len() > visible_height && visible_height > 0 {
             if start + 1 == end {
-                // A scrollable pane whose visible window spans exactly one row
-                // renders a single position (`Model 2/3`), not a degenerate
-                // `2-2/3` range (#3995).
-                format!(" {title} {}/{} ", end, rows.len())
+                format!("{}/{}", end, rows.len())
             } else {
-                format!(" {title} {}-{}/{} ", start + 1, end, rows.len())
+                format!("{}-{}/{}", start + 1, end, rows.len())
             }
         } else {
-            format!(" {title} ")
+            String::new()
         };
-        Block::default()
-            .style(Style::default().bg(palette::WHALE_BG))
-            .render(area, buf);
+        let accent = active_modal_accent_color();
         let title_area = Rect { height: 1, ..area };
-        Paragraph::new(Line::from(vec![
-            Span::raw("  "),
+        let mut title_spans = vec![
             Span::styled(
-                title,
+                if state.focused {
+                    format!(" {} ", codewhale_tui_kit::glyphs::SELECTION)
+                } else {
+                    "   ".to_string()
+                },
+                Style::default().fg(accent),
+            ),
+            Span::styled(
+                title.to_string(),
                 Style::default()
                     .fg(if state.focused {
-                        palette::TEXT_PRIMARY
+                        accent
                     } else {
                         palette::TEXT_MUTED
                     })
                     .bold(),
             ),
-        ]))
-        .render(title_area, buf);
-        let inner = Rect {
+        ];
+        if !title_badge.is_empty() {
+            title_spans.push(Span::styled(
+                format!("  {title_badge}"),
+                Style::default().fg(palette::TEXT_DIM),
+            ));
+        }
+        Paragraph::new(Line::from(title_spans)).render(title_area, buf);
+        let raw_inner = Rect {
             y: area.y.saturating_add(header_height),
             height: area.height.saturating_sub(header_height),
             ..area
         };
+        let inner = render_panel_scroll_rail(
+            raw_inner,
+            buf,
+            rows.len(),
+            start,
+            visible_height,
+            state.focused,
+        );
 
-        // Column widths are measured over all filtered rows so their offsets
-        // remain stable while scrolling.
         let mut columns = ModelRowColumns::for_rows(rows);
         if header_height == 2 {
             columns.primary = columns.primary.max(7);
             columns.route = columns.route.max(10);
             columns.meta = columns.meta.max(9);
-            self.render_sort_columns(Rect::new(area.x, area.y + 1, area.width, 1), buf, columns);
+            self.render_sort_columns(Rect::new(inner.x, area.y + 1, inner.width, 1), buf, columns);
         }
 
         let mut lines = Vec::with_capacity(end.saturating_sub(start));
         let pane_height = usize::from(inner.height);
         for (idx, row) in rows.iter().enumerate().skip(start).take(end - start) {
-            // Family headers consume pane lines too: stop building (and stop
-            // recording hitboxes) as soon as the pane is full, so rendering
-            // never addresses the buffer past its bounds.
             if lines.len() >= pane_height {
                 break;
             }
             let is_selected = idx == state.selected;
-            // Only the focused pane owns the keyboard cursor. Unavailable
-            // routes retain a width-safe attention mark and warning ink.
             let locked = row.locked;
             let focused = is_selected && state.focused;
-            let marker = if focused {
-                codewhale_tui_kit::glyphs::SELECTION
-            } else if locked {
+            let pointer = codewhale_tui_kit::glyphs::selection_marker(focused);
+            let status_glyph = if locked {
                 codewhale_tui_kit::glyphs::ATTENTION
             } else if row.active {
                 codewhale_tui_kit::glyphs::CURRENT
@@ -1690,7 +1718,7 @@ impl ModelPickerView {
                 })
             } else if is_selected {
                 Style::default()
-                    .fg(palette::TEXT_MUTED)
+                    .fg(palette::TEXT_PRIMARY)
                     .bg(palette::SURFACE_ELEVATED)
             } else if locked || row.dim {
                 Style::default()
@@ -1699,65 +1727,83 @@ impl ModelPickerView {
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
+            let route_style = if focused {
+                menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
+            } else if locked || row.dim {
+                label_style.fg(palette::TEXT_MUTED)
+            } else if hovered {
+                menu_style::hovered_row_style().fg(accent)
+            } else if is_selected {
+                Style::default().fg(accent).bg(palette::SURFACE_ELEVATED)
+            } else {
+                Style::default().fg(palette::TEXT_SOFT)
+            };
             let hint_style = if focused {
                 menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
             } else if locked || row.dim {
                 label_style.fg(palette::TEXT_MUTED)
             } else if hovered {
                 menu_style::hovered_row_style().fg(palette::TEXT_MUTED)
+            } else if is_selected {
+                Style::default()
+                    .fg(palette::TEXT_MUTED)
+                    .bg(palette::SURFACE_ELEVATED)
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
             };
-            // Provider → group → model grouping: a dim group header is drawn
-            // when the row states one and it differs from the previous visible
-            // row's (groups sort contiguously). Unknown groups draw nothing.
             if group_header_before(rows, idx) && pane_height > 1 {
                 lines.push(Line::from(Span::styled(
-                    format!("    {}", row.group.as_deref().unwrap_or_default()),
-                    Style::default().fg(palette::TEXT_DIM),
+                    format!("  {}", row.group.as_deref().unwrap_or_default()),
+                    Style::default().fg(palette::TEXT_MUTED).bold(),
                 )));
+                if lines.len() >= pane_height {
+                    break;
+                }
             }
-            // The hitbox points at the row's own line (after any group
-            // header), so mouse/scan targets and keyboard targets agree.
             let row_y = inner.y.saturating_add(lines.len() as u16);
             self.row_hitboxes.borrow_mut().push((
                 Rect::new(inner.x, row_y, inner.width, 1),
                 state.pane,
                 idx,
             ));
-            if focused || hovered {
+            if focused || hovered || is_selected {
                 buf.set_style(Rect::new(inner.x, row_y, inner.width, 1), label_style);
             }
             let spans = picker_row_spans(
                 row,
-                marker,
+                pointer,
+                status_glyph,
                 usize::from(inner.width),
                 columns,
                 label_style,
+                route_style,
                 hint_style,
             );
-            lines.push(Line::from(spans).style(if focused || hovered {
-                label_style
-            } else {
-                Style::default()
-            }));
+            lines.push(
+                Line::from(spans).style(if focused || hovered || is_selected {
+                    label_style
+                } else {
+                    Style::default()
+                }),
+            );
         }
         if rows.is_empty() {
-            // A search that matches nothing must say so, not render a bare
-            // empty box (#3757 UX review).
             let message = if self.query.is_empty() {
                 tr(self.locale, MessageId::RouteNoModels).into_owned()
             } else {
                 tr(self.locale, MessageId::RouteNoModelMatch).replace("{query}", &self.query)
             };
             lines.push(Line::from(Span::styled(
-                message,
-                Style::default().fg(palette::TEXT_MUTED),
+                format!("  {message}"),
+                Style::default().fg(palette::TEXT_PRIMARY).bold(),
             )));
+            if !self.query.is_empty() && pane_height >= 3 {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", tr(self.locale, MessageId::ModelPickerFilterHint)),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
+            }
         }
-        // Group headers can push the visible rows past the viewport; clip
-        // to the area so rendering never indexes the buffer out of bounds
-        // (ratatui-core 0.1.0 panics instead of clipping).
         if lines.len() > usize::from(inner.height) {
             lines.truncate(usize::from(inner.height));
         }
@@ -1770,7 +1816,8 @@ fn group_header_before(rows: &[PaneRow], index: usize) -> bool {
     row.group.as_deref().is_some_and(|group| {
         !group.trim().is_empty()
             && rows.get(index.wrapping_sub(1)).is_none_or(|previous| {
-                previous.group.as_deref() != Some(group) || previous.route != row.route
+                previous.group.as_deref() != Some(group)
+                    || (row.group_scoped_by_route && previous.route != row.route)
             })
     })
 }
@@ -1848,17 +1895,11 @@ fn widen_model_pane(layout: ListDetailLayout) -> ListDetailLayout {
 struct PaneRow {
     primary: String,
     route: String,
-    /// Metadata as separable units. Kept as a list so a squeezed column sheds
-    /// whole facts instead of rendering half a word.
     meta: Vec<String>,
-    /// Section header text for this row (catalog family, or the provider when
-    /// sorted by provider). None = no header is drawn.
     group: Option<String>,
-    /// The route this session is already on.
+    group_scoped_by_route: bool,
     active: bool,
     locked: bool,
-    /// Muted ink for a selectable row with a caveat (not listed by a fresh
-    /// roster); unlike `locked` it keeps the ordinary marker.
     dim: bool,
 }
 
@@ -1873,6 +1914,7 @@ impl PaneRow {
                 vec![meta]
             },
             group: None,
+            group_scoped_by_route: true,
             active: false,
             locked: false,
             dim: false,
@@ -1903,12 +1945,7 @@ struct ModelRowColumns {
     meta: usize,
 }
 
-/// Width reserved for the marker glyph itself. The lock is a two-column emoji
-/// while `▸` and `●` are one, so the cell is padded to the widest of them —
-/// otherwise a single locked row shifts every column on its line by one.
-const MARKER_CELL_WIDTH: usize = 2;
-/// ` ▸  ` — one leading space, the marker cell, one trailing space.
-const ROW_PREFIX_WIDTH: usize = MARKER_CELL_WIDTH + 2;
+const ROW_PREFIX_WIDTH: usize = 5;
 /// Blank cells between two columns.
 const COLUMN_GAP: usize = 2;
 /// Below this a route column tells the user nothing, so the space goes to the
@@ -2059,33 +2096,38 @@ fn fit_identifier(text: &str, width: usize) -> String {
     out
 }
 
-/// Lay a row out into aligned, individually-truncated columns.
-///
-/// Primary and secondary ink follow the pane's focus; unavailable routes
-/// retain a semantic warning mark independently of selection.
 fn picker_row_spans<'a>(
     row: &'a PaneRow,
-    marker: &'static str,
+    pointer: &'static str,
+    status_glyph: &'static str,
     width: usize,
     columns: ModelRowColumns,
     label_style: Style,
+    route_style: Style,
     hint_style: Style,
 ) -> Vec<Span<'a>> {
     use unicode_width::UnicodeWidthStr;
 
     let columns = columns.resolve(width);
-    let marker_pad = MARKER_CELL_WIDTH.saturating_sub(UnicodeWidthStr::width(marker));
+    let accent = active_modal_accent_color();
+    let pointer_style = if pointer == codewhale_tui_kit::glyphs::SELECTION {
+        label_style.fg(accent)
+    } else {
+        label_style
+    };
+    let status_style = if row.locked {
+        label_style.fg(palette::STATUS_WARNING)
+    } else if row.active {
+        label_style.fg(palette::STATUS_SUCCESS)
+    } else {
+        label_style
+    };
     let mut spans = vec![
         Span::styled(" ", label_style),
-        Span::styled(
-            marker,
-            if row.locked {
-                label_style.fg(palette::STATUS_WARNING)
-            } else {
-                label_style
-            },
-        ),
-        Span::styled(" ".repeat(marker_pad + 1), label_style),
+        Span::styled(pointer, pointer_style),
+        Span::styled(" ", label_style),
+        Span::styled(status_glyph, status_style),
+        Span::styled(" ", label_style),
     ];
     let mut used = ROW_PREFIX_WIDTH;
 
@@ -2093,8 +2135,6 @@ fn picker_row_spans<'a>(
     used += UnicodeWidthStr::width(primary.as_str());
     spans.push(Span::styled(primary, label_style));
 
-    // Pad to the column edge only when something follows; a trailing run of
-    // spaces would otherwise extend the selected row's highlight past its text.
     let pad_to = |spans: &mut Vec<Span<'a>>, used: &mut usize, target: usize| {
         if *used < target {
             spans.push(Span::styled(" ".repeat(target - *used), label_style));
@@ -2108,7 +2148,7 @@ fn picker_row_spans<'a>(
         used += COLUMN_GAP;
         let route = fit_identifier(&row.route, columns.route);
         used += UnicodeWidthStr::width(route.as_str());
-        spans.push(Span::styled(route, hint_style));
+        spans.push(Span::styled(route, route_style));
     }
 
     if !row.meta.is_empty() {
@@ -2117,8 +2157,6 @@ fn picker_row_spans<'a>(
         } else {
             ROW_PREFIX_WIDTH + columns.primary
         };
-        // Take the smaller of the column's share and the physical remainder, so
-        // a row that ended early cannot overrun the pane.
         let remaining = width
             .saturating_sub(column_edge)
             .saturating_sub(COLUMN_GAP)
@@ -3266,11 +3304,23 @@ fn model_row_meta_chips(row: &ModelPickerRow) -> Vec<String> {
     );
     if let PickerPricing::Status(status) = row.metadata.pricing {
         chips.push(format!("price {status}"));
-    } else if let (PickerPricing::Known(_), Some(basis)) =
-        (&row.metadata.pricing, row.metadata.price_basis.as_ref())
-        && basis.short != "live"
-    {
-        chips.push(format!("price {}", basis.short));
+    } else if let PickerPricing::Known(price) = &row.metadata.pricing {
+        if price != "priced" {
+            let chip = match row.metadata.price_basis.as_ref() {
+                Some(basis) if basis.short != "live" => format!("{price} ({})", basis.short),
+                _ => price.clone(),
+            };
+            chips.push(chip);
+        } else if let Some(basis) = row.metadata.price_basis.as_ref()
+            && basis.short != "live"
+        {
+            chips.push(format!("price {}", basis.short));
+        }
+    } else if matches!(
+        row.provider,
+        Some(ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm)
+    ) {
+        chips.push("local".to_string());
     }
     // #5239/#5441: an unverified window still drives budgets, but the chip
     // must not lend it a verified reading. Honesty rides as its own chip
@@ -4547,7 +4597,6 @@ impl ModelPickerView {
         *self.catalog_action_hitbox.borrow_mut() = None;
         let view = self.effective_view();
         let view_action: std::borrow::Cow<'static, str> = match view {
-            // The default view is a short list; say how much sits behind it.
             ModelListView::Configured => format!(
                 "{} ({})",
                 tr(self.locale, MessageId::RouteBrowseCatalog),
@@ -4570,47 +4619,18 @@ impl ModelPickerView {
             Some(key) => format!("{title} · {}", provider_filter_label(key)),
             None => title,
         };
-        // The catalog is a visible action on the existing title rail, with
-        // no extra row taken from short terminals. Keep the shortcut too.
-        let action_label = codewhale_tui_kit::ui_text::semantic_truncate(
-            &view_action,
-            usize::from(area.width.saturating_sub(20)),
-        );
-        let action_width = unicode_width::UnicodeWidthStr::width(action_label.as_str()) as u16;
-        let show_action = area.width >= 28
-            && area.height > 0
-            && (self.assignment_context.is_none()
-                || unicode_width::UnicodeWidthStr::width(title.as_str())
-                    + usize::from(action_width)
-                    + 8
-                    <= usize::from(area.width));
-        let title = if show_action {
-            codewhale_tui_kit::ui_text::semantic_truncate(
-                &title,
-                usize::from(area.width.saturating_sub(action_width + 8)),
-            )
+        let accent = active_modal_accent_color();
+        let action_style = if self.catalog_action_hovered {
+            menu_style::hovered_row_style().fg(accent)
         } else {
-            title
+            Style::default().fg(accent).underlined()
         };
-        let inner = render_underwater_surface(area, buf, title);
-        if show_action {
-            let action = Rect::new(
-                inner.right().saturating_sub(action_width),
-                area.y + u16::from(area.height >= 24),
-                action_width,
-                1,
-            );
-            *self.catalog_action_hitbox.borrow_mut() = Some(action);
-            Paragraph::new(action_label)
-                .style(if self.catalog_action_hovered {
-                    menu_style::hovered_row_style()
-                } else {
-                    Style::default().fg(palette::WHALE_ACTION).underlined()
-                })
-                .render(action, buf);
+        let mut frame = SurfaceFrame::new(title);
+        if area.width >= 28 && area.height > 0 {
+            frame = frame.right_pill(view_action.clone(), action_style);
         }
-        // ⇧A and ⇧D are query text while a search is typed; advertise them
-        // only when they act.
+        let (inner, pill_hitbox) = render_surface_frame(area, buf, frame);
+        *self.catalog_action_hitbox.borrow_mut() = pill_hitbox;
         let searching = !self.query.is_empty();
         let show_advanced_hints = inner.width >= 88 && inner.height >= 24;
         let mut footer_hints = vec![
@@ -4645,8 +4665,6 @@ impl ModelPickerView {
         if !self.can_edit_effort() {
             footer_hints.remove(1);
         }
-        // A Fleet row has no startup default to save; the chord is a
-        // session-route action only.
         if self.purpose == ModelPickerPurpose::Session && show_advanced_hints && !searching {
             footer_hints.insert(
                 4,
@@ -4656,11 +4674,6 @@ impl ModelPickerView {
                 ),
             );
         }
-        // Keep compact route modals focused on the core browse/apply actions;
-        // wider shells have room to disclose the pin action too.
-        // Pin and Fleet act only on a highlighted catalog route. While a
-        // search is typed the shifted letters are query text, so the Ctrl
-        // chords are advertised instead.
         if show_advanced_hints && self.highlighted_route().is_some() {
             let (fleet_key, pin_key) = if searching {
                 ("Ctrl+F", "Ctrl+P")
@@ -4685,13 +4698,46 @@ impl ModelPickerView {
         let content = render_modal_footer(inner, buf, &footer_hints);
         let content = self.offer.render(self.locale, content, buf);
 
+        self.ensure_projection();
+        let total_models = self
+            .model_rows
+            .iter()
+            .filter(|row| row.provider.is_some())
+            .count();
+        let visible_count = self
+            .projection
+            .borrow()
+            .as_ref()
+            .map_or(0, |p| p.rows.len());
+
+        let show_rule = content.height >= 10;
+        let show_filter_bar = content.height >= 6;
+        let top_rows = 1 + u16::from(show_filter_bar) + u16::from(show_rule);
         let shell = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
-                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(top_rows),
                 ratatui::layout::Constraint::Min(1),
             ])
             .split(content);
+        let top = shell[0];
+        let provider_label = self
+            .resolved_admitted_identity()
+            .as_ref()
+            .or(self.initial_identity.as_ref())
+            .map_or("unavailable", |identity| {
+                identity
+                    .compatibility()
+                    .map_or(identity.key.as_str(), |row| row.label)
+            })
+            .to_string();
+        let blocked_suffix = self
+            .visible_model_rows()
+            .get(self.selected_model_idx)
+            .and_then(|row| row.blocked_reason.as_deref())
+            .map(|reason| format!(" · ! {reason}"))
+            .unwrap_or_default();
+        let status_row = Rect { height: 1, ..top };
         Paragraph::new(Line::from(vec![
             Span::styled(
                 self.assignment_context
@@ -4703,25 +4749,10 @@ impl ModelPickerView {
                 Style::default().fg(palette::TEXT_MUTED),
             ),
             Span::styled(
-                self.resolved_admitted_identity()
-                    .as_ref()
-                    .or(self.initial_identity.as_ref())
-                    .map_or("unavailable", |identity| {
-                        identity
-                            .compatibility()
-                            .map_or(identity.key.as_str(), |row| row.label)
-                    })
-                    .to_string(),
-                Style::default().fg(palette::TEXT_PRIMARY),
+                provider_label,
+                Style::default().fg(palette::TEXT_PRIMARY).bold(),
             ),
-            Span::styled(
-                self.visible_model_rows()
-                    .get(self.selected_model_idx)
-                    .and_then(|row| row.blocked_reason.as_deref())
-                    .map(|reason| format!(" · ! {reason}"))
-                    .unwrap_or_default(),
-                Style::default().fg(palette::STATUS_WARNING),
-            ),
+            Span::styled(blocked_suffix, Style::default().fg(palette::STATUS_WARNING)),
             Span::styled(
                 self.notice
                     .as_ref()
@@ -4741,7 +4772,54 @@ impl ModelPickerView {
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ]))
-        .render(shell[0], buf);
+        .render(status_row, buf);
+
+        if show_filter_bar && top.height >= 2 {
+            let filter_row = Rect {
+                y: top.y.saturating_add(1),
+                height: 1,
+                ..top
+            };
+            let ascii = crate::tui::color_compat::ascii_safe_enabled();
+            let caret = if ascii { "_" } else { "▏" };
+            let count_text = format!("{visible_count}/{total_models}");
+            let mut filter_spans = if searching {
+                vec![
+                    Span::styled(
+                        tr(self.locale, MessageId::HelpFilterPrefix),
+                        Style::default().fg(accent).bold(),
+                    ),
+                    Span::styled(
+                        self.query.clone(),
+                        Style::default().fg(palette::TEXT_PRIMARY).bold(),
+                    ),
+                    Span::styled(caret, Style::default().fg(accent)),
+                ]
+            } else {
+                vec![
+                    Span::styled("/ ", Style::default().fg(palette::TEXT_DIM)),
+                    Span::styled(
+                        tr(self.locale, MessageId::ModelPickerFilterPlaceholder),
+                        Style::default().fg(palette::TEXT_DIM),
+                    ),
+                ]
+            };
+            filter_spans.push(Span::styled(
+                format!("  ({count_text})"),
+                Style::default().fg(palette::TEXT_MUTED),
+            ));
+            Paragraph::new(Line::from(filter_spans)).render(filter_row, buf);
+        }
+        if show_rule && top.height >= top_rows {
+            render_modal_rule(
+                Rect {
+                    y: top.y.saturating_add(top_rows.saturating_sub(1)),
+                    height: 1,
+                    ..top
+                },
+                buf,
+            );
+        }
 
         let mut layout = widen_model_pane(ListDetailLayout::split(shell[1], 24));
         if !self.can_edit_effort() {
@@ -4761,7 +4839,6 @@ impl ModelPickerView {
             );
         }
 
-        self.ensure_projection();
         let projection = self.projection.borrow();
         let model_rows = &projection.as_ref().unwrap().rows;
         let model_title = if self.query.trim().is_empty() {
@@ -4783,6 +4860,18 @@ impl ModelPickerView {
 
         if !self.can_edit_effort() {
             return;
+        }
+        if !layout.stacked && layout.detail.x > layout.list.right() {
+            let div_x = layout.list.right();
+            let div_sym = if crate::tui::color_compat::ascii_safe_enabled() {
+                "|"
+            } else {
+                "│"
+            };
+            let div_style = Style::default().fg(active_modal_border_color());
+            for y in shell[1].top()..shell[1].bottom() {
+                buf[(div_x, y)].set_symbol(div_sym).set_style(div_style);
+            }
         }
         let effort_provider = self.resolved_provider().unwrap_or(self.initial_provider);
         let current_efforts = self.current_efforts();
