@@ -31,6 +31,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -40,6 +41,15 @@ pub const MAX_EVENTS: usize = 512;
 pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
+
+/// How long startup arming retries a busy compaction lock before skipping.
+/// `flock` has no timeout of its own, so a suspended process holding the
+/// lock would otherwise wedge every launch.
+#[cfg(not(test))]
+const ARM_LOCK_BUDGET: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const ARM_LOCK_BUDGET: Duration = Duration::from_millis(200);
+const ARM_LOCK_RETRY: Duration = Duration::from_millis(25);
 
 /// Exact contents of the opt-out tombstone observed by a consent decision.
 ///
@@ -548,10 +558,30 @@ pub fn wipe(root: &Path) -> Result<()> {
 pub(crate) fn arm(
     root: &Path,
     observed_generation: Option<&TombstoneGeneration>,
-    permission_still_enabled: impl FnOnce() -> bool,
+    permission_still_enabled: impl Fn() -> bool,
 ) -> Result<()> {
     ensure_dir(root)?;
-    with_lock(root, || {
+    // The compaction lock is an flock: a suspended process holding it never
+    // releases it, and every launch arms telemetry, so a blocking wait here
+    // wedges the whole CLI. Bound the wait and skip arming instead.
+    let deadline = Instant::now() + ARM_LOCK_BUDGET;
+    loop {
+        match try_with_lock_in_turn(root, || {
+            arm_locked(root, observed_generation, &permission_still_enabled)
+        })? {
+            Some(()) => return Ok(()),
+            None if Instant::now() < deadline => std::thread::sleep(ARM_LOCK_RETRY),
+            None => anyhow::bail!("the telemetry compaction lock stayed busy"),
+        }
+    }
+}
+
+fn arm_locked(
+    root: &Path,
+    observed_generation: Option<&TombstoneGeneration>,
+    permission_still_enabled: &dyn Fn() -> bool,
+) -> Result<()> {
+    {
         let current_generation = tombstone_generation(root)?;
         if current_generation.as_ref() != observed_generation {
             anyhow::bail!("telemetry permission changed before arming");
@@ -566,5 +596,5 @@ pub(crate) fn arm(
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
         }
         truncate(&buffer_path(root))
-    })
+    }
 }

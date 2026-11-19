@@ -2419,3 +2419,26 @@ mod spools {
         assert!(lines.last().unwrap().contains(&line(699)));
     }
 }
+
+#[test]
+fn arming_skips_a_busy_privacy_lock_instead_of_wedging_the_launch() {
+    // A suspended process holding `buffer.jsonl.lock` never releases its
+    // flock; arming must give up rather than block the launch forever. The
+    // guard here stands in for that foreign holder — same-process opens of
+    // the lock file still contend under flock.
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(buffer::lock_path(&root))
+        .expect("open lock");
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.try_write().expect("hold the privacy lock");
+
+    let started = Instant::now();
+    let error = buffer::arm(&root, None, || true).expect_err("busy lock must not arm");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(error.to_string().contains("lock stayed busy"));
+}
