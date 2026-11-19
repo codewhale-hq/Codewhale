@@ -5503,7 +5503,6 @@ pub(crate) async fn run_event_loop(
             || has_running_agents
             || durable_tasks_active
             || app.is_loading
-            || browsing_history
             || app.ocean_completion_started_at.is_some_and(|started| {
                 started.elapsed()
                     < Duration::from_millis(crate::tui::ocean::COMPLETION_SETTLE_MS as u64)
@@ -5512,10 +5511,12 @@ pub(crate) async fn run_event_loop(
         let underwater_ambient_motion = shell_motion_enabled
             && underwater_motion_visible
             && !ambient_settled
-            && (browsing_history || shell_phase_working || empty_water_visible);
+            && !browsing_history
+            && (shell_phase_working || empty_water_visible);
         let underwater_completion_motion = shell_motion_enabled
             && underwater_atmosphere_enabled
             && !underwater_surface_obscured
+            && !browsing_history
             && matches!(app.runtime_turn_status.as_deref(), Some("completed"))
             && app.ocean_completion_started_at.is_some_and(|started| {
                 started.elapsed()
