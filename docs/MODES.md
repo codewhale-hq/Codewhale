@@ -27,7 +27,9 @@ the saved `role`/`profile` assignment. An Exact Fleet fixes each member's route.
 One dial says how much Codewhale may do without asking. Press `Shift+Tab` to
 step it: **Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask**. Plan
 is the Plan mode; every other stop is Work with that permission posture. The
-footer shows the current stop and `Shift+Tab to change`. New installs start on
+footer shows the current stop and `Shift+Tab to change`; after you have pressed
+it twice the hint stands down, except on Auto-Review and Full Access, where it
+stays while the footer has room. New installs start on
 Accept Edits when no permission posture is saved. An explicit saved choice,
 including Ask from an earlier version, stays in control.
 `Tab` only completes composer menus, commands, file mentions and suggestions;
