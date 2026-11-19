@@ -141,23 +141,7 @@ fn state_unreachable_reason(error: &anyhow::Error) -> Option<&'static str> {
 }
 
 fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event {
-    // One clock read shared by every row, so elapsed values in a single
-    // listing are consistent with each other (#5479).
-    let now_ms = crate::tools::subagent::epoch_millis_now();
-    Event::AgentList {
-        owner_session_id: active_session_id.to_string(),
-        agents: manager.list_for_session(active_session_id),
-        coordination: manager.coordination_detail_projection_for_session(
-            active_session_id,
-            None,
-            24,
-        ),
-        queued_follow_ups: manager.queued_follow_up_counts_for_session(active_session_id),
-        roster: crate::agent_roster::build_agent_roster(
-            &manager.list_worker_records_for_session(active_session_id),
-            now_ms,
-        ),
-    }
+    manager.agent_list_event(active_session_id)
 }
 
 /// The `<turn_meta>` line naming the permission posture a turn ran under
