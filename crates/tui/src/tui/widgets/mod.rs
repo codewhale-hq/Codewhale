@@ -4692,27 +4692,31 @@ mod tests {
                 is_diff: false,
             }))
         };
-        let exec = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cargo test -p codewhale-tui".to_string(),
-            description: None,
-            status: ToolStatus::Failed,
-            output: None,
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: Instant::now().checked_sub(Duration::from_secs(5)),
-            duration_ms: Some(5_000),
-            stale_elapsed_since_output_ms: None,
-            waiting: None,
-            source: ExecSource::Assistant,
-            interaction: None,
-            output_summary: None,
-        }));
+        let exec = |status| {
+            HistoryCell::Tool(ToolCell::Exec(ExecCell {
+                command: "cargo test -p codewhale-tui".to_string(),
+                description: None,
+                status,
+                output: None,
+                live_output: None,
+                shell_task_id: None,
+                owner_agent_id: None,
+                owner_agent_name: None,
+                started_at: Instant::now().checked_sub(Duration::from_secs(5)),
+                duration_ms: Some(5_000),
+                stale_elapsed_since_output_ms: None,
+                waiting: None,
+                source: ExecSource::Assistant,
+                interaction: None,
+                output_summary: None,
+            }))
+        };
         let theme = palette::UNDERWATER_UI_THEME;
         let options = crate::tui::history::TranscriptRenderOptions::default();
         let completed = Instant::now();
-        let flash = |cell: &HistoryCell, after: Duration| {
+        let flash = |cell: &HistoryCell,
+                     options: crate::tui::history::TranscriptRenderOptions,
+                     after: Duration| {
             let mut rendered = cell.lines_with_options(100, options);
             let meta: Vec<TranscriptLineMeta> = (0..rendered.len())
                 .map(|line_in_cell| TranscriptLineMeta::CellLine {
@@ -4745,9 +4749,10 @@ mod tests {
         for cell in [
             generic(ToolStatus::Success),
             generic(ToolStatus::Failed),
-            exec,
+            exec(ToolStatus::Success),
+            exec(ToolStatus::Failed),
         ] {
-            let (before, early, visible) = flash(&cell, Duration::from_millis(60));
+            let (before, early, visible) = flash(&cell, options, Duration::from_millis(60));
             assert!(visible, "a fresh outcome flashes: {before:?}");
             assert_eq!(early.spans.len(), before.spans.len());
             let summary = before
@@ -4755,17 +4760,28 @@ mod tests {
                 .iter()
                 .position(|span| span.content.contains("TODO") || span.content.contains("cargo"))
                 .expect("summary or command present");
+            let status_word = before
+                .spans
+                .iter()
+                .position(|span| span.content == " \u{00B7} ")
+                .expect("status separator present")
+                - 1;
             let (before_fg, early_fg) = (fg_of(&before), fg_of(&early));
             assert_ne!(
                 early_fg[..summary],
                 before_fg[..summary],
                 "the outcome mark lights"
             );
+            assert_ne!(
+                early_fg[status_word], before_fg[status_word],
+                "the status word lights"
+            );
             assert_eq!(
-                early_fg[summary], before_fg[summary],
+                early_fg[summary..],
+                before_fg[summary..],
                 "the summary and command never flash"
             );
-            let (_, settled, visible) = flash(&cell, SETTLE_FLASH_DURATION);
+            let (_, settled, visible) = flash(&cell, options, SETTLE_FLASH_DURATION);
             assert!(!visible);
             assert_eq!(
                 fg_of(&settled),
@@ -4773,7 +4789,34 @@ mod tests {
                 "the flash leaves no residue"
             );
         }
-        let (before, running, visible) = flash(&generic(ToolStatus::Running), Duration::ZERO);
+
+        let calm = crate::tui::history::TranscriptRenderOptions {
+            calm_mode: true,
+            ..options
+        };
+        for cell in [exec(ToolStatus::Success), exec(ToolStatus::Failed)] {
+            let (before, early, visible) = flash(&cell, calm, Duration::from_millis(60));
+            assert!(visible, "a fresh outcome flashes: {before:?}");
+            let (before_fg, early_fg) = (fg_of(&before), fg_of(&early));
+            let changed: Vec<usize> = (0..before_fg.len())
+                .filter(|index| early_fg[*index] != before_fg[*index])
+                .collect();
+            let mut expected = vec![0];
+            if let Some(status) = before
+                .spans
+                .iter()
+                .position(|span| span.content == "failed")
+            {
+                expected.push(status);
+            }
+            assert_eq!(
+                changed, expected,
+                "calm rows light the mark and the outcome word only: {before:?}"
+            );
+        }
+
+        let (before, running, visible) =
+            flash(&generic(ToolStatus::Running), options, Duration::ZERO);
         assert!(!visible);
         assert_eq!(fg_of(&running), fg_of(&before));
     }

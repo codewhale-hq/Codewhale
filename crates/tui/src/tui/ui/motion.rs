@@ -338,6 +338,7 @@ pub(crate) fn should_tick_status_animation(
         && (app.is_loading
             || working_clock_has_glow(app)
             || composer_border_breathes(app)
+            || app.viewport.activity_sweep_visible
             || has_running_agents
             || app.is_compacting
             || app.is_purging

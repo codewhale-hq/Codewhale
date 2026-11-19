@@ -3439,8 +3439,11 @@ pub(crate) fn tool_header_settle_spans(tool: &ToolCell, line: &Line<'static>) ->
             .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ ")),
     );
     let mut spans = vec![base];
+    let family_header = line.spans.get(base + 1).is_some_and(|span| {
+        span.content.ends_with(' ') && is_tool_family_glyph(span.content.trim_end())
+    });
     match (tool, tool.status()) {
-        (ToolCell::Exec(_), Some(status)) => {
+        (ToolCell::Exec(_), Some(status)) if !family_header => {
             let status_fg =
                 tool_glyph_color(status, crate::tui::widgets::tool_card::ToolFamily::Run);
             spans.extend((base + 2..line.spans.len()).find(|index| {
