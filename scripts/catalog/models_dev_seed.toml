@@ -402,6 +402,7 @@ models = [
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
   "gemini-4-hydrogen",
+  "gemini-4-neon",
 ]
 
 [[providers]]

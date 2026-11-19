@@ -1700,6 +1700,15 @@
         "thinking_can_disable": false,
         "family": "Google"
       },
+      "gemini-4-neon": {
+        "source": "official vendor model docs, verified 2026-11-19; see source_receipts",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
+        "thought_signatures_required": true,
+        "thinking_can_disable": false,
+        "family": "Google"
+      },
       "gemini-3-pro": {
         "source": "official vendor model docs, verified 2026-11-17; see source_receipts",
         "context_window": 1048576,
@@ -3179,6 +3188,12 @@
         "id": "qwen3.6-plus",
         "supports_tools": false,
         "supports_reasoning": false
+      },
+      {
+        "id": "gemini-4-neon",
+        "supports_tools": true,
+        "supports_reasoning": true,
+        "provider": "google"
       }
     ],
     "public_models": [
@@ -4158,7 +4173,8 @@
       "https://platform.claude.com/docs/en/models/haiku-4-5/overview": "verified 2026-10-22: claude-haiku-4-5 supports manual extended thinking and image input, with 200K context and 64K output; no adaptive-thinking or default-effort support inferred",
       "https://qwencloud.com/pricing/token-plan": "verified 2026-11-11: the Supported Models table lists qwen4-max-preview marked New with Text Generation, Reasoning Model and Visual Understanding, so image input is recorded; the page gives no context window, maximum output, tool calling or thinking control, so none is recorded and Codewhale sends no thinking switch",
       "https://aistudio.google.com/docs/models/gemini-4-hydrogen": "verified 2026-11-17: stable model code gemini-4-hydrogen, 1,048,576 context, 65,536 output by default for synchronous requests (1,048,576 with long decode), function calling, thinking levels low/medium/high/xhigh, implicit caching only",
-      "https://aistudio.google.com/docs/models": "verified 2026-11-17: gemini-3-pro-preview is shut down; gemini-2.5-pro and gemini-2.5-flash are deprecated and route to gemini-3.8-flash and gemini-3.5-flash-lite from 2026-12-01; Google recommends gemini-4-hydrogen for new projects"
+      "https://aistudio.google.com/docs/models": "verified 2026-11-17: gemini-3-pro-preview is shut down; gemini-2.5-pro and gemini-2.5-flash are deprecated and route to gemini-3.8-flash and gemini-3.5-flash-lite from 2026-12-01; Google recommends gemini-4-hydrogen for new projects",
+      "https://aistudio.google.com/docs/models/gemini-4-neon": "verified 2026-11-19: model code gemini-4-neon, 1,048,576 context, 65,536 output by default; thinking levels low, medium, high (default), xhigh; paid tier $3 input, $15 output, $0.15 cache-read per 1M tokens; text, image, audio, video and PDF input; text output"
     },
     "transports": [
       {
@@ -5689,6 +5705,18 @@
         "output": 0.33,
         "source": "preserved exact cited reference; not endpoint/account pricing"
       },
+      "google/gemini-4-neon": {
+        "cache_read": 0.15,
+        "input": 3.0,
+        "output": 15.0,
+        "source": "preserved exact cited reference; not endpoint/account pricing"
+      },
+      "gemini-4-neon": {
+        "cache_read": 0.15,
+        "input": 3.0,
+        "output": 15.0,
+        "source": "preserved exact cited reference; not endpoint/account pricing"
+      },
       "tencent/hy3-preview": {
         "cache_read": 0.021,
         "input": 0.063,
@@ -5926,6 +5954,7 @@
       ],
       "google": [
         "gemini-4-hydrogen",
+        "gemini-4-neon",
         "$DEFAULT_GOOGLE_MODEL",
         "gemini-4-argon",
         "gemini-3.8-flash",
