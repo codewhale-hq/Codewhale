@@ -6942,6 +6942,49 @@ impl McpPool {
     }
 
     /// Get list of configured server names (static + dynamic)
+    #[must_use]
+    pub fn subagent_unavailable_tool_reason(&self, model_tool: &str) -> String {
+        let routes = self.resolved_tool_servers();
+        let server = routes.get(model_tool).cloned().or_else(|| {
+            let dynamic = self.dynamic_servers.read();
+            self.config
+                .servers
+                .keys()
+                .chain(dynamic.keys())
+                .filter(|server| model_tool.starts_with(&Self::mcp_model_tool_name(server, "")))
+                .max_by_key(|server| server.len())
+                .cloned()
+        });
+        let Some(server) = server else {
+            return format!(
+                "MCP tool '{model_tool}' is unavailable to this sub-agent: no MCP server configured for this session owns that name. Use tool_search to list the MCP tools this sub-agent can call."
+            );
+        };
+        let reason = if !self.server_allowed(&server) {
+            "is denied by this session's MCP policy".to_string()
+        } else if self.needs_auth_servers.contains(&server) {
+            format!("needs authorization; run /mcp login {server} in the parent session")
+        } else if self.connecting.contains(&server) {
+            "was still connecting when this sub-agent's tools were built".to_string()
+        } else if routes.contains_key(model_tool) {
+            "is connected, but this tool is outside this sub-agent's role or tool scope".to_string()
+        } else if self
+            .connections
+            .get(&server)
+            .is_some_and(McpConnection::is_ready)
+        {
+            "is connected but does not offer this tool (disabled, denied, or not in its catalog)"
+                .to_string()
+        } else if let Some(backoff) = self.connect_backoff.get(&server) {
+            format!("failed to connect: {}", backoff.last_error)
+        } else {
+            "is configured but not connected in this session".to_string()
+        };
+        format!(
+            "MCP tool '{model_tool}' is unavailable to this sub-agent: server '{server}' {reason}."
+        )
+    }
+
     pub fn server_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
