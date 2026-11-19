@@ -1103,10 +1103,7 @@ impl CodewhaleClient {
                                 buf.push_str(&partial_json);
                             }
                         }
-                        Delta::SignatureDelta { .. } => {
-                            // Anthropic-native signature deltas never occur on
-                            // the Responses bridge (#3014).
-                        }
+                        Delta::SignatureDelta { .. } | Delta::ThoughtSignatureDelta { .. } => {}
                         Delta::ReasoningStateDelta { state } => {
                             if let Some(ContentBlock::Thinking {
                                 state: existing, ..

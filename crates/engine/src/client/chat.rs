@@ -742,15 +742,57 @@ fn apply_google_reasoning_effort(
     let Some(effort) = effort else {
         return;
     };
-    let can_disable = resolve_google_route_model(model)
+    let resolved = resolve_google_route_model(model);
+    let can_disable = resolved
         .as_deref()
         .is_some_and(codewhale_models::model_can_disable_thinking);
-    let effort = match effort.trim().to_ascii_lowercase().as_str() {
+    let offering = resolved.as_deref().and_then(|wire_id| {
+        crate::provider_lake::bundled_catalog_offering_for_model(ProviderKind::Google, wire_id)
+    });
+    let declared_efforts: Option<Vec<&str>> = offering.as_ref().and_then(|row| {
+        row.reasoning_options
+            .iter()
+            .find(|option| option["type"] == "effort")
+            .and_then(|option| option["values"].as_array())
+            .map(|values| values.iter().filter_map(Value::as_str).collect())
+    });
+    let has_declared = |target: &str| {
+        declared_efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.contains(&target))
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "auto" | "automatic") {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+        return;
+    }
+    let effort = match normalized.as_str() {
         "off" | "disabled" | "none" | "false" if can_disable => "none",
-        "off" | "disabled" | "none" | "false" | "minimal" => "minimal",
-        "low" => "low",
-        "medium" | "mid" | "" => "medium",
-        "high" | "xhigh" | "max" | "highest" | "ultra" | "ultracode" => "high",
+        "off" | "disabled" | "none" | "false" | "minimal" | "minimum" => {
+            if declared_efforts.is_some() && !has_declared("minimal") && has_declared("low") {
+                "low"
+            } else {
+                "minimal"
+            }
+        }
+        "low" | "light" => "low",
+        "medium" | "mid" | "" => {
+            if declared_efforts.is_some() && !has_declared("medium") {
+                if has_declared("high") { "high" } else { "low" }
+            } else {
+                "medium"
+            }
+        }
+        "high" => "high",
+        "xhigh" | "max" | "maximum" | "highest" | "ultra" | "ultracode" => {
+            if has_declared("xhigh") {
+                "xhigh"
+            } else {
+                "high"
+            }
+        }
         _ => return,
     };
     body["reasoning_effort"] = json!(effort);
@@ -781,23 +823,24 @@ fn validate_google_thought_signature_replay(
         let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) else {
             continue;
         };
-        for call in tool_calls {
-            let missing = call
-                .pointer("/extra_content/google/thought_signature")
-                .and_then(Value::as_str)
-                .is_none();
-            if missing {
-                let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
-                if requires_signatures {
-                    anyhow::bail!(
-                        "Gemini model `{model}` requires a thought signature to replay tool call \
-                         `{id}`, but none was captured (the turn predates signature capture, or \
-                         the provider omitted it). Start a new session before using tools on \
-                         this route."
-                    );
-                }
-                unsigned_call_ids.push(id);
+        let Some(call) = tool_calls.first() else {
+            continue;
+        };
+        let missing = call
+            .pointer("/extra_content/google/thought_signature")
+            .and_then(Value::as_str)
+            .is_none();
+        if missing {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
+            if requires_signatures {
+                anyhow::bail!(
+                    "Gemini model `{model}` requires a thought signature to replay tool call \
+                     `{id}`, but none was captured (the turn predates signature capture, or \
+                     the provider omitted it). Start a new session before using tools on \
+                     this route."
+                );
             }
+            unsigned_call_ids.push(id);
         }
     }
     if !unsigned_call_ids.is_empty() {
@@ -1563,7 +1606,7 @@ impl CodewhaleClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let mut tool_indices = ChatToolStream::default();
             let mut reasoning_detail_buffers: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
             let mut inline_reasoning_tags = InlineReasoningTagState::default();
             let reasoning_stream_style = reasoning_stream_style_for_route(
@@ -4253,6 +4296,48 @@ enum SseDataFrame {
     Events(Vec<StreamEvent>),
 }
 
+#[derive(Default)]
+pub(super) struct ChatToolStream {
+    calls: Vec<ChatToolSlot>,
+    previous_batch: Vec<usize>,
+}
+
+struct ChatToolSlot {
+    block: u32,
+    wire_index: Option<u64>,
+    id: Option<String>,
+}
+
+impl ChatToolStream {
+    fn slot(
+        &self,
+        index: Option<u64>,
+        id: Option<&str>,
+        has_name: bool,
+        position: usize,
+        batch_len: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        let by_index = index.and_then(|i| self.calls.iter().position(|c| c.wire_index == Some(i)));
+        let by_id = id.and_then(|id| self.calls.iter().position(|c| c.id.as_deref() == Some(id)));
+        if let Some(slot) = by_index.or(by_id) {
+            let call = &self.calls[slot];
+            if index.zip(call.wire_index).is_some_and(|(a, b)| a != b)
+                || id.zip(call.id.as_deref()).is_some_and(|(a, b)| a != b)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
+            return Ok(Some(slot));
+        }
+        if index.is_some() || id.is_some() || has_name {
+            return Ok(None);
+        }
+        if self.previous_batch.len() == batch_len {
+            return Ok(self.previous_batch.get(position).copied());
+        }
+        Err("Cannot match an unindexed tool call delta to its provider stream block")
+    }
+}
+
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
 // shared parser-state set (mirrored by `parse_sse_chunk*`); bundling them into a
 // struct would only add reborrow noise on this hot SSE path.
@@ -4262,7 +4347,7 @@ fn parse_sse_data_frame(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4296,7 +4381,7 @@ pub(super) fn parse_sse_chunk(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     is_reasoning_model: bool,
 ) -> Vec<StreamEvent> {
@@ -4325,7 +4410,7 @@ fn parse_sse_chunk_with_reasoning_style(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4584,12 +4669,60 @@ fn parse_sse_chunk_with_reasoning_style(
             }
 
             // Handle tool calls
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for tc in tool_calls {
-                    let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let tool_block_index = match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::hash_map::Entry::Vacant(entry) => {
+            if let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .filter(|calls| !calls.is_empty())
+            {
+                let mut batch = Vec::with_capacity(tool_calls.len());
+                for (tc_pos, tc) in tool_calls.iter().enumerate() {
+                    let wire_index = tc.get("index").and_then(Value::as_u64);
+                    let id = tc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty());
+                    let name = tc.pointer("/function/name").and_then(Value::as_str);
+                    let slot = match tool_indices.slot(
+                        wire_index,
+                        id,
+                        name.is_some_and(|name| !name.trim().is_empty()),
+                        tc_pos,
+                        tool_calls.len(),
+                    ) {
+                        Ok(slot) => slot,
+                        Err(message) => {
+                            return vec![StreamEvent::Error {
+                                error: json!({ "message": message }),
+                            }];
+                        }
+                    };
+                    let (slot, tool_block_index) = match slot {
+                        Some(slot) => {
+                            if batch.contains(&slot) {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": "Duplicate tool call in provider stream batch" }),
+                                }];
+                            }
+                            let call = &mut tool_indices.calls[slot];
+                            call.wire_index = call.wire_index.or(wire_index);
+                            if call.id.is_none() {
+                                call.id = id.map(str::to_string);
+                            }
+                            if let Some(sig) = tc
+                                .pointer("/extra_content/google/thought_signature")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                            {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ThoughtSignatureDelta {
+                                        thought_signature: sig.to_string(),
+                                    },
+                                });
+                            }
+                            (slot, call.block)
+                        }
+                        None => {
                             // Close text block if transitioning to tool use
                             if *text_started {
                                 events.push(StreamEvent::ContentBlockStop {
@@ -4607,9 +4740,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             }
 
                             let block_index = *content_index;
-                            let id = tc
-                                .get("id")
-                                .and_then(Value::as_str)
+                            let block_id = id
                                 .map(str::to_string)
                                 // Some upstream gateways (and the responses-API
                                 // bridge) elide the `id` on the first chunk of a
@@ -4621,11 +4752,8 @@ fn parse_sse_chunk_with_reasoning_style(
                                 // the content-block position to keep the
                                 // fallback unique within the response.
                                 .unwrap_or_else(|| format!("call_{block_index}"));
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(Value::as_str);
-                            let name = tool_name_or_fallback(name, &id, "Streaming response chunk");
+                            let name =
+                                tool_name_or_fallback(name, &block_id, "Streaming response chunk");
                             let caller = tc.get("caller").and_then(|v| {
                                 v.get("type").and_then(Value::as_str).map(|caller_type| {
                                     ToolCaller {
@@ -4645,7 +4773,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             events.push(StreamEvent::ContentBlockStart {
                                 index: block_index,
                                 content_block: ContentBlockStart::ToolUse {
-                                    id,
+                                    id: block_id,
                                     name: from_api_tool_name(&name),
                                     input: json!({}),
                                     caller,
@@ -4653,10 +4781,16 @@ fn parse_sse_chunk_with_reasoning_style(
                                 },
                             });
                             *content_index = (*content_index).saturating_add(1);
-                            entry.insert(block_index);
-                            block_index
+                            let slot = tool_indices.calls.len();
+                            tool_indices.calls.push(ChatToolSlot {
+                                block: block_index,
+                                wire_index,
+                                id: id.map(str::to_string),
+                            });
+                            (slot, block_index)
                         }
                     };
+                    batch.push(slot);
 
                     // Stream tool call arguments
                     if let Some(args) = tc
@@ -4673,6 +4807,7 @@ fn parse_sse_chunk_with_reasoning_style(
                         });
                     }
                 }
+                tool_indices.previous_batch = batch;
             }
         }
 
@@ -4752,13 +4887,9 @@ fn parse_sse_chunk_with_reasoning_style(
                 *thinking_started = false;
             }
             // Close tool blocks
-            let mut open_tool_indices: Vec<u32> =
-                tool_indices.drain().map(|(_, idx)| idx).collect();
-            open_tool_indices.sort_unstable();
-            for tool_block_index in open_tool_indices {
-                events.push(StreamEvent::ContentBlockStop {
-                    index: tool_block_index,
-                });
+            tool_indices.previous_batch.clear();
+            for call in tool_indices.calls.drain(..) {
+                events.push(StreamEvent::ContentBlockStop { index: call.block });
             }
 
             // Emit usage from the chunk if available
@@ -4830,7 +4961,7 @@ mod stream_diagnostics_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         for chunk in [
             json!({ "error": { "message": "rate limit exceeded", "type": "rate_limit_error" } }),
@@ -8960,7 +9091,7 @@ mod google_thought_signature_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         let mut inline_tags = InlineReasoningTagState::default();
         let events = parse_sse_chunk_with_reasoning_style(

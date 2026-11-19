@@ -18,7 +18,7 @@ fn decode_chunk_with_reasoning(json_text: &str, is_reasoning_model: bool) -> Vec
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     parse_sse_chunk(
         &chunk,
@@ -38,7 +38,7 @@ fn decode_chunks_with_style(
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
     let mut events = Vec::new();
@@ -67,7 +67,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
         content_index: u32,
         text_started: bool,
         thinking_started: bool,
-        tool_indices: std::collections::HashMap<u32, u32>,
+        tool_indices: ChatToolStream,
         reasoning_detail_buffers: std::collections::HashMap<u32, String>,
         inline_reasoning_tags: InlineReasoningTagState,
         events: Vec<StreamEvent>,
@@ -80,7 +80,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
                 content_index: 0,
                 text_started: false,
                 thinking_started: false,
-                tool_indices: std::collections::HashMap::new(),
+                tool_indices: ChatToolStream::default(),
                 reasoning_detail_buffers: std::collections::HashMap::new(),
                 inline_reasoning_tags: InlineReasoningTagState::default(),
                 events: Vec::new(),
@@ -300,7 +300,7 @@ fn decoder_streams_moonshot_multi_chunk_reasoning_as_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -388,7 +388,7 @@ fn decoder_streams_minimax_reasoning_details_as_incremental_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -459,7 +459,7 @@ fn modelstudio_streams_reasoning_content_as_thinking() {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let mut inline_reasoning_tags = InlineReasoningTagState::default();
         let mut events = Vec::new();
@@ -528,7 +528,7 @@ fn decoder_does_not_render_reasoning_as_text_for_known_provider_models() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let is_reasoning_model =
         is_reasoning_model_for_stream(ProviderKind::XiaomiMimo, "mimo-v2.5-pro");
@@ -815,7 +815,7 @@ fn decoder_treats_done_frame_as_terminal() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
 
@@ -837,7 +837,7 @@ fn decoder_treats_done_frame_as_terminal() {
     assert_eq!(content_index, 0);
     assert!(!text_started);
     assert!(!thinking_started);
-    assert!(tool_indices.is_empty());
+    assert!(tool_indices.calls.is_empty());
 }
 
 #[test]
@@ -1888,4 +1888,239 @@ fn deepseek_chat_web_tools_latest_reminder_replay_and_sse_parity() {
             && delta.title.as_deref() == Some("Rust Chat")
             && usage.as_ref().and_then(|u| u.safety_tokens) == Some(5)
     )));
+}
+
+#[test]
+fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_cleanly() {
+    let sse_chunks = [
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "id": "call_g1",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                            "extra_content": { "google": { "thought_signature": "sig_first" } }
+                        },
+                        {
+                            "id": "call_g2",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+                        }
+                    ]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_g3",
+                        "type": "function",
+                        "function": { "name": "grep_files", "arguments": "{\"pattern\":" }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "function": { "arguments": "\"foo\"}" },
+                        "extra_content": { "google": { "thought_signature": "sig_late" } }
+                    }]
+                }
+            }]
+        })
+        .to_string(),
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string(),
+    ];
+    let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
+    let events = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+
+    let starts: Vec<(u32, String, Option<String>)> = events
+        .into_iter()
+        .filter_map(|ev| match ev {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block:
+                    ContentBlockStart::ToolUse {
+                        id,
+                        thought_signature,
+                        ..
+                    },
+            } => Some((index, id, thought_signature)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            (0, "call_g1".to_string(), Some("sig_first".to_string())),
+            (1, "call_g2".to_string(), None),
+            (2, "call_g3".to_string(), None),
+        ]
+    );
+
+    let events2 = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    assert!(events2.iter().any(|ev| matches!(
+        ev,
+        StreamEvent::ContentBlockDelta {
+            index: 2,
+            delta: Delta::ThoughtSignatureDelta { thought_signature },
+        } if thought_signature == "sig_late"
+    )));
+
+    let replay_messages = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_g1",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" },
+                "extra_content": { "google": { "thought_signature": "sig_first" } }
+            },
+            {
+                "id": "call_g2",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{\"path\":\"b.rs\"}" }
+            }
+        ]
+    })];
+    crate::client::chat::validate_google_thought_signature_replay(
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-4-hydrogen",
+        &replay_messages,
+    )
+    .expect("parallel Gemini tool calls carry thought_signature only on tool_calls[0]");
+
+    let missing_first = vec![serde_json::json!({
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call_unsigned",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            },
+            {
+                "id": "call_second",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" },
+                "extra_content": { "google": { "thought_signature": "sig_wrong_slot" } }
+            }
+        ]
+    })];
+    assert!(
+        crate::client::chat::validate_google_thought_signature_replay(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-4-hydrogen",
+            &missing_first,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn google_parallel_tool_continuations_match_identity_then_batch_position() {
+    let start = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g1","function":{"name":"read_file","arguments":"{\"path\":"}},
+        {"id":"call_g2","function":{"name":"grep_files","arguments":"{\"pattern\":"}}
+    ]}}]}"#;
+    let continue_both = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"\"a.rs\"}"}},
+        {"function":{"arguments":"\"needle\"}"}}
+    ]}}]}"#;
+    let signature_for_first = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g1","extra_content":{"google":{"thought_signature":"sig_first"}}}
+    ]}}]}"#;
+    let events = decode_chunks_with_style(
+        &[start, continue_both, signature_for_first],
+        ReasoningStreamStyle::SeparateField,
+    );
+    let input: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::InputJsonDelta { partial_json },
+            } => Some((*index, partial_json.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        input,
+        [
+            (0, "{\"path\":"),
+            (1, "{\"pattern\":"),
+            (0, "\"a.rs\"}"),
+            (1, "\"needle\"}")
+        ]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThoughtSignatureDelta { thought_signature }
+        } if thought_signature == "sig_first"
+    )));
+
+    let ambiguous = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"\"unknown target\"}"}}
+    ]}}]}"#;
+    let events = decode_chunks_with_style(&[start, ambiguous], ReasoningStreamStyle::SeparateField);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+}
+
+#[test]
+fn google_reasoning_effort_honors_hydrogen_xhigh_and_gemini4_low_floor() {
+    let url = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+    let mut hydrogen_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_xhigh,
+        url,
+        "gemini-4-hydrogen",
+        Some("xhigh"),
+    );
+    assert_eq!(hydrogen_xhigh["reasoning_effort"], "xhigh");
+
+    let mut carbon_xhigh = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut carbon_xhigh,
+        url,
+        "gemini-4-carbon",
+        Some("xhigh"),
+    );
+    assert_eq!(carbon_xhigh["reasoning_effort"], "high");
+
+    let mut hydrogen_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut hydrogen_off,
+        url,
+        "gemini-4-hydrogen",
+        Some("off"),
+    );
+    assert_eq!(hydrogen_off["reasoning_effort"], "low");
+
+    let mut flash_off = serde_json::json!({});
+    crate::client::chat::apply_google_reasoning_effort(
+        &mut flash_off,
+        url,
+        "gemini-2.5-flash",
+        Some("off"),
+    );
+    assert_eq!(flash_off["reasoning_effort"], "none");
 }

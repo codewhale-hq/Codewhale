@@ -242,7 +242,8 @@ where
         bytes.extend_from_slice(&chunk);
     }
     let raw = String::from_utf8_lossy(&bytes);
-    if let Ok(body) = serde_json::from_str::<serde_json::Value>(&raw) {
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+        let body = super::unwrap_single_element_json_array(&parsed);
         let failed = body
             .pointer("/base_resp/status_code")
             .and_then(serde_json::Value::as_i64)
@@ -268,12 +269,19 @@ where
 }
 
 pub fn body_delay(body: &str) -> Option<Duration> {
-    let body: serde_json::Value = serde_json::from_str(body).ok()?;
-    let objects = [
-        &body,
-        body.get("error").unwrap_or(&body),
-        body.get("base_resp").unwrap_or(&body),
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let body = super::unwrap_single_element_json_array(&parsed);
+    let mut objects = vec![
+        body,
+        body.get("error").unwrap_or(body),
+        body.get("base_resp").unwrap_or(body),
     ];
+    if let Some(details) = body
+        .pointer("/error/details")
+        .and_then(serde_json::Value::as_array)
+    {
+        objects.extend(details.iter());
+    }
     let mut delay = None;
     for object in objects {
         for key in ["retry_after", "retry_after_seconds", "retryDelay"] {
@@ -387,7 +395,8 @@ pub fn provider_error(
     let hint = hint
         .max(body_delay(raw))
         .max(super::retry_delay_from_error_body(raw));
-    let body: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+    let parsed: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+    let body = super::unwrap_single_element_json_array(&parsed);
     let code = [
         "/error/code",
         "/error/type",
@@ -426,7 +435,7 @@ pub fn provider_error(
         });
     }
     if (matches!(status, 400 | 402 | 403 | 429) || (200..300).contains(&status))
-        && independent_billing_evidence(&body, raw, true)
+        && independent_billing_evidence(body, raw, true)
     {
         return Some(LlmError::QuotaExhausted(
             super::QuotaExhaustionError::from_http_message(safe.to_owned()),
