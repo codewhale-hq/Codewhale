@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scrolling up into history no longer flickers ("scrolling demon"):** while the transcript is scrolled away from the live tail, status animation ticks, the working clock glow and the Underwater ocean and completion animation hold still until you return to the tail, so terminals without synchronized output such as Terminal.app stop repainting at 8-12 fps while you read history during an active turn.
+
+### Known limits
+
+- **Terminal.app alternate-screen view can detach from scrollback:** if the Terminal.app view stops following the live conversation after scrolling, scroll down to the bottom or type a character to re-attach it. Other terminals are not affected.
+
 ## [0.10.3] - 2026-11-18
 - **Thread forks no longer stall unrelated conversations:** named-turn `/undo`, `/fork`, and `/retry` now prepare and stage cloned turn records outside the manager-wide session admission lock and only take the guard for the brief pre-check and final atomic thread commit (failing closed if the source thread changed mid-preparation), so restoring or reloading unrelated threads no longer waits on a large conversation fork. (CW-8227)
 - **Muse Code as an external agent:** Codewhale now discovers an installed Meta Muse Code CLI (`muse`) and drives it over ACP through `@bex-co/muse-code-acp` (`muse-code-acp`, with `MUSE_CODE_EXECUTABLE` and `muse login`), listing it in `GET /v1/agents/external` alongside Claude, Codex, Antigravity, and other installed agents.

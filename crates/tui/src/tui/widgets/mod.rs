@@ -138,25 +138,21 @@ impl ChatWidget {
         // same motion gate as everything else in the water. Both the column's
         // settle flourish and ambient life's presence read this one clock:
         // the pet needs the settle tail too; the column clips only its light pulse.
-        let completion_life_clock = (underwater_atmosphere
-            && app.motion_policy().allows_decorative())
-        .then_some(())
-        .and(app.ocean_completion_started_at)
-        .map(|started| started.elapsed().as_millis());
+        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
+        let completion_life_clock =
+            (underwater_atmosphere && app.motion_policy().allows_decorative() && !browsing_history)
+                .then_some(())
+                .and(app.ocean_completion_started_at)
+                .map(|started| started.elapsed().as_millis());
         let completion_elapsed_ms = completion_life_clock
             .filter(|elapsed| *elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
-        // Keep the selected underwater scene alive while a turn is doing
-        // work, even after the transcript exists. The ordinary Flat shell
-        // remains entirely still and lets the host terminal lead.
         let underwater_motion_enabled =
             underwater_atmosphere && crate::tui::underwater::decorative_shell_motion_enabled(app);
-        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
         let ocean_animated = underwater_motion_enabled
-            && (render_empty_state
-                || browsing_history
-                || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
+            && !browsing_history
+            && (render_empty_state || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         // Life presence eases the animated/static boundary as a pure function
         // of the monotonic clocks (see ocean::life_presence): bursty fast
         // streams ramp in, quiet waits settle out, never a hard snap.
@@ -8773,7 +8769,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         let widget = ChatWidget::new(&mut app, area);
         assert!(!widget.ambient_life);
-        assert!(widget.ocean_animated);
+        assert!(!widget.ocean_animated);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         buffer_text(&buf, area)
@@ -8797,6 +8793,31 @@ mod tests {
                 "ambient life damaged history row {index}:\n{rendered}"
             );
         }
+    }
+
+    #[test]
+    fn browsing_history_holds_ocean_life_and_completion_still() {
+        let mut app = create_test_app();
+        app.low_motion = false;
+        app.fancy_animations = true;
+        for index in 0..18 {
+            app.add_message(HistoryCell::Assistant {
+                content: format!("history turn {index:02}"),
+                streaming: false,
+            });
+        }
+        app.is_loading = true;
+        app.runtime_turn_status = Some("in_progress".to_string());
+        app.turn_started_at = Some(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(900))
+                .expect("recent turn start"),
+        );
+        app.ocean_completion_started_at = Some(Instant::now());
+        app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
+
+        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 80, 24));
+        assert_eq!(widget.life_presence_fixed, 0);
     }
 
     #[test]
