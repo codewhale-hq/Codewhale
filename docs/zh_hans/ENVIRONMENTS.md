@@ -134,6 +134,8 @@ x64 的这 3 对作为微软文档 API 契约记录（各函数参考页的最�
 
 候选运行 43320217667 在稳定工具链升级到 Rust 1.100.0 后，又在 kernel32.dll 的 `GetLogicalDrives` 与 `QueryDosDeviceW` 两对上停止；它们来自 Rust 1.100.0 标准库的 Windows 文件系统代码。探测运行 43330905781（Windows 11 ARM64 build 26200.9725）解析了该候选 ARM64 可执行文件的全部 449 个导入。x64 的这 2 对作为微软文档 API 契约记录（各函数参考页的最低客户端为 Windows XP）；x64 允许列表现为 473 对，ARM64 为 475 对，限制同上。
 
+源 `7616799f09` 的发布候选运行 44379943827 在两个 64 位目标上停止于 `api-ms-win-crt-math-l1-1-0.dll!cosf`（来自 5.4.0 实时动效中的 `f32::cos()`），并在 x64 上额外停止于 `kernel32.dll!IsProcessorFeaturePresent`（来自 `windows-2025-vs2026` 运行器的 MSVC 14.52 CRT/工具链更新，该符号此前已在 ARM64 上通过验收）。探测运行 44417404125（Windows 11 ARM64 内部版本 26200.9974）解析了该候选 ARM64 可执行文件的全部 449 个导入，`cosf` 已加入基线。x64 的这 2 对作为微软文档 API 契约记录（`cosf` 为 10.0.10240 UCRT API 集最低版本，`IsProcessorFeaturePresent` 为 Windows 2000 Professional 最低客户端）；x64 允许列表现为 475 对，ARM64 为 476 对，限制同上。
+
 此快照中，最终发布文件在真实 1607 上启动/安装及候选程序生成的卸载器仍未验收。
 最终冻结源码、发布导入记录、各安装途径、打包/原生应用崩溃恢复和最低 OS 回执应
 进入发布验收记录，见[英文发布检查单](../RELEASE_CHECKLIST.md)。
