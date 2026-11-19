@@ -10,11 +10,24 @@ const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(120);
 const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(8);
 #[cfg(windows)]
 const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
+/// Bound on "still one paste stream" for newline absorption. Windows Terminal
+/// injects pasted console records at its own pace, and a loaded runner can
+/// space them tens of milliseconds apart — past the burst-forming interval,
+/// so such a paste never buffers even though its Enters are paste payload.
+/// 60ms is far below a deliberate submit after typing and well inside the
+/// 120ms suppression budget.
+const PASTE_BURST_STREAM_WINDOW: Duration = Duration::from_millis(60);
 
 #[derive(Default)]
 pub struct PasteBurst {
     last_plain_char_time: Option<Instant>,
     consecutive_plain_char_burst: u16,
+    /// Plain chars in the still-live input stream: paced further apart than
+    /// the burst-forming interval but within the active idle timeout of each
+    /// other. Windows Terminal can inject a raw paste at its own pace (tens
+    /// of ms between records on a loaded runner); such a stream never forms
+    /// a burst buffer, yet its newlines are still paste payload.
+    stream_chars: u16,
     burst_window_until: Option<Instant>,
     buffer: String,
     active: bool,
@@ -81,11 +94,24 @@ impl PasteBurst {
 
     pub fn note_plain_char(&mut self, now: Instant) -> u16 {
         match self.last_plain_char_time {
-            Some(prev) if now.duration_since(prev) <= PASTE_BURST_CHAR_INTERVAL => {
-                self.consecutive_plain_char_burst =
-                    self.consecutive_plain_char_burst.saturating_add(1);
+            Some(prev) => {
+                let gap = now.duration_since(prev);
+                if gap <= PASTE_BURST_CHAR_INTERVAL {
+                    self.consecutive_plain_char_burst =
+                        self.consecutive_plain_char_burst.saturating_add(1);
+                } else {
+                    self.consecutive_plain_char_burst = 1;
+                }
+                self.stream_chars = if gap <= PASTE_BURST_STREAM_WINDOW {
+                    self.stream_chars.saturating_add(1)
+                } else {
+                    1
+                };
             }
-            _ => self.consecutive_plain_char_burst = 1,
+            _ => {
+                self.consecutive_plain_char_burst = 1;
+                self.stream_chars = 1;
+            }
         }
         self.last_plain_char_time = Some(now);
         self.consecutive_plain_char_burst
@@ -169,7 +195,16 @@ impl PasteBurst {
 
     pub fn newline_should_insert_instead_of_submit(&self, now: Instant) -> bool {
         let in_burst_window = self.burst_window_until.is_some_and(|until| now <= until);
-        self.is_active() || in_burst_window
+        // A paste paced slower than the burst-forming interval still delivers
+        // its newlines as paste payload: the stream counter proves several
+        // raw chars just arrived, and the stream window bounds how stale the
+        // last one may be. A lone typed or IME-committed char never reaches
+        // the threshold, so a deliberate Enter still submits.
+        let stream_recent = self.stream_chars >= PASTE_BURST_MIN_CHARS
+            && self
+                .last_plain_char_time
+                .is_some_and(|t| now.duration_since(t) <= PASTE_BURST_STREAM_WINDOW);
+        self.is_active() || in_burst_window || stream_recent
     }
 
     pub fn extend_window(&mut self, now: Instant) {
@@ -232,6 +267,7 @@ impl PasteBurst {
             "buffer must be flushed before deactivating"
         );
         self.consecutive_plain_char_burst = 0;
+        self.stream_chars = 0;
         self.last_plain_char_time = None;
         self.active = false;
         self.pending_first_char = None;
@@ -256,6 +292,7 @@ impl PasteBurst {
     pub fn clear_after_explicit_paste(&mut self) {
         self.last_plain_char_time = None;
         self.consecutive_plain_char_burst = 0;
+        self.stream_chars = 0;
         self.burst_window_until = None;
         self.active = false;
         self.buffer.clear();
@@ -561,6 +598,10 @@ mod tests {
 
     /// A slow IME sequence never accumulates a rapid run, so every commit
     /// re-arms only the short window and Enter stays available throughout.
+    /// Real candidate-commit latency is hundreds of ms — far past the 60ms
+    /// stream window — so the stream heuristic never claims it either.
+    /// (Commits paced *inside* the stream window are indistinguishable from
+    /// a slow-injected paste; the stream evidence wins there by design.)
     #[test]
     fn slow_ime_sequence_never_holds_enter() {
         let mut burst = PasteBurst::default();
@@ -568,16 +609,65 @@ mod tests {
 
         // "你好世界" committed one character at a time with human gaps.
         for i in 0..4u64 {
-            let now = t0 + Duration::from_millis(50 * i);
+            let now = t0 + Duration::from_millis(200 * i);
             let rapid = burst.note_plain_char(now);
-            assert_eq!(rapid, 1, "50ms gaps are never a paste-speed run");
+            assert_eq!(rapid, 1, "200ms gaps are never a paste-speed run");
             burst.arm_window_for_direct_char(now, rapid);
         }
 
-        let last = t0 + Duration::from_millis(150);
+        let last = t0 + Duration::from_millis(600);
         assert!(
             !burst.newline_should_insert_instead_of_submit(last + Duration::from_millis(30)),
             "Enter after an IME-typed CJK message must submit"
+        );
+    }
+
+    /// Windows Terminal injects pasted console records at its own pace —
+    /// tens of ms apart on a loaded runner, past the 8ms burst-forming
+    /// interval. Such a paste never buffers, but its embedded Enters are
+    /// still payload, not submits. The stream counter (>=3 plain chars each
+    /// within the 60ms stream window) proves a stream is live, and the
+    /// window bounds how stale the last char may be.
+    #[test]
+    fn enter_inside_a_slow_paced_raw_paste_inserts_a_newline() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+
+        // "line 1\n…" arriving one record every 30ms: too slow to form a
+        // burst (consecutive never reaches 3), so every char rides the
+        // pending→Typed path.
+        for (i, ch) in "line 1".chars().enumerate() {
+            let now = t0 + Duration::from_millis(30 * i as u64);
+            let _ = burst.flush_if_due(now);
+            let _ = burst.on_plain_char(ch, now);
+        }
+        let t_enter = t0 + Duration::from_millis(30 * 6);
+        let _ = burst.flush_if_due(t_enter);
+        assert!(
+            burst.newline_should_insert_instead_of_submit(t_enter),
+            "the trailing Enter of a slow-paced raw paste is paste payload, \
+             not a submit — it must insert a newline"
+        );
+    }
+
+    /// The same stream releases Enter once the last char is stale: a
+    /// deliberate submit lands past the 60ms stream window.
+    #[test]
+    fn enter_after_a_slow_stream_gone_still_submits() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+
+        for (i, ch) in "line 1".chars().enumerate() {
+            let now = t0 + Duration::from_millis(30 * i as u64);
+            let _ = burst.on_plain_char(ch, now);
+        }
+        let last = t0 + Duration::from_millis(30 * 5);
+        let _ = burst.flush_if_due(last + Duration::from_millis(40));
+        assert!(
+            !burst.newline_should_insert_instead_of_submit(
+                last + PASTE_BURST_STREAM_WINDOW + Duration::from_millis(1)
+            ),
+            "Enter more than the stream window after the last char submits"
         );
     }
 }

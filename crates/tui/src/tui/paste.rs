@@ -299,6 +299,62 @@ mod tests {
     }
 
     #[test]
+    fn mixed_ascii_cjk_24_line_paste_keeps_newlines() {
+        let expected: String = (1..=24)
+            .map(|n| format!("cw-clipboard-{n:02} 漢字 🐳 line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = test_app();
+        let start = Instant::now();
+        for (index, ch) in expected.chars().enumerate() {
+            let now = start + Duration::from_millis(index as u64);
+            app.flush_paste_burst_if_due(now);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(&mut app, &key, now),
+                "char {index} {ch:?} not handled"
+            );
+        }
+        app.flush_paste_burst_if_due(start + Duration::from_secs(1));
+        assert_eq!(app.input, expected);
+    }
+
+    #[test]
+    fn slow_paced_mixed_ascii_cjk_paste_keeps_newlines() {
+        // Windows Terminal injects pasted console records at its own pace —
+        // tens of ms apart on a loaded runner, past the 8ms burst-forming
+        // interval, so this paste never buffers. Each Enter is still paste
+        // payload: the stream heuristic must insert '\n', not consume the
+        // key as a submit (which lost every newline — the draft stashed as
+        // one 733-char line).
+        let expected: String = (1..=6)
+            .map(|n| format!("cw-clipboard-{n:02} 漢字 🐳 line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = test_app();
+        let start = Instant::now();
+        for (index, ch) in expected.chars().enumerate() {
+            let now = start + Duration::from_millis(30 * index as u64);
+            app.flush_paste_burst_if_due(now);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(&mut app, &key, now),
+                "char {index} {ch:?} not handled"
+            );
+        }
+        app.flush_paste_burst_if_due(start + Duration::from_secs(60));
+        assert_eq!(app.input, expected);
+    }
+
+    #[test]
     fn windows_terminal_raw_five_line_paste_never_reaches_submit() {
         // #6427: test the interactive startup decision, not captured stdout,
         // then send the raw keys that the Windows input backend can produce.
@@ -504,14 +560,16 @@ mod tests {
 
     /// A whole IME-typed CJK sentence, one commit at a time at human speed,
     /// followed by Enter: every character lands verbatim and the Enter still
-    /// reaches the submit path.
+    /// reaches the submit path. Real IME candidate commits land hundreds of
+    /// milliseconds apart; sub-60ms commits are intentionally
+    /// indistinguishable from a slow paste stream (#7398).
     #[test]
     fn ime_typed_sentence_then_enter_falls_through_to_submit() {
         let mut app = test_app();
         let t0 = Instant::now();
 
         for (i, ch) in "你好世界".chars().enumerate() {
-            let now = t0 + Duration::from_millis(50 * i as u64);
+            let now = t0 + Duration::from_millis(200 * i as u64);
             assert!(handle_paste_burst_key(&mut app, &plain(ch), now));
         }
         assert_eq!(app.input, "你好世界");
@@ -520,7 +578,7 @@ mod tests {
             !handle_paste_burst_key(
                 &mut app,
                 &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                t0 + Duration::from_millis(180),
+                t0 + Duration::from_millis(700),
             ),
             "Enter after an IME-typed CJK message must submit"
         );
