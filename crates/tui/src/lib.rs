@@ -3673,6 +3673,7 @@ fn is_workspace_dotenv_credential_key(key: &str) -> bool {
             "DEEPSEEK_SEARCH_API_KEY"
                 | "SOFYA_API_KEY"
                 | "SERPLY_API_KEY"
+                | "SEARCHAPI_API_KEY"
                 | "METASO_API_KEY"
                 | "BAIDU_SEARCH_API_KEY"
                 | "TAVILY_API_KEY"

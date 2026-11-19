@@ -255,6 +255,7 @@ fn to_search_provider(provider: CommandSearchProvider) -> SearchProvider {
         CommandSearchProvider::Sofya => SearchProvider::Sofya,
         CommandSearchProvider::Serply => SearchProvider::Serply,
         CommandSearchProvider::DeepSeek => SearchProvider::DeepSeek,
+        CommandSearchProvider::SearchApi => SearchProvider::SearchApi,
     }
 }
 
@@ -272,6 +273,7 @@ fn from_search_provider(provider: SearchProvider) -> CommandSearchProvider {
         SearchProvider::Sofya => CommandSearchProvider::Sofya,
         SearchProvider::Serply => CommandSearchProvider::Serply,
         SearchProvider::DeepSeek => CommandSearchProvider::DeepSeek,
+        SearchProvider::SearchApi => CommandSearchProvider::SearchApi,
     }
 }
 

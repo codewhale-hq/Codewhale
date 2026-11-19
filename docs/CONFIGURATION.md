@@ -3765,6 +3765,7 @@ ignored:
 | Tavily | `time_range` | not sent (Tavily takes country names) |
 | SearXNG | `time_range` | `language`, as given |
 | Serply | not sent (undocumented) | `hl` language, `gl` country |
+| SearchApi | `time_period=last_day/last_week/last_month/last_year` | `hl` language, `gl` country |
 | DeepSeek | not sent | not sent (`localization` takes an IP address) |
 | Provider-native | declined; the search falls through to the configured provider | not sent |
 
@@ -3835,6 +3836,17 @@ title, URL, and snippet. Set `[search] api_key` to your Serply key, or the
 `SERPLY_API_KEY` env var. This is a search-tool backend only; it does not add a
 Serply model provider.
 
+**SearchApi** ([searchapi.io](https://www.searchapi.io)) returns Google organic
+results with title, URL, and snippet from
+`GET https://www.searchapi.io/api/v1/search?engine=google`. Set `[search] api_key`
+to your SearchApi key, or the `SEARCHAPI_API_KEY` env var. The API honors `num`
+up to 10 and clamps larger values. A query Google answers with nothing comes
+back as HTTP 200 without `organic_results`; Codewhale treats that as zero
+results (so the usual DuckDuckGo degradation applies), not as an error. Some
+lower-ranked rows carry a `google.com/goto?url=...` redirect as their link; they
+are passed through unchanged. This is a search-tool backend only; it does not
+add a SearchApi model provider.
+
 **DeepSeek** ([docs](https://api-docs.deepseek.com/guides/search)) uses
 `POST https://api.deepseek.com/v1/tools/search`. Set `provider = "deepseek"`
 (`deep-seek` and `deepseek-search` are also accepted) and supply `[search] api_key`
@@ -3859,7 +3871,7 @@ any non-empty `[search] api_key` and is configured by that key or
 
 ```toml
 [search]
-provider = "firecrawl" # also duckduckgo | bing | tavily | bocha | metaso | searxng | baidu | volcengine | sofya | serply | deepseek
+provider = "firecrawl" # also duckduckgo | bing | tavily | bocha | metaso | searxng | baidu | volcengine | sofya | serply | deepseek | searchapi
 # base_url = "https://search.example/" # optional with provider = "duckduckgo"; required with "searxng"
 # api_key = "YOUR_KEY" # optional for firecrawl; required by the other API providers
 # native = false # provider-native search: unset = only when no provider is configured

@@ -33,6 +33,8 @@ pub enum BackendId {
     Serply,
     #[serde(rename = "deepseek")]
     DeepSeek,
+    #[serde(rename = "searchapi")]
+    SearchApi,
 }
 
 impl BackendId {
@@ -52,6 +54,7 @@ impl BackendId {
             Self::Sofya => "sofya",
             Self::Serply => "serply",
             Self::DeepSeek => "deepseek",
+            Self::SearchApi => "searchapi",
         }
     }
 }
