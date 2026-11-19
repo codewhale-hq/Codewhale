@@ -29980,7 +29980,11 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
     assert!(!app.is_loading);
     for (width, height) in [(80, 24), (140, 40)] {
         let frame = render_test_app(&mut app, &config, width, height);
-        let text = frame.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = frame
+            .split_whitespace()
+            .filter(|word| *word != "\u{258f}")
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             text.contains("API key not found"),
             "{width}x{height}: {text}"
