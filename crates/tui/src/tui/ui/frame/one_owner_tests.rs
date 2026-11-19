@@ -46,6 +46,7 @@ fn frame_app() -> App {
     // The fixture config carries no key; a keyless launch paints "model not
     // connected" (U3). These rows are about a connected route.
     app.onboarding_needs_api_key = false;
+    app.low_motion = true;
     app
 }
 

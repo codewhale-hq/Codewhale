@@ -557,6 +557,11 @@ pub fn start_title_animation(original: &str) {
     });
 }
 
+#[must_use]
+pub(crate) fn terminal_focused() -> bool {
+    TERMINAL_FOCUSED.load(Ordering::SeqCst)
+}
+
 /// Update the focus gate used by the title activity signal.
 ///
 /// Focus gain immediately restores the steady whale + verb. Focus loss emits

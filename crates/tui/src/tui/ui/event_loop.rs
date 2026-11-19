@@ -5513,10 +5513,18 @@ pub(crate) async fn run_event_loop(
         let underwater_ambient_motion = shell_motion_enabled
             && underwater_motion_visible
             && !ambient_settled
-            && (browsing_history || shell_phase_working || empty_water_visible);
+            && !browsing_history
+            && !app.redaction_gate
+            && crate::tui::underwater::ambient_motion_terminal_supported(app)
+            && crate::tui::underwater::ocean_field_paintable(app)
+            && (shell_phase_working || empty_water_visible);
         let underwater_completion_motion = shell_motion_enabled
             && underwater_atmosphere_enabled
             && !underwater_surface_obscured
+            && !browsing_history
+            && !app.redaction_gate
+            && crate::tui::underwater::ambient_motion_terminal_supported(app)
+            && crate::tui::underwater::ocean_field_paintable(app)
             && matches!(app.runtime_turn_status.as_deref(), Some("completed"))
             && app.ocean_completion_started_at.is_some_and(|started| {
                 started.elapsed()
@@ -5543,15 +5551,32 @@ pub(crate) async fn run_event_loop(
         // Read once here so the animation tick and the frame limiter below
         // agree on the same tier for this frame.
         let cadence_tier = transcript_cadence_tier(app, has_running_agents);
-        let underwater_motion =
-            underwater_ambient_motion || underwater_completion_motion || launch_motion;
+        let underwater_life_motion = !underwater_surface_obscured
+            && crate::tui::underwater::ambient_life_motion_enabled(app)
+            && app.viewport.last_transcript_area.is_some_and(|area| {
+                let scrollbar = u16::from(
+                    app.viewport.last_transcript_total > app.viewport.last_transcript_visible
+                        && area.width > 1
+                        && area.height > 0,
+                );
+                area.width.saturating_sub(scrollbar) >= crate::tui::ocean::AMBIENT_MIN_WIDTH
+                    && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
+            });
+        let underwater_life_only = underwater_life_motion
+            && !(status_motion
+                || underwater_ambient_motion
+                || underwater_completion_motion
+                || launch_motion);
+        let underwater_motion = underwater_ambient_motion
+            || underwater_completion_motion
+            || launch_motion
+            || underwater_life_motion;
         let animation_active = status_motion || underwater_motion;
-        let animation_interval = Duration::from_millis(animation_interval_ms(
-            app,
-            status_motion,
-            underwater_motion,
-            cadence_tier,
-        ));
+        let animation_interval = Duration::from_millis(if underwater_life_only {
+            crate::tui::ocean::AMBIENT_LIFE_INTERVAL_MS
+        } else {
+            animation_interval_ms(app, status_motion, underwater_motion, cadence_tier)
+        });
         let idle_facts = IdleFacts {
             has_running_agents,
             animation_active: animation_active

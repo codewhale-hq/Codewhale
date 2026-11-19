@@ -62,12 +62,14 @@ pub struct ChatWidget {
     /// Live-activity shape of the ambient scene (thinking/tools/subagents).
     ocean_activity: crate::tui::ambient_life::AmbientActivity,
     /// Ink for the selected underwater scene's idle fish/bubbles.
-    ambient_inks: Option<(Color, Color)>,
+    ambient_ink: Option<Color>,
     ocean_elapsed_ms: u128,
+    #[cfg(test)]
     ocean_animated: bool,
     /// Fixed-point (0..=1000) life presence; see `ocean::life_presence`.
+    #[cfg(test)]
     life_presence_fixed: u16,
-    fish_flee_elapsed_ms: Option<u128>,
+    ambient_presence: f32,
     ambient_life: bool,
     scroll_track: Color,
     scroll_thumb: Color,
@@ -132,14 +134,13 @@ impl ChatWidget {
         let ocean_activity = crate::tui::ambient_life::AmbientActivity::from_kind(
             crate::tui::underwater::LiveActivity::from_app(app).kind(),
         );
-        let ambient_inks = underwater_atmosphere
-            .then(|| crate::tui::ocean::ambient_inks_for_activity(&app.ui_theme, ocean_activity));
-        // The completion breath is authored decorative motion, so it rides the
-        // same motion gate as everything else in the water. Both the column's
-        // settle flourish and ambient life's presence read this one clock:
-        // the pet needs the settle tail too; the column clips only its light pulse.
+        let ambient_ink = underwater_atmosphere
+            .then(|| crate::tui::ocean::ambient_ink_for_activity(&app.ui_theme, ocean_activity));
+        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
         let completion_life_clock = (underwater_atmosphere
-            && app.motion_policy().allows_decorative())
+            && !browsing_history
+            && app.motion_policy().allows_decorative()
+            && crate::tui::underwater::ambient_motion_terminal_supported(app))
         .then_some(())
         .and(app.ocean_completion_started_at)
         .map(|started| started.elapsed().as_millis());
@@ -147,25 +148,12 @@ impl ChatWidget {
             .filter(|elapsed| *elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
-        // Keep the selected underwater scene alive while a turn is doing
-        // work, even after the transcript exists. The ordinary Flat shell
-        // remains entirely still and lets the host terminal lead.
-        let underwater_motion_enabled =
-            underwater_atmosphere && crate::tui::underwater::decorative_shell_motion_enabled(app);
-        let browsing_history = !app.viewport.transcript_scroll.is_at_tail();
+        let underwater_motion_enabled = underwater_atmosphere
+            && !browsing_history
+            && crate::tui::underwater::decorative_shell_motion_enabled(app)
+            && crate::tui::underwater::ambient_motion_terminal_supported(app);
         let ocean_animated = underwater_motion_enabled
-            && (render_empty_state
-                || browsing_history
-                || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
-        // Life presence eases the animated/static boundary as a pure function
-        // of the monotonic clocks (see ocean::life_presence): bursty fast
-        // streams ramp in, quiet waits settle out, never a hard snap.
-        //
-        // This deliberately takes the *gated* completion clock. Reading
-        // `app.ocean_completion_started_at` raw here let the completion branch
-        // of `life_presence` short-circuit the `!animated` check, so a
-        // reduced-motion session got ~1.4 s of full ambient life after every
-        // successful turn — precisely while the user was reading the result.
+            && (render_empty_state || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         let life_presence = crate::tui::ocean::life_presence(
             completion_life_clock,
             app.turn_started_at
@@ -175,6 +163,12 @@ impl ChatWidget {
             render_empty_state,
         );
         let life_presence_fixed = (life_presence * 1000.0).round().clamp(0.0, 1000.0) as u16;
+        let ambient_motion = crate::tui::underwater::ambient_life_motion_enabled(app);
+        let ambient_presence = if ambient_motion {
+            life_presence.max(crate::tui::ocean::AMBIENT_IDLE_PRESENCE)
+        } else {
+            0.0
+        };
         let ocean_column = ocean_ramp.map(|ramp| {
             let context_percent = crate::tui::phase_strip::context_percent_from_app(app);
             crate::tui::ocean::OceanColumn::new(
@@ -189,12 +183,6 @@ impl ChatWidget {
             )
             .with_paint_caps(app.viewport.ocean_caps)
         });
-        let fish_flee_elapsed_ms = underwater_motion_enabled
-            .then_some(())
-            .and(app.turn_started_at)
-            .map(|started| started.elapsed().as_millis())
-            .filter(|elapsed| *elapsed < 800)
-            .filter(|_| matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
         let scroll_track = app.ui_theme.border;
         let scroll_thumb = app.ui_theme.status_working;
         let jump_border = app.ui_theme.border;
@@ -232,22 +220,14 @@ impl ChatWidget {
                 background,
                 ocean_column,
                 ocean_activity,
-                ambient_inks,
+                ambient_ink,
                 ocean_elapsed_ms,
+                #[cfg(test)]
                 ocean_animated,
+                #[cfg(test)]
                 life_presence_fixed,
-                fish_flee_elapsed_ms,
-                // Reduced-motion users still get a quiet, static Deepsea scene;
-                // Flat remains a normal host-owned terminal either way.
-                ambient_life: underwater_atmosphere
-                    && !app.attention_hold_active()
-                    && matches!(
-                        phase,
-                        ShellPhase::Idle
-                            | ShellPhase::Typing
-                            | ShellPhase::Working
-                            | ShellPhase::Verifying
-                    ),
+                ambient_presence,
+                ambient_life: ambient_motion,
                 scroll_track,
                 scroll_thumb,
                 jump_border,
@@ -750,12 +730,14 @@ impl ChatWidget {
             background,
             ocean_column,
             ocean_activity,
-            ambient_inks,
+            ambient_ink,
             ocean_elapsed_ms,
+            #[cfg(test)]
             ocean_animated,
+            #[cfg(test)]
             life_presence_fixed,
-            fish_flee_elapsed_ms,
-            ambient_life: false,
+            ambient_presence,
+            ambient_life: ambient_motion,
             scroll_track,
             scroll_thumb,
             jump_border,
@@ -1106,7 +1088,7 @@ impl Renderable for ChatWidget {
         );
         let plan = self.viewport().render_content(area, buf);
         // The kit guarded background pass stays between content and chrome.
-        self.render_underwater_field(plan.area, buf);
+        self.render_underwater_field(plan.area, plan.link_area, buf);
         plan.paint_chrome(buf);
         let regions = codewhale_tui_kit::osc8::link_regions_for_plan(&plan, &self.line_links);
         for region in &regions {
@@ -1137,7 +1119,7 @@ impl ChatWidget {
     /// Paint the explicitly selected underwater field. Flat keeps the theme
     /// surface, Solarized Light keeps canonical Base3, and Terminal keeps its
     /// inherited background without inherited aquarium decoration.
-    fn render_underwater_field(&self, area: Rect, buf: &mut Buffer) {
+    fn render_underwater_field(&self, area: Rect, life_area: Rect, buf: &mut Buffer) {
         if let Some(column) = self.ocean_column {
             // Cache per-row ocean colors; invalidate only on phase/size/breath.
             let phase_tag = column.phase_tag();
@@ -1160,53 +1142,28 @@ impl ChatWidget {
         }
 
         if self.ambient_life
-            && let Some(inks) = self.ambient_inks
+            && let (Some(ink), Some(column)) = (self.ambient_ink, self.ocean_column)
+            && let Some(theme) = column.paint_theme(self.background)
         {
-            // The scatter has a centre. It used to be column 0 with a row in
-            // the middle of the field, which is neither where the school
-            // swims nor anywhere the eye is: the flee proximity test
-            // (|dy| < 6) could not even fire on a tall field, and when it did
-            // every fish was to the right of the anchor so the whole school
-            // slid the same way. Anchored on the composer's centre line and
-            // the school's own band, a turn beginning reads as the shoal
-            // parting around the thing that just happened.
-            let cursor = crate::tui::ambient_life::AmbientCursor {
-                column: area.x.saturating_add(area.width / 2),
-                row: area
-                    .y
-                    .saturating_add(crate::tui::ambient_life::school_band_row(area)),
-                flee_elapsed_ms: self.fish_flee_elapsed_ms,
-            };
-            // Whale cameo rides the completion breath clock when present.
             let whale = crate::tui::ambient_life::WhaleCameo {
-                elapsed_ms: self.ocean_column.and_then(|c| c.completion_elapsed_ms()),
-                anchor_x: area.x.saturating_add(area.width / 2),
-                anchor_y: area.y.saturating_add(area.height.saturating_mul(2) / 3),
+                elapsed_ms: column.completion_elapsed_ms(),
+                anchor_x: life_area.x.saturating_add(life_area.width / 2),
+                anchor_y: life_area
+                    .y
+                    .saturating_add(life_area.height.saturating_mul(2) / 3),
             };
-            // Per-frame budget counters (built/painted/skipped/clipped);
-            // consumed by ambient-life tests and debug tooling, not by the
-            // widget itself.
             let _ambient_stats = crate::tui::ambient_life::render_ambient_life(
-                area,
+                life_area,
                 buf,
-                inks,
+                &theme,
+                ink,
                 &self.lines,
                 self.ocean_elapsed_ms,
                 self.ocean_presence_f32(),
-                cursor,
                 whale,
                 self.ocean_activity,
+                &self.ocean_protected,
             );
-            if let Some(column) = self.ocean_column {
-                crate::tui::ambient_life::apply_caustic_shimmer(
-                    area,
-                    buf,
-                    &column,
-                    self.ocean_elapsed_ms,
-                    self.ocean_animated,
-                    &self.lines,
-                );
-            }
         }
     }
 }
@@ -1214,28 +1171,7 @@ impl ChatWidget {
 impl ChatWidget {
     /// Life presence as a 0..=1 fraction; drives ambient-life ink fading.
     fn ocean_presence_f32(&self) -> f32 {
-        (f32::from(self.life_presence_fixed) / 1000.0).clamp(0.0, 1.0)
-    }
-}
-
-#[cfg(test)]
-fn fish_flee_offset(elapsed_ms: u128) -> u16 {
-    crate::tui::ambient_life::fish_flee_offset(elapsed_ms)
-}
-
-#[cfg(test)]
-fn fish_mark(facing_right: bool) -> &'static str {
-    if facing_right { "><>" } else { "<><" }
-}
-
-#[cfg(test)]
-fn fish_heading(previous_x: u16, current_x: u16, next_x: u16, fallback_right: bool) -> bool {
-    if next_x != current_x {
-        next_x > current_x
-    } else if current_x != previous_x {
-        current_x > previous_x
-    } else {
-        fallback_right
+        self.ambient_presence.clamp(0.0, 1.0)
     }
 }
 
@@ -4172,11 +4108,11 @@ mod tests {
         approval_palette, approval_truncation_hint, build_empty_state_lines,
         composer_content_geometry, composer_empty_hint_text, composer_height, composer_inner_area,
         composer_max_height, composer_submit_hint, composer_top_padding, cursor_row_col,
-        empty_composer_visual_rows, enclosed_composer_panel_fits, fish_flee_offset, fish_heading,
-        fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
-        placeholder_visual_lines, push_command_entry, receipt_is_settling, revision_in_domain,
-        should_render_empty_state, slash_completion_hints, test_native_ocean_caps,
-        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        empty_composer_visual_rows, enclosed_composer_panel_fits, history_entry_revision,
+        layout_input, layout_input_with_scroll, placeholder_visual_lines, push_command_entry,
+        receipt_is_settling, revision_in_domain, should_render_empty_state, slash_completion_hints,
+        test_native_ocean_caps, tool_run_summary_revision, wrap_input_lines,
+        wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -7782,19 +7718,9 @@ mod tests {
 
         assert_ne!(buf[(0, 0)].bg, buf[(0, 19)].bg);
         let rendered = buffer_text(&buf, area);
-        // One loose wedge school, every member facing the same way (facing
-        // equals travel by construction). The counter knows both silhouette
-        // families: the native braille poses this terminal paints and the
-        // ASCII bodies of `CODEWHALE_ASCII_SAFE=1`.
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
         assert!(
-            rightward == 0 || leftward == 0,
-            "one school shares one direction:\n{rendered}"
-        );
-        let fish_count = rightward + leftward;
-        assert!(
-            (4..=7).contains(&fish_count),
-            "wide idle water should show one cohesive wedge school (got {fish_count}):\n{rendered}"
+            ambient_life_cells(&mut app, area, 0) > 0,
+            "wide idle water shows ocean life:\n{rendered}"
         );
 
         let context_x = ((100usize - UnicodeWidthStr::width(context.as_str())) / 2) as u16;
@@ -7828,11 +7754,10 @@ mod tests {
 
         assert_eq!(buf[(0, 0)].bg, base);
         assert_eq!(buf[(0, 19)].bg, base, "flat keeps the plain theme surface");
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "terminal-owned themes must keep a normal shell without decorative fish:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "terminal-owned themes must keep a normal shell without decorative fish"
         );
     }
 
@@ -7861,11 +7786,10 @@ mod tests {
             canonical_base3,
             "Solarized Light must keep canonical Base3 through the viewport"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "a theme with no painted field earns no ambient life:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "a theme with no painted field earns no ambient life"
         );
     }
 
@@ -7906,11 +7830,10 @@ mod tests {
             (0..area.height).all(|y| (0..area.width).all(|x| buf[(x, y)].bg == Color::Reset)),
             "the Terminal treatment must never paint a background"
         );
-        let rendered = buffer_text(&buf, area);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene:\n{rendered}"
+            ambient_life_cells(&mut app, area, 0),
+            0,
+            "Terminal must remain a quiet host-owned shell without the selected Deepsea scene"
         );
     }
 
@@ -8485,20 +8408,6 @@ mod tests {
         assert_eq!(app.viewport.pending_scroll_delta, 0);
     }
 
-    #[test]
-    fn fish_glyph_always_matches_screen_direction() {
-        assert_eq!(fish_mark(true), "><>");
-        assert_eq!(fish_mark(false), "<><");
-        assert!(fish_heading(8, 9, 10, false));
-        assert!(!fish_heading(10, 9, 8, true));
-        assert!(fish_heading(8, 9, 9, false));
-        assert!(!fish_heading(10, 9, 9, true));
-
-        // Mirrored tracks are the regression case: a forward path flag can
-        // correspond to decreasing screen x. Heading follows x, not the flag.
-        assert!(!fish_heading(74, 73, 72, true));
-    }
-
     /// Render a chat field carrying `rows` of history and return its rows.
     fn history_field_rows(rows: usize) -> Vec<String> {
         let mut app = create_test_app();
@@ -8514,7 +8423,8 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
         let widget = ChatWidget::new(&mut app, area);
         assert!(!widget.ambient_life);
-        assert!(widget.ocean_animated);
+        assert!(!widget.ocean_animated);
+        assert_eq!(ambient_life_cells(&mut app, area, 0), 0);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         buffer_text(&buf, area)
@@ -8525,13 +8435,8 @@ mod tests {
 
     #[test]
     fn browsing_history_holds_no_fish() {
-        let rows = history_field_rows(4);
+        let rows = history_field_rows(30);
         let rendered = rows.join("\n");
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
         for index in 0..4 {
             assert!(
                 rendered.contains(&format!("history row {index}")),
@@ -8540,9 +8445,70 @@ mod tests {
         }
     }
 
+    fn ambient_life_cells(app: &mut App, area: Rect, elapsed: u128) -> usize {
+        let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+        still.ambient_life = false;
+        let mut alive_buf = Buffer::empty(area);
+        alive.render(area, &mut alive_buf);
+        let mut still_buf = Buffer::empty(area);
+        still.render(area, &mut still_buf);
+        alive_buf
+            .content
+            .iter()
+            .zip(&still_buf.content)
+            .filter(|(a, b)| a != b)
+            .count()
+    }
+
+    fn assert_life_keeps_clear_of_text(app: &mut App, area: Rect) -> String {
+        let mut painted_any = false;
+        let mut last = String::new();
+        for elapsed in [0, 4_000, 9_000, 15_000, 26_000] {
+            let alive = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            assert!(alive.ambient_life);
+            let mut still = ChatWidget::new_with_ocean_elapsed(app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            alive.render(area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            still.render(area, &mut still_buf);
+            let text_columns = area.right().saturating_sub(1);
+            let is_text = |x: i32, y: i32| {
+                x >= i32::from(area.left())
+                    && x < i32::from(text_columns)
+                    && y >= i32::from(area.top())
+                    && y < i32::from(area.bottom())
+                    && still_buf[(x as u16, y as u16)].symbol() != " "
+            };
+            last = buffer_text(&alive_buf, area);
+            for y in area.top()..area.bottom() {
+                for x in area.left()..text_columns {
+                    if alive_buf[(x, y)] == still_buf[(x, y)] {
+                        continue;
+                    }
+                    painted_any = true;
+                    for dy in -1..=1 {
+                        for dx in -2..=2 {
+                            assert!(
+                                !is_text(i32::from(x) + dx, i32::from(y) + dy),
+                                "life at ({x}, {y}) touches text at t={elapsed}:\n{last}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(painted_any, "the ocean painted no life at all:\n{last}");
+        last
+    }
+
     #[test]
-    fn active_tail_holds_no_fish_after_message_submit() {
+    fn active_tail_life_keeps_clear_of_text() {
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         for index in 0..18 {
@@ -8559,23 +8525,17 @@ mod tests {
                 .expect("recent turn start"),
         );
         let area = Rect::new(0, 0, 80, 24);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(!widget.ambient_life);
-        assert!(widget.ocean_animated);
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
+        assert!(ChatWidget::new_with_ocean_elapsed(&mut app, area, 0).ocean_animated);
+        let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release check 17"), "{rendered}");
     }
 
     #[test]
-    fn completed_turn_holds_no_fish() {
+    fn completed_turn_life_keeps_clear_of_text() {
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         app.add_message(HistoryCell::Assistant {
@@ -8585,24 +8545,16 @@ mod tests {
         app.runtime_turn_status = Some("completed".to_string());
         app.ocean_completion_started_at = Some(Instant::now());
         let area = Rect::new(0, 0, 80, 24);
-        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(!widget.ambient_life);
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "{rendered}"
-        );
+        let rendered = assert_life_keeps_clear_of_text(&mut app, area);
         assert!(rendered.contains("release receipt"), "{rendered}");
     }
 
     #[test]
     fn a_field_full_of_transcript_holds_no_fish() {
-        // Full-width prose really does claim the whole field; short status
-        // lines no longer impersonate this fixture.
         let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
         app.low_motion = false;
         app.fancy_animations = true;
         for _ in 0..30 {
@@ -8611,17 +8563,133 @@ mod tests {
                 streaming: false,
             });
         }
-        app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
         let area = Rect::new(0, 0, 100, 20);
         let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
+        assert!(widget.ambient_life);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
+        for elapsed in [0u128, 4_000, 9_000] {
+            assert_eq!(
+                ambient_life_cells(&mut app, area, elapsed),
+                0,
+                "a full transcript is not an aquarium at t={elapsed}:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolled_away_completion_breath_and_disabled_surfaces_stay_still() {
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        for index in 0..25 {
+            app.add_message(HistoryCell::Assistant {
+                content: format!("history line {index}"),
+                streaming: false,
+            });
+        }
+        app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
+        app.runtime_turn_status = Some("completed".to_string());
+        app.ocean_completion_started_at = Some(Instant::now());
+        let area = Rect::new(0, 0, 100, 20);
+        let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
         assert_eq!(
-            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
-            (0, 0),
-            "a full transcript is not an aquarium:\n{rendered}"
+            widget
+                .ocean_column
+                .and_then(|column| column.completion_elapsed_ms()),
+            None
         );
+        assert_eq!(widget.life_presence_fixed, 0);
+        assert!(!widget.ambient_life);
+        assert!(!widget.ocean_animated);
+        assert_eq!(ambient_life_cells(&mut app, area, 0), 0);
+
+        app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
+        assert!(crate::tui::underwater::ambient_life_motion_enabled(&app));
+
+        app.synchronized_output_enabled = false;
+        assert!(!crate::tui::underwater::ambient_life_motion_enabled(&app));
+        app.synchronized_output_enabled = true;
+
+        app.viewport.ocean_caps = None;
+        assert!(!crate::tui::underwater::ambient_life_motion_enabled(&app));
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+
+        let saved_theme = app.ui_theme;
+        app.ui_theme =
+            palette::UNDERWATER_UI_THEME.with_background_color(Color::Rgb(0xf5, 0xf7, 0xfa));
+        assert!(!crate::tui::underwater::ambient_life_motion_enabled(&app));
+        app.ui_theme = saved_theme;
+
+        app.redaction_gate = true;
+        assert!(!crate::tui::underwater::ambient_life_motion_enabled(&app));
+        app.redaction_gate = false;
+
+        app.pending_child_requests.insert(
+            "req-1".to_string(),
+            crate::tui::pending_requests::PendingChildRequest {
+                agent_id: "child-1".to_string(),
+                tool_name: "exec_shell".to_string(),
+                description: "Run test".to_string(),
+                input: serde_json::json!({ "command": "pwd" }),
+                approval_key: "exec_shell:pwd".to_string(),
+                approval_grouping_key: "exec_shell".to_string(),
+                intent_summary: None,
+                requested_at: Instant::now(),
+            },
+        );
+        assert!(!crate::tui::underwater::ambient_life_motion_enabled(&app));
+        app.pending_child_requests.clear();
+        assert!(crate::tui::underwater::ambient_life_motion_enabled(&app));
+    }
+
+    #[test]
+    fn scrollbar_column_stays_clear_of_ambient_life() {
+        let mut app = create_test_app();
+        app.theme_id = codewhale_palette::ThemeId::Underwater;
+        app.ui_theme = palette::UNDERWATER_UI_THEME;
+        app.viewport.ocean_caps = Some(test_native_ocean_caps());
+        app.low_motion = false;
+        app.fancy_animations = true;
+        for index in 0..30 {
+            app.add_message(HistoryCell::Assistant {
+                content: format!("row {index:02}"),
+                streaming: false,
+            });
+        }
+        let area = Rect::new(0, 0, 80, 20);
+        let scrollbar_x = area.right() - 1;
+        let mut painted_any = false;
+        for elapsed in [0u128, 4_000, 9_000, 15_000, 26_000, 40_000, 70_000] {
+            let alive = ChatWidget::new_with_ocean_elapsed(&mut app, area, elapsed);
+            assert!(alive.scrollbar.is_some());
+            assert!(alive.ambient_life);
+            let mut still = ChatWidget::new_with_ocean_elapsed(&mut app, area, elapsed);
+            still.ambient_life = false;
+            let mut alive_buf = Buffer::empty(area);
+            let alive_plan = alive.viewport().render_content(area, &mut alive_buf);
+            alive.render_underwater_field(alive_plan.area, alive_plan.link_area, &mut alive_buf);
+            let mut still_buf = Buffer::empty(area);
+            let still_plan = still.viewport().render_content(area, &mut still_buf);
+            still.render_underwater_field(still_plan.area, still_plan.link_area, &mut still_buf);
+            for y in area.top()..area.bottom() {
+                assert_eq!(
+                    alive_buf[(scrollbar_x, y)],
+                    still_buf[(scrollbar_x, y)],
+                    "ambient life painted into scrollbar column ({scrollbar_x}, {y}) at t={elapsed}"
+                );
+                for x in area.left()..scrollbar_x {
+                    if alive_buf[(x, y)] != still_buf[(x, y)] {
+                        painted_any = true;
+                    }
+                }
+            }
+        }
+        assert!(painted_any);
     }
 
     fn todo_write_cell(item: Option<&str>) -> HistoryCell {
@@ -10101,14 +10169,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(receipt_is_settling(1, 140));
         assert!(!receipt_is_settling(6, 560));
         assert!(!receipt_is_settling(60, 560));
-    }
-
-    #[test]
-    fn fish_flee_is_one_shot_and_returns_to_ambient_origin() {
-        assert_eq!(fish_flee_offset(0), 0);
-        assert!(fish_flee_offset(400) >= 8);
-        assert_eq!(fish_flee_offset(800), 0);
-        assert_eq!(fish_flee_offset(8_000), 0);
     }
 
     /// Cold-versus-warm proof for the whole chat frame (#6652): the cached

@@ -218,43 +218,32 @@ fn terminal_native_themes_keep_reset_shells_while_underwater_paints_the_column()
 
 #[test]
 fn ambient_ink_matches_sunk_sky_shades_and_survives_reset_surfaces() {
-    // The underwater theme's authored RGB ramp gives its shell two sunk sky
-    // shades; seafoam remains live-work ink.
     let theme = codewhale_palette::UNDERWATER_UI_THEME;
     let ramp = OceanRamp::for_theme(&theme).expect("underwater ramp");
     let baseline = crate::tui::ambient_life::AmbientActivity::Baseline;
-    let (primary, secondary) = ambient_inks_for_activity(&theme, baseline);
+    let primary = ambient_ink_for_activity(&theme, baseline);
     assert_ne!(primary, ramp.ambient);
-    assert_ne!(primary, secondary);
     assert_ne!(primary, theme.accent_secondary);
 
-    // Terminal-owned surfaces have no RGB base; the raw secondary accent
-    // lets the terminal's own palette color the life.
     let terminal = codewhale_palette::TERMINAL_UI_THEME;
-    assert_eq!(
-        ambient_inks_for_activity(&terminal, baseline),
-        (terminal.info, terminal.info)
-    );
+    assert_eq!(ambient_ink_for_activity(&terminal, baseline), terminal.info);
 }
 
 #[test]
 fn ambient_ink_reads_the_activity_at_a_glance() {
     use crate::tui::ambient_life::AmbientActivity;
     let theme = codewhale_palette::UNDERWATER_UI_THEME;
-    let baseline = ambient_inks_for_activity(&theme, AmbientActivity::Baseline);
-    let reasoning = ambient_inks_for_activity(&theme, AmbientActivity::Reasoning);
-    let tools = ambient_inks_for_activity(&theme, AmbientActivity::Tools);
-    let subagents = ambient_inks_for_activity(&theme, AmbientActivity::Subagents);
+    let baseline = ambient_ink_for_activity(&theme, AmbientActivity::Baseline);
+    let reasoning = ambient_ink_for_activity(&theme, AmbientActivity::Reasoning);
+    let tools = ambient_ink_for_activity(&theme, AmbientActivity::Tools);
+    let subagents = ambient_ink_for_activity(&theme, AmbientActivity::Subagents);
 
-    // Each activity wears its own water: dim deep for reasoning, bright
-    // current for tools, seafoam for orchestration.
     assert_ne!(reasoning, baseline);
     assert_ne!(tools, baseline);
     assert_ne!(subagents, baseline);
     assert_ne!(subagents, tools);
-    // Verifying keeps the metered baseline treatment.
     assert_eq!(
-        ambient_inks_for_activity(&theme, AmbientActivity::Verifying),
+        ambient_ink_for_activity(&theme, AmbientActivity::Verifying),
         baseline
     );
 }

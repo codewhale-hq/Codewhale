@@ -1066,6 +1066,44 @@ pub(crate) fn decorative_shell_motion_enabled(app: &App) -> bool {
         && app.view_stack.is_empty()
 }
 
+#[must_use]
+pub(crate) fn ocean_field_paintable(app: &App) -> bool {
+    crate::tui::ocean::OceanRamp::for_theme(&app.ui_theme).is_some()
+        && codewhale_ratatui::detect::appearance_for_background(app.ui_theme.surface_bg)
+            == Some(codewhale_ratatui::detect::Appearance::Dark)
+        && app.viewport.ocean_caps.is_some_and(|caps| {
+            matches!(
+                caps.depth,
+                codewhale_ratatui::color::ColorDepth::TrueColor
+                    | codewhale_ratatui::color::ColorDepth::Ansi256
+            )
+        })
+}
+
+#[must_use]
+pub(crate) fn ambient_life_motion_enabled(app: &App) -> bool {
+    app.theme_id == codewhale_palette::ThemeId::Underwater
+        && app.synchronized_output_enabled
+        && app.motion_policy().allows_decorative()
+        && !app.attention_hold_active()
+        && app.onboarding == OnboardingState::None
+        && app.view_stack.is_empty()
+        && !app.redaction_gate
+        && (app.agent_focus.is_none() || app.launch.return_to_session)
+        && app.viewport.transcript_scroll.is_at_tail()
+        && crate::tui::notifications::terminal_focused()
+        && !matches!(
+            ShellPhase::from_app(app),
+            ShellPhase::Waiting | ShellPhase::Approval
+        )
+        && ocean_field_paintable(app)
+}
+
+#[must_use]
+pub(crate) fn ambient_motion_terminal_supported(app: &App) -> bool {
+    app.synchronized_output_enabled && !crate::tui::display_refresh::terminal_is_apple_terminal()
+}
+
 /// Shorten a workspace path to its trailing components, marked with a leading
 /// ellipsis so it reads as "somewhere above here" rather than as a real path.
 fn shorten_workspace(workspace: &str, keep: usize) -> String {
@@ -2939,7 +2977,10 @@ pub fn launch_motion_active(app: &App, obscured: bool, ambient_settled: bool) ->
     let now = app.ambient_clock_ms;
     let dissolve = app.launch.card_dissolve_progress(now, true);
     let dissolving = dissolve > 0.0 && dissolve < 1.0;
-    let water_alive = app.theme_id == codewhale_palette::ThemeId::Underwater && !ambient_settled;
+    let water_alive = app.theme_id == codewhale_palette::ThemeId::Underwater
+        && !ambient_settled
+        && ambient_motion_terminal_supported(app)
+        && ocean_field_paintable(app);
     let revealing = !app.launch.return_to_session
         && !crate::tui::color_compat::ascii_safe_enabled()
         && app.launch.mark_reveal_started_at.is_some_and(|started| {

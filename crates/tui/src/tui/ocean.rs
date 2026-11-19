@@ -25,40 +25,31 @@ use codewhale_palette::UiTheme;
 /// are never scheduled for invisible life.
 pub const AMBIENT_MIN_WIDTH: u16 = 40;
 pub const AMBIENT_MIN_HEIGHT: u16 = 10;
+pub const AMBIENT_IDLE_PRESENCE: f32 = 0.85;
+pub const AMBIENT_LIFE_INTERVAL_MS: u64 = 250;
 
-/// Ambient-life ink pair, independent of the Deepsea ramp and shaped by what
-/// the agent is doing so the marks themselves carry the state at a glance:
-/// reasoning dims toward the deep, tool work brightens like a faster current,
-/// and a sub-agent pod swims in seafoam — the hue reserved for orchestration.
 #[must_use]
-pub fn ambient_inks_for_activity(
+pub fn ambient_ink_for_activity(
     theme: &UiTheme,
     activity: crate::tui::ambient_life::AmbientActivity,
-) -> (Color, Color) {
+) -> Color {
     use crate::tui::ambient_life::AmbientActivity;
     let sky = match activity {
         AmbientActivity::Subagents => rgb(theme.accent_secondary).unwrap_or((79, 209, 197)),
         _ => rgb(theme.info).unwrap_or((106, 174, 242)),
     };
-    // `mix(sky, base, t)`: larger `t` sits closer to the background — dimmer.
-    let (toward_base_a, toward_base_b) = match activity {
-        AmbientActivity::Reasoning => (0.58, 0.44),
-        AmbientActivity::Reading => (0.50, 0.36),
-        AmbientActivity::Tools => (0.30, 0.18),
-        AmbientActivity::Subagents => (0.34, 0.22),
-        AmbientActivity::Verifying | AmbientActivity::Baseline => (0.42, 0.28),
+    let toward_base = match activity {
+        AmbientActivity::Reasoning => 0.58,
+        AmbientActivity::Reading => 0.50,
+        AmbientActivity::Tools => 0.30,
+        AmbientActivity::Subagents => 0.34,
+        AmbientActivity::Verifying | AmbientActivity::Baseline => 0.42,
     };
-    // Only the underwater theme owns a painted base column; everywhere else
-    // the terminal's own ground (Color::Reset) is the base and the inks fall
-    // back to the theme's info lane.
     let mix_base = rgb(theme.surface_bg)
         .or_else(|| OceanRamp::for_theme(theme).and_then(|ramp| rgb(ramp.middle)));
     match mix_base {
-        Some(base) => (
-            color(mix(sky, base, toward_base_a)),
-            color(mix(sky, base, toward_base_b)),
-        ),
-        None => (theme.info, theme.info),
+        Some(base) => color(mix(sky, base, toward_base)),
+        None => theme.info,
     }
 }
 
@@ -340,7 +331,7 @@ impl OceanColumn {
         self
     }
 
-    fn paint_theme(self, ground: Color) -> Option<codewhale_ratatui::Theme> {
+    pub(crate) fn paint_theme(self, ground: Color) -> Option<codewhale_ratatui::Theme> {
         let mut caps = self.paint_caps?;
         // Equality-matched opaque ground is actual pane evidence. A terminal
         // Reset/named ink supplies no RGB evidence; an OS hint cannot fill it.
@@ -397,21 +388,6 @@ impl OceanColumn {
             .apply_native(area, buf, &theme, facts, |cell, water| {
                 crate::tui::color_compat::project_ocean_ink(cell, water, theme.depth(), ui_theme)
             });
-    }
-
-    pub(crate) fn paint_caustics(
-        self,
-        area: Rect,
-        buf: &mut Buffer,
-        facts: &codewhale_ratatui::ocean::OceanCausticFacts<'_>,
-    ) {
-        let Some(theme) = self.paint_theme(facts.paint.ground) else {
-            return;
-        };
-        self.native()
-            .ramp(self.ramp.native())
-            .viewport(Rect::new(0, self.top, 0, self.height))
-            .apply_caustics(area, buf, &theme, facts);
     }
 
     // Existing pure fixture facade explicitly supplies a synthetic backend.

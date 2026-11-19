@@ -346,7 +346,7 @@ fn footer_row(tui: &mut Harness) -> (u16, String) {
         .unwrap_or_else(|| panic!("no dial chip on screen:\n{}", frame.debug_dump()))
 }
 
-fn assert_status_and_water(tui: &mut Harness, label: &str) {
+fn assert_status_and_water(tui: &mut Harness, label: &str, animated: bool) {
     let (footer, status) = footer_row(tui);
     let frame = tui.frame();
     for retired in ["operate", "Operate", "Work bar"] {
@@ -357,18 +357,54 @@ fn assert_status_and_water(tui: &mut Harness, label: &str) {
         );
     }
     assert!(status.contains("accept edits"), "{label}: {status}");
-    for row in 0..footer.saturating_sub(3) {
-        let text = frame.row(row);
-        let cells: Vec<char> = text.chars().collect();
-        let school = cells.windows(2).any(|pair| {
-            pair.iter()
-                .all(|cell| ('\u{2801}'..='\u{28FF}').contains(cell))
-        });
+    let rows: Vec<Vec<char>> = (0..footer.saturating_sub(3))
+        .map(|row| frame.row(row).chars().collect())
+        .collect();
+    let is_braille = |ch: char| ('\u{2801}'..='\u{28FF}').contains(&ch);
+    for (row, cells) in rows.iter().enumerate() {
+        let text: String = cells.iter().collect();
         assert!(
-            !school && !text.contains(['˚', '°', '≈', '～']),
-            "{label}: ambient art on transcript row {row} `{text}`:\n{}",
+            !text.contains(['≈', '～']),
+            "{label}: retired wave art on transcript row {row} `{text}`:\n{}",
             frame.debug_dump()
         );
+        if !animated {
+            let school = cells
+                .windows(2)
+                .any(|pair| pair.iter().all(|cell| is_braille(*cell)));
+            assert!(
+                !school && !text.contains(['˚', '°']),
+                "{label}: ambient art on transcript row {row} `{text}`:\n{}",
+                frame.debug_dump()
+            );
+            continue;
+        }
+        for (col, &ch) in cells.iter().enumerate() {
+            let ambient_glyph = matches!(ch, '˚' | '°')
+                || (is_braille(ch)
+                    && (col
+                        .checked_sub(1)
+                        .is_some_and(|prev| is_braille(cells[prev]))
+                        || cells.get(col + 1).is_some_and(|next| is_braille(*next))));
+            if !ambient_glyph {
+                continue;
+            }
+            let r0 = row.saturating_sub(1);
+            let r1 = (row + 1).min(rows.len().saturating_sub(1));
+            for nr in r0..=r1 {
+                let c0 = col.saturating_sub(2);
+                let c1 = (col + 2).min(rows[nr].len().saturating_sub(1));
+                for nc in c0..=c1 {
+                    if let Some(&neighbor) = rows[nr].get(nc) {
+                        assert!(
+                            !neighbor.is_ascii_alphanumeric(),
+                            "{label}: ambient glyph `{ch}` at ({col}, {row}) touches text `{neighbor}` at ({nc}, {nr}):\n{}",
+                            frame.debug_dump()
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -379,14 +415,24 @@ fn thinking_rows(tui: &mut Harness) -> usize {
         .count()
 }
 
-fn stream_first_turn(tui: &mut Harness, provider: &PacedProvider, thinking_shown: bool) {
+fn stream_first_turn(
+    tui: &mut Harness,
+    provider: &PacedProvider,
+    thinking_shown: bool,
+    animated: bool,
+) {
     tui.type_line(PROMPTS[0]).unwrap();
     expect(tui, "the first request and its interrupt hint", |frame| {
         provider.turns() == 1 && frame.contains("Esc to interrupt")
     });
     std::thread::sleep(Duration::from_millis(900));
     report(tui, "loading");
-    assert_status_and_water(tui, "loading");
+    assert_status_and_water(tui, "loading", animated);
+    assert!(
+        tui.frame().contains(PROMPTS[0]),
+        "loading: prompt text damaged:\n{}",
+        tui.frame().debug_dump()
+    );
 
     provider.release(1);
     let tail = reasoning_line(REASONING_LINES);
@@ -401,7 +447,7 @@ fn stream_first_turn(tui: &mut Harness, provider: &PacedProvider, thinking_shown
     }
     std::thread::sleep(Duration::from_millis(1300));
     report(tui, "thinking");
-    assert_status_and_water(tui, "thinking");
+    assert_status_and_water(tui, "thinking", animated);
     assert_eq!(thinking_rows(tui), 1, "one Thinking line");
     let (_, status) = footer_row(tui);
     assert!(
@@ -431,7 +477,12 @@ fn stream_first_turn(tui: &mut Harness, provider: &PacedProvider, thinking_shown
     });
     settle(tui);
     report(tui, "settled");
-    assert_status_and_water(tui, "settled");
+    assert_status_and_water(tui, "settled", animated);
+    assert!(
+        tui.frame().contains(ANSWER),
+        "settled: answer text damaged:\n{}",
+        tui.frame().debug_dump()
+    );
 }
 
 #[test]
@@ -441,7 +492,7 @@ fn thinking_streams_stops_and_restores_at_the_shipped_widths() {
         let provider = PacedProvider::start();
         prepare(&workspace, &provider, None);
         let mut tui = launch(&workspace, &provider, size, "--fresh", true);
-        stream_first_turn(&mut tui, &provider, true);
+        stream_first_turn(&mut tui, &provider, true, true);
 
         tui.type_line(PROMPTS[1]).unwrap();
         expect(&mut tui, "the second request", |_| provider.turns() == 2);
@@ -456,7 +507,7 @@ fn thinking_streams_stops_and_restores_at_the_shipped_widths() {
         });
         settle(&mut tui);
         report(&mut tui, "stopped");
-        assert_status_and_water(&mut tui, "stopped");
+        assert_status_and_water(&mut tui, "stopped", true);
         provider.release(2);
 
         tui.send(keys::key::ctrl('u')).unwrap();
@@ -471,7 +522,7 @@ fn thinking_streams_stops_and_restores_at_the_shipped_widths() {
         });
         settle(&mut tui);
         report(&mut tui, "restored");
-        assert_status_and_water(&mut tui, "restored");
+        assert_status_and_water(&mut tui, "restored", false);
         let frame = tui.frame();
         assert!(!frame.contains("Thinking…"), "{}", frame.debug_dump());
         tui.shutdown();
@@ -484,7 +535,7 @@ fn a_saved_choice_to_hide_thinking_survives_the_new_default() {
     let provider = PacedProvider::start();
     prepare(&workspace, &provider, Some("show_thinking = false\n"));
     let mut tui = launch(&workspace, &provider, (24, 80), "--fresh", false);
-    stream_first_turn(&mut tui, &provider, false);
+    stream_first_turn(&mut tui, &provider, false, false);
     let frame = tui.frame();
     assert!(!frame.contains("Thought"), "{}", frame.debug_dump());
     tui.shutdown();

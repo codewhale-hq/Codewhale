@@ -222,6 +222,21 @@ pub fn terminal_is_ghostty() -> bool {
     }
 }
 
+#[must_use]
+pub fn terminal_is_apple_terminal() -> bool {
+    #[cfg(test)]
+    {
+        false
+    }
+    #[cfg(not(test))]
+    {
+        static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *CACHE.get_or_init(|| {
+            std::env::var("TERM_PROGRAM").is_ok_and(|program| program.trim() == "Apple_Terminal")
+        })
+    }
+}
+
 fn accept_hz(hz: u32) -> Option<u32> {
     if (MIN_HZ..=MAX_HZ).contains(&hz) {
         Some(hz)
