@@ -1019,7 +1019,7 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
         let marker = workspace.path().join("nested-round-ran");
         let path = marker.display().to_string();
         let nested = format!(
-            "```repl\ntry:\n    open({path:?}, 'w').write('x')\nexcept PermissionError:\n    FINAL('fixture write refused')\nelse:\n    FINAL('nested done')\n```"
+            "```repl\nimport errno\ntry:\n    open({path:?}, 'w').write('x')\nexcept OSError as error:\n    if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):\n        raise\n    FINAL('fixture write refused')\nelse:\n    FINAL('nested done')\n```"
         );
         let rlm = crate::tools::rlm::RLM_TOOL_NAME;
         let mock = std::sync::Arc::new(MockLlmClient::new(vec![
@@ -1187,15 +1187,35 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
                 !std::iter::from_fn(|| rx.try_recv().ok())
                     .any(|event| matches!(event, Event::ApprovalRequired { .. }))
             );
+            let requests = mock.captured_requests();
+            let results: Vec<_> = requests
+                .iter()
+                .flat_map(|request| &request.messages)
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, content, is_error, .. } => {
+                        Some((tool_use_id.as_str(), content.as_str(), *is_error))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let refused_start = read_only && results.iter().any(|(id, content, error)| {
+                *id == "rlm-open" && *error == Some(true) && content.contains(
+                    "read_only execution requires an enforcing native read-only sandbox; nothing was run",
+                )
+            });
             assert_eq!(
                 mock.remaining_turns(),
-                0,
-                "the recursive reply must reach the gate"
+                usize::from(refused_start),
+                "mode={approval:?}, read_only={read_only}, results={results:?}"
             );
-            if read_only {
-                assert!(mock.captured_requests().iter().flat_map(|request| &request.messages)
-                    .flat_map(|message| &message.content).any(|block| matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("fixture write refused"))),
-                    "the read-only child kernel must report refusing the attempted write");
+            if read_only && !refused_start {
+                assert!(
+                    results.iter().any(|(id, content, _)| {
+                        *id == "rlm-eval" && content.contains("fixture write refused")
+                    }),
+                    "the read-only child kernel must report refusing the attempted write: {results:?}"
+                );
             }
         }
     }
