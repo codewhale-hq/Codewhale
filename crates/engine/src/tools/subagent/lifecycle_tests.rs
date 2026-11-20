@@ -925,7 +925,7 @@ async fn lifecycle_start_peek_and_status_detail_preserve_fields_and_strip_checkp
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
     runtime.context = context.clone();
-    runtime.cancel_token.cancel();
+    let _cancel_on_drop = runtime.cancel_token.clone().drop_guard();
 
     let tool = AgentTool::new(Arc::clone(&manager), runtime);
     let started = tool
