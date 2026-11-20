@@ -169,18 +169,12 @@ async fn host_request(
                                 && (key != "q" || value == query)
                                 && (key != "num" || value == &max_results.to_string())
                         })
-                    && proposal.pairs.iter().all(|(key, _)| {
+                    && proposal.pairs.iter().all(|(key, value)| {
                         matches!(
                             key.as_str(),
-                            "q" | "num"
-                                | "hl"
-                                | "gl"
-                                | "format"
-                                | "time_range"
-                                | "language"
-                                | "engine"
-                                | "time_period"
-                        )
+                            "q" | "num" | "hl" | "gl" | "format" | "time_range" | "language"
+                        ) || (backend == "searchapi"
+                            && ((key == "engine" && value == "google") || key == "time_period"))
                     })
             }
             "volcengine" => {
@@ -1185,8 +1179,6 @@ impl WebSearchTool {
         Ok(parse_serply_results(&parsed, max_results))
     }
 
-    /// Search SearchApi (<https://www.searchapi.io>); it returns Google organic
-    /// results and accepts `SEARCHAPI_API_KEY`.
     async fn run_searchapi_search(
         &self,
         query: &str,
@@ -1195,11 +1187,18 @@ impl WebSearchTool {
         timeout_ms: u64,
         context: &ToolContext,
     ) -> AdapterResult<Vec<WebSearchEntry>> {
-        let env_key = std::env::var("SEARCHAPI_API_KEY").ok();
         let api_key = context
             .search_api_key
             .as_deref()
-            .or(env_key.as_deref())
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                std::env::var("SEARCHAPI_API_KEY")
+                    .ok()
+                    .map(|key| key.trim().to_string())
+                    .filter(|key| !key.is_empty())
+            })
             .ok_or_else(|| {
                 ToolError::invalid_input(
                     "SearchApi search requires an API key. Set `[search] api_key` in config.toml or the SEARCHAPI_API_KEY env var.",
@@ -1234,7 +1233,7 @@ impl WebSearchTool {
         };
         let resp = client
             .get(url)
-            .bearer_auth(api_key)
+            .bearer_auth(&api_key)
             .header("Accept", "application/json")
             .send()
             .await
@@ -1268,7 +1267,7 @@ impl WebSearchTool {
             "searchapi",
             &parsed,
             max_results,
-            Some(api_key),
+            Some(api_key.as_str()),
             context,
             timeout_ms,
         )
@@ -3343,9 +3342,6 @@ fn parse_serply_results(parsed: &Value, max_results: usize) -> Vec<WebSearchEntr
         .collect()
 }
 
-/// SearchApi's Google engine documents `hl` (interface language), `gl`
-/// (country) and `time_period` (`last_day` / `last_week` / `last_month` /
-/// `last_year`). `num` is honored up to 10 and clamped by the API above that.
 fn searchapi_search_url(
     query: &str,
     filters: QueryFilters<'_>,
@@ -3373,12 +3369,6 @@ fn searchapi_search_url(
     Ok(url)
 }
 
-/// Parse SearchApi `/api/v1/search` output: `organic_results[]` rows carry
-/// `title`, `link`, and `snippet`. A query Google answers with nothing is an
-/// HTTP 200 body without `organic_results` (plus an `error` string), which
-/// parses as zero results rather than a failure. Knowledge graph, ads, and
-/// related searches are top-level siblings and are ignored; lower-ranked
-/// `google.com/goto?url=...` redirect links are passed through unchanged.
 fn parse_searchapi_results(parsed: &Value, max_results: usize) -> Vec<WebSearchEntry> {
     parsed
         .get("organic_results")
