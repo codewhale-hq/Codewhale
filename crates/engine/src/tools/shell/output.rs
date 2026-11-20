@@ -417,14 +417,17 @@ impl BoundedOutputAccumulator {
             && self.stream_finished
             && self.persisted_artifact.is_none()
             && self.temp.is_some()
-            && let Err(error) = self.persist_temp_to_session_artifact()
-            && self.spill_unavailable.is_none()
+            && self.session_artifact.is_some()
         {
-            self.spill_unavailable = Some(spill_unavailable_reason(&error));
+            self.persist_temp_to_session_artifact()?;
         }
         if truncated && finalize && self.persisted_artifact.is_none() {
             let reason = self.spill_unavailable.as_deref().unwrap_or(
-                "the output stream did not close cleanly, so the full output artifact was not saved",
+                if self.session_artifact.is_none() {
+                    "session artifact storage is unavailable without an active session"
+                } else {
+                    "the output stream did not close cleanly, so the full output artifact was not saved"
+                },
             );
             content.push_str(&format!(
                 "\n\n[Showing the last {} of {} lines ({} limit). Full output was not persisted: {reason}]",
