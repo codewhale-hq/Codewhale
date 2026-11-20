@@ -375,7 +375,7 @@ owner = "crates/engine/src/model_routing.rs"
 [[feature]]
 id = "model-catalog-refresh"
 name = "Model catalog refresh"
-summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+summary = "Refresh public model facts and exact provider rosters; selection fences account and endpoint changes, while failed discovery retains only same-scope evidence."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.3"

@@ -1169,8 +1169,11 @@
                 "fp",
                 7
             ),
-            Err(CatalogRefreshError::EmptyList)
+            Ok(Vec::new())
         );
+        for body in [r#"{}"#, r#"{"error":"denied"}"#, r#"{"data":[{}]}"#] {
+            assert_eq!(codewhale_catalog_offerings_from_body(body, "codewhale", "fp", 7), Err(CatalogRefreshError::InvalidResponse));
+        }
         assert_eq!(
             codewhale_catalog_offerings_from_body("not json", "codewhale", "fp", 7),
             Err(CatalogRefreshError::InvalidResponse)
@@ -1701,14 +1704,10 @@
                 CatalogRefreshError::InvalidResponse
             );
 
-            // Empty list -> EmptyList.
             let server = MockServer::start().await;
             mount_models_json(&server, 200, json!({"data": []})).await;
             let client = openrouter_client_for(&server);
-            assert_eq!(
-                client.fetch_catalog_delta().await.expect_err("empty list"),
-                CatalogRefreshError::EmptyList
-            );
+            assert!(client.fetch_catalog_delta().await.expect("valid empty inventory").offerings.is_empty());
         }
     }
 

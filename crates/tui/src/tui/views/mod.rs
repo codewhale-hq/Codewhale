@@ -1051,6 +1051,7 @@ pub enum ViewEvent {
     /// fields let the handler skip work when nothing changed and craft a clear
     /// status message.
     ModelPickerApplied {
+        route_selection: Option<codewhale_engine::model_inventory::RouteSelection>,
         model: String,
         identity: Option<codewhale_runtime::config::ProviderIdentity>,
         effort: codewhale_engine::reasoning_preference::ReasoningEffort,

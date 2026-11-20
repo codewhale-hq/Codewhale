@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "6f7cd12887720e94b0f8e5cc7766fed07cd8d0786004ce8268281eec75607c14"
+    "sha256": "98d3dbd527866fe2f147f4a5e7f6cd8183b690668d3783bab6e94a79063547e4"
   },
   "features": [
     {
@@ -444,7 +444,7 @@
     {
       "id": "model-catalog-refresh",
       "name": "Model catalog refresh",
-      "summary": "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot.",
+      "summary": "Refresh public model facts and exact provider rosters; selection fences account and endpoint changes, while failed discovery retains only same-scope evidence.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",

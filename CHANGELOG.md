@@ -17,6 +17,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Added
 
+- **Exact route inventory:** model lists separate metadata, observed roster evidence and readiness; optional session selections reject changed account or endpoint bindings, and the terminal uses the same Engine projection. Empty discovery no longer masquerades as a failed refresh. (CW-8311)
+
 - **SearchApi web search provider:** `web_search` now supports SearchApi (`[search] provider = "searchapi"`, `SEARCHAPI_API_KEY` or `[search] api_key`) for Google organic results with `hl`, `gl`, and `time_period` filtering. Thanks [@gabsferreira](https://github.com/gabsferreira) (#7410).
 - **Crisper 980-dot whale and activity forms in `/pet`:** the terminal pet's 980 dots now compile from perimeter-anchored hexagonal-lattice silhouettes with rorqual throat illumination at rest and cleaner edges across all thirteen running, waiting and done forms, while keeping zero motion under Hold still and Reduce motion. (CW-6453)
 - **Terminal and website design tokens updated to 5.4.0:** vendored `codewhale-design` `5.4.0` and `codewhale-ratatui` `5.4.0` roles (`Subagent` and `LivePeak`), exported the updated `5.4.0` CSS custom properties to the website (`web/app/tokens.css`), fixed `adapt_fg_for_depth` ANSI-16 appearance awareness (bright 9–14 on dark, dark 1–6 on light) so warnings and status lines stay legible on light 16-color terminals, and preserved green/red hues (`22`/`52` dark, `158`/`224` light) on 256-color diff line backgrounds. (CW-8264)

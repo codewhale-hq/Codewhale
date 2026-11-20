@@ -4487,77 +4487,9 @@ impl CodewhaleClient {
                 return;
             }
 
-            // Invalidate older in-flight fetches before loading any reusable
-            // scope. Baseten's ticket also clears account-scoped rows because the
-            // same endpoint can expose a different workspace after a key change.
-            let refresh_ticket = crate::provider_catalog_live::begin_refresh_for_identity(
-                provider,
-                identity.key.as_str(),
-                &config.active_route_base_url(),
-            );
-
-            // Publish the exact persisted scope immediately so opening `/model`
-            // never waits on the network and another endpoint's rows cannot leak
-            // into this route. Account-scoped Baseten rows deliberately do not
-            // reload from disk until the current credential proves them again.
-            crate::provider_catalog_live::maybe_load_persisted_cache_for_config(config);
-
-            let client = match CodewhaleClient::for_catalog_refresh(config) {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::debug!(
-                        target: "provider_catalog",
-                        error = %err,
-                        "skipping provider catalog refresh: client creation failed"
-                    );
-                    return;
-                }
-            };
-
+            let config = config.clone();
             tokio::spawn(async move {
-                match client.fetch_catalog_delta().await {
-                    Ok(delta) => {
-                        let count = delta.offerings.len();
-                        if crate::provider_catalog_live::record_success_if_current(
-                            &refresh_ticket,
-                            delta,
-                        )
-                        .is_none()
-                        {
-                            tracing::debug!(
-                                target: "provider_catalog",
-                                "discarded provider catalog response superseded by a newer refresh"
-                            );
-                            return;
-                        }
-                        tracing::debug!(
-                            target: "provider_catalog",
-                            offering_count = count,
-                            "provider catalog refresh merged {count} offerings into provider lake"
-                        );
-                    }
-                    Err(err) => {
-                        if crate::provider_catalog_live::record_failure_if_current(
-                            &refresh_ticket,
-                            &client.catalog_provider_id(),
-                            &base_url_fingerprint(&client.base_url),
-                            err,
-                        )
-                        .is_none()
-                        {
-                            tracing::debug!(
-                                target: "provider_catalog",
-                                "discarded provider catalog failure superseded by a newer refresh"
-                            );
-                            return;
-                        }
-                        tracing::debug!(
-                            target: "provider_catalog",
-                            error = ?err,
-                            "provider catalog refresh failed; keeping existing rows"
-                        );
-                    }
-                }
+                let _ = crate::provider_lake::update_provider_catalog(&config, &identity).await;
             });
         }
     }
@@ -6272,7 +6204,6 @@ fn codewhale_catalog_offerings_from_body(
 ) -> Result<Vec<CatalogOffering>, CatalogRefreshError> {
     #[derive(serde::Deserialize)]
     struct Listing {
-        #[serde(default)]
         data: Vec<Row>,
     }
     #[derive(serde::Deserialize)]
@@ -6305,7 +6236,8 @@ fn codewhale_catalog_offerings_from_body(
 
     let listing: Listing =
         serde_json::from_str(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
-    let mut offerings: Vec<CatalogOffering> = Vec::with_capacity(listing.data.len());
+    let listed = listing.data.len();
+    let mut offerings: Vec<CatalogOffering> = Vec::with_capacity(listed);
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for row in listing.data {
         let id = row.id.trim().to_string();
@@ -6366,8 +6298,8 @@ fn codewhale_catalog_offerings_from_body(
             ..Default::default()
         });
     }
-    if offerings.is_empty() {
-        return Err(CatalogRefreshError::EmptyList);
+    if listed > 0 && offerings.is_empty() {
+        return Err(CatalogRefreshError::InvalidResponse);
     }
     Ok(offerings)
 }
@@ -6404,9 +6336,6 @@ fn catalog_delta_from_models_body(
         // dropped here, so the roster the picker and `/model` read is
         // servable chat only.
         let listed = parse_orcarouter_models_response(body)?;
-        if listed.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         let chat_rows: Vec<_> = listed
             .iter()
             .filter(|item| orcarouter_row_is_chat(item))
@@ -6425,15 +6354,12 @@ fn catalog_delta_from_models_body(
                 orcarouter_to_catalog_offering(item, &provider, &fingerprint, fetched_at).ok()
             })
             .collect();
-        if offerings.is_empty() {
+        if offerings.is_empty() && !listed.is_empty() {
             return Err(CatalogRefreshError::InvalidResponse);
         }
         offerings
     } else if api_provider == ProviderKind::Openrouter {
         let or_models = parse_openrouter_models_response(body)?;
-        if or_models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         // A row with an unreadable or implausible price is skipped and
         // counted, not allowed to fail every other row (#6690).
         let offerings: Vec<_> = or_models
@@ -6450,15 +6376,12 @@ fn catalog_delta_from_models_body(
                 "skipped OpenRouter model rows with invalid pricing"
             );
         }
-        if offerings.is_empty() {
+        if offerings.is_empty() && !or_models.is_empty() {
             return Err(CatalogRefreshError::InvalidResponse);
         }
         offerings
     } else if catalog_endpoint_is_baseten(api_provider, base_url) {
         let baseten_models = parse_baseten_models_response(body)?;
-        if baseten_models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         baseten_models
             .iter()
             .map(|item| baseten_to_catalog_offering(item, &provider, &fingerprint, fetched_at))
@@ -6516,9 +6439,6 @@ fn catalog_delta_from_models_body(
             parse_models_response_for_provider(body, api_provider)
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?,
         );
-        if models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         // OpenCode Go's cutline rewrites a listed id to its canonical spelling.
         // Key the limits map the same way so a row keeps the numbers the
         // provider stated for it.
@@ -6612,9 +6532,6 @@ fn named_gateway_catalog_offerings_from_body(
     fetched_at: u64,
 ) -> Result<Vec<CatalogOffering>, CatalogRefreshError> {
     let models = parse_models_response(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
-    if models.is_empty() {
-        return Err(CatalogRefreshError::EmptyList);
-    }
 
     let default_model_id = kind.provider().default_model();
     Ok(models

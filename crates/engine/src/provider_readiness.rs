@@ -121,6 +121,30 @@ pub fn route_identity_for_model(
     }
 }
 
+pub fn inventory_observation_for_route(
+    config: &Config,
+    identity: &ProviderIdentity,
+) -> ProviderRouteIdentity {
+    let mut observation = route_identity_for_model(config, identity, "");
+    if observation.credential_generation.is_none() {
+        let mut scoped = config.clone();
+        scoped.plugin_oauth_read_only = true;
+        if scoped.scope_to_provider_identity(identity).is_ok() {
+            observation.credential_generation =
+                scoped
+                    .active_route_api_key_read_only()
+                    .ok()
+                    .map(|credential| {
+                        codewhale_config::credentials::CredentialGeneration::derive(
+                            &scoped.base_url_for_route(identity),
+                            &credential,
+                        )
+                    });
+        }
+    }
+    observation
+}
+
 pub fn auth_class_for_provider(
     config: &codewhale_runtime::config::Config,
     identity: &ProviderIdentity,

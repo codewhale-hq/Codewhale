@@ -1587,6 +1587,8 @@ pub struct CreateThreadExecutorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpdateThreadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_selection: Option<crate::model_inventory::RouteSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_workspace: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_idle: Option<bool>,
@@ -9777,6 +9779,9 @@ impl RuntimeThreadManager {
         // anything is saved, exactly like the TUI's `/provider`: a provider
         // that cannot serve the next turn is refused, not recorded. History
         // stays with the thread; the next turn installs the new route.
+        if req.route_selection.is_some() && req.model_provider.is_none() {
+            bail!("route_selection requires model_provider and an exact model");
+        }
         let provider_switch = {
             let config = self.read_config().clone();
             match requested_provider_identity(
@@ -9785,6 +9790,17 @@ impl RuntimeThreadManager {
                 req.model_provider_id.as_deref(),
             )? {
                 Some(identity) => {
+                    if let Some(selection) = &req.route_selection {
+                        let model = req
+                            .model
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("route_selection requires an exact model"))?;
+                        crate::model_inventory::validate_inventory_selection(
+                            &config, &identity, model, selection,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)?;
+                    }
                     let current_model = self.get_thread(id).await?.model;
                     let requested_model = req.model.clone().or_else(|| {
                         current_model
@@ -9834,6 +9850,24 @@ impl RuntimeThreadManager {
                 wait.await
                     .map_err(|_| anyhow!("update admission hook dropped resume"))?;
             }
+        }
+        if let Some(selection) = req.route_selection.clone() {
+            let config = self.read_config().clone();
+            let identity = requested_provider_identity(
+                &config,
+                req.model_provider.as_deref(),
+                req.model_provider_id.as_deref(),
+            )?
+            .ok_or_else(|| anyhow!("route_selection requires an exact provider"))?;
+            let model = req
+                .model
+                .clone()
+                .ok_or_else(|| anyhow!("route_selection requires an exact model"))?;
+            crate::model_inventory::validate_inventory_selection(
+                &config, &identity, &model, &selection,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         }
         let configured_sandbox_mode = self.read_config().sandbox_mode.clone();
         let (thread, changes, evicted_engine, posture_engine, ended_grants, permission_receipt) = {
@@ -14698,6 +14732,12 @@ impl RuntimeThreadManager {
             false,
         )
         .await
+    }
+
+    pub fn provider_readiness_snapshot(
+        &self,
+    ) -> crate::provider_readiness::ProviderReadinessSnapshot {
+        self.provider_health.lock().clone()
     }
 
     #[must_use]

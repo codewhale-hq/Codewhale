@@ -4434,3 +4434,6 @@ establish complete chat or Codex parity.
 A local whale's `SOUL.md` describes its personality and voice. Read the exact local file with `GET /v1/whale/soul` and save it with `PUT /v1/whale/soul`. Both operations require the host Runtime token. The response carries the path, text, revision and writable state. Send the returned revision quoted in `If-Match` with a JSON object containing `text`. A stale edit returns HTTP 412 so the editor can keep the draft. Files are private to the current OS user (mode 0600 on Unix), UTF-8, regular single-link files with a 16 KiB limit. An existing `SOUL.md` requires a matching `whale.toml` identity (`id = "default"`); an absent local whale is created only by an explicit save. A concurrent edit returns HTTP 409 instead of waiting for the other writer. An explicitly imported account whale has a read-only local copy.
 
 The root Engine captures the local whale's voice at turn admission and charges it to the global instruction budget. The instruction receipt includes `whale_soul_source_path` and `whale_soul_revision`; internal follow-ups reuse the captured voice. Its personality applies within the existing permissions.
+
+
+The additive exact-route inventory and fenced thread-selection fields are documented in [Route inventory](ROUTE_INVENTORY.md).

@@ -335,6 +335,7 @@ struct ModelPickerRow {
     /// custom route, so pins must carry this exact key when present.
     provider_identity: Option<String>,
     admitted_identity: Option<codewhale_runtime::config::ProviderIdentity>,
+    route_selection: Option<codewhale_engine::model_inventory::RouteSelection>,
     hint: String,
     metadata: EffectivePickerMetadata,
     selectable: bool,
@@ -1354,6 +1355,10 @@ impl ModelPickerView {
         ViewEvent::ModelPickerApplied {
             model: self.resolved_model(),
             identity: self.resolved_admitted_identity(),
+            route_selection: self
+                .visible_model_rows()
+                .get(self.selected_model_idx)
+                .and_then(|row| row.route_selection.clone()),
             effort: self.selected_effort_request,
             previous_model: self.previous_model.clone(),
             previous_effort: self.initial_effort,
@@ -2338,6 +2343,7 @@ fn picker_model_rows_for_app(app: &App, config: &Config) -> Vec<ModelPickerRow> 
             provider: Some(provider),
             provider_identity: Some(pin.provider.clone()),
             admitted_identity: None,
+            route_selection: None,
             hint: format!(
                 "stale pinned · exact {} / {} · unavailable; repair or remove",
                 pin.provider, pin.model
@@ -2604,7 +2610,7 @@ fn route_provider_config<'a>(
 fn push_provider_model_rows(
     rows: &mut Vec<ModelPickerRow>,
     admitted: &codewhale_runtime::config::ProviderIdentity,
-    mut model_ids: Vec<String>,
+    model_ids: Vec<String>,
     active_provider: ProviderKind,
     config: &Config,
     codex_roster: &CodexModelRoster,
@@ -2615,29 +2621,38 @@ fn push_provider_model_rows(
     }
     let provider = admitted.provider;
     let identity = admitted.key.to_string();
-    let base_url = config.base_url_for_route(admitted);
-    let fresh_roster = fresh_roster_listing(provider, &identity, &base_url);
-    for declaration in config.custom_models.as_deref().unwrap_or_default() {
-        if codewhale_runtime::config::configured_model_for_route(
-            config,
-            provider,
-            &identity,
-            &base_url,
-            &declaration.id,
-        )
-        .is_some()
-            && !model_ids.contains(&declaration.id)
-        {
-            model_ids.push(declaration.id.clone());
+    let inventory = match codewhale_engine::model_inventory::exact_route_inventory(
+        config,
+        admitted,
+        provider_health,
+        &model_ids,
+    ) {
+        Ok(inventory) => inventory,
+        Err(reason) => {
+            for id in model_ids.into_iter().filter(|id| id != "auto") {
+                let metadata = effective_picker_metadata_for_identity(
+                    config,
+                    Some(provider),
+                    Some(&identity),
+                    &id,
+                );
+                push_model_row(
+                    rows,
+                    id,
+                    Some(provider),
+                    Some(identity.clone()),
+                    reason.clone(),
+                    metadata,
+                    false,
+                    Some(reason.clone()),
+                );
+            }
+            return;
         }
-    }
-    let readiness_scope =
-        codewhale_engine::provider_readiness::RouteReadinessScope::for_route(config, admitted);
-    for id in model_ids {
-        if id == "auto" {
-            continue;
-        }
-        let readiness = readiness_scope.resolve(config, &id, provider_health);
+    };
+    for route in inventory.models {
+        let id = route.model;
+        let readiness = route.readiness;
         let selectable = readiness.can_attempt();
         let readiness_label = readiness.label();
         let roster_entry = if provider == ProviderKind::OpenaiCodex {
@@ -2687,16 +2702,12 @@ fn push_provider_model_rows(
                 | codewhale_engine::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked
                 | codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         );
-        let not_listed = fresh_roster.as_ref().and_then(|(listed, checked)| {
-            (!listed.iter().any(|listed| listed.eq_ignore_ascii_case(&id))).then(|| NotListed {
-                provider: if provider == ProviderKind::Custom {
-                    identity.clone()
-                } else {
-                    provider.provider().display_name().to_string()
-                },
-                checked: checked.clone(),
-            })
-        });
+        let not_listed = (route.evidence
+            == codewhale_engine::model_inventory::InventoryEvidence::Absent)
+            .then(|| NotListed {
+                provider: identity.clone(),
+                checked: "current inventory".to_string(),
+            });
         let before = rows.len();
         push_model_row(
             rows,
@@ -2712,48 +2723,11 @@ fn push_provider_model_rows(
             && let Some(row) = rows.last_mut()
         {
             row.admitted_identity = Some(admitted.clone());
+            row.route_selection = Some(route.selection);
             row.credentialed = credentialed;
             row.not_listed = not_listed;
         }
     }
-}
-
-/// Ids a FRESH live roster lists for this exact route, with the fetch date.
-/// `None` when no fresh roster exists — a stale, failed, or absent roster
-/// cannot prove an id is gone (the same rule as
-/// `provider_catalog_live::pin_missing_from_fresh_roster`, #6035). Attested
-/// unlisted ids count as listed.
-fn fresh_roster_listing(
-    provider: ProviderKind,
-    identity: &str,
-    base_url: &str,
-) -> Option<(Vec<String>, String)> {
-    if provider == ProviderKind::OpenaiCodex {
-        return None;
-    }
-    // Reading the entry first loads a roster an earlier process persisted.
-    let entry = codewhale_engine::provider_catalog_live::cached_entry_for_route(
-        provider, identity, base_url,
-    )
-    .ok()
-    .flatten()?;
-    if codewhale_engine::provider_catalog_live::status_for_route(provider, identity, base_url)
-        != CatalogStatus::Fresh
-    {
-        return None;
-    }
-    let mut listed =
-        codewhale_engine::provider_lake::catalog_models_for_route(provider, identity, base_url);
-    for offering in &entry.offerings {
-        listed.push(picker_visible_model_id(provider, &offering.wire_model_id, false).to_string());
-        if let Some(canonical) = &offering.canonical_model {
-            listed.push(canonical.clone());
-        }
-    }
-    let checked = chrono::DateTime::from_timestamp(i64::try_from(entry.fetched_at).ok()?, 0)?
-        .format("%Y-%m-%d")
-        .to_string();
-    Some((listed, checked))
 }
 
 fn provider_catalog_receipt_for_route(
@@ -3045,6 +3019,7 @@ fn push_model_row(
         provider,
         provider_identity,
         admitted_identity: None,
+        route_selection: None,
         hint,
         metadata,
         selectable,
@@ -5331,6 +5306,7 @@ mod tests {
             provider_identity: None,
             admitted_identity: (provider != ProviderKind::Custom)
                 .then(|| Config::default().test_identity_for_kind(provider)),
+            route_selection: None,
             hint: String::new(),
             metadata: EffectivePickerMetadata::default(),
             selectable: true,
@@ -6347,6 +6323,7 @@ mod tests {
             provider: Some(ProviderKind::Custom),
             provider_identity: Some(codewhale_config::catalog::BASETEN_PROVIDER_ID.to_string()),
             admitted_identity: None,
+            route_selection: None,
             hint: String::new(),
             metadata: EffectivePickerMetadata::default(),
             selectable: true,

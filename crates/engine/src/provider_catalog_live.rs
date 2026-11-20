@@ -6,7 +6,7 @@
 //! partition, failures retain that partition's prior rows, and startup loads
 //! only the active route's exact partition. Credentials authorize the fetch in
 //! `client`; they never enter this module or its disk envelope. Baseten and
-//! Codewhale account rosters are memory-only and cleared before each refresh;
+//! Codewhale account rosters are memory-only and cleared when their binding changes;
 //! a named custom route at either official endpoint follows the same rule.
 //!
 //! The former unscoped OpenRouter cache reader is retired; installed old files
@@ -63,8 +63,165 @@ static DISK_LOADED: AtomicBool = AtomicBool::new(false);
 
 static CACHE: LazyLock<RwLock<ProviderCatalogCache>> =
     LazyLock::new(|| RwLock::new(ProviderCatalogCache::new()));
-static REFRESH_GENERATIONS: LazyLock<RwLock<BTreeMap<String, u64>>> =
+static REFRESH_GENERATIONS: LazyLock<RwLock<BTreeMap<String, InventoryFence>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
+
+#[derive(Default)]
+struct InventoryFence {
+    generation: u64,
+    observation: Option<crate::provider_readiness::ProviderRouteIdentity>,
+    binding: String,
+    account: Option<String>,
+    refresh: std::sync::Arc<tokio::sync::Mutex<()>>,
+    error: Option<CatalogRefreshError>,
+    revision: std::sync::atomic::AtomicU64,
+    publication: std::sync::Mutex<()>,
+}
+
+pub fn inventory_scope(
+    config: &Config,
+    identity: &codewhale_runtime::config::ProviderIdentity,
+) -> Result<(String, u64), String> {
+    config.verify_provider_identity(identity)?;
+    ensure_cache_loaded().map_err(|error| error.to_string())?;
+    let observation = crate::provider_readiness::inventory_observation_for_route(config, identity);
+    let account = if identity.provider == ProviderKind::OpenaiCodex {
+        codewhale_runtime::codex_model_roster::snapshot_path(config)
+            .map(|path| path.to_string_lossy().into_owned())
+    } else if identity.provider == ProviderKind::Codewhale {
+        config
+            .account_model_access
+            .read()
+            .as_ref()
+            .filter(|access| access.profile == config.account_profile)
+            .map(|access| access.session_id.clone())
+    } else {
+        None
+    };
+    let binding = codewhale_runtime::hashing::sha256_hex(
+        serde_json::to_vec(&(
+            identity.persisted_kind(),
+            identity.persisted_id(),
+            identity.key.as_str(),
+            config.base_url_for_route(identity),
+            format!(
+                "{:?}",
+                crate::provider_readiness::auth_class_for_provider(config, identity)
+            ),
+            &account,
+        ))
+        .map_err(|error| error.to_string())?,
+    );
+    let scope = storage_provider(identity.provider, identity.key.as_str());
+    let mut fences = REFRESH_GENERATIONS
+        .write()
+        .map_err(|_| "inventory fence unavailable")?;
+    let fence = fences.entry(scope).or_default();
+    if fence.observation.as_ref() != Some(&observation) || fence.account != account {
+        let same_account = account.is_some() && fence.account == account;
+        if !same_account || fence.binding != binding {
+            fence.binding = binding;
+            if account.is_none() {
+                fence.binding = uuid::Uuid::new_v4().to_string();
+            }
+        }
+        let preserve_keyless = fence.observation.is_none()
+            && matches!(
+                crate::provider_readiness::auth_class_for_provider(config, identity),
+                crate::provider_readiness::ProviderAuthClass::NoAuth
+                    | crate::provider_readiness::ProviderAuthClass::Local
+            );
+        fence.refresh = Default::default();
+        fence.error = None;
+        fence.account = account;
+        fence.observation = Some(observation);
+        fence.generation = fence.generation.saturating_add(1);
+        if !preserve_keyless {
+            forget_account_scoped_provider(identity.provider, identity.key.as_str());
+        }
+    }
+    Ok((fence.binding.clone(), fence.generation))
+}
+
+pub fn record_inventory_error(
+    ticket: &ProviderCatalogRefreshTicket,
+    error: Option<CatalogRefreshError>,
+) {
+    if let Ok(mut fences) = REFRESH_GENERATIONS.write()
+        && let Some(fence) =
+            fences.get_mut(&storage_provider(ticket.provider_kind, &ticket.provider))
+        && fence.generation == ticket.generation
+    {
+        if fence.error != error {
+            fence.error = error;
+            fence.revision.fetch_add(2, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn inventory_error(
+    identity: &codewhale_runtime::config::ProviderIdentity,
+    generation: u64,
+) -> Option<CatalogRefreshError> {
+    REFRESH_GENERATIONS
+        .read()
+        .ok()?
+        .get(&storage_provider(identity.provider, identity.key.as_str()))
+        .filter(|fence| fence.generation == generation)?
+        .error
+}
+
+pub fn begin_scoped_refresh(
+    config: &Config,
+    identity: &codewhale_runtime::config::ProviderIdentity,
+    base_url: &str,
+) -> Result<ProviderCatalogRefreshTicket, String> {
+    let (_, generation) = inventory_scope(config, identity)?;
+    begin_inventory_refresh(identity, base_url, generation)
+        .ok_or_else(|| "refresh_superseded".to_string())
+}
+
+pub fn inventory_observation_revision(
+    identity: &codewhale_runtime::config::ProviderIdentity,
+    generation: u64,
+) -> Option<u64> {
+    let fences = REFRESH_GENERATIONS.read().ok()?;
+    let fence = fences.get(&storage_provider(identity.provider, identity.key.as_str()))?;
+    let revision = fence.revision.load(Ordering::SeqCst);
+    (fence.generation == generation && revision % 2 == 0).then_some(revision)
+}
+
+pub fn begin_inventory_refresh(
+    identity: &codewhale_runtime::config::ProviderIdentity,
+    base_url: &str,
+    expected_generation: u64,
+) -> Option<ProviderCatalogRefreshTicket> {
+    let mut fences = REFRESH_GENERATIONS.write().ok()?;
+    let fence = fences.get_mut(&storage_provider(identity.provider, identity.key.as_str()))?;
+    if fence.generation != expected_generation {
+        return None;
+    }
+    fence.generation = fence.generation.saturating_add(1);
+    Some(ProviderCatalogRefreshTicket {
+        provider: canonical_provider_scope(identity.key.as_str()),
+        provider_kind: identity.provider,
+        fingerprint: Some(base_url_fingerprint(base_url)),
+        generation: fence.generation,
+    })
+}
+
+pub fn try_inventory_refresh(
+    identity: &codewhale_runtime::config::ProviderIdentity,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    REFRESH_GENERATIONS
+        .read()
+        .ok()?
+        .get(&storage_provider(identity.provider, identity.key.as_str()))?
+        .refresh
+        .clone()
+        .try_lock_owned()
+        .ok()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCatalogRefreshTicket {
@@ -1371,44 +1528,67 @@ pub fn maybe_load_persisted_cache_for_config(config: &Config) -> usize {
     let provider_identity = canonical_provider_scope(identity.key.as_str());
     let base_url = config.base_url_for_route(&identity);
     let fingerprint = base_url_fingerprint(&base_url);
-    if route_is_account_scoped(config, &identity) {
-        forget_account_scoped_provider(provider, &provider_identity);
+    let Ok((_, generation)) = inventory_scope(config, &identity) else {
         return 0;
+    };
+    if !matches!(
+        crate::provider_readiness::auth_class_for_provider(config, &identity),
+        crate::provider_readiness::ProviderAuthClass::NoAuth
+            | crate::provider_readiness::ProviderAuthClass::Local
+    ) {
+        return cached_entry_for_route(provider, &provider_identity, &base_url)
+            .ok()
+            .flatten()
+            .map_or(0, |entry| entry.offerings.len());
     }
-    if let Ok(mut guard) = CACHE.write()
-        && let Some(loaded) = load_from_disk()
-    {
-        // Keep session-only scopes that cannot exist on disk, while allowing a
-        // newer durable scope from another Codewhale process to refresh this
-        // process. Every in-process writer takes CACHE before the file lock, so
-        // this read/merge cannot overwrite a concurrent local refresh.
-        for (key, entry) in loaded.entries {
-            let should_replace = guard
+    let ticket = ProviderCatalogRefreshTicket {
+        provider: provider_identity.clone(),
+        provider_kind: provider,
+        fingerprint: Some(fingerprint.clone()),
+        generation,
+    };
+    with_current_route_ticket(&ticket, provider, &provider_identity, &base_url, || {
+        if let Some(loaded) = load_from_disk()
+            && let Some(entry) = loaded.get(
+                &storage_provider(provider, &provider_identity),
+                &fingerprint,
+            )
+            && let Ok(mut guard) = CACHE.write()
+        {
+            let key = ProviderCatalogCache::cache_key(
+                &storage_provider(provider, &provider_identity),
+                &fingerprint,
+            );
+            if guard
                 .entries
                 .get(&key)
-                .is_none_or(|current| entry.fetched_at >= current.fetched_at);
-            if should_replace {
-                guard.entries.insert(key, entry);
+                .is_none_or(|current| entry.fetched_at >= current.fetched_at)
+            {
+                guard.entries.insert(key, entry.clone());
             }
         }
-    }
-    CACHE
-        .read()
-        .map(|guard| {
-            if provider_owns_live_catalog(provider, &base_url) {
-                publish_exact_scope_for_identity(&guard, provider, &provider_identity, &fingerprint)
-            } else {
-                // Models.dev owns this provider's roster, so a persisted /models
-                // partition can only shadow fresher snapshot rows (#6396).
-                crate::provider_lake::replace_provider_live_snapshot_for_identity(
-                    provider,
-                    &provider_identity,
-                    CatalogSnapshot::default(),
-                );
-                0
-            }
-        })
-        .unwrap_or(0)
+        CACHE
+            .read()
+            .map(|guard| {
+                if provider_owns_live_catalog(provider, &base_url) {
+                    publish_exact_scope_for_identity(
+                        &guard,
+                        provider,
+                        &provider_identity,
+                        &fingerprint,
+                    )
+                } else {
+                    crate::provider_lake::replace_provider_live_snapshot_for_identity(
+                        provider,
+                        &provider_identity,
+                        CatalogSnapshot::default(),
+                    );
+                    0
+                }
+            })
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
 }
 
 fn forget_account_scoped_provider(provider_kind: ProviderKind, provider: &str) {
@@ -1427,9 +1607,8 @@ fn forget_account_scoped_provider(provider_kind: ProviderKind, provider: &str) {
 
 /// Begin a provider refresh and invalidate older in-flight results.
 ///
-/// Account-scoped Baseten and Codewhale routes additionally drop their prior
-/// in-memory rosters: the same URL can expose different models after a credential
-/// change, and no safe account identifier is available for cache reuse.
+/// Account-scoped routes without an established observation drop their prior
+/// in-memory rosters. Scoped callers invalidate binding changes before refresh.
 #[cfg(any(test, feature = "test-support"))]
 pub fn begin_refresh(provider: &str) -> ProviderCatalogRefreshTicket {
     begin_refresh_inner(inferred_provider_kind(provider), provider, None)
@@ -1458,14 +1637,14 @@ fn begin_refresh_inner(
     // refresh can never publish between the new ticket and the clear.
     let generation = if let Ok(mut generations) = REFRESH_GENERATIONS.write() {
         let generation = generations.entry(scope.clone()).or_default();
-        *generation = generation.saturating_add(1);
+        generation.generation = generation.generation.saturating_add(1);
         if fingerprint
             .as_deref()
             .is_some_and(|fp| is_account_scoped_scope(&scope, fp))
         {
             forget_account_scoped_provider(provider_kind, &provider);
         }
-        *generation
+        generation.generation
     } else {
         0
     };
@@ -1489,7 +1668,7 @@ fn with_current_ticket<T>(
     let generations = REFRESH_GENERATIONS.read().ok()?;
     if generations
         .get(&storage_provider(ticket.provider_kind, &ticket.provider))
-        .copied()
+        .map(|fence| fence.generation)
         != Some(ticket.generation)
     {
         return None;
@@ -1497,7 +1676,12 @@ fn with_current_ticket<T>(
     // Keep the generation read guard alive through publication. A newer
     // `begin_refresh` needs the write lock, so it cannot slip between the
     // current-ticket check and this operation's cache/lake update.
+    let fence = generations.get(&storage_provider(ticket.provider_kind, &ticket.provider))?;
+    let publication = fence.publication.lock().ok()?;
+    fence.revision.fetch_add(1, Ordering::SeqCst);
     let result = operation();
+    fence.revision.fetch_add(1, Ordering::SeqCst);
+    drop(publication);
     drop(generations);
     Some(result)
 }
@@ -2776,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_reload_rehydrates_and_exposes_six_hundred_openrouter_models() {
+    fn disk_reload_rehydrates_and_exposes_six_hundred_keyless_openrouter_models() {
         let _env = lock_test_env();
         let _live = crate::provider_lake::lock_live_snapshot();
         let home = tempfile::tempdir().expect("home");
@@ -2791,6 +2975,7 @@ mod tests {
             let __cw_config_init_1_1 = Some(ProvidersConfig {
                 openrouter: ProviderConfig {
                     base_url: Some("https://synthetic.openrouter.invalid/api/v1".to_string()),
+                    auth_mode: Some("none".to_string()),
                     ..ProviderConfig::default()
                 },
                 ..ProvidersConfig::default()

@@ -3134,6 +3134,7 @@ pub(crate) async fn handle_view_events(
                 app.status_message = Some(format!("Attached @{path}"));
             }
             ViewEvent::ModelPickerApplied {
+                route_selection,
                 model,
                 identity,
                 effort,
@@ -3141,6 +3142,17 @@ pub(crate) async fn handle_view_events(
                 previous_effort,
                 save_as_startup_default,
             } => {
+                if let (Some(selection), Some(identity)) = (route_selection, identity.as_ref()) {
+                    if let Err(error) =
+                        codewhale_engine::model_inventory::validate_inventory_selection(
+                            config, identity, &model, &selection,
+                        )
+                        .await
+                    {
+                        app.push_status_toast(error, StatusToastLevel::Error, Some(12_000));
+                        continue;
+                    }
+                }
                 apply_model_picker_choice(
                     app,
                     engine_handle,

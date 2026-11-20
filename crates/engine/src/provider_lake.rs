@@ -1807,6 +1807,14 @@ pub async fn update_provider_catalog(
         receipt.error = Some("provider_identity_changed");
         return receipt;
     }
+    let Ok((_, observation_generation)) =
+        crate::provider_catalog_live::inventory_scope(config, identity)
+    else {
+        let mut receipt = cached_receipt(config, identity);
+        receipt.outcome = "skipped";
+        receipt.error = Some("provider_identity_changed");
+        return receipt;
+    };
     if identity.provider == ProviderKind::OpenaiCodex {
         let mut route_config = config.clone();
         if route_config.scope_to_provider_identity(identity).is_err() {
@@ -1829,6 +1837,12 @@ pub async fn update_provider_catalog(
             }
         };
     }
+    let Some(_refresh) = crate::provider_catalog_live::try_inventory_refresh(identity) else {
+        let mut receipt = cached_receipt(config, identity);
+        receipt.outcome = "skipped";
+        receipt.error = Some("refresh_pending");
+        return receipt;
+    };
     let mut route_config = config.clone();
     if route_config.scope_to_provider_identity(identity).is_err() {
         let mut receipt = cached_receipt(config, identity);
@@ -1888,11 +1902,15 @@ pub async fn update_provider_catalog(
         receipt.outcome = "failed";
         return receipt;
     }
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
-        identity.provider,
-        identity.key.as_str(),
+    let Some(ticket) = crate::provider_catalog_live::begin_inventory_refresh(
+        identity,
         &base_url,
-    );
+        observation_generation,
+    ) else {
+        receipt.outcome = "skipped";
+        receipt.error = Some("refresh_superseded");
+        return receipt;
+    };
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(20),
         client.fetch_catalog_delta(),

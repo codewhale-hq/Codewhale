@@ -1,0 +1,19 @@
+# Exact route inventory
+
+Existing GET /v1/providers/{kind}/models?model_provider_id={exact-id}&filter=...&cursor=... remains the read. Each model adds `route: {model, selection: {route_id, binding_id}, provider_rank, evidence, readiness}`. `evidence` is advertised/configured_unverified/metadata_only/absent; advertised is listing evidence, never proof of inference. Readiness retains the Engine enum. Existing facts remain metadata.
+
+Response adds `inventory_revision`, `inventory_status` (existing CatalogStatus), and `discovery_supported`. Cursor is bound to exact scope, inventory revision, filtered rows and query. Empty successful listing, unsupported discovery, and failed/stale reads remain distinct. Match opaque model IDs exactly; filter searches before pagination and exact matches rank first.
+
+PATCH /v1/threads/{id} accepts optional `route_selection: {route_id,binding_id}` with `model`, `model_provider`, and exact `model_provider_id` when present in provider listing. This changes the session, not the saved startup default. Omission preserves the legacy request. Engine re-admits identity, checks binding and current readiness, and resolves the exact wire model before accepting. A changed binding requires refresh and explicit reselection; never silently replay selection against a new provider. Preserve query/focus keyed by route_id; never use inventory revision or credential generation as favorite/history identity.
+
+route_id is stable configured route + exact model (case preserved). binding_id fences endpoint/account; known-account credential renewal retains selection identity. API keys without a provable account identity require reselection on credential replacement. Client receives no account identifier or credential generation. This candidate adds no discovery on picker open, provider registry, or roster database.
+
+Desktop clients can adopt these optional fields independently; older clients retain the existing model-list and selection request shapes.
+
+## Evidence and limits
+
+The process fence extends the existing provider catalog request-generation owner. Unscoped legacy provider observations are invalidated on first scoped read; this deliberately requires a fresh discovery after restart where no safe account scope was persisted. No favorite/history key includes a credential generation. No inference request is made by inventory or selection validation. Prefix/KV-cache behavior is unchanged: this is a host-side selection contract, not new model-visible context.
+
+Same-account binding preservation requires a provable backing identity (official ChatGPT registration or the active Codewhale account session). Unknown-account API-key replacement invalidates the binding. A manual route remains unverified when discovery is unsupported or fails; a fresh authoritative absence is unavailable. Metadata never asserts entitlement. Thread selection is additive; legacy unfenced requests keep their established behavior. The read uses the requesting runtime's verified configured identities; it is not a cross-runtime or arbitrary host inventory service.
+
+Fixture commands: `scripts/dev-test.sh engine exact_inventory_` and `scripts/dev-test.sh app-server exact_inventory_`. These exercise exact selection, discovery outcomes, binding changes, and cursor scope without live provider calls. Existing catalog and TUI selection fixtures cover the compatibility consumers. Installed UI behavior and real inference require separate qualification.
