@@ -1982,6 +1982,12 @@ impl Expander {
                     }
                 }
                 "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
+                "awk" | "gawk" | "mawk" | "nawk" | "goawk" => {
+                    self.record_awk_program(tokens, head, &dynamic, depth);
+                }
+                "sed" | "gsed" | "ssed" => {
+                    self.record_sed_program(tokens, head, &dynamic, depth);
+                }
                 _ if SHELL_NAMES.contains(&name.as_str()) => {
                     match shell_input(&name, &tokens[head..], &dynamic[head..]) {
                         ShellInput::Command(offsets) => {
@@ -2398,6 +2404,1020 @@ impl Expander {
             index += 1;
         }
     }
+
+    fn record_awk_program(
+        &mut self,
+        tokens: &[String],
+        head: usize,
+        dynamic: &[bool],
+        depth: usize,
+    ) {
+        let mut scripts: Vec<&str> = Vec::new();
+        let mut has_script_option = false;
+        let mut options_done = false;
+        let mut first_operand: Option<usize> = None;
+        let mut i = head + 1;
+
+        while i < tokens.len() {
+            let token = tokens[i].as_str();
+            if !options_done && token == "--" {
+                options_done = true;
+                i += 1;
+                continue;
+            }
+            if !options_done && token.len() > 1 && token.starts_with('-') {
+                if let Some(long) = token.strip_prefix("--") {
+                    let (opt, inline) = match long.split_once('=') {
+                        Some((k, v)) => (k, Some(v)),
+                        None => (long, None),
+                    };
+                    match opt {
+                        "source" => {
+                            has_script_option = true;
+                            if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
+                                push_script(&mut scripts, &mut self.dynamic, v, d);
+                            }
+                        }
+                        "file" | "exec" => {
+                            has_script_option = true;
+                            options_done |= opt == "exec";
+                            if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
+                                self.dynamic |= is_runtime_script_file(v, d);
+                            }
+                        }
+                        "field-separator" | "assign" | "include" | "load"
+                            if inline.is_none() && i + 1 < tokens.len() =>
+                        {
+                            i += 1;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let flags = &token[1..];
+                    for (at, ch) in flags.char_indices() {
+                        let rest = &flags[at + ch.len_utf8()..];
+                        let inline = (!rest.is_empty()).then_some(rest);
+                        match ch {
+                            'e' => {
+                                has_script_option = true;
+                                if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
+                                {
+                                    push_script(&mut scripts, &mut self.dynamic, v, d);
+                                }
+                                break;
+                            }
+                            'f' | 'E' => {
+                                has_script_option = true;
+                                options_done |= ch == 'E';
+                                if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
+                                {
+                                    self.dynamic |= is_runtime_script_file(v, d);
+                                }
+                                break;
+                            }
+                            'W' => {
+                                if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
+                                {
+                                    if let Some(src) = v.strip_prefix("source=") {
+                                        has_script_option = true;
+                                        push_script(&mut scripts, &mut self.dynamic, src, d);
+                                    } else if let Some(file) =
+                                        v.strip_prefix("file=").or_else(|| v.strip_prefix("exec="))
+                                    {
+                                        has_script_option = true;
+                                        options_done |= v.starts_with("exec=");
+                                        self.dynamic |= is_runtime_script_file(file, d);
+                                    }
+                                }
+                                break;
+                            }
+                            'F' | 'v' | 'i' | 'l' => {
+                                if inline.is_none() && i + 1 < tokens.len() {
+                                    i += 1;
+                                }
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if first_operand.is_none() {
+                first_operand = Some(i);
+            }
+            i += 1;
+        }
+
+        if !has_script_option && let Some(op) = first_operand {
+            push_script(&mut scripts, &mut self.dynamic, &tokens[op], dynamic[op]);
+        }
+
+        if !scripts.is_empty() {
+            let joined = scripts.join("\n");
+            self.scan_awk_program(&joined, depth);
+        }
+    }
+
+    fn scan_awk_program(&mut self, program: &str, depth: usize) {
+        let tokens = lex_awk_tokens(program);
+        let n = tokens.len();
+        for idx in 0..n {
+            match &tokens[idx] {
+                AwkToken::Ident(name)
+                    if name == "system" && tokens.get(idx + 1) == Some(&AwkToken::LParen) =>
+                {
+                    let mut depth_paren = 1usize;
+                    let mut close = idx + 2;
+                    while close < n && depth_paren > 0 {
+                        match tokens[close] {
+                            AwkToken::LParen => depth_paren += 1,
+                            AwkToken::RParen => depth_paren -= 1,
+                            _ => {}
+                        }
+                        if depth_paren > 0 {
+                            close += 1;
+                        }
+                    }
+                    if depth_paren == 0 {
+                        self.emit_awk_command_expr(&tokens[idx + 2..close], depth);
+                    } else {
+                        self.dynamic = true;
+                        self.nested = true;
+                    }
+                }
+                AwkToken::Pipe => {
+                    let mut after = idx + 1;
+                    while after < n && tokens[after] == AwkToken::Newline {
+                        after += 1;
+                    }
+                    let expr = if matches!(tokens.get(after), Some(AwkToken::Ident(s)) if s == "getline")
+                    {
+                        awk_pipe_lhs(&tokens[..idx])
+                    } else {
+                        awk_pipe_rhs(&tokens[after..])
+                    };
+                    self.emit_awk_command_expr(expr, depth);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn emit_awk_command_expr(&mut self, expr: &[AwkToken], depth: usize) {
+        self.nested = true;
+        if expr.is_empty() {
+            self.dynamic = true;
+            return;
+        }
+        let mut joined = String::new();
+        let mut paren_depth = 0usize;
+        let mut has_str = false;
+        let mut all_static = true;
+        for tok in expr {
+            match tok {
+                AwkToken::Str(s) => {
+                    has_str = true;
+                    joined.push_str(s);
+                }
+                AwkToken::LParen => paren_depth += 1,
+                AwkToken::RParen if paren_depth > 0 => paren_depth -= 1,
+                AwkToken::Newline => {}
+                _ => {
+                    all_static = false;
+                    break;
+                }
+            }
+        }
+        if all_static && has_str && paren_depth == 0 {
+            self.code_payload(&joined, false, depth);
+        } else if let Some(AwkToken::Str(prefix)) = expr
+            .iter()
+            .find(|tok| !matches!(tok, AwkToken::LParen | AwkToken::Newline))
+        {
+            self.code_payload(prefix, true, depth);
+        } else {
+            self.dynamic = true;
+        }
+    }
+
+    fn record_sed_program(
+        &mut self,
+        tokens: &[String],
+        head: usize,
+        dynamic: &[bool],
+        depth: usize,
+    ) {
+        let mut scripts: Vec<&str> = Vec::new();
+        let mut has_script_option = false;
+        let mut bare_in_place = false;
+        let mut options_done = false;
+        let mut operands: Vec<usize> = Vec::new();
+        let mut i = head + 1;
+
+        while i < tokens.len() {
+            let token = tokens[i].as_str();
+            if !options_done && token == "--" {
+                options_done = true;
+                i += 1;
+                continue;
+            }
+            if !options_done && token.len() > 1 && token.starts_with('-') {
+                if let Some(long) = token.strip_prefix("--") {
+                    let (opt, inline) = match long.split_once('=') {
+                        Some((k, v)) => (k, Some(v)),
+                        None => (long, None),
+                    };
+                    match opt {
+                        "expression" => {
+                            has_script_option = true;
+                            if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
+                                push_script(&mut scripts, &mut self.dynamic, v, d);
+                            }
+                        }
+                        "file" => {
+                            has_script_option = true;
+                            if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
+                                self.dynamic |= is_runtime_script_file(v, d);
+                            }
+                        }
+                        "line-length" if inline.is_none() && i + 1 < tokens.len() => {
+                            i += 1;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let flags = &token[1..];
+                    for (at, ch) in flags.char_indices() {
+                        let rest = &flags[at + ch.len_utf8()..];
+                        let inline = (!rest.is_empty()).then_some(rest);
+                        match ch {
+                            'e' => {
+                                has_script_option = true;
+                                if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
+                                {
+                                    push_script(&mut scripts, &mut self.dynamic, v, d);
+                                }
+                                break;
+                            }
+                            'f' => {
+                                has_script_option = true;
+                                if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
+                                {
+                                    self.dynamic |= is_runtime_script_file(v, d);
+                                }
+                                break;
+                            }
+                            'l' => {
+                                if inline.is_none() && i + 1 < tokens.len() {
+                                    i += 1;
+                                }
+                                break;
+                            }
+                            'i' => {
+                                bare_in_place |= inline.is_none();
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            operands.push(i);
+            i += 1;
+        }
+
+        if !has_script_option && let Some(&first) = operands.first() {
+            push_script(
+                &mut scripts,
+                &mut self.dynamic,
+                &tokens[first],
+                dynamic[first],
+            );
+            if bare_in_place
+                && let Some(&second) = operands.get(1)
+                && looks_like_bsd_sed_backup_suffix(&tokens[first])
+            {
+                push_script(
+                    &mut scripts,
+                    &mut self.dynamic,
+                    &tokens[second],
+                    dynamic[second],
+                );
+            }
+        }
+
+        if !scripts.is_empty() {
+            let joined = scripts.join("\n");
+            self.scan_sed_script(&joined, depth);
+        }
+    }
+
+    fn scan_sed_script(&mut self, script: &str, depth: usize) {
+        let chars: Vec<char> = script.chars().collect();
+        let n = chars.len();
+        let mut i = 0usize;
+
+        while i < n {
+            while i < n && matches!(chars[i], ' ' | '\t' | '\r' | '\n' | ';' | '}') {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+            if chars[i] == '#' {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+
+            let (next_i, matched_addr) = skip_sed_address(&chars, i);
+            i = next_i;
+            if matched_addr {
+                while i < n && matches!(chars[i], ' ' | '\t') {
+                    i += 1;
+                }
+                if i < n && chars[i] == ',' {
+                    (i, _) = skip_sed_address(&chars, i + 1);
+                }
+            }
+            while i < n && matches!(chars[i], ' ' | '\t' | '!') {
+                i += 1;
+            }
+            if i >= n {
+                break;
+            }
+
+            match chars[i] {
+                ';' | '\n' | '\r' | '{' | '}' => i += 1,
+                '#' => {
+                    while i < n && chars[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                's' => {
+                    i += 1;
+                    if i >= n || matches!(chars[i], '\n' | '\\') {
+                        continue;
+                    }
+                    let delim = chars[i];
+                    i += 1;
+                    let pat_start = i;
+                    let pat_after = skip_sed_regex(&chars, pat_start, delim);
+                    if pat_after == 0 || pat_after > n || chars[pat_after - 1] != delim {
+                        i = pat_after;
+                        continue;
+                    }
+                    let pat_end = pat_after - 1;
+                    let (repl, repl_dynamic, after_repl) =
+                        parse_sed_replacement(&chars, pat_after, delim);
+                    i = after_repl;
+                    let mut has_e = false;
+                    while i < n {
+                        match chars[i] {
+                            'e' => {
+                                has_e = true;
+                                i += 1;
+                            }
+                            'w' | 'W' => {
+                                i += 1;
+                                while i < n && chars[i] != '\n' {
+                                    i += 1;
+                                }
+                                break;
+                            }
+                            ';' | '\n' | '}' | '#' => break,
+                            _ => i += 1,
+                        }
+                    }
+                    if has_e {
+                        let pat: String = chars[pat_start..pat_end].iter().collect();
+                        let replaces_whole_line =
+                            matches!(pat.as_str(), ".*" | "^.*$" | "^.*" | ".*$");
+                        self.nested = true;
+                        if repl.trim().is_empty() {
+                            self.dynamic = true;
+                        } else {
+                            self.code_payload(&repl, !replaces_whole_line || repl_dynamic, depth);
+                        }
+                    }
+                }
+                'y' => {
+                    i += 1;
+                    if i < n && !matches!(chars[i], '\n' | '\\') {
+                        let delim = chars[i];
+                        i = skip_sed_delimited(&chars, i + 1, delim);
+                        i = skip_sed_delimited(&chars, i, delim);
+                    }
+                }
+                'e' => {
+                    i += 1;
+                    while i < n && matches!(chars[i], ' ' | '\t') {
+                        i += 1;
+                    }
+                    self.nested = true;
+                    if i >= n || matches!(chars[i], '\n' | '\r' | ';' | '}') {
+                        self.dynamic = true;
+                    } else {
+                        let mut cmd = String::new();
+                        while i < n && chars[i] != '\n' {
+                            if chars[i] == '\\' && i + 1 < n && chars[i + 1] == '\n' {
+                                i += 2;
+                                continue;
+                            }
+                            cmd.push(chars[i]);
+                            i += 1;
+                        }
+                        if cmd.trim().is_empty() {
+                            self.dynamic = true;
+                        } else {
+                            self.code_payload(&cmd, false, depth);
+                        }
+                    }
+                }
+                'a' | 'i' | 'c' => {
+                    i += 1;
+                    while i < n && matches!(chars[i], ' ' | '\t') {
+                        i += 1;
+                    }
+                    if i < n && chars[i] == '\\' && chars.get(i + 1) == Some(&'\n') {
+                        i += 2;
+                    }
+                    while i < n {
+                        let line_start = i;
+                        while i < n && chars[i] != '\n' {
+                            i += 1;
+                        }
+                        let trailing_bs = chars[line_start..i]
+                            .iter()
+                            .rev()
+                            .take_while(|&&c| c == '\\')
+                            .count();
+                        if i < n {
+                            i += 1;
+                        }
+                        if trailing_bs % 2 == 0 {
+                            break;
+                        }
+                    }
+                }
+                'r' | 'R' | 'w' | 'W' => {
+                    i += 1;
+                    while i < n && chars[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                ':' | 'b' | 't' | 'T' | 'q' | 'Q' | 'l' | 'v' => {
+                    i += 1;
+                    while i < n && !matches!(chars[i], ';' | '\n' | '}' | '#') {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+    }
+}
+
+fn take_opt_val<'a>(
+    inline: Option<&'a str>,
+    tokens: &'a [String],
+    dynamic: &[bool],
+    i: &mut usize,
+) -> Option<(&'a str, bool)> {
+    match inline {
+        Some(v) => Some((v, dynamic[*i])),
+        None if *i + 1 < tokens.len() => {
+            *i += 1;
+            Some((tokens[*i].as_str(), dynamic[*i]))
+        }
+        None => None,
+    }
+}
+
+fn push_script<'a>(scripts: &mut Vec<&'a str>, out_dynamic: &mut bool, val: &'a str, is_dyn: bool) {
+    if is_dyn {
+        *out_dynamic = true;
+    } else {
+        scripts.push(val);
+    }
+}
+
+fn is_runtime_script_file(val: &str, is_dynamic: bool) -> bool {
+    is_dynamic || val == "-" || script_descriptor_fd(val).is_some()
+}
+
+fn parse_hex_byte(chars: &[char], start: usize) -> Option<(char, usize)> {
+    let mut val = 0u32;
+    let mut end = start;
+    while end < chars.len() && end < start + 2 {
+        let Some(d) = chars[end].to_digit(16) else {
+            break;
+        };
+        val = (val << 4) | d;
+        end += 1;
+    }
+    (end > start).then_some((char::from((val & 0xff) as u8), end))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AwkToken {
+    Ident(String),
+    Str(String),
+    Number,
+    Regex,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Semi,
+    Newline,
+    Pipe,
+    LogicalOr,
+    IncDec,
+    MultiOp,
+    Other(char),
+}
+
+fn lex_awk_tokens(input: &str) -> Vec<AwkToken> {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut tokens = Vec::new();
+    let mut i = 0usize;
+    let mut regex_allowed = true;
+    let mut prev_cond_kw = false;
+    let mut cond_parens: Vec<bool> = Vec::new();
+
+    while i < n {
+        let ch = chars[i];
+        match ch {
+            ' ' | '\t' | '\r' => {
+                i += 1;
+                continue;
+            }
+            '\\' if chars.get(i + 1) == Some(&'\n') => {
+                i += 2;
+                continue;
+            }
+            '\\' if chars.get(i + 1) == Some(&'\r') && chars.get(i + 2) == Some(&'\n') => {
+                i += 3;
+                continue;
+            }
+            '#' => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            '\n' => {
+                tokens.push(AwkToken::Newline);
+                regex_allowed = true;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        let mut next_cond_kw = false;
+        match ch {
+            '"' => {
+                let (text, next) = lex_awk_string(&chars, i);
+                tokens.push(AwkToken::Str(text));
+                regex_allowed = false;
+                i = next;
+            }
+            '/' if regex_allowed => {
+                i = skip_sed_regex(&chars, i + 1, '/');
+                tokens.push(AwkToken::Regex);
+                regex_allowed = false;
+            }
+            '(' => {
+                cond_parens.push(prev_cond_kw);
+                tokens.push(AwkToken::LParen);
+                regex_allowed = true;
+                i += 1;
+            }
+            ')' => {
+                tokens.push(AwkToken::RParen);
+                regex_allowed = cond_parens.pop().unwrap_or(false);
+                i += 1;
+            }
+            '[' | '{' | '}' | ';' => {
+                tokens.push(match ch {
+                    '[' => AwkToken::LBracket,
+                    '{' => AwkToken::LBrace,
+                    '}' => AwkToken::RBrace,
+                    _ => AwkToken::Semi,
+                });
+                regex_allowed = true;
+                i += 1;
+            }
+            ']' => {
+                tokens.push(AwkToken::RBracket);
+                regex_allowed = false;
+                i += 1;
+            }
+            '|' => {
+                if chars.get(i + 1) == Some(&'|') {
+                    tokens.push(AwkToken::LogicalOr);
+                    i += 2;
+                } else {
+                    tokens.push(AwkToken::Pipe);
+                    i += if chars.get(i + 1) == Some(&'&') { 2 } else { 1 };
+                }
+                regex_allowed = true;
+            }
+            '+' | '-' if chars.get(i + 1) == Some(&ch) => {
+                tokens.push(AwkToken::IncDec);
+                regex_allowed = false;
+                i += 2;
+            }
+            '&' if chars.get(i + 1) == Some(&'&') => {
+                tokens.push(AwkToken::MultiOp);
+                regex_allowed = true;
+                i += 2;
+            }
+            '=' | '!' | '<' | '>' | '+' | '-' | '*' | '/' | '%' | '^'
+                if chars.get(i + 1) == Some(&'=') =>
+            {
+                tokens.push(AwkToken::MultiOp);
+                regex_allowed = true;
+                i += 2;
+            }
+            '!' if chars.get(i + 1) == Some(&'~') => {
+                tokens.push(AwkToken::MultiOp);
+                regex_allowed = true;
+                i += 2;
+            }
+            '0'..='9' => {
+                i += 1;
+                while i < n
+                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+                {
+                    i += 1;
+                }
+                tokens.push(AwkToken::Number);
+                regex_allowed = false;
+            }
+            '.' if chars.get(i + 1).is_some_and(char::is_ascii_digit) => {
+                i += 1;
+                while i < n && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                tokens.push(AwkToken::Number);
+                regex_allowed = false;
+            }
+            _ if ch.is_ascii_alphabetic() || ch == '_' => {
+                let start = i;
+                i += 1;
+                while i < n && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                regex_allowed = matches!(
+                    word.as_str(),
+                    "if" | "else"
+                        | "do"
+                        | "while"
+                        | "for"
+                        | "return"
+                        | "print"
+                        | "printf"
+                        | "in"
+                        | "case"
+                );
+                next_cond_kw = matches!(word.as_str(), "if" | "while" | "for");
+                tokens.push(AwkToken::Ident(word));
+            }
+            _ => {
+                tokens.push(AwkToken::Other(ch));
+                regex_allowed = true;
+                i += 1;
+            }
+        }
+        prev_cond_kw = next_cond_kw;
+    }
+    tokens
+}
+
+fn lex_awk_string(chars: &[char], start: usize) -> (String, usize) {
+    let n = chars.len();
+    let mut i = start + 1;
+    let mut out = String::new();
+    while i < n {
+        match chars[i] {
+            '"' => return (out, i + 1),
+            '\\' if i + 1 < n => {
+                let next = chars[i + 1];
+                match next {
+                    '\n' => i += 2,
+                    'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' => {
+                        out.push(match next {
+                            'a' => '\x07',
+                            'b' => '\x08',
+                            'f' => '\x0c',
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            _ => '\x0b',
+                        });
+                        i += 2;
+                    }
+                    '0'..='7' => {
+                        let mut val = 0u32;
+                        let mut end = i + 1;
+                        while end < n && end < i + 4 && ('0'..='7').contains(&chars[end]) {
+                            val = (val << 3) | (chars[end] as u32 - '0' as u32);
+                            end += 1;
+                        }
+                        out.push(char::from((val & 0xff) as u8));
+                        i = end;
+                    }
+                    'x' => {
+                        if let Some((decoded, end)) = parse_hex_byte(chars, i + 2) {
+                            out.push(decoded);
+                            i = end;
+                        } else {
+                            out.push('x');
+                            i += 2;
+                        }
+                    }
+                    _ => {
+                        out.push(next);
+                        i += 2;
+                    }
+                }
+            }
+            ch => {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    (out, n)
+}
+
+fn is_awk_lhs_stop(tok: &AwkToken) -> bool {
+    match tok {
+        AwkToken::LBrace
+        | AwkToken::RBrace
+        | AwkToken::Semi
+        | AwkToken::Newline
+        | AwkToken::Pipe
+        | AwkToken::LogicalOr
+        | AwkToken::MultiOp => true,
+        AwkToken::Other(ch) => matches!(ch, ',' | '=' | '?' | ':' | '<' | '>' | '~' | '!'),
+        AwkToken::Ident(w) => matches!(
+            w.as_str(),
+            "if" | "else" | "while" | "for" | "do" | "return" | "print" | "printf" | "in" | "case"
+        ),
+        _ => false,
+    }
+}
+
+fn awk_pipe_lhs(before: &[AwkToken]) -> &[AwkToken] {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut start = before.len();
+    while start > 0 {
+        let tok = &before[start - 1];
+        match tok {
+            AwkToken::RParen => paren += 1,
+            AwkToken::LParen if paren > 0 => paren -= 1,
+            AwkToken::LParen => break,
+            AwkToken::RBracket => bracket += 1,
+            AwkToken::LBracket if bracket > 0 => bracket -= 1,
+            AwkToken::LBracket => break,
+            _ if paren == 0 && bracket == 0 && is_awk_lhs_stop(tok) => break,
+            _ => {}
+        }
+        start -= 1;
+    }
+    &before[start..]
+}
+
+fn awk_pipe_rhs(after: &[AwkToken]) -> &[AwkToken] {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut end = 0usize;
+    while end < after.len() {
+        match &after[end] {
+            AwkToken::LParen => paren += 1,
+            AwkToken::RParen if paren > 0 => paren -= 1,
+            AwkToken::RParen => break,
+            AwkToken::LBracket => bracket += 1,
+            AwkToken::RBracket if bracket > 0 => bracket -= 1,
+            AwkToken::RBracket => break,
+            AwkToken::Semi
+            | AwkToken::Newline
+            | AwkToken::RBrace
+            | AwkToken::LBrace
+            | AwkToken::Pipe
+            | AwkToken::LogicalOr
+                if paren == 0 && bracket == 0 =>
+            {
+                break;
+            }
+            AwkToken::Ident(w) if paren == 0 && bracket == 0 && w == "else" => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    &after[..end]
+}
+
+fn looks_like_bsd_sed_backup_suffix(token: &str) -> bool {
+    if token.is_empty() || token.starts_with('.') {
+        return true;
+    }
+    token.len() > 1
+        && !token.contains([
+            '/', ';', '\n', '{', '}', ' ', '\t', ',', '!', '$', '\\', '#',
+        ])
+        && !token.starts_with(['s', 'e', 'y'])
+        && !token.as_bytes()[0].is_ascii_digit()
+}
+
+fn skip_sed_regex(chars: &[char], start: usize, delim: char) -> usize {
+    let n = chars.len();
+    let mut i = start;
+    let mut in_class = false;
+    while i < n {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < n {
+            i += 2;
+            continue;
+        }
+        if ch == '\n' {
+            return i;
+        }
+        if !in_class {
+            if ch == delim {
+                return i + 1;
+            }
+            if ch == '[' {
+                in_class = true;
+                i += 1;
+                if i < n && chars[i] == '^' {
+                    i += 1;
+                }
+                if i < n && chars[i] == ']' {
+                    i += 1;
+                }
+                continue;
+            }
+        } else if ch == '[' && i + 1 < n && matches!(chars[i + 1], ':' | '.' | '=') {
+            let inner = chars[i + 1];
+            i += 2;
+            while i + 1 < n && !(chars[i] == inner && chars[i + 1] == ']') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        } else if ch == ']' {
+            in_class = false;
+        }
+        i += 1;
+    }
+    n
+}
+
+fn skip_sed_delimited(chars: &[char], start: usize, delim: char) -> usize {
+    let n = chars.len();
+    let mut i = start;
+    while i < n {
+        if chars[i] == '\\' && i + 1 < n {
+            i += 2;
+            continue;
+        }
+        if chars[i] == delim {
+            return i + 1;
+        }
+        if chars[i] == '\n' {
+            return i;
+        }
+        i += 1;
+    }
+    n
+}
+
+fn skip_sed_address(chars: &[char], mut i: usize) -> (usize, bool) {
+    let n = chars.len();
+    while i < n && matches!(chars[i], ' ' | '\t') {
+        i += 1;
+    }
+    if i >= n {
+        return (i, false);
+    }
+    match chars[i] {
+        '$' => (i + 1, true),
+        '0'..='9' => {
+            while i < n && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < n && chars[i] == '~' {
+                i += 1;
+                while i < n && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            (i, true)
+        }
+        '+' | '~' if chars.get(i + 1).is_some_and(char::is_ascii_digit) => {
+            i += 1;
+            while i < n && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            (i, true)
+        }
+        '/' => {
+            i = skip_sed_regex(chars, i + 1, '/');
+            while i < n && matches!(chars[i], 'I' | 'i' | 'M' | 'm') {
+                i += 1;
+            }
+            (i, true)
+        }
+        '\\' if i + 1 < n && chars[i + 1] != '\n' => {
+            let delim = chars[i + 1];
+            i = skip_sed_regex(chars, i + 2, delim);
+            while i < n && matches!(chars[i], 'I' | 'i' | 'M' | 'm') {
+                i += 1;
+            }
+            (i, true)
+        }
+        _ => (i, false),
+    }
+}
+
+fn parse_sed_replacement(chars: &[char], start: usize, delim: char) -> (String, bool, usize) {
+    let n = chars.len();
+    let mut i = start;
+    let mut out = String::new();
+    let mut has_dynamic = false;
+    while i < n {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < n {
+            let next = chars[i + 1];
+            match next {
+                '\n' | 'n' | 't' | 'r' | 'a' | 'f' | 'v' => {
+                    out.push(match next {
+                        '\n' | 'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        'a' => '\x07',
+                        'f' => '\x0c',
+                        _ => '\x0b',
+                    });
+                    i += 2;
+                }
+                '\\' | '&' => {
+                    out.push(next);
+                    i += 2;
+                }
+                c if c == delim => {
+                    out.push(delim);
+                    i += 2;
+                }
+                '0'..='9' | 'l' | 'L' | 'u' | 'U' | 'E' | 'c' | 'o' | 'd' => {
+                    has_dynamic = true;
+                    i += 2;
+                }
+                'x' => {
+                    has_dynamic = true;
+                    if let Some((decoded, end)) = parse_hex_byte(chars, i + 2) {
+                        out.push(decoded);
+                        i = end;
+                    } else {
+                        out.push('x');
+                        i += 2;
+                    }
+                }
+                _ => {
+                    out.push(next);
+                    i += 2;
+                }
+            }
+            continue;
+        }
+        if ch == delim {
+            return (out, has_dynamic, i + 1);
+        }
+        if ch == '\n' {
+            return (out, true, i);
+        }
+        if ch == '&' {
+            has_dynamic = true;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    (out, true, n)
 }
 
 struct VerbLauncher {
@@ -4088,12 +5108,10 @@ fn command_heads(tokens: &[String]) -> Heads {
     }
 }
 
-/// A script operand that names a file descriptor rather than a file:
-/// `/dev/stdin`, `/dev/fd/N` or `/proc/<pid>/fd/N`. Its text arrives through
-/// a pipe, a here-string or a redirect, so it is only known at run time —
-/// unless it is stdin and a heredoc body (already expanded as the script)
-/// feeds it.
-fn script_read_at_run_time(script: &str, line: &Line) -> bool {
+fn script_descriptor_fd(script: &str) -> Option<&str> {
+    if !script.starts_with('/') {
+        return None;
+    }
     let mut parts: Vec<&str> = Vec::new();
     for part in script.split('/') {
         match part {
@@ -4104,22 +5122,27 @@ fn script_read_at_run_time(script: &str, line: &Line) -> bool {
             part => parts.push(part),
         }
     }
-    if !script.starts_with('/') {
-        return false;
-    }
-    let descriptor = match parts.as_slice() {
-        ["dev", "stdin"] => "0",
-        ["dev", "fd", fd] => fd,
+    match parts.as_slice() {
+        ["dev", "stdin"] => Some("0"),
+        ["dev", "fd", fd] => Some(*fd),
         ["proc", process, "fd", fd]
             if *process == "self"
                 || *process == "thread-self"
                 || process.chars().all(|ch| ch.is_ascii_digit()) =>
         {
-            fd
+            Some(*fd)
         }
-        _ => return false,
-    };
-    descriptor != "0" || !line.heredoc
+        _ => None,
+    }
+}
+
+/// A script operand that names a file descriptor rather than a file:
+/// `/dev/stdin`, `/dev/fd/N` or `/proc/<pid>/fd/N`. Its text arrives through
+/// a pipe, a here-string or a redirect, so it is only known at run time —
+/// unless it is stdin and a heredoc body (already expanded as the script)
+/// feeds it.
+fn script_read_at_run_time(script: &str, line: &Line) -> bool {
+    script_descriptor_fd(script).is_some_and(|fd| fd != "0" || !line.heredoc)
 }
 
 /// How the shell invocation `tokens` (with `tokens[0]` the shell) gets its
@@ -4640,5 +5663,138 @@ mod tests {
         );
         assert!(expand_for_platform("$'rm' -f f", false).dynamic);
         assert!(expand_for_platform("$'\\x72m' f", false).dynamic);
+    }
+
+    #[test]
+    fn awk_static_and_dynamic_command_payloads_are_scanned() {
+        for (command, expected) in [
+            ("awk 'BEGIN{system(\"rm x\")}'", "rm x"),
+            ("awk 'BEGIN{system(\"r\" \"m\" \" x\")}'", "rm x"),
+            (r#"awk 'BEGIN{system("\162\155 x")}'"#, "rm x"),
+            (r#"awk 'BEGIN{system("\x72\x6d x")}'"#, "rm x"),
+            ("awk 'BEGIN{\"rm x\" | getline}'", "rm x"),
+            (
+                "awk 'BEGIN{while ((\"rm x\" | getline line) > 0) print line}'",
+                "rm x",
+            ),
+            ("awk 'BEGIN{\"rm x\" |& getline}'", "rm x"),
+            ("awk 'BEGIN{print \"a\" | \"rm x\"}'", "rm x"),
+            ("awk 'BEGIN{printf \"%s\", \"a\" |& \"rm x\"}'", "rm x"),
+            ("awk '{x = a / b; system(\"rm x\"); y = c / d}'", "rm x"),
+            ("gawk -e 'BEGIN{system(\"rm x\")}' file.txt", "rm x"),
+            ("gawk --source='BEGIN{system(\"rm x\")}' file.txt", "rm x"),
+            ("mawk -F: 'BEGIN{system(\"rm x\")}' /etc/passwd", "rm x"),
+            ("awk -- 'BEGIN{system(\"rm x\")}'", "rm x"),
+            ("gawk -e 'BEGIN{system(\"rm\"' -e '\" x\")}'", "rm x"),
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                expansion.commands.iter().any(|target| target == expected),
+                "{command}: {:?}",
+                expansion.commands
+            );
+            assert!(expansion.nested, "{command}");
+        }
+
+        for command in [
+            "awk 'BEGIN{c=\"rm x\"; system(c)}'",
+            "awk -v c='rm x' 'BEGIN{system(c)}'",
+            "awk 'BEGIN{system(\"rm \" $1)}'",
+            "awk 'BEGIN{c=\"rm x\"; c | getline}'",
+            "awk 'BEGIN{c=\"rm x\"; print \"a\" | c}'",
+            "awk $PROG file.txt",
+            "gawk -e \"$PROG\" file.txt",
+            "awk -f - file.txt",
+            "awk -f /dev/stdin file.txt",
+        ] {
+            assert!(expand_for_platform(command, false).dynamic, "{command}");
+        }
+
+        for command in [
+            "awk '{print}'",
+            "awk '{print $1}'",
+            "awk -F: '{print $1}' /etc/passwd",
+            "awk '/foo|bar/ {print}' file.txt",
+            "awk '$1 ~ /foo|bar/ {print}' file.txt",
+            "awk '$1 == \"a\" || $2 == \"b\" {print}' file.txt",
+            "awk '{print $1 / 2}' file.txt",
+            "awk '{print \"system(\\\"rm x\\\")\"}'",
+            "awk '# system(\"rm x\")\n{print $1}'",
+            "awk '{my_system(\"rm x\")}'",
+            "awk -f script.awk file.txt",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                !expansion.dynamic && !expansion.nested,
+                "{command}: {expansion:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sed_static_and_dynamic_command_payloads_are_scanned() {
+        for (command, expected) in [
+            ("sed 's/a/rm x/e'", "rm x"),
+            ("sed 's#a#rm x#ge'", "rm x"),
+            ("sed 's|a|rm x|2ep'", "rm x"),
+            ("sed 's/.*/rm x/e'", "rm x"),
+            ("sed 's/a/rm x/ew /tmp/out'", "rm x"),
+            ("sed 'e rm x'", "rm x"),
+            ("sed '1e rm x'", "rm x"),
+            ("sed '/foo/e rm x'", "rm x"),
+            ("sed 's/foo/bar/g; e rm x'", "rm x"),
+            ("sed -e 's/a/b/' -e 's/c/rm x/e'", "rm x"),
+            ("sed --expression='e rm x'", "rm x"),
+            ("sed -ne 's/a/rm x/e'", "rm x"),
+            ("sed -i '' 's/a/rm x/e' file.txt", "rm x"),
+            ("sed -i .bak 's/a/rm x/e' file.txt", "rm x"),
+            ("gsed '1{s/a/rm x/e}'", "rm x"),
+            ("sed 'e echo hi; rm x'", "rm x"),
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                expansion.commands.iter().any(|target| target == expected),
+                "{command}: {:?}",
+                expansion.commands
+            );
+            assert!(expansion.nested, "{command}");
+        }
+
+        for command in [
+            "sed 'e'",
+            "sed '1e'",
+            "sed '1{e}'",
+            "sed 'e; p'",
+            "sed 's/^//e'",
+            "sed 's/a/b/e'",
+            "sed $PROG file.txt",
+            "sed -e \"$PROG\" file.txt",
+            "sed -f - file.txt",
+            "sed -f /dev/stdin file.txt",
+        ] {
+            assert!(expand_for_platform(command, false).dynamic, "{command}");
+        }
+
+        for command in [
+            "sed -n '/x/p'",
+            "sed 's/foo/bar/g'",
+            "sed -e 's/echo/echoed/g'",
+            "sed 's/e/x/g'",
+            "sed 's/a/b/w readme.txt'",
+            "sed 'y/abcde/ABCDE/'",
+            "sed ':end; s/a/b/; t end'",
+            "sed '1i\\\nexample header'",
+            "sed 's/[a/e]/b/g'",
+            "sed 's/[[:alpha:]/]/e/g'",
+            "sed -i 's/foo/bar/' file.txt",
+            "sed -i '' 's/foo/bar/g' file.txt",
+            "sed -f script.sed file.txt",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                !expansion.dynamic && !expansion.nested,
+                "{command}: {expansion:?}"
+            );
+        }
     }
 }
