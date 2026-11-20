@@ -22,6 +22,7 @@ pub(super) struct PersistedShellArtifact {
     pub(super) absolute_path: PathBuf,
     pub(super) relative_path: PathBuf,
     pub(super) byte_size: u64,
+    pub(super) complete: bool,
     pub(super) digest: String,
 }
 
@@ -65,6 +66,7 @@ fn persist_shell_bytes_with_spec(
     Ok(PersistedShellArtifact {
         artifact_id: spec.artifact_id.clone(),
         session_id: spec.session_id.clone(),
+        complete: true,
         absolute_path,
         relative_path,
         byte_size: raw_bytes.len().try_into().unwrap_or(u64::MAX),
@@ -323,6 +325,7 @@ impl BoundedOutputAccumulator {
                 self.persisted_artifact = Some(PersistedShellArtifact {
                     artifact_id: spec.artifact_id.clone(),
                     session_id: spec.session_id.clone(),
+                    complete: true,
                     absolute_path,
                     relative_path,
                     byte_size,
@@ -563,6 +566,9 @@ pub(super) struct RawOutputBuffer {
     dropped: usize,
     cap: usize,
     abandoned: bool,
+    spool_on_clip: bool,
+    spool: Option<tempfile::NamedTempFile>,
+    final_artifact: Option<PersistedShellArtifact>,
 }
 
 impl RawOutputBuffer {
@@ -576,6 +582,9 @@ impl RawOutputBuffer {
             dropped: 0,
             cap: cap.max(1),
             abandoned: false,
+            spool_on_clip: false,
+            spool: None,
+            final_artifact: None,
         }
     }
 
@@ -592,11 +601,106 @@ impl RawOutputBuffer {
             self.dropped = self.dropped.saturating_add(bytes.len());
             return false;
         }
+        if self.spool_on_clip {
+            let clipped = self.data.len().saturating_add(bytes.len())
+                > self.cap.saturating_add(RAW_STREAM_DROP_SLACK.min(self.cap));
+            let write = if let Some(file) = self.spool.as_mut() {
+                file.write_all(bytes)
+            } else if clipped && self.dropped == 0 {
+                tempfile::NamedTempFile::new().and_then(|mut file| {
+                    file.write_all(&self.data)?;
+                    file.write_all(bytes)?;
+                    self.spool = Some(file);
+                    Ok(())
+                })
+            } else {
+                Ok(())
+            };
+            if let Err(error) = write {
+                tracing::warn!(%error, "raw shell spill unavailable");
+                self.spool.take();
+                self.spool_on_clip = false;
+            }
+        }
         self.data.extend_from_slice(bytes);
         if self.data.len() > self.cap.saturating_add(RAW_STREAM_DROP_SLACK.min(self.cap)) {
             self.drop_front_to(self.cap);
         }
         true
+    }
+
+    pub(super) fn for_job(cap: usize, spool_on_clip: bool) -> SharedRawOutput {
+        Arc::new(Mutex::new(Self {
+            spool_on_clip,
+            ..Self::with_cap(cap)
+        }))
+    }
+
+    pub(super) fn mark_read_error(&mut self) {
+        self.abandoned = true;
+    }
+
+    pub(super) fn capture_complete(&self) -> bool {
+        !self.abandoned && (self.dropped == 0 || self.spool.is_some())
+    }
+
+    fn copy_complete(&self, writer: &mut impl Write) -> io::Result<()> {
+        if self.abandoned {
+            return Err(io::Error::other("the output reader ended before EOF"));
+        }
+        if let Some(file) = self.spool.as_ref() {
+            let copied = io::copy(&mut file.reopen()?, writer)?;
+            if copied != self.total_len() as u64 {
+                return Err(io::Error::other("raw shell spill is incomplete"));
+            }
+        } else if self.dropped == 0 {
+            writer.write_all(&self.data)?;
+        } else {
+            return Err(io::Error::other(
+                "raw shell output was dropped before publication",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn artifact(&self) -> Option<PersistedShellArtifact> {
+        self.final_artifact.clone()
+    }
+
+    pub(super) fn publish_complete(
+        &mut self,
+        stderr: Option<&Self>,
+        session: &str,
+        key: &str,
+    ) -> io::Result<PersistedShellArtifact> {
+        let mut file = tempfile::tempfile()?;
+        self.copy_complete(&mut file)?;
+        if let Some(stderr) = stderr.filter(|raw| raw.total_len() > 0) {
+            if self.total_len() != 0 {
+                file.write_all(b"\n\n")?;
+            }
+            file.write_all(b"STDERR:\n")?;
+            stderr.copy_complete(&mut file)?;
+        }
+        file.rewind()?;
+        let artifact_id = codewhale_runtime::artifacts::artifact_id_for_tool_call(key);
+        let (absolute_path, relative_path, byte_size, digest) =
+            codewhale_runtime::artifacts::write_session_artifact_immutable_from_reader(
+                session,
+                &artifact_id,
+                &mut file,
+            )?;
+        let artifact = PersistedShellArtifact {
+            artifact_id,
+            complete: true,
+            session_id: session.to_owned(),
+            absolute_path,
+            relative_path,
+            byte_size,
+            digest,
+        };
+        self.final_artifact = Some(artifact.clone());
+        Ok(artifact)
     }
 
     /// Give up on this stream: release everything held and stop accepting more.
@@ -606,6 +710,7 @@ impl RawOutputBuffer {
     /// bytes; holding them until the writer eventually closes is pure residency.
     pub(super) fn abandon(&mut self) {
         self.abandoned = true;
+        self.spool.take();
         self.dropped = self.dropped.saturating_add(self.data.len());
         self.data = Vec::new();
     }
@@ -627,6 +732,7 @@ impl RawOutputBuffer {
     /// Collapse to at most `keep` trailing bytes and give the allocation back.
     /// Called once a job is terminal *and* its output has been delivered.
     pub(super) fn release_to_tail(&mut self, keep: usize) {
+        self.spool.take();
         if self.data.len() <= keep {
             return;
         }
@@ -655,6 +761,7 @@ impl Default for RawOutputBuffer {
 
 pub(super) type SharedRawOutput = Arc<Mutex<RawOutputBuffer>>;
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn new_shared_raw_output() -> SharedRawOutput {
     Arc::new(Mutex::new(RawOutputBuffer::new()))
 }

@@ -64,11 +64,12 @@ use codewhale_runtime::child_env;
 use codewhale_sandbox::{
     CommandSpec, ExecEnv, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxType,
 };
+#[cfg(any(test, feature = "test-support"))]
+use output::new_shared_raw_output;
 use output::{
     BoundedOutputAccumulator, BoundedOutputSnapshot, PersistedShellArtifact, RAW_STREAM_MAX_BYTES,
     RAW_STREAM_SETTLED_TAIL_BYTES, RawOutputBuffer, SessionArtifactSpec, SharedRawOutput,
-    new_shared_raw_output, persist_shell_output_artifact, tail_from_buffer, tail_text,
-    take_delta_from_buffer,
+    persist_shell_output_artifact, tail_from_buffer, tail_text, take_delta_from_buffer,
 };
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
@@ -1126,7 +1127,14 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    buffer
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_read_error();
+                    break;
+                }
             }
         }
     })
@@ -1135,6 +1143,7 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
 fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
     mut reader: R,
     output: Arc<Mutex<BoundedOutputAccumulator>>,
+    raw: SharedRawOutput,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 4096];
@@ -1142,6 +1151,13 @@ fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if !raw
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .append(&chunk[..n])
+                    {
+                        return;
+                    }
                     let mut guard = output.lock().unwrap_or_else(|error| error.into_inner());
                     if let Err(error) = guard.append(&chunk[..n]) {
                         guard.record_error(&error);
@@ -1790,6 +1806,8 @@ impl BackgroundShell {
                 persisted_artifact,
             );
         }
+        let previous_stdout = self.stdout_cursor;
+        let previous_stderr = self.stderr_cursor;
         let (stdout_delta, stdout_total) =
             take_delta_from_buffer(&self.stdout_buffer, &mut self.stdout_cursor);
         let (stderr_delta, stderr_total) = if let Some(buffer) = self.stderr_buffer.as_ref() {
@@ -1798,8 +1816,8 @@ impl BackgroundShell {
             (Vec::new(), 0)
         };
 
-        let stdout_delta_len = stdout_delta.len();
-        let stderr_delta_len = stderr_delta.len();
+        let stdout_delta_len = self.stdout_cursor.saturating_sub(previous_stdout);
+        let stderr_delta_len = self.stderr_cursor.saturating_sub(previous_stderr);
 
         if stdout_delta_len > 0 || stderr_delta_len > 0 {
             self.last_output_at = Instant::now();
@@ -1923,23 +1941,7 @@ impl BackgroundShell {
         let stdout_truncated = stdout_meta.truncated || stdout_dropped > 0;
         let stderr_truncated = stderr_meta.truncated || stderr_dropped > 0;
         let persisted_artifact = if finalize && (stdout_truncated || stderr_truncated) {
-            let full_combined = combine_full_shell_streams(&stdout_full, &stderr_full);
-            match persist_shell_output_artifact(
-                &self.owner_session_id,
-                self.origin_tool_call_id.as_deref(),
-                &format!("bash-{}", self.id),
-                full_combined.as_bytes(),
-            ) {
-                Ok(artifact) => Some(artifact),
-                Err(error) => {
-                    tracing::warn!(
-                        task_id = %self.id,
-                        %error,
-                        "foreground shell output session artifact could not be written"
-                    );
-                    None
-                }
-            }
+            self.publish_raw_output()?
         } else {
             None
         };
@@ -1967,6 +1969,50 @@ impl BackgroundShell {
             },
             persisted_artifact,
         ))
+    }
+
+    fn publish_raw_output(&self) -> Result<Option<PersistedShellArtifact>> {
+        if !codewhale_runtime::artifacts::is_valid_session_id(&self.owner_session_id) {
+            return Ok(None);
+        }
+        let mut stdout = self.stdout_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let stderr = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buffer| buffer.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(artifact) = stdout.artifact() {
+            return Ok(Some(artifact));
+        }
+        if !stdout.capture_complete() || stderr.as_ref().is_some_and(|s| !s.capture_complete()) {
+            return Ok(None);
+        }
+        let key = self.origin_tool_call_id.as_deref().unwrap_or(&self.id);
+        let publish = stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, key);
+        let publish = match publish {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && key != self.id => {
+                stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, &self.id)
+            }
+            other => other,
+        };
+        Ok(Some(publish?))
+    }
+
+    fn finalize_output_artifact(&self) -> Result<Option<PersistedShellArtifact>> {
+        if let Some(snapshot) = self.bounded_output_snapshot(true)? {
+            return Ok(snapshot.persisted_artifact);
+        }
+        let large = [&self.stdout_buffer]
+            .into_iter()
+            .chain(self.stderr_buffer.iter())
+            .any(|buffer| {
+                let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                guard.total_len() > RAW_STREAM_MAX_BYTES
+            });
+        if large {
+            self.publish_raw_output()
+        } else {
+            Ok(None)
+        }
     }
 
     fn bounded_output_snapshot(&self, finalize: bool) -> Result<Option<BoundedOutputSnapshot>> {
@@ -2093,6 +2139,12 @@ impl BackgroundShell {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .persisted_artifact()
+        });
+        let persisted_artifact = persisted_artifact.or_else(|| {
+            self.stdout_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .artifact()
         });
         if let Some(artifact) = persisted_artifact.as_ref() {
             event.evidence_ref = Some(artifact.artifact_id.clone());
@@ -3137,11 +3189,21 @@ impl ShellManager {
             ));
         }
 
-        let stdout_buffer = new_shared_raw_output();
+        let spool = !small_contract_mode
+            && !persist_pending
+            && codewhale_runtime::artifacts::is_valid_session_id(&owner_session_id);
+        let stdout_buffer = RawOutputBuffer::for_job(
+            if small_contract_mode {
+                RAW_STREAM_SETTLED_TAIL_BYTES
+            } else {
+                RAW_STREAM_MAX_BYTES
+            },
+            spool,
+        );
         let stderr_buffer = if tty || persist_pending || small_contract_mode {
             None
         } else {
-            Some(new_shared_raw_output())
+            Some(RawOutputBuffer::for_job(RAW_STREAM_MAX_BYTES, spool))
         };
         let bounded_output =
             small_contract_mode.then(|| {
@@ -3282,7 +3344,11 @@ impl ShellManager {
             let (stdout_thread, stderr_thread) =
                 if let (Some(reader), Some(output)) = (combined_reader, bounded_output.as_ref()) {
                     (
-                        Some(spawn_bounded_reader_thread(reader, Arc::clone(output))),
+                        Some(spawn_bounded_reader_thread(
+                            reader,
+                            Arc::clone(output),
+                            Arc::clone(&stdout_buffer),
+                        )),
                         None,
                     )
                 } else {
@@ -3573,9 +3639,7 @@ impl ShellManager {
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
         wait_while_running(shell, wait, timeout_ms);
         let finalized_artifact = if shell.status != ShellStatus::Running {
-            shell
-                .bounded_output_snapshot(true)?
-                .and_then(|snapshot| snapshot.persisted_artifact)
+            shell.finalize_output_artifact()?
         } else {
             None
         };
@@ -4203,7 +4267,7 @@ impl ShellManager {
                 && shell.status != ShellStatus::Running
                 && !shell.completion_reported
             {
-                if let Err(error) = shell.bounded_output_snapshot(true) {
+                if let Err(error) = shell.finalize_output_artifact() {
                     tracing::warn!(task_id = %shell.id, %error, "shell completion artifact publication failed; retaining output for retry");
                     continue;
                 }
@@ -6231,8 +6295,13 @@ fn combine_full_shell_streams(stdout: &str, stderr: &str) -> String {
 }
 
 fn format_persisted_shell_artifact_footer(artifact: &PersistedShellArtifact) -> String {
+    let label = if artifact.complete {
+        "Full output"
+    } else {
+        "Output excerpt"
+    };
     format!(
-        "[Full output saved as artifact {}; {}]",
+        "[{label} saved as artifact {}; {}]",
         artifact.artifact_id,
         crate::tools::truncate::spillover_recovery_instruction(Some(&artifact.artifact_id)),
     )
@@ -6269,7 +6338,10 @@ fn stamp_persisted_shell_artifact_metadata(
     );
     obj.insert("artifact_preview".into(), preview.into());
     obj.insert("truncated".into(), true.into());
-    obj.insert("original_byte_count".into(), artifact.byte_size.into());
+    obj.insert("artifact_complete".into(), artifact.complete.into());
+    if artifact.complete {
+        obj.insert("original_byte_count".into(), artifact.byte_size.into());
+    }
 }
 
 fn attach_shell_artifact_to_tool_result(
@@ -8614,11 +8686,15 @@ fn finalize_raw_shell_delta(
             let full_combined = combine_full_shell_streams(&raw.stdout, &raw.stderr);
             persist_shell_output_artifact(
                 &context.state_namespace,
-                context.origin_tool_call_id.as_deref(),
+                None,
                 &format!("shell-wait-{}-{}", raw.task_id, Uuid::new_v4().simple()),
                 full_combined.as_bytes(),
             )
             .ok()
+            .map(|mut artifact| {
+                artifact.complete = false;
+                artifact
+            })
         } else {
             None
         }
@@ -8632,10 +8708,14 @@ fn finalize_raw_shell_delta(
         duration_ms: raw.duration_ms,
         stdout_len: stdout_meta.original_len.max(raw.stdout_delta_len),
         stderr_len: stderr_meta.original_len.max(raw.stderr_delta_len),
-        stdout_omitted: stdout_meta.omitted,
-        stderr_omitted: stderr_meta.omitted,
-        stdout_truncated: stdout_meta.truncated,
-        stderr_truncated: stderr_meta.truncated,
+        stdout_omitted: stdout_meta
+            .omitted
+            .saturating_add(raw.stdout_delta_len.saturating_sub(raw.stdout.len())),
+        stderr_omitted: stderr_meta
+            .omitted
+            .saturating_add(raw.stderr_delta_len.saturating_sub(raw.stderr.len())),
+        stdout_truncated: stdout_meta.truncated || raw.stdout_delta_len > raw.stdout.len(),
+        stderr_truncated: stderr_meta.truncated || raw.stderr_delta_len > raw.stderr.len(),
         sandboxed: raw.sandboxed,
         sandbox_type: raw.sandbox_type,
         sandbox_denied: raw.sandbox_denied,
