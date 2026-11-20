@@ -1375,12 +1375,19 @@ const KEYWORD_CONTINUES: &[&str] = &[
     "done", "fi", "esac", "!", "coproc", "time",
 ];
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum WordQuote {
+    #[default]
+    Unquoted,
+    Quoted,
+    InlineScalar,
+}
 /// The word being read, with what the parser learned about it.
 #[derive(Default)]
 struct WordBuf {
     text: String,
     started: bool,
-    quoted: bool,
+    quoted: WordQuote,
     redirect_operand: bool,
     /// The word's final text depends on an expansion the parser does not run.
     dynamic: bool,
@@ -1414,7 +1421,7 @@ impl WordBuf {
                     .last()
                     .is_none_or(|last| KEYWORD_CONTINUES.contains(&last.as_str()));
                 let mut closed = false;
-                if command_position && !self.quoted {
+                if command_position && self.quoted == WordQuote::Unquoted {
                     match self.text.as_str() {
                         "{" | "while" | "until" | "for" | "if" | "case" | "select" => {
                             groups.push(Group {
@@ -1445,7 +1452,7 @@ impl WordBuf {
             }
             self.started = false;
         }
-        self.quoted = false;
+        self.quoted = WordQuote::Unquoted;
         self.dynamic = false;
         self.brace = false;
         self.bracket = false;
@@ -1460,7 +1467,7 @@ struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
     odd: Vec<bool>,
-    quoted: Vec<bool>,
+    quoted: Vec<WordQuote>,
     heredoc: bool,
     stdin_piped: bool,
 }
@@ -1591,7 +1598,7 @@ impl Expander {
                             after_pipe = false;
                             word.text.push(chars[i + 1]);
                             word.started = true;
-                            word.quoted = true;
+                            word.quoted = WordQuote::Quoted;
                         }
                         i += 2;
                     } else {
@@ -1602,7 +1609,7 @@ impl Expander {
                 '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '\'' {
                         word.text.push(chars[i]);
@@ -1614,8 +1621,18 @@ impl Expander {
                 // Double quotes suppress word splitting but NOT substitution.
                 '"' => {
                     after_pipe = false;
+                    let mut inline_scalar = word.quoted == WordQuote::Unquoted
+                        && !word.dynamic
+                        && word
+                            .text
+                            .strip_prefix("--")
+                            .and_then(|prefix| prefix.strip_suffix('='))
+                            .is_some_and(|name| {
+                                !name.is_empty()
+                                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                            });
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '"' {
                         match chars[i] {
@@ -1628,6 +1645,7 @@ impl Expander {
                                 i += 2;
                             }
                             '`' => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_backtick(&chars, i);
                                 uncertain |= !certain;
@@ -1635,6 +1653,7 @@ impl Expander {
                                 i = next;
                             }
                             '$' if i + 1 < n && matches!(chars[i + 1], '(' | '{') => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_substitution(&chars, i + 1);
                                 uncertain |= !certain;
@@ -1643,6 +1662,8 @@ impl Expander {
                             }
                             ch => {
                                 if ch == '$' && starts_parameter(chars.get(i + 1)) {
+                                    inline_scalar &=
+                                        chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_';
                                     word.dynamic = true;
                                 }
                                 word.text.push(ch);
@@ -1651,12 +1672,24 @@ impl Expander {
                         }
                     }
                     uncertain |= i >= n;
+                    if inline_scalar
+                        && word.dynamic
+                        && i < n
+                        && chars.get(i + 1).is_none_or(|ch| {
+                            matches!(
+                                ch,
+                                ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>'
+                            )
+                        })
+                    {
+                        word.quoted = WordQuote::InlineScalar;
+                    }
                     i = (i + 1).min(n);
                 }
                 '$' if i + 1 < n && chars[i + 1] == '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     word.dynamic = true;
                     i += 2;
                     while i < n && chars[i] != '\'' {
@@ -2229,7 +2262,8 @@ impl Expander {
             }
         }
         for at in 0..tokens.len() {
-            if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
+            if tokens[at] == "--" && line.quoted[at] == WordQuote::Unquoted && at + 1 < tokens.len()
+            {
                 self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
             }
         }
@@ -2567,7 +2601,9 @@ impl Expander {
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
         let tokens = &line.words;
         let opt_end = (head + 1..tokens.len())
-            .find(|&i| tokens[i] == "--" && !line.quoted[i] && !line.dynamic[i])
+            .find(|&i| {
+                tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+            })
             .unwrap_or(tokens.len());
         let has_dynamic = line.dynamic[head + 1..opt_end].iter().any(|&d| d);
         let stop = tokens[head + 1..opt_end].iter().any(|t| {
@@ -2594,8 +2630,9 @@ impl Expander {
         depth: usize,
     ) {
         let tokens = &line.words;
-        let dash_dash = (head + 1..tokens.len())
-            .find(|&i| tokens[i] == "--" && !line.quoted[i] && !line.dynamic[i]);
+        let dash_dash = (head + 1..tokens.len()).find(|&i| {
+            tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+        });
         let opt_end = dash_dash.unwrap_or(tokens.len());
         let args_start = dash_dash.map_or(tokens.len(), |i| i + 1);
         let mut found: Option<(String, usize)> = None;
@@ -4363,7 +4400,10 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     let mut words = vec![prefix.to_string()];
     let mut dynamic = vec![line.dynamic[prefix_idx]];
     let mut odd = vec![prefix_odd];
-    let mut quoted = vec![line.quoted[prefix_idx]];
+    let mut quoted = vec![match line.quoted[prefix_idx] {
+        WordQuote::InlineScalar => WordQuote::Quoted,
+        quote => quote,
+    }];
     if rest_start < line.words.len() {
         words.extend_from_slice(&line.words[rest_start..]);
         dynamic.extend_from_slice(&line.dynamic[rest_start..]);
@@ -4401,7 +4441,7 @@ fn find_entrypoints(tokens: &[String], dynamic: &[bool], base: usize) -> Vec<(St
     found
 }
 
-fn ssh_reads_stdin(tokens: &[String], dynamic: &[bool], quoted: &[bool], head: usize) -> bool {
+fn ssh_reads_stdin(tokens: &[String], dynamic: &[bool], quoted: &[WordQuote], head: usize) -> bool {
     if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
         return false;
     }
@@ -4725,7 +4765,7 @@ fn redirection_len(chars: &[char]) -> usize {
 }
 
 fn consume_redirect_descriptor(word: &mut WordBuf) -> bool {
-    if !word.quoted && !word.dynamic && is_redirect_descriptor(&word.text) {
+    if word.quoted == WordQuote::Unquoted && !word.dynamic && is_redirect_descriptor(&word.text) {
         let is_stdin = word.text.bytes().all(|b| b == b'0');
         word.text.clear();
         word.started = false;
@@ -5355,11 +5395,11 @@ fn step_wrapper_option(
 
 fn is_known_quoted_inline_value(
     token: &str,
-    quoted: bool,
+    quoted: WordQuote,
     spec: &Wrapper,
     options_done: bool,
 ) -> bool {
-    if options_done || !quoted {
+    if options_done || quoted != WordQuote::InlineScalar {
         return false;
     }
     let Some(long) = token.strip_prefix("--") else {
@@ -5374,7 +5414,7 @@ fn is_known_quoted_inline_value(
 fn launcher_verb_targets(
     tokens: &[String],
     dynamic: &[bool],
-    quoted: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
@@ -5399,7 +5439,7 @@ fn launcher_verb_targets(
 fn resolve_wrapper_targets(
     tokens: &[String],
     dynamic: &[bool],
-    quoted: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
@@ -5764,6 +5804,26 @@ mod tests {
             commands.map(|command| (command.stdin_piped, command.heredoc)),
             [(true, false), (true, false), (false, true)]
         );
+    }
+
+    #[test]
+    fn launcher_inline_option_requires_value_local_quote_evidence() {
+        let proven = expand_for_platform(r#"docker run --env="$SETTING" alpine ls"#, false);
+        assert!(!proven.dynamic);
+        assert!(proven.commands.iter().any(|command| command == "ls"));
+
+        let words = ["--env=VALUE", "alpine", "ls"].map(str::to_string);
+        let mut unresolved = false;
+        let targets = resolve_wrapper_targets(
+            &words,
+            &[true, false, false],
+            &[WordQuote::Quoted, WordQuote::Unquoted, WordQuote::Unquoted],
+            0,
+            &DOCKER_RUN_SPEC,
+            &mut unresolved,
+        );
+        assert_eq!(targets, [2]);
+        assert!(unresolved);
     }
 
     fn expand(command: &str) -> Vec<String> {
