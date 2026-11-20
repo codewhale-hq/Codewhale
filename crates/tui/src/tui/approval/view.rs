@@ -253,7 +253,12 @@ impl ApprovalView {
     pub(crate) fn offers(&self, option: ApprovalOption) -> bool {
         match option {
             ApprovalOption::OpenPermissions => {
-                self.scopes_open && self.offers_permission_settings()
+                self.scopes_open
+                    && self
+                        .scope_menu_hitboxes
+                        .borrow()
+                        .iter()
+                        .any(|(option, _)| *option == ApprovalOption::OpenPermissions)
             }
             ApprovalOption::AllowExactRepo => self.save_preview_shown.get(),
             ApprovalOption::ApproveAlways => {

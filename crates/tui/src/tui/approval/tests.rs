@@ -1192,6 +1192,7 @@ fn test_approval_view_navigation() {
 
     view.handle_key(create_key_event(KeyCode::Char('m')));
     assert!(view.scopes_open);
+    render_lines(&view, 120, 40);
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
