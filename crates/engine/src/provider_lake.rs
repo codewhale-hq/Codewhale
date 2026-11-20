@@ -2715,15 +2715,19 @@ mod tests {
     #[tokio::test]
     async fn models_update_persists_exact_routes_and_keeps_prior_rows_after_failure() {
         let _env = crate::test_support::lock_test_env();
+        let _live = lock_live_snapshot();
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         crate::provider_catalog_live::reset_cache_for_test();
         let _cli_key = crate::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
         let first = wiremock::MockServer::start().await;
         let second = wiremock::MockServer::start().await;
-        let config = catalog_test_config(&first.uri(), &second.uri());
+        let mut config = catalog_test_config(&first.uri(), &second.uri());
         let first_id = config.resolve_provider_identity("catalog-first").unwrap();
         let second_id = config.resolve_provider_identity("catalog-second").unwrap();
+        let second_route = config.provider_config_for_mut(&second_id).unwrap();
+        second_route.api_key = None;
+        second_route.auth_mode = Some("none".into());
         catalog_mock(
             &first,
             "first-route-test-key",
@@ -2731,13 +2735,15 @@ mod tests {
             serde_json::json!({"data":[{"id":"new-first-model"}]}),
         )
         .await;
-        catalog_mock(
-            &second,
-            "second-route-test-key",
-            200,
-            serde_json::json!({"data":[{"id":"new-second-model"}]}),
-        )
-        .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/v1/models"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data":[{"id":"new-second-model"}]})),
+            )
+            .expect(1)
+            .mount(&second)
+            .await;
         assert_eq!(
             update_provider_catalog(&config, &first_id).await.outcome,
             "updated"
@@ -2748,8 +2754,9 @@ mod tests {
         );
         assert_eq!(config.provider.as_deref(), Some("catalog-first"));
         assert_eq!(config.default_model(), "saved-model");
-        // Simulate restart: remove only this memo, not any persistent state.
-        crate::provider_catalog_live::reset_cache_for_test();
+        let anonymous_requests = second.received_requests().await.unwrap();
+        assert_eq!(anonymous_requests.len(), 1);
+        assert!(!anonymous_requests[0].headers.contains_key("authorization"));
         assert_eq!(
             catalog_models_for_route(ProviderKind::Custom, "catalog-first", &first.uri()),
             ["new-first-model"]
@@ -2763,6 +2770,7 @@ mod tests {
                 .is_empty()
         );
         let prior = cached_receipt(&config, &first_id).fetched_at;
+        assert!(prior.is_some());
         first.reset().await;
         catalog_mock(
             &first,
@@ -2786,8 +2794,25 @@ mod tests {
         );
         let body =
             std::fs::read_to_string(crate::provider_catalog_live::cache_path().unwrap()).unwrap();
+        assert!(body.contains("new-second-model"));
+        assert!(!body.contains("new-first-model"));
         assert!(!body.contains("first-route-test-key"));
         assert!(!body.contains(&first.uri()));
+        assert!(!body.contains(&second.uri()));
+        crate::provider_catalog_live::reset_cache_for_test();
+        clear_live_snapshot();
+        assert!(
+            catalog_models_for_route(ProviderKind::Custom, "catalog-first", &first.uri())
+                .is_empty()
+        );
+        assert!(
+            catalog_models_for_route(ProviderKind::Custom, "catalog-first", &second.uri())
+                .is_empty()
+        );
+        assert_eq!(
+            catalog_models_for_route(ProviderKind::Custom, "catalog-second", &second.uri()),
+            ["new-second-model"]
+        );
         assert!(
             !serde_json::to_string(&receipt)
                 .unwrap()
