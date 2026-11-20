@@ -617,6 +617,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
 - **Tool-call identity:** generated IDs stay distinct from literal provider IDs, including when a provider sends the ID late in a stream. Thanks [@donglovejava](https://github.com/donglovejava) ([PR 7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
 - **Headless resume:** `exec --resume` asks for explicit provider or model reselection when the saved endpoint or account binding changes. (CW-8311)
 - **Terminal translations:** Auto-Review fallback, provider badges, theme previews, and automation schedules use the selected language.
