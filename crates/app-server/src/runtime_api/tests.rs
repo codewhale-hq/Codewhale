@@ -20651,9 +20651,10 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
     );
     let fingerprint = base_url_fingerprint(endpoint);
     let fetched_at = now_unix();
-    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
-        provider, "ollama", endpoint,
-    );
+    let identity = config.test_identity_for_kind(provider);
+    let ticket =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(&config, &identity, endpoint)
+            .expect("begin scoped catalog refresh");
     codewhale_engine::provider_catalog_live::record_success_if_current(
         &ticket,
         ProviderCatalogDelta {
@@ -20695,12 +20696,22 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
         ""
     );
     assert!(provider_models_for_api(&other, &(other).test_identity_for_kind(provider)).is_empty());
-    codewhale_engine::provider_catalog_live::record_failure_if_current(
-        &ticket,
-        "ollama",
-        &fingerprint,
-        CatalogRefreshError::Network,
+    let fail = |ticket| {
+        codewhale_engine::provider_catalog_live::record_failure_if_current(
+            ticket,
+            "ollama",
+            &fingerprint,
+            CatalogRefreshError::Network,
+        )
+    };
+    assert!(
+        fail(&ticket).is_none(),
+        "the other endpoint superseded this ticket"
     );
+    let ticket =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(&config, &identity, endpoint)
+            .expect("reopen the original endpoint's catalog scope");
+    assert!(fail(&ticket).is_some());
     assert_eq!(
         provider_default_model_for_api(&config, &(config).test_identity_for_kind(provider)),
         ""
