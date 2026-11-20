@@ -572,7 +572,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots."
+summary = "Install, review and trust bundles, preview and import local DSH packages, and restore reviewed snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"

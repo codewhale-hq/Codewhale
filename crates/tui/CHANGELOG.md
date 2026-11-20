@@ -617,6 +617,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **Session recall:** session summaries omit internal tool-history repair receipts while preserving the surrounding conversation and tool summaries.
 - **Workflow gates block roles written with older names:** a gate whose `role` or `blocks_role` uses an alias such as `implementer`, `verify` or `verifier` now matches the canonical role a task is dispatched under, so the blocked role waits for the gate and receives its handoffs instead of running early.
 - Workflow gates apply to implicit roles. A blocked planner cannot start a reducer or receive its inputs until the gate passes.
 

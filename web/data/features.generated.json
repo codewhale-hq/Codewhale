@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "98d3dbd527866fe2f147f4a5e7f6cd8183b690668d3783bab6e94a79063547e4"
+    "sha256": "1237f01ff7f6fa9fa3e11de8bf628b4ad8fd07c4cf04ca173e2ca7aee8eccb5e"
   },
   "features": [
     {
@@ -444,7 +444,7 @@
     {
       "id": "model-catalog-refresh",
       "name": "Model catalog refresh",
-      "summary": "Refresh public model facts and exact provider rosters; selection fences account and endpoint changes, while failed discovery retains only same-scope evidence.",
+      "summary": "Refresh model facts and exact provider rosters; selection is fenced to the account and endpoint.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -729,7 +729,7 @@
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots.",
+      "summary": "Install, review and trust bundles, preview and import local DSH packages, and restore reviewed snapshots.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
