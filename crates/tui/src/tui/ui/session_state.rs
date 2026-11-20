@@ -1325,7 +1325,7 @@ pub(crate) fn persist_rules_from_approval(
     app: &mut App,
     config: &mut Config,
     rules: &[codewhale_config::ToolAskRule],
-) {
+) -> bool {
     let action = rules.first().map(|rule| rule.action);
     match codewhale_config::ConfigStore::load(app.config_path.clone()).and_then(|mut store| {
         let added = match action {
@@ -1353,6 +1353,7 @@ pub(crate) fn persist_rules_from_approval(
                 "Saved {added} {action} permission rule(s) to {}",
                 path.display()
             ));
+            true
         }
         Ok((_added, path)) => {
             let action = match action {
@@ -1363,9 +1364,11 @@ pub(crate) fn persist_rules_from_approval(
                 "{action} permission rule already saved in {}",
                 path.display()
             ));
+            true
         }
         Err(err) => {
             app.status_message = Some(format!("Failed to save permission rule: {err:#}"));
+            false
         }
     }
 }
