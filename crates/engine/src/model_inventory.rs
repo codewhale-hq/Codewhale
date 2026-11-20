@@ -1275,7 +1275,8 @@ model = "Same"
         let _env = crate::test_support::lock_test_env();
         let _live = crate::provider_lake::lock_live_snapshot();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let home_path = home.path().canonicalize().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home_path);
         crate::provider_catalog_live::reset_cache_for_test();
         let mut config = Config::default();
         config.session_provider_keys_only = true;
