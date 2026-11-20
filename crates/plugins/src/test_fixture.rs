@@ -58,8 +58,54 @@ pub fn finalize_staged_bundle(path: &Path) -> Result<FinalizedStagedBundle, Stri
     Ok(fixture)
 }
 
+pub struct PluginTempDir(TempDir);
+
+impl PluginTempDir {
+    pub fn new() -> std::io::Result<Self> {
+        TempDir::new().map(Self)
+    }
+
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl Drop for PluginTempDir {
+    fn drop(&mut self) {
+        fn unlock_directories(path: &Path) -> std::io::Result<()> {
+            let metadata = fs::symlink_metadata(path)?;
+            if !metadata.is_dir()
+                || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+            {
+                return Ok(());
+            }
+            let directory =
+                super::registry::open_staged_fixture_target(path).map_err(std::io::Error::other)?;
+            let permissions = directory.metadata()?.permissions();
+            #[cfg(unix)]
+            let permissions = {
+                use std::os::unix::fs::PermissionsExt;
+                fs::Permissions::from_mode(permissions.mode() | 0o700)
+            };
+            super::registry::restore_staged_fixture_target(&directory, &permissions)
+                .map_err(std::io::Error::other)?;
+            for child in fs::read_dir(path)? {
+                unlock_directories(&child?.path())?;
+            }
+            Ok(())
+        }
+
+        if let Err(error) = unlock_directories(self.path()) {
+            eprintln!(
+                "could not unlock plugin test fixture {}: {error}",
+                self.path().display()
+            );
+        }
+    }
+}
+
 pub struct DeclarativePluginFixture {
-    _temp: TempDir,
+    _temp: PluginTempDir,
     pub workspace: PathBuf,
     pub marker: PathBuf,
     pub config: DiscoveryConfig,
@@ -74,7 +120,7 @@ impl Default for DeclarativePluginFixture {
 
 impl DeclarativePluginFixture {
     pub fn new() -> Self {
-        let temp = TempDir::new().expect("plugin fixture tempdir");
+        let temp = PluginTempDir::new().expect("plugin fixture tempdir");
         let workspace = temp.path().join("project");
         let user_plugins_dir = temp.path().join("user");
         let plugin = user_plugins_dir.join("runtime-demo");

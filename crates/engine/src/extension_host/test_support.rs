@@ -82,7 +82,7 @@ pub fn node_for_tests(test: &str) -> Option<PathBuf> {
 /// (trusted) and enabled through the real registry. Callers must hold a
 /// `TestPolicyGuard::extension_host(true)` on this thread.
 pub struct FixturePlugins {
-    _temp: tempfile::TempDir,
+    _temp: codewhale_plugins::test_fixture::PluginTempDir,
     pub config: DiscoveryConfig,
     pub root: PathBuf,
     /// The stub built-in command catalog, so a fixture plugin's commands can
@@ -95,7 +95,7 @@ impl FixturePlugins {
         use codewhale_plugins::install::{
             DEFAULT_MAX_SIZE_BYTES, PluginInstallOutcome, PluginInstallSource, install,
         };
-        let temp = tempfile::tempdir_in(crate::test_support::test_scratch_root()).unwrap();
+        let temp = codewhale_plugins::test_fixture::PluginTempDir::new().unwrap();
         let workspace = temp.path().join("project");
         let user = temp.path().join("user");
         std::fs::create_dir_all(&workspace).unwrap();
