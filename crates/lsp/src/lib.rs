@@ -736,19 +736,27 @@ impl LspManager {
         for (server, slot) in slots.into_iter().take(MAX_SERVERS) {
             let params = serde_json::json!({"query": query});
             requests.spawn(async move {
-                let response = tokio::time::timeout_at(deadline, async {
-                    let transport = slot.lock().await.clone();
+                let response = async {
+                    let transport = tokio::time::timeout_at(deadline, slot.lock())
+                        .await
+                        .map_err(|_| {
+                            "workspace symbol request timed out waiting for startup".to_owned()
+                        })?
+                        .clone();
                     let Some(transport) = transport.filter(|transport| transport.is_alive()) else {
                         return Ok(None);
                     };
                     transport
-                        .request("workspace/symbol", params, wait)
+                        .request(
+                            "workspace/symbol",
+                            params,
+                            deadline.saturating_duration_since(tokio::time::Instant::now()),
+                        )
                         .await
                         .map(Some)
                         .map_err(|err| err.to_string())
-                })
-                .await
-                .unwrap_or_else(|_| Err("workspace symbol request timed out".into()));
+                }
+                .await;
                 (server, response)
             });
         }
