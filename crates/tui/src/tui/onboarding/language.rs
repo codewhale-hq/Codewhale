@@ -55,28 +55,25 @@ const TWO_COLUMN_MIN_WIDTH: usize = 56;
 pub fn lines(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     let current_owned = app.current_locale_tag();
     let current = current_owned.as_str();
+    let accent = super::theme_or(app.ui_theme.accent_primary, palette::WHALE_ACTION);
+    let body_fg = super::theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY);
+    let muted_fg = super::theme_or(app.ui_theme.text_muted, palette::TEXT_MUTED);
 
     let title = Line::from(Span::styled(
         app.tr(MessageId::OnboardLanguageTitle).to_string(),
-        Style::default()
-            .fg(palette::WHALE_ACTION)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     ));
 
-    // The action rail can leave only five body rows at 40x12. A compact grid
-    // spends one on the title and derives enough columns to keep every
-    // selectable hotkey visible in the remaining rows. Wider/taller terminals
-    // keep the native names and explanatory sentence.
     if height < 12 {
         let option_rows = height.saturating_sub(1).max(1);
-        return compact_grid(title, width, option_rows, current);
+        return compact_grid(title, width, option_rows, current, accent, body_fg);
     }
 
     let mut out: Vec<Line<'static>> = vec![title, Line::from("")];
     for segment in super::wrap_words(&app.tr(MessageId::OnboardLanguageBlurb), width) {
         out.push(Line::from(Span::styled(
             segment,
-            Style::default().fg(palette::TEXT_PRIMARY),
+            Style::default().fg(body_fg),
         )));
     }
     out.push(Line::from(""));
@@ -87,7 +84,7 @@ pub fn lines(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         let split = LANGUAGE_OPTIONS.len().div_ceil(2);
         let (left_column, right_column) = LANGUAGE_OPTIONS.split_at(split);
         for (idx, left) in left_column.iter().enumerate() {
-            let mut spans = option_spans(left, current);
+            let mut spans = option_spans_inner(left, current, false, accent, body_fg, muted_fg);
             if let Some(right) = right_column.get(idx) {
                 let used: usize = spans
                     .iter()
@@ -95,13 +92,17 @@ pub fn lines(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
                     .sum();
                 let gap = (column_width + 1).saturating_sub(used).max(2);
                 spans.push(Span::raw(" ".repeat(gap)));
-                spans.extend(option_spans(right, current));
+                spans.extend(option_spans_inner(
+                    right, current, false, accent, body_fg, muted_fg,
+                ));
             }
             out.push(Line::from(spans));
         }
     } else {
         for option in LANGUAGE_OPTIONS {
-            out.push(Line::from(option_spans_with_english(option, current)));
+            out.push(Line::from(option_spans_inner(
+                option, current, true, accent, body_fg, muted_fg,
+            )));
         }
     }
 
@@ -113,6 +114,8 @@ fn compact_grid(
     width: usize,
     rows: usize,
     current: &str,
+    accent: ratatui::style::Color,
+    body_fg: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
     let columns = LANGUAGE_OPTIONS.len().div_ceil(rows);
     let gap = usize::from(columns > 1);
@@ -132,7 +135,13 @@ fn compact_grid(
             if column > 0 {
                 spans.push(Span::raw(" ".repeat(gap)));
             }
-            spans.extend(compact_option_spans(option, current, column_width));
+            spans.extend(compact_option_spans(
+                option,
+                current,
+                column_width,
+                accent,
+                body_fg,
+            ));
         }
         out.push(Line::from(spans));
     }
@@ -143,6 +152,8 @@ fn compact_option_spans(
     option: &(char, &str, &str, &str),
     current: &str,
     width: usize,
+    accent: ratatui::style::Color,
+    body_fg: ratatui::style::Color,
 ) -> Vec<Span<'static>> {
     let (hotkey, tag, native, _) = *option;
     let prefix = format!("[{hotkey}]");
@@ -150,11 +161,9 @@ fn compact_option_spans(
     let label_width = width.saturating_sub(prefix_width);
     let label = codewhale_tui_kit::ui_text::semantic_truncate(native, label_width);
     let style = if current == tag {
-        Style::default()
-            .fg(palette::WHALE_ACTION)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(palette::TEXT_PRIMARY)
+        Style::default().fg(body_fg)
     };
     let used = prefix_width + UnicodeWidthStr::width(label.as_str());
     vec![
@@ -164,21 +173,13 @@ fn compact_option_spans(
     ]
 }
 
-fn option_spans(option: &(char, &str, &str, &str), current: &str) -> Vec<Span<'static>> {
-    option_spans_inner(option, current, false)
-}
-
-fn option_spans_with_english(
-    option: &(char, &str, &str, &str),
-    current: &str,
-) -> Vec<Span<'static>> {
-    option_spans_inner(option, current, true)
-}
-
 fn option_spans_inner(
     option: &(char, &str, &str, &str),
     current: &str,
     with_english: bool,
+    accent: ratatui::style::Color,
+    body_fg: ratatui::style::Color,
+    muted_fg: ratatui::style::Color,
 ) -> Vec<Span<'static>> {
     let (hotkey, tag, native, english) = *option;
     let is_current = current == tag;
@@ -187,28 +188,26 @@ fn option_spans_inner(
     } else {
         codewhale_tui_kit::glyphs::AVAILABLE
     };
-    let bullet_color = if is_current {
-        palette::WHALE_ACTION
+    let bullet_color = if is_current { accent } else { muted_fg };
+    let label_style = if is_current {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        palette::TEXT_MUTED
+        Style::default().fg(body_fg)
     };
     let mut spans: Vec<Span<'static>> = vec![
         Span::styled(format!("{bullet} "), Style::default().fg(bullet_color)),
         Span::styled(
             format!("[{hotkey}] "),
             Style::default()
-                .fg(palette::TEXT_PRIMARY)
+                .fg(if is_current { accent } else { muted_fg })
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            native.to_string(),
-            Style::default().fg(palette::TEXT_PRIMARY),
-        ),
+        Span::styled(native.to_string(), label_style),
     ];
     if with_english && !english.is_empty() {
         spans.push(Span::styled(
             format!(" {english}"),
-            Style::default().fg(palette::TEXT_MUTED),
+            Style::default().fg(muted_fg),
         ));
     }
     spans

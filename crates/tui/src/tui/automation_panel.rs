@@ -321,6 +321,74 @@ impl AutomationPanelState {
     }
 }
 
+#[must_use]
+pub(crate) fn format_schedule_badge(rrule: &str) -> String {
+    let trimmed = rrule.trim();
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+    let mut freq: Option<&str> = None;
+    let mut interval: Option<u32> = None;
+    let mut byday: Option<&str> = None;
+    let mut byhour: Option<u32> = None;
+    let mut byminute: Option<u32> = None;
+    let mut expr: Option<&str> = None;
+    for part in trimmed.split(';') {
+        if let Some((key, value)) = part.split_once('=') {
+            match key.trim().to_ascii_uppercase().as_str() {
+                "FREQ" => freq = Some(value.trim()),
+                "INTERVAL" => interval = value.trim().parse().ok(),
+                "BYDAY" => byday = Some(value.trim()),
+                "BYHOUR" => byhour = value.trim().parse().ok(),
+                "BYMINUTE" => byminute = value.trim().parse().ok(),
+                "EXPR" => expr = Some(value.trim()),
+                _ => {}
+            }
+        }
+    }
+    let time = byhour.map(|h| format!("{h:02}:{:02}", byminute.unwrap_or(0)));
+    match freq.map(str::to_ascii_uppercase).as_deref() {
+        Some("CRON") => match expr {
+            Some(e) if !e.is_empty() => format!("cron {e}"),
+            _ => trimmed.to_string(),
+        },
+        Some("MINUTELY") => match interval {
+            Some(n) if n > 1 => format!("every {n}m"),
+            _ => "every 1m".to_string(),
+        },
+        Some("HOURLY") => match interval {
+            Some(n) if n > 1 => format!("every {n}h"),
+            _ => "hourly".to_string(),
+        },
+        Some("DAILY") => match (interval, time) {
+            (Some(n), Some(t)) if n > 1 => format!("every {n}d {t}"),
+            (Some(n), None) if n > 1 => format!("every {n}d"),
+            (_, Some(t)) => format!("daily {t}"),
+            _ => "daily".to_string(),
+        },
+        Some("WEEKLY") => {
+            let mut label = match interval {
+                Some(n) if n > 1 => format!("every {n}w"),
+                _ => "weekly".to_string(),
+            };
+            if let Some(days) = byday.filter(|d| !d.is_empty()) {
+                label.push(' ');
+                label.push_str(days);
+            }
+            if let Some(t) = time {
+                label.push(' ');
+                label.push_str(&t);
+            }
+            label
+        }
+        Some("MONTHLY") => match time {
+            Some(t) => format!("monthly {t}"),
+            None => "monthly".to_string(),
+        },
+        _ => trimmed.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
