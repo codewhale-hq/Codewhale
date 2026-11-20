@@ -1811,8 +1811,8 @@ pub async fn update_provider_catalog(
         crate::provider_catalog_live::inventory_scope(config, identity)
     else {
         let mut receipt = cached_receipt(config, identity);
-        receipt.outcome = "skipped";
-        receipt.error = Some("provider_identity_changed");
+        receipt.outcome = "failed";
+        receipt.error = receipt.error.or(Some("inventory_scope_unavailable"));
         return receipt;
     };
     if identity.provider == ProviderKind::OpenaiCodex {
@@ -2851,12 +2851,12 @@ mod tests {
         )
         .await;
         let receipt = update_provider_catalog(&config, &identity).await;
-        // The existing provider adapter treats an empty list as a failed
-        // refresh. Preserve the last usable rows and disclose that failure.
-        assert_eq!(receipt.outcome, "failed");
-        assert_eq!(
-            catalog_models_for_route(ProviderKind::Custom, identity.key.as_str(), &server.uri()),
-            ["new-model"]
+        assert_eq!(receipt.outcome, "updated");
+        assert_eq!(receipt.status, CatalogStatus::Fresh);
+        assert_eq!(receipt.model_count, 0);
+        assert!(
+            catalog_models_for_route(ProviderKind::Custom, identity.key.as_str(), &server.uri())
+                .is_empty()
         );
     }
 

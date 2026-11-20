@@ -2650,6 +2650,11 @@ fn push_provider_model_rows(
             return;
         }
     };
+    let checked = inventory
+        .fetched_at
+        .and_then(|time| i64::try_from(time).ok())
+        .and_then(|time| chrono::DateTime::from_timestamp(time, 0))
+        .map(|time| time.format("%Y-%m-%d").to_string());
     for route in inventory.models {
         let id = route.model;
         let readiness = route.readiness;
@@ -2702,11 +2707,18 @@ fn push_provider_model_rows(
                 | codewhale_engine::provider_readiness::ResolvedProviderReadiness::ConnectionCheckedModelUnchecked
                 | codewhale_engine::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed { .. }
         );
-        let not_listed = (route.evidence
-            == codewhale_engine::model_inventory::InventoryEvidence::Absent)
-            .then(|| NotListed {
-                provider: identity.clone(),
-                checked: "current inventory".to_string(),
+        let not_listed = checked
+            .as_ref()
+            .filter(|_| {
+                route.evidence == codewhale_engine::model_inventory::InventoryEvidence::Absent
+            })
+            .map(|checked| NotListed {
+                provider: if provider == ProviderKind::Custom {
+                    identity.clone()
+                } else {
+                    provider.provider().display_name().to_string()
+                },
+                checked: checked.clone(),
             });
         let before = rows.len();
         push_model_row(
@@ -6409,17 +6421,17 @@ mod tests {
         push_provider_model_rows(
             &mut rows,
             &config.test_identity_for_kind(ProviderKind::Openrouter),
-            vec![model],
+            vec![model.clone()],
             ProviderKind::Openrouter,
             &config,
             &codex_roster,
             &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
-        assert_eq!(rows.len(), 1);
+        let row = rows.iter().find(|row| row.id == model).unwrap();
         assert!(
-            rows[0].hint.contains("refresh failed (unauthorized)"),
+            row.hint.contains("refresh failed (unauthorized)"),
             "{}",
-            rows[0].hint
+            row.hint
         );
 
         codewhale_engine::provider_catalog_live::reset_cache_for_test();
@@ -7060,7 +7072,8 @@ api_key = "fixture-xai-key"
                         &base_url,
                     )
                 };
-                let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
+                let observed = chrono::Utc::now();
+                let now = u64::try_from(observed.timestamp()).unwrap();
                 // DeepSeek's roster is 15 days old and lacks the current model.
                 assert!(matches!(
                     roster(
@@ -7091,7 +7104,7 @@ api_key = "fixture-xai-key"
                     .iter()
                     .find(|row| row.id == "stealth/ox-alpha")
                     .expect("a not-listed row is dimmed, never hidden");
-                let checked = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                let checked = observed.format("%Y-%m-%d").to_string();
                 assert_eq!(
                     ox.not_listed,
                     Some(NotListed {
@@ -7102,7 +7115,10 @@ api_key = "fixture-xai-key"
                         checked: checked.clone(),
                     })
                 );
-                assert!(ox.selectable, "still selectable");
+                assert!(
+                    !ox.selectable,
+                    "fresh authoritative absence blocks selection"
+                );
                 drop(rows);
                 let text = render_text(&picker, 160, 40);
                 assert!(

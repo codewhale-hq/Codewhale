@@ -43,6 +43,8 @@ pub struct ExactRouteInventory {
     generation: u64,
     #[serde(skip)]
     observation_revision: u64,
+    #[serde(skip)]
+    pub fetched_at: Option<u64>,
     pub revision: String,
     pub status: codewhale_config::catalog::CatalogStatus,
     pub discovery_supported: bool,
@@ -119,25 +121,46 @@ pub fn exact_route_inventory(
                     reason: CatalogRefreshError::NotFound
                 }
             );
-    let mut scoped = config.clone();
-    scoped.scope_to_provider_identity(identity)?;
-    let mut ids = crate::provider_lake::listed_models_for_route(&scoped, identity);
-    let default_model = scoped.default_model();
-    if identity.provider != ProviderKind::Ollama
-        || !codewhale_runtime::config::is_unresolved_local_ollama_model(&default_model)
-    {
-        ids.push(default_model.clone());
-    }
-    ids.extend(retained.iter().cloned());
+    let default_model = (config.active_provider_identity().ok().as_ref() == Some(identity))
+        .then(|| provider_default_model(config, identity));
     let configured = config
         .provider_config_for(identity)
         .and_then(|row| row.model.as_deref());
-    if let Some(model) = configured {
-        ids.push(model.to_string());
+    let mut ids: Vec<_> = configured
+        .map(str::to_string)
+        .into_iter()
+        .chain(default_model.iter().cloned())
+        .collect();
+    if let Some(roster) = &codex {
+        ids.extend(roster.model_ids());
+    } else if !config.model_ids_pass_through_for_provider(identity)
+        || entry.as_ref().is_some_and(|entry| entry.fetched_at > 0)
+        || crate::provider_lake::live_catalog_unavailable(config, identity)
+    {
+        ids.extend(models_for_provider(config, identity));
     }
+    ids.extend(retained.iter().cloned());
     if let Some(entry) = &entry {
         ids.extend(entry.offerings.iter().map(|row| row.wire_model_id.clone()));
     }
+    ids.extend(
+        config
+            .custom_models
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|model| {
+                codewhale_runtime::config::configured_model_for_route(
+                    config,
+                    identity.provider,
+                    identity.key.as_str(),
+                    &base,
+                    &model.id,
+                )
+                .is_some()
+            })
+            .map(|model| model.id.clone()),
+    );
     ids.retain(|id| {
         !id.is_empty()
             && !id.eq_ignore_ascii_case("auto")
@@ -157,7 +180,7 @@ pub fn exact_route_inventory(
                     entry.fetched_at > 0
                         && entry.offerings.iter().any(|row| row.wire_model_id == model)
                 });
-            let manual = default_model == model
+            let manual = default_model.as_deref() == Some(model.as_str())
                 || configured == Some(model.as_str())
                 || (retained.contains(&model)
                     && crate::provider_lake::configured_catalog_offering_for_route(
@@ -244,6 +267,15 @@ pub fn exact_route_inventory(
     Ok(ExactRouteInventory {
         generation,
         observation_revision,
+        fetched_at: if let Some(roster) = &codex {
+            roster
+                .observed_at
+                .or(roster.fetched_at)
+                .and_then(|time| u64::try_from(time.timestamp()).ok())
+        } else {
+            entry.as_ref().map(|entry| entry.fetched_at)
+        }
+        .filter(|time| *time > 0),
         revision,
         status,
         discovery_supported,
@@ -1096,10 +1128,12 @@ base_url = "http://127.0.0.1:18002/v1"
 id = "Same"
 attachment = false
 [providers.alpha]
+kind = "openai-compatible"
 base_url = "http://127.0.0.1:18001/v1"
 auth_mode = "none"
 model = "Same"
 [providers.beta]
+kind = "openai-compatible"
 base_url = "http://127.0.0.1:18002/v1"
 auth_mode = "none"
 model = "Same"

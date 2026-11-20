@@ -136,7 +136,7 @@ pub fn inventory_scope(
         fence.account = account;
         fence.observation = Some(observation);
         fence.generation = fence.generation.saturating_add(1);
-        if !preserve_keyless {
+        if !preserve_keyless && route_is_account_scoped(config, identity) {
             forget_account_scoped_provider(identity.provider, identity.key.as_str());
         }
     }
