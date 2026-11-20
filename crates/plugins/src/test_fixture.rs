@@ -95,7 +95,21 @@ impl Drop for PluginTempDir {
             Ok(())
         }
 
-        if let Err(error) = unlock_directories(self.path()) {
+        let state = self.path().join("state");
+        let unlock_staged = || -> std::io::Result<()> {
+            let metadata = fs::symlink_metadata(&state)?;
+            if !metadata.is_dir()
+                || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata)
+            {
+                return Ok(());
+            }
+            #[cfg(windows)]
+            let _state = codewhale_util::files::WindowsDirectory::open(&state)?;
+            unlock_directories(&state.join(".runtime"))
+        };
+        if let Err(error) = unlock_staged()
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
             eprintln!(
                 "could not unlock plugin test fixture {}: {error}",
                 self.path().display()
