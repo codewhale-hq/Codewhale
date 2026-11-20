@@ -1511,6 +1511,8 @@ pub enum ThreadListFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CreateThreadRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_selection: Option<crate::model_inventory::RouteSelection>,
     #[serde(default, alias = "operationKey")]
     pub operation_key: Option<String>,
     pub model: Option<String>,
@@ -1826,6 +1828,36 @@ pub(super) fn canonical_runtime_reasoning_effort(value: Option<&str>) -> Result<
 #[derive(Debug, thiserror::Error)]
 #[error("operation_key already binds a different thread creation request")]
 pub struct RuntimeThreadCreateConflict;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Route selection changed or is unavailable. Refresh the model list and reselect the route."
+)]
+pub struct RuntimeThreadCreateRouteConflict;
+
+fn admit_exact_thread_create_route(
+    config: &Config,
+    thread: &mut ThreadRecord,
+    selection: &crate::model_inventory::RouteSelection,
+) -> Result<()> {
+    let identity = config
+        .resolve_persisted_provider_identity(
+            thread.model_provider.as_deref(),
+            thread.model_provider_id.as_deref(),
+        )
+        .map_err(|_| RuntimeThreadCreateRouteConflict)?;
+    let resolved = crate::model_inventory::resolve_inventory_selection(
+        config,
+        &identity,
+        &thread.model,
+        selection,
+    )
+    .map_err(|_| RuntimeThreadCreateRouteConflict)?;
+    thread.model = resolved.candidate.wire_model_id().as_str().to_string();
+    thread.model_provider = Some(resolved.identity.persisted_kind().to_string());
+    thread.model_provider_id = resolved.identity.persisted_id().map(str::to_string);
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedRuntimeTurnOperation {
@@ -8358,6 +8390,24 @@ impl RuntimeThreadManager {
     ) -> Result<ThreadRecord> {
         let now = Utc::now();
         let reasoning_effort = canonical_runtime_reasoning_effort(req.reasoning_effort.as_deref())?;
+        if let Some(selection) = req.route_selection.as_ref() {
+            let exact_field = |value: &str| {
+                !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
+            };
+            anyhow::ensure!(
+                req.model_provider.as_deref().is_some_and(exact_field)
+                    && req.model.as_deref().is_some_and(|model| {
+                        exact_field(model) && !model.eq_ignore_ascii_case("auto")
+                    }),
+                "route_selection requires model_provider and an exact model"
+            );
+            anyhow::ensure!(
+                req.model_provider_id.as_deref().is_none_or(exact_field)
+                    && exact_field(&selection.route_id)
+                    && exact_field(&selection.binding_id),
+                "route_selection and model_provider_id must be exact nonempty values"
+            );
+        }
         if let Some(environment) = req.environment.as_ref() {
             return Err(environment.refusal().into());
         }
@@ -8391,6 +8441,7 @@ impl RuntimeThreadManager {
                     req.model.is_none()
                         && req.model_provider.is_none()
                         && req.model_provider_id.is_none()
+                        && req.route_selection.is_none()
                         && req.reasoning_effort.is_none(),
                     "set another agent's model through executor.config.model; Codewhale provider controls are unavailable"
                 );
@@ -8402,49 +8453,53 @@ impl RuntimeThreadManager {
             }
             None => None,
         };
-        let (model_provider, model_provider_id, default_model) =
-            if let Some(record) = executor.as_ref() {
-                (
-                    None,
-                    None,
-                    record
-                        .model
-                        .clone()
-                        .or_else(|| record.agent_name.clone())
-                        .unwrap_or_else(|| record.agent_id.clone()),
-                )
+        let (model_provider, model_provider_id, model) = if let Some(record) = executor.as_ref() {
+            (
+                None,
+                None,
+                record
+                    .model
+                    .clone()
+                    .or_else(|| record.agent_name.clone())
+                    .unwrap_or_else(|| record.agent_id.clone()),
+            )
+        } else if req.route_selection.is_some() {
+            (
+                req.model_provider,
+                req.model_provider_id,
+                req.model
+                    .context("route_selection requires an exact model")?,
+            )
+        } else {
+            let config = self.read_config().clone();
+            let requested_kind = req
+                .model_provider
+                .as_deref()
+                .filter(|provider| !provider.trim().is_empty());
+            let requested_id = req.model_provider_id.as_deref().map(str::trim);
+            let identity = if requested_kind.is_some() || requested_id.is_some() {
+                config.resolve_persisted_provider_identity(requested_kind, requested_id)
             } else {
-                let config = self.read_config().clone();
-                let requested_kind = req
-                    .model_provider
+                config.active_provider_identity()
+            }
+            .map_err(|reason| anyhow!(reason))?;
+            let default_model = resolve_runtime_route_for_identity(
+                &config,
+                &identity,
+                req.model
                     .as_deref()
-                    .filter(|provider| !provider.trim().is_empty());
-                let requested_id = req.model_provider_id.as_deref().map(str::trim);
-                let identity = if requested_kind.is_some() || requested_id.is_some() {
-                    config.resolve_persisted_provider_identity(requested_kind, requested_id)
-                } else {
-                    config.active_provider_identity()
-                }
-                .map_err(|reason| anyhow!(reason))?;
-                let default_model = resolve_runtime_route_for_identity(
-                    &config,
-                    &identity,
-                    req.model
-                        .as_deref()
-                        .filter(|model| !model.trim().is_empty()),
-                )
-                .map_err(|reason| anyhow!(reason))?
-                .model;
-                (
-                    Some(identity.persisted_kind().to_string()),
-                    identity.persisted_id().map(str::to_string),
-                    default_model,
-                )
-            };
-        let model = req
-            .model
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or(default_model);
+                    .filter(|model| !model.trim().is_empty()),
+            )
+            .map_err(|reason| anyhow!(reason))?
+            .model;
+            (
+                Some(identity.persisted_kind().to_string()),
+                identity.persisted_id().map(str::to_string),
+                req.model
+                    .filter(|model| !model.trim().is_empty())
+                    .unwrap_or(default_model),
+            )
+        };
         let workspace = req.workspace.unwrap_or_else(|| self.workspace.clone());
         let add_dirs = validate_add_dirs(req.add_dirs)?;
         let requested_mode = req
@@ -8490,7 +8545,7 @@ impl RuntimeThreadManager {
             None => None,
         };
         let disallowed_tools = crate::task_manager::normalize_deny_rules(req.disallowed_tools);
-        let thread = ThreadRecord {
+        let mut thread = ThreadRecord {
             schema_version: super::required_thread_schema_version(&disallowed_tools),
             id: match reserved_id {
                 Some(id) => validated_record_id(&id, "reserved history thread id")?.to_string(),
@@ -8525,6 +8580,7 @@ impl RuntimeThreadManager {
             environment: None,
             agent_preset,
         };
+        let route_selection = req.route_selection;
         if let Some(operation_key) = req.operation_key {
             let key_fingerprint = runtime_turn_operation_key_fingerprint(
                 &self.store.owner_id,
@@ -8558,13 +8614,22 @@ impl RuntimeThreadManager {
             if !thread.disallowed_tools.is_empty() {
                 fingerprint_body["disallowed_tools"] = json!(thread.disallowed_tools);
             }
+            if let Some(selection) = route_selection.as_ref() {
+                fingerprint_body["route_selection"] = json!(selection);
+            }
             let request_fingerprint =
                 codewhale_runtime::hashing::sha256_hex(serde_json::to_vec(&fingerprint_body)?);
             let _emit_order = self.event_emit.lock().await;
             let store = self.store.clone();
+            let route_config = Arc::clone(&self.config);
+            #[cfg(any(test, feature = "test-support"))]
+            let env_ticket = crate::test_support::env_scope_ticket();
             let (thread, event) = tokio::task::spawn_blocking(move || {
+                #[cfg(any(test, feature = "test-support"))]
+                let _membership = crate::test_support::join_env_scope(env_ticket);
                 store.with_turn_operation_claim(Some(&key_fingerprint), || {
                     let path = store.thread_create_operation_path(&key_fingerprint)?;
+                    let mut new_binding = false;
                     let mut binding = match read_store_file(&path) {
                         Ok(raw) => {
                             let binding: RuntimeThreadCreateBinding = serde_json::from_str(&raw)?;
@@ -8592,7 +8657,7 @@ impl RuntimeThreadManager {
                                 committed: false,
                             };
                             binding.validate()?;
-                            write_json_atomic(&path, &binding)?;
+                            new_binding = true;
                             binding
                         }
                         Err(error) => return Err(error),
@@ -8603,7 +8668,24 @@ impl RuntimeThreadManager {
                     let started = store
                         .contains_event(&binding.thread_id, &RuntimeEventMatch::ThreadStarted)?;
                     let thread_path = store.thread_path(&binding.thread_id)?;
-                    let thread = if thread_path.try_exists()? {
+                    let thread_exists = thread_path.try_exists()?;
+                    anyhow::ensure!(
+                        route_selection.is_none() || !new_binding || !thread_exists,
+                        "exact route thread creation requires an unused thread id"
+                    );
+                    let config = route_selection
+                        .as_ref()
+                        .filter(|_| !thread_exists)
+                        .map(|_| route_config.read());
+                    if let (Some(config), Some(selection)) =
+                        (config.as_deref(), route_selection.as_ref())
+                    {
+                        admit_exact_thread_create_route(config, &mut thread, selection)?;
+                    }
+                    if new_binding {
+                        write_json_atomic(&path, &binding)?;
+                    }
+                    let thread = if thread_exists {
                         store.load_thread(&binding.thread_id)?
                     } else {
                         anyhow::ensure!(
@@ -8617,6 +8699,7 @@ impl RuntimeThreadManager {
                         store.save_thread(&thread)?;
                         thread
                     };
+                    drop(config);
                     let event = if started {
                         None
                     } else {
@@ -8641,7 +8724,19 @@ impl RuntimeThreadManager {
             }
             return Ok(thread);
         }
-        self.store.save_thread(&thread)?;
+        if let Some(selection) = route_selection {
+            let store = self.store.clone();
+            let route_config = Arc::clone(&self.config);
+            thread = codewhale_runtime::runtime_control::owner_work(move || {
+                let config = route_config.read();
+                admit_exact_thread_create_route(&config, &mut thread, &selection)?;
+                store.save_thread(&thread)?;
+                Ok(thread)
+            })
+            .await?;
+        } else {
+            self.store.save_thread(&thread)?;
+        }
         self.emit_event(
             &thread.id,
             None,

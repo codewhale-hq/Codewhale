@@ -1441,6 +1441,18 @@ tools remain blocked even if listed in `allowed_tools`, and non-empty rules
 participate in creation idempotency fingerprints. These fields are additive:
 older thread records and clients that omit them retain their previous behavior.
 
+When `GET /v1/runtime/info` advertises
+`capabilities.exact_route_thread_create: true`, clients can send the model
+list's `route_selection` object (`route_id` and `binding_id`) on thread
+creation. Send the selected `model_provider`, exact wire `model` and
+`model_provider_id` when the list supplies one. Missing or malformed required
+fields return HTTP 400. If the selected route has changed or is unavailable,
+the server returns HTTP 409 with `error.code: "route_selection_stale"` before
+creating a thread or emitting `thread.started`. Refresh the model list and
+ask the user to reselect. The selection participates in the creation
+fingerprint when using `operation_key`. A matching committed retry still
+returns the original thread if the route has since changed.
+
 ### Sessions on other agents (external agent threads)
 
 For installation, sign-in and a runnable example, see

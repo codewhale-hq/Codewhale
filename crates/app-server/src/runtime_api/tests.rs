@@ -14963,6 +14963,93 @@ model = "gpt-6-astra"
             .await?;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+
+    let runtime_info: Value = client
+        .get(format!("http://{addr}/v1/runtime/info"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        runtime_info["capabilities"]["exact_route_thread_create"],
+        true
+    );
+    let threads_url = format!("http://{addr}/v1/threads");
+    let mut exact_request = json!({
+        "operation_key": "exact-route-create",
+        "model_provider": "custom",
+        "model_provider_id": "second",
+        "model": "gpt-6-astra",
+        "allow_shell": false,
+        "route_selection": body["models"][0]["route"]["selection"]
+    });
+    let response = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let exact_thread: Value = response.json().await?;
+    assert_eq!(exact_thread["model_provider"], "custom");
+    assert_eq!(exact_thread["model_provider_id"], "second");
+    assert_eq!(exact_thread["model"], "gpt-6-astra");
+    assert_ne!(exact_thread["id"], created["id"]);
+
+    let mut changed_config = runtime_threads.read_config().clone();
+    changed_config.provider_config_for_mut(&exact)?.base_url =
+        Some(format!("{}/changed/v1", transport.uri()));
+    runtime_threads.reload_config(changed_config).await?;
+
+    let replayed: Value = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(replayed, exact_thread);
+    exact_request["operation_key"] = json!("stale-route-create");
+    let stale = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let error: Value = stale.json().await?;
+    assert_eq!(error["error"]["code"], "route_selection_stale");
+
+    exact_request
+        .as_object_mut()
+        .unwrap()
+        .remove("operation_key");
+    let unkeyed = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(unkeyed.status(), StatusCode::CONFLICT);
+    let error: Value = unkeyed.json().await?;
+    assert_eq!(error["error"]["code"], "route_selection_stale");
+
+    exact_request.as_object_mut().unwrap().remove("model");
+    let incomplete = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(incomplete.status(), StatusCode::BAD_REQUEST);
+
+    let listed: Vec<Value> = client
+        .get(&threads_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(transport.received_requests().await.unwrap().len(), 1);
     handle.abort();
     Ok(())
 }

@@ -79,11 +79,13 @@ use codewhale_engine::fleet::worker_runtime::fleet_write_roots;
 use codewhale_engine::mcp::McpPool;
 use codewhale_engine::runtime_threads::{
     MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
-    manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
-    manager::RuntimeThreadManagerConfig, manager::RuntimeTurnOperationReceipt,
-    manager::SharedRuntimeThreadManager, manager::StartTurnRequest, manager::StartWatchTurnRequest,
-    manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
-    manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
+    manager::CreateThreadRequest, manager::ExternalApprovalDecision,
+    manager::RuntimeThreadCreateConflict, manager::RuntimeThreadCreateRouteConflict,
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    manager::RuntimeTurnOperationReceipt, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest, manager::StartWatchTurnRequest, manager::SteerTurnRequest,
+    manager::ThreadDetail, manager::ThreadListFilter, manager::UpdateThreadRequest,
+    manager::UsageGroupBy, manager::UsageTotals,
 };
 use codewhale_runtime::config::{Config, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
@@ -1695,6 +1697,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         session_provider_keys: false,
         threads: true,
         thread_create_idempotency: true,
+        exact_route_thread_create: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
         thread_scoped_reads: true,
@@ -4098,13 +4101,15 @@ async fn create_thread(
     if req.mode.as_ref().is_none_or(|m| m.trim().is_empty()) {
         req.mode = Some("agent".to_string());
     }
-    refresh_local_default_catalog(
-        &state,
-        req.model.as_deref(),
-        req.model_provider.as_deref(),
-        req.model_provider_id.as_deref(),
-    )
-    .await;
+    if req.route_selection.is_none() {
+        refresh_local_default_catalog(
+            &state,
+            req.model.as_deref(),
+            req.model_provider.as_deref(),
+            req.model_provider_id.as_deref(),
+        )
+        .await;
+    }
 
     let thread = state
         .runtime_threads
@@ -4117,9 +4122,9 @@ async fn create_thread(
         .map_err(|e| {
             if let Some(refusal) = external_agent_refusal(&e).or_else(|| mode_refusal(&e)) {
                 refusal
-            } else if e
-                .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
-            {
+            } else if e.is::<RuntimeThreadCreateRouteConflict>() {
+                ApiError::conflict(e.to_string()).with_code("route_selection_stale")
+            } else if e.is::<RuntimeThreadCreateConflict>() {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
