@@ -50,11 +50,14 @@ jobs:
           $product = 'HKCU:\Software\CodeWhale'
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'CodeWhale/CodeWhale.lnk'
           if ((Test-Path $registry) -or (Test-Path $product) -or (Test-Path $shortcut)) { throw 'Expected a clean disposable runner profile' }
-          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
           function Read-Path {
             $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
           }
           $initialPath = Read-Path
+          $hadPath = $key.GetValueNames() -contains 'Path'
+          $pathKind = if ($hadPath) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+          $expectedAfterLegacyRemoval = if ($initialPath.EndsWith(';')) { $initialPath.Substring(0, $initialPath.Length - 1) } else { $initialPath }
           function Install([string]$package) {
             $process = Start-Process -PassThru -Wait -FilePath $package -ArgumentList @('/S', "/D=$install")
             if ($process.ExitCode -ne 0) { throw "Installer exit $($process.ExitCode)" }
@@ -68,6 +71,9 @@ jobs:
           }
           Install $baseline
           Check-Version 'codewhale 0.10.2 (ff466b2ed0bf)'
+          $legacyInstalledPath = Read-Path
+          $expectedLegacyPath = if ($initialPath.Length -eq 0 -or $initialPath.EndsWith(';')) { "$initialPath$bin" } else { "$initialPath;$bin" }
+          if ($legacyInstalledPath -cne $expectedLegacyPath) { throw 'Published baseline PATH did not match its legacy append contract' }
           'unrelated' | Set-Content (Join-Path $bin 'unrelated.txt')
           'saved state' | Set-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')
           Install $setup
@@ -77,6 +83,7 @@ jobs:
           }
           if ((Get-ItemProperty -LiteralPath $registry).DisplayVersion -cne '0.10.3') { throw 'Upgrade registration version mismatch' }
           if (@((Read-Path) -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw 'Expected one installed PATH entry' }
+          if ((Read-Path) -cne $legacyInstalledPath) { throw 'Upgrade changed existing PATH bytes' }
           if (!(Test-Path $shortcut) -or !(Test-Path (Join-Path $bin 'codewhale.bat'))) { throw 'Missing launcher or Start Menu shortcut' }
           $uninstaller = Join-Path $install 'Uninstall.exe'
           $uninstallerHash = (Get-FileHash -LiteralPath $uninstaller).Hash.ToLowerInvariant()
@@ -85,10 +92,23 @@ jobs:
           foreach ($file in @($uninstaller,$shortcut,(Join-Path $bin 'codewhale.exe'),(Join-Path $bin 'codew.exe'),(Join-Path $bin 'codewhale.bat'),$registry,$product)) {
             if (Test-Path -LiteralPath $file) { throw "Uninstall retained owned item $file" }
           }
-          if ((Read-Path) -cne $initialPath) { throw 'Uninstaller did not restore original user PATH' }
+          if ((Read-Path) -cne $expectedAfterLegacyRemoval) { throw 'Upgrade removal changed PATH beyond the legacy append' }
           if ((Get-Content (Join-Path $bin 'unrelated.txt')) -cne 'unrelated' -or (Get-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')) -cne 'saved state') { throw 'Uninstall changed unrelated files or state' }
-          $key.Close()
-          [ordered]@{ source=$env:ENGINE_SHA; rc_run=$env:RC_RUN; windows_build=[Environment]::OSVersion.Version.Build; baseline_setup_sha256=$env:BASELINE_SETUP_SHA256; setup_sha256=$setupDigest; codewhale_sha256=$env:ENGINE_EXE_SHA256; generated_uninstaller_sha256=$uninstallerHash; baseline_install=$true; upgrade=$true; uninstall=$true; path_restored=$true; state_preserved=$true } | ConvertTo-Json | Tee-Object -FilePath windows-installer-proof.json
+          try {
+            $install = Join-Path $root 'fresh-install'
+            $bin = Join-Path $install 'bin'
+            $seed = '%USERPROFILE%\bin;C:\CodeWhaleProofFixture\unrelated;;'
+            $key.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Install $setup
+            if ((Read-Path) -cne "$seed$bin;" ) { throw 'Current installer changed the existing trailing PATH separators' }
+            $freshRemoved = Start-Process -PassThru -Wait -FilePath (Join-Path $install 'Uninstall.exe') -ArgumentList '/S'
+            if ($freshRemoved.ExitCode -ne 0 -or (Read-Path) -cne $seed) { throw 'Fresh uninstall did not restore exact PATH bytes' }
+            if ($key.GetValueKind('Path') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw 'Fresh uninstall changed the registry value type' }
+          } finally {
+            if ($hadPath) { $key.SetValue('Path', $initialPath, $pathKind) } else { $key.DeleteValue('Path', $false) }
+            $key.Close()
+          }
+          [ordered]@{ source=$env:ENGINE_SHA; rc_run=$env:RC_RUN; windows_build=[Environment]::OSVersion.Version.Build; baseline_setup_sha256=$env:BASELINE_SETUP_SHA256; setup_sha256=$setupDigest; codewhale_sha256=$env:ENGINE_EXE_SHA256; generated_uninstaller_sha256=$uninstallerHash; baseline_install=$true; upgrade=$true; uninstall=$true; legacy_trailing_separator_consumed=$initialPath.EndsWith(';'); fresh_exact_path_round_trip=$true; state_preserved=$true } | ConvertTo-Json | Tee-Object -FilePath windows-installer-proof.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-installer-proof
