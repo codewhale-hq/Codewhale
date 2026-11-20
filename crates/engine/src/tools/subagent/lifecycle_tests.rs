@@ -586,6 +586,34 @@ fn lifecycle_oversized_event_pages_return_every_sequence_once() {
     let page: Value = serde_json::from_str(&result.content).unwrap();
     assert_eq!(page["recent_events"][0]["seq"], 25);
     assert!(page.get("events_next_offset").is_none());
+
+    for (session_bytes, keeps_handle) in [(7200, true), (9000, false)] {
+        let mut with_handle = projection.clone();
+        with_handle["transcript_handle"] = json!({
+            "kind": "var_handle", "session_id": "s".repeat(session_bytes),
+            "name": "transcript", "type": "json", "length": 7, "repr_preview": "",
+            "sha256": "a".repeat(64),
+        });
+        let detail = lifecycle::bounded_detail(
+            with_handle.clone(),
+            json!({"agent_id":"agent-test","summary":"x".repeat(7600)}),
+            0,
+            20,
+        );
+        let result = lifecycle::status_result(detail, false).unwrap();
+        assert!(result.content.len() <= 8192);
+        let page: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(page["recent_events"][0]["seq"], 1);
+        assert_eq!(page["recent_events"][0]["detail_omitted"], true);
+        assert_eq!(page["events_next_offset"], 1);
+        assert_eq!(page["agent_id"], "agent-test");
+        if keeps_handle {
+            assert_eq!(page["transcript_handle"], with_handle["transcript_handle"]);
+        } else {
+            assert!(page.get("transcript_handle").is_none());
+            assert_eq!(page["transcript_handle_omitted"], true);
+        }
+    }
 }
 
 #[tokio::test]

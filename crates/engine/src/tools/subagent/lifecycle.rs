@@ -4,7 +4,7 @@ use super::*;
 pub(super) const COMPACT_STATUS_BYTES: usize = 8192;
 pub(super) const COMPACT_SPAWN_BYTES: usize = 4096;
 pub(super) const COMPACT_CANCEL_BYTES: usize = 4096;
-const DETAIL_STATUS_BYTES: usize = 8 * 1024;
+const DETAIL_STATUS_BYTES: usize = 8 * 1024 - r#","action":"status""#.len();
 const PEEK_RECENT_EVENTS_LIMIT: usize = 8;
 
 pub(super) fn compact_transcript_handle(mut handle: Value) -> Value {
@@ -582,6 +582,10 @@ fn bound_detail_value(value: &mut Value, offset: usize, limit: usize, budget: &m
     }
 }
 
+fn detail_fits(page: &Value) -> bool {
+    serde_json::to_vec(page).is_ok_and(|bytes| bytes.len() <= DETAIL_STATUS_BYTES)
+}
+
 fn truncate_event_page(detail: &mut Value, offset: usize, retained: usize) {
     if let Some(events) = detail
         .get_mut("recent_events")
@@ -744,7 +748,7 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
     );
 
     let mut out = Value::Object(detail);
-    if serde_json::to_vec(&out).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
+    if !detail_fits(&out) {
         if let Some(result_text) = out
             .get("result")
             .and_then(Value::as_str)
@@ -755,7 +759,7 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
         }
         truncate_event_page(&mut out, offset, 4);
     }
-    if serde_json::to_vec(&out).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
+    if !detail_fits(&out) {
         truncate_event_page(&mut out, offset, 1);
         let status = out
             .pointer("/verification/status")
@@ -774,7 +778,7 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
             "detail_required": true,
         });
     }
-    if serde_json::to_vec(&out).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
+    if !detail_fits(&out) {
         let handle = out.get("transcript_handle").cloned();
         let mut minimal = json!({
             "agent_id": out["agent_id"],
@@ -806,6 +810,38 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
         ] {
             if let Some(value) = out.get_mut(key) {
                 minimal[key] = value.take();
+            }
+        }
+        if !detail_fits(&minimal) {
+            let identity = minimal.get_mut("agent_id").map(Value::take);
+            minimal.as_object_mut().unwrap().retain(|key, _| {
+                matches!(
+                    key.as_str(),
+                    "recent_events"
+                        | "events_total"
+                        | "events_next_offset"
+                        | "events_omitted"
+                        | "transcript_handle"
+                        | "detail_bounded"
+                )
+            });
+            if !detail_fits(&minimal)
+                && let Some(row) = minimal
+                    .get_mut("recent_events")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|events| events.first_mut())
+            {
+                *row = json!({"seq": row["seq"].as_u64(), "detail_omitted": true});
+            }
+            if !detail_fits(&minimal) {
+                minimal.as_object_mut().unwrap().remove("transcript_handle");
+                minimal["transcript_handle_omitted"] = json!(true);
+            }
+            if let Some(identity) = identity {
+                minimal["agent_id"] = identity;
+                if !detail_fits(&minimal) {
+                    minimal.as_object_mut().unwrap().remove("agent_id");
+                }
             }
         }
         out = minimal;
