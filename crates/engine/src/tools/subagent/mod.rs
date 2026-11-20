@@ -15227,8 +15227,11 @@ impl ToolSpec for AgentTool {
         if projection.snapshot.status == SubAgentStatus::Running {
             value["status"] = json!("running");
         }
-        value["next"] =
-            json!("Results arrive automatically; continue other work or end your turn.");
+        value["next"] = if verbose {
+            json!("Results arrive automatically; continue other work or end your turn.")
+        } else {
+            json!("Results arrive automatically.")
+        };
         compact_spawn_receipt(&mut value, verbose);
         if let Some(note) = projection
             .child_route
@@ -15314,8 +15317,16 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     if let Some(route) = object.get_mut("child_route") {
         *route = lifecycle::compact_child_route(std::mem::take(route));
     }
-    if let Some(handle) = object.get_mut("transcript_handle") {
-        *handle = lifecycle::compact_transcript_handle(std::mem::take(handle));
+    if let Some(preview) = object
+        .get_mut("transcript_handle")
+        .and_then(|handle| handle.get_mut("repr_preview"))
+    {
+        *preview = json!("");
+    }
+    for flag in ["timed_out", "timed_out_with_checkpoint"] {
+        if object.get(flag).and_then(Value::as_bool) == Some(false) {
+            object.remove(flag);
+        }
     }
     if let Some(follow_up) = object.get_mut("follow_up").and_then(Value::as_object_mut) {
         follow_up.remove("session_name");
@@ -15357,7 +15368,7 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     object.insert("compact".to_string(), json!(true));
     object.insert(
         "compact_note".to_string(),
-        json!("Inspect with agent_id, detail=true; start verbose: true."),
+        json!("Full receipt: verbose: true."),
     );
     // Declared output paths can be numerous and long. Keep every path that
     // fits verbatim and make omissions explicit; addressed detail has them all.
