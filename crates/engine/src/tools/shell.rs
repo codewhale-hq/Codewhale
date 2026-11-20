@@ -7399,15 +7399,21 @@ impl ToolSpec for BashTool {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
                     let persisted_artifact = if stdout_meta.truncated || stderr_meta.truncated {
-                        let full_combined =
-                            combine_full_shell_streams(&output.stdout, &output.stderr);
-                        persist_shell_output_artifact(
-                            &context.state_namespace,
-                            context.origin_tool_call_id.as_deref(),
-                            &format!("bash-sandbox-{}", Uuid::new_v4().simple()),
-                            full_combined.as_bytes(),
-                        )
-                        .ok()
+                        let session_id = context.state_namespace.clone();
+                        let origin_tool_call_id = context.origin_tool_call_id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let full_combined =
+                                combine_full_shell_streams(&output.stdout, &output.stderr);
+                            persist_shell_output_artifact(
+                                &session_id,
+                                origin_tool_call_id.as_deref(),
+                                &format!("bash-sandbox-{}", Uuid::new_v4().simple()),
+                                full_combined.as_bytes(),
+                            )
+                            .ok()
+                        })
+                        .await
+                        .map_err(|err| ToolError::execution_failed(err.to_string()))?
                     } else {
                         None
                     };

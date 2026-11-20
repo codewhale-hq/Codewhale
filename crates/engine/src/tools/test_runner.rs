@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::cargo_failure_summary::summarize_cargo_failure;
-use super::shell::{SharedShellManager, ShellResult, ShellStatus};
+use super::shell::{SharedShellManager, ShellManager, ShellResult, ShellStatus};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str,
@@ -470,13 +470,25 @@ impl Drop for ForegroundTestGuard {
         if !self.armed {
             return;
         }
-        let mut manager = self
-            .manager
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Ok(killed) = manager.kill(&self.task_id) {
-            manager.mark_cancel_reported(&killed);
+        let manager = self.manager.clone();
+        let task_id = self.task_id.clone();
+        let cleanup = move || {
+            let mut manager = manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cancel_cargo_job(&mut manager, &task_id);
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(cleanup);
+        } else {
+            cleanup();
         }
+    }
+}
+
+fn cancel_cargo_job(manager: &mut ShellManager, task_id: &str) {
+    if let Ok(killed) = manager.kill(task_id) {
+        manager.mark_cancel_reported(&killed);
     }
 }
 
@@ -503,23 +515,31 @@ async fn run_cargo_with_auto_background(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            if let Ok(killed) = manager.kill(&task_id) {
-                manager.mark_cancel_reported(&killed);
-            }
-            guard.armed = false;
+            tokio::task::spawn_blocking(move || {
+                let mut manager = guard
+                    .manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                cancel_cargo_job(&mut manager, &guard.task_id);
+                guard.armed = false;
+                Ok::<_, ToolError>(())
+            })
+            .await
+            .map_err(|err| ToolError::execution_failed(err.to_string()))??;
             return Err(ToolError::cancelled("cargo test cancelled"));
         }
 
-        let status = context
-            .shell_manager
-            .lock()
-            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?
-            .poll_status(&task_id)
-            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+        let manager = context.shell_manager.clone();
+        let poll_task_id = task_id.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            manager
+                .lock()
+                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?
+                .poll_status(&poll_task_id)
+                .map_err(|err| ToolError::execution_failed(err.to_string()))
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(err.to_string()))??;
 
         if status != ShellStatus::Running || Instant::now() >= deadline {
             guard.armed = false;
