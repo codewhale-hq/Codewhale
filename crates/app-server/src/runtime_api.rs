@@ -15444,6 +15444,17 @@ async fn list_memory(
     State(state): State<RuntimeApiState>,
     Query(query): Query<ListMemoryQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let store = native_store_for_state(&state);
+    tokio::task::spawn_blocking(move || list_memory_sync(store, state.workspace, query))
+        .await
+        .map_err(|error| ApiError::internal(format!("memory list worker stopped: {error}")))?
+}
+
+fn list_memory_sync(
+    store: codewhale_runtime::native_memory::NativeMemoryStore,
+    workspace: PathBuf,
+    query: ListMemoryQuery,
+) -> Result<Json<Value>, ApiError> {
     let limit = match query.limit.unwrap_or(MEMORY_LIST_DEFAULT_LIMIT) {
         0 => {
             return Err(ApiError::bad_request("limit must be at least 1"));
@@ -15456,15 +15467,14 @@ async fn list_memory(
         n => n,
     };
 
-    let store = native_store_for_state(&state);
     let root = store.root().to_path_buf();
-    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &state.workspace)?;
+    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &workspace)?;
     if scope_filter.is_none() {
         // "all" is global memory plus this repository's. With no identity
         // (no origin remote, or git unavailable) there is no workspace memory
         // to show, and the listing still serves global memory.
         workspace_id =
-            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&state.workspace)
+            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace)
                 .unwrap_or_else(|error| {
                     tracing::warn!("memory list shows global memory only: {error}");
                     None
@@ -15478,7 +15488,7 @@ async fn list_memory(
         }
         match scope_filter {
             None if workspace_id.is_some() => {
-                store.search_in_workspace(workspace_id.as_deref(), &state.workspace, q, limit)
+                store.search_in_workspace(workspace_id.as_deref(), &workspace, q, limit)
             }
             None => store.search(q, limit),
             Some(codewhale_runtime::native_memory::MemoryScope::Global) => {
@@ -15488,19 +15498,19 @@ async fn list_memory(
                         .collect()
                 })
             }
-            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => store
-                .search_for_workspace(&state.workspace, q, limit)
-                .map(|h| {
+            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => {
+                store.search_for_workspace(&workspace, q, limit).map(|h| {
                     h.into_iter()
                         .filter(|h| scope_label_for_source(&h.source, &root) == "workspace")
                         .collect()
-                }),
+                })
+            }
         }
     } else {
         store.list_in_workspace(
             scope_filter,
             workspace_id.as_deref(),
-            Some(&state.workspace),
+            Some(&workspace),
             limit,
         )
     }
