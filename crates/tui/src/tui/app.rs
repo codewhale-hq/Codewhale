@@ -1309,6 +1309,7 @@ pub enum SidebarRowAction {
     Command(String),
     /// Put a destructive command in the composer instead of executing it.
     /// The user confirms with Enter or cancels by editing/clearing the draft.
+    #[allow(dead_code)]
     PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so

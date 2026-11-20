@@ -17,7 +17,13 @@ const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
 fn managed_program_preserves_resolved_path_and_argument_boundaries() {
     const FIXTURE_ENV: &str = "CODEWHALE_TEST_ARGV_FIXTURE";
     if std::env::var(FIXTURE_ENV).as_deref() == Ok("1") {
-        println!("\nargv fixture: {:?}", std::env::args().collect::<Vec<_>>());
+        let mut output = std::io::stdout().lock();
+        writeln!(
+            output,
+            "\nargv fixture: {:?}",
+            std::env::args().collect::<Vec<_>>()
+        )
+        .unwrap();
         return;
     }
     let workspace = tempdir().expect("tempdir");

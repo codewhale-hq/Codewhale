@@ -1068,57 +1068,66 @@ mod tests {
         assert!(parsed.command.contains("cargo test"));
     }
 
-    #[tokio::test]
-    async fn run_tests_foreground_spill_preserves_evidence_without_partial_counts() {
+    #[test]
+    fn run_tests_foreground_spill_preserves_evidence_without_partial_counts() {
         use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
 
         assert!(cargo_available(), "this regression requires Cargo");
         let _artifact_lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        struct ArtifactRootReset(Option<std::path::PathBuf>);
-        impl Drop for ArtifactRootReset {
-            fn drop(&mut self) {
-                codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
-            }
-        }
-        let tmp = tempdir().unwrap();
-        let _artifact_root = ArtifactRootReset(
-            codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
-                tmp.path().join("sessions"),
-            )),
-        );
-        let project = init_cargo_project(tmp.path());
-        fs::write(
-            project.join("src/lib.rs"),
-            r#"
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                struct ArtifactRootReset(Option<std::path::PathBuf>);
+                impl Drop for ArtifactRootReset {
+                    fn drop(&mut self) {
+                        codewhale_runtime::artifacts::set_test_artifact_sessions_root(
+                            self.0.take(),
+                        );
+                    }
+                }
+                let tmp = tempdir().unwrap();
+                let _artifact_root = ArtifactRootReset(
+                    codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+                        tmp.path().join("sessions"),
+                    )),
+                );
+                let project = init_cargo_project(tmp.path());
+                fs::write(
+                    project.join("src/lib.rs"),
+                    r#"
 #[test]
 fn early() { println!("EARLY_TEST_EVIDENCE"); }
 "#,
-        )
-        .unwrap();
-        fs::create_dir(project.join("tests")).unwrap();
-        let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
-        for late_test in [false, true] {
-            let session = if late_test {
-                "cargo-partial-count"
-            } else {
-                "cargo-false-zero"
-            };
-            let header = if late_test {
-                "#[test] fn late()"
-            } else {
-                "fn main()"
-            };
-            fs::write(
-                project.join("Cargo.toml"),
-                format!("{manifest}\n[[test]]\nname = \"verbose\"\nharness = {late_test}\n"),
-            )
-            .unwrap();
-            fs::write(
-                project.join("tests/verbose.rs"),
-                format!(
-                    r#"
+                )
+                .unwrap();
+                fs::create_dir(project.join("tests")).unwrap();
+                let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+                for late_test in [false, true] {
+                    let session = if late_test {
+                        "cargo-partial-count"
+                    } else {
+                        "cargo-false-zero"
+                    };
+                    let header = if late_test {
+                        "#[test] fn late()"
+                    } else {
+                        "fn main()"
+                    };
+                    fs::write(
+                        project.join("Cargo.toml"),
+                        format!(
+                            "{manifest}\n[[test]]\nname = \"verbose\"\nharness = {late_test}\n"
+                        ),
+                    )
+                    .unwrap();
+                    fs::write(
+                        project.join("tests/verbose.rs"),
+                        format!(
+                            r#"
 {header} {{
     use std::io::Write;
     let mut out = std::io::stdout().lock();
@@ -1131,90 +1140,90 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
     writeln!(out, "LAST_TEST_EVIDENCE").unwrap();
 }}
 "#
-                ),
-            )
-            .unwrap();
-            let ctx = ToolContext::new(&project)
-                .with_state_namespace(session)
-                .with_origin_tool_call_id("cargo-verbose");
-            let result = RunTestsTool
-                .execute(
-                    json!({
-                        "args": "--offline -- --nocapture --test-threads=1",
-                        "timeout_ms": 120_000
-                    }),
-                    &ctx,
-                )
-                .await
-                .unwrap();
-            let parsed: RunTestsOutput = serde_json::from_str(&result.content).unwrap();
-            assert!(parsed.success, "{}", result.content);
-            assert!(!parsed.backgrounded);
-            assert!(!parsed.zero_tests_matched);
-            assert_eq!(parsed.tests_executed, None);
-            assert_eq!(parsed.tests_filtered_out, None);
-            let capture = parsed.capture.unwrap();
-            assert!(!capture.output_complete);
-            assert!(capture.stdout_total_len > 16 * 1024 * 1024);
-            assert!(capture.stdout_omitted > 16 * 1024 * 1024);
-            assert!(parsed.stdout.contains("LAST_TEST_EVIDENCE"));
-            assert!(result.content.len() < 64 * 1024);
-            let metadata = result.metadata.unwrap();
-            assert_eq!(metadata["artifact_session_id"], session);
-            let artifact = metadata["artifact_id"]
-                .as_str()
-                .expect("test output artifact");
-            for marker in [
-                "EARLY_TEST_EVIDENCE",
-                "MIDDLE_TEST_EVIDENCE",
-                "LAST_TEST_EVIDENCE",
-            ] {
-                let recovered = RetrieveToolResultTool
-                    .execute(
-                        json!({
-                            "ref": artifact, "mode": "query", "query": marker
-                        }),
-                        &ctx,
+                        ),
                     )
-                    .await
                     .unwrap();
-                assert!(recovered.success, "{}", recovered.content);
-                let body: Value = serde_json::from_str(&recovered.content).unwrap();
-                assert!(body["matched_lines"].as_u64().unwrap() > 0);
-                assert!(body["matches_returned"].as_u64().unwrap() > 0);
-                assert!(
-                    body["results"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|result| result["excerpt"].as_str().unwrap().contains(marker))
-                );
-            }
-            let foreign = ctx.clone().with_state_namespace("cargo-foreign");
-            let denied = RetrieveToolResultTool
-                .execute(
-                    json!({
-                        "ref": artifact, "mode": "lines", "lines": "1-10"
-                    }),
-                    &foreign,
-                )
-                .await;
-            assert!(denied.is_err() || denied.is_ok_and(|result| !result.success));
-            assert!(
-                !ctx.shell_manager
-                    .lock()
-                    .unwrap()
-                    .may_have_undelivered_completion_for_session(session)
-            );
-        }
-        let session = "cargo-publication-retry";
-        let blocked = tmp.path().join("sessions").join(session).join("artifacts");
-        fs::create_dir_all(blocked.parent().unwrap()).unwrap();
-        fs::write(&blocked, "publication blocked").unwrap();
-        let ctx = ToolContext::new(&project)
-            .with_state_namespace(session)
-            .with_origin_tool_call_id("cargo-retry");
-        let failed = RunTestsTool
+                    let ctx = ToolContext::new(&project)
+                        .with_state_namespace(session)
+                        .with_origin_tool_call_id("cargo-verbose");
+                    let result = RunTestsTool
+                        .execute(
+                            json!({
+                                "args": "--offline -- --nocapture --test-threads=1",
+                                "timeout_ms": 120_000
+                            }),
+                            &ctx,
+                        )
+                        .await
+                        .unwrap();
+                    let parsed: RunTestsOutput = serde_json::from_str(&result.content).unwrap();
+                    assert!(parsed.success, "{}", result.content);
+                    assert!(!parsed.backgrounded);
+                    assert!(!parsed.zero_tests_matched);
+                    assert_eq!(parsed.tests_executed, None);
+                    assert_eq!(parsed.tests_filtered_out, None);
+                    let capture = parsed.capture.unwrap();
+                    assert!(!capture.output_complete);
+                    assert!(capture.stdout_total_len > 16 * 1024 * 1024);
+                    assert!(capture.stdout_omitted > 16 * 1024 * 1024);
+                    assert!(parsed.stdout.contains("LAST_TEST_EVIDENCE"));
+                    assert!(result.content.len() < 64 * 1024);
+                    let metadata = result.metadata.unwrap();
+                    assert_eq!(metadata["artifact_session_id"], session);
+                    let artifact = metadata["artifact_id"]
+                        .as_str()
+                        .expect("test output artifact");
+                    for marker in [
+                        "EARLY_TEST_EVIDENCE",
+                        "MIDDLE_TEST_EVIDENCE",
+                        "LAST_TEST_EVIDENCE",
+                    ] {
+                        let recovered = RetrieveToolResultTool
+                            .execute(
+                                json!({
+                                    "ref": artifact, "mode": "query", "query": marker
+                                }),
+                                &ctx,
+                            )
+                            .await
+                            .unwrap();
+                        assert!(recovered.success, "{}", recovered.content);
+                        let body: Value = serde_json::from_str(&recovered.content).unwrap();
+                        assert!(body["matched_lines"].as_u64().unwrap() > 0);
+                        assert!(body["matches_returned"].as_u64().unwrap() > 0);
+                        assert!(
+                            body["results"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|result| result["excerpt"].as_str().unwrap().contains(marker))
+                        );
+                    }
+                    let foreign = ctx.clone().with_state_namespace("cargo-foreign");
+                    let denied = RetrieveToolResultTool
+                        .execute(
+                            json!({
+                                "ref": artifact, "mode": "lines", "lines": "1-10"
+                            }),
+                            &foreign,
+                        )
+                        .await;
+                    assert!(denied.is_err() || denied.is_ok_and(|result| !result.success));
+                    assert!(
+                        !ctx.shell_manager
+                            .lock()
+                            .unwrap()
+                            .may_have_undelivered_completion_for_session(session)
+                    );
+                }
+                let session = "cargo-publication-retry";
+                let blocked = tmp.path().join("sessions").join(session).join("artifacts");
+                fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+                fs::write(&blocked, "publication blocked").unwrap();
+                let ctx = ToolContext::new(&project)
+                    .with_state_namespace(session)
+                    .with_origin_tool_call_id("cargo-retry");
+                let failed = RunTestsTool
             .execute(
                 json!({
                     "args": "--offline -- --nocapture --test-threads=1", "timeout_ms": 120_000
@@ -1222,42 +1231,43 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
                 &ctx,
             )
             .await;
-        assert!(failed.is_err());
-        assert!(
-            ctx.shell_manager
-                .lock()
-                .unwrap()
-                .has_finished_unreported_jobs_for_session(session)
-        );
-        fs::remove_file(&blocked).unwrap();
-        let evidence = ctx
-            .shell_manager
-            .lock()
-            .unwrap()
-            .drain_finished_jobs_with_evidence_for_session(session);
-        assert_eq!(evidence.len(), 1);
-        let receipt: Value = serde_json::from_slice(&evidence[0].artifact_bytes()).unwrap();
-        let artifact = receipt["stdout"]["artifact_id"]
-            .as_str()
-            .expect("recovered test artifact");
-        let recovered = RetrieveToolResultTool
-            .execute(
-                json!({
-                    "ref": artifact, "mode": "query", "query": "EARLY_TEST_EVIDENCE"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(recovered.success);
-        let body: Value = serde_json::from_str(&recovered.content).unwrap();
-        assert!(body["matched_lines"].as_u64().unwrap() > 0);
-        assert!(body["results"].as_array().unwrap().iter().any(|result| {
-            result["excerpt"]
-                .as_str()
-                .unwrap()
-                .contains("EARLY_TEST_EVIDENCE")
-        }));
+                assert!(failed.is_err());
+                assert!(
+                    ctx.shell_manager
+                        .lock()
+                        .unwrap()
+                        .has_finished_unreported_jobs_for_session(session)
+                );
+                fs::remove_file(&blocked).unwrap();
+                let evidence = ctx
+                    .shell_manager
+                    .lock()
+                    .unwrap()
+                    .drain_finished_jobs_with_evidence_for_session(session);
+                assert_eq!(evidence.len(), 1);
+                let receipt: Value = serde_json::from_slice(&evidence[0].artifact_bytes()).unwrap();
+                let artifact = receipt["stdout"]["artifact_id"]
+                    .as_str()
+                    .expect("recovered test artifact");
+                let recovered = RetrieveToolResultTool
+                    .execute(
+                        json!({
+                            "ref": artifact, "mode": "query", "query": "EARLY_TEST_EVIDENCE"
+                        }),
+                        &ctx,
+                    )
+                    .await
+                    .unwrap();
+                assert!(recovered.success);
+                let body: Value = serde_json::from_str(&recovered.content).unwrap();
+                assert!(body["matched_lines"].as_u64().unwrap() > 0);
+                assert!(body["results"].as_array().unwrap().iter().any(|result| {
+                    result["excerpt"]
+                        .as_str()
+                        .unwrap()
+                        .contains("EARLY_TEST_EVIDENCE")
+                }));
+            });
     }
 
     #[tokio::test]
