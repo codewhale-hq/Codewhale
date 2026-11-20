@@ -32465,12 +32465,6 @@ fn queued_terminal_events_keep_receipt_gap_for_late_unbracketed_submit() {
 #[test]
 fn queued_mid_stream_enter_inserts_newline_not_submit_under_backlog() {
     let (tx, rx) = std::sync::mpsc::channel();
-    // A raw paste at the pace the real Windows Terminal harness produced:
-    // chars ~5ms apart form a burst, and its Enter lands inside the 120ms
-    // suppression window. The whole stream is queued before the loop reads
-    // it, so processing time lags the last char far beyond the window — the
-    // predicate must run on each event's observed_at or the mid-paste Enter
-    // submits (a processing-time dispatch revert fails this test).
     let first_at = Instant::now()
         .checked_sub(Duration::from_millis(880))
         .expect("stale stream origin");
@@ -32525,8 +32519,6 @@ fn queued_mid_stream_enter_inserts_newline_not_submit_under_backlog() {
         submitted, None,
         "an Enter observed inside the suppression window must not submit just because processing ran late"
     );
-    // The absorbed newline lives in the burst buffer; a later expiry flush
-    // delivers the whole payload to the composer in order.
     flush_paste_burst_before_composer(&mut app, enter_at + Duration::from_millis(200));
     assert!(
         app.input.contains("pasted payload\n"),

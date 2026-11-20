@@ -5656,14 +5656,6 @@ pub(crate) async fn run_event_loop(
             terminal_repaint = FrameRepaint::Clear;
         }
 
-        // The burst window is armed in event-observed time, so expiry must
-        // be asked on that same clock: when input is backlogged, "now" for
-        // the paste machine is the *oldest* event still queued — the queue
-        // is FIFO-ordered by observed_at, so front() is the only bound that
-        // cannot outrun an unjudged Enter sitting behind it. back() would
-        // let a late mouse move or trailing char kill the window while an
-        // in-window Enter still waits its turn. Drain the pump first so
-        // queued input counts before the window can die underneath it.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
         let paste_now = pending_terminal_events
             .front()

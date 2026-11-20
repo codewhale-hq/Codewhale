@@ -12311,6 +12311,18 @@ impl RuntimeThreadManager {
         ))
     }
 
+    async fn delete_unpublished_fork_session(sessions_dir: &Path, session_id: Option<&str>) {
+        let Some(session_id) = session_id.map(str::to_owned) else {
+            return;
+        };
+        let sessions_dir = sessions_dir.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::session_manager::SessionManager::new(sessions_dir)
+                .and_then(|manager| manager.delete_session(&session_id))
+        })
+        .await;
+    }
+
     async fn commit_staged_fork(
         &self,
         source_snapshot: &ThreadRecord,
@@ -12322,11 +12334,21 @@ impl RuntimeThreadManager {
         let store = self.store.clone();
         let records_owned = records.to_vec();
         let thread_id = thread.id.clone();
-        let (saved_turn_ids, saved_item_ids) = tokio::task::spawn_blocking(move || {
+        let staging_result = tokio::task::spawn_blocking(move || {
             Self::stage_fork_records_in_store(&store, &thread_id, &records_owned)
         })
         .await
-        .context("fork staging task failed")??;
+        .context("fork staging task failed")
+        .and_then(|result| result);
+        let (saved_turn_ids, saved_item_ids) = match staging_result {
+            Ok(saved) => saved,
+            Err(error) => {
+                drop(target_lease);
+                Self::delete_unpublished_fork_session(sessions_dir, thread.session_id.as_deref())
+                    .await;
+                return Err(error);
+            }
+        };
 
         let admission = self.session_checkpoint_guard().await;
         let commit_result: Result<()> = async {
@@ -12383,13 +12405,8 @@ impl RuntimeThreadManager {
         });
         drop(admission);
         drop(target_lease);
-        if unpublished && let Some(session_id) = thread.session_id.clone() {
-            let sessions_dir = sessions_dir.to_path_buf();
-            let _ = tokio::task::spawn_blocking(move || {
-                crate::session_manager::SessionManager::new(sessions_dir)
-                    .and_then(|manager| manager.delete_session(&session_id))
-            })
-            .await;
+        if unpublished {
+            Self::delete_unpublished_fork_session(sessions_dir, thread.session_id.as_deref()).await;
         }
         cleanup_result
     }

@@ -42,9 +42,6 @@ pub const MAX_BYTES: u64 = 256 * 1024;
 /// A single append must fit in one atomic `write(2)`.
 pub const MAX_LINE_BYTES: usize = 4096;
 
-/// How long `with_lock` retries a busy compaction lock before giving up.
-/// `flock` has no timeout of its own, so a suspended process holding the
-/// lock would otherwise wedge every launch behind it.
 const PRIVACY_LOCK_BUDGET: Duration = Duration::from_secs(3);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -419,16 +416,7 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-/// Run `operation` holding the exclusive compaction lock.
-///
-/// Startup arming, the opt-out wipe, and the spool header write use this.
-/// `flock` has no timeout of its own, so a suspended process holding the lock
-/// would wedge every launch behind it; the wait is bounded by
-/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
-/// caller treats as skip-and-continue rather than fatal.
-pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-    let gate = process_gate(root);
-    let _turn = wait_turn(&gate);
+fn with_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let file = open_lock(root)?;
     let deadline = Instant::now() + PRIVACY_LOCK_BUDGET;
     let mut lock = fd_lock::RwLock::new(file);
@@ -439,6 +427,19 @@ pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Resul
             Err(_) => anyhow::bail!("the telemetry compaction lock stayed busy"),
         }
     }
+}
+
+/// Run `operation` holding the exclusive compaction lock.
+///
+/// Startup arming, the opt-out wipe, and the spool header write use this.
+/// `flock` has no timeout of its own, so a suspended process holding the lock
+/// would wedge every launch behind it; the wait is bounded by
+/// `PRIVACY_LOCK_BUDGET` and a still-busy lock returns an error, which every
+/// caller treats as skip-and-continue rather than fatal.
+pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
+    with_flock(root, operation)
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
@@ -504,7 +505,9 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// logs it — but the tombstone alone already makes the buffer permanently
 /// undrainable, so a failed wipe fails **closed**.
 pub fn wipe(root: &Path) -> Result<()> {
-    match with_lock(root, || {
+    let gate = process_gate(root);
+    let _turn = wait_turn(&gate);
+    match with_flock(root, || {
         write_tombstone(root)?;
 
         let mut failure: Option<anyhow::Error> = None;
@@ -535,9 +538,6 @@ pub fn wipe(root: &Path) -> Result<()> {
     }) {
         Ok(()) => Ok(()),
         Err(error) => {
-            // The lock stayed busy or a later step failed: the opt-out marker
-            // still has to land, or already-armed buffers keep appending. The
-            // install is atomic, so writing it outside the lock cannot tear.
             write_tombstone(root)?;
             Err(error)
         }
@@ -555,21 +555,16 @@ fn write_tombstone(root: &Path) -> Result<()> {
     if tombstone_generation(root).ok().flatten().is_some() {
         return Ok(());
     }
-    let tmp = root.join(format!(".disabled.{}.tmp", std::process::id()));
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .with_context(|| format!("failed to write {}", tmp.display()))?;
-        secure(&file)?;
-        file.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
-            .with_context(|| format!("failed to write {}", tmp.display()))?;
-        file.sync_data()
-            .with_context(|| format!("failed to sync {}", tmp.display()))?;
-    }
-    fs::rename(&tmp, &tombstone)
+    let mut tmp = tempfile::NamedTempFile::new_in(root)
+        .with_context(|| format!("failed to stage {}", tombstone.display()))?;
+    secure(tmp.as_file())?;
+    tmp.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
+        .with_context(|| format!("failed to write {}", tombstone.display()))?;
+    tmp.as_file()
+        .sync_data()
+        .with_context(|| format!("failed to sync {}", tombstone.display()))?;
+    tmp.persist(&tombstone)
+        .map_err(|error| error.error)
         .with_context(|| format!("failed to install {}", tombstone.display()))?;
     Ok(())
 }
@@ -584,7 +579,7 @@ fn write_tombstone(root: &Path) -> Result<()> {
 pub(crate) fn arm(
     root: &Path,
     observed_generation: Option<&TombstoneGeneration>,
-    permission_still_enabled: impl FnOnce() -> bool,
+    permission_still_enabled: impl Fn() -> bool,
 ) -> Result<()> {
     ensure_dir(root)?;
     with_lock(root, || {
@@ -596,10 +591,20 @@ pub(crate) fn arm(
             anyhow::bail!("telemetry permission is no longer enabled");
         }
         let tombstone = tombstone_path(root);
-        if tombstone.exists() {
+        if observed_generation.is_some() && tombstone.exists() {
+            if tombstone_generation(root)?.as_ref() != observed_generation {
+                anyhow::bail!("telemetry permission changed before arming");
+            }
             let _ = fs::remove_dir_all(crate::spool::dir(root));
             fs::remove_file(&tombstone)
                 .with_context(|| format!("failed to remove {}", tombstone.display()))?;
+            if !permission_still_enabled() {
+                let _ = write_tombstone(root);
+                anyhow::bail!("telemetry permission is no longer enabled");
+            }
+        }
+        if tombstone.exists() {
+            anyhow::bail!("telemetry permission changed before arming");
         }
         truncate(&buffer_path(root))
     })
