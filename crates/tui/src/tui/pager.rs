@@ -31,9 +31,10 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::tui::views::rounded::{render_rounded_footer, render_rounded_surface};
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
-    render_modal_footer, render_panel_scroll_rail, render_underwater_surface,
+    render_panel_scroll_rail,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -1520,7 +1521,7 @@ impl ModalView for PagerView {
         } else {
             page.title.clone()
         };
-        let inner = render_underwater_surface(area, buf, title);
+        let inner = render_rounded_surface(area, buf, title, None, self.search_mode);
 
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
@@ -1595,7 +1596,7 @@ impl ModalView for PagerView {
                 )));
             }
         }
-        let content = render_modal_footer(inner, buf, &hints);
+        let content = render_rounded_footer(inner, buf, &hints);
 
         // Re-wrap before reserving the search-status row: resizing can make
         // the first match appear or the last match disappear. Hold a column
@@ -1739,10 +1740,6 @@ impl ModalView for PagerView {
 
         let content =
             render_panel_scroll_rail(content, buf, row_count, scroll, visible_height, true);
-        // Explicit base ink: the surface behind this body is always WHALE_BG,
-        // so spans without their own fg must not inherit a dark terminal
-        // default (light-profile terminals would render them as black-on-black).
-        // Ratatui paints the base first; styled spans patch over it.
         let paragraph = Paragraph::new(visible_lines)
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(palette::TEXT_PRIMARY));
@@ -2360,10 +2357,6 @@ mod tests {
 
     #[test]
     fn body_cells_carry_explicit_ink_on_the_dark_surface() {
-        // The pager paints WHALE_BG behind the body, so a body span
-        // without its own fg inherits the terminal default, black ink on
-        // light-profile terminals, i.e. black-on-black. The base paragraph
-        // style must pin every text cell to the body ink.
         let p = make_pager(3);
         let area = Rect::new(0, 0, 100, 16);
         let mut buf = Buffer::empty(area);
@@ -2379,7 +2372,8 @@ mod tests {
             }
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.symbol().trim().is_empty() {
+                let symbol = cell.symbol();
+                if symbol.trim().is_empty() || matches!(symbol, "│" | "|") {
                     continue;
                 }
                 assert_eq!(
@@ -2788,11 +2782,10 @@ mod tests {
                 assert!(text.contains(label), "{w}x{h}: footer missing '{label}'");
             }
 
-            // Composited frame is fully opaque.
             assert!(!text.contains('X'), "{w}x{h}: background bleed-through");
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
 
