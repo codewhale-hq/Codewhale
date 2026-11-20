@@ -501,6 +501,15 @@ impl NativeMemoryStore {
         workspace_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryHit>> {
+        self.list_in_workspace(scope, workspace_id, None, limit)
+    }
+    pub fn list_in_workspace(
+        &self,
+        scope: Option<MemoryScope>,
+        workspace_id: Option<&str>,
+        workspace: Option<&Path>,
+        limit: usize,
+    ) -> Result<Vec<MemoryHit>> {
         let scopes = match scope {
             None => self.scopes(workspace_id)?,
             Some(MemoryScope::Global) => vec![Self::owner_scope()],
@@ -509,13 +518,17 @@ impl NativeMemoryStore {
             )?],
         };
         let access = Access::operator(scopes)?;
-        let store = self.open_structured()?;
-        // Entry surfaces show only live memory; candidates and reviewed-off
-        // entries are visible in the Context Lens, not here.
+        let Some(store) = Store::open_for_listing(&self.index_path())? else {
+            return Ok(Vec::new());
+        };
+        let snapshot = match workspace {
+            Some(root) => workspace::snapshot(root, store.dependency_paths(&access)?)?,
+            None => Snapshot::default(),
+        };
         store
             .list_current(&access, limit)?
             .iter()
-            .map(|m| self.hit(&store, &access, m, &Snapshot::default()))
+            .map(|m| self.hit(&store, &access, m, &snapshot))
             .collect()
     }
     pub fn import_legacy(&self, path: &Path) -> Result<bool> {

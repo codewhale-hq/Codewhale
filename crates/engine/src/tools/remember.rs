@@ -77,7 +77,7 @@ impl ToolSpec for RememberTool {
             let limit = input.limit.unwrap_or(8).clamp(1, 20) as usize;
             let hits = tokio::task::spawn_blocking(move || {
                 let workspace_id = NativeMemoryStore::workspace_id(&workspace)?;
-                store.list_all(scope, workspace_id.as_deref(), limit + 1)
+                store.list_in_workspace(scope, workspace_id.as_deref(), Some(&workspace), limit + 1)
             })
             .await
             .map_err(|_| ToolError::execution_failed("memory worker stopped"))?
@@ -187,6 +187,12 @@ mod tests {
         let mut context = ToolContext::new(temp.path());
         context.memory_path = Some(root.join("global/MEMORY.md"));
         let native = NativeMemoryStore::new(&root);
+        let empty = RememberTool
+            .execute(json!({"action":"list"}), &context)
+            .await
+            .unwrap();
+        assert_eq!(empty.metadata.unwrap()["count"], 0);
+        assert!(!root.exists());
         for note in ["Use cedar.", "Use birch.", "Use spruce."] {
             native.remember(MemoryScope::Global, None, note).unwrap();
         }
@@ -213,6 +219,57 @@ mod tests {
             assert!(!listed.content.contains(&ordered[2].draft.body));
         }
     }
+    #[tokio::test]
+    async fn listing_checks_workspace_dependency_freshness() {
+        use codewhale_memory::{MemoryBackend, policy, workspace};
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut context = ToolContext::new(temp.path());
+        let native = NativeMemoryStore::new(temp.path().join("memory"));
+        context.memory_path = Some(native.global_path());
+        let id = NativeMemoryStore::workspace_id(temp.path())
+            .unwrap()
+            .unwrap();
+        let access =
+            Access::operator(vec![NativeMemoryStore::workspace_scope(&id).unwrap()]).unwrap();
+        native
+            .remember(MemoryScope::Workspace, Some(&id), "Fixture note.")
+            .unwrap();
+        let mut store = native.open_structured().unwrap();
+        let mut draft = store.list(&access, None, 1).unwrap().remove(0).draft;
+        draft.body = "This note tracks file state.".into();
+        draft
+            .dependencies
+            .insert("note.txt".into(), policy::sha256(b"first"));
+        std::fs::write(temp.path().join("note.txt"), "first").unwrap();
+        let memory = store
+            .capture(&access, "file-dependent-note", draft)
+            .unwrap()
+            .memory;
+        let snapshot = workspace::snapshot(temp.path(), ["note.txt".to_owned()]).unwrap();
+        store
+            .approve(&access, &memory.id, memory.revision, None, &snapshot)
+            .unwrap();
+        let list = json!({"action":"list","scope":"workspace"});
+        assert!(
+            RememberTool
+                .execute(list.clone(), &context)
+                .await
+                .unwrap()
+                .content
+                .contains("freshness=current")
+        );
+        std::fs::write(temp.path().join("note.txt"), "second").unwrap();
+        assert!(
+            RememberTool
+                .execute(list, &context)
+                .await
+                .unwrap()
+                .content
+                .contains("freshness=stale_or_unknown")
+        );
+    }
+
     #[tokio::test]
     async fn forged_review_field_is_rejected() {
         let temp = tempfile::tempdir().unwrap();

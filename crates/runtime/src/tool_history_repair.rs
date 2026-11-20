@@ -173,11 +173,30 @@ fn repair_tool_call_pairs_inner(
         if filtered.content.is_empty() {
             dropped_since_push = true;
         } else if dropped_since_push
-            && filtered.role == "assistant"
+            && matches!(filtered.role, Role::Assistant | Role::InterruptedAssistant)
             && let Some(previous) = rebuilt.last_mut()
-            && previous.role == "assistant"
+            && matches!(previous.role, Role::Assistant | Role::InterruptedAssistant)
         {
-            previous.content.extend(filtered.content);
+            if previous.role == Role::Assistant
+                && filtered.role == Role::Assistant
+                && previous
+                    .content
+                    .iter()
+                    .chain(&filtered.content)
+                    .all(|block| matches!(block, ContentBlock::Text { .. }))
+            {
+                previous.content.extend(filtered.content);
+            } else {
+                rebuilt.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "[tool_history_repair] Removed an empty message at this position."
+                            .into(),
+                        cache_control: None,
+                    }],
+                });
+                rebuilt.push(filtered);
+            }
             dropped_since_push = false;
         } else {
             rebuilt.push(filtered);
@@ -424,6 +443,41 @@ mod tests {
             .collect();
         assert_eq!(roles, ["user", "assistant"]);
         assert_eq!(dropped_between_assistants[1].content.len(), 3);
+    }
+
+    #[test]
+    fn orphan_removal_preserves_thinking_and_interrupted_turn_boundaries() {
+        for (first_role, last_role, opaque) in [
+            ("assistant", "assistant", true),
+            ("assistant_interrupted", "assistant", false),
+            ("assistant", "assistant_interrupted", false),
+        ] {
+            let first = text(first_role, "first answer");
+            let mut last = text(last_role, "second answer");
+            if opaque {
+                last.content.insert(0, serde_json::from_value(json!({
+                    "type": "thinking", "thinking": "second turn", "signature": "fixture-signature"
+                })).unwrap());
+                last.content.insert(
+                    1,
+                    serde_json::from_value(json!({
+                        "type": "thinking", "thinking": "", "redacted_data": "fixture-ciphertext"
+                    }))
+                    .unwrap(),
+                );
+            }
+            let mut history = vec![first.clone(), tool_result("orphan", "bad"), last.clone()];
+            let receipt = repair_tool_call_pairs_for_provider(&mut history);
+            assert_eq!(receipt.orphan_result_ids, ["orphan"]);
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[0], first);
+            assert_eq!(history[1].role, Role::User);
+            assert!(
+                matches!(&history[1].content[..], [ContentBlock::Text { text, .. }] if text.starts_with("[tool_history_repair]"))
+            );
+            assert_eq!(history[2], last);
+            assert!(repair_tool_call_pairs_for_provider(&mut history).is_empty());
+        }
     }
 
     #[test]

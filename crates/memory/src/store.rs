@@ -383,22 +383,7 @@ impl Store {
         }
         // Explicit local file security. No URI filenames and no extension loading.
         match fs::symlink_metadata(path) {
-            Ok(meta) => {
-                if meta.file_type().is_symlink() || !meta.is_file() {
-                    return Err(Error::Invalid(
-                        "database must be a regular, non-symlink file".into(),
-                    ));
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if meta.permissions().mode() & 0o077 != 0 && !mount_ignores_unix_modes(path) {
-                        return Err(Error::Invalid(
-                            "database permissions must exclude group and world access".into(),
-                        ));
-                    }
-                }
-            }
+            Ok(meta) => Self::check_database_file(path, &meta)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut opts = fs::OpenOptions::new();
                 opts.write(true).create_new(true);
@@ -422,6 +407,61 @@ impl Store {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         Self::from_connection(conn, Arc::new(now))
+    }
+    fn check_database_file(_path: &Path, meta: &fs::Metadata) -> Result<()> {
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(Error::Invalid(
+                "database must be a regular, non-symlink file".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o077 != 0 && !mount_ignores_unix_modes(_path) {
+                return Err(Error::Invalid(
+                    "database permissions must exclude group and world access".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub fn open_for_listing(path: &Path) -> Result<Option<Self>> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        Self::check_database_file(path, &meta)?;
+        let canonical_parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .canonicalize()?;
+        let db = canonical_parent.join(
+            path.file_name()
+                .ok_or_else(|| Error::Invalid("database filename required".into()))?,
+        );
+        let conn = Connection::open_with_flags(
+            db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        conn.busy_timeout(Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA temp_store=MEMORY; BEGIN")?;
+        let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if app != APP_ID || !(1..=2).contains(&version) {
+            return Err(Error::DatabaseMismatch);
+        }
+        if version == 1 {
+            conn.execute_batch("CREATE TEMP VIEW memory_numeric_aliases AS SELECT row_number() OVER (ORDER BY rowid) AS id, id AS memory_id FROM main.memories")?;
+        }
+        conn.execute_batch("PRAGMA query_only=ON")?;
+        Ok(Some(Self {
+            conn,
+            clock: Arc::new(now),
+        }))
     }
     pub fn in_memory() -> Result<Self> {
         Self::from_connection(Connection::open_in_memory()?, Arc::new(now))

@@ -15497,7 +15497,12 @@ async fn list_memory(
                 }),
         }
     } else {
-        store.list_all(scope_filter, workspace_id.as_deref(), limit)
+        store.list_in_workspace(
+            scope_filter,
+            workspace_id.as_deref(),
+            Some(&state.workspace),
+            limit,
+        )
     }
     .map_err(|e| ApiError::internal(format!("memory list error: {e}")))?;
 
