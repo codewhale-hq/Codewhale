@@ -32,6 +32,7 @@ pub enum ApprovalOption {
     AllowExactRepo,
     Deny,
     Abort,
+    OpenPermissions,
 }
 
 impl ApprovalOption {
@@ -77,15 +78,16 @@ impl ApprovalOption {
             .unwrap_or(Self::order_for(request).len().saturating_sub(1))
     }
 
-    fn decision(self) -> ReviewDecision {
-        match self {
+    fn decision(self) -> Option<ReviewDecision> {
+        Some(match self {
             ApprovalOption::ApproveOnce => ReviewDecision::Approved,
             ApprovalOption::ApproveAlways => ReviewDecision::ApprovedForSession,
             ApprovalOption::AllowExactRepo => ReviewDecision::Approved,
             // Workflow maps Deny → "Edit plan" (model revises plan).
             ApprovalOption::Deny => ReviewDecision::Denied,
             ApprovalOption::Abort => ReviewDecision::Abort,
-        }
+            ApprovalOption::OpenPermissions => return None,
+        })
     }
 }
 
@@ -182,7 +184,14 @@ impl ApprovalView {
         if self.request.owner.is_none() && self.request.can_save_allow_rule() {
             options.push(ApprovalOption::AllowExactRepo);
         }
+        if self.offers_permission_settings() {
+            options.push(ApprovalOption::OpenPermissions);
+        }
         options
+    }
+
+    pub(crate) fn offers_permission_settings(&self) -> bool {
+        self.request.owner.is_none() && !self.is_workflow_plan_approval()
     }
 
     fn toggle_scopes(&mut self) {
@@ -243,6 +252,9 @@ impl ApprovalView {
     /// their painted preview; hidden session grants require opening details.
     pub(crate) fn offers(&self, option: ApprovalOption) -> bool {
         match option {
+            ApprovalOption::OpenPermissions => {
+                self.scopes_open && self.offers_permission_settings()
+            }
             ApprovalOption::AllowExactRepo => self.save_preview_shown.get(),
             ApprovalOption::ApproveAlways => {
                 ApprovalOption::order_for(&self.request).contains(&option)
@@ -282,7 +294,7 @@ impl ApprovalView {
     /// Test-only accessor for the selected option's decision.
     #[cfg(test)]
     pub(super) fn current_decision(&self) -> ReviewDecision {
-        self.current_option().decision()
+        self.current_option().decision().expect("approval decision")
     }
 
     /// Selected option for the renderer (used by the widget tests too).
@@ -323,15 +335,18 @@ impl ApprovalView {
             // saved, and nothing else is decided in its place.
             return ViewAction::None;
         }
+        let Some(decision) = option.decision() else {
+            return ViewAction::Emit(ViewEvent::OpenPermissionSettings);
+        };
         self.selected = option.index_for(&self.request);
         if option == ApprovalOption::AllowExactRepo && self.request.can_save_allow_rule() {
             self.emit_decision_with_rules(
-                option.decision(),
+                decision,
                 false,
                 self.request.persistent_allow_rules.clone(),
             )
         } else {
-            self.emit_decision(option.decision(), false)
+            self.emit_decision(decision, false)
         }
     }
 
@@ -455,8 +470,12 @@ impl ModalView for ApprovalView {
         if key.kind != KeyEventKind::Press {
             return ViewAction::None;
         }
-        // Details is the intentional modified-key action; it cannot grant
-        // authority. Editing/mode chords must never answer this card.
+        if self.offers_permission_settings()
+            && crate::tui::shell_key_routing::is_permission_cycle_shortcut(&key)
+        {
+            return ViewAction::Emit(ViewEvent::OpenPermissionSettings);
+        }
+        // Details and permissions routes never answer the approval.
         if crate::tui::shell_key_routing::is_tool_details_shortcut(&key) {
             return self.emit_params_pager();
         }

@@ -1196,9 +1196,56 @@ fn test_approval_view_navigation() {
     view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
     view.select_next();
+    assert_eq!(view.current_option(), ApprovalOption::OpenPermissions);
+    view.select_next();
     assert_eq!(view.current_option(), ApprovalOption::ApproveOnce);
     view.select_prev();
-    assert_eq!(view.current_option(), ApprovalOption::ApproveAlways);
+    assert_eq!(view.current_option(), ApprovalOption::OpenPermissions);
+}
+
+#[test]
+fn permission_shortcut_and_full_access_choice_leave_the_approval_pending() {
+    let mut view = ApprovalView::new(benign_request());
+    assert!(
+        render_lines(&view, 120, 40)
+            .join("\n")
+            .contains("Shift+Tab Permissions")
+    );
+    for code in [KeyCode::BackTab, KeyCode::Tab] {
+        assert!(matches!(
+            view.handle_key(KeyEvent::new(code, KeyModifiers::SHIFT)),
+            ViewAction::Emit(ViewEvent::OpenPermissionSettings)
+        ));
+        assert_eq!(view.current_option(), ApprovalOption::Deny);
+    }
+    view.handle_key(create_key_event(KeyCode::Char('m')));
+    assert!(
+        render_lines(&view, 120, 40)
+            .join("\n")
+            .contains("Full Access")
+    );
+    view.select_prev();
+    assert_eq!(view.current_option(), ApprovalOption::OpenPermissions);
+    assert!(matches!(
+        view.handle_key(create_key_event(KeyCode::Enter)),
+        ViewAction::Emit(ViewEvent::OpenPermissionSettings)
+    ));
+    let pos = view
+        .scope_menu_hitboxes
+        .borrow()
+        .iter()
+        .find(|(option, _)| *option == ApprovalOption::OpenPermissions)
+        .map(|(_, rect)| (rect.x, rect.y))
+        .unwrap();
+    assert!(matches!(
+        view.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: pos.0,
+            row: pos.1,
+            modifiers: KeyModifiers::NONE,
+        }),
+        ViewAction::Emit(ViewEvent::OpenPermissionSettings)
+    ));
 }
 
 #[test]
