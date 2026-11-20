@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>Цей переклад є машинною чернеткою, яку ще не перевіряли носії мови.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale у терміналі після справжнього завдання на gemini-4-hydrogen. Він запустив python3 -m unittest -v test_ls.py, 2 тести пройшли, і він повідомляє, що додав до ls.py прапорець --json за допомогою argparse. У рядку стану видно accept edits і gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale у терміналі після справжнього завдання на deepseek-flash. Він запустив python3 -m unittest -v test_ls.py, 2 тести пройшли, і він повідомляє, що додав до ls.py прапорець --json. У рядку стану видно accept edits і deepseek-flash.">
 
-<sub>Справжній сеанс на збірці розробки 0.10.3: gemini-4-hydrogen через API Google написав зміну, а ви один раз дозволили запуск тестів.</sub>
+<sub>Справжній сеанс на збірці розробки 0.10.3: deepseek-flash через API DeepSeek написав зміну, а ви один раз дозволили запуск тестів.</sub>
 
 </div>
 

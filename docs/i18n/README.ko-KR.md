@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>이 번역은 기계 번역 초안이며 원어민 검토를 아직 받지 않았습니다.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, argparse로 ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 gemini-4-hydrogen이 표시됩니다.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="deepseek-flash으로 실제 작업을 마친 터미널의 Codewhale. python3 -m unittest -v test_ls.py를 실행해 테스트 2개가 통과했고, ls.py에 --json 옵션을 추가했다고 보고합니다. 상태 줄에는 accept edits와 deepseek-flash이 표시됩니다.">
 
-<sub>0.10.3 개발 빌드에서의 실제 세션입니다. Google API를 통해 gemini-4-hydrogen이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
+<sub>0.10.3 개발 빌드에서의 실제 세션입니다. DeepSeek API를 통해 deepseek-flash이 변경을 작성했고, 테스트 실행은 사용자가 한 번 허용했습니다.</sub>
 
 </div>
 

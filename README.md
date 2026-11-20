@@ -27,9 +27,9 @@ This installs the latest release on macOS or Linux, and it needs no account.
 
 [简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja-JP.md) · [Tiếng Việt](docs/i18n/README.vi.md) · [Bahasa Indonesia](docs/i18n/README.id.md) · [한국어](docs/i18n/README.ko-KR.md) · [Español](docs/i18n/README.es-419.md) · [Português](docs/i18n/README.pt-BR.md) · [Русский](docs/i18n/README.ru.md) · [Українська](docs/i18n/README.uk.md) · [Français](docs/i18n/README.fr.md) · [Deutsch](docs/i18n/README.de.md) · [繁體中文](docs/i18n/README.zh-TW.md) · [हिन्दी](docs/i18n/README.hi.md) · [Türkçe](docs/i18n/README.tr.md) · [Italiano](docs/i18n/README.it.md) · [Polski](docs/i18n/README.pl.md) · [العربية](docs/i18n/README.ar.md) · [Català](docs/i18n/README.ca.md)
 
-<img src="web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in a terminal after a real task on gemini-4-hydrogen. It ran python3 -m unittest -v test_ls.py, 2 tests passed, and it reports that it added a --json flag to ls.py with argparse. The status line shows accept edits and gemini-4-hydrogen.">
+<img src="web/public/codewhale-tui-latest.png" width="760" alt="Codewhale in a terminal after a real task on deepseek-flash. It ran python3 -m unittest -v test_ls.py, 2 tests passed, and it reports that it added a --json flag to ls.py. The status line shows accept edits and deepseek-flash.">
 
-<sub>A real session on a 0.10.3 development build: gemini-4-hydrogen through Google's API wrote the edit, and you allowed the test run once.</sub>
+<sub>A real session on a 0.10.3 development build: deepseek-flash through DeepSeek's API wrote the edit, and you allowed the test run once.</sub>
 
 </div>
 
