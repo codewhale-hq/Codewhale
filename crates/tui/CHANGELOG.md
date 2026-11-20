@@ -617,6 +617,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **Headless resume:** `exec --resume` asks for explicit provider or model reselection when the saved endpoint or account binding changes. (CW-8311)
+- **Terminal translations:** Auto-Review fallback, provider badges, theme previews, and automation schedules use the selected language.
+- **AICraft setup:** the bundled descriptor lists the mainland and international API endpoints. Thanks [@BX166](https://github.com/BX166) ([PR 7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
 - **Background shell output:** explicit background `bash` jobs retain the complete piped output and return its artifact from `task_shell_wait`.
 - **Session recall:** session summaries omit internal tool-history repair receipts while preserving the surrounding conversation and tool summaries.
 - **Workflow gates block roles written with older names:** a gate whose `role` or `blocks_role` uses an alias such as `implementer`, `verify` or `verifier` now matches the canonical role a task is dispatched under, so the blocked role waits for the gate and receives its handoffs instead of running early.
