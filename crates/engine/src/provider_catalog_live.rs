@@ -29,6 +29,7 @@ use codewhale_config::catalog::{
     CatalogRefreshError, CatalogSnapshot, CatalogStatus, ProviderCatalogCache,
     ProviderCatalogDelta, base_url_fingerprint,
 };
+use codewhale_config::credentials::CredentialGeneration;
 use codewhale_config::persistence::atomic_write_json;
 use codewhale_config::pricing::{Currency, OfferingPricing, PricingProvenance};
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use codewhale_config::ProviderKind;
 use codewhale_runtime::config::Config;
 
-const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_SCHEMA_VERSION: u32 = 3;
 const CACHE_FILE: &str = "provider-catalogs.json";
 const MAX_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_CACHE_SCOPES: usize = 64;
@@ -70,6 +71,9 @@ static REFRESH_GENERATIONS: LazyLock<RwLock<BTreeMap<String, InventoryFence>>> =
 struct InventoryFence {
     generation: u64,
     observation: Option<crate::provider_readiness::ProviderRouteIdentity>,
+    request_scope: Option<CredentialGeneration>,
+    endpoint_fingerprint: String,
+    durable_catalog: bool,
     binding: String,
     account: Option<String>,
     refresh: std::sync::Arc<tokio::sync::Mutex<()>>,
@@ -85,6 +89,37 @@ pub fn inventory_scope(
     config.verify_provider_identity(identity)?;
     ensure_cache_loaded().map_err(|error| error.to_string())?;
     let observation = crate::provider_readiness::inventory_observation_for_route(config, identity);
+    let base_url = config.base_url_for_route(identity);
+    let endpoint_fingerprint = base_url_fingerprint(&base_url);
+    let scope = storage_provider(identity.provider, identity.key.as_str());
+    let auth_class = crate::provider_readiness::auth_class_for_provider(config, identity);
+    let global_headers: BTreeMap<_, _> = config.http_headers.iter().flatten().collect();
+    let provider_headers: BTreeMap<_, _> = config
+        .provider_config_for(identity)
+        .and_then(|provider| provider.http_headers.as_ref())
+        .into_iter()
+        .flatten()
+        .collect();
+    let request_scope = CredentialGeneration::derive(
+        &base_url,
+        &serde_json::to_string(&(&global_headers, &provider_headers))
+            .map_err(|error| error.to_string())?,
+    );
+    let durable_catalog = !is_account_scoped_scope(&scope, &endpoint_fingerprint)
+        && (crate::client::CodewhaleClient::public_catalog_for_route(config, identity)
+            || (matches!(
+                auth_class,
+                crate::provider_readiness::ProviderAuthClass::NoAuth
+                    | crate::provider_readiness::ProviderAuthClass::Local
+            ) && observation.has_keyless_credential(&base_url)
+                && global_headers.is_empty()
+                && provider_headers.is_empty()
+                && reqwest::Url::parse(&base_url).is_ok_and(|url| {
+                    url.username().is_empty()
+                        && url.password().is_none()
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                })));
     let account = if identity.provider == ProviderKind::OpenaiCodex {
         codewhale_runtime::codex_model_roster::snapshot_path(config)
             .map(|path| path.to_string_lossy().into_owned())
@@ -103,21 +138,21 @@ pub fn inventory_scope(
             identity.persisted_kind(),
             identity.persisted_id(),
             identity.key.as_str(),
-            config.base_url_for_route(identity),
-            format!(
-                "{:?}",
-                crate::provider_readiness::auth_class_for_provider(config, identity)
-            ),
+            &base_url,
+            format!("{auth_class:?}"),
             &account,
         ))
         .map_err(|error| error.to_string())?,
     );
-    let scope = storage_provider(identity.provider, identity.key.as_str());
     let mut fences = REFRESH_GENERATIONS
         .write()
         .map_err(|_| "inventory fence unavailable")?;
     let fence = fences.entry(scope).or_default();
-    if fence.observation.as_ref() != Some(&observation) || fence.account != account {
+    if fence.observation.as_ref() != Some(&observation)
+        || fence.account != account
+        || fence.request_scope.as_ref() != Some(&request_scope)
+        || fence.durable_catalog != durable_catalog
+    {
         let same_account = account.is_some() && fence.account == account;
         if !same_account || fence.binding != binding {
             fence.binding = binding;
@@ -125,20 +160,17 @@ pub fn inventory_scope(
                 fence.binding = uuid::Uuid::new_v4().to_string();
             }
         }
-        let preserve_keyless = fence.observation.is_none()
-            && matches!(
-                crate::provider_readiness::auth_class_for_provider(config, identity),
-                crate::provider_readiness::ProviderAuthClass::NoAuth
-                    | crate::provider_readiness::ProviderAuthClass::Local
-            );
+        if !durable_catalog || (fence.observation.is_some() && !fence.durable_catalog) {
+            forget_account_scoped_provider(identity.provider, identity.key.as_str());
+        }
         fence.refresh = Default::default();
         fence.error = None;
         fence.account = account;
         fence.observation = Some(observation);
+        fence.request_scope = Some(request_scope);
+        fence.endpoint_fingerprint = endpoint_fingerprint;
+        fence.durable_catalog = durable_catalog;
         fence.generation = fence.generation.saturating_add(1);
-        if !preserve_keyless && route_is_account_scoped(config, identity) {
-            forget_account_scoped_provider(identity.provider, identity.key.as_str());
-        }
     }
     Ok((fence.binding.clone(), fence.generation))
 }
@@ -195,17 +227,19 @@ pub fn begin_inventory_refresh(
     base_url: &str,
     expected_generation: u64,
 ) -> Option<ProviderCatalogRefreshTicket> {
+    let fingerprint = base_url_fingerprint(base_url);
     let mut fences = REFRESH_GENERATIONS.write().ok()?;
     let fence = fences.get_mut(&storage_provider(identity.provider, identity.key.as_str()))?;
-    if fence.generation != expected_generation {
+    if fence.generation != expected_generation || fence.endpoint_fingerprint != fingerprint {
         return None;
     }
     fence.generation = fence.generation.saturating_add(1);
     Some(ProviderCatalogRefreshTicket {
         provider: canonical_provider_scope(identity.key.as_str()),
         provider_kind: identity.provider,
-        fingerprint: Some(base_url_fingerprint(base_url)),
+        fingerprint: Some(fingerprint),
         generation: fence.generation,
+        durable_catalog: fence.durable_catalog,
     })
 }
 
@@ -228,6 +262,7 @@ pub struct ProviderCatalogRefreshTicket {
     provider_kind: ProviderKind,
     fingerprint: Option<String>,
     generation: u64,
+    durable_catalog: bool,
 }
 
 /// Immutable, secret-free catalog rate evidence captured at dispatch.
@@ -991,6 +1026,9 @@ fn load_from_disk_unlocked_with_limit(path: &Path, max_bytes: u64) -> Option<Pro
         return None;
     }
     let persisted: PersistedProviderCatalogs = serde_json::from_slice(&body).ok()?;
+    if persisted.schema_version == 2 {
+        return Some(ProviderCatalogCache::new());
+    }
     if persisted.schema_version != CACHE_SCHEMA_VERSION {
         return None;
     }
@@ -1242,11 +1280,13 @@ fn merge_durable_scope(
     process_cache: &ProviderCatalogCache,
     provider: &str,
     fingerprint: &str,
+    durable_catalog: bool,
 ) -> ProviderCatalogCache {
     durable_cache
         .entries
         .retain(|_, entry| !is_account_scoped_scope(&entry.provider, &entry.base_url_fingerprint));
-    if !is_account_scoped_scope(provider, fingerprint)
+    if durable_catalog
+        && !is_account_scoped_scope(provider, fingerprint)
         && let Some(entry) = process_cache.get(provider, fingerprint).cloned()
     {
         durable_cache.entries.insert(
@@ -1387,7 +1427,12 @@ fn write_bounded_cache(
     atomic_write_json(path, &envelope)
 }
 
-fn persist_scope(cache: &ProviderCatalogCache, provider: &str, fingerprint: &str) -> bool {
+fn persist_scope(
+    cache: &ProviderCatalogCache,
+    provider: &str,
+    fingerprint: &str,
+    durable_catalog: bool,
+) -> bool {
     let Some(path) = cache_path() else {
         return false;
     };
@@ -1410,6 +1455,7 @@ fn persist_scope(cache: &ProviderCatalogCache, provider: &str, fingerprint: &str
             cache,
             &provider,
             fingerprint,
+            durable_catalog,
         );
         write_bounded_cache(
             &path,
@@ -1477,7 +1523,7 @@ fn persist_failure_scope(
             }
         }
 
-        let durable_cache = merge_durable_scope(durable_cache, cache, &provider, fingerprint);
+        let durable_cache = merge_durable_scope(durable_cache, cache, &provider, fingerprint, true);
         write_bounded_cache(
             &path,
             durable_cache,
@@ -1530,11 +1576,12 @@ pub fn maybe_load_persisted_cache_for_config(config: &Config) -> usize {
     let Ok((_, generation)) = inventory_scope(config, &identity) else {
         return 0;
     };
-    if !matches!(
-        crate::provider_readiness::auth_class_for_provider(config, &identity),
-        crate::provider_readiness::ProviderAuthClass::NoAuth
-            | crate::provider_readiness::ProviderAuthClass::Local
-    ) {
+    let durable_catalog = REFRESH_GENERATIONS.read().is_ok_and(|fences| {
+        fences
+            .get(&storage_provider(provider, &provider_identity))
+            .is_some_and(|fence| fence.generation == generation && fence.durable_catalog)
+    });
+    if !durable_catalog {
         return cached_entry_for_route(provider, &provider_identity, &base_url)
             .ok()
             .flatten()
@@ -1545,6 +1592,7 @@ pub fn maybe_load_persisted_cache_for_config(config: &Config) -> usize {
         provider_kind: provider,
         fingerprint: Some(fingerprint.clone()),
         generation,
+        durable_catalog,
     };
     with_current_route_ticket(&ticket, provider, &provider_identity, &base_url, || {
         if let Some(loaded) = load_from_disk()
@@ -1652,6 +1700,7 @@ fn begin_refresh_inner(
         provider_kind,
         fingerprint,
         generation,
+        durable_catalog: cfg!(any(test, feature = "test-support")),
     }
 }
 
@@ -1714,7 +1763,7 @@ pub fn record_success_if_current(
         return None;
     }
     with_current_ticket(ticket, &provider, || {
-        record_success_for_identity(ticket.provider_kind, delta)
+        record_success_for_identity(ticket.provider_kind, delta, ticket.durable_catalog)
     })
 }
 
@@ -1734,7 +1783,13 @@ pub fn record_failure_if_current(
         return None;
     }
     with_current_ticket(ticket, &provider, || {
-        record_failure_for_identity(ticket.provider_kind, &provider, fingerprint, reason)
+        record_failure_for_identity(
+            ticket.provider_kind,
+            &provider,
+            fingerprint,
+            reason,
+            ticket.durable_catalog,
+        )
     })
 }
 
@@ -2310,12 +2365,13 @@ fn fresh_cloud_dispatch_pricing_quote_at(
 /// removed upstream disappear instead of accumulating forever.
 #[cfg(any(test, feature = "test-support"))]
 pub fn record_success(delta: ProviderCatalogDelta) -> CatalogStatus {
-    record_success_for_identity(inferred_provider_kind(&delta.provider), delta)
+    record_success_for_identity(inferred_provider_kind(&delta.provider), delta, true)
 }
 
 fn record_success_for_identity(
     kind: ProviderKind,
     mut delta: ProviderCatalogDelta,
+    durable_catalog: bool,
 ) -> CatalogStatus {
     let provider = canonical_provider_scope(&delta.provider);
     delta.provider = storage_provider(kind, &provider);
@@ -2341,6 +2397,7 @@ fn record_success_for_identity(
             &provider,
             &delta.base_url_fingerprint,
             CatalogRefreshError::InvalidResponse,
+            durable_catalog,
         );
     }
     let fingerprint = delta.base_url_fingerprint.clone();
@@ -2348,7 +2405,12 @@ fn record_success_for_identity(
         return CatalogStatus::Unknown;
     };
     guard.record_success(delta, DEFAULT_PROVIDER_CATALOG_TTL_SECS);
-    let persisted = persist_scope(&guard, &storage_provider(kind, &provider), &fingerprint);
+    let persisted = persist_scope(
+        &guard,
+        &storage_provider(kind, &provider),
+        &fingerprint,
+        durable_catalog,
+    );
     publish_exact_scope_for_identity(&guard, kind, &provider, &fingerprint);
     if persisted {
         CatalogStatus::Fresh
@@ -2370,6 +2432,7 @@ pub fn record_failure(
         provider,
         fingerprint,
         reason,
+        true,
     )
 }
 
@@ -2378,6 +2441,7 @@ fn record_failure_for_identity(
     provider: &str,
     fingerprint: &str,
     reason: CatalogRefreshError,
+    durable_catalog: bool,
 ) -> CatalogStatus {
     let provider = canonical_provider_scope(provider);
     let scope = storage_provider(kind, &provider);
@@ -2385,7 +2449,11 @@ fn record_failure_for_identity(
         return CatalogStatus::Failed { reason };
     };
     guard.record_failure(&scope, fingerprint, reason);
-    persist_failure_scope(&mut guard, &scope, fingerprint, reason);
+    if durable_catalog {
+        persist_failure_scope(&mut guard, &scope, fingerprint, reason);
+    } else {
+        persist_scope(&guard, &scope, fingerprint, false);
+    }
     publish_exact_scope_for_identity(&guard, kind, &provider, fingerprint);
     CatalogStatus::Failed { reason }
 }
@@ -2478,6 +2546,111 @@ mod tests {
         let mut delta = delta_at(provider, fingerprint, ids, fetched_at);
         delta.provider = scope(provider);
         delta
+    }
+
+    #[test]
+    fn authenticated_catalogs_are_fenced_in_memory_and_keyless_catalogs_survive_restart() {
+        let _env = lock_test_env();
+        let _live = crate::provider_lake::lock_live_snapshot();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let _cli = EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
+        reset_cache_for_test();
+        let mut config: Config = toml::from_str(
+            r#"
+provider = "account-fence"
+[providers.account-fence]
+kind = "openai-compatible"
+base_url = "https://account-catalog.example/v1"
+api_key = "fixture-first-account"
+[providers.vllm]
+base_url = "http://127.0.0.1:18576/v1"
+auth_mode = "none"
+[providers.public-fence]
+kind = "openai-compatible"
+base_url = "https://pass.wafer.ai/v1"
+api_key = "fixture-public-listing-key"
+"#,
+        )
+        .unwrap();
+        let private = config.active_provider_identity().unwrap();
+        let keyless = config
+            .builtin_provider_identity(ProviderKind::Vllm)
+            .unwrap();
+        let public = config
+            .resolve_provider_pin_identity("public-fence")
+            .unwrap();
+        let publish = |config: &Config, identity: &codewhale_runtime::config::ProviderIdentity| {
+            let base = config.base_url_for_route(identity);
+            let ticket = begin_scoped_refresh(config, identity, &base).unwrap();
+            assert_eq!(
+                record_success_if_current(
+                    &ticket,
+                    delta(
+                        identity.key.as_str(),
+                        &base_url_fingerprint(&base),
+                        &["model-a"]
+                    ),
+                ),
+                Some(CatalogStatus::Fresh)
+            );
+            ticket
+        };
+        let private_url = config.base_url_for_route(&private);
+        let keyless_url = config.base_url_for_route(&keyless);
+        let public_url = config.base_url_for_route(&public);
+        publish(&config, &keyless);
+        publish(&config, &public);
+        let first_ticket = publish(&config, &private);
+        let read = |identity: &codewhale_runtime::config::ProviderIdentity, base: &str| {
+            cached_entry_for_route(identity.provider, identity.key.as_str(), base).unwrap()
+        };
+        assert!(read(&private, &private_url).is_some());
+        let (first_binding, _) = inventory_scope(&config, &private).unwrap();
+        config
+            .set_provider_api_key_override(&private, Some("fixture-second-account".into()))
+            .unwrap();
+        let (second_binding, _) = inventory_scope(&config, &private).unwrap();
+        assert_ne!(first_binding, second_binding);
+        assert!(read(&private, &private_url).is_none());
+        let fingerprint = base_url_fingerprint(&private_url);
+        assert!(
+            record_success_if_current(
+                &first_ticket,
+                delta(private.key.as_str(), &fingerprint, &["model-a"]),
+            )
+            .is_none()
+        );
+        let second_ticket = begin_scoped_refresh(&config, &private, &private_url).unwrap();
+        record_failure_if_current(
+            &second_ticket,
+            private.key.as_str(),
+            &fingerprint,
+            CatalogRefreshError::Network,
+        )
+        .unwrap();
+        assert!(read(&private, &private_url).unwrap().offerings.is_empty());
+        reset_cache_for_test();
+        assert!(read(&private, &private_url).is_none());
+        assert_eq!(read(&keyless, &keyless_url).unwrap().offerings.len(), 1);
+        assert_eq!(read(&public, &public_url).unwrap().offerings.len(), 1);
+
+        let mut legacy = ProviderCatalogCache::new();
+        let mut legacy_delta = delta(private.key.as_str(), &fingerprint, &["legacy-model"]);
+        legacy_delta.provider = storage_provider(private.provider, private.key.as_str());
+        legacy.record_success(legacy_delta, DEFAULT_PROVIDER_CATALOG_TTL_SECS);
+        let path = home.path().join("legacy-cache.json");
+        atomic_write_json(
+            &path,
+            &PersistedProviderCatalogs {
+                schema_version: 2,
+                cache: legacy,
+            },
+        )
+        .unwrap();
+        assert!(load_from_disk_unlocked(&path).unwrap().entries.is_empty());
+        reset_cache_for_test();
+        crate::provider_lake::clear_live_snapshot();
     }
 
     #[test]
@@ -2669,14 +2842,14 @@ mod tests {
 
         let mut process_a = ProviderCatalogCache::new();
         process_a.record_success(stored_delta("CustomA", "fp-a", &["upper-model"]), 60);
-        persist_scope(&process_a, &scope("CustomA"), "fp-a");
+        persist_scope(&process_a, &scope("CustomA"), "fp-a", true);
 
         // Simulate another process that started before A wrote and therefore
         // has an empty/stale in-memory snapshot. Its scoped write must merge A
         // from disk rather than replacing the whole envelope.
         let mut process_b = ProviderCatalogCache::new();
         process_b.record_success(stored_delta("customa", "fp-b", &["lower-model"]), 60);
-        persist_scope(&process_b, &scope("customa"), "fp-b");
+        persist_scope(&process_b, &scope("customa"), "fp-b", true);
 
         let loaded = load_from_disk().expect("merged durable cache");
         assert_eq!(
@@ -2709,13 +2882,13 @@ mod tests {
         // Process B began with this old roster and still holds it in memory.
         let mut stale_process = ProviderCatalogCache::new();
         stale_process.record_success(stored_delta_at("openrouter", "fp", &["old-model"], 1), 60);
-        persist_scope(&stale_process, &scope("openrouter"), "fp");
+        persist_scope(&stale_process, &scope("openrouter"), "fp", true);
         *CACHE.write().expect("cache") = stale_process;
 
         // Process A completes a newer successful refresh for the same scope.
         let mut newer_process = ProviderCatalogCache::new();
         newer_process.record_success(stored_delta_at("openrouter", "fp", &["new-model"], 2), 60);
-        persist_scope(&newer_process, &scope("openrouter"), "fp");
+        persist_scope(&newer_process, &scope("openrouter"), "fp", true);
 
         // B then fails. Its failure status is current, but its old rows are
         // not: the transaction must retain A's newer durable roster.

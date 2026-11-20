@@ -8522,16 +8522,21 @@ pub(crate) async fn run_plugin_oauth_from_tui(
             )
             .await?;
         }
-        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        let base_url = config.base_url_for_route(&identity);
+        codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             identity.provider,
             &provider,
-            &config.base_url_for_route(&identity),
+            &base_url,
         );
         if !logout {
             let mut scoped = config.clone();
             scoped
                 .scope_to_provider_identity(&identity)
                 .map_err(anyhow::Error::msg)?;
+            let ticket = codewhale_engine::provider_catalog_live::begin_scoped_refresh(
+                &scoped, &identity, &base_url,
+            )
+            .map_err(anyhow::Error::msg)?;
             let client = codewhale_engine::client::CodewhaleClient::for_catalog_refresh(&scoped)?;
             let delta = client
                 .fetch_catalog_delta()

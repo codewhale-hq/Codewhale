@@ -4147,7 +4147,12 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
     }
     match outcome {
         Ok(roster) => {
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .active_route_api_key_read_only()
+                .is_ok_and(|current| current == api_key)
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             app.provider_health.record_models_probe_success(
                 &scoped_config,
                 &identity,
@@ -4252,7 +4257,15 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
         Ok(roster) => {
             // Before the model pick reads the route roster: list what this
             // key can call today, not catalog rows the provider has retired.
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .set_provider_api_key_override(&identity, Some(api_key.clone()))
+                .is_ok()
+                && scoped_config
+                    .active_route_api_key_read_only()
+                    .is_ok_and(|current| current == codewhale_secrets::normalize_api_key(&api_key))
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             // Keep the readiness row aligned with the live check the wizard
             // just completed. This probe only proves the endpoint and
             // credentials are reachable: the model is chosen after the probe,

@@ -106,6 +106,13 @@ pub struct ProviderRouteIdentity {
     credential_generation: Option<codewhale_config::credentials::CredentialGeneration>,
 }
 
+impl ProviderRouteIdentity {
+    pub(crate) fn has_keyless_credential(&self, base_url: &str) -> bool {
+        self.credential_generation.as_ref()
+            == Some(&codewhale_config::credentials::CredentialGeneration::derive(base_url, ""))
+    }
+}
+
 pub fn route_identity_for_model(
     config: &codewhale_runtime::config::Config,
     identity: &ProviderIdentity,
