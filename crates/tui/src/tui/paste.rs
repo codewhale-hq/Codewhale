@@ -358,6 +358,30 @@ mod tests {
         assert_eq!(app.input, expected);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn fifty_ms_windows_typing_and_ime_commits_leave_send_available() {
+        for text in ["abc", "你好啊", "hello world", "你好世界你好世界"] {
+            let mut app = test_app();
+            let start = Instant::now();
+            let mut last = start;
+            for (i, ch) in text.chars().enumerate() {
+                last = start + Duration::from_millis(50 * i as u64);
+                app.flush_paste_burst_if_due(last);
+                assert!(handle_paste_burst_key(&mut app, &plain(ch), last));
+            }
+            let enter = last + Duration::from_millis(30);
+            app.flush_paste_burst_if_due(enter);
+            assert!(app.composer_enter_would_submit(true, enter), "{text}");
+            assert!(!handle_paste_burst_key(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                enter,
+            ));
+            assert_eq!(app.input, text);
+        }
+    }
+
     #[test]
     fn composer_enter_uses_event_observed_time_not_processing_time() {
         let mut app = test_app();
@@ -584,9 +608,8 @@ mod tests {
 
     /// A whole IME-typed CJK sentence, one commit at a time at human speed,
     /// followed by Enter: every character lands verbatim and the Enter still
-    /// reaches the submit path. Real IME candidate commits land hundreds of
-    /// milliseconds apart; sub-60ms commits are intentionally
-    /// indistinguishable from a slow paste stream (#7398).
+    /// reaches the submit path. A 50ms cadence alone must not establish a
+    /// paste stream (#7398).
     #[test]
     fn ime_typed_sentence_then_enter_falls_through_to_submit() {
         let mut app = test_app();
@@ -786,7 +809,7 @@ mod tests {
         }
         let flush_at =
             now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
-        if let codewhale_tui_kit::paste_burst::FlushResult::Paste(rest) =
+        if let codewhale_tui_kit::paste_burst::FlushResult::TextContinuation(rest) =
             app.paste_burst.flush_if_due(flush_at)
         {
             app.insert_str(&rest);

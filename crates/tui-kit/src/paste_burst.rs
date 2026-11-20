@@ -14,6 +14,11 @@ const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
 const PASTE_BURST_STREAM_WINDOW: Duration = PASTE_BURST_CHAR_INTERVAL;
 #[cfg(windows)]
 const PASTE_BURST_STREAM_WINDOW: Duration = Duration::from_millis(60);
+const PASTE_BURST_STREAM_CHAR_INTERVAL: Duration = if cfg!(windows) {
+    Duration::from_millis(30)
+} else {
+    PASTE_BURST_STREAM_WINDOW
+};
 
 #[derive(Default)]
 pub struct PasteBurst {
@@ -22,6 +27,7 @@ pub struct PasteBurst {
     stream_chars: u16,
     burst_window_until: Option<Instant>,
     buffer: String,
+    chunk_emitted: bool,
     active: bool,
     pending_first_char: Option<(char, Instant)>,
 }
@@ -35,6 +41,7 @@ pub enum CharDecision {
 
 pub enum FlushResult {
     Paste(String),
+    TextContinuation(String),
     Typed(char),
     /// Enter can submit again even though the composer text has not changed.
     SuppressionExpired,
@@ -58,6 +65,7 @@ impl PasteBurst {
 
     pub fn take_chunk_if_full(&mut self) -> Option<String> {
         if self.buffer.len() >= PASTE_BURST_MAX_BYTES {
+            self.chunk_emitted = true;
             Some(std::mem::take(&mut self.buffer))
         } else {
             None
@@ -100,7 +108,7 @@ impl PasteBurst {
                 } else {
                     self.consecutive_plain_char_burst = 1;
                 }
-                self.stream_chars = if gap <= PASTE_BURST_STREAM_WINDOW {
+                self.stream_chars = if gap <= PASTE_BURST_STREAM_CHAR_INTERVAL {
                     self.stream_chars.saturating_add(1)
                 } else {
                     1
@@ -145,7 +153,11 @@ impl PasteBurst {
             // outside an active burst no longer re-arms it, so suppression
             // always ends `PASTE_ENTER_SUPPRESS_WINDOW` after the last real
             // keystroke.
-            FlushResult::Paste(out)
+            if std::mem::take(&mut self.chunk_emitted) {
+                FlushResult::TextContinuation(out)
+            } else {
+                FlushResult::Paste(out)
+            }
         } else if timed_out {
             if let Some((ch, _)) = self.pending_first_char.take() {
                 FlushResult::Typed(ch)
@@ -236,6 +248,7 @@ impl PasteBurst {
             return None;
         }
         self.active = false;
+        self.chunk_emitted = false;
         let mut out = std::mem::take(&mut self.buffer);
         if let Some((ch, _)) = self.pending_first_char.take() {
             out.push(ch);
@@ -261,6 +274,7 @@ impl PasteBurst {
         );
         self.consecutive_plain_char_burst = 0;
         self.active = false;
+        self.chunk_emitted = false;
         self.pending_first_char = None;
         // burst_window_until, stream_chars and last_plain_char_time are
         // intentionally NOT cleared: a trailing Enter a stream-window after
@@ -288,6 +302,7 @@ impl PasteBurst {
         self.stream_chars = 0;
         self.burst_window_until = None;
         self.active = false;
+        self.chunk_emitted = false;
         self.buffer.clear();
         self.pending_first_char = None;
     }
@@ -591,10 +606,9 @@ mod tests {
 
     /// A slow IME sequence never accumulates a rapid run, so every commit
     /// re-arms only the short window and Enter stays available throughout.
-    /// Real candidate-commit latency is hundreds of ms — far past the 60ms
-    /// stream window — so the stream heuristic never claims it either.
-    /// (Commits paced *inside* the stream window are indistinguishable from
-    /// a slow-injected paste; the stream evidence wins there by design.)
+    /// Known limitation: typing at the stream cadence is indistinguishable
+    /// from raw paste; slower raw paste without an earlier burst is typing.
+    /// Bracketed paste supplies the independent signal that resolves this.
     #[test]
     fn slow_ime_sequence_never_holds_enter() {
         let mut burst = PasteBurst::default();
@@ -619,8 +633,8 @@ mod tests {
     /// tens of ms apart on a loaded runner, past the 8ms burst-forming
     /// interval. Such a paste never buffers, but its embedded Enters are
     /// still payload, not submits. The stream counter (>=3 plain chars each
-    /// within the 60ms stream window) proves a stream is live, and the
-    /// window bounds how stale the last char may be. The 60ms window is
+    /// within 30ms) is stronger cadence evidence than the trailing-Enter
+    /// window, which bounds how stale the last char may be. The 60ms window is
     /// Windows-only; elsewhere the bound is the burst interval.
     #[cfg(windows)]
     #[test]
@@ -667,6 +681,63 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn established_windows_burst_preserves_fifty_ms_tail_and_enter() {
+        let mut burst = PasteBurst::default();
+        let start = Instant::now();
+        let payload = "ab你好\n";
+        let mut last = start;
+        for (i, ch) in payload.chars().enumerate() {
+            last = start + Duration::from_millis(if i == 0 { 0 } else { 1 + 50 * (i as u64 - 1) });
+            assert!(matches!(burst.flush_if_due(last), FlushResult::None));
+            if ch == '\n' {
+                assert!(burst.append_newline_if_active(last));
+            } else {
+                match burst.on_plain_char(ch, last) {
+                    CharDecision::RetainFirstChar => {}
+                    CharDecision::BeginBuffer => burst.begin_buffer_from_now(ch, last),
+                    CharDecision::BeginBufferFromPending | CharDecision::BufferAppend => {
+                        burst.append_char_to_buffer(ch, last);
+                    }
+                }
+            }
+        }
+        assert!(matches!(
+            burst.flush_if_due(last + PasteBurst::recommended_active_flush_delay()),
+            FlushResult::Paste(text) if text == payload
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fifty_ms_typing_and_ime_commits_do_not_establish_a_paste_stream() {
+        for text in ["abc", "你好啊", "hello world", "你好世界你好世界"] {
+            let mut burst = PasteBurst::default();
+            let start = Instant::now();
+            let mut last = start;
+            for (i, ch) in text.chars().enumerate() {
+                last = start + Duration::from_millis(50 * i as u64);
+                let _ = burst.flush_if_due(last);
+                if ch.is_ascii() {
+                    assert!(matches!(
+                        burst.on_plain_char(ch, last),
+                        CharDecision::RetainFirstChar
+                    ));
+                } else {
+                    let rapid = burst.note_plain_char(last);
+                    burst.arm_window_for_direct_char(last, rapid);
+                }
+            }
+            let enter = last + Duration::from_millis(30);
+            let _ = burst.flush_if_due(enter);
+            assert!(
+                !burst.newline_should_insert_instead_of_submit(enter),
+                "{text}"
+            );
+        }
+    }
+
     #[test]
     fn large_raw_cjk_multiline_paste_preserves_every_char_and_newline_via_chunks() {
         let mut burst = PasteBurst::default();
@@ -698,7 +769,7 @@ mod tests {
         }
         let flush_at = now + PasteBurst::recommended_active_flush_delay();
         match burst.flush_if_due(flush_at) {
-            FlushResult::Paste(rest) => assembled.push_str(&rest),
+            FlushResult::TextContinuation(rest) => assembled.push_str(&rest),
             _ => panic!("expected final Paste flush"),
         }
         assert!(chunk_count >= 2);

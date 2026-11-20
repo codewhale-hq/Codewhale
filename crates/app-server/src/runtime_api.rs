@@ -10752,19 +10752,13 @@ async fn retry_thread_turn(
     Json(req): Json<RetryTurnRequest>,
 ) -> Result<(StatusCode, Json<RetryTurnResponse>), ApiError> {
     let depth = req.depth.unwrap_or(0);
-    let (reservation, _) = state
-        .runtime_threads
-        .thread_restore_guard(&id)
-        .await
-        .map_err(map_thread_err)?;
-    drop(reservation);
     let runtime = state.runtime_threads.clone();
     let sessions_dir = state.sessions_dir.clone();
     let prompt = req.prompt;
     let (forked_thread, retry_prompt, original_user_images, max_output_tokens) =
         tokio::spawn(async move {
             let prepared = runtime
-                .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &sessions_dir)
+                .prepare_retry_in_sessions_dir(&id, depth, &sessions_dir)
                 .await
                 .map_err(map_thread_err)?;
             let retry_prompt = prompt

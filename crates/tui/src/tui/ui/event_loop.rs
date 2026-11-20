@@ -717,6 +717,10 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
             }
             true
         }
+        codewhale_tui_kit::paste_burst::FlushResult::TextContinuation(text) => {
+            app.insert_str(&text);
+            true
+        }
         codewhale_tui_kit::paste_burst::FlushResult::Typed(' ')
             if app.input.is_empty() && handle_transcript_space(app) =>
         {

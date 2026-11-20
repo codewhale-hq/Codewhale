@@ -503,9 +503,8 @@ pub fn truncate(path: &Path) -> Result<()> {
 ///
 /// Order matters and is the whole of the guarantee:
 ///
-/// 1. take the bounded lock — this is not an exit path;
-/// 2. write the tombstone **first**, and never remove it here — a lock that
-///    stays busy still installs the tombstone on the error path;
+/// 1. wait for an outstanding delivery to release the privacy lock;
+/// 2. write the tombstone and keep it for the rest of this opted-out period;
 /// 3. truncate `buffer.jsonl` and `dryrun.jsonl` — do **not** unlink them, and
 ///    never unlink the privacy lock file — and delete every spool;
 /// 4. remove `install_id.json` and `state.json`.
@@ -514,11 +513,11 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// logs it — but the tombstone alone already makes the buffer permanently
 /// undrainable, so a failed wipe fails **closed**.
 pub fn wipe(root: &Path) -> Result<()> {
-    wipe_with_timeout(root, Some(PRIVACY_LOCK_BUDGET))
+    wipe_with_timeout(root, None)
 }
 
-pub fn wipe_after_preference_change(root: &Path) -> Result<()> {
-    wipe_with_timeout(root, None)
+pub(crate) fn wipe_on_startup(root: &Path) -> Result<()> {
+    wipe_with_timeout(root, Some(PRIVACY_LOCK_BUDGET))
 }
 
 fn wipe_with_timeout(root: &Path, timeout: Option<Duration>) -> Result<()> {

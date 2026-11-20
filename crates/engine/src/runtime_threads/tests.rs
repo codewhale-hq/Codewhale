@@ -28578,3 +28578,73 @@ async fn named_turn_fork_rejects_commit_when_source_thread_changes_mid_prepare()
     assert_eq!(threads.len(), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn retry_captures_admitted_prompt_and_images_and_rejects_changed_source() -> Result<()> {
+    use crate::image_attach::test_support::runtime_image_fixture;
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let image = runtime_image_fixture(17);
+    let messages: Vec<Message> = serde_json::from_value(json!([
+        {"role":"user","content":[{"type":"text","text":"retry this"},
+            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}", image.data_base64)}}]},
+        {"role":"assistant","content":[{"type":"text","text":"original answer"}]}
+    ]))?;
+    manager
+        .seed_thread_from_messages(&thread.id, &messages)
+        .await?;
+    let (admission, source) = manager.thread_restore_guard(&thread.id).await?;
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+    let runtime = manager.clone();
+    let id = thread.id.clone();
+    let mut task = tokio::spawn(async move {
+        runtime
+            .prepare_retry_in_sessions_dir(&id, 0, runtime.sessions_dir())
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut task)
+            .await
+            .is_err()
+    );
+    assert!(hook_rx.try_recv().is_err());
+    drop(admission);
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await?
+        .context("retry preparation hook closed")?;
+    let (admission, mut current) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread.id),
+    )
+    .await??;
+    current.latest_turn_id = Some("turn_concurrently_completed".to_string());
+    current.updated_at = source.updated_at + chrono::Duration::seconds(1);
+    manager.store.save_thread(&current)?;
+    drop(admission);
+    let _ = resume.send(());
+    let prepared = tokio::time::timeout(Duration::from_secs(5), task).await???;
+    assert_eq!(prepared.dropped_turn_id, source.latest_turn_id);
+    assert_eq!(prepared.original_user_text(), Some("retry this"));
+    assert_eq!(prepared.original_images.len(), 1);
+    assert_eq!(prepared.original_images[0].data_base64, image.data_base64);
+    let error = manager
+        .publish_prepared_fork_guarded(prepared)
+        .await
+        .expect_err("retry must not publish after concurrent source completion");
+    assert!(
+        format!("{error:#}").contains("source thread changed while preparing fork"),
+        "{error:#}"
+    );
+    assert_eq!(
+        manager
+            .list_threads(ThreadListFilter::IncludeArchived, None)
+            .await?
+            .len(),
+        1
+    );
+    Ok(())
+}
