@@ -5710,6 +5710,20 @@ impl Config {
     }
 
     pub fn account_model_api_key(&self, identity: &ProviderIdentity) -> Option<String> {
+        self.account_model_key_and_owner(identity)
+            .map(|(key, _)| key)
+    }
+
+    pub fn account_model_owner_for_key(
+        &self,
+        identity: &ProviderIdentity,
+        key: &str,
+    ) -> Option<String> {
+        let (current_key, owner) = self.account_model_key_and_owner(identity)?;
+        (codewhale_secrets::normalize_api_key(&current_key) == key).then_some(owner)
+    }
+
+    fn account_model_key_and_owner(&self, identity: &ProviderIdentity) -> Option<(String, String)> {
         let provider = identity.provider;
         // Exact endpoint binding, including path. A custom Codewhale route
         // must never inherit the account's credential, even on the same host.
@@ -5776,12 +5790,13 @@ impl Config {
             && account.account_id.as_deref() == Some(cached.account_id.as_str())
             && account.session_id.as_deref() == Some(cached.session_id.as_str())
         {
-            return Some(cached.credential);
+            return Some((cached.credential, cached.account_id));
         }
         let access = access.filter(|access| access.expires_at > now.timestamp())?;
+        let owner = account.account_id?;
         (account.state == codewhale_secrets::account::AccountSessionState::Authenticated
             && account.session_id.as_deref() == Some(access.session_id.as_str()))
-        .then(|| access.credential.expose_secret().to_string())
+        .then(|| (access.credential.expose_secret().to_string(), owner))
     }
 
     /// Prove a current health-cache credential generation without commands,
@@ -5887,32 +5902,13 @@ impl Config {
         self.active_route_api_key_with_secret_store_mode(false)
     }
 
-    /// [`Self::active_route_api_key_with_source`], plus — only when the
-    /// resolver's xAI OAuth step produced the key — the account label of
-    /// that same credential (`Some(None)`: its ID token names no email).
-    /// Plan-limit guidance must name the account that sends the request, and
-    /// this reads it without opening the credential a second time.
-    pub fn active_route_api_key_with_xai_sign_in(
-        &self,
-    ) -> Result<(ResolvedApiKey, Option<XaiSignInLabel>)> {
-        if let Some(credentials) = self.xai_oauth_route_credentials() {
-            let credentials = credentials?;
-            return Ok((
-                (
-                    codewhale_secrets::normalize_api_key(&credentials.access_token),
-                    XAI_OAUTH_KEY_SOURCE.to_string(),
-                ),
-                Some(credentials.account_label),
-            ));
-        }
-        Ok((self.active_route_api_key_with_source()?, None))
-    }
-
     /// The resolver's xAI OAuth step: `Some` when the active route is xAI on
     /// the official endpoint with `auth_mode = "oauth"` and a usable sign-in
     /// exists (configured owned generation, legacy owned file, or consented
     /// Grok CLI import), holding that sign-in's credentials.
-    fn xai_oauth_route_credentials(&self) -> Option<Result<crate::oauth::OwnedOAuthCredentials>> {
+    pub fn xai_oauth_route_credentials(
+        &self,
+    ) -> Option<Result<crate::oauth::OwnedOAuthCredentials>> {
         let identity = self.active_provider_identity().ok()?;
         if self.required_account_model_owner.is_some()
             || self.session_provider_keys_only
@@ -6115,8 +6111,7 @@ impl Config {
         // xAI OAuth prefers Codewhale-owned device-login storage. An existing
         // Grok CLI file is considered only with provider/path-scoped read-only
         // consent. Activated by [providers.xai] auth_mode = "oauth". No
-        // earlier step applies to xAI, which
-        // `active_route_api_key_with_xai_sign_in` relies on.
+        // earlier step applies to xAI.
         if let Some(credentials) = self.xai_oauth_route_credentials() {
             return credentials
                 .map(|credentials| (credentials.access_token, XAI_OAUTH_KEY_SOURCE.to_string()));
@@ -11282,10 +11277,6 @@ fn user_global_config_api_key(identity: &ProviderIdentity) -> Option<String> {
 
 /// `(key, source label)` as the active-route resolver returns it.
 pub type ResolvedApiKey = (String, String);
-
-/// Account label of the xAI sign-in that minted a key; `None` when its ID
-/// token names no email.
-pub type XaiSignInLabel = Option<String>;
 
 /// Key-source label the resolver gives a key minted by xAI OAuth (owned
 /// sign-in or consented Grok CLI import), named in authentication errors.

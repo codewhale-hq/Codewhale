@@ -3248,6 +3248,7 @@ async fn run_async_main_dispatch(
                         args.sandbox.as_deref(),
                         args.json,
                         resume_session,
+                        resume_explicit_provider || resume_explicit_model.is_some(),
                         force_configured_route,
                         args.output_format,
                         max_turns,

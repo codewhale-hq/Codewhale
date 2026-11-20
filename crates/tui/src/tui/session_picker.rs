@@ -2128,6 +2128,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: std::path::PathBuf::from("/tmp"),
             mode: Some("agent".to_string()),
             cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),

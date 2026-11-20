@@ -225,6 +225,7 @@ pub struct CodewhaleClient {
     /// is signed in and how to switch, appended to plan-quota errors. Holds
     /// an account label only, never token material.
     subscription_limit_guidance: Option<String>,
+    resume_account_scope: Option<String>,
     /// Reviewed runtime authority and OAuth descriptor travel with the frozen route.
     plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
@@ -575,6 +576,7 @@ impl Clone for CodewhaleClient {
             api_key: self.api_key.clone(),
             api_key_source: self.api_key_source.clone(),
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
+            resume_account_scope: self.resume_account_scope.clone(),
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
             claude_org: self.claude_org.clone(),
@@ -1360,10 +1362,11 @@ struct CapturedRootCert {
 
 enum CapturedRouteCredentials {
     Codex(codewhale_runtime::oauth::OwnedOAuthCredentials),
+    Xai(codewhale_runtime::oauth::OwnedOAuthCredentials),
     ApiKey {
         api_key: String,
         api_key_source: String,
-        xai_sign_in: Option<codewhale_runtime::config::XaiSignInLabel>,
+        account_owner: Option<String>,
     },
 }
 
@@ -1767,12 +1770,18 @@ impl CodewhaleClient {
         {
             return Ok(CapturedRouteCredentials::Codex(config.codex_credentials()?));
         }
-        let ((api_key, api_key_source), xai_sign_in) =
-            config.active_route_api_key_with_xai_sign_in()?;
+        if let Some(credentials) = config.xai_oauth_route_credentials() {
+            return Ok(CapturedRouteCredentials::Xai(credentials?));
+        }
+        let (api_key, api_key_source) = config.active_route_api_key_with_source()?;
+        let account_owner = (identity.provider == ProviderKind::Codewhale
+            && api_key_source == "Codewhale account")
+            .then(|| config.account_model_owner_for_key(identity, &api_key))
+            .flatten();
         Ok(CapturedRouteCredentials::ApiKey {
             api_key,
             api_key_source,
-            xai_sign_in,
+            account_owner,
         })
     }
 
@@ -1853,6 +1862,7 @@ impl CodewhaleClient {
             codex_account_id,
             subscription_limit_guidance,
             chatgpt_reasoning_api,
+            resume_account_scope,
         ) = match credentials {
             CapturedRouteCredentials::Codex(credentials) => {
                 let guidance = codewhale_runtime::oauth::usage_limit_guidance(
@@ -1875,22 +1885,43 @@ impl CodewhaleClient {
                     (credentials.access_token, "ChatGPT sign-in".to_string()),
                     credentials.account_id,
                     Some(guidance),
+                    Some(reasoning_api.clone()),
                     Some(reasoning_api),
+                )
+            }
+            CapturedRouteCredentials::Xai(credentials) => {
+                let guidance = codewhale_runtime::oauth::usage_limit_guidance(
+                    codewhale_runtime::oauth::OAuthProvider::Xai,
+                    credentials.account_label.as_deref(),
+                );
+                let scope = credentials
+                    .account_id
+                    .as_deref()
+                    .map(|account| {
+                        serde_json::to_string(&(
+                            "xai",
+                            &credentials.issuer,
+                            &credentials.client_id,
+                            account,
+                        ))
+                    })
+                    .transpose()?;
+                (
+                    (
+                        codewhale_secrets::normalize_api_key(&credentials.access_token),
+                        codewhale_runtime::config::XAI_OAUTH_KEY_SOURCE.to_string(),
+                    ),
+                    None,
+                    Some(guidance),
+                    None,
+                    scope,
                 )
             }
             CapturedRouteCredentials::ApiKey {
                 api_key,
                 api_key_source,
-                xai_sign_in,
-            } => {
-                let guidance = xai_sign_in.map(|label| {
-                    codewhale_runtime::oauth::usage_limit_guidance(
-                        codewhale_runtime::oauth::OAuthProvider::Xai,
-                        label.as_deref(),
-                    )
-                });
-                ((api_key, api_key_source), None, guidance, None)
-            }
+                account_owner,
+            } => ((api_key, api_key_source), None, None, None, account_owner),
         };
         let model_bound_secret_values = Arc::new(configured_model_bound_secret_values_with(
             config,
@@ -2051,6 +2082,7 @@ impl CodewhaleClient {
             api_key,
             api_key_source,
             subscription_limit_guidance,
+            resume_account_scope,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
             claude_org,
@@ -3745,6 +3777,46 @@ impl CodewhaleClient {
             None,
             reasoning_effort,
         )
+    }
+
+    pub fn exec_route_binding(
+        &self,
+        key: &[u8; 32],
+        config: &Config,
+    ) -> Result<crate::route_receipt::ExecRouteBinding> {
+        use crate::route_receipt::ExecRouteBinding;
+        let endpoint = Some(ExecRouteBinding::endpoint_tag(key, &self.base_url));
+        let authority = if self.plugin_provider.is_some() || self.claude_org.is_some() {
+            None
+        } else {
+            let (source, credential) = self
+                .resume_account_scope
+                .as_deref()
+                .map_or(("key", self.api_key.as_str()), |account| {
+                    ("account", account)
+                });
+            let headers = config
+                .http_headers()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let headers = serde_json::to_string(&headers)?;
+            Some(ExecRouteBinding::tag(
+                key,
+                b"authority",
+                &[
+                    self.admitted_identity.persisted_kind(),
+                    self.admitted_identity.key.as_str(),
+                    source,
+                    credential,
+                    self.path_suffix.as_deref().unwrap_or_default(),
+                    &headers,
+                ],
+            ))
+        };
+        Ok(ExecRouteBinding {
+            endpoint,
+            authority,
+        })
     }
 
     /// Secret-free receipt for the exact base endpoint and credential

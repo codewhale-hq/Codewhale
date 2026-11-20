@@ -1051,6 +1051,8 @@ pub struct SessionMetadata {
     /// kind (`custom` for every named custom route).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_route_binding: Option<crate::route_receipt::ExecRouteBinding>,
     /// Workspace directory
     pub workspace: PathBuf,
     /// Optional mode label (agent/plan/etc.)
@@ -1291,6 +1293,11 @@ fn default_model_provider() -> String {
 
 impl SessionMetadata {
     pub fn set_model_provider_route(&mut self, kind: &str, identity: Option<&str>) {
+        if self.exec_route_binding.is_some()
+            && (self.model_provider != kind || self.model_provider_id.as_deref() != identity)
+        {
+            self.exec_route_binding = Some(crate::route_receipt::ExecRouteBinding::default());
+        }
         self.model_provider = kind.to_string();
         self.model_provider_id = identity.map(str::to_string);
     }
@@ -2217,6 +2224,7 @@ impl SavedSession {
             model,
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace,
             mode: None,
             cost: SessionCostSnapshot::default(),
@@ -2715,6 +2723,39 @@ impl SessionManager {
     /// Return the resolved sessions directory path.
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
+    }
+
+    pub fn exec_route_binding_key(&self, create: bool) -> anyhow::Result<[u8; 32]> {
+        use ring::rand::SecureRandom as _;
+        let directory = self.sessions_dir.canonicalize()?.join(".exec-route");
+        let directory = if create {
+            codewhale_config::private_directory::PrivateDirectory::open(&directory)?
+        } else {
+            codewhale_config::private_directory::PrivateDirectory::inspect(&directory)?
+        };
+        let name = "key";
+        let read = || -> anyhow::Result<Option<[u8; 32]>> {
+            directory
+                .read_private_receipt(name, 32)?
+                .map(|(bytes, _)| {
+                    bytes
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("invalid exec route binding key"))
+                })
+                .transpose()
+        };
+        if let Some(key) = read()? {
+            return Ok(key);
+        }
+        anyhow::ensure!(create, "exec route binding key is missing");
+        let mut key = [0u8; 32];
+        ring::rand::SystemRandom::new()
+            .fill(&mut key)
+            .map_err(|_| anyhow::anyhow!("could not generate an exec route binding key"))?;
+        if let Err(error) = directory.write_owned_file(name, &key, false) {
+            return read()?.ok_or(error);
+        }
+        Ok(key)
     }
 
     /// The live-lease file for `session_id`; see [`set_live_session`].
@@ -3774,6 +3815,19 @@ impl SessionManager {
         metadata.title_is_custom = persisted.title_is_custom;
         metadata.archived = persisted.archived;
         metadata.created_at = persisted.created_at;
+        if metadata.exec_route_binding.is_none()
+            && let Some(binding) = persisted.exec_route_binding.as_ref()
+        {
+            metadata.exec_route_binding = Some(
+                if metadata.model_provider == persisted.model_provider
+                    && metadata.model_provider_id == persisted.model_provider_id
+                {
+                    binding.clone()
+                } else {
+                    crate::route_receipt::ExecRouteBinding::default()
+                },
+            );
+        }
         metadata
             .parent_session_id
             .clone_from(&persisted.parent_session_id);
@@ -7765,6 +7819,7 @@ fn create_saved_session_inner(
             model: model.to_string(),
             model_provider: default_model_provider(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: workspace.to_path_buf(),
             mode: mode.map(str::to_string),
             cost: SessionCostSnapshot::default(),
