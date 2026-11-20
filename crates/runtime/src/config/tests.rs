@@ -1892,6 +1892,40 @@ fn serply_search_provider_parses_and_round_trips() {
 }
 
 #[test]
+fn explicit_searchapi_search_provider_is_preserved() {
+    let config: Config = toml::from_str(
+        r#"
+        [search]
+        provider = "searchapi"
+        "#,
+    )
+    .expect("searchapi search config");
+
+    assert_eq!(
+        config.search.and_then(|search| search.provider),
+        Some(SearchProvider::SearchApi)
+    );
+}
+
+#[test]
+fn searchapi_search_provider_parses_aliases_and_round_trips() {
+    for value in ["searchapi", "SearchApi", "search-api", "search_api"] {
+        assert_eq!(
+            SearchProvider::parse(value),
+            Some(SearchProvider::SearchApi),
+            "{value}"
+        );
+    }
+    assert_eq!(SearchProvider::SearchApi.as_str(), "searchapi");
+    let json = serde_json::to_string(&SearchProvider::SearchApi).expect("serialize");
+    assert_eq!(json, "\"searchapi\"");
+    assert_eq!(
+        serde_json::from_str::<SearchProvider>(&json).expect("deserialize"),
+        SearchProvider::SearchApi
+    );
+}
+
+#[test]
 fn live_search_provider_update_preserves_environment_precedence() {
     let _guard = lock_test_env();
     let previous_codewhale = env::var_os("CODEWHALE_SEARCH_PROVIDER");

@@ -140,6 +140,12 @@ function provider(input) {
       snippetKeys = ["description", "snippet"];
       trim2 = false;
       break;
+    case "searchapi":
+      items = array(parsed.organic_results);
+      urlKeys = ["link"];
+      snippetKeys = ["snippet"];
+      trim2 = false;
+      break;
     case "volcengine": {
       if (own(parsed, "error")) {
         const value = parsed.error && typeof parsed.error === "object" && !Array.isArray(parsed.error) ? row(parsed.error) : {};
@@ -261,6 +267,9 @@ Schema: {"results":[{"title":"...","url":"https://...","snippet":"..."}]}
       break;
     case "serply":
       pairs = [["q", query], ["num", String(max)], ...language === void 0 ? [] : [["hl", language]], ...region === void 0 ? [] : [["gl", region.toLowerCase()]]];
+      break;
+    case "searchapi":
+      pairs = [["q", query], ["engine", "google"], ["num", String(max)], ...window === void 0 ? [] : [["time_period", `last_${window}`]], ...language === void 0 ? [] : [["hl", language]], ...region === void 0 ? [] : [["gl", region.toLowerCase()]]];
       break;
     case "searxng":
       pairs = [["q", query], ["format", "json"], ...window === void 0 ? [] : [["time_range", window]], ...locale === void 0 ? [] : [["language", locale]]];

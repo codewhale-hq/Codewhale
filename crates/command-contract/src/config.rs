@@ -482,6 +482,7 @@ pub enum CommandSearchProvider {
     Sofya,
     Serply,
     DeepSeek,
+    SearchApi,
 }
 
 /// Operator-notification delivery method.
