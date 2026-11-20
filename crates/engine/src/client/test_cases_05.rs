@@ -497,7 +497,7 @@
         let mut content_index = 0;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = super::chat::ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let events = parse_sse_chunk(
             &json!({
@@ -736,7 +736,7 @@
         let mut content_index = 0;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut tool_indices = super::chat::ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let events = parse_sse_chunk(
             &chunk,
@@ -796,7 +796,7 @@
         let mut content_index = 0;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut tool_indices = super::chat::ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let events = parse_sse_chunk(
             &chunk,

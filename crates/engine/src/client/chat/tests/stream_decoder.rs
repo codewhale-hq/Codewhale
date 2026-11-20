@@ -5,6 +5,7 @@
 //! directly to verify each "class of stream failure" the engine relies on.
 use super::*;
 use crate::client::wire::{SseLineDecoder, SseLineError};
+use codewhale_config::descriptors::defaults::DEFAULT_GOOGLE_BASE_URL;
 use codewhale_models::{ContentBlockStart, Delta, StreamEvent};
 
 /// Decode a raw SSE-data JSON chunk into our internal events, mirroring
@@ -18,7 +19,7 @@ fn decode_chunk_with_reasoning(json_text: &str, is_reasoning_model: bool) -> Vec
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     parse_sse_chunk(
         &chunk,
@@ -35,10 +36,25 @@ fn decode_chunks_with_style(
     chunks: &[&str],
     reasoning_stream_style: ReasoningStreamStyle,
 ) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(chunks, reasoning_stream_style, ChatToolStream::default())
+}
+
+fn decode_google_chunks(chunks: &[&str]) -> Vec<StreamEvent> {
+    decode_chunks_with_tool_stream(
+        chunks,
+        ReasoningStreamStyle::SeparateField,
+        ChatToolStream::for_base_url(DEFAULT_GOOGLE_BASE_URL),
+    )
+}
+
+fn decode_chunks_with_tool_stream(
+    chunks: &[&str],
+    reasoning_stream_style: ReasoningStreamStyle,
+    mut tool_indices: ChatToolStream,
+) -> Vec<StreamEvent> {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
     let mut events = Vec::new();
@@ -67,7 +83,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
         content_index: u32,
         text_started: bool,
         thinking_started: bool,
-        tool_indices: std::collections::HashMap<u32, u32>,
+        tool_indices: ChatToolStream,
         reasoning_detail_buffers: std::collections::HashMap<u32, String>,
         inline_reasoning_tags: InlineReasoningTagState,
         events: Vec<StreamEvent>,
@@ -80,7 +96,7 @@ fn decode_sse_byte_chunks(chunks: &[&[u8]]) -> Result<Vec<StreamEvent>, SseLineE
                 content_index: 0,
                 text_started: false,
                 thinking_started: false,
-                tool_indices: std::collections::HashMap::new(),
+                tool_indices: ChatToolStream::default(),
                 reasoning_detail_buffers: std::collections::HashMap::new(),
                 inline_reasoning_tags: InlineReasoningTagState::default(),
                 events: Vec::new(),
@@ -300,7 +316,7 @@ fn decoder_streams_moonshot_multi_chunk_reasoning_as_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -388,7 +404,7 @@ fn decoder_streams_minimax_reasoning_details_as_incremental_thinking() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut events = Vec::new();
     for chunk in chunks {
@@ -459,7 +475,7 @@ fn modelstudio_streams_reasoning_content_as_thinking() {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_detail_buffers = std::collections::HashMap::new();
         let mut inline_reasoning_tags = InlineReasoningTagState::default();
         let mut events = Vec::new();
@@ -528,7 +544,7 @@ fn decoder_does_not_render_reasoning_as_text_for_known_provider_models() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let is_reasoning_model =
         is_reasoning_model_for_stream(ProviderKind::XiaomiMimo, "mimo-v2.5-pro");
@@ -815,7 +831,7 @@ fn decoder_treats_done_frame_as_terminal() {
     let mut content_index = 0u32;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let mut inline_reasoning_tags = InlineReasoningTagState::default();
 
@@ -837,7 +853,7 @@ fn decoder_treats_done_frame_as_terminal() {
     assert_eq!(content_index, 0);
     assert!(!text_started);
     assert!(!thinking_started);
-    assert!(tool_indices.is_empty());
+    assert!(tool_indices.calls.is_empty());
 }
 
 #[test]
@@ -2002,7 +2018,7 @@ fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_clea
         .to_string(),
     ];
     let refs: Vec<&str> = sse_chunks.iter().map(String::as_str).collect();
-    let events = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    let events = decode_google_chunks(&refs);
 
     let starts: Vec<(u32, String, Option<String>)> = events
         .into_iter()
@@ -2028,7 +2044,7 @@ fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_clea
         ]
     );
 
-    let events2 = decode_chunks_with_style(&refs, ReasoningStreamStyle::SeparateField);
+    let events2 = decode_google_chunks(&refs);
     assert!(events2.iter().any(|ev| matches!(
         ev,
         StreamEvent::ContentBlockDelta {
@@ -2084,6 +2100,84 @@ fn google_parallel_tool_calls_without_index_keep_separate_blocks_and_replay_clea
         )
         .is_err()
     );
+}
+
+#[test]
+fn google_parallel_tool_continuations_match_identity_then_batch_position() {
+    let start = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g1","function":{"name":"read_file","arguments":"{\"path\":"}},
+        {"id":"call_g2","function":{"name":"grep_files","arguments":"{\"pattern\":"}}
+    ]}}]}"#;
+    let continue_both = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g1","function":{"arguments":"\"a.rs\"}"}},
+        {"function":{"arguments":"\"needle\"}"}}
+    ]}}]}"#;
+    let signature_for_first = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g1","extra_content":{"google":{"thought_signature":"sig_first"}}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, signature_for_first, continue_both]);
+    let input: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::InputJsonDelta { partial_json },
+            } => Some((*index, partial_json.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        input,
+        [
+            (0, "{\"path\":"),
+            (1, "{\"pattern\":"),
+            (0, "\"a.rs\"}"),
+            (1, "\"needle\"}")
+        ]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThoughtSignatureDelta { thought_signature }
+        } if thought_signature == "sig_first"
+    )));
+
+    let ambiguous = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"\"unknown target\"}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, ambiguous]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let anonymous_parallel = r#"{"choices":[{"delta":{"tool_calls":[
+        {"function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, anonymous_parallel]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let partly_reordered = r#"{"choices":[{"delta":{"tool_calls":[
+        {"id":"call_g2","function":{"arguments":"{}"}},
+        {"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, partly_reordered]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let unknown_continuation = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":5,"function":{"arguments":"{}"}}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[start, unknown_continuation]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
+
+    let indexed_batch = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"function":{"name":"read_file"}},
+        {"index":1,"id":"call_g2","function":{"name":"grep_files"}}
+    ]}}]}"#;
+    let conflicting_identity = r#"{"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_g2"}
+    ]}}]}"#;
+    let events = decode_google_chunks(&[indexed_batch, conflicting_identity]);
+    assert!(matches!(events.last(), Some(StreamEvent::Error { .. })));
 }
 
 #[test]

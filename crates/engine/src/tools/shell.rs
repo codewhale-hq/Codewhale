@@ -2762,7 +2762,8 @@ impl ShellManager {
         }
 
         if background {
-            let bounded_output = timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS);
+            let bounded_output =
+                program_args.is_some() || timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS);
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
@@ -3465,6 +3466,20 @@ impl ShellManager {
         shell.snapshot_with_artifact(shell.status != ShellStatus::Running)
     }
 
+    pub(super) fn test_output(
+        &mut self,
+        task_id: &str,
+        session_id: &str,
+    ) -> Result<(ShellResult, serde_json::Value)> {
+        self.require_session_owner(task_id, session_id)?;
+        let (snapshot, artifact) = self.get_output_with_artifact(task_id, false, 0)?;
+        let mut metadata = json!({});
+        if let Some(artifact) = artifact {
+            stamp_persisted_shell_artifact_metadata(&mut metadata, &artifact, &snapshot.stdout);
+        }
+        Ok((snapshot, metadata))
+    }
+
     /// Poll a job and return only its status.
     ///
     /// The foreground wait loop ticks every 100 ms and discards the snapshot
@@ -3472,7 +3487,7 @@ impl ShellManager {
     /// raw buffers to build it. On a command printing 50 MB that was ~1.5 GB of
     /// allocate-and-drop churn per wait, all of it thrown away (#5472 finding 1,
     /// the transient term). Status is what the loop actually needs.
-    fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
+    pub(super) fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
         let shell = self
             .processes
             .get_mut(task_id)

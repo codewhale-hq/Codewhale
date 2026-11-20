@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-18T23:42:11Z",
-    "sha256": "890c379ddf4215b5d24677569c8efb0d731019c2778efe780a1527a7479e3b57"
+    "fetched_at": "2026-11-20T05:19:54Z",
+    "sha256": "d178146b38f5687ea10d945730a7b714c890ba85a09b45fed7a6e74c9ecea9a0"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -5013,7 +5013,7 @@
         "cost": {
           "input": 0.9,
           "output": 1.5,
-          "cache_read": 0.25
+          "cache_read": 0.2
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -5425,9 +5425,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.007,
-          "output": 6.8,
-          "cache_read": 0.006
+          "input": 0.62,
+          "output": 2.42,
+          "cache_read": 0.14
         }
       },
       "z-ai/glm-5.3": {
