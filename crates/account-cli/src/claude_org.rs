@@ -109,6 +109,7 @@ impl std::error::Error for ClaudeOrgError {}
 
 #[derive(Clone)]
 pub struct ClaudeOrgToken {
+    pub account: Option<(String, String)>,
     pub access_token: String,
     pub expires_at: DateTime<Utc>,
     pub base_url: String,
@@ -240,6 +241,7 @@ pub(crate) fn claude_org_token_from_response(
         .map_err(|_| invalid())?
         .with_timezone(&Utc);
     Ok(ClaudeOrgToken {
+        account: None,
         access_token: wire.access_token,
         expires_at,
         base_url: wire.base_url,
@@ -331,7 +333,11 @@ impl AccountClient {
                 rejected = Some(bearer);
                 continue;
             }
-            return claude_org_token_from_response(&response);
+            let mut token = claude_org_token_from_response(&response)?;
+            token.account = lease.bundle.user.as_ref().and_then(|user| {
+                (!user.id.trim().is_empty()).then(|| (self.api_base.clone(), user.id.clone()))
+            });
+            return Ok(token);
         }
     }
 

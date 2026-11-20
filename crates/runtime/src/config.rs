@@ -5714,15 +5714,6 @@ impl Config {
             .map(|(key, _)| key)
     }
 
-    pub fn account_model_owner_for_key(
-        &self,
-        identity: &ProviderIdentity,
-        key: &str,
-    ) -> Option<String> {
-        let (current_key, owner) = self.account_model_key_and_owner(identity)?;
-        (codewhale_secrets::normalize_api_key(&current_key) == key).then_some(owner)
-    }
-
     fn account_model_key_and_owner(&self, identity: &ProviderIdentity) -> Option<(String, String)> {
         let provider = identity.provider;
         // Exact endpoint binding, including path. A custom Codewhale route
@@ -5902,6 +5893,12 @@ impl Config {
         self.active_route_api_key_with_secret_store_mode(false)
     }
 
+    pub fn active_route_api_key_with_owner(&self) -> Result<(ResolvedApiKey, Option<String>)> {
+        let mut owner = None;
+        let key = self.active_route_api_key_with_owner_and_mode(false, &mut owner)?;
+        Ok((key, owner))
+    }
+
     /// The resolver's xAI OAuth step: `Some` when the active route is xAI on
     /// the official endpoint with `auth_mode = "oauth"` and a usable sign-in
     /// exists (configured owned generation, legacy owned file, or consented
@@ -5944,7 +5941,15 @@ impl Config {
         &self,
         read_only: bool,
     ) -> Result<(String, String)> {
-        self.resolve_active_route_api_key(read_only)
+        self.active_route_api_key_with_owner_and_mode(read_only, &mut None)
+    }
+
+    fn active_route_api_key_with_owner_and_mode(
+        &self,
+        read_only: bool,
+        account_owner: &mut Option<String>,
+    ) -> Result<ResolvedApiKey> {
+        self.resolve_active_route_api_key(read_only, account_owner)
             .map(|(key, source)| (codewhale_secrets::normalize_api_key(&key), source))
     }
 
@@ -5990,15 +5995,22 @@ impl Config {
     /// The active route's key and a display label for where it came from
     /// (#6528). Callers go through [`Self::active_route_api_key_with_source`],
     /// which normalizes the key.
-    fn resolve_active_route_api_key(&self, read_only: bool) -> Result<(String, String)> {
+    fn resolve_active_route_api_key(
+        &self,
+        read_only: bool,
+        account_owner: &mut Option<String>,
+    ) -> Result<ResolvedApiKey> {
         let identity = self
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
         self.verify_provider_identity(&identity)
             .map_err(anyhow::Error::msg)?;
         if self.required_account_model_owner.is_some() {
-            return self.account_model_api_key(&identity)
-                .map(|key| (key, "Codewhale account".to_string()))
+            return self.account_model_key_and_owner(&identity)
+                .map(|(key, owner)| {
+                    *account_owner = Some(owner);
+                    (key, "Codewhale account".to_string())
+                })
                 .context("The selected account model access is unavailable; no credential fallback is allowed");
         }
         if let Some(key) = self.session_provider_api_key(&identity) {
@@ -6255,7 +6267,8 @@ impl Config {
 
         // Account auth is a reversible fallback, never an overwrite of an
         // environment, config-file, or durable provider credential.
-        if let Some(key) = self.account_model_api_key(&identity) {
+        if let Some((key, owner)) = self.account_model_key_and_owner(&identity) {
+            *account_owner = Some(owner);
             return Ok((key, "Codewhale account".to_string()));
         }
 

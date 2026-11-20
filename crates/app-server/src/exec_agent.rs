@@ -424,7 +424,7 @@ pub async fn run_exec_agent(
         .map_err(anyhow::Error::msg)?;
     let effective_provider = effective_identity.provider;
     let effective_model = route.model;
-    let validated_route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+    let mut validated_route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         &execution_config,
         &effective_identity,
         Some(&effective_model),
@@ -433,6 +433,7 @@ pub async fn run_exec_agent(
     .validate_for_async(codewhale_engine::route_runtime::RouteErrorSurface::Headless)
     .await
     .map_err(anyhow::Error::msg)?;
+    validated_route.client.pin_exec_auth_scope().await?;
     let mut deferred_binding = (!should_persist_session).then(|| {
         (
             validated_route.client.clone(),
@@ -4144,7 +4145,12 @@ mod route_tests {
             codewhale_engine::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
         let temporary = tempfile::tempdir()?;
         let store = temporary.path().join("sessions");
-        let binding = |key, base_url, api_key| -> Result<ExecRouteBinding> {
+        let binding = |key, base_url, api_key, wire: &str| -> Result<ExecRouteBinding> {
+            let profile = if wire == "responses" {
+                "responses_profile = \"standard\""
+            } else {
+                ""
+            };
             let config: Config = toml::from_str(&format!(
                 r#"
 provider = "resume-fixture"
@@ -4153,6 +4159,8 @@ kind = "openai-compatible"
 base_url = "{base_url}"
 model = "fixture-model"
 api_key = "{api_key}"
+wire = "{wire}"
+{profile}
 "#
             ))?;
             codewhale_engine::client::CodewhaleClient::new(&config)?
@@ -4165,7 +4173,7 @@ api_key = "{api_key}"
         let manager = SessionManager::new(store.clone())?;
         let key =
             SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, true)?;
-        let current = binding(&key, ORIGINAL, ORIGINAL_KEY)?;
+        let current = binding(&key, ORIGINAL, ORIGINAL_KEY, "chat")?;
         let mut saved = session_manager::create_saved_session_with_mode(
             &[],
             "fixture-model",
@@ -4190,7 +4198,18 @@ api_key = "{api_key}"
             SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, false)?;
         let required = required_exec_resume_binding(Some(&saved), false);
         check_exec_resume_endpoint(required, Some(&reopened_key), ORIGINAL)?;
-        check_exec_resume_authority(required, &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY)?)?;
+        check_exec_resume_authority(
+            required,
+            &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY, "chat")?,
+        )?;
+        assert!(
+            check_exec_resume_authority(
+                required,
+                &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY, "responses")?,
+            )
+            .is_err()
+        );
+
         let changed_endpoint =
             check_exec_resume_endpoint(required, Some(&reopened_key), REBOUND).unwrap_err();
         assert!(
@@ -4200,7 +4219,7 @@ api_key = "{api_key}"
         );
         assert!(!changed_endpoint.to_string().contains(REBOUND));
         assert!(check_exec_resume_endpoint(required, None, ORIGINAL).is_err());
-        let rebound_account = binding(&reopened_key, ORIGINAL, REBOUND_KEY)?;
+        let rebound_account = binding(&reopened_key, ORIGINAL, REBOUND_KEY, "chat")?;
         let changed_account = check_exec_resume_authority(required, &rebound_account).unwrap_err();
         assert!(
             changed_account
@@ -4211,7 +4230,10 @@ api_key = "{api_key}"
 
         let required = required_exec_resume_binding(Some(&saved), true);
         check_exec_resume_endpoint(required, Some(&reopened_key), REBOUND)?;
-        check_exec_resume_authority(required, &binding(&reopened_key, REBOUND, REBOUND_KEY)?)?;
+        check_exec_resume_authority(
+            required,
+            &binding(&reopened_key, REBOUND, REBOUND_KEY, "chat")?,
+        )?;
         Ok(())
     }
     #[test]

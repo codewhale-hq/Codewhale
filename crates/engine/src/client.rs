@@ -226,6 +226,7 @@ pub struct CodewhaleClient {
     /// an account label only, never token material.
     subscription_limit_guidance: Option<String>,
     resume_account_scope: Option<String>,
+    exec_plugin_grant: Option<uuid::Uuid>,
     /// Reviewed runtime authority and OAuth descriptor travel with the frozen route.
     plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
@@ -577,6 +578,7 @@ impl Clone for CodewhaleClient {
             api_key_source: self.api_key_source.clone(),
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
             resume_account_scope: self.resume_account_scope.clone(),
+            exec_plugin_grant: self.exec_plugin_grant,
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
             claude_org: self.claude_org.clone(),
@@ -1773,11 +1775,8 @@ impl CodewhaleClient {
         if let Some(credentials) = config.xai_oauth_route_credentials() {
             return Ok(CapturedRouteCredentials::Xai(credentials?));
         }
-        let (api_key, api_key_source) = config.active_route_api_key_with_source()?;
-        let account_owner = (identity.provider == ProviderKind::Codewhale
-            && api_key_source == "Codewhale account")
-            .then(|| config.account_model_owner_for_key(identity, &api_key))
-            .flatten();
+        let ((api_key, api_key_source), account_owner) =
+            config.active_route_api_key_with_owner()?;
         Ok(CapturedRouteCredentials::ApiKey {
             api_key,
             api_key_source,
@@ -2083,6 +2082,7 @@ impl CodewhaleClient {
             api_key_source,
             subscription_limit_guidance,
             resume_account_scope,
+            exec_plugin_grant: None,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
             claude_org,
@@ -2147,27 +2147,48 @@ impl CodewhaleClient {
                 .map(|(request, _)| request)
                 .map_err(anyhow::Error::new);
         }
-        let Some(provider) = self.plugin_provider.clone() else {
+        if self.plugin_provider.is_none() {
             return Ok(request);
-        };
+        }
+        let destination = request
+            .try_clone()
+            .context("plugin request cannot be inspected")?
+            .build()?;
+        let base = reqwest::Url::parse(&self.base_url)?;
+        anyhow::ensure!(
+            destination.url().origin() == base.origin(),
+            "plugin request escaped its reviewed provider origin"
+        );
+        let read_only = self.plugin_oauth_read_only;
+        let grant = self.exec_plugin_grant;
+        let token = self
+            .with_plugin_authority(move |name, base_url, descriptor| {
+                codewhale_runtime::oauth::plugin_oauth_access_token_for_grant(
+                    name, base_url, descriptor, read_only, grant,
+                )
+            })
+            .await?;
+        Ok(request.bearer_auth(token))
+    }
+
+    async fn with_plugin_authority<T: Send + 'static>(
+        &self,
+        authorize: impl FnOnce(&str, &str, &codewhale_runtime::oauth::PluginOAuthConfig) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T> {
+        let provider = self
+            .plugin_provider
+            .clone()
+            .context("plugin provider is unavailable")?;
         let authority = provider
             .plugin_authority
             .clone()
             .context("plugin provider has no authority")?;
         let name = self.admitted_identity.key.to_string();
         let base_url = self.base_url.clone();
-        let destination = request
-            .try_clone()
-            .context("plugin request cannot be inspected")?
-            .build()?;
-        let base = reqwest::Url::parse(&base_url)?;
-        anyhow::ensure!(
-            destination.url().origin() == base.origin(),
-            "plugin request escaped its reviewed provider origin"
-        );
         let policy = codewhale_plugins::activation::extension_host_policy_enabled();
-        let read_only = self.plugin_oauth_read_only;
-        let token = tokio::task::spawn_blocking(move || -> Result<String> {
+        tokio::task::spawn_blocking(move || -> Result<T> {
             let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
             let descriptor = provider
                 .oauth
@@ -2182,9 +2203,7 @@ impl CodewhaleClient {
                 Some(provider.http_headers.as_ref().unwrap_or(&empty_headers)),
             )
             .map_err(anyhow::Error::msg)?;
-            let token = codewhale_runtime::oauth::plugin_oauth_access_token(
-                &name, &base_url, descriptor, read_only,
-            )?;
+            let authorization = authorize(&name, &base_url, descriptor)?;
             // Refresh may wait on the issuer. Do not send a model request if
             // the review was revoked while that HTTP request was in flight.
             codewhale_plugins::registry::verify_plugin_component_authority(
@@ -2192,10 +2211,9 @@ impl CodewhaleClient {
                 codewhale_plugins::activation::PluginActivationCapability::Providers,
             )
             .map_err(anyhow::Error::msg)?;
-            Ok(token)
+            Ok(authorization)
         })
-        .await??;
-        Ok(request.bearer_auth(token))
+        .await?
     }
 
     fn claude_org_test_transport_base(&self) -> Option<&str> {
@@ -3779,6 +3797,24 @@ impl CodewhaleClient {
         )
     }
 
+    pub async fn pin_exec_auth_scope(&mut self) -> Result<()> {
+        if let Some(claude) = &self.claude_org {
+            self.resume_account_scope = claude
+                .pin_resume_identity()
+                .await
+                .map_err(anyhow::Error::new)?
+                .map(|identity| serde_json::to_string(&identity))
+                .transpose()?;
+        } else if self.plugin_provider.is_some() {
+            let grant = self
+                .with_plugin_authority(codewhale_runtime::oauth::pin_plugin_oauth_grant)
+                .await?;
+            self.exec_plugin_grant = Some(grant);
+            self.resume_account_scope = Some(grant.to_string());
+        }
+        Ok(())
+    }
+
     pub fn exec_route_binding(
         &self,
         key: &[u8; 32],
@@ -3786,7 +3822,9 @@ impl CodewhaleClient {
     ) -> Result<crate::route_receipt::ExecRouteBinding> {
         use crate::route_receipt::ExecRouteBinding;
         let endpoint = Some(ExecRouteBinding::endpoint_tag(key, &self.base_url));
-        let authority = if self.plugin_provider.is_some() || self.claude_org.is_some() {
+        let authority = if (self.plugin_provider.is_some() || self.claude_org.is_some())
+            && self.resume_account_scope.is_none()
+        {
             None
         } else {
             let (source, credential) = self
@@ -3800,6 +3838,7 @@ impl CodewhaleClient {
                 .into_iter()
                 .collect::<std::collections::BTreeMap<_, _>>();
             let headers = serde_json::to_string(&headers)?;
+            let wire = format!("{:?}:{:?}", self.wire_format, self.responses_profile_id);
             Some(ExecRouteBinding::tag(
                 key,
                 b"authority",
@@ -3809,6 +3848,7 @@ impl CodewhaleClient {
                     source,
                     credential,
                     self.path_suffix.as_deref().unwrap_or_default(),
+                    &wire,
                     &headers,
                 ],
             ))
