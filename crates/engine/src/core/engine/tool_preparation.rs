@@ -1171,7 +1171,8 @@ mod tests {
         use crate::mcp::{McpToolApprovalHint, set_mcp_tool_approval_hint_for_test};
 
         let root = tempdir().expect("tempdir");
-        let context = ToolContext::new(root.path().to_path_buf());
+        let mut context = ToolContext::new(root.path().to_path_buf());
+        context.auto_approve = true;
         let mut registry = ToolRegistry::new(context);
         registry.register(Arc::new(crate::tools::file_tool::ReadTool));
         registry.register(Arc::new(crate::tools::file_tool::EditTool));
@@ -1212,7 +1213,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(idx, (name, input))| {
-                let prepared = prepare_tool_call(name, input, Some(&registry), false)
+                let prepared = prepare_tool_call(name, input, Some(&registry), true)
                     .unwrap_or_else(|e| panic!("prepare {name}: {e}"));
                 assert!(prepared.call.read_only, "{name} should be read_only");
                 assert!(
