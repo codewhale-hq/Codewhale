@@ -610,6 +610,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 - The offline model catalog uses the updated Models.dev prices for OpenRouter’s GLM 5.2 and DeepSeek V4 Pro routes.
 
+- Verbose Cargo tests keep recoverable shell output and flag omitted bytes. When capture is incomplete, the test result omits aggregate counts. Completed shell output remains retrievable after a provisional preview.
 - Delegated test runs stay in the foreground when the child cannot collect a background job. Managed Cargo test runs preserve argument boundaries on Windows, including spaces and ampersands in workspace paths.
 
 - Terminal output preserves Unicode alongside shell formatting. Test jobs retain their child owner, and a child without permission to wait for a detached job runs tests in the foreground. ACP approvals show the requested path and operation when a verified file diff is unavailable.

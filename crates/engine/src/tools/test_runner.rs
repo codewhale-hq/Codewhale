@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::cargo_failure_summary::summarize_cargo_failure;
-use super::shell::{SharedShellManager, ShellOutputStream, ShellStatus};
+use super::shell::{SharedShellManager, ShellResult, ShellStatus};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str,
@@ -32,6 +32,8 @@ pub struct RunTestsTool;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RunTestsOutput {
     success: bool,
+    #[serde(flatten)]
+    capture: Option<TestCapture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
     stdout: String,
@@ -59,6 +61,30 @@ struct RunTestsOutput {
     warning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestCapture {
+    output_complete: bool,
+    stdout_total_len: usize,
+    stderr_total_len: usize,
+    stdout_omitted: usize,
+    stderr_omitted: usize,
+}
+
+impl From<&ShellResult> for TestCapture {
+    fn from(snapshot: &ShellResult) -> Self {
+        Self {
+            output_complete: !snapshot.stdout_truncated
+                && !snapshot.stderr_truncated
+                && snapshot.stdout_omitted == 0
+                && snapshot.stderr_omitted == 0,
+            stdout_total_len: snapshot.stdout_len,
+            stderr_total_len: snapshot.stderr_len,
+            stdout_omitted: snapshot.stdout_omitted,
+            stderr_omitted: snapshot.stderr_omitted,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -234,12 +260,15 @@ impl ToolSpec for RunTestsTool {
                 let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                 let exit_code = output.status.code().unwrap_or(-1);
                 finish_completed_tests(
-                    !run.stopped && output.status.success(),
-                    exit_code,
-                    stdout,
-                    stderr,
-                    command_str,
-                    run.stopped,
+                    RunTestsOutput {
+                        success: !run.stopped && output.status.success(),
+                        exit_code: Some(exit_code),
+                        stdout,
+                        stderr,
+                        command: command_str,
+                        timed_out: run.stopped,
+                        ..Default::default()
+                    },
                     filtered,
                 )
             }
@@ -248,44 +277,34 @@ impl ToolSpec for RunTestsTool {
 }
 
 fn finish_completed_tests(
-    status_ok: bool,
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-    command: String,
-    timed_out: bool,
+    mut output: RunTestsOutput,
     filtered: bool,
 ) -> Result<ToolResult, ToolError> {
-    let detection = if status_ok && !timed_out {
-        detect_zero_tests_matched(&stdout, &stderr, filtered)
+    let output_complete = output
+        .capture
+        .as_ref()
+        .is_none_or(|capture| capture.output_complete);
+    let detection = if output.success && !output.timed_out && output_complete {
+        detect_zero_tests_matched(&output.stdout, &output.stderr, filtered)
     } else {
         ZeroTestDetection::default()
     };
-    let success = status_ok && !timed_out && !detection.zero_tests_matched;
-    let warning = detection.zero_tests_matched.then(|| {
-        detection.reason.clone().unwrap_or_else(|| {
+    output.success = output.success && !output.timed_out && !detection.zero_tests_matched;
+    output.warning = if detection.zero_tests_matched {
+        Some(detection.reason.clone().unwrap_or_else(|| {
             "0 tests matched; verify your test filter args because a 0-test pass proves nothing"
                 .to_string()
-        })
-    });
-    run_tests_result(RunTestsOutput {
-        success,
-        exit_code: Some(exit_code),
-        stdout,
-        stderr,
-        command,
-        timed_out,
-        backgrounded: false,
-        status: None,
-        task_id: None,
-        last_output_age_ms: None,
-        progress: None,
-        zero_tests_matched: detection.zero_tests_matched,
-        tests_executed: detection.tests_executed,
-        tests_filtered_out: detection.tests_filtered_out,
-        summary: warning.clone(),
-        warning,
-    })
+        }))
+    } else if !output_complete {
+        Some("Output was truncated; aggregate and zero-test counts are unavailable. Use the output recovery information, when available, to inspect complete evidence.".to_string())
+    } else {
+        None
+    };
+    output.zero_tests_matched = detection.zero_tests_matched;
+    output.tests_executed = detection.tests_executed;
+    output.tests_filtered_out = detection.tests_filtered_out;
+    output.summary = output.warning.clone();
+    run_tests_result(output)
 }
 
 fn run_tests_result(result: RunTestsOutput) -> Result<ToolResult, ToolError> {
@@ -417,6 +436,7 @@ fn start_background_cargo(
     );
     background_tests_tool_result(
         RunTestsOutput {
+            capture: None,
             success: true,
             exit_code: None,
             stdout: String::new(),
@@ -494,78 +514,67 @@ async fn run_cargo_with_auto_background(
             return Err(ToolError::cancelled("cargo test cancelled"));
         }
 
-        let finished = {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            let probe = manager
-                .read_output_chunk(&task_id, ShellOutputStream::Stdout, usize::MAX, 0, 0)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-            if probe.status == ShellStatus::Running {
-                None
-            } else {
-                let stdout = manager
-                    .read_output_chunk(&task_id, ShellOutputStream::Stdout, 0, usize::MAX, 0)
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
-                    .unwrap_or_default();
-                let stderr = manager
-                    .read_output_chunk(&task_id, ShellOutputStream::Stderr, 0, usize::MAX, 0)
-                    .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
-                    .unwrap_or_default();
-                manager.acknowledge_foreground_completion(&task_id);
-                Some((probe.status, probe.exit_code, stdout, stderr))
-            }
-        };
+        let status = context
+            .shell_manager
+            .lock()
+            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?
+            .poll_status(&task_id)
+            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
 
-        if let Some((status, exit_code, stdout, stderr)) = finished {
+        if status != ShellStatus::Running || Instant::now() >= deadline {
             guard.armed = false;
-            let status_ok = status == ShellStatus::Completed && exit_code == Some(0);
-            return finish_completed_tests(
-                status_ok,
-                exit_code
-                    .and_then(|code| i32::try_from(code).ok())
-                    .unwrap_or(-1),
-                stdout,
-                stderr,
-                command_str.to_string(),
-                status == ShellStatus::TimedOut,
-                filtered,
-            );
-        }
-
-        if Instant::now() >= deadline {
-            guard.armed = false;
-            let (snapshot, last_output_age_ms, progress) = {
-                let mut manager = context
+            let manager = context.shell_manager.clone();
+            let output_task_id = task_id.clone();
+            let session_id = context.state_namespace.clone();
+            let (snapshot, metadata, last_output_age_ms, progress) =
+                tokio::task::spawn_blocking(move || {
+                    let mut manager = manager
+                        .lock()
+                        .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                    let (snapshot, metadata) = manager
+                        .test_output(&output_task_id, &session_id)
+                        .map_err(|err| ToolError::execution_failed(format!(
+                            "Failed to collect test output for task_id={output_task_id}: {err}; output remains available for retry with task_shell_wait"
+                        )))?;
+                    let age = manager.last_output_age_ms(&output_task_id);
+                    let progress = manager.running_progress(&output_task_id);
+                    Ok::<_, ToolError>((snapshot, metadata, age, progress))
+                })
+                .await
+                .map_err(|err| ToolError::execution_failed(err.to_string()))??;
+            let capture = TestCapture::from(&snapshot);
+            if snapshot.status != ShellStatus::Running {
+                let mut result = finish_completed_tests(
+                    RunTestsOutput {
+                        success: snapshot.status == ShellStatus::Completed
+                            && snapshot.exit_code == Some(0),
+                        exit_code: Some(
+                            snapshot
+                                .exit_code
+                                .and_then(|code| i32::try_from(code).ok())
+                                .unwrap_or(-1),
+                        ),
+                        stdout: snapshot.stdout,
+                        stderr: snapshot.stderr,
+                        command: command_str.to_string(),
+                        timed_out: snapshot.status == ShellStatus::TimedOut,
+                        capture: Some(capture),
+                        ..Default::default()
+                    },
+                    filtered,
+                )?;
+                result
+                    .metadata
+                    .get_or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(metadata.as_object().unwrap().clone());
+                context
                     .shell_manager
                     .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-                let snapshot = manager
-                    .get_output(&task_id, false, 0)
-                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-                if snapshot.status != ShellStatus::Running {
-                    manager.acknowledge_foreground_completion(&task_id);
-                }
-                let age = manager.last_output_age_ms(&task_id);
-                let progress = manager.running_progress(&task_id);
-                (snapshot, age, progress)
-            };
-            if snapshot.status != ShellStatus::Running {
-                let status_ok =
-                    snapshot.status == ShellStatus::Completed && snapshot.exit_code == Some(0);
-                return finish_completed_tests(
-                    status_ok,
-                    snapshot
-                        .exit_code
-                        .and_then(|code| i32::try_from(code).ok())
-                        .unwrap_or(-1),
-                    snapshot.stdout,
-                    snapshot.stderr,
-                    command_str.to_string(),
-                    snapshot.status == ShellStatus::TimedOut,
-                    filtered,
-                );
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?
+                    .acknowledge_foreground_completion(&task_id);
+                return Ok(result);
             }
             let summary = format!(
                 "cargo test is still running after {}ms and moved to the background (task_id: {task_id}). Call `task_shell_wait` with this task_id to read output, wait for completion, or cancel.",
@@ -573,6 +582,7 @@ async fn run_cargo_with_auto_background(
             );
             return background_tests_tool_result(
                 RunTestsOutput {
+                    capture: Some(capture),
                     success: true,
                     exit_code: None,
                     stdout: snapshot.stdout,
@@ -1053,7 +1063,195 @@ mod tests {
             parsed.stderr
         );
         assert_eq!(parsed.exit_code, Some(0));
+        assert_eq!(parsed.tests_executed, Some(1));
+        assert!(parsed.capture.as_ref().unwrap().output_complete);
         assert!(parsed.command.contains("cargo test"));
+    }
+
+    #[tokio::test]
+    async fn run_tests_foreground_spill_preserves_evidence_without_partial_counts() {
+        use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
+
+        assert!(cargo_available(), "this regression requires Cargo");
+        let _artifact_lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        struct ArtifactRootReset(Option<std::path::PathBuf>);
+        impl Drop for ArtifactRootReset {
+            fn drop(&mut self) {
+                codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+            }
+        }
+        let tmp = tempdir().unwrap();
+        let _artifact_root = ArtifactRootReset(
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+                tmp.path().join("sessions"),
+            )),
+        );
+        let project = init_cargo_project(tmp.path());
+        fs::write(
+            project.join("src/lib.rs"),
+            r#"
+#[test]
+fn early() { println!("EARLY_TEST_EVIDENCE"); }
+"#,
+        )
+        .unwrap();
+        fs::create_dir(project.join("tests")).unwrap();
+        let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+        for late_test in [false, true] {
+            let session = if late_test {
+                "cargo-partial-count"
+            } else {
+                "cargo-false-zero"
+            };
+            let header = if late_test {
+                "#[test] fn late()"
+            } else {
+                "fn main()"
+            };
+            fs::write(
+                project.join("Cargo.toml"),
+                format!("{manifest}\n[[test]]\nname = \"verbose\"\nharness = {late_test}\n"),
+            )
+            .unwrap();
+            fs::write(
+                project.join("tests/verbose.rs"),
+                format!(
+                    r#"
+{header} {{
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let row = vec![b'x'; 1023];
+    for i in 0..18_432 {{
+        if i == 9_000 {{ writeln!(out, "MIDDLE_TEST_EVIDENCE").unwrap(); }}
+        out.write_all(&row).unwrap();
+        out.write_all(b"\n").unwrap();
+    }}
+    writeln!(out, "LAST_TEST_EVIDENCE").unwrap();
+}}
+"#
+                ),
+            )
+            .unwrap();
+            let ctx = ToolContext::new(&project)
+                .with_state_namespace(session)
+                .with_origin_tool_call_id("cargo-verbose");
+            let result = RunTestsTool
+                .execute(
+                    json!({
+                        "args": "--offline -- --nocapture --test-threads=1",
+                        "timeout_ms": 120_000
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            let parsed: RunTestsOutput = serde_json::from_str(&result.content).unwrap();
+            assert!(parsed.success, "{}", result.content);
+            assert!(!parsed.backgrounded);
+            assert!(!parsed.zero_tests_matched);
+            assert_eq!(parsed.tests_executed, None);
+            assert_eq!(parsed.tests_filtered_out, None);
+            let capture = parsed.capture.unwrap();
+            assert!(!capture.output_complete);
+            assert!(capture.stdout_total_len > 16 * 1024 * 1024);
+            assert!(capture.stdout_omitted > 16 * 1024 * 1024);
+            assert!(parsed.stdout.contains("LAST_TEST_EVIDENCE"));
+            assert!(result.content.len() < 64 * 1024);
+            let metadata = result.metadata.unwrap();
+            assert_eq!(metadata["artifact_session_id"], session);
+            assert_eq!(metadata["artifact_id"], "art_cargo-verbose");
+            for marker in [
+                "EARLY_TEST_EVIDENCE",
+                "MIDDLE_TEST_EVIDENCE",
+                "LAST_TEST_EVIDENCE",
+            ] {
+                let recovered = RetrieveToolResultTool
+                    .execute(
+                        json!({
+                            "ref": "art_cargo-verbose", "mode": "query", "query": marker
+                        }),
+                        &ctx,
+                    )
+                    .await
+                    .unwrap();
+                assert!(recovered.success, "{}", recovered.content);
+                let body: Value = serde_json::from_str(&recovered.content).unwrap();
+                assert!(body["matched_lines"].as_u64().unwrap() > 0);
+                assert!(body["matches_returned"].as_u64().unwrap() > 0);
+                assert!(
+                    body["results"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|result| result["excerpt"].as_str().unwrap().contains(marker))
+                );
+            }
+            let foreign = ctx.clone().with_state_namespace("cargo-foreign");
+            let denied = RetrieveToolResultTool
+                .execute(
+                    json!({
+                        "ref": "art_cargo-verbose", "mode": "lines", "lines": "1-10"
+                    }),
+                    &foreign,
+                )
+                .await;
+            assert!(denied.is_err() || denied.is_ok_and(|result| !result.success));
+            assert!(
+                !ctx.shell_manager
+                    .lock()
+                    .unwrap()
+                    .may_have_undelivered_completion_for_session(session)
+            );
+        }
+        let session = "cargo-publication-retry";
+        let blocked = tmp.path().join("sessions").join(session).join("artifacts");
+        fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        fs::write(&blocked, "publication blocked").unwrap();
+        let ctx = ToolContext::new(&project)
+            .with_state_namespace(session)
+            .with_origin_tool_call_id("cargo-retry");
+        let failed = RunTestsTool
+            .execute(
+                json!({
+                    "args": "--offline -- --nocapture --test-threads=1", "timeout_ms": 120_000
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(failed.is_err());
+        assert!(
+            ctx.shell_manager
+                .lock()
+                .unwrap()
+                .has_finished_unreported_jobs_for_session(session)
+        );
+        fs::remove_file(&blocked).unwrap();
+        let evidence = ctx
+            .shell_manager
+            .lock()
+            .unwrap()
+            .drain_finished_jobs_with_evidence_for_session(session);
+        assert_eq!(evidence.len(), 1);
+        let recovered = RetrieveToolResultTool
+            .execute(
+                json!({
+                    "ref": "art_cargo-retry", "mode": "query", "query": "EARLY_TEST_EVIDENCE"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(recovered.success);
+        let body: Value = serde_json::from_str(&recovered.content).unwrap();
+        assert!(body["matched_lines"].as_u64().unwrap() > 0);
+        assert!(body["results"].as_array().unwrap().iter().any(|result| {
+            result["excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("EARLY_TEST_EVIDENCE")
+        }));
     }
 
     #[tokio::test]
