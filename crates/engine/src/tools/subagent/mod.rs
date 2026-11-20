@@ -10684,6 +10684,7 @@ impl SubAgentManager {
                 route_source: None,
                 display_name: Some(subagent_result_display_name(&snapshot)),
             });
+            let _ = event_tx.try_send(self.agent_list_event(&identity.owner_session_id));
         }
         Ok((snapshot, context))
     }
@@ -11166,6 +11167,24 @@ impl SubAgentManager {
             .filter(|agent| self.agent_is_owned_by_session(agent, active_session_id))
             .map(|agent| self.snapshot_for_listing(agent))
             .collect()
+    }
+
+    pub fn agent_list_event(&self, active_session_id: &str) -> Event {
+        let now_ms = epoch_millis_now();
+        Event::AgentList {
+            owner_session_id: active_session_id.to_string(),
+            agents: self.list_for_session(active_session_id),
+            coordination: self.coordination_detail_projection_for_session(
+                active_session_id,
+                None,
+                24,
+            ),
+            queued_follow_ups: self.queued_follow_up_counts_for_session(active_session_id),
+            roster: crate::agent_roster::build_agent_roster(
+                &self.list_worker_records_for_session(active_session_id),
+                now_ms,
+            ),
+        }
     }
 
     /// Legacy test-global projection for boot-origin filtering (#405).
@@ -11900,6 +11919,9 @@ impl SubAgentManager {
                 .agents
                 .get(agent_id)
                 .is_some_and(|agent| agent.suppress_parent_completion);
+        let refresh_target = delivery
+            .as_ref()
+            .and_then(|ctx| ctx.event_tx.clone().map(|tx| (tx, ctx.session_id.clone())));
         if let Some(delivery) = delivery {
             delivery.deliver(self, &result, suppress_parent_completion);
         }
@@ -11934,6 +11956,9 @@ impl SubAgentManager {
                 .write_claims
                 .retain(|record| record.claim.owner != agent_id);
             self.coordination.prune_claim_scopes();
+        }
+        if let Some((event_tx, session_id)) = refresh_target {
+            let _ = event_tx.try_send(self.agent_list_event(&session_id));
         }
         Ok(true)
     }

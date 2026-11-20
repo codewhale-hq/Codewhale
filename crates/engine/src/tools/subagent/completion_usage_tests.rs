@@ -614,3 +614,57 @@ fn worker_legacy_gap_remains_after_exact_promotions() {
     assert!(record.has_unreported_usage);
     assert!(record.legacy_unreported_usage);
 }
+
+#[test]
+fn finish_terminal_result_emits_agent_list_after_agent_complete() {
+    let dir = tempdir().unwrap();
+    let mut manager = SubAgentManager::new(dir.path().to_path_buf(), 4);
+    let id = child(&mut manager, "live-refresh", None, None);
+    let (event_tx, mut event_rx) = mpsc::channel(8);
+    manager.agents.get_mut(&id).unwrap().terminal_delivery =
+        Some(SubAgentTerminalDeliveryContext {
+            spawn_depth: 1,
+            parent_completion_tx: None,
+            mailbox: None,
+            event_tx: Some(event_tx),
+            event_delivery: None,
+            session_id: "workspace".into(),
+        });
+    let mut result = terminal_result(&manager, &id);
+    result.status = SubAgentStatus::Cancelled;
+    assert!(
+        manager
+            .finish_terminal_result(&id, result, false, false)
+            .expect("terminal transition")
+    );
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(Event::AgentComplete {
+            id: ref completed_id,
+            outcome: Some(SubAgentStatus::Cancelled),
+            ..
+        }) if completed_id == &id
+    ));
+    let Event::AgentList {
+        owner_session_id,
+        agents,
+        roster,
+        ..
+    } = event_rx
+        .try_recv()
+        .expect("immediate AgentList refresh after completion")
+    else {
+        panic!("expected Event::AgentList after Event::AgentComplete");
+    };
+    assert_eq!(owner_session_id, "workspace");
+    assert!(
+        agents
+            .iter()
+            .any(|agent| { agent.agent_id == id && agent.status == SubAgentStatus::Cancelled })
+    );
+    let row = roster
+        .iter()
+        .find(|row| row.worker_id == id)
+        .expect("roster row for finished worker");
+    assert_eq!(row.state, crate::agent_roster::RosterState::Cancelled);
+}
