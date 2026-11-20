@@ -1,5 +1,5 @@
 use super::CodewhaleClient;
-use super::chat::{parse_chat_message, parse_sse_chunk};
+use super::chat::{ChatToolStream, parse_chat_message, parse_sse_chunk};
 use anyhow::Result;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Delta, Message, MessageRequest, StreamEvent, Tool};
@@ -300,7 +300,7 @@ fn replay_placeholder_echo_is_dropped_from_ingest() {
     let mut content_index = 0;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let chunks = [
         json!({
@@ -361,7 +361,7 @@ fn streaming_fixture_accepts_delayed_tool_arguments_and_usage_tail() {
     let mut content_index = 0;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let chunks = [
         json!({
