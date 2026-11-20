@@ -15327,11 +15327,6 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     {
         *preview = json!("");
     }
-    for flag in ["timed_out", "timed_out_with_checkpoint"] {
-        if object.get(flag).and_then(Value::as_bool) == Some(false) {
-            object.remove(flag);
-        }
-    }
     if let Some(follow_up) = object.get_mut("follow_up").and_then(Value::as_object_mut) {
         follow_up.remove("session_name");
     }
@@ -15370,10 +15365,7 @@ fn compact_spawn_receipt(value: &mut Value, verbose: bool) {
     object.remove("takeover");
     object.remove("verification");
     object.insert("compact".to_string(), json!(true));
-    object.insert(
-        "compact_note".to_string(),
-        json!("Full receipt: verbose: true."),
-    );
+    object.insert("compact_note".to_string(), json!("More: verbose: true."));
     // Declared output paths can be numerous and long. Keep every path that
     // fits verbatim and make omissions explicit; addressed detail has them all.
     let mut omitted = 0;
