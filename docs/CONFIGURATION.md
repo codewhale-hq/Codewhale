@@ -3645,6 +3645,15 @@ Omitted or `0` uses 1800 (30 minutes); values are clamped to `1..=86400`.
 task_human_wait_cap_seconds = 3600   # optional; default 1800
 ```
 
+`max_parallel_shell_exec` bounds how many shell commands one parallel tool wave
+runs at the same time; the rest of the wave waits for a slot. Omitted or `0`
+uses 4; values above 32 are clamped to 32.
+
+```toml
+[tools]
+max_parallel_shell_exec = 8   # optional; default 4
+```
+
 `user_input_timeout_seconds` governs question waits only. Approvals have their own clock,
 `[approval] timeout_seconds`, which waits indefinitely unless you set it.
 Wall-clock and stream protections elsewhere are unaffected.

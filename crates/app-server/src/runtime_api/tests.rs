@@ -445,6 +445,7 @@ fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> Sav
             model: "test-model".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: PathBuf::from("."),
             mode: None,
             cost: Default::default(),
@@ -14134,6 +14135,7 @@ fn provider_model_catalog_paginates_all_six_hundred_rows_without_truncation() {
     let models = (0..600)
         .rev()
         .map(|index| ProviderModelEntry {
+            route: None,
             reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
             reasoning_effort_levels: Vec::new(),
             reasoning_effort_source: None,
@@ -14191,6 +14193,7 @@ fn provider_model_catalog_applies_filter_before_cursor_and_rejects_cross_scope_r
     let models = ["Alpha-One", "alpha-two", "beta"]
         .into_iter()
         .map(|id| ProviderModelEntry {
+            route: None,
             reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
             reasoning_effort_levels: Vec::new(),
             reasoning_effort_source: None,
@@ -14250,6 +14253,7 @@ fn provider_model_cursor_rejects_catalog_change_between_pages() {
     let models = ["bravo", "charlie"]
         .into_iter()
         .map(|id| ProviderModelEntry {
+            route: None,
             reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
             reasoning_effort_levels: Vec::new(),
             reasoning_effort_source: None,
@@ -14274,6 +14278,7 @@ fn provider_model_cursor_rejects_catalog_change_between_pages() {
     let cursor = first.next_cursor.expect("second page remains");
     let mut changed = models.clone();
     changed.push(ProviderModelEntry {
+        route: None,
         reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
         reasoning_effort_levels: Vec::new(),
         reasoning_effort_source: None,
@@ -14322,6 +14327,7 @@ fn provider_model_cursor_round_trips_multibyte_filter_at_the_allowed_limit() {
     let models = ["a", "b"]
         .into_iter()
         .map(|suffix| ProviderModelEntry {
+            route: None,
             reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
             reasoning_effort_levels: Vec::new(),
             reasoning_effort_source: None,
@@ -14854,28 +14860,50 @@ fn provider_reasoning_metadata_keeps_exact_roster_levels_and_unknown_boundaries(
 
 #[tokio::test]
 async fn provider_models_query_keeps_named_routes_separate_without_switching() -> Result<()> {
+    let _lock = lock_test_env();
     let root = tempfile::tempdir()?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    let transport = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v1/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!({"data":[{"id":"gpt-6-astra"}]})),
+        )
+        .expect(1)
+        .mount(&transport)
+        .await;
     let config_file = root.path().join("config.toml");
     fs::write(
         &config_file,
-        r#"provider = "first"
+        format!(
+            r#"provider = "first"
 [providers.first]
 kind = "openai-compatible"
 base_url = "http://127.0.0.1:18190/v1"
 model = "first-model"
 [providers.second]
 kind = "openai-compatible"
-base_url = "http://127.0.0.1:18191/v1"
+base_url = "{}/v1"
+auth_mode = "none"
 model = "gpt-6-astra"
 "#,
+            transport.uri()
+        ),
     )?;
-    let Some((addr, _runtime_threads, handle)) =
+    let Some((addr, runtime_threads, handle)) =
         spawn_test_server_with_config_path(config_file).await?
     else {
         return Ok(());
     };
     let client = codewhale_release::tls::reqwest_client();
     let before = get_config(&client, &addr).await;
+    let config = runtime_threads.read_config().clone();
+    let exact = config
+        .resolve_persisted_provider_identity(Some("custom"), Some("second"))
+        .map_err(anyhow::Error::msg)?;
+    let refresh = codewhale_engine::provider_lake::update_provider_catalog(&config, &exact).await;
+    assert_eq!(serde_json::to_value(refresh)?["outcome"], "updated");
     let response = client
         .get(format!(
             "http://{addr}/v1/providers/custom/models?model_provider_id=second"
@@ -14893,6 +14921,37 @@ model = "gpt-6-astra"
         get_config(&client, &addr).await["provider"],
         before["provider"]
     );
+    let created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("thread id")?;
+    let selected: Value = client.patch(format!("http://{addr}/v1/threads/{thread_id}"))
+        .json(&json!({"model_provider":"custom", "model_provider_id":"second", "model":"gpt-6-astra", "route_selection":body["models"][0]["route"]["selection"]}))
+        .send().await?.error_for_status()?.json().await?;
+    let config = runtime_threads.read_config().clone();
+    let identity = config
+        .resolve_persisted_provider_identity(
+            selected["model_provider"].as_str(),
+            selected["model_provider_id"].as_str(),
+        )
+        .map_err(anyhow::Error::msg)?;
+    let resolved = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+        &config,
+        &identity,
+        selected["model"].as_str(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    assert_eq!(resolved.candidate.wire_model_id().as_str(), "gpt-6-astra");
+    assert_eq!(
+        resolved.candidate.endpoint().base_url,
+        format!("{}/v1", transport.uri())
+    );
+    transport.verify().await;
     for path in [
         "custom/models?model_provider_id=",
         "custom/models?model_provider_id=missing",
@@ -14904,6 +14963,93 @@ model = "gpt-6-astra"
             .await?;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+
+    let runtime_info: Value = client
+        .get(format!("http://{addr}/v1/runtime/info"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        runtime_info["capabilities"]["exact_route_thread_create"],
+        true
+    );
+    let threads_url = format!("http://{addr}/v1/threads");
+    let mut exact_request = json!({
+        "operation_key": "exact-route-create",
+        "model_provider": "custom",
+        "model_provider_id": "second",
+        "model": "gpt-6-astra",
+        "allow_shell": false,
+        "route_selection": body["models"][0]["route"]["selection"]
+    });
+    let response = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let exact_thread: Value = response.json().await?;
+    assert_eq!(exact_thread["model_provider"], "custom");
+    assert_eq!(exact_thread["model_provider_id"], "second");
+    assert_eq!(exact_thread["model"], "gpt-6-astra");
+    assert_ne!(exact_thread["id"], created["id"]);
+
+    let mut changed_config = runtime_threads.read_config().clone();
+    changed_config.provider_config_for_mut(&exact)?.base_url =
+        Some(format!("{}/changed/v1", transport.uri()));
+    runtime_threads.reload_config(changed_config).await?;
+
+    let replayed: Value = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(replayed, exact_thread);
+    exact_request["operation_key"] = json!("stale-route-create");
+    let stale = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let error: Value = stale.json().await?;
+    assert_eq!(error["error"]["code"], "route_selection_stale");
+
+    exact_request
+        .as_object_mut()
+        .unwrap()
+        .remove("operation_key");
+    let unkeyed = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(unkeyed.status(), StatusCode::CONFLICT);
+    let error: Value = unkeyed.json().await?;
+    assert_eq!(error["error"]["code"], "route_selection_stale");
+
+    exact_request.as_object_mut().unwrap().remove("model");
+    let incomplete = client
+        .post(&threads_url)
+        .json(&exact_request)
+        .send()
+        .await?;
+    assert_eq!(incomplete.status(), StatusCode::BAD_REQUEST);
+
+    let listed: Vec<Value> = client
+        .get(&threads_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(transport.received_requests().await.unwrap().len(), 1);
     handle.abort();
     Ok(())
 }
@@ -20505,9 +20651,10 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
     );
     let fingerprint = base_url_fingerprint(endpoint);
     let fetched_at = now_unix();
-    let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
-        provider, "ollama", endpoint,
-    );
+    let identity = config.test_identity_for_kind(provider);
+    let ticket =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(&config, &identity, endpoint)
+            .expect("begin scoped catalog refresh");
     codewhale_engine::provider_catalog_live::record_success_if_current(
         &ticket,
         ProviderCatalogDelta {
@@ -20549,12 +20696,22 @@ fn api_provider_default_and_model_list_follow_exact_local_catalog() {
         ""
     );
     assert!(provider_models_for_api(&other, &(other).test_identity_for_kind(provider)).is_empty());
-    codewhale_engine::provider_catalog_live::record_failure_if_current(
-        &ticket,
-        "ollama",
-        &fingerprint,
-        CatalogRefreshError::Network,
+    let fail = |ticket| {
+        codewhale_engine::provider_catalog_live::record_failure_if_current(
+            ticket,
+            "ollama",
+            &fingerprint,
+            CatalogRefreshError::Network,
+        )
+    };
+    assert!(
+        fail(&ticket).is_none(),
+        "the other endpoint superseded this ticket"
     );
+    let ticket =
+        codewhale_engine::provider_catalog_live::begin_scoped_refresh(&config, &identity, endpoint)
+            .expect("reopen the original endpoint's catalog scope");
+    assert!(fail(&ticket).is_some());
     assert_eq!(
         provider_default_model_for_api(&config, &(config).test_identity_for_kind(provider)),
         ""
@@ -21423,6 +21580,7 @@ fn runtime_image_named_catalog_cursor_binds_identity_endpoint_and_catalog() -> R
     let models = ["one", "two"]
         .into_iter()
         .map(|id| ProviderModelEntry {
+            route: None,
             reasoning_effort: codewhale_config::route::CapabilityState::Unknown,
             reasoning_effort_levels: Vec::new(),
             reasoning_effort_source: None,
@@ -29871,4 +30029,49 @@ pub(super) fn bootstrap_loads_in_node(source: &str) -> Option<String> {
         String::from_utf8_lossy(&output.stderr)
     );
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[test]
+fn exact_inventory_query_keeps_wire_case_and_snapshot_cursor() {
+    let rows = ["aaaSame", "Same", "same", "wire-id"]
+        .into_iter()
+        .map(|id| ProviderModelEntry {
+            route: None,
+            id: id.to_string(),
+            image_input: Default::default(),
+            output_token_limit: Default::default(),
+            reasoning_effort: Default::default(),
+            reasoning_effort_levels: vec![],
+            reasoning_effort_source: None,
+            facts: (id == "wire-id").then(|| serde_json::json!({"name": "Same"})),
+        })
+        .collect::<Vec<_>>();
+    let mut params = ListProviderModelsParams {
+        filter: Some("same".into()),
+        limit: Some(1),
+        ..Default::default()
+    };
+    let first = paginate_provider_models(
+        "custom",
+        rows.clone(),
+        &params,
+        Some("scope-a-revision-1".into()),
+    )
+    .unwrap();
+    assert_eq!(first.total, 4);
+    assert_eq!(first.models[0].id, "same");
+    params.cursor = first.next_cursor;
+    assert!(
+        paginate_provider_models(
+            "custom",
+            rows.clone(),
+            &params,
+            Some("scope-a-revision-2".into())
+        )
+        .is_err()
+    );
+    assert!(
+        paginate_provider_models("custom", rows, &params, Some("scope-b-revision-1".into()))
+            .is_err()
+    );
 }

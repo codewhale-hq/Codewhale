@@ -148,12 +148,13 @@ fn repair_tool_call_pairs_inner(
     }
 
     let original = std::mem::take(messages);
-    let mut rebuilt = Vec::with_capacity(
+    let mut rebuilt: Vec<Message> = Vec::with_capacity(
         original
             .len()
             .saturating_add(receipt.repaired_call_ids.len()),
     );
     let mut seen_result_ordinal = 0usize;
+    let mut dropped_since_push = false;
 
     for (message_index, message) in original.into_iter().enumerate() {
         let missing_after_message = missing_by_message
@@ -169,8 +170,37 @@ fn repair_tool_call_pairs_inner(
                 true
             }
         });
-        if !filtered.content.is_empty() {
+        if filtered.content.is_empty() {
+            dropped_since_push = true;
+        } else if dropped_since_push
+            && matches!(filtered.role, Role::Assistant | Role::InterruptedAssistant)
+            && let Some(previous) = rebuilt.last_mut()
+            && matches!(previous.role, Role::Assistant | Role::InterruptedAssistant)
+        {
+            if previous.role == Role::Assistant
+                && filtered.role == Role::Assistant
+                && previous
+                    .content
+                    .iter()
+                    .chain(&filtered.content)
+                    .all(|block| matches!(block, ContentBlock::Text { .. }))
+            {
+                previous.content.extend(filtered.content);
+            } else {
+                rebuilt.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "[tool_history_repair] Removed an empty message at this position."
+                            .into(),
+                        cache_control: None,
+                    }],
+                });
+                rebuilt.push(filtered);
+            }
+            dropped_since_push = false;
+        } else {
             rebuilt.push(filtered);
+            dropped_since_push = false;
         }
 
         if !missing_after_message.is_empty() {
@@ -194,13 +224,22 @@ fn repair_tool_call_pairs_inner(
     }
 
     if append_visible_receipt {
-        rebuilt.push(Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: receipt.visible_message(),
-                cache_control: None,
-            }],
-        });
+        let receipt_block = ContentBlock::Text {
+            text: receipt.visible_message(),
+            cache_control: None,
+        };
+        match rebuilt.last_mut() {
+            Some(last)
+                if last.role == "assistant"
+                    || last.role == codewhale_models::INTERRUPTED_ASSISTANT_ROLE =>
+            {
+                last.content.push(receipt_block)
+            }
+            _ => rebuilt.push(Message {
+                role: Role::Assistant,
+                content: vec![receipt_block],
+            }),
+        }
     }
     *messages = rebuilt;
     receipt
@@ -388,6 +427,57 @@ mod tests {
             } if tool_use_id == "call-1" && content.contains("crashed_and_repaired")
         ));
         assert_eq!(messages.last().expect("receipt").role, "assistant");
+        assert_eq!(messages.len(), 3);
+
+        let mut dropped_between_assistants = vec![
+            text("user", "question"),
+            text("assistant", "first answer"),
+            tool_result("orphan", "bad"),
+            text("assistant", "second answer"),
+        ];
+        let receipt = repair_tool_call_pairs(&mut dropped_between_assistants);
+        assert_eq!(receipt.orphan_result_ids, vec!["orphan"]);
+        let roles: Vec<_> = dropped_between_assistants
+            .iter()
+            .map(|message| message.role.to_string())
+            .collect();
+        assert_eq!(roles, ["user", "assistant"]);
+        assert_eq!(dropped_between_assistants[1].content.len(), 3);
+    }
+
+    #[test]
+    fn orphan_removal_preserves_thinking_and_interrupted_turn_boundaries() {
+        for (first_role, last_role, opaque) in [
+            ("assistant", "assistant", true),
+            ("assistant_interrupted", "assistant", false),
+            ("assistant", "assistant_interrupted", false),
+        ] {
+            let first = text(first_role, "first answer");
+            let mut last = text(last_role, "second answer");
+            if opaque {
+                last.content.insert(0, serde_json::from_value(json!({
+                    "type": "thinking", "thinking": "second turn", "signature": "fixture-signature"
+                })).unwrap());
+                last.content.insert(
+                    1,
+                    serde_json::from_value(json!({
+                        "type": "thinking", "thinking": "", "redacted_data": "fixture-ciphertext"
+                    }))
+                    .unwrap(),
+                );
+            }
+            let mut history = vec![first.clone(), tool_result("orphan", "bad"), last.clone()];
+            let receipt = repair_tool_call_pairs_for_provider(&mut history);
+            assert_eq!(receipt.orphan_result_ids, ["orphan"]);
+            assert_eq!(history.len(), 3);
+            assert_eq!(history[0], first);
+            assert_eq!(history[1].role, Role::User);
+            assert!(
+                matches!(&history[1].content[..], [ContentBlock::Text { text, .. }] if text.starts_with("[tool_history_repair]"))
+            );
+            assert_eq!(history[2], last);
+            assert!(repair_tool_call_pairs_for_provider(&mut history).is_empty());
+        }
     }
 
     #[test]

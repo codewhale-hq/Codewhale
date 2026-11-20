@@ -14,6 +14,108 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
 
 #[test]
+fn managed_program_preserves_resolved_path_and_argument_boundaries() {
+    const FIXTURE_ENV: &str = "CODEWHALE_TEST_ARGV_FIXTURE";
+    if std::env::var(FIXTURE_ENV).as_deref() == Ok("1") {
+        let mut output = std::io::stdout().lock();
+        writeln!(
+            output,
+            "\nargv fixture: {:?}",
+            std::env::args().collect::<Vec<_>>()
+        )
+        .unwrap();
+        return;
+    }
+    let workspace = tempdir().expect("tempdir");
+    let program = std::env::current_exe().expect("test executable");
+    let program = program.to_str().expect("UTF-8 test executable");
+    let mut manager = ShellManager::new(workspace.path().to_path_buf());
+    for fixture in [
+        r"C:\work\R&D\Cargo.toml",
+        r"C:\work\sample project\Cargo.toml",
+        r"C:\work\O'Brien\Cargo.toml",
+        r"C:\work\文档\Cargo.toml",
+        r"C:\work\sample project\",
+        "sample \"quoted\" name",
+        "",
+    ] {
+        let args = vec![
+            "--nocapture".to_string(),
+            "--exact".to_string(),
+            "tools::shell::tests::managed_program_preserves_resolved_path_and_argument_boundaries"
+                .to_string(),
+            "--skip".to_string(),
+            fixture.to_string(),
+        ];
+        let expected = Command::new(program)
+            .env(FIXTURE_ENV, "1")
+            .args(&args)
+            .current_dir(workspace.path())
+            .output()
+            .expect("direct fixture");
+        assert!(expected.status.success(), "{fixture:?}: {expected:?}");
+        let started = manager
+            .execute_with_options_env_for_owner_and_work(
+                "argv fixture (display only)",
+                Some((program, &args)),
+                None,
+                30_000,
+                true,
+                None,
+                false,
+                Some(ExecutionSandboxPolicy::DangerFullAccess),
+                HashMap::from([(FIXTURE_ENV.to_string(), "1".to_string())]),
+                None,
+                "argv-fixture-session".to_string(),
+                None,
+                None,
+                None,
+                None,
+                false,
+                (1_000, 600_000),
+            )
+            .expect("managed fixture");
+        let task_id = started.task_id.expect("background job");
+        let _ = manager.write_stdin(&task_id, "", true);
+        let actual = manager
+            .get_output(&task_id, true, BACKGROUND_COMPLETION_WAIT_MS)
+            .expect("fixture completion");
+        assert_eq!(
+            actual.status,
+            ShellStatus::Completed,
+            "{fixture:?}: {actual:?}"
+        );
+        assert_eq!(actual.exit_code, Some(0), "{fixture:?}: {actual:?}");
+        let first = manager
+            .read_output_chunk(&task_id, ShellOutputStream::Stdout, 0, 7, 0)
+            .unwrap();
+        let remaining = manager
+            .read_output_chunk(
+                &task_id,
+                ShellOutputStream::Stdout,
+                first.next_offset,
+                65_536,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            [first.bytes, remaining.bytes].concat(),
+            actual.stdout.as_bytes()
+        );
+        let expected_stdout = String::from_utf8(expected.stdout).expect("fixture output");
+        let expected_argv = expected_stdout
+            .lines()
+            .find(|line| line.starts_with("argv fixture:"));
+        let actual_argv = actual
+            .stdout
+            .lines()
+            .find(|line| line.starts_with("argv fixture:"));
+        assert_eq!(actual_argv, expected_argv, "{fixture:?}: {}", actual.stdout);
+        assert_eq!(actual.stderr.as_bytes(), expected.stderr, "{fixture:?}");
+    }
+}
+
+#[test]
 fn shell_catalog_guidance_matches_execution() {
     let tool = LowercaseBashTool;
     let schema = tool.input_schema();
@@ -221,8 +323,8 @@ fn inherited_interactive_terminal_fails_closed_before_spawn() {
     assert!(message.contains("background: true, tty: true"), "{message}");
     assert!(message.contains("action: \"interact\""), "{message}");
     assert!(message.contains("task_id"), "{message}");
-    assert!(message.contains("terminal/run"), "{message}");
-    assert!(message.contains("terminal/send"), "{message}");
+    assert!(message.contains("terminal_run"), "{message}");
+    assert!(message.contains("terminal_send"), "{message}");
 }
 
 #[cfg(all(unix, target_env = "ohos"))]
@@ -238,7 +340,7 @@ fn inherited_interactive_terminal_offers_only_ohos_recovery_paths() {
     assert!(message.contains("new terminal"), "{message}");
     assert!(message.contains("omit `interactive: true`"), "{message}");
     assert!(!message.contains("background: true"), "{message}");
-    assert!(!message.contains("terminal/run"), "{message}");
+    assert!(!message.contains("terminal_run"), "{message}");
 }
 
 #[test]
@@ -268,6 +370,7 @@ fn contract_bash_nonzero_is_an_error_with_status_after_output() {
         None,
         None,
         false,
+        None,
         None,
     )
     .expect_err("nonzero must be a failed tool call");
@@ -2353,6 +2456,7 @@ fn completion_evidence_preserves_arbitrary_stream_bytes() {
         stderr: stderr.clone(),
         stdout_omitted: 0,
         stderr_omitted: 0,
+        persisted_artifact: None,
     };
 
     let payload: serde_json::Value =
@@ -2786,9 +2890,10 @@ fn contract_bash_denial_surfaces_the_escalation_shape() {
     let mut result = failed_network_shell_result("", "Operation not permitted");
     result.sandbox_denied = true;
 
-    let error =
-        finish_contract_bash_result(result, None, &ctx, None, false, None, None, false, None)
-            .expect_err("sandbox denial is a failed call");
+    let error = finish_contract_bash_result(
+        result, None, &ctx, None, false, None, None, false, None, None,
+    )
+    .expect_err("sandbox denial is a failed call");
 
     assert!(
         error
@@ -2960,6 +3065,7 @@ fn readonly_denied_hint_classifies_refusals_and_ignores_success_or_bwrap() {
         None,
         Some(READONLY_WRITE_DENIED_HINT),
         false,
+        None,
         None,
     )
     .expect_err("denied write fails");
@@ -4619,6 +4725,7 @@ fn bounded_job_delta_returns_only_new_output() {
         .execute_with_options_env_for_owner_and_work(
             "printf 'first-chunk\\n'; while [ ! -e go ]; do sleep 0.05; done; printf 'second-chunk\\n'",
             None,
+            None,
             60_000,
             true,
             None,
@@ -5776,6 +5883,7 @@ async fn busy_work_graph_still_runs_the_command() {
             .execute_with_options_env_for_owner_and_work(
                 &format!("echo ran > {marker}"),
                 None,
+                None,
                 10_000,
                 background,
                 None,
@@ -6513,4 +6621,279 @@ async fn lowercase_bash_persists_description_respects_cwd_and_supports_backgroun
         legacy.metadata.as_ref().unwrap()["description"],
         "legacy run label"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn foreground_bash_large_output_persists_session_artifact_readable_via_retrieve_tool_result()
+{
+    use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
+
+    let _artifact_lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    struct ArtifactRootReset(Option<PathBuf>);
+    impl Drop for ArtifactRootReset {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+        }
+    }
+
+    let workspace = tempdir().expect("workspace");
+    let _artifact_root = ArtifactRootReset(
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            workspace.path().join("sessions"),
+        )),
+    );
+
+    let base_ctx = ToolContext::new(workspace.path()).with_state_namespace("session-fg-art");
+    assert!(!base_ctx.trust_mode);
+    assert!(!base_ctx.auto_approve);
+
+    let ctx_lowercase = base_ctx.clone().with_origin_tool_call_id("call-fg-large-1");
+    let preview = codewhale_runtime::artifacts::write_session_artifact_immutable(
+        "session-fg-art",
+        "art_call-fg-large-1",
+        b"still running",
+    )
+    .expect("store provisional output");
+    let lowercase_cmd = "printf 'START_MARKER_0\\n'; i=1; while [ $i -le 1100 ]; do printf 'pad-a-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' \"$i\"; i=$((i+1)); done; printf 'MID_MARKER_PAST_30KB\\n'; while [ $i -le 2200 ]; do printf 'pad-b-%04d-yyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n' \"$i\"; i=$((i+1)); done; printf 'END_MARKER_TAIL\\n'";
+    let lowercase_result = LowercaseBashTool
+        .execute(json!({"command": lowercase_cmd}), &ctx_lowercase)
+        .await
+        .expect("large foreground bash");
+    assert!(lowercase_result.success, "{}", lowercase_result.content);
+    assert!(lowercase_result.content.contains("END_MARKER_TAIL"));
+    assert!(!lowercase_result.content.contains("START_MARKER_0"));
+    assert!(!lowercase_result.content.contains("codewhale-bash-"));
+    assert!(!lowercase_result.content.contains("/var/folders/"));
+    assert!(lowercase_result.content.contains("retrieve_tool_result"));
+    assert!(lowercase_result.content.len() < 60_000);
+    let lc_meta = lowercase_result.metadata.expect("lowercase metadata");
+    let final_id = lc_meta["artifact_id"].as_str().expect("completed artifact");
+    assert_ne!(final_id, "art_call-fg-large-1");
+    assert!(lowercase_result.content.contains(final_id));
+    assert_eq!(std::fs::read(preview.0).unwrap(), b"still running");
+    assert_eq!(lc_meta["artifact_session_id"], "session-fg-art");
+    assert_eq!(lc_meta["truncated"], true);
+    assert!(
+        lc_meta["original_byte_count"]
+            .as_u64()
+            .expect("original byte count")
+            > 60_000
+    );
+
+    for marker in ["START_MARKER_0", "MID_MARKER_PAST_30KB", "END_MARKER_TAIL"] {
+        let retrieved = RetrieveToolResultTool
+            .execute(
+                json!({
+                    "ref": final_id,
+                    "mode": "query",
+                    "query": marker,
+                }),
+                &base_ctx,
+            )
+            .await
+            .expect("retrieve foreground bash artifact");
+        assert!(
+            retrieved.content.contains(marker),
+            "expected {marker} in retrieved output: {}",
+            retrieved.content
+        );
+    }
+
+    let ctx_bash = base_ctx.clone().with_origin_tool_call_id("call-fg-large-2");
+    let bash_cmd = "printf 'BASH_START_MARKER\\n'; i=1; while [ $i -le 700 ]; do printf 'row-%04d-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n' \"$i\"; i=$((i+1)); done; printf 'BASH_MID_PAST_30KB\\n'; while [ $i -le 1400 ]; do printf 'row-%04d-wwwwwwwwwwwwwwwwwwwwwwwwwwwwww\\n' \"$i\"; i=$((i+1)); done; printf 'BASH_END_MARKER\\n'";
+    let bash_result = BashTool::new("Bash")
+        .execute(json!({"command": bash_cmd}), &ctx_bash)
+        .await
+        .expect("large foreground BashTool");
+    assert!(bash_result.success, "{}", bash_result.content);
+    assert!(bash_result.content.contains("BASH_START_MARKER"));
+    assert!(bash_result.content.contains("BASH_END_MARKER"));
+    assert!(!bash_result.content.contains("BASH_MID_PAST_30KB"));
+    assert!(bash_result.content.contains("art_call-fg-large-2"));
+    assert!(bash_result.content.contains("retrieve_tool_result"));
+    let bash_meta = bash_result.metadata.expect("bash metadata");
+    assert_eq!(bash_meta["artifact_id"], "art_call-fg-large-2");
+    assert!(
+        bash_meta["original_byte_count"]
+            .as_u64()
+            .expect("original byte count")
+            > 50_000
+    );
+
+    let mid = RetrieveToolResultTool
+        .execute(
+            json!({
+                "ref": "art_call-fg-large-2",
+                "mode": "query",
+                "query": "BASH_MID_PAST_30KB",
+            }),
+            &base_ctx,
+        )
+        .await
+        .expect("retrieve BashTool omitted middle");
+    assert!(
+        mid.content.contains("BASH_MID_PAST_30KB"),
+        "{}",
+        mid.content
+    );
+
+    let mut payload = b"RAW_START\n".to_vec();
+    payload.resize(21 * 1024 * 1024, b'x');
+    payload.extend_from_slice(b"\nRAW_END\n");
+    std::fs::write(workspace.path().join("large.bin"), &payload).unwrap();
+    let raw = BashTool::new("Bash")
+        .execute(
+            json!({"command": "cat large.bin; printf 'stderr-end' >&2"}),
+            &base_ctx.clone().with_origin_tool_call_id("raw-over-cap"),
+        )
+        .await
+        .unwrap();
+    assert!(raw.success, "{}", raw.content);
+    let metadata = raw.metadata.unwrap();
+    assert_eq!(metadata["artifact_complete"], true);
+    payload.extend_from_slice(b"\n\nSTDERR:\nstderr-end");
+    let bytes = std::fs::read(metadata["artifact_path"].as_str().unwrap()).unwrap();
+    assert_eq!(bytes.len(), payload.len());
+    assert!(bytes == payload);
+    assert_eq!(metadata["original_byte_count"], payload.len() as u64);
+
+    let ctx_fail = base_ctx.clone().with_origin_tool_call_id("call-fg-large-3");
+    let fail_err = LowercaseBashTool
+        .execute(
+            json!({"command": format!("{lowercase_cmd}; exit 2")}),
+            &ctx_fail,
+        )
+        .await
+        .expect_err("nonzero foreground bash returns error");
+    let fail_text = fail_err.to_string();
+    assert!(fail_text.contains("retrieve_tool_result"), "{fail_text}");
+    assert!(!fail_text.contains("codewhale-bash-"), "{fail_text}");
+    let failure_id = fail_err.metadata().expect("fail metadata")["artifact_id"]
+        .as_str()
+        .expect("failed command artifact");
+    assert!(fail_text.contains(failure_id), "{fail_text}");
+    let fail_retrieved = RetrieveToolResultTool
+        .execute(
+            json!({
+                "ref": failure_id,
+                "mode": "query",
+                "query": "MID_MARKER_PAST_30KB",
+            }),
+            &base_ctx,
+        )
+        .await
+        .expect("retrieve failing bash artifact");
+    assert!(fail_retrieved.content.contains("MID_MARKER_PAST_30KB"));
+}
+
+#[test]
+fn bounded_spill_finalization_retries_before_acknowledging_wait_or_completion() {
+    let _lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    struct ResetRoot(Option<std::path::PathBuf>);
+    impl Drop for ResetRoot {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+        }
+    }
+    let fixture = tempdir().unwrap();
+    let sessions = fixture.path().join("sessions");
+    let _root = ResetRoot(
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(sessions.clone())),
+    );
+    for wait in [true, false] {
+        let session = if wait {
+            "wait-session"
+        } else {
+            "drain-session"
+        };
+        let mut manager = ShellManager::new(fixture.path().to_path_buf());
+        manager.seed_finished_record_for_test("fixture-job", Duration::ZERO);
+        let mut output = BoundedOutputAccumulator::new_in(
+            Some(fixture.path()),
+            Some(SessionArtifactSpec {
+                session_id: session.into(),
+                artifact_id: "art_fixture".into(),
+            }),
+        );
+        let chunk = [0xff; 4096];
+        for _ in 0..512 {
+            output.append(&chunk).unwrap();
+        }
+        let shell = manager.processes.get_mut("fixture-job").unwrap();
+        shell.owner_session_id = session.into();
+        shell.status = ShellStatus::Running;
+        shell.bounded_output = Some(Arc::new(Mutex::new(output)));
+        let running = shell.take_delta();
+        assert!(running.2 > 16 * 1024);
+        assert!(running.6.is_none());
+        shell
+            .bounded_output
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .finish()
+            .unwrap();
+        shell.status = ShellStatus::Completed;
+        std::fs::create_dir_all(sessions.join(session)).unwrap();
+        let blocked = sessions.join(session).join("artifacts");
+        std::fs::write(&blocked, b"fixture obstruction").unwrap();
+        let cursor = shell.stdout_cursor;
+        if wait {
+            assert!(
+                manager
+                    .get_raw_output_delta("fixture-job", false, 0)
+                    .is_err()
+            );
+        } else {
+            assert!(manager.drain_finished_jobs_with_evidence().is_empty());
+        }
+        let shell = &manager.processes["fixture-job"];
+        assert!(!shell.completion_reported);
+        assert_eq!(shell.stdout_cursor, cursor);
+        assert_eq!(
+            shell
+                .bounded_output
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .retained_raw_bytes()
+                .unwrap()
+                .0,
+            vec![0xff; 16 * 1024]
+        );
+        std::fs::remove_file(&blocked).unwrap();
+        let artifact = if wait {
+            let result = manager
+                .get_raw_output_delta("fixture-job", false, 0)
+                .unwrap();
+            assert!(result.stdout.is_empty());
+            assert_eq!(result.stdout_delta_len, 0);
+            result.persisted_artifact.unwrap()
+        } else {
+            let completions = manager.drain_finished_jobs_with_evidence();
+            assert_eq!(completions.len(), 1);
+            let evidence = &completions[0];
+            assert!(evidence.stdout.len() <= 16 * 1024);
+            assert!(evidence.artifact_bytes().len() < 32 * 1024);
+            let payload: Value = serde_json::from_slice(&evidence.artifact_bytes()).unwrap();
+            assert_eq!(payload["stdout"]["artifact_id"], "art_fixture");
+            evidence.persisted_artifact.clone().unwrap()
+        };
+        assert!(manager.processes["fixture-job"].completion_reported);
+        let raw = vec![0xff; 2 * 1024 * 1024];
+        assert_eq!(std::fs::read(&artifact.absolute_path).unwrap(), raw);
+        assert_eq!(artifact.byte_size, raw.len() as u64);
+        assert_eq!(
+            artifact.digest,
+            codewhale_runtime::hashing::sha256_hex(&raw)
+        );
+    }
 }

@@ -106,6 +106,13 @@ pub struct ProviderRouteIdentity {
     credential_generation: Option<codewhale_config::credentials::CredentialGeneration>,
 }
 
+impl ProviderRouteIdentity {
+    pub(crate) fn has_keyless_credential(&self, base_url: &str) -> bool {
+        self.credential_generation.as_ref()
+            == Some(&codewhale_config::credentials::CredentialGeneration::derive(base_url, ""))
+    }
+}
+
 pub fn route_identity_for_model(
     config: &codewhale_runtime::config::Config,
     identity: &ProviderIdentity,
@@ -119,6 +126,30 @@ pub fn route_identity_for_model(
         auth_class: auth_class_for_provider(config, identity),
         credential_generation: config.readonly_health_credential_generation(identity),
     }
+}
+
+pub fn inventory_observation_for_route(
+    config: &Config,
+    identity: &ProviderIdentity,
+) -> ProviderRouteIdentity {
+    let mut observation = route_identity_for_model(config, identity, "");
+    if observation.credential_generation.is_none() {
+        let mut scoped = config.clone();
+        scoped.plugin_oauth_read_only = true;
+        if scoped.scope_to_provider_identity(identity).is_ok() {
+            observation.credential_generation =
+                scoped
+                    .active_route_api_key_read_only()
+                    .ok()
+                    .map(|credential| {
+                        codewhale_config::credentials::CredentialGeneration::derive(
+                            &scoped.base_url_for_route(identity),
+                            &credential,
+                        )
+                    });
+        }
+    }
+    observation
 }
 
 pub fn auth_class_for_provider(

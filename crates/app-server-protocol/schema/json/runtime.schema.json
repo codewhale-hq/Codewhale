@@ -277,6 +277,10 @@
           "type": "boolean",
           "default": false
         },
+        "exact_route_thread_create": {
+          "type": "boolean",
+          "default": false
+        },
         "thread_idle_precondition": {
           "type": "boolean",
           "default": false
@@ -479,6 +483,7 @@
         "session_provider_keys",
         "threads",
         "thread_create_idempotency",
+        "exact_route_thread_create",
         "thread_idle_precondition",
         "thread_patch_undo_turn_id",
         "thread_scoped_reads",

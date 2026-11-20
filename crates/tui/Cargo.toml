@@ -201,7 +201,6 @@ codewhale-models = { path = "../models", version = "0.10.3", features = [
 cucumber = "0.23.0"
 wiremock = "0.6"
 tiny_http = "0.12"
-pretty_assertions = "1.4"
 rio-vt = "0.5.1"
 codewhale-app-server = { path = "../app-server", version = "0.10.3", features = ["test-support"] }
 

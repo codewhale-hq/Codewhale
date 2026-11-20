@@ -297,7 +297,7 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 - `read-only` and `workspace-write` are enforced by Seatbelt or bubblewrap only
   when that wrapper is selected and available.
 - The configured value can only narrow the sandbox the permission mode
-  picks: Full Access (`yolo`) runs without the wrapper, Ask and Auto-Review
+  picks: Full Access (`yolo`) runs without the wrapper, Ask and [Auto-Review](AUTO_REVIEW.md)
   use `workspace-write`, and Plan uses `read-only`. A configured
   `danger-full-access` or `external-sandbox` therefore takes effect only in
   Full Access; it never loosens Ask or Auto-Review.

@@ -141,23 +141,7 @@ fn state_unreachable_reason(error: &anyhow::Error) -> Option<&'static str> {
 }
 
 fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event {
-    // One clock read shared by every row, so elapsed values in a single
-    // listing are consistent with each other (#5479).
-    let now_ms = crate::tools::subagent::epoch_millis_now();
-    Event::AgentList {
-        owner_session_id: active_session_id.to_string(),
-        agents: manager.list_for_session(active_session_id),
-        coordination: manager.coordination_detail_projection_for_session(
-            active_session_id,
-            None,
-            24,
-        ),
-        queued_follow_ups: manager.queued_follow_up_counts_for_session(active_session_id),
-        roster: crate::agent_roster::build_agent_roster(
-            &manager.list_worker_records_for_session(active_session_id),
-            now_ms,
-        ),
-    }
+    manager.agent_list_event(active_session_id)
 }
 
 /// The `<turn_meta>` line naming the permission posture a turn ran under
@@ -6646,14 +6630,15 @@ impl Engine {
             runtime.reasoning_effort = route.reasoning_effort.clone();
             runtime.reasoning_effort_auto = route.reasoning_effort_auto;
             runtime.mcp_pool = mcp_pool.clone();
-            child
-                .authority
-                .tool_registry_builder(
-                    runtime,
-                    self.config.todos.clone(),
-                    self.config.plan_state.clone(),
-                )
-                .with_dynamic_tools(dynamic_tools)
+            let mut builder = child.authority.tool_registry_builder(
+                runtime,
+                self.config.todos.clone(),
+                self.config.plan_state.clone(),
+            );
+            if let Some(pool) = mcp_pool.as_ref() {
+                builder = builder.with_mcp_tools(Arc::clone(pool)).await;
+            }
+            builder.with_dynamic_tools(dynamic_tools)
         } else {
             self.build_turn_tool_registry_builder_for_route(
                 input_policy.mode,
@@ -11017,9 +11002,8 @@ impl Engine {
             self.emit_session_updated().await;
         }
         for body in notices {
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
+            self.add_session_message(crate::runtime_handoff::instruction_notice_runtime_message(
                 body,
-                crate::core::ops::UserInputProvenance::Runtime,
             ))
             .await;
         }
@@ -12502,10 +12486,13 @@ pub use context::compact_tool_result_for_route_with_window;
 /// Public so external hosts/wrappers can reuse the engine's input-budget math
 /// (see `context_input_budget_for_route`'s doc) instead of re-deriving it.
 pub use context::context_input_budget_for_route;
+pub(crate) use context::filter_messages_mcp_server_instructions;
 #[cfg(test)]
 use context::route_context_budget_for_provider;
 #[cfg(test)]
 use context::route_context_budget_for_route;
+#[cfg(test)]
+pub use context::tool_result_context_view;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_overflow_exhausted_message,
     extract_compaction_summary_prompt, is_context_length_error_message,
@@ -12538,6 +12525,14 @@ pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
+pub(super) const MAX_PARALLEL_SHELL_EXEC_CAP: usize = 32;
+
+pub(super) fn resolve_max_parallel_shell_exec(configured: Option<usize>) -> usize {
+    configured
+        .filter(|&value| value > 0)
+        .unwrap_or(MAX_PARALLEL_SHELL_EXEC)
+        .min(MAX_PARALLEL_SHELL_EXEC_CAP)
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn default_active_native_tool_names() -> &'static [&'static str] {

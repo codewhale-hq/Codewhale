@@ -808,6 +808,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             source_session.metadata.model_provider.as_str(),
             source_session.metadata.model_provider_id.as_deref(),
         );
+        forked.metadata.exec_route_binding = source_session.metadata.exec_route_binding.clone();
         forked.metadata.copy_cost_from(&source_session.metadata);
         forked.context_references = source_session.context_references.clone();
         forked.artifacts = source_session.artifacts.clone();

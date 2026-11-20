@@ -1,18 +1,16 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 14] = [
+    const EXPECTED_NATIVE: [&str; 12] = [
         "read",
         "write",
         "edit",
+        "list_dir",
         "file_search",
         "grep_files",
         "bash",
         "agent",
         "todo_write",
         "create_goal",
-        "get_goal",
-        "update_goal",
-        "task_shell_wait",
         "present",
         "load_skill",
     ];
@@ -561,12 +559,10 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
         "agent",
         "bash",
         "create_goal",
-        "get_goal",
-        "update_goal",
-        "task_shell_wait",
         "edit",
         "file_search",
         "grep_files",
+        "list_dir",
         "read",
         "todo_write",
         "tool_search",
@@ -595,14 +591,10 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
             assert!(!full.contains(hidden), "{mode} must hide {hidden}");
         }
         // #6562: `[features] code_mode` defaults on, so Act/Operate promote
-        // `execute_tools` into the request head. Plan hides it entirely and
-        // registers only the foreground shell surface, so Plan omits
-        // `task_shell_wait`.
+        // `execute_tools` into the request head while Plan hides it.
         let mut expected_mode_active = expected_active.clone();
         if mode != "plan" {
             expected_mode_active.insert("execute_tools");
-        } else {
-            expected_mode_active.remove("task_shell_wait");
         }
         assert_eq!(
             metric_tool_names(&payload, mode, "active"),
@@ -1207,7 +1199,7 @@ fn deferred_first_use_executes_well_formed_calls_and_hydrates_malformed_ones() {
         )
         .unwrap_or_else(|| panic!("{malformed} must return the schema instead of executing"));
         assert!(hydrated.contains("apply_patch"));
-        assert!(result.success);
+        assert!(!result.success);
         assert!(result.content.contains("Tool `apply_patch` was deferred"));
         assert!(result.content.contains("patch: string"));
         assert!(result.content.contains("The tool was not executed"));

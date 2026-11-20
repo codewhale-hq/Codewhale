@@ -672,6 +672,9 @@ fn shell_denial_filters_search_catalog_without_expanding_allow_grants() {
         "exec_shell",
         "task_shell_start",
         "task_gate_run",
+        "terminal_run",
+        "terminal_send",
+        "terminal_reset",
         "terminal/run",
         "terminal/send",
         "terminal/reset",
@@ -720,6 +723,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
             tasks,
             catalog_tool("Run"),
             catalog_tool("task_shell_wait"),
+            catalog_tool("terminal_cancel"),
             catalog_tool("terminal/cancel"),
         ],
         None,
@@ -737,6 +741,7 @@ fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
     assert!(!surface.denies_call("tasks", &json!({"action":"list"})));
     assert!(surface.denies_call("tasks", &json!({"action":"gate_run"})));
     assert!(!surface.denies_call("task_shell_wait", &json!({})));
+    assert!(!surface.denies_call("terminal_cancel", &json!({})));
     assert!(!surface.denies_call("terminal/cancel", &json!({})));
     for input in [
         json!({"action":"tests"}),
@@ -772,6 +777,8 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
             "tasks/pr_attempt_preflight",
             "git apply --check of a stored patch",
         ),
+        ("terminal_cancel", "stops an existing terminal session"),
+        ("terminal_wait", "reads an existing terminal session"),
         ("terminal/cancel", "stops an existing terminal session"),
         ("terminal/wait", "reads an existing terminal session"),
         (
@@ -1412,20 +1419,26 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                 })
                 .await
                 .expect("steer channel open");
-            assert_eq!(accepted.await.unwrap(), handle::SteerOutcome::Accepted);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), accepted)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("{phase}: steering must preempt an indefinitely silent request")
+                })
+                .unwrap();
+            assert_eq!(outcome, handle::SteerOutcome::Accepted);
             assert!(
                 dropped.load(Ordering::SeqCst),
                 "{phase}: obsolete request must close before steer acceptance"
             );
         };
-        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
             tokio::join!(
                 engine.run_turn(&mut turn, surface, Some(Arc::clone(&children)), None),
                 steer
             )
         })
         .await
-        .expect("steering must preempt an indefinitely silent request");
+        .unwrap_or_else(|_| panic!("{phase}: steered turn must finish"));
         assert_eq!(status, TurnOutcomeStatus::Completed, "{phase}: {error:?}");
         assert_eq!(client.calls.load(Ordering::SeqCst), 3, "{phase}");
         let requests = client.requests.lock().unwrap().clone();

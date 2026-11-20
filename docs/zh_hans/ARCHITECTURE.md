@@ -107,6 +107,8 @@ Codewhale Engine 是现有 Rust 执行运行时。[Runtime API](RUNTIME_API.md) 
 
 ### 工作区 crate
 
+由清单文件生成的完整列表见 [Workspace crates](../reference/crates.md)。下面的说明解释其中主要的几个。
+
 - **`crates/cli`** - 唯一的 `codewhale` 可执行程序及命令接口。它自身拥有
   `auth`、`metrics`、`update` 等命令，并通过 `codewhale_tui::run(RuntimeOptions, args)`
   在同一进程内启动终端和无头模式（`run`、`exec`、`doctor`、`sessions`……）。

@@ -1126,7 +1126,7 @@ fn reviewed_redirect_matches_origin(endpoint: &reqwest::Url, approved_origin: &s
 // === MCP Tool Definition ===
 
 /// Tool discovered from an MCP server
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct McpTool {
     pub name: String,
     #[serde(default)]
@@ -3447,13 +3447,83 @@ impl Drop for McpConnection {
 
 // === McpPool - Connection Pool Management ===
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigRefresh {
+    IfChanged,
+    VerifyContents,
+    Reconnect,
+}
+
 #[derive(Debug, Clone)]
 struct McpToolRoute {
     server_name: String,
-    tool_name: String,
+    tool: McpTool,
     catalog_generation: u64,
     catalog_revision: u64,
-    plugin_authority: Option<codewhale_config::PluginAuthority>,
+    server_identity: McpServerIdentity,
+    runtime_added: bool,
+}
+
+impl McpToolRoute {
+    fn permits(&self, conn: &McpConnection, timeouts: McpTimeouts) -> bool {
+        conn.name == self.server_name
+            && conn.catalog_authorized()
+            && conn.config().runtime_added == self.runtime_added
+            && conn.catalog_generation == self.catalog_generation
+            && conn.config().is_tool_enabled(&self.tool.name)
+            && conn.tools().contains(&self.tool)
+            && mcp_configured_server_identity(timeouts, &conn.name, conn.config())
+                == self.server_identity
+    }
+}
+
+#[derive(Clone)]
+pub struct DelegatedMcpRead {
+    route: McpToolRoute,
+    lifetime: tokio_util::sync::CancellationToken,
+    instance: Arc<std::sync::Mutex<Option<String>>>,
+    grant: codewhale_mcp::config::DelegatedOperation,
+}
+
+impl DelegatedMcpRead {
+    pub(crate) fn current(&self) -> bool {
+        !self.lifetime.is_cancelled()
+    }
+
+    pub(crate) fn permits_arguments(&self, input: &serde_json::Value) -> bool {
+        self.current() && self.grant.allowed_arguments.contains(input)
+    }
+}
+
+fn static_mcp_binding(server: &McpServerConfig) -> Option<String> {
+    if server.runtime_added
+        || server.reviewed_plugin.is_some()
+        || server.command.is_some()
+        || !server.env_headers.is_empty()
+        || server.bearer_token_env_var.is_some()
+        || server
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("authorization"))
+            .count()
+            != 1
+        || !server.headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && !value.trim().is_empty()
+        })
+        || server.headers.values().any(|value| value.contains("${"))
+    {
+        return None;
+    }
+    let endpoint = server.url.as_deref()?;
+    if endpoint.contains("${") {
+        return None;
+    }
+    let headers = server
+        .headers
+        .iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let bytes = serde_json::to_vec(&(endpoint, headers)).ok()?;
+    Some(codewhale_runtime::hashing::sha256_hex(bytes))
 }
 
 /// Model-facing name suffix of the synthetic self-serve OAuth login tool
@@ -3611,6 +3681,7 @@ fn mcp_configured_server_identity(
 ) -> McpServerIdentity {
     (
         hash_mcp_config(&McpConfig {
+            delegated_operations: Default::default(),
             timeouts,
             servers: HashMap::from([(name.to_string(), server.clone())]),
         }),
@@ -3624,6 +3695,7 @@ fn runtime_servers_hash(servers: &HashMap<String, McpServerConfig>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hash_mcp_config(&McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: servers.clone(),
     })
@@ -4063,7 +4135,8 @@ impl McpPool {
     /// call (and only re-reads the file when the mtime moved). On networked
     /// or remote filesystems where mtime granularity is poor, the hash
     /// compare keeps us from churning connections on every check.
-    fn reload_from_config_sources(&mut self, force: bool) -> Result<bool> {
+    fn reload_from_config_sources(&mut self, mode: ConfigRefresh) -> Result<bool> {
+        let force = mode == ConfigRefresh::Reconnect;
         let runtime_changed = self.sync_runtime_servers();
         if self.config_sources.is_empty() {
             if force {
@@ -4079,7 +4152,8 @@ impl McpPool {
         let native_epoch = crate::extension_host::native_mcp::epoch();
         let native_changed =
             self.plugin_registry.is_some() && native_epoch != self.native_mcp_epoch;
-        if !force && !native_changed && current_mtimes == self.last_mtimes {
+        if mode == ConfigRefresh::IfChanged && !native_changed && current_mtimes == self.last_mtimes
+        {
             return Ok(runtime_changed);
         }
         // An mtime moved, or the user explicitly requested a reload: re-read
@@ -4144,7 +4218,7 @@ impl McpPool {
     }
 
     pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
-        self.reload_from_config_sources(false)
+        self.reload_from_config_sources(ConfigRefresh::IfChanged)
     }
 
     /// Force a source re-read and drop every live connection so the next
@@ -4157,7 +4231,8 @@ impl McpPool {
     /// in-memory servers remain registered because this mutates the existing
     /// pool rather than replacing it.
     pub fn force_reload_config_sources(&mut self) -> Result<()> {
-        self.reload_from_config_sources(true).map(|_| ())
+        self.reload_from_config_sources(ConfigRefresh::Reconnect)
+            .map(|_| ())
     }
 
     /// Install a replacement global config source transactionally, preserving
@@ -6320,6 +6395,99 @@ impl McpPool {
             })
     }
 
+    pub(crate) fn delegated_read(&self, name: &str) -> Option<Arc<DelegatedMcpRead>> {
+        if self.config_sources.is_empty() || self.config.delegated_operations.is_empty() {
+            return None;
+        }
+        let (server, tool) = self.parse_prefixed_name(name).ok()?;
+        self.delegated_read_for(name, &server, &tool)
+    }
+
+    pub(crate) fn delegated_read_for(
+        &self,
+        name: &str,
+        server: &str,
+        tool: &str,
+    ) -> Option<Arc<DelegatedMcpRead>> {
+        let declaration = self.config.delegated_operations.get(server)?.get(tool)?;
+        let conn = self.connections.get(server)?;
+        let configured = self.config.servers.get(server)?;
+        if declaration.effect != codewhale_mcp::config::McpOperationEffect::Read
+            || self.config_sources.is_empty()
+            || !self.server_allowed(server)
+            || !self.tool_allowed(name)
+            || !conn.catalog_authorized()
+            || !conn.is_ready()
+            || !configured.is_enabled()
+            || !configured.is_tool_enabled(tool)
+            || declaration.allowed_arguments.is_empty()
+            || !declaration
+                .allowed_arguments
+                .iter()
+                .all(serde_json::Value::is_object)
+            || static_mcp_binding(configured).as_ref() != Some(&declaration.binding_sha256)
+            || static_mcp_binding(conn.config()).as_ref() != Some(&declaration.binding_sha256)
+        {
+            return None;
+        }
+        let route = self
+            .capture_tool_route(server.to_owned(), tool.to_owned())
+            .ok()?;
+        if route.tool.input_schema != declaration.input_schema
+            || route
+                .tool
+                .annotations
+                .is_some_and(|hint| hint.destructive_hint == Some(true))
+            || self.authenticate_tool_target(name).is_some()
+        {
+            return None;
+        }
+        Some(Arc::new(DelegatedMcpRead {
+            route,
+            lifetime: conn.cancel_token.clone(),
+            instance: Arc::clone(&conn.authority_revocation_reason),
+            grant: declaration.clone(),
+        }))
+    }
+
+    pub(crate) async fn call_delegated_read(
+        &mut self,
+        expected: &DelegatedMcpRead,
+        name: &str,
+        input: serde_json::Value,
+        rules: &[String],
+    ) -> Result<serde_json::Value> {
+        Self::authorize_call(&self.disallowed_tools, name, &input)?;
+        Self::authorize_call(rules, name, &input)?;
+        self.reload_from_config_sources(ConfigRefresh::VerifyContents)?;
+        let current = self
+            .delegated_read(name)
+            .context("delegated connector binding is stale")?;
+        anyhow::ensure!(
+            expected.current()
+                && Arc::ptr_eq(&expected.instance, &current.instance)
+                && current.route.server_name == expected.route.server_name
+                && current.route.tool == expected.route.tool
+                && current.route.catalog_generation == expected.route.catalog_generation
+                && current.route.catalog_revision == expected.route.catalog_revision
+                && current.grant == expected.grant,
+            "delegated connector binding changed"
+        );
+        anyhow::ensure!(
+            expected.permits_arguments(&input),
+            "delegated connector disclosure denied"
+        );
+        let conn = self
+            .connections
+            .get_mut(&expected.route.server_name)
+            .context("delegated connector is unavailable")?;
+        let timeout = conn
+            .config()
+            .effective_execute_timeout(&self.config.timeouts);
+        conn.call_tool_decided(&expected.route.tool.name, input, timeout, None)
+            .await
+    }
+
     pub(crate) fn always_allow_binding(&self, name: &str) -> Option<u64> {
         let (server, tool) = self.parse_prefixed_name(name).ok()?;
         let cfg = self.config.servers.get(&server)?;
@@ -6418,16 +6586,21 @@ impl McpPool {
             .connections
             .get(&server_name)
             .context("advertised MCP connection disappeared during resolution")?;
-        let plugin_authority = connection
-            .config()
-            .reviewed_plugin_source()
-            .map(|source| source.authority.clone());
+        let tool = connection
+            .tools()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .context("advertised MCP operation is no longer available")?
+            .clone();
+        let server_identity =
+            mcp_configured_server_identity(self.config.timeouts, &server_name, connection.config());
         Ok(McpToolRoute {
             server_name,
-            tool_name,
+            tool,
             catalog_generation: connection.catalog_generation,
             catalog_revision: connection.catalog_revision,
-            plugin_authority,
+            server_identity,
+            runtime_added: connection.config().runtime_added,
         })
     }
 
@@ -6835,24 +7008,13 @@ impl McpPool {
             }
         };
         let server_name = route.server_name.clone();
-        let tool_name = route.tool_name.clone();
+        let tool_name = route.tool.name.clone();
         // Copy the global timeouts to avoid borrow conflict
         let global_timeouts = self.config.timeouts;
         let conn = self.get_or_connect(&server_name).await?;
-        if conn.catalog_generation != route.catalog_generation
-            || conn.catalog_revision != route.catalog_revision
+        if conn.catalog_revision != route.catalog_revision || !route.permits(conn, global_timeouts)
         {
-            anyhow::bail!("MCP catalog changed after tool resolution; retry the call");
-        }
-        if conn
-            .config()
-            .reviewed_plugin_source()
-            .map(|source| &source.authority)
-            != route.plugin_authority.as_ref()
-            || !conn.config().is_tool_enabled(&tool_name)
-            || !conn.tools().iter().any(|tool| tool.name == tool_name)
-        {
-            anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
+            anyhow::bail!("MCP operation binding changed after tool resolution; retry the call");
         }
         let timeout = conn.config().effective_execute_timeout(&global_timeouts);
         let result = match conn
@@ -6881,17 +7043,9 @@ impl McpPool {
                 // still reach the classification below.
                 match self.get_or_connect(&server_name).await {
                     Ok(conn) => {
-                        if conn.catalog_generation != route.catalog_generation
-                            || conn
-                                .config()
-                                .reviewed_plugin_source()
-                                .map(|source| &source.authority)
-                                != route.plugin_authority.as_ref()
-                            || !conn.config().is_tool_enabled(&tool_name)
-                            || !conn.tools().iter().any(|tool| tool.name == tool_name)
-                        {
+                        if decision.is_some() || !route.permits(conn, global_timeouts) {
                             Err(anyhow::anyhow!(
-                                "MCP tool '{tool_name}' is disabled for server '{server_name}'"
+                                "MCP operation binding changed on reconnect; prepare a new call"
                             ))
                         } else {
                             let timeout = conn.config().effective_execute_timeout(&global_timeouts);
@@ -6942,6 +7096,49 @@ impl McpPool {
     }
 
     /// Get list of configured server names (static + dynamic)
+    #[must_use]
+    pub fn subagent_unavailable_tool_reason(&self, model_tool: &str) -> String {
+        let routes = self.resolved_tool_servers();
+        let server = routes.get(model_tool).cloned().or_else(|| {
+            let dynamic = self.dynamic_servers.read();
+            self.config
+                .servers
+                .keys()
+                .chain(dynamic.keys())
+                .filter(|server| model_tool.starts_with(&Self::mcp_model_tool_name(server, "")))
+                .max_by_key(|server| server.len())
+                .cloned()
+        });
+        let Some(server) = server else {
+            return format!(
+                "MCP tool '{model_tool}' is unavailable to this sub-agent: no MCP server configured for this session owns that name. Use tool_search to list the MCP tools this sub-agent can call."
+            );
+        };
+        let reason = if !self.server_allowed(&server) {
+            "is denied by this session's MCP policy".to_string()
+        } else if self.needs_auth_servers.contains(&server) {
+            format!("needs authorization; run /mcp login {server} in the parent session")
+        } else if self.connecting.contains(&server) {
+            "was still connecting when this sub-agent's tools were built".to_string()
+        } else if routes.contains_key(model_tool) {
+            "is connected, but this tool is outside this sub-agent's role or tool scope".to_string()
+        } else if self
+            .connections
+            .get(&server)
+            .is_some_and(McpConnection::is_ready)
+        {
+            "is connected but does not offer this tool (disabled, denied, or not in its catalog)"
+                .to_string()
+        } else if let Some(backoff) = self.connect_backoff.get(&server) {
+            format!("failed to connect: {}", backoff.last_error)
+        } else {
+            "is configured but not connected in this session".to_string()
+        };
+        format!(
+            "MCP tool '{model_tool}' is unavailable to this sub-agent: server '{server}' {reason}."
+        )
+    }
+
     pub fn server_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
@@ -7941,6 +8138,13 @@ pub fn load_config_with_workspace_and_plugins(
         .retain(|name, server| !is_desktop_browser_server(name, server));
     let workspace = checked_workspace_path(workspace)?;
     let project_path = checked_workspace_mcp_config_path(&workspace)?;
+    if global_path
+        .canonicalize()
+        .is_ok_and(|path| path.starts_with(&workspace))
+        || paths_refer_to_same_config(global_path, &project_path)
+    {
+        merged.delegated_operations.clear();
+    }
     if !project_path.exists() || paths_refer_to_same_config(global_path, &project_path) {
         return merge_plugin_mcp_servers(merged, plugins);
     }
@@ -7965,6 +8169,9 @@ pub fn load_config_with_workspace_and_plugins(
             server.cwd = Some(resolve_project_mcp_cwd(&workspace, server.cwd.as_deref())?);
         }
     }
+    merged
+        .delegated_operations
+        .retain(|name, _| !project.servers.contains_key(name));
     merged.servers.extend(project.servers);
 
     merge_plugin_mcp_servers(merged, plugins)

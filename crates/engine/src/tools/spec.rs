@@ -1086,13 +1086,7 @@ impl ToolContext {
         path: &Path,
         requested_path: &str,
     ) -> Result<(), ToolError> {
-        self.require_fresh_read_for(
-            path,
-            requested_path,
-            "File action=\"edit\"",
-            "File with action=\"read\"",
-            "File action=\"read\"",
-        )
+        self.require_fresh_read_for(path, requested_path, "edit", "read", "read")
     }
 
     pub fn require_fresh_read_before_write(
@@ -1970,6 +1964,10 @@ pub fn resolve_home_path_with(
 /// The core trait that all tools must implement.
 #[async_trait]
 pub trait ToolSpec: Send + Sync {
+    fn delegated_mcp_read(&self) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        None
+    }
+
     /// Returns the unique name of this tool (used in API calls).
     fn name(&self) -> &str;
 

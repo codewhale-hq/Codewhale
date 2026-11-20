@@ -310,6 +310,9 @@
   "crates/memory/src/main.rs": {
     "std_fs": 1
   },
+  "crates/memory/src/store.rs": {
+    "path_canonicalize": 1
+  },
   "crates/net/src/import_claude.rs": {
     "std_fs": 2
   },

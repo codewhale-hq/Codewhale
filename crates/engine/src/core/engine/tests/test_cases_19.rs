@@ -644,6 +644,242 @@ async fn background_completion_after_a_turn_is_delivered_once_on_the_next_turn()
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn task_shell_wait_suppresses_duplicate_background_shell_completion_event() {
+    use crate::tools::shell::{LowercaseBashTool, ShellStatus};
+    use crate::tools::spec::{ToolContext, ToolSpec};
+    use crate::tools::tasks::TaskShellWaitTool;
+    use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
+
+    let _artifact_lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    struct ArtifactRootReset(Option<PathBuf>);
+    impl Drop for ArtifactRootReset {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+        }
+    }
+
+    let tmp = tempdir().expect("tempdir");
+    let _artifact_root = ArtifactRootReset(
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            tmp.path().join("sessions"),
+        )),
+    );
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let mut ctx = ToolContext::new(tmp.path())
+        .with_shell_manager(engine.shell_manager.clone())
+        .with_state_namespace(engine.session.id.clone());
+    ctx.auto_approve = true;
+
+    let started = LowercaseBashTool
+        .execute(
+            serde_json::json!({"command": "printf 'bg-done\\n'", "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start bg job");
+    let task_id = started
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.get("task_id"))
+        .and_then(serde_json::Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let waited = TaskShellWaitTool
+        .execute(
+            serde_json::json!({"task_id": task_id, "wait": true, "timeout_ms": 10_000}),
+            &ctx,
+        )
+        .await
+        .expect("wait bg job");
+    assert!(waited.success, "{}", waited.content);
+    assert!(waited.content.contains("bg-done"), "{}", waited.content);
+    assert!(
+        engine.drain_shell_completion_events().is_empty(),
+        "waited terminal completion must not inject a duplicate runtime event"
+    );
+    {
+        let mut shell = engine.shell_manager.lock().expect("shell manager");
+        assert!(!shell.has_finished_unreported_jobs_for_session(&engine.session.id));
+        assert!(
+            shell
+                .list_jobs_for_session(&engine.session.id)
+                .iter()
+                .any(|job| job.id == task_id && job.status == ShellStatus::Completed),
+            "completed job must stay visible in job listing"
+        );
+    }
+
+    let large_started = LowercaseBashTool
+        .execute(
+            serde_json::json!({
+                "command": "printf 'BG_HEAD\\n'; i=1; while [ $i -le 700 ]; do printf 'bg-row-%04d-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' \"$i\"; i=$((i+1)); done; printf 'BG_MID_PAST_30KB\\n'; while [ $i -le 1400 ]; do printf 'bg-row-%04d-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\n' \"$i\"; i=$((i+1)); done; printf 'BG_TAIL\\n'",
+                "background": true
+            }),
+            &ctx,
+        )
+        .await
+        .expect("start large bg job");
+    let large_id = large_started.metadata.as_ref().unwrap()["task_id"]
+        .as_str()
+        .expect("large task id")
+        .to_string();
+    let large_wait_ctx = ctx.clone().with_origin_tool_call_id("call-wait-large");
+    let large_waited = TaskShellWaitTool
+        .execute(
+            serde_json::json!({"task_id": &large_id, "wait": true, "timeout_ms": 10_000}),
+            &large_wait_ctx,
+        )
+        .await
+        .expect("wait large bg job");
+    assert!(large_waited.success, "{}", large_waited.content);
+    let metadata = large_waited.metadata.as_ref().expect("large wait metadata");
+    let artifact_id = metadata["artifact_id"]
+        .as_str()
+        .expect("complete background output artifact");
+    assert_eq!(
+        artifact_id,
+        codewhale_runtime::artifacts::artifact_id_for_tool_call(&large_id)
+    );
+    assert_eq!(metadata["artifact_complete"], true);
+    assert!(large_waited.content.contains(artifact_id));
+    assert!(large_waited.content.contains("retrieve_tool_result"));
+    assert!(engine.drain_shell_completion_events().is_empty());
+    let large_mid = RetrieveToolResultTool
+        .execute(
+            serde_json::json!({
+                "ref": artifact_id,
+                "mode": "query",
+                "query": "BG_MID_PAST_30KB"
+            }),
+            &ctx,
+        )
+        .await
+        .expect("retrieve large waited output");
+    assert!(large_mid.success, "{}", large_mid.content);
+    let matches: serde_json::Value =
+        serde_json::from_str(&large_mid.content).expect("artifact query result");
+    assert_eq!(matches["matched_lines"], 1);
+    assert!(
+        matches["results"][0]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| excerpt.contains("BG_MID_PAST_30KB")),
+        "{}",
+        large_mid.content
+    );
+
+    let cancel_started = LowercaseBashTool
+        .execute(
+            serde_json::json!({"command": "sleep 30", "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start cancel bg job");
+    let cancel_id = cancel_started.metadata.as_ref().unwrap()["task_id"]
+        .as_str()
+        .expect("cancel task id")
+        .to_string();
+    let canceled = TaskShellWaitTool
+        .execute(
+            serde_json::json!({"task_id": cancel_id, "cancel": true}),
+            &ctx,
+        )
+        .await
+        .expect("cancel bg job");
+    assert!(canceled.success);
+    assert!(engine.drain_shell_completion_events().is_empty());
+    assert!(
+        engine
+            .shell_manager
+            .lock()
+            .expect("shell manager")
+            .list_jobs_for_session(&engine.session.id)
+            .iter()
+            .any(|job| job.id == cancel_id && job.status == ShellStatus::Killed)
+    );
+
+    let async_started = LowercaseBashTool
+        .execute(
+            serde_json::json!({
+                "command": "while [ ! -e release-async ]; do sleep 0.05; done; printf 'bg-done\\n'",
+                "background": true
+            }),
+            &ctx,
+        )
+        .await
+        .expect("start async bg job");
+    let async_id = async_started.metadata.as_ref().unwrap()["task_id"]
+        .as_str()
+        .expect("async task id")
+        .to_string();
+    let running_poll = TaskShellWaitTool
+        .execute(
+            serde_json::json!({"task_id": async_id, "wait": false}),
+            &ctx,
+        )
+        .await
+        .expect("nonblocking poll while running");
+    assert_eq!(
+        running_poll.metadata.as_ref().unwrap()["status"],
+        serde_json::json!("Running")
+    );
+    std::fs::write(tmp.path().join("release-async"), "").expect("release async job");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let done = engine
+            .shell_manager
+            .lock()
+            .expect("shell manager")
+            .list_jobs_for_session(&engine.session.id)
+            .iter()
+            .any(|job| job.id == async_id && job.status != ShellStatus::Running);
+        if done {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let delivered = engine.drain_shell_completion_events();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].task_id, async_id);
+    assert_eq!(delivered[0].stdout_tail, "bg-done\n");
+    assert_eq!(delivered[0].stdout_len, 8);
+    assert!(delivered[0].evidence_ref.is_none());
+    let expected_artifact = codewhale_runtime::artifacts::session_artifact_absolute_path(
+        &engine.session.id,
+        &codewhale_runtime::artifacts::session_artifact_relative_path(
+            &codewhale_runtime::artifacts::artifact_id_for_tool_call(&format!(
+                "background-shell-completion-{async_id}"
+            )),
+        ),
+    )
+    .expect("artifact path");
+    assert!(!expected_artifact.exists());
+
+    let message = crate::runtime_handoff::shell_completion_runtime_message(&delivered);
+    assert!(crate::runtime_handoff::is_internal_runtime_handoff(&message));
+    let codewhale_models::ContentBlock::Text { text, .. } = &message.content[0] else {
+        panic!("expected runtime event text");
+    };
+    assert!(text.contains("background_shell_completion"), "{text}");
+    assert!(text.contains("bg-done"), "{text}");
+    assert!(!text.contains("art_background-shell-completion"), "{text}");
+    assert!(!text.contains("evidence_ref"), "{text}");
+    assert!(!text.contains("retrieve_tool_result"), "{text}");
+    assert!(engine.drain_shell_completion_events().is_empty());
+}
+
 /// #3738 acceptance: the cacheable prefix must be byte-stable across turns
 /// when mode and context are unchanged.
 ///

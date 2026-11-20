@@ -559,6 +559,7 @@ impl RuntimeChatRelayHost {
         let native_thread_id = self
             .manager
             .create_thread(CreateThreadRequest {
+                route_selection: None,
                 parent_thread_id: None,
                 executor: None,
                 environment: None,
@@ -702,6 +703,7 @@ impl RuntimeChatRelayHost {
             let thread = self
                 .manager
                 .create_thread(CreateThreadRequest {
+                    route_selection: None,
                     operation_key: None,
                     model: Some(command.model.clone()),
                     model_provider: Some(command.model_provider.clone()),

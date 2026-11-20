@@ -1821,12 +1821,59 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
         "good",
         "const r = require(\"react\");\nconst p = require('@deepseek-ai/dsh-client-ui-primitives');\nconst u = require(\"./util\");\n",
     );
+    fs::write(
+        good.join("lib/util.js"),
+        "exports.v = 1; require('./client'); require('./data.json'); require('mapped'); require('react-dom/client'); require('react/jsx-runtime');\n",
+    )
+    .unwrap();
+    fs::write(good.join("lib/data.json"), r#"{"value":2}"#).unwrap();
+    fs::create_dir_all(good.join("node_modules/mapped")).unwrap();
+    fs::write(
+        good.join("node_modules/mapped/package.json"),
+        r#"{"exports":{".":{"import":"./selected.cjs","default":"./missing.js"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        good.join("node_modules/mapped/selected.cjs"),
+        "exports.value = 3;",
+    )
+    .unwrap();
     let converted = dsh::convert_package(&good, &tmp.path().join("out-good")).unwrap();
     assert_eq!(converted.client_closures.len(), 1);
     let closure = &converted.client_closures[0];
     assert_eq!(closure.entry, "source/lib/client.js");
     assert!(closure.files.contains_key("source/lib/util.js"));
-    assert_eq!(closure.host_provided.len(), 2);
+    assert_eq!(closure.host_provided.len(), 4);
+    assert!(
+        closure
+            .host_provided
+            .iter()
+            .any(|id| id == "react-dom/client")
+    );
+    assert!(
+        closure
+            .host_provided
+            .iter()
+            .any(|id| id == "react/jsx-runtime")
+    );
+    assert_eq!(
+        closure.imports["source/lib/client.js"]["./util"].as_deref(),
+        Some("source/lib/util.js")
+    );
+    assert_eq!(closure.imports["source/lib/client.js"]["react"], None);
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["./client"].as_deref(),
+        Some("source/lib/client.js")
+    );
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["./data.json"].as_deref(),
+        Some("source/lib/data.json")
+    );
+    assert_eq!(
+        closure.imports["source/lib/util.js"]["mapped"].as_deref(),
+        Some("source/node_modules/mapped/selected.cjs")
+    );
+
     let installed = fs::read(tmp.path().join("out-good/source/lib/util.js")).unwrap();
     assert_eq!(
         closure.files["source/lib/util.js"],
@@ -1841,6 +1888,7 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
     assert!(!converted.outcomes.iter().any(|o| o.needs_manual_port()));
 
     for (label, source) in [
+        ("dynamic-import", "import(\"./util\");\n"),
         ("ambient", "require(\"left-pad\");\n"),
         ("builtin", "require(\"node:fs\");\n"),
         ("computed", "const n = \"x\"; require(n);\n"),

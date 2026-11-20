@@ -225,6 +225,8 @@ pub struct CodewhaleClient {
     /// is signed in and how to switch, appended to plan-quota errors. Holds
     /// an account label only, never token material.
     subscription_limit_guidance: Option<String>,
+    resume_account_scope: Option<String>,
+    exec_plugin_grant: Option<uuid::Uuid>,
     /// Reviewed runtime authority and OAuth descriptor travel with the frozen route.
     plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
     /// Read-only diagnostic probes must never migrate or refresh the grant.
@@ -575,6 +577,8 @@ impl Clone for CodewhaleClient {
             api_key: self.api_key.clone(),
             api_key_source: self.api_key_source.clone(),
             subscription_limit_guidance: self.subscription_limit_guidance.clone(),
+            resume_account_scope: self.resume_account_scope.clone(),
+            exec_plugin_grant: self.exec_plugin_grant,
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
             claude_org: self.claude_org.clone(),
@@ -1360,10 +1364,11 @@ struct CapturedRootCert {
 
 enum CapturedRouteCredentials {
     Codex(codewhale_runtime::oauth::OwnedOAuthCredentials),
+    Xai(codewhale_runtime::oauth::OwnedOAuthCredentials),
     ApiKey {
         api_key: String,
         api_key_source: String,
-        xai_sign_in: Option<codewhale_runtime::config::XaiSignInLabel>,
+        account_owner: Option<String>,
     },
 }
 
@@ -1767,12 +1772,15 @@ impl CodewhaleClient {
         {
             return Ok(CapturedRouteCredentials::Codex(config.codex_credentials()?));
         }
-        let ((api_key, api_key_source), xai_sign_in) =
-            config.active_route_api_key_with_xai_sign_in()?;
+        if let Some(credentials) = config.xai_oauth_route_credentials() {
+            return Ok(CapturedRouteCredentials::Xai(credentials?));
+        }
+        let ((api_key, api_key_source), account_owner) =
+            config.active_route_api_key_with_owner()?;
         Ok(CapturedRouteCredentials::ApiKey {
             api_key,
             api_key_source,
-            xai_sign_in,
+            account_owner,
         })
     }
 
@@ -1853,6 +1861,7 @@ impl CodewhaleClient {
             codex_account_id,
             subscription_limit_guidance,
             chatgpt_reasoning_api,
+            resume_account_scope,
         ) = match credentials {
             CapturedRouteCredentials::Codex(credentials) => {
                 let guidance = codewhale_runtime::oauth::usage_limit_guidance(
@@ -1875,22 +1884,43 @@ impl CodewhaleClient {
                     (credentials.access_token, "ChatGPT sign-in".to_string()),
                     credentials.account_id,
                     Some(guidance),
+                    Some(reasoning_api.clone()),
                     Some(reasoning_api),
+                )
+            }
+            CapturedRouteCredentials::Xai(credentials) => {
+                let guidance = codewhale_runtime::oauth::usage_limit_guidance(
+                    codewhale_runtime::oauth::OAuthProvider::Xai,
+                    credentials.account_label.as_deref(),
+                );
+                let scope = credentials
+                    .account_id
+                    .as_deref()
+                    .map(|account| {
+                        serde_json::to_string(&(
+                            "xai",
+                            &credentials.issuer,
+                            &credentials.client_id,
+                            account,
+                        ))
+                    })
+                    .transpose()?;
+                (
+                    (
+                        codewhale_secrets::normalize_api_key(&credentials.access_token),
+                        codewhale_runtime::config::XAI_OAUTH_KEY_SOURCE.to_string(),
+                    ),
+                    None,
+                    Some(guidance),
+                    None,
+                    scope,
                 )
             }
             CapturedRouteCredentials::ApiKey {
                 api_key,
                 api_key_source,
-                xai_sign_in,
-            } => {
-                let guidance = xai_sign_in.map(|label| {
-                    codewhale_runtime::oauth::usage_limit_guidance(
-                        codewhale_runtime::oauth::OAuthProvider::Xai,
-                        label.as_deref(),
-                    )
-                });
-                ((api_key, api_key_source), None, guidance, None)
-            }
+                account_owner,
+            } => ((api_key, api_key_source), None, None, None, account_owner),
         };
         let model_bound_secret_values = Arc::new(configured_model_bound_secret_values_with(
             config,
@@ -2051,6 +2081,8 @@ impl CodewhaleClient {
             api_key,
             api_key_source,
             subscription_limit_guidance,
+            resume_account_scope,
+            exec_plugin_grant: None,
             plugin_provider,
             plugin_oauth_read_only: config.plugin_oauth_read_only,
             claude_org,
@@ -2115,27 +2147,48 @@ impl CodewhaleClient {
                 .map(|(request, _)| request)
                 .map_err(anyhow::Error::new);
         }
-        let Some(provider) = self.plugin_provider.clone() else {
+        if self.plugin_provider.is_none() {
             return Ok(request);
-        };
+        }
+        let destination = request
+            .try_clone()
+            .context("plugin request cannot be inspected")?
+            .build()?;
+        let base = reqwest::Url::parse(&self.base_url)?;
+        anyhow::ensure!(
+            destination.url().origin() == base.origin(),
+            "plugin request escaped its reviewed provider origin"
+        );
+        let read_only = self.plugin_oauth_read_only;
+        let grant = self.exec_plugin_grant;
+        let token = self
+            .with_plugin_authority(move |name, base_url, descriptor| {
+                codewhale_runtime::oauth::plugin_oauth_access_token_for_grant(
+                    name, base_url, descriptor, read_only, grant,
+                )
+            })
+            .await?;
+        Ok(request.bearer_auth(token))
+    }
+
+    async fn with_plugin_authority<T: Send + 'static>(
+        &self,
+        authorize: impl FnOnce(&str, &str, &codewhale_runtime::oauth::PluginOAuthConfig) -> Result<T>
+        + Send
+        + 'static,
+    ) -> Result<T> {
+        let provider = self
+            .plugin_provider
+            .clone()
+            .context("plugin provider is unavailable")?;
         let authority = provider
             .plugin_authority
             .clone()
             .context("plugin provider has no authority")?;
         let name = self.admitted_identity.key.to_string();
         let base_url = self.base_url.clone();
-        let destination = request
-            .try_clone()
-            .context("plugin request cannot be inspected")?
-            .build()?;
-        let base = reqwest::Url::parse(&base_url)?;
-        anyhow::ensure!(
-            destination.url().origin() == base.origin(),
-            "plugin request escaped its reviewed provider origin"
-        );
         let policy = codewhale_plugins::activation::extension_host_policy_enabled();
-        let read_only = self.plugin_oauth_read_only;
-        let token = tokio::task::spawn_blocking(move || -> Result<String> {
+        tokio::task::spawn_blocking(move || -> Result<T> {
             let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
             let descriptor = provider
                 .oauth
@@ -2150,9 +2203,7 @@ impl CodewhaleClient {
                 Some(provider.http_headers.as_ref().unwrap_or(&empty_headers)),
             )
             .map_err(anyhow::Error::msg)?;
-            let token = codewhale_runtime::oauth::plugin_oauth_access_token(
-                &name, &base_url, descriptor, read_only,
-            )?;
+            let authorization = authorize(&name, &base_url, descriptor)?;
             // Refresh may wait on the issuer. Do not send a model request if
             // the review was revoked while that HTTP request was in flight.
             codewhale_plugins::registry::verify_plugin_component_authority(
@@ -2160,10 +2211,9 @@ impl CodewhaleClient {
                 codewhale_plugins::activation::PluginActivationCapability::Providers,
             )
             .map_err(anyhow::Error::msg)?;
-            Ok(token)
+            Ok(authorization)
         })
-        .await??;
-        Ok(request.bearer_auth(token))
+        .await?
     }
 
     fn claude_org_test_transport_base(&self) -> Option<&str> {
@@ -3747,6 +3797,68 @@ impl CodewhaleClient {
         )
     }
 
+    pub async fn pin_exec_auth_scope(&mut self) -> Result<()> {
+        if let Some(claude) = &self.claude_org {
+            self.resume_account_scope = claude
+                .pin_resume_identity()
+                .await
+                .map_err(anyhow::Error::new)?
+                .map(|identity| serde_json::to_string(&identity))
+                .transpose()?;
+        } else if self.plugin_provider.is_some() {
+            let grant = self
+                .with_plugin_authority(codewhale_runtime::oauth::pin_plugin_oauth_grant)
+                .await?;
+            self.exec_plugin_grant = Some(grant);
+            self.resume_account_scope = Some(grant.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn exec_route_binding(
+        &self,
+        key: &[u8; 32],
+        config: &Config,
+    ) -> Result<crate::route_receipt::ExecRouteBinding> {
+        use crate::route_receipt::ExecRouteBinding;
+        let endpoint = Some(ExecRouteBinding::endpoint_tag(key, &self.base_url));
+        let authority = if (self.plugin_provider.is_some() || self.claude_org.is_some())
+            && self.resume_account_scope.is_none()
+        {
+            None
+        } else {
+            let (source, credential) = self
+                .resume_account_scope
+                .as_deref()
+                .map_or(("key", self.api_key.as_str()), |account| {
+                    ("account", account)
+                });
+            let headers = config
+                .http_headers()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let headers = serde_json::to_string(&headers)?;
+            let wire = format!("{:?}:{:?}", self.wire_format, self.responses_profile_id);
+            Some(ExecRouteBinding::tag(
+                key,
+                b"authority",
+                &[
+                    self.admitted_identity.persisted_kind(),
+                    self.admitted_identity.key.as_str(),
+                    source,
+                    credential,
+                    self.path_suffix.as_deref().unwrap_or_default(),
+                    &wire,
+                    &headers,
+                ],
+            ))
+        };
+        Ok(ExecRouteBinding {
+            endpoint,
+            authority,
+        })
+    }
+
     /// Secret-free receipt for the exact base endpoint and credential
     /// generation this client was constructed with.
     ///
@@ -4487,77 +4599,9 @@ impl CodewhaleClient {
                 return;
             }
 
-            // Invalidate older in-flight fetches before loading any reusable
-            // scope. Baseten's ticket also clears account-scoped rows because the
-            // same endpoint can expose a different workspace after a key change.
-            let refresh_ticket = crate::provider_catalog_live::begin_refresh_for_identity(
-                provider,
-                identity.key.as_str(),
-                &config.active_route_base_url(),
-            );
-
-            // Publish the exact persisted scope immediately so opening `/model`
-            // never waits on the network and another endpoint's rows cannot leak
-            // into this route. Account-scoped Baseten rows deliberately do not
-            // reload from disk until the current credential proves them again.
-            crate::provider_catalog_live::maybe_load_persisted_cache_for_config(config);
-
-            let client = match CodewhaleClient::for_catalog_refresh(config) {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::debug!(
-                        target: "provider_catalog",
-                        error = %err,
-                        "skipping provider catalog refresh: client creation failed"
-                    );
-                    return;
-                }
-            };
-
+            let config = config.clone();
             tokio::spawn(async move {
-                match client.fetch_catalog_delta().await {
-                    Ok(delta) => {
-                        let count = delta.offerings.len();
-                        if crate::provider_catalog_live::record_success_if_current(
-                            &refresh_ticket,
-                            delta,
-                        )
-                        .is_none()
-                        {
-                            tracing::debug!(
-                                target: "provider_catalog",
-                                "discarded provider catalog response superseded by a newer refresh"
-                            );
-                            return;
-                        }
-                        tracing::debug!(
-                            target: "provider_catalog",
-                            offering_count = count,
-                            "provider catalog refresh merged {count} offerings into provider lake"
-                        );
-                    }
-                    Err(err) => {
-                        if crate::provider_catalog_live::record_failure_if_current(
-                            &refresh_ticket,
-                            &client.catalog_provider_id(),
-                            &base_url_fingerprint(&client.base_url),
-                            err,
-                        )
-                        .is_none()
-                        {
-                            tracing::debug!(
-                                target: "provider_catalog",
-                                "discarded provider catalog failure superseded by a newer refresh"
-                            );
-                            return;
-                        }
-                        tracing::debug!(
-                            target: "provider_catalog",
-                            error = ?err,
-                            "provider catalog refresh failed; keeping existing rows"
-                        );
-                    }
-                }
+                let _ = crate::provider_lake::update_provider_catalog(&config, &identity).await;
             });
         }
     }
@@ -6272,7 +6316,6 @@ fn codewhale_catalog_offerings_from_body(
 ) -> Result<Vec<CatalogOffering>, CatalogRefreshError> {
     #[derive(serde::Deserialize)]
     struct Listing {
-        #[serde(default)]
         data: Vec<Row>,
     }
     #[derive(serde::Deserialize)]
@@ -6305,7 +6348,8 @@ fn codewhale_catalog_offerings_from_body(
 
     let listing: Listing =
         serde_json::from_str(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
-    let mut offerings: Vec<CatalogOffering> = Vec::with_capacity(listing.data.len());
+    let listed = listing.data.len();
+    let mut offerings: Vec<CatalogOffering> = Vec::with_capacity(listed);
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for row in listing.data {
         let id = row.id.trim().to_string();
@@ -6366,8 +6410,8 @@ fn codewhale_catalog_offerings_from_body(
             ..Default::default()
         });
     }
-    if offerings.is_empty() {
-        return Err(CatalogRefreshError::EmptyList);
+    if listed > 0 && offerings.is_empty() {
+        return Err(CatalogRefreshError::InvalidResponse);
     }
     Ok(offerings)
 }
@@ -6404,9 +6448,6 @@ fn catalog_delta_from_models_body(
         // dropped here, so the roster the picker and `/model` read is
         // servable chat only.
         let listed = parse_orcarouter_models_response(body)?;
-        if listed.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         let chat_rows: Vec<_> = listed
             .iter()
             .filter(|item| orcarouter_row_is_chat(item))
@@ -6425,15 +6466,12 @@ fn catalog_delta_from_models_body(
                 orcarouter_to_catalog_offering(item, &provider, &fingerprint, fetched_at).ok()
             })
             .collect();
-        if offerings.is_empty() {
+        if offerings.is_empty() && !listed.is_empty() {
             return Err(CatalogRefreshError::InvalidResponse);
         }
         offerings
     } else if api_provider == ProviderKind::Openrouter {
         let or_models = parse_openrouter_models_response(body)?;
-        if or_models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         // A row with an unreadable or implausible price is skipped and
         // counted, not allowed to fail every other row (#6690).
         let offerings: Vec<_> = or_models
@@ -6450,15 +6488,12 @@ fn catalog_delta_from_models_body(
                 "skipped OpenRouter model rows with invalid pricing"
             );
         }
-        if offerings.is_empty() {
+        if offerings.is_empty() && !or_models.is_empty() {
             return Err(CatalogRefreshError::InvalidResponse);
         }
         offerings
     } else if catalog_endpoint_is_baseten(api_provider, base_url) {
         let baseten_models = parse_baseten_models_response(body)?;
-        if baseten_models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         baseten_models
             .iter()
             .map(|item| baseten_to_catalog_offering(item, &provider, &fingerprint, fetched_at))
@@ -6516,9 +6551,6 @@ fn catalog_delta_from_models_body(
             parse_models_response_for_provider(body, api_provider)
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?,
         );
-        if models.is_empty() {
-            return Err(CatalogRefreshError::EmptyList);
-        }
         // OpenCode Go's cutline rewrites a listed id to its canonical spelling.
         // Key the limits map the same way so a row keeps the numbers the
         // provider stated for it.
@@ -6612,9 +6644,6 @@ fn named_gateway_catalog_offerings_from_body(
     fetched_at: u64,
 ) -> Result<Vec<CatalogOffering>, CatalogRefreshError> {
     let models = parse_models_response(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
-    if models.is_empty() {
-        return Err(CatalogRefreshError::EmptyList);
-    }
 
     let default_model_id = kind.provider().default_model();
     Ok(models

@@ -46,6 +46,26 @@ pub struct McpConfig {
     pub timeouts: McpTimeouts,
     #[serde(default, alias = "mcpServers")]
     pub servers: HashMap<String, McpServerConfig>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub delegated_operations: HashMap<String, HashMap<String, DelegatedOperation>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedOperation {
+    pub effect: McpOperationEffect,
+    pub binding_sha256: String,
+    pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub allowed_arguments: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpOperationEffect {
+    Read,
+    Mutate,
+    Unknown,
 }
 
 /// Global timeout configuration

@@ -605,6 +605,7 @@ mod tests {
             inject: Vec::new(),
             host_provided: Vec::new(),
             files: Default::default(),
+            imports: Default::default(),
             bytes: 10,
         }];
         let inventory = inventory();

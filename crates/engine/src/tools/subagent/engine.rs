@@ -171,7 +171,7 @@ impl ChildAuthority {
         todos: SharedTodoList,
         plan: SharedPlanState,
     ) -> ToolRegistryBuilder {
-        let mut builder = ToolRegistryBuilder::new().with_full_agent_surface_options(
+        ToolRegistryBuilder::new().with_full_agent_surface_options(
             Some(runtime.client.clone()),
             runtime.model.clone(),
             runtime.manager.clone(),
@@ -179,11 +179,7 @@ impl ChildAuthority {
             runtime.agent_tool_surface_options.clone(),
             todos,
             plan,
-        );
-        if let Some(pool) = runtime.mcp_pool.as_ref() {
-            builder = builder.with_mcp_tools(pool.clone());
-        }
-        builder
+        )
     }
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)
@@ -354,7 +350,35 @@ impl ChildAuthority {
         // and non-`Full`-shell roles cannot run shell, regardless of whether
         // the parent session is auto-approved. This closes the auto-approve
         // bypass where a read-only child could quietly write or shell out.
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            if !self.grant.network
+                || !self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+            {
+                return Err(admission_denied(
+                    "[role.scope.denied] This connector needs an explicit child tool and network grant.",
+                ));
+            }
+            if !grant.current() {
+                return Err(admission_denied(
+                    "[role.binding.stale] This connector binding has changed.",
+                ));
+            }
+            if !grant.permits_arguments(input) {
+                return Err(admission_denied(
+                    "[role.disclosure.denied] This connector payload is outside the delegated read grant.",
+                ));
+            }
+        }
         if !self.posture_permits_tool(registry, name, Some(input)) {
+            if crate::mcp::McpPool::is_mcp_tool(name) {
+                return Err(admission_denied(
+                    "[role.effect.denied] This role requires an operator-authorized connector read.",
+                ));
+            }
             if self.allows_bounded_readonly_bash(name) {
                 // #6015: the same rule text and next steps as the durable
                 // authority and the executor, from the one classifier.
@@ -569,6 +593,16 @@ impl ChildAuthority {
         if name == "agent" {
             return true;
         }
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            return grant.current()
+                && self.grant.network
+                && self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+                && input.is_none_or(|input| grant.permits_arguments(input));
+        }
         match registry.get(name) {
             Some(spec) => match input.map_or_else(
                 || spec.approval_requirement(),
@@ -684,6 +718,13 @@ impl ChildAuthority {
         }
     }
 
+    pub(crate) fn can_collect_background_tests(&self) -> bool {
+        use codewhale_agent_contract::worker_profile::{ShellGrant, ToolSurface};
+        self.grant.shell == ShellGrant::Full
+            && self.grant.surface != ToolSurface::Evidence
+            && self.is_tool_allowed("task_shell_wait")
+    }
+
     pub fn grant_blocks_tool(&self, registry: &ToolRegistry, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         // Desktop / machine-control is never in a child's grant.
@@ -714,7 +755,8 @@ impl ChildAuthority {
                 lower.as_str(),
                 "exec_wait" | "exec_interact" | "task_shell_start" | "task_shell_wait"
             )
-            || lower.starts_with("terminal/");
+            || lower.starts_with("terminal/")
+            || lower.starts_with("terminal_");
         raw_shell
             && self.grant.shell < codewhale_agent_contract::worker_profile::ShellGrant::Full
             && !self.allows_bounded_readonly_bash(name)
@@ -789,6 +831,45 @@ impl ChildAuthority {
             "Bash" => Some(json!({"action": "run", "command": "pwd"})),
             _ => None,
         }
+    }
+
+    pub fn can_admit_any_mcp_tool(&self) -> bool {
+        (self.grant.surface != codewhale_agent_contract::worker_profile::ToolSurface::Evidence
+            || self.grant.scope.as_ref().is_some_and(|scope| {
+                scope
+                    .iter()
+                    .any(|name| crate::mcp::McpPool::is_mcp_tool(name) && !name.contains('*'))
+            }))
+            && self.grant.network
+            && !self.grant.scope.as_ref().is_some_and(Vec::is_empty)
+            && !self.is_tool_denied("mcp*")
+    }
+
+    pub async fn admitted_mcp_servers(
+        self: &Arc<Self>,
+        runtime: &SubAgentRuntime,
+    ) -> HashSet<String> {
+        if !self.can_admit_any_mcp_tool() {
+            return HashSet::new();
+        }
+        let Some(pool) = runtime.mcp_pool.as_ref() else {
+            return HashSet::new();
+        };
+        let routes = {
+            let guard = pool.lock().await;
+            guard.resolved_tool_servers()
+        };
+        if routes.is_empty() {
+            return HashSet::new();
+        }
+        let mcp_registry = ToolRegistryBuilder::new()
+            .with_mcp_tools(Arc::clone(pool))
+            .await
+            .build(self.context());
+        self.tools_for_model(&mcp_registry, &self.agent_type)
+            .into_iter()
+            .filter_map(|tool| routes.get(&tool.name).cloned())
+            .collect()
     }
 
     pub fn tools_for_model(&self, registry: &ToolRegistry, agent_type: &FleetRole) -> Vec<Tool> {
@@ -1632,10 +1713,11 @@ pub(super) async fn run_child_agent(
     parking: Option<Arc<std::sync::atomic::AtomicBool>>,
     input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
 ) -> Result<SubAgentResult> {
+    let allow_mcp = !matches!(agent_type, FleetRole::Scout | FleetRole::Reviewer);
     let (runtime, attachment) = if runtime.cancel_token.is_cancelled() {
         (runtime.clone(), None)
     } else {
-        prepare_child_membership(runtime, &assignment, &agent_id).await?
+        prepare_child_membership(runtime, &assignment, &agent_id, allow_mcp).await?
     };
     let (owner_agent_name, executed_actions) = {
         let manager = runtime.manager.read().await;
@@ -1650,20 +1732,23 @@ pub(super) async fn run_child_agent(
             });
         (name, manager.executed_actions_handle(&agent_id))
     };
-    let identity = format!(
-        "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
-        if runtime.worker_profile.permissions.write {
-            "you may edit files; keep to what this task assigns"
-        } else {
-            "read-only"
-        }
-    );
+    let branch_workspace = runtime.context.workspace.clone();
+    let branch = tokio::task::spawn_blocking(move || current_git_branch(&branch_workspace))
+        .await
+        .ok()
+        .flatten();
     let mut authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
         agent_id.clone(),
-        owner_agent_name,
+        owner_agent_name.clone(),
         allowed_tools.clone(),
+    );
+    let identity = subagent_capability_block(
+        &owner_agent_name,
+        &runtime,
+        &authority.grant,
+        branch.as_deref(),
     );
     if let Some(actions) = executed_actions
         && let Some(auth) = Arc::get_mut(&mut authority)
@@ -1671,7 +1756,7 @@ pub(super) async fn run_child_agent(
         auth.executed_actions = actions;
     }
     let mut system =
-        build_subagent_system_prompt_with_skills(&agent_type, &assignment, &runtime.context);
+        build_subagent_system_prompt_with_memory(&agent_type, &assignment, &runtime.context);
     if let Some(persona) = runtime
         .activation
         .as_ref()
@@ -1711,9 +1796,17 @@ pub(super) async fn run_child_agent(
         &system,
         fork.as_ref(),
     );
+    let admitted_mcp_servers = authority.admitted_mcp_servers(&runtime).await;
+    crate::core::engine::filter_messages_mcp_server_instructions(&mut seed, &admitted_mcp_servers);
     let initial = seed
         .pop()
         .ok_or_else(|| anyhow!("child assignment has no task message"))?;
+    if let Some(section) =
+        subagent_inherited_instructions_section(&runtime.parent_pinned_project_instructions)
+    {
+        system.push_str("\n\n");
+        system.push_str(&section);
+    }
     let content = initial
         .content
         .iter()
@@ -2191,6 +2284,7 @@ async fn prepare_child_membership(
     runtime: &SubAgentRuntime,
     assignment: &SubAgentAssignment,
     agent_id: &str,
+    allow_mcp: bool,
 ) -> Result<(
     SubAgentRuntime,
     Option<crate::extension_host::HostAttachment>,
@@ -2231,7 +2325,7 @@ async fn prepare_child_membership(
                 .context
                 .clone()
                 .with_plugin_registry(attachment.plugin_view());
-            if let Some(parent_pool) = runtime.mcp_pool.as_ref() {
+            if allow_mcp && let Some(parent_pool) = runtime.mcp_pool.as_ref() {
                 let mut pool = parent_pool
                     .lock()
                     .await

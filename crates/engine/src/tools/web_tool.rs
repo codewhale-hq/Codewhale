@@ -178,10 +178,14 @@ impl ToolSpec for WebTool {
     }
 
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
-        match self.resolve_action(input) {
-            "fetch" => FetchUrlTool.approval_requirement_for(input),
-            "search" => WebSearchTool.approval_requirement_for(input),
-            "wait" => WaitForDevServerTool.approval_requirement_for(input),
+        let action = self.resolve_action(input);
+        let Ok(inner) = self.strip_action(input.clone()) else {
+            return ApprovalRequirement::Required;
+        };
+        match action {
+            "fetch" => FetchUrlTool.approval_requirement_for(&inner),
+            "search" => WebSearchTool.approval_requirement_for(&inner),
+            "wait" => WaitForDevServerTool.approval_requirement_for(&inner),
             _ => ApprovalRequirement::Required,
         }
     }
@@ -191,7 +195,7 @@ impl ToolSpec for WebTool {
     }
 
     fn supports_parallel_for(&self, input: &Value) -> bool {
-        self.resolve_action(input) == "search"
+        matches!(self.resolve_action(input), "search" | "fetch")
     }
 
     fn starts_detached_for(&self, _input: &Value) -> bool {
@@ -244,6 +248,22 @@ mod tests {
         let message = err(json!({"action": "get", "url": "https://example.com"})).await;
         assert!(message.contains("get"), "{message}");
         assert!(message.contains("search, fetch, wait"), "{message}");
+    }
+
+    #[test]
+    fn fetch_runs_in_parallel_and_keeps_its_approval() {
+        let web = WebTool::new("Web");
+        let fetch = json!({"action": "fetch", "url": "https://example.com"});
+        assert!(web.supports_parallel_for(&fetch));
+        assert!(!web.supports_parallel_for(&json!({"action": "wait", "port": 3000})));
+        assert_eq!(
+            web.approval_requirement_for(&fetch),
+            ApprovalRequirement::Required
+        );
+        assert_eq!(
+            web.approval_requirement_for(&json!("not an object")),
+            ApprovalRequirement::Required
+        );
     }
 
     #[test]

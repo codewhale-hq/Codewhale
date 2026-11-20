@@ -1185,12 +1185,13 @@ async fn roster_envelope_with_empty_data_is_an_empty_listing_not_a_models_fallba
     )
     .await;
     let client = custom_mock_client_for_identity(&server, "relay-private");
-    assert_eq!(
+    assert!(
         client
             .fetch_catalog_delta()
             .await
-            .expect_err("an empty data roster is an empty listing"),
-        CatalogRefreshError::EmptyList
+            .expect("valid empty listing")
+            .offerings
+            .is_empty()
     );
 }
 

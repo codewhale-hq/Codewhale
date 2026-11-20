@@ -934,8 +934,8 @@ impl Engine {
         }
 
         // RLM is a structured tool call (`rlm_query`) handled by the
-        // normal tool dispatch path; inline ```repl blocks (paper §2)
-        // are executed below when tool_uses is empty.
+        // normal tool dispatch path; a ```repl fence in prose is never
+        // executed outside an RLM host turn.
         // DeepSeek chat API rejects assistant messages that contain only
         // Keep thinking for UI stream events, but persist only sendable
         // assistant turns in the conversation state.

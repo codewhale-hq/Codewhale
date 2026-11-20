@@ -233,24 +233,33 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
         return MouseOutcome::default();
     };
     let placement = app.work_surface.effective_placement;
-    let on_divider = match placement {
-        WorkSurfacePlacement::Off => false,
-        WorkSurfacePlacement::Top => {
-            mouse.row == area.bottom().saturating_sub(1)
-                && mouse.column >= area.x
-                && mouse.column < area.right()
+    let framed = area.width >= 4 && area.height >= 3;
+    let on_divider = if framed {
+        match placement {
+            WorkSurfacePlacement::Off => false,
+            WorkSurfacePlacement::Top => {
+                mouse.row == area.bottom().saturating_sub(1)
+                    && mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && dock_tab_at(app, mouse.column, mouse.row).is_none()
+            }
+            WorkSurfacePlacement::Bottom => {
+                mouse.row == area.y
+                    && mouse.column >= area.x
+                    && mouse.column < area.right()
+                    && dock_tab_at(app, mouse.column, mouse.row).is_none()
+            }
+            WorkSurfacePlacement::Left => {
+                mouse.column == area.right().saturating_sub(1)
+                    && mouse.row >= area.y
+                    && mouse.row < area.bottom()
+            }
+            WorkSurfacePlacement::Right => {
+                mouse.column == area.x && mouse.row >= area.y && mouse.row < area.bottom()
+            }
         }
-        WorkSurfacePlacement::Bottom => {
-            mouse.row == area.y && mouse.column >= area.x && mouse.column < area.right()
-        }
-        WorkSurfacePlacement::Left => {
-            mouse.column == area.right().saturating_sub(1)
-                && mouse.row >= area.y
-                && mouse.row < area.bottom()
-        }
-        WorkSurfacePlacement::Right => {
-            mouse.column == area.x && mouse.row >= area.y && mouse.row < area.bottom()
-        }
+    } else {
+        false
     };
 
     if matches!(mouse.kind, MouseEventKind::Moved) && app.work_surface.divider_hovered != on_divider
@@ -261,12 +270,19 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
 
     match mouse.kind {
         MouseEventKind::Moved if on_divider => {
+            if app.work_surface.hovered_tab.take().is_some()
+                || app.work_surface.hovered.take().is_some()
+            {
+                app.needs_redraw = true;
+            }
             return MouseOutcome {
                 consumed: true,
                 action: None,
             };
         }
         MouseEventKind::Down(MouseButton::Left) if on_divider => {
+            app.work_surface.hovered_tab = None;
+            app.work_surface.hovered = None;
             app.work_surface.resizing = true;
             app.work_surface.divider_hovered = true;
             app.work_surface.resize_anchor_column = mouse.column;
@@ -452,6 +468,19 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
         };
     }
 
+    let in_row_columns = if framed {
+        let right_bound = if placement == WorkSurfacePlacement::Left
+            && app.work_surface.total_rows > app.work_surface.visible_rows
+        {
+            area.right().saturating_sub(2)
+        } else {
+            area.right().saturating_sub(1)
+        };
+        mouse.column > area.x && mouse.column < right_bound
+    } else {
+        true
+    };
+
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             claim_focus(app);
@@ -477,7 +506,11 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
             }
         }
         MouseEventKind::Moved => {
-            let hovered = hit_row(app, mouse.row).map(|row| row.id.clone());
+            let hovered = if in_row_columns {
+                hit_row(app, mouse.row).map(|row| row.id.clone())
+            } else {
+                None
+            };
             if app.work_surface.hovered != hovered {
                 app.work_surface.hovered = hovered;
                 app.needs_redraw = true;
@@ -488,7 +521,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> MouseOutcome {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            let row = hit_row(app, mouse.row).cloned();
+            let row = in_row_columns
+                .then(|| hit_row(app, mouse.row).cloned())
+                .flatten();
             let Some(row) = row else {
                 claim_focus(app);
                 return MouseOutcome {

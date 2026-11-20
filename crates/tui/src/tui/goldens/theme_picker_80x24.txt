@@ -1,23 +1,23 @@
 
-  theme · live preview ────────────────────────────────────────────────────────
-
-                                                                             █
-      1. System                            Follow terminal background…       █
-      2. Terminal                          Inherit terminal colors fully…    █
-      3. Shoreline                         Warm charcoal, one restrained…    █
-      4. Shoreline Light                   Shoreline on warm paper — the…    █
-   ▸  5. Underwater                        The painted ocean field: ombre…   █
-      6. Underwater Retro                  Flat phosphor-teal ocean: the…    █
-      7. Blue Stage                        Stage black, action blue, and…    █
-      8. Blue Stage Light                  Paper, cobalt action, and one…    █
-      9. Grayscale                         Color-minimal high contrast       █
-     10. Catppuccin Mocha                  Soft pastels on warm dark         █
-     11. Tokyo Night                       Deep blue/violet night palette    █
-     12. Dracula                           Classic high-contrast purple      █
-     13. Gruvbox Dark                      Vintage warm earth tones          █
-     14. Claude                            Warm navy & coral                 █
-     15. Matrix                            The Matrix films inspired theme   █
-     16. Solarized Light                   Solarized light — Light, calming… █
-     17. Uwu                               Soft kawaii night — sakura,…      │
-   ↑/↓ preview  Enter save  Esc revert
- ──────────────────────────────────────────────────────────────────────────────
+ ╭ theme · live preview ──────────────────────────────────────────────── 5/17 ╮
+ │       1. System                          Follow terminal background…       │
+ │       2. Terminal                        Inherit terminal colors fully…    │
+ │       3. Shoreline                       Warm charcoal, one restrained…    │
+ │       4. Shoreline Light                 Shoreline on warm paper — the…    │
+ │  ▸ ●  5. Underwater                      The painted ocean field: ombre…   │
+ │       6. Underwater Retro                Flat phosphor-teal ocean: the…    │
+ │       7. Blue Stage                      Stage black, action blue, and…    │
+ │       8. Blue Stage Light                Paper, cobalt action, and one…    │
+ │       9. Grayscale                       Color-minimal high contrast       │
+ │      10. Catppuccin Mocha                Soft pastels on warm dark         │
+ │      11. Tokyo Night                     Deep blue/violet night palette    │
+ │      12. Dracula                         Classic high-contrast purple      │
+ │      13. Gruvbox Dark                    Vintage warm earth tones          │
+ │      14. Claude                          Warm navy & coral                 │
+ │      15. Matrix                          The Matrix films inspired theme   │
+ │      16. Solarized Light                 Solarized light — Light,…         │
+ │      17. Uwu                             Soft kawaii night — sakura,…      │
+ │                                                                            │
+ │                                                                            │
+ │ ↑/↓ preview · Enter save · Esc revert                                      │
+ ╰────────────────────────────────────────────────────────────────────────────╯

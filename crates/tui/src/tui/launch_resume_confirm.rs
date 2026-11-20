@@ -12,11 +12,10 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-use crate::tui::views::{
-    ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area, render_modal_surface,
-};
+use crate::tui::views::rounded::render_rounded_modal;
+use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
@@ -137,22 +136,15 @@ impl ModalView for LaunchResumeConfirmView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let popup = self.occupied_region(area);
         self.last_area.set(Some(popup));
-        render_modal_surface(area, popup, buf);
+        let inner = render_rounded_modal(
+            area,
+            popup,
+            buf,
+            tr(self.locale, MessageId::LaunchResumeConfirmTitle),
+            None,
+            true,
+        );
 
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                tr(self.locale, MessageId::LaunchResumeConfirmTitle).to_string(),
-                Style::default().fg(palette::TEXT_PRIMARY).bold(),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-        let inner = block.inner(popup);
-        block.render(popup, buf);
-
-        // Reserve the consequence and controls first. A long session title
-        // is one clipped line, never a paragraph that can bury the warning.
         let body_height = inner.height.saturating_sub(1);
         let warning = Paragraph::new(tr(self.locale, MessageId::LaunchResumeConfirmBody))
             .style(Style::default().fg(palette::TEXT_SOFT))
@@ -185,8 +177,6 @@ impl ModalView for LaunchResumeConfirmView {
         }
         warning.render(Rect::new(inner.x, y, inner.width, warning_height), buf);
 
-        // These are real controls, sharing the same measured rectangles for
-        // paint and pointer input. Keep both reachable in compact terminals.
         let button_width = inner.width.saturating_sub(1) / 2;
         let y = inner.bottom().saturating_sub(1);
         let buttons = [

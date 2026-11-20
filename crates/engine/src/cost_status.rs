@@ -5063,6 +5063,14 @@ mod tests {
                 "models/gemini-4-hydrogen",
                 4_963.0 * 1.5e-6 + 131_324.0 * 0.075e-6 + 46.0 * 7.5e-6,
             ),
+            (
+                "gemini-4-neon",
+                4_963.0 * 3e-6 + 131_324.0 * 0.15e-6 + 46.0 * 15e-6,
+            ),
+            (
+                "models/gemini-4-neon",
+                4_963.0 * 3e-6 + 131_324.0 * 0.15e-6 + 46.0 * 15e-6,
+            ),
         ] {
             let route = EffectiveRouteEnvelope::capture_observed(
                 ProviderKind::Google,
@@ -5085,19 +5093,6 @@ mod tests {
                 "{model} roster probe: {probe:?}"
             );
             assert_eq!(probe.unpriced_reason, None, "{model} roster probe");
-        }
-
-        for unpriced_neon in ["gemini-4-neon", "models/gemini-4-neon"] {
-            let route = EffectiveRouteEnvelope::capture_observed(
-                ProviderKind::Google,
-                "google",
-                unpriced_neon,
-                Some(google_base),
-                now,
-            );
-            assert!(route.provider_live_pricing.is_none(), "{unpriced_neon}");
-            let audit = route.audit_frozen(&google_usage);
-            assert!(!audit.is_priced(), "{unpriced_neon}: {audit:?}");
         }
 
         let live_models_dev = codewhale_config::catalog::CatalogSnapshot {

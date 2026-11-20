@@ -4551,6 +4551,8 @@ fn validate_plugin_callback(query: &str, issuer: &str) -> Result<()> {
 
 #[derive(Serialize, Deserialize)]
 pub struct PluginOAuthTokens {
+    #[serde(default)]
+    grant_id: Option<uuid::Uuid>,
     access_token: String,
     refresh_token: Option<String>,
     expires_at: u64,
@@ -4614,6 +4616,7 @@ pub fn plugin_token_response(
         .filter(|seconds| *seconds > 0)
         .context("Plugin OAuth token response requires a positive expires_in")?;
     Ok(PluginOAuthTokens {
+        grant_id: Some(uuid::Uuid::new_v4()),
         access_token,
         refresh_token: token
             .refresh_token
@@ -4659,27 +4662,94 @@ pub fn plugin_oauth_access_token(
     descriptor: &PluginOAuthConfig,
     read_only: bool,
 ) -> Result<String> {
+    plugin_oauth_access_token_for_grant(provider, base_url, descriptor, read_only, None)
+}
+
+pub fn plugin_oauth_access_token_for_grant(
+    provider: &str,
+    base_url: &str,
+    descriptor: &PluginOAuthConfig,
+    read_only: bool,
+    expected_grant: Option<uuid::Uuid>,
+) -> Result<String> {
     let slot = plugin_oauth_slot(provider, base_url, descriptor)?;
     let secrets = if read_only {
         codewhale_secrets::Secrets::auto_detect_read_only()
     } else {
         codewhale_secrets::Secrets::auto_detect()
     };
-    plugin_oauth_access_token_with_store(&slot, descriptor, read_only, &secrets)
+    resolve_plugin_oauth_access_token(&slot, descriptor, read_only, &secrets, expected_grant)
 }
 
+pub fn pin_plugin_oauth_grant(
+    provider: &str,
+    base_url: &str,
+    descriptor: &PluginOAuthConfig,
+) -> Result<uuid::Uuid> {
+    let slot = plugin_oauth_slot(provider, base_url, descriptor)?;
+    pin_plugin_oauth_grant_with_store(&slot, &codewhale_secrets::Secrets::auto_detect())
+}
+
+fn read_plugin_oauth_grant(raw: Option<&str>) -> Result<PluginOAuthTokens> {
+    let stored = raw.context(
+        "Plugin OAuth login missing; use /connect <provider> in Codewhale or codewhale auth plugin-login --provider <provider> in a terminal",
+    )?;
+    serde_json::from_str(stored)
+        .map_err(|_| anyhow::anyhow!("Plugin OAuth credential store contains invalid data"))
+}
+
+fn pin_plugin_oauth_grant_with_store(
+    slot: &str,
+    secrets: &codewhale_secrets::Secrets,
+) -> Result<uuid::Uuid> {
+    if let Some(raw) = secrets.get(slot)?
+        && let Some(id) = read_plugin_oauth_grant(Some(&raw))?.grant_id
+    {
+        return Ok(id);
+    }
+    secrets
+        .with_entry_transaction(slot, |raw| {
+            let mut token = read_plugin_oauth_grant(raw.as_deref())
+                .map_err(|error| codewhale_secrets::SecretsError::Keyring(error.to_string()))?;
+            let id = match token.grant_id {
+                Some(id) => id,
+                None => {
+                    let id = uuid::Uuid::new_v4();
+                    token.grant_id = Some(id);
+                    *raw = Some(serde_json::to_string(&token).map_err(|error| {
+                        codewhale_secrets::SecretsError::Keyring(error.to_string())
+                    })?);
+                    id
+                }
+            };
+            Ok(id)
+        })
+        .map_err(Into::into)
+}
+
+#[cfg(test)]
 fn plugin_oauth_access_token_with_store(
     slot: &str,
     descriptor: &PluginOAuthConfig,
     read_only: bool,
     secrets: &codewhale_secrets::Secrets,
 ) -> Result<String> {
+    resolve_plugin_oauth_access_token(slot, descriptor, read_only, secrets, None)
+}
+
+fn resolve_plugin_oauth_access_token(
+    slot: &str,
+    descriptor: &PluginOAuthConfig,
+    read_only: bool,
+    secrets: &codewhale_secrets::Secrets,
+    expected_grant: Option<uuid::Uuid>,
+) -> Result<String> {
     let resolve = |raw: &mut Option<String>| -> Result<String> {
-        let stored = raw.as_ref().context(
-            "Plugin OAuth login missing; use /connect <provider> in Codewhale or codewhale auth plugin-login --provider <provider> in a terminal",
-        )?;
-        let mut token: PluginOAuthTokens = serde_json::from_str(stored)
-            .map_err(|_| anyhow::anyhow!("Plugin OAuth credential store contains invalid data"))?;
+        let mut token = read_plugin_oauth_grant(raw.as_deref())?;
+        anyhow::ensure!(
+            expected_grant.is_none_or(|expected| token.grant_id == Some(expected)),
+            "Plugin OAuth login changed after route selection. Re-run with an explicit --provider or --model."
+        );
         let now = now_unix_secs().context("System clock before UNIX epoch")? as u64;
         // The refresh window is not expiration. Non-refreshable grants and
         // read-only diagnostics may use a token for its actual valid lifetime.
@@ -4704,7 +4774,9 @@ fn plugin_oauth_access_token_with_store(
             if let Some(resource) = &descriptor.resource {
                 form.push(("resource", resource));
             }
+            let grant_id = token.grant_id;
             token = plugin_token_response(descriptor, &form, Some(refresh.clone()))?;
+            token.grant_id = grant_id.or(token.grant_id);
             *raw = Some(serde_json::to_string(&token)?);
         }
         Ok(token.access_token)
@@ -9279,6 +9351,7 @@ mod plugin_oauth_tests {
         ));
         let config = descriptor();
         let raw = serde_json::to_string(&PluginOAuthTokens {
+            grant_id: None,
             access_token: "expired".into(),
             refresh_token: Some("refresh".into()),
             expires_at: 1,
@@ -9287,6 +9360,7 @@ mod plugin_oauth_tests {
         secrets.set("test-slot", &raw).unwrap();
         assert!(plugin_oauth_saved_token(&raw).unwrap());
         let unusable = serde_json::to_string(&PluginOAuthTokens {
+            grant_id: None,
             access_token: "expired".into(),
             refresh_token: None,
             expires_at: 1,
@@ -9414,6 +9488,7 @@ mod plugin_oauth_tests {
             .set(
                 "rotation",
                 &serde_json::to_string(&PluginOAuthTokens {
+                    grant_id: None,
                     access_token: "expired".into(),
                     refresh_token: Some("old-refresh".into()),
                     expires_at: 1,
@@ -9421,12 +9496,13 @@ mod plugin_oauth_tests {
                 .unwrap(),
             )
             .unwrap();
+        let grant = pin_plugin_oauth_grant_with_store("rotation", &secrets).unwrap();
         let mut workers = Vec::new();
         for _ in 0..2 {
             let config = config.clone();
             let secrets = secrets.clone();
             workers.push(tokio::task::spawn_blocking(move || {
-                plugin_oauth_access_token_with_store("rotation", &config, false, &secrets)
+                resolve_plugin_oauth_access_token("rotation", &config, false, &secrets, Some(grant))
             }));
         }
         for worker in workers {
@@ -9435,6 +9511,20 @@ mod plugin_oauth_tests {
         let stored: PluginOAuthTokens =
             serde_json::from_str(&secrets.get("rotation").unwrap().unwrap()).unwrap();
         assert_eq!(stored.refresh_token.as_deref(), Some("rotated"));
+        assert_eq!(stored.grant_id, Some(grant));
+        let new_grant = PluginOAuthTokens {
+            grant_id: Some(uuid::Uuid::new_v4()),
+            ..stored
+        };
+        secrets
+            .set("rotation", &serde_json::to_string(&new_grant).unwrap())
+            .unwrap();
+        assert!(
+            resolve_plugin_oauth_access_token("rotation", &config, false, &secrets, Some(grant))
+                .unwrap_err()
+                .to_string()
+                .contains("login changed")
+        );
         secrets.delete("rotation").unwrap();
         assert!(
             plugin_oauth_access_token_with_store("rotation", &config, false, &secrets).is_err()
@@ -9474,6 +9564,7 @@ mod plugin_oauth_tests {
                 codewhale_secrets::InMemoryKeyringStore::default(),
             ));
             let raw = serde_json::to_string(&PluginOAuthTokens {
+                grant_id: None,
                 access_token: "still-valid".into(),
                 refresh_token: Some("refresh".into()),
                 expires_at: (now_unix_secs().unwrap() as u64).saturating_add(30),

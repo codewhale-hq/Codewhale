@@ -1541,9 +1541,10 @@ async fn edit_file_requires_prior_read() {
         .expect_err("edit without read should fail");
     let message = err.to_string();
     assert!(message.contains("not been read"), "{message}");
-    // The recovery has to be spelled as a call the model can make: `read_file`
-    // was retired in v0.9.3 and the registry has no fuzzy resolve step.
-    assert!(message.contains(r#"File with action="read""#), "{message}");
+    assert!(
+        message.contains(r#"call read path="blind.txt""#),
+        "{message}"
+    );
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1569,7 +1570,10 @@ async fn edit_file_rejects_stale_prior_read() {
         .expect_err("stale read should fail");
     let message = err.to_string();
     assert!(message.contains("changed since"), "{message}");
-    assert!(message.contains(r#"File with action="read""#), "{message}");
+    assert!(
+        message.contains(r#"call read path="stale.txt""#),
+        "{message}"
+    );
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1595,12 +1599,11 @@ async fn edit_file_rejects_non_unique_exact_match() {
     let message = err.to_string();
     assert!(message.contains("non-unique"), "{message}");
     assert!(message.contains("matched 2"), "{message}");
-    // Recovery text must name the live surface. `read_file` is retired and
-    // cannot dispatch (crates/engine/src/tools/registry.rs:2067).
     assert!(
-        message.contains("call File with action=\"read\""),
+        message.contains("call `read` with path=\"multi.txt\""),
         "{message}"
     );
+    assert!(!message.contains("File with action=\"read\""), "{message}");
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1847,7 +1850,11 @@ async fn test_edit_file_not_found() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("not found"));
-    assert!(err.to_string().contains("call File with action=\"read\""));
+    assert!(
+        err.to_string()
+            .contains("call `read` with path=\"no_match.txt\"")
+    );
+    assert!(!err.to_string().contains("File with action=\"read\""));
     assert!(!err.to_string().contains("read_file"));
 }
 
@@ -1885,9 +1892,10 @@ async fn test_edit_file_rejects_identical_search_and_replace() {
         "error should size the payload: {err}"
     );
     assert!(
-        err.contains("Recovery"),
-        "error should offer recovery: {err}"
+        err.contains("Recovery: re-read the file with `read`"),
+        "error should offer recovery using `read`: {err}"
     );
+    assert!(!err.contains("File action=\"read\""), "{err}");
     let unchanged = fs::read_to_string(&test_file).expect("read");
     assert_eq!(unchanged, "a := \"foo\"");
 }

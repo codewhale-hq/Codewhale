@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-17T15:04:45Z",
-    "sha256": "08c60778489d59baf98eadacf6328b4f75e6f79ba16078778366a4302fb69a13"
+    "fetched_at": "2026-11-20T05:19:54Z",
+    "sha256": "d178146b38f5687ea10d945730a7b714c890ba85a09b45fed7a6e74c9ecea9a0"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -2477,6 +2477,55 @@
           "input_audio": 1.5
         }
       },
+      "gemini-4-neon": {
+        "id": "gemini-4-neon",
+        "canonical_model_id": "google/gemini-4-neon",
+        "name": "Gemini 4 Neon",
+        "description": "Google's Gemini 4 model for fast, frontier-level coding, knowledge work and science workflows, with four thinking levels and a 1M-token context window",
+        "family": "gemini",
+        "knowledge": "2026-03",
+        "release_date": "2026-11-18",
+        "last_updated": "2026-11-18",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 65536
+        },
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.15,
+          "input_audio": 3
+        }
+      },
       "gemini-flash-latest": {
         "id": "gemini-flash-latest",
         "name": "Gemini Flash Latest",
@@ -2645,6 +2694,71 @@
       }
     },
     "meta": {
+      "muse-ember-1.0": {
+        "id": "muse-ember-1.0",
+        "canonical_model_id": "meta/muse-ember-1.0",
+        "name": "Muse Ember",
+        "description": "Muse Ember is Meta's smallest and most efficient reasoning model, built for the work agents repeat all day: tool calls, coding subtasks, routing, extraction, and long-document parsing. It pairs with Muse Wonder or Muse Spark, which plan while Muse Ember handles the volume.",
+        "family": "muse",
+        "release_date": "2026-11-09",
+        "last_updated": "2026-11-09",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "tiers": [
+            {
+              "input": 0.3,
+              "output": 1.5,
+              "cache_read": 0.012,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 0.3,
+            "output": 1.5,
+            "cache_read": 0.012
+          }
+        }
+      },
       "muse-spark-1.1": {
         "id": "muse-spark-1.1",
         "canonical_model_id": "meta/muse-spark-1.1",
@@ -4607,6 +4721,206 @@
             }
           }
         }
+      },
+      "gpt-6.2-astra": {
+        "id": "gpt-6.2-astra",
+        "canonical_model_id": "openai/gpt-6.2-astra",
+        "name": "GPT-6.2 Astra",
+        "description": "A frontier reasoning model for coding, computer use, and professional work such as slides, spreadsheets, and documents.",
+        "family": "gpt-astra",
+        "knowledge": "2026-05-18",
+        "release_date": "2026-11-17",
+        "last_updated": "2026-11-17",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8,
+          "output": 40,
+          "cache_read": 0.4,
+          "cache_write": 10,
+          "tiers": [
+            {
+              "input": 16,
+              "output": 60,
+              "cache_read": 0.8,
+              "cache_write": 20,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 16,
+            "output": 60,
+            "cache_read": 0.8,
+            "cache_write": 20
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 16,
+                "output": 80,
+                "cache_read": 0.8,
+                "cache_write": 20
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            },
+            "ultrafast": {
+              "provider": {
+                "body": {
+                  "service_tier": "ultrafast"
+                }
+              }
+            }
+          }
+        }
+      },
+      "gpt-6.2-sol": {
+        "id": "gpt-6.2-sol",
+        "canonical_model_id": "openai/gpt-6.2-sol",
+        "name": "GPT-6.2 Sol",
+        "description": "An efficient reasoning model for everyday work, multistep agentic workflows, and coding.",
+        "family": "gpt-sol",
+        "knowledge": "2026-06-01",
+        "release_date": "2026-11-17",
+        "last_updated": "2026-11-17",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "cache_write": 2.5,
+          "tiers": [
+            {
+              "input": 4,
+              "output": 15,
+              "cache_read": 0.2,
+              "cache_write": 5,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 4,
+            "output": 15,
+            "cache_read": 0.2,
+            "cache_write": 5
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 4,
+                "output": 20,
+                "cache_read": 0.2,
+                "cache_write": 5
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            },
+            "ultrafast": {
+              "provider": {
+                "body": {
+                  "service_tier": "ultrafast"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "openrouter": {
@@ -4648,7 +4962,7 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 393216
         },
         "cost": {
           "input": 0.09,
@@ -4694,12 +5008,12 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 384000
+          "output": 393216
         },
         "cost": {
           "input": 0.9,
           "output": 1.5,
-          "cache_read": 0.25
+          "cache_read": 0.2
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -5111,9 +5425,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.007,
-          "output": 6.8,
-          "cache_read": 0.006
+          "input": 0.62,
+          "output": 2.42,
+          "cache_read": 0.14
         }
       },
       "z-ai/glm-5.3": {
@@ -5194,11 +5508,11 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943717
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.0784,
+          "input": 0.15,
+          "output": 0.5,
           "cache_read": 0.03
         }
       }
@@ -5540,7 +5854,7 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 1048576
         },
         "cost": {
           "input": 3,
