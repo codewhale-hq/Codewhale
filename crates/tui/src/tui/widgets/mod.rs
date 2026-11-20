@@ -4253,11 +4253,11 @@ mod tests {
         approval_truncation_hint, build_empty_state_lines, composer_content_geometry,
         composer_empty_hint_text, composer_height, composer_inner_area, composer_max_height,
         composer_submit_hint, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
-        enclosed_composer_panel_fits, fish_heading, fish_mark,
-        history_entry_revision, layout_input, layout_input_with_scroll, placeholder_visual_lines,
-        push_command_entry, receipt_is_settling, revision_in_domain, should_render_empty_state,
-        slash_completion_hints, test_native_ocean_caps, tool_run_summary_revision,
-        wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        enclosed_composer_panel_fits, fish_heading, fish_mark, history_entry_revision,
+        layout_input, layout_input_with_scroll, placeholder_visual_lines, push_command_entry,
+        receipt_is_settling, revision_in_domain, should_render_empty_state, slash_completion_hints,
+        test_native_ocean_caps, tool_run_summary_revision, wrap_input_lines,
+        wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
