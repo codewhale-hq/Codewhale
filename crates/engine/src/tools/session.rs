@@ -72,6 +72,11 @@ fn message_text(message: &Message) -> String {
             ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
+        .filter(|text| {
+            let text = text.trim();
+            !(text.starts_with("[tool_history_repair] Repaired ")
+                && text.ends_with(" orphan terminal result(s)."))
+        })
         .collect::<Vec<_>>()
         .join("")
 }
@@ -203,11 +208,6 @@ fn format_tail_message(message: &Message) -> Option<String> {
         Role::Assistant => {
             let text = message_text(message);
             let trimmed = text.trim();
-            if trimmed.starts_with("[tool_history_repair] Repaired ")
-                && trimmed.ends_with(" orphan terminal result(s).")
-            {
-                return None;
-            }
             if !trimmed.is_empty() {
                 return Some(format!(
                     "assistant: {}",
