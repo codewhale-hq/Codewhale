@@ -337,6 +337,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Changed
 
+- **The `codewhale` npm package needs Node.js 22 or newer:** its `engines` field and install check move from Node.js 18 to 22, so `npm install -g codewhale` on Node.js 18 or 20 stops and asks you to upgrade Node.js. Other install methods are unchanged. (CW-8205)
 - **Faster secret redaction before every model request:** `redact_model_bound_secrets` now skips lines with no credential signal through a byte-level fast path and gives byte-identical output to the previous code, checked against an unoptimized reference on a generated corpus, so long sessions no longer pay full redaction cost on ordinary text each turn. (#7347)
 - **Terminal and website design tokens updated to 5.4.0:** vendored `codewhale-design` `5.4.0` and `codewhale-ratatui` `5.4.0` roles (`Subagent` and `LivePeak`), exported the updated `5.4.0` CSS custom properties to the website (`web/app/tokens.css`), fixed `adapt_fg_for_depth` ANSI-16 appearance awareness (bright 9–14 on dark, dark 1–6 on light) so warnings and status lines stay legible on light 16-color terminals, and preserved green/red hues (`22`/`52` dark, `158`/`224` light) on 256-color diff line backgrounds. (CW-8264)
 - **Crisper 980-dot whale and activity forms in `/pet`:** the terminal pet's 980 dots now compile from perimeter-anchored hexagonal-lattice silhouettes with rorqual throat illumination at rest and cleaner edges across all thirteen running, waiting and done forms, while keeping zero motion under Hold still and Reduce motion. (CW-6453)
@@ -1102,6 +1103,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **A failed send keeps what you typed since:** when a message fails to send after you have started a new draft, the failed message is stashed rather than written over the draft, so it stays recoverable ([#7255](https://github.com/codewhale-hq/Codewhale/pull/7255)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
 
 - **Windows: plugins enable again on a finalized runtime root.** The sandboxed plugin host adds its own AppContainer read and execute grant to the finalized plugin root, and Windows stored the root's inheriting read/execute entry as more than one entry; both made enabling refuse. The root now carries one non-inheriting entry, the verifier still requires a protected owner-only DACL with nothing above read and execute, and the refusal names the underlying check. Fleet ledger compaction is no longer blocked by a live appender, and a blocked checkpoint inspection is reported as such instead of clearing save health. The Windows suite has not been shown green for this change, so this is not a Windows qualification.
+
+- **Parallel tool calls without ids no longer fail the turn on a non-streaming reply:** when a provider, or a gateway in front of it, answered a non-streaming `chat/completions` request with several tool calls that carried no `id`, every call was given the same placeholder id and the whole response was then rejected for a duplicate pairing, failing the turn. Each call now gets its own fallback id, matching streaming replies.
 
 ### Security
 

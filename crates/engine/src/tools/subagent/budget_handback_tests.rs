@@ -43,12 +43,8 @@ impl Drop for Fixture {
 async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixture {
     // Only these cases exercise wall/API timeouts. The other cases exercise
     // budget and report semantics, so leave room for full-suite scheduling.
-    let timeout_case = matches!(mode, "hold" | "timeout" | "work-timeout");
-    let wall_time_secs = if matches!(mode, "hold" | "timeout") {
-        5
-    } else {
-        30
-    };
+    let timeout_case = matches!(mode, "timeout" | "work-timeout");
+    let wall_time_secs = if mode == "timeout" { 5 } else { 30 };
     let workspace = tempdir().unwrap();
     fs::write(
         workspace.path().join("README.md"),

@@ -303,7 +303,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 ## 4. npm
 
-**前置条件：** Node.js 18+ 和 npm，并且有一个**你能写入的全局 prefix**。npm 安装的是注册表上最新已发布的版本，绝不会是未发布的源码候选版。
+**前置条件：** Node.js 22+ 和 npm，并且有一个**你能写入的全局 prefix**。在 Node.js 18 或 20 上，安装会停止并提示你升级 Node.js。npm 安装的是注册表上最新已发布的版本，绝不会是未发布的源码候选版。
 
 ```bash
 npm install -g codewhale
