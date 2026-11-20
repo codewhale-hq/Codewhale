@@ -736,18 +736,28 @@ async fn task_shell_wait_suppresses_duplicate_background_shell_completion_event(
     let large_wait_ctx = ctx.clone().with_origin_tool_call_id("call-wait-large");
     let large_waited = TaskShellWaitTool
         .execute(
-            serde_json::json!({"task_id": large_id, "wait": true, "timeout_ms": 10_000}),
+            serde_json::json!({"task_id": &large_id, "wait": true, "timeout_ms": 10_000}),
             &large_wait_ctx,
         )
         .await
         .expect("wait large bg job");
-    assert!(large_waited.content.contains("art_call-wait-large"));
+    assert!(large_waited.success, "{}", large_waited.content);
+    let metadata = large_waited.metadata.as_ref().expect("large wait metadata");
+    let artifact_id = metadata["artifact_id"]
+        .as_str()
+        .expect("complete background output artifact");
+    assert_eq!(
+        artifact_id,
+        codewhale_runtime::artifacts::artifact_id_for_tool_call(&large_id)
+    );
+    assert_eq!(metadata["artifact_complete"], true);
+    assert!(large_waited.content.contains(artifact_id));
     assert!(large_waited.content.contains("retrieve_tool_result"));
     assert!(engine.drain_shell_completion_events().is_empty());
     let large_mid = RetrieveToolResultTool
         .execute(
             serde_json::json!({
-                "ref": "art_call-wait-large",
+                "ref": artifact_id,
                 "mode": "query",
                 "query": "BG_MID_PAST_30KB"
             }),
@@ -755,6 +765,7 @@ async fn task_shell_wait_suppresses_duplicate_background_shell_completion_event(
         )
         .await
         .expect("retrieve large waited output");
+    assert!(large_mid.success, "{}", large_mid.content);
     assert!(large_mid.content.contains("BG_MID_PAST_30KB"));
 
     let cancel_started = LowercaseBashTool
