@@ -69,7 +69,10 @@ fn row_line<'a>(screen: &'a str, model: &str) -> &'a str {
     screen
         .lines()
         .find(|line| {
-            line.contains(model) && !line.contains("Model:") && !line.contains(&format!("/{model}"))
+            line.contains(model)
+                && !line.contains("Model:")
+                && !line.contains("Filter:")
+                && !line.contains(&format!("/{model}"))
         })
         .unwrap_or_else(|| panic!("no row for {model}:\n{screen}"))
 }

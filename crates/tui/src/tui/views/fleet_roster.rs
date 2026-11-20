@@ -31,7 +31,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 use crate::tui::app::App;
@@ -48,8 +48,9 @@ use codewhale_tui_kit::menu_style;
 /// vocabulary instead of wrapping (#6290).
 const FLEET_ROSTER_PAGE: usize = 10;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    truncate_view_text,
+    ActionHint, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent,
+    active_modal_accent_color, active_modal_border_color, render_modal_footer, render_modal_rule,
+    render_panel_scroll_rail, render_surface_frame, render_vertical_divider, truncate_view_text,
 };
 use crate::tui::whales;
 use codewhale_agent_contract::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
@@ -463,64 +464,45 @@ impl ModalView for FleetRosterView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
-        Block::default()
-            .style(Style::default().bg(self.surface_bg))
-            .render(area, buf);
-
-        let hints = self.footer_hints();
-        let content = render_modal_footer(area, buf, &hints);
-
-        // A compact, honest header: the roster is the current room, Workers
-        // is a real destination. Editing belongs to the selected member,
-        // rather than a decorative Setup tab that never handled clicks.
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(content);
-        let roster_label = format!(
-            " {} · {} ",
+        let title = format!(
+            "{} · {}",
             tr(self.locale, MessageId::FleetRosterHeaderLabel),
             tr(self.locale, MessageId::FleetRosterTabRoster)
         );
-        let workers_label = format!(" {} ", tr(self.locale, MessageId::FleetRosterWorkers));
-        let roster_width = unicode_width::UnicodeWidthStr::width(roster_label.as_str()) as u16;
-        let workers_width = unicode_width::UnicodeWidthStr::width(workers_label.as_str()) as u16;
-        self.workers_hitbox.set(None);
-        // Place Workers at the right edge so even a compact screen retains
-        // its full action target; the room label yields first.
-        let workers_width = workers_width.min(chunks[0].width);
-        let workers = Rect::new(
-            chunks[0].right().saturating_sub(workers_width),
-            chunks[0].y,
-            workers_width,
-            u16::from(chunks[0].height > 0),
-        );
-        if workers.width > 0 && workers.height > 0 {
-            self.workers_hitbox.set(Some(workers));
-        }
-        let title = Rect::new(
-            chunks[0].x,
-            chunks[0].y,
-            roster_width.min(chunks[0].width.saturating_sub(workers_width)),
-            workers.height,
-        );
-        Paragraph::new(Line::from(Span::styled(
-            roster_label,
-            Style::default().fg(palette::TEXT_PRIMARY).bold(),
-        )))
-        .render(title, buf);
+        let workers_label = tr(self.locale, MessageId::FleetRosterWorkers).into_owned();
         let workers_style = if self.hovered_workers.get() {
-            menu_style::hovered_row_style().fg(palette::WHALE_ACTION)
+            menu_style::hovered_row_style().fg(active_modal_accent_color())
         } else {
             Style::default()
-                .fg(palette::WHALE_ACTION)
-                .add_modifier(Modifier::UNDERLINED)
+                .fg(active_modal_accent_color())
+                .add_modifier(Modifier::BOLD)
         };
-        Paragraph::new(Line::from(Span::styled(workers_label, workers_style))).render(workers, buf);
-        if chunks[0].height > 1 {
+        let mut frame = SurfaceFrame::new(title).right_pill(workers_label, workers_style);
+        if self.surface_bg == Color::Reset {
+            let mut theme = palette::TERMINAL_UI_THEME;
+            theme.surface_bg = Color::Reset;
+            theme.composer_bg = Color::Reset;
+            frame = frame.theme(theme);
+        }
+        let (inner, pill_hitbox) = render_surface_frame(area, buf, frame);
+        self.workers_hitbox.set(pill_hitbox);
+
+        let hints = self.footer_hints();
+        let content = render_modal_footer(inner, buf, &hints);
+
+        let show_rule = content.height >= 4;
+        let header_height = if show_rule {
+            2
+        } else {
+            u16::from(content.height >= 2)
+        };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(header_height), Constraint::Min(1)])
+            .split(content);
+        if chunks[0].height > 0 {
             let summary = format!(
-                " {} · {}",
+                "{} · {}",
                 self.selected_fleet_line(),
                 tr(self.locale, MessageId::FleetRosterMembersCount)
                     .replace("{count}", &(self.members.len() + 1).to_string())
@@ -529,7 +511,10 @@ impl ModalView for FleetRosterView {
                 truncate_view_text(&summary, usize::from(chunks[0].width)),
                 Style::default().fg(palette::TEXT_MUTED),
             )))
-            .render(
+            .render(Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, 1), buf);
+        }
+        if show_rule && chunks[0].height > 1 {
+            render_modal_rule(
                 Rect::new(chunks[0].x, chunks[0].y + 1, chunks[0].width, 1),
                 buf,
             );
@@ -569,6 +554,7 @@ impl FleetRosterView {
                     Constraint::Min(20),
                 ])
                 .split(area);
+            render_vertical_divider(cols[1], buf, active_modal_border_color());
             (cols[0], cols[2])
         } else {
             let list_height =
@@ -580,9 +566,6 @@ impl FleetRosterView {
             (rows[0], rows[1])
         };
 
-        // Row list: the pinned operator first, then one row per member,
-        // scrolled so the selection stays visible when the party outgrows
-        // the pane.
         let visible_rows = usize::from(list_area.height).max(1);
         let first = self
             .selected
@@ -591,6 +574,8 @@ impl FleetRosterView {
                 self.row_count()
                     .saturating_sub(visible_rows.min(self.row_count())),
             );
+        let list_area =
+            render_panel_scroll_rail(list_area, buf, self.row_count(), first, visible_rows, true);
         let list_width = usize::from(list_area.width);
         let mut list_lines: Vec<Line> = Vec::with_capacity(visible_rows);
         for (line_offset, idx) in (first..(first + visible_rows).min(self.row_count())).enumerate()
