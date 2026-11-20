@@ -13,6 +13,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Added
 
+- **Read-only deferred tools:** Auto-Review recognizes local inspection tools and task or automation reads without prompting for routine lookups. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7431)
+
 - **Exact route inventory:** model lists separate metadata, observed roster evidence and readiness; optional session selections reject changed account or endpoint bindings, and the terminal shows the catalog status from that same route inventory, including on bundled fallback rows. A new Runtime thread can commit an exact selection before it becomes visible. Empty discovery no longer masquerades as a failed refresh. (CW-8311)
 
 - **DSH reviewed client module map:** CommonJS client activation uses the installer’s admitted import edges for relative modules, JSON, cycles and contained package exports. Undeclared requests fail closed, and prior compatibility receipts require review again. Installed Engine/App qualification remains pending (CW-8288, CW-8014, CW-8019).

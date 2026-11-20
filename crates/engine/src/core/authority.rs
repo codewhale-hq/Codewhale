@@ -1227,12 +1227,10 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
             | "git_show"
             | "git_blame"
             | "git_commit_plan"
-            | "git_merge_tree"
             | "git_review_scope"
             | "project"
             | "project_map"
             | "diagnostics"
-            | "lsp"
             | "load_skill"
             | "handle_read"
             | "retrieve_tool_result"
@@ -1244,7 +1242,6 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
             | "memory_search"
             | "validate_data"
             | "tui_help"
-            | "notify"
             | "show_data"
             | "present"
             | "agents/list"
@@ -2099,7 +2096,6 @@ mod tests {
             "tool_search_tool_bm25",
             "handle_read",
             "retrieve_tool_result",
-            "lsp",
             "context_archive_get",
             "context_archive_search",
             "session_get",
@@ -2109,12 +2105,10 @@ mod tests {
             "project_map",
             "validate_data",
             "tui_help",
-            "notify",
             "show_data",
             "present",
             "agents/list",
             "agents/wait",
-            "git_merge_tree",
             "task_list",
             "task_read",
             "pr_attempt_list",
@@ -2139,7 +2133,6 @@ mod tests {
         }
 
         for (family, action) in [
-            ("Git", "merge_tree"),
             ("tasks", "list"),
             ("tasks", "read"),
             ("tasks", "pr_attempt_list"),
@@ -2169,6 +2162,9 @@ mod tests {
         }
 
         for name in [
+            "lsp",
+            "notify",
+            "git_merge_tree",
             "image_ocr",
             "image_analyze",
             "pandoc_convert",
@@ -2198,6 +2194,7 @@ mod tests {
 
         for (family, action) in [
             ("Git", "fetch"),
+            ("Git", "merge_tree"),
             ("tasks", "pr_attempt_preflight"),
             ("tasks", "create"),
             ("tasks", "gate_run"),
