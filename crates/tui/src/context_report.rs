@@ -25,6 +25,7 @@ use codewhale_engine::compaction::{
     estimate_text_tokens_conservative,
 };
 use codewhale_engine::prompts::CORE_EXECUTION_PROFILE_PROMPT;
+use codewhale_localization::{MessageId, resolve_locale, tr};
 use codewhale_models::{CacheControl, ContentBlock, Message, SystemPrompt, Tool};
 use codewhale_runtime::config::Config;
 #[cfg(test)]
@@ -679,27 +680,26 @@ fn base_source_entries(
         plugin_registry,
         context_window_tokens,
     );
-    if let Some(block) = skills_block {
-        let mut entry = SourceEntry::text(
-            SourceKind::SkillsBlock,
-            "Available skills",
-            skills_dir.map(|path| path.display().to_string()),
-            ActivationReason::FilePresent,
-            &block,
-            CountingConfidence::High,
-            Some(5),
-        );
-        entry.truncation_reason = codewhale_skills::shortened_skills_note(&block);
-        builder.push(entry);
-    } else {
-        builder.push(SourceEntry::omitted(
-            SourceKind::SkillsBlock,
-            "Available skills",
-            skills_dir.map(|path| path.display().to_string()),
-            Some(5),
-            "no skills discovered",
-        ));
-    }
+    let skills_detail = skills_block.map_or_else(
+        || "no skills discovered".to_string(),
+        |block| {
+            let label = tr(resolve_locale(locale_tag), MessageId::ConfigPreviewLabel);
+            let tokens = known_tokens(Some(estimate_text_tokens_conservative(&block)));
+            let mut detail = format!("{label}≈ {tokens} · load_skill");
+            if let Some(note) = codewhale_skills::shortened_skills_note(&block) {
+                detail.push_str(". ");
+                detail.push_str(&note);
+            }
+            detail
+        },
+    );
+    builder.push(SourceEntry::omitted(
+        SourceKind::SkillsBlock,
+        "Available skills",
+        skills_dir.map(|path| path.display().to_string()),
+        Some(5),
+        skills_detail,
+    ));
 
     builder.push(SourceEntry::omitted(
         SourceKind::ContextManagement,
@@ -1046,6 +1046,43 @@ mod tests {
         assert!(json.contains("\"source_kind\": \"tool_result\""));
         assert!(json.contains("\"active_context_estimated_tokens\": 123"));
         assert!(json.contains("\"overflow_guard_estimated_tokens\": 185"));
+    }
+
+    #[test]
+    fn headless_skill_catalog_preview_does_not_count_toward_prompt_tokens() {
+        let workspace = tempdir().expect("workspace");
+        let skills = tempdir().expect("skills");
+        let skill_dir = skills.path().join("fixture-skill-preview");
+        fs::create_dir(&skill_dir).expect("create skill directory");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: fixture-skill-preview\ndescription: A long fixture description used to verify that catalog shortening stays visible.\n---\nInstructions.\n",
+        )
+        .expect("write skill");
+
+        let config: Config = toml::from_str(&format!(
+            "skills_dir = {}\n[skills]\nlisting_max_description_chars = 8",
+            toml::Value::String(skills.path().to_string_lossy().into_owned())
+        ))
+        .expect("read config");
+        let report = build_headless_context_report(&config, workspace.path());
+        let json: serde_json::Value =
+            serde_json::from_str(&context_report_json(&report)).expect("read context report JSON");
+        let skills_entry = json["entries"]
+            .as_array()
+            .expect("source entries")
+            .iter()
+            .find(|entry| entry["source_kind"] == "skills_block")
+            .expect("skills source");
+
+        assert_eq!(skills_entry["activation_reason"], "omitted");
+        assert_eq!(skills_entry["estimated_tokens"], 0);
+        let detail = skills_entry["truncation_reason"]
+            .as_str()
+            .expect("catalog preview detail");
+        assert!(detail.starts_with("Preview: ≈ "), "{detail}");
+        assert!(detail.contains("tokens · load_skill"), "{detail}");
+        assert!(detail.contains("descriptions shortened"), "{detail}");
     }
 
     #[test]
