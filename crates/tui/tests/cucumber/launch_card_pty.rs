@@ -332,16 +332,22 @@ fn launch_resume_buttons_support_mouse_cancel_and_keyboard_choice() {
         click_text(&mut tui, TITLE);
         wait(&mut tui, "cancel");
         click_text(&mut tui, "cancel");
-        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
-            .unwrap();
+        tui.wait_for(
+            |frame| frame.find_text(TITLE).is_some() && !frame.contains("resume  Enter"),
+            WAIT,
+        )
+        .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
         wait(&mut tui, "cancel");
         tui.send(keys::key::tab()).unwrap();
         tui.send(keys::key::enter()).unwrap();
-        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
-            .unwrap();
+        tui.wait_for(
+            |frame| frame.find_text(TITLE).is_some() && !frame.contains("resume  Enter"),
+            WAIT,
+        )
+        .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
