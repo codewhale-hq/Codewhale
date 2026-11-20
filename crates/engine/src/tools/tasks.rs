@@ -1024,10 +1024,6 @@ impl ToolSpec for TaskShellWaitTool {
         ApprovalRequirement::Required
     }
 
-    fn supports_parallel_for(&self, input: &Value) -> bool {
-        self.is_read_only_for(input)
-    }
-
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
         if self.is_read_only_for(input) {
             ApprovalRequirement::Auto

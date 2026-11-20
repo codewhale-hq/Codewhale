@@ -1062,6 +1062,10 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
         install_fixture_route(&mut engine);
         engine.session.auto_approve = approval == ApprovalMode::Bypass;
         engine.session.approval_mode = approval;
+        if approval == ApprovalMode::Auto {
+            engine.turn_run_origin = crate::core::authority::RunOrigin::Interactive;
+            engine.turn_owner_present = true;
+        }
         if read_only {
             let posture = engine.applied_runtime_authority();
             engine
@@ -1137,6 +1141,31 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
             } else {
                 handle.deny_tool_call(&nested_card).await.expect("deny");
             }
+        }
+        if approval == ApprovalMode::Auto {
+            let mut events = handle.rx_event.write().await;
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while let Some(event) = events.recv().await {
+                    if let Event::ApprovalRequired {
+                        id,
+                        tool_name,
+                        input,
+                        ..
+                    } = event
+                    {
+                        assert_eq!(tool_name, rlm);
+                        assert_eq!(input["action"], "eval");
+                        handle
+                            .approve_tool_call(&id)
+                            .await
+                            .expect("approve the outer RLM evaluation");
+                        return;
+                    }
+                }
+                panic!("event stream closed before the outer RLM evaluation asked its owner");
+            })
+            .await
+            .expect("the outer RLM eval requires its owner's confirmation");
         }
         let (status, error) = tokio::time::timeout(Duration::from_secs(60), task)
             .await
