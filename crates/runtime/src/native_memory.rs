@@ -513,9 +513,8 @@ impl NativeMemoryStore {
         // Entry surfaces show only live memory; candidates and reviewed-off
         // entries are visible in the Context Lens, not here.
         store
-            .list(&access, None, limit)?
+            .list_current(&access, limit)?
             .iter()
-            .filter(|m| matches!(m.status, Status::Active | Status::Stale))
             .map(|m| self.hit(&store, &access, m, &Snapshot::default()))
             .collect()
     }

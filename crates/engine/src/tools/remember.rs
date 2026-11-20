@@ -77,12 +77,12 @@ impl ToolSpec for RememberTool {
             let limit = input.limit.unwrap_or(8).clamp(1, 20) as usize;
             let hits = tokio::task::spawn_blocking(move || {
                 let workspace_id = NativeMemoryStore::workspace_id(&workspace)?;
-                store.list_all(scope, workspace_id.as_deref(), limit)
+                store.list_all(scope, workspace_id.as_deref(), limit + 1)
             })
             .await
             .map_err(|_| ToolError::execution_failed("memory worker stopped"))?
             .map_err(|error| ToolError::execution_failed(format!("memory list failed: {error}")))?;
-            return Ok(super::native_memory::output(hits));
+            return Ok(super::native_memory::output(hits, limit));
         }
         let note = input
             .note
@@ -177,6 +177,41 @@ mod tests {
         assert!(RememberTool.is_read_only_for(&list));
         let listed = RememberTool.execute(list, &context).await.unwrap();
         assert!(listed.content.contains("No bounded memory matches."));
+    }
+    #[tokio::test]
+    async fn list_limits_eligible_notes_and_reports_when_more_remain() {
+        use codewhale_memory::{MemoryBackend, Snapshot};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("memory");
+        let mut context = ToolContext::new(temp.path());
+        context.memory_path = Some(root.join("global/MEMORY.md"));
+        let native = NativeMemoryStore::new(&root);
+        for note in ["Use cedar.", "Use birch.", "Use spruce."] {
+            native.remember(MemoryScope::Global, None, note).unwrap();
+        }
+        let access = Access::operator(vec![NativeMemoryStore::owner_scope()]).unwrap();
+        let mut store = native.open_structured().unwrap();
+        let ordered = store.list(&access, None, 3).unwrap();
+        let list = json!({"action":"list","scope":"global","limit":1});
+        for (index, memory) in ordered.iter().enumerate().skip(1) {
+            store
+                .approve(
+                    &access,
+                    &memory.id,
+                    memory.revision,
+                    None,
+                    &Snapshot::default(),
+                )
+                .unwrap();
+            let listed = RememberTool.execute(list.clone(), &context).await.unwrap();
+            let metadata = listed.metadata.unwrap();
+            assert_eq!(metadata["count"], 1);
+            assert_eq!(metadata["truncated"], index > 1);
+            assert!(listed.content.contains(&ordered[1].draft.body));
+            assert!(!listed.content.contains(&ordered[0].draft.body));
+            assert!(!listed.content.contains(&ordered[2].draft.body));
+        }
     }
     #[tokio::test]
     async fn forged_review_field_is_rejected() {

@@ -476,9 +476,21 @@ impl Store {
         effective_freshness(&self.conn, access, memory, snapshot, self.timestamp())
     }
     pub fn list(&self, access: &Access, after: Option<&str>, limit: usize) -> Result<Vec<Memory>> {
+        self.list_rows(access, after, limit, false)
+    }
+    pub fn list_current(&self, access: &Access, limit: usize) -> Result<Vec<Memory>> {
+        self.list_rows(access, None, limit, true)
+    }
+    fn list_rows(
+        &self,
+        access: &Access,
+        after: Option<&str>,
+        limit: usize,
+        current_only: bool,
+    ) -> Result<Vec<Memory>> {
         access.require(Capability::Read)?;
         let sql = format!(
-            "SELECT {SELECT} FROM memories m WHERE m.scope IN (SELECT value FROM json_each(?1)) AND m.id>?2 ORDER BY m.id LIMIT ?3"
+            "SELECT {SELECT} FROM memories m WHERE m.scope IN (SELECT value FROM json_each(?1)) AND m.id>?2 AND (NOT ?4 OR m.status IN ('active','stale')) ORDER BY m.id LIMIT ?3"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         Ok(stmt
@@ -486,7 +498,8 @@ impl Store {
                 params![
                     access.scope_json()?,
                     after.unwrap_or(""),
-                    limit.clamp(1, 500) as i64
+                    limit.clamp(1, 500) as i64,
+                    current_only
                 ],
                 row_memory,
             )?
