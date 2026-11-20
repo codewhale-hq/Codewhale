@@ -149,7 +149,7 @@ slot key to a seat, and loads one Engine-generated bootstrap built from those
 bytes. A native client is admitted only on `customize.plugins.detail`. A slot
 key with no seat answers `plugin_ui_seat_unsupported`; several keys on one seat
 need the caller to name one (`plugin_ui_dsh_slot_required`). A closure that needs
-a host module the frame does not provide, uses ES module syntax or is not valid
+a host module outside React, React DOM, the JSX runtime and the pinned DSH browser primitives, uses ES module syntax or is not valid
 JSON answers `plugin_ui_unsupported`. Code Review 1.0.8's client decorates
 global command candidates through DSH services that the current detail-slot
 renderer does not provide, so it is not qualified.

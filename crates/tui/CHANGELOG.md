@@ -13,6 +13,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Added
 
+- Reviewed DeepSeek Harness workpane clients can use the host-provided React primitives module.
+
 - **SearchApi web search provider:** `web_search` now supports SearchApi (`[search] provider = "searchapi"`, `SEARCHAPI_API_KEY` or `[search] api_key`) for Google organic results with `hl`, `gl`, and `time_period` filtering. Thanks [@gabsferreira](https://github.com/gabsferreira) (#7410).
 - **Muse Code as an external agent:** Codewhale now discovers an installed Meta Muse Code CLI (`muse`) and drives it over ACP through `@bex-co/muse-code-acp` (`muse-code-acp`, with `MUSE_CODE_EXECUTABLE` and `muse login`), listing it in `GET /v1/agents/external` alongside Claude, Codex, Antigravity, and other installed agents.
 - **Single-line docked TUI approval strip:** approval prompts now dock as one line directly above the composer with a leading amber edge glyph (`⛯`), concise verb and truncated command summary, `Allow` (`y`/`1`, or `Enter` when selected), `Deny` (`n`, or `Enter` by default; `Esc` cancels the turn or closes an open menu), `m` to open an upward scope menu (`Allow once`, `Allow in this conversation`, and `Always allow in this repo` with its `.codewhale/permissions.toml` rule pattern shown only there), and `d` or `Tab` to expand diff/command details upward on demand; after a decision, a one-line settled receipt (`Allowed once · <command>`, `Denied · <command>`, or `Always allowed in this repo · <pattern>`) is appended to the transcript. (CURRENT_DECISIONS §225)

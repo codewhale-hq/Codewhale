@@ -57,7 +57,8 @@ const PLUGIN_UI_SEATS: [&str; 6] = [
     "command.row",
 ];
 const DSH_BOOTSTRAP_ENTRY: &str = "__codewhale_dsh_bootstrap.js";
-const DSH_FRAME_MODULES: [&str; 4] = [
+const DSH_FRAME_MODULES: [&str; 5] = [
+    "@deepseek-ai/dsh-client-ui-primitives",
     "react",
     "react-dom",
     "react-dom/client",

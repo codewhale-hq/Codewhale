@@ -414,7 +414,7 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
 }
 
 #[tokio::test]
-async fn plugin_ui_dsh_client_with_unprovided_modules_or_ambient_dependencies_is_unsupported()
+async fn plugin_ui_dsh_client_provides_primitives_and_rejects_esm_or_ambient_dependencies()
 -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("runtime");
@@ -441,7 +441,14 @@ async fn plugin_ui_dsh_client_with_unprovided_modules_or_ambient_dependencies_is
     };
     let client = codewhale_release::tls::reqwest_client();
     let base = format!("http://{addr}/v1/apps/plugins");
-    for package in [host_module, esm, ambient] {
+    let installed =
+        install_active(&client, &base, format!("dsh:{}", host_module.display())).await?;
+    let name = installed["name"].as_str().unwrap();
+    let (status, body) = ui(&client, &base, name, "slot=workpane.panel").await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["dsh_slot"], "sidebar.right.pane.tab");
+
+    for package in [esm, ambient] {
         let installed =
             install_active(&client, &base, format!("dsh:{}", package.display())).await?;
         let name = installed["name"].as_str().unwrap();
