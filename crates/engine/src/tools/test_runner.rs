@@ -1161,7 +1161,9 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
             assert!(result.content.len() < 64 * 1024);
             let metadata = result.metadata.unwrap();
             assert_eq!(metadata["artifact_session_id"], session);
-            assert_eq!(metadata["artifact_id"], "art_cargo-verbose");
+            let artifact = metadata["artifact_id"]
+                .as_str()
+                .expect("test output artifact");
             for marker in [
                 "EARLY_TEST_EVIDENCE",
                 "MIDDLE_TEST_EVIDENCE",
@@ -1170,7 +1172,7 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
                 let recovered = RetrieveToolResultTool
                     .execute(
                         json!({
-                            "ref": "art_cargo-verbose", "mode": "query", "query": marker
+                            "ref": artifact, "mode": "query", "query": marker
                         }),
                         &ctx,
                     )
@@ -1192,7 +1194,7 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
             let denied = RetrieveToolResultTool
                 .execute(
                     json!({
-                        "ref": "art_cargo-verbose", "mode": "lines", "lines": "1-10"
+                        "ref": artifact, "mode": "lines", "lines": "1-10"
                     }),
                     &foreign,
                 )
@@ -1234,10 +1236,14 @@ fn early() { println!("EARLY_TEST_EVIDENCE"); }
             .unwrap()
             .drain_finished_jobs_with_evidence_for_session(session);
         assert_eq!(evidence.len(), 1);
+        let receipt: Value = serde_json::from_slice(&evidence[0].artifact_bytes()).unwrap();
+        let artifact = receipt["stdout"]["artifact_id"]
+            .as_str()
+            .expect("recovered test artifact");
         let recovered = RetrieveToolResultTool
             .execute(
                 json!({
-                    "ref": "art_cargo-retry", "mode": "query", "query": "EARLY_TEST_EVIDENCE"
+                    "ref": artifact, "mode": "query", "query": "EARLY_TEST_EVIDENCE"
                 }),
                 &ctx,
             )
