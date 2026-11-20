@@ -56,6 +56,8 @@ const MAX_DEPTH: usize = 8;
 /// Upper bound on emitted command lines, so a pathological input cannot turn
 /// one policy check into unbounded work.
 const MAX_COMMANDS: usize = 256;
+const MAX_TMUX_WORK: usize = 4 * 1024 * 1024;
+const TMUX_PROMPT_INPUTS: usize = 9;
 
 /// Upper bound on the parser states explored while locating the real command
 /// word behind wrapper words. Running out marks the command unresolved.
@@ -1307,6 +1309,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny_dropped: false,
         extra_deny_cap_dropped: false,
         deny_suffix_depths: HashMap::new(),
+        tmux_work_left: MAX_TMUX_WORK,
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
@@ -1346,6 +1349,7 @@ struct Expander {
     extra_deny_dropped: bool,
     extra_deny_cap_dropped: bool,
     deny_suffix_depths: HashMap<u64, usize>,
+    tmux_work_left: usize,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
@@ -2250,6 +2254,7 @@ impl Expander {
             extra_deny_dropped: false,
             extra_deny_cap_dropped: false,
             deny_suffix_depths: std::mem::take(&mut self.deny_suffix_depths),
+            tmux_work_left: self.tmux_work_left,
             literal_backslashes: self.literal_backslashes,
             dynamic: false,
             nested: false,
@@ -2261,6 +2266,7 @@ impl Expander {
             groups: Vec::new(),
         };
         child.record(sub, depth);
+        self.tmux_work_left = child.tmux_work_left;
         self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
         let child_dropped = child.extra_deny_dropped;
         let child_cap_dropped = child.extra_deny_cap_dropped;
@@ -2476,6 +2482,24 @@ impl Expander {
         self.dynamic |= truncated;
     }
 
+    fn mark_tmux_unresolved(&mut self) {
+        self.dynamic = true;
+        self.extra_deny_dropped |= self.deny_only;
+    }
+
+    fn reserve_tmux_work(&mut self, amount: usize) -> bool {
+        if charge_tmux_work(&mut self.tmux_work_left, amount) {
+            return true;
+        }
+        self.mark_tmux_unresolved();
+        false
+    }
+
+    fn reserve_tmux_words(&mut self, words: &[String]) -> bool {
+        self.reserve_tmux_work(words.len().saturating_add(1))
+            && self.reserve_tmux_work(words.iter().map(String::len).fold(0, usize::saturating_add))
+    }
+
     fn record_tmux(
         &mut self,
         line: &Line,
@@ -2485,6 +2509,9 @@ impl Expander {
         truncated: &mut bool,
     ) {
         let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[head..]) {
+            return;
+        }
         for verb_idx in launcher_verb_targets(tokens, head + 1, &TMUX_GLOBAL_SPEC, truncated) {
             if verb_idx < tokens.len() {
                 self.record_tmux_command_list(
@@ -2509,12 +2536,15 @@ impl Expander {
         truncated: &mut bool,
     ) {
         if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
-            self.dynamic = true;
+            self.mark_tmux_unresolved();
             return;
         }
         let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[start..end]) {
+            return;
+        }
         let mut seg_start = start;
-        while seg_start < end {
+        while seg_start < end && self.tmux_work_left > 0 {
             let mut seg_end = seg_start;
             while seg_end < end && tokens[seg_end] != ";" {
                 seg_end += 1;
@@ -2544,6 +2574,9 @@ impl Expander {
         for landing in resolve_wrapper_targets(&tokens[..end], verb_idx + 1, spec, truncated) {
             if landing < end {
                 let rest = &tokens[landing..end];
+                if !self.reserve_tmux_words(rest) {
+                    return;
+                }
                 let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
                 self.code_payload(&rest.join(" "), rest_dynamic, depth);
                 if rest.len() > 1 {
@@ -2563,6 +2596,9 @@ impl Expander {
         truncated: &mut bool,
     ) {
         let tokens = &line.words;
+        if !self.reserve_tmux_words(&tokens[verb_idx..end]) {
+            return;
+        }
         if dynamic[verb_idx] || line.odd[verb_idx] {
             self.dynamic = true;
         }
@@ -2610,6 +2646,9 @@ impl Expander {
                 ) {
                     if landing < end {
                         let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
                         let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
                         self.expand_tmux_command_string(
                             &rest.join(" "),
@@ -2633,6 +2672,9 @@ impl Expander {
                 ) {
                     if landing < end {
                         let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
                         for (offset, operand) in rest.iter().enumerate() {
                             self.code_payload(operand, dynamic[landing + offset], depth);
                         }
@@ -2650,6 +2692,9 @@ impl Expander {
                     truncated,
                 ) {
                     if landing < end {
+                        if !self.reserve_tmux_words(&tokens[landing..end]) {
+                            return;
+                        }
                         for at in landing..end {
                             self.expand_tmux_command_string(
                                 &tokens[at],
@@ -2671,6 +2716,9 @@ impl Expander {
                 ) {
                     if landing < end {
                         let rest = &tokens[landing..end];
+                        if !self.reserve_tmux_words(rest) {
+                            return;
+                        }
                         let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
                         self.expand_tmux_command_string(
                             &rest.join(" "),
@@ -2742,7 +2790,7 @@ impl Expander {
         truncated: &mut bool,
     ) {
         let tokens = &line.words;
-        let mut inputs: Vec<(String, bool)> = Vec::new();
+        let mut inputs: Vec<(&str, bool)> = Vec::new();
         let mut literal_inputs = false;
         let mut at = verb_idx + 1;
         while at < end {
@@ -2765,11 +2813,11 @@ impl Expander {
                     let rest = &flags[offset + flag.len_utf8()..];
                     if rest.is_empty() {
                         if at + 1 < end {
-                            inputs.push((tokens[at + 1].clone(), dynamic[at + 1]));
+                            inputs.push((&tokens[at + 1], dynamic[at + 1]));
                         }
                         consumes_next = true;
                     } else {
-                        inputs.push((rest.to_string(), dynamic[at]));
+                        inputs.push((rest, dynamic[at]));
                     }
                     break;
                 }
@@ -2794,6 +2842,9 @@ impl Expander {
         if landings.is_empty() {
             for (input, input_dynamic) in &inputs {
                 self.expand_tmux_command_string(input, *input_dynamic, true, depth, truncated);
+                if self.tmux_work_left == 0 {
+                    return;
+                }
                 if !literal_inputs && input.contains(',') {
                     for part in input.split(',') {
                         if !part.is_empty() {
@@ -2804,6 +2855,9 @@ impl Expander {
                                 depth,
                                 truncated,
                             );
+                            if self.tmux_work_left == 0 {
+                                return;
+                            }
                         }
                     }
                 }
@@ -2813,17 +2867,30 @@ impl Expander {
                 let template = &tokens[landing];
                 let template_dynamic = dynamic[landing];
                 self.expand_tmux_command_string(template, template_dynamic, true, depth, truncated);
+                if self.tmux_work_left == 0 {
+                    return;
+                }
                 if template.contains('%') {
                     for (input, input_dynamic) in &inputs {
+                        if !self.reserve_tmux_work(input.len().saturating_add(1)) {
+                            return;
+                        }
                         if *input_dynamic {
                             self.dynamic = true;
                         }
                         let parts: Vec<&str> = if literal_inputs {
-                            vec![input.as_str()]
+                            vec![input]
                         } else {
-                            input.split(',').collect()
+                            input.split(',').take(TMUX_PROMPT_INPUTS).collect()
                         };
-                        let substituted = substitute_tmux_prompt_template(template, &parts);
+                        let Some(substituted) = substitute_tmux_prompt_template(
+                            template,
+                            &parts,
+                            &mut self.tmux_work_left,
+                        ) else {
+                            self.mark_tmux_unresolved();
+                            return;
+                        };
                         self.expand_tmux_command_string(
                             &substituted,
                             template_dynamic || *input_dynamic,
@@ -2846,7 +2913,10 @@ impl Expander {
         truncated: &mut bool,
     ) {
         if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
-            self.dynamic = true;
+            self.mark_tmux_unresolved();
+            return;
+        }
+        if !self.reserve_tmux_work(payload.len().saturating_add(1)) {
             return;
         }
         if also_shell {
@@ -4702,7 +4772,23 @@ fn slice_line_range(line: &Line, start: usize, end: usize) -> Line {
     }
 }
 
-fn substitute_tmux_prompt_template(template: &str, inputs: &[&str]) -> String {
+fn charge_tmux_work(work_left: &mut usize, amount: usize) -> bool {
+    if amount >= *work_left {
+        *work_left = 0;
+        return false;
+    }
+    *work_left -= amount;
+    true
+}
+
+fn substitute_tmux_prompt_template(
+    template: &str,
+    inputs: &[&str],
+    work_left: &mut usize,
+) -> Option<String> {
+    if !charge_tmux_work(work_left, template.len().saturating_add(1)) {
+        return None;
+    }
     let mut out = template.to_string();
     if let Some(first) = inputs.first()
         && let Some(pos) = out.find("%%")
@@ -4712,15 +4798,40 @@ fn substitute_tmux_prompt_template(template: &str, inputs: &[&str]) -> String {
         } else {
             2
         };
+        if !charge_tmux_work(
+            work_left,
+            input_replacement_len(out.len(), 1, len, first.len())?,
+        ) {
+            return None;
+        }
         out.replace_range(pos..pos + len, first);
     }
-    for (idx, input) in inputs.iter().take(9).enumerate() {
+    for (idx, input) in inputs.iter().take(TMUX_PROMPT_INPUTS).enumerate() {
+        if !charge_tmux_work(work_left, out.len().saturating_add(1)) {
+            return None;
+        }
         let placeholder = format!("%{}", idx + 1);
-        if out.contains(&placeholder) {
+        let count = out.matches(&placeholder).count();
+        if count > 0 {
+            let len = input_replacement_len(out.len(), count, placeholder.len(), input.len())?;
+            if !charge_tmux_work(work_left, len) {
+                return None;
+            }
             out = out.replace(&placeholder, input);
         }
     }
-    out
+    Some(out)
+}
+
+fn input_replacement_len(
+    source_bytes: usize,
+    count: usize,
+    placeholder_bytes: usize,
+    replacement_bytes: usize,
+) -> Option<usize> {
+    source_bytes
+        .checked_sub(count.checked_mul(placeholder_bytes)?)?
+        .checked_add(count.checked_mul(replacement_bytes)?)
 }
 
 fn tmux_source_file_parse_only(
@@ -6197,6 +6308,22 @@ mod tests {
             commands.map(|command| (command.stdin_piped, command.heredoc)),
             [(true, false), (true, false), (false, true)]
         );
+    }
+
+    #[test]
+    fn tmux_prompt_template_respects_work_in_utf8_bytes() {
+        let mut work_left = 128;
+        assert_eq!(
+            substitute_tmux_prompt_template("%% / %2", &["é", "猫"], &mut work_left),
+            Some("é / 猫".to_string())
+        );
+
+        let mut work_left = 10;
+        assert_eq!(
+            substitute_tmux_prompt_template("%1", &["é猫"], &mut work_left),
+            None
+        );
+        assert_eq!(work_left, 0);
     }
 
     fn expand(command: &str) -> Vec<String> {
