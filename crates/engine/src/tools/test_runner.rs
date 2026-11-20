@@ -147,7 +147,7 @@ impl ToolSpec for RunTestsTool {
         let explicit_background = if context
             .child_host
             .as_ref()
-            .is_some_and(|child| !child.is_tool_allowed("task_shell_wait"))
+            .is_some_and(|child| !child.can_collect_background_tests())
         {
             if explicit_background == Some(true) {
                 return Err(ToolError::invalid_input(

@@ -680,6 +680,13 @@ impl ChildAuthority {
         }
     }
 
+    pub(crate) fn can_collect_background_tests(&self) -> bool {
+        use codewhale_agent_contract::worker_profile::{ShellGrant, ToolSurface};
+        self.grant.shell == ShellGrant::Full
+            && self.grant.surface != ToolSurface::Evidence
+            && self.is_tool_allowed("task_shell_wait")
+    }
+
     pub fn grant_blocks_tool(&self, registry: &ToolRegistry, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         // Desktop / machine-control is never in a child's grant.

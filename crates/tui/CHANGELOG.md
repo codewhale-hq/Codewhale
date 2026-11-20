@@ -608,6 +608,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- Delegated test runs stay in the foreground when the child cannot collect a background job. Managed Cargo test runs preserve argument boundaries on Windows, including spaces and ampersands in workspace paths.
+
 - Terminal output preserves Unicode alongside shell formatting. Test jobs retain their child owner, and a child without permission to wait for a detached job runs tests in the foreground. ACP approvals show the requested path and operation when a verified file diff is unavailable.
 
 - **Auto-Review review failures ask you instead of blocking:** when the Auto-Review reviewer times out, cannot be reached, answers incompletely or unparseably, or the review context is over budget, it now retries once after a timeout or transport failure within the same 90-second budget, then opens the normal approval card for that call on an interactive turn you are attending instead of blocking it. Child workers and unattended or headless runs still deny fail closed, now with a message that says the review failed rather than that the action is unsafe. (CW-6881)
