@@ -1879,7 +1879,7 @@ mod tests {
         );
         let denied = tmp.path().join("beta/denied.rs");
         let block = ws
-            .summary_block(tmp.path(), &|path| path != denied)
+            .summary_block(tmp.path(), &|path| path != denied.as_path())
             .expect("block");
         assert!(block.contains("- alpha/keep.rs (file)"), "{block}");
         assert!(!block.contains("secrets/STATUS.md"), "{block}");
