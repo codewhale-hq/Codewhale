@@ -5006,15 +5006,7 @@ fn non_unicode_codewhale_home_is_preserved_by_config_owned_user_paths() -> Resul
 #[test]
 fn codewhale_config_path_env_wins_over_legacy_env() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-config-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-config-env-test");
     let preferred = temp_root.join("preferred.toml");
     let legacy = temp_root.join("legacy.toml");
     let _codewhale_config = EnvVarGuard::set("CODEWHALE_CONFIG_PATH", &preferred);
@@ -6503,15 +6495,7 @@ fn explicit_deepseek_base_url_overrides_beta_default() {
 #[test]
 fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-model-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-model-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -6882,15 +6866,7 @@ fn xai_explicit_provider_model_is_honored_over_vendor_default() {
 #[test]
 fn nvidia_nim_env_overrides_provider_and_credentials() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-nim-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-nim-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -7332,15 +7308,8 @@ model = "mimo-v2.6-pro"
 #[test]
 fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-xiaomi-mimo-token-plan-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root =
+        crate::test_support::test_scratch_dir("codewhale-tui-xiaomi-mimo-token-plan-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -7370,15 +7339,8 @@ fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<
 #[test]
 fn xiaomi_mimo_env_pay_as_you_go_mode_prefers_standard_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-xiaomi-mimo-payg-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root =
+        crate::test_support::test_scratch_dir("codewhale-tui-xiaomi-mimo-payg-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -7423,15 +7385,7 @@ fn atlascloud_provider_uses_documented_defaults() -> Result<()> {
 #[test]
 fn atlascloud_env_overrides_provider_base_url_and_model() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-atlascloud-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-atlascloud-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -8110,15 +8064,7 @@ fn vllm_env_resolves_reported_lan_http_endpoint_and_model() -> Result<()> {
 #[test]
 fn ollama_env_overrides_base_url_and_model() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-ollama-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-ollama-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -8313,15 +8259,7 @@ model = "arcee-trinity-large-preview"
 #[test]
 fn siliconflow_cn_base_url_env_normalizes_model_aliases() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-siliconflow-cn-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-siliconflow-cn-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 

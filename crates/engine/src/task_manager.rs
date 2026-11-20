@@ -5434,7 +5434,7 @@ mod tests {
                 "replay cannot rewrite accepted work"
             );
             assert_eq!(executions.load(Ordering::SeqCst), 1);
-            manager.shutdown();
+            manager.shutdown_and_wait().await?;
         }
         Ok(())
     }
@@ -5487,7 +5487,7 @@ mod tests {
             0,
             "accepted work cannot be replayed after restart"
         );
-        manager.shutdown();
+        manager.shutdown_and_wait().await?;
         Ok(())
     }
 
@@ -6034,6 +6034,7 @@ mod tests {
 
         assert!(err.to_string().contains("single path component"));
         assert!(!escaped.exists(), "artifact write escaped the task root");
+        manager.shutdown_and_wait().await?;
         Ok(())
     }
 
@@ -8525,6 +8526,7 @@ mod tests {
                 .any(|entry| entry.summary.contains("heartbeat")),
             "heartbeats are supervisor-side liveness only and must not surface on the timeline"
         );
+        manager.shutdown_and_wait().await?;
         Ok(())
     }
 
