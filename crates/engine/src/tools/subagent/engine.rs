@@ -350,7 +350,35 @@ impl ChildAuthority {
         // and non-`Full`-shell roles cannot run shell, regardless of whether
         // the parent session is auto-approved. This closes the auto-approve
         // bypass where a read-only child could quietly write or shell out.
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            if !self.grant.network
+                || !self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+            {
+                return Err(admission_denied(
+                    "[role.scope.denied] This connector needs an explicit child tool and network grant.",
+                ));
+            }
+            if !grant.current() {
+                return Err(admission_denied(
+                    "[role.binding.stale] This connector binding has changed.",
+                ));
+            }
+            if !grant.permits_arguments(input) {
+                return Err(admission_denied(
+                    "[role.disclosure.denied] This connector payload is outside the delegated read grant.",
+                ));
+            }
+        }
         if !self.posture_permits_tool(registry, name, Some(input)) {
+            if crate::mcp::McpPool::is_mcp_tool(name) {
+                return Err(admission_denied(
+                    "[role.effect.denied] This role requires an operator-authorized connector read.",
+                ));
+            }
             if self.allows_bounded_readonly_bash(name) {
                 // #6015: the same rule text and next steps as the durable
                 // authority and the executor, from the one classifier.
@@ -564,6 +592,16 @@ impl ChildAuthority {
         // suppress it or turn depth into a mutation permission.
         if name == "agent" {
             return true;
+        }
+        if let Some(grant) = registry.delegated_mcp_read(name) {
+            return grant.current()
+                && self.grant.network
+                && self
+                    .grant
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.iter().any(|entry| entry == name))
+                && input.is_none_or(|input| grant.permits_arguments(input));
         }
         match registry.get(name) {
             Some(spec) => match input.map_or_else(
@@ -796,7 +834,12 @@ impl ChildAuthority {
     }
 
     pub fn can_admit_any_mcp_tool(&self) -> bool {
-        self.grant.surface != codewhale_agent_contract::worker_profile::ToolSurface::Evidence
+        (self.grant.surface != codewhale_agent_contract::worker_profile::ToolSurface::Evidence
+            || self.grant.scope.as_ref().is_some_and(|scope| {
+                scope
+                    .iter()
+                    .any(|name| crate::mcp::McpPool::is_mcp_tool(name) && !name.contains('*'))
+            }))
             && self.grant.network
             && !self.grant.scope.as_ref().is_some_and(Vec::is_empty)
             && !self.is_tool_denied("mcp*")

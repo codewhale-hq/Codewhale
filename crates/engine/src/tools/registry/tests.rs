@@ -2512,6 +2512,7 @@ fn registration_adapter_origins_are_bounded_and_exclude_execution_payloads() {
         ),
         (
             Arc::new(super::McpToolAdapter {
+                delegated_read: None,
                 name: hostile.clone(),
                 server_name: Some("plugin-4-demo-server_with_underscores".into()),
                 tool: crate::mcp::McpTool {

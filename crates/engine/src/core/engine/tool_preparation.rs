@@ -60,10 +60,19 @@ pub(super) fn prepare_tool_call(
         let read_only = mcp_tool_is_read_only(name)
             || crate::mcp::mcp_tool_approval_hint(name)
                 == Some(crate::mcp::McpToolApprovalHint::TrustedReadOnly);
-        // A bounded worker keeps the execution gate's rule (built-in resource
-        // reads only), so preparation never admits a call that
-        // `tool_execution` then refuses.
+        let delegated = registry
+            .filter(|tools| tools.context().child_host.is_some())
+            .and_then(|tools| tools.delegated_mcp_read(name));
+        let scoped_read = delegated.is_some();
+        if let Some(grant) = delegated
+            && !grant.permits_arguments(&input)
+        {
+            return Err(ToolError::permission_denied(
+                "Delegated connector disclosure denied.",
+            ));
+        }
         if !mcp_tool_is_read_only(name)
+            && !scoped_read
             && let Some(authority) =
                 registry.and_then(|registry| registry.context().tool_authority.as_ref())
         {
@@ -129,10 +138,12 @@ pub(super) fn prepare_tool_call(
                 name: name.to_string(),
                 description: mcp_tool_approval_description(name, &input),
                 input,
-                read_only,
+                read_only: read_only || scoped_read,
                 supports_parallel: mcp_tool_is_parallel_safe(name) || read_only,
                 starts_detached: false,
-                approval: if read_only {
+                approval: if scoped_read {
+                    ApprovalRequirement::Required
+                } else if read_only {
                     ApprovalRequirement::Auto
                 } else {
                     ApprovalRequirement::Suggest
@@ -143,7 +154,7 @@ pub(super) fn prepare_tool_call(
                     vec![ResourceClaim::GlobalExclusive]
                 },
             },
-            auto_approve: session_auto_approve,
+            auto_approve: session_auto_approve && !scoped_read,
         });
     }
 

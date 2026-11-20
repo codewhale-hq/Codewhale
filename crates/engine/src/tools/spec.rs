@@ -1964,6 +1964,10 @@ pub fn resolve_home_path_with(
 /// The core trait that all tools must implement.
 #[async_trait]
 pub trait ToolSpec: Send + Sync {
+    fn delegated_mcp_read(&self) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        None
+    }
+
     /// Returns the unique name of this tool (used in API calls).
     fn name(&self) -> &str;
 

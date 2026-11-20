@@ -23159,6 +23159,8 @@ mod tests;
 
 #[cfg(test)]
 pub use tests::kimi_general_child_request_tools_fixture;
+#[cfg(test)]
+pub(crate) use tests::stub_runtime;
 
 #[cfg(any(test, feature = "test-support"))]
 #[test]

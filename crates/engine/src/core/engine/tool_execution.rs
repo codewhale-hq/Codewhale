@@ -374,9 +374,20 @@ impl Engine {
         decision: Option<&super::HumanDecision>,
         account_fence: Option<&crate::profile_constitution::AccountFence>,
         always_binding: Option<u64>,
+        delegated: Option<Arc<crate::mcp::DelegatedMcpRead>>,
     ) -> Result<RichToolResult, ToolError> {
         McpPool::authorize_call(disallowed_tools, name, &input)
             .map_err(|error| ToolError::not_available(error.to_string()))?;
+        if let Some(grant) = delegated {
+            crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
+            let result = pool
+                .lock()
+                .await
+                .call_delegated_read(&grant, name, input, disallowed_tools)
+                .await
+                .map_err(|error| ToolError::permission_denied(error.to_string()))?;
+            return Ok(crate::tools::registry::mcp_result_to_bounded_rich_tool_result(result));
+        }
         // A synthetic `mcp_<server>_authenticate` call runs the shared OAuth
         // login flow with the pool lock released during the browser wait, so
         // parallel MCP tools and the `/mcp` manager keep working while the
@@ -624,6 +635,10 @@ impl Engine {
         if let Some(authority) = tool_authority {
             if McpPool::is_mcp_tool(&tool_name)
                 && !super::dispatch::mcp_tool_is_read_only(&tool_name)
+                && !registry
+                    .filter(|tools| tools.context().child_host.is_some())
+                    .and_then(|tools| tools.delegated_mcp_read(&tool_name))
+                    .is_some_and(|grant| grant.permits_arguments(&tool_input))
             {
                 return Err(ToolError::permission_denied(format!(
                     "worker '{}' cannot run mutating MCP tool {tool_name}: it has no authorized file target",
@@ -821,6 +836,9 @@ impl Engine {
                         context_override
                             .as_ref()
                             .and_then(|context| context.mcp_always_binding),
+                        child_mcp_call
+                            .as_ref()
+                            .and_then(|_| registry?.delegated_mcp_read(&tool_name)),
                     )
                     .await
                 } else {

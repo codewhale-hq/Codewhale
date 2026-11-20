@@ -986,6 +986,9 @@ impl CodemodeInvoker {
                 None,
                 context.account_fence.as_deref(),
                 None,
+                child
+                    .as_ref()
+                    .and_then(|_| registry.delegated_mcp_read(&name)),
             )
             .await;
             if let Some(span) = span {

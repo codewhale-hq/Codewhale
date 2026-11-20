@@ -81,6 +81,13 @@ impl ToolRegistry {
         }
     }
 
+    pub(crate) fn delegated_mcp_read(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        self.get(name)?.delegated_mcp_read()
+    }
+
     /// Get a tool by name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn ToolSpec>> {
@@ -1548,6 +1555,9 @@ impl ToolRegistryBuilder {
         let tool_servers = pool.resolved_tool_servers();
         for (name, tool) in pool.all_tools() {
             let adapter = Arc::new(McpToolAdapter {
+                delegated_read: tool_servers
+                    .get(&name)
+                    .and_then(|server| pool.delegated_read_for(&name, server, &tool.name)),
                 server_name: tool_servers.get(&name).cloned(),
                 name: name.clone(),
                 tool: tool.clone(),
@@ -1842,6 +1852,7 @@ fn to_snake_case(s: &str) -> String {
 /// Adapter that wraps an MCP tool definition so it can live in the
 /// unified `ToolRegistry` alongside native tools (§5.B).
 struct McpToolAdapter {
+    delegated_read: Option<Arc<crate::mcp::DelegatedMcpRead>>,
     name: String,
     /// Diagnostic snapshot from the pool's exact route projection.
     server_name: Option<String>,
@@ -1862,6 +1873,10 @@ fn is_mcp_read_helper(name: &str) -> bool {
 
 #[async_trait::async_trait]
 impl ToolSpec for McpToolAdapter {
+    fn delegated_mcp_read(&self) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        self.delegated_read.clone()
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -1898,6 +1913,12 @@ impl ToolSpec for McpToolAdapter {
         // network access unless they're known discovery helpers.
         if is_mcp_read_helper(&self.name) {
             vec![ToolCapability::ReadOnly]
+        } else if self.delegated_read.is_some() {
+            vec![
+                ToolCapability::ReadOnly,
+                ToolCapability::Network,
+                ToolCapability::RequiresApproval,
+            ]
         } else {
             vec![ToolCapability::Network, ToolCapability::RequiresApproval]
         }
@@ -1939,6 +1960,15 @@ impl ToolSpec for McpToolAdapter {
             context.account_fence.as_deref(),
         )
         .await?;
+        if context.child_host.is_some()
+            && let Some(grant) = &self.delegated_read
+        {
+            let result = pool
+                .call_delegated_read(grant, &self.name, input, &context.disallowed_tools)
+                .await
+                .map_err(|error| ToolError::permission_denied(error.to_string()))?;
+            return Ok(mcp_result_to_bounded_rich_tool_result(result));
+        }
         let result = pool
             .call_tool_with_disallowed(
                 &self.name,
@@ -2037,6 +2067,7 @@ pub fn mcp_result_to_bounded_rich_tool_result(result: Value) -> RichToolResult {
 #[cfg(test)]
 pub(super) fn mcp_tool_adapter_for_test(name: &str) -> Arc<dyn ToolSpec> {
     Arc::new(McpToolAdapter {
+        delegated_read: None,
         name: name.to_string(),
         server_name: None,
         tool: crate::mcp::McpTool {
