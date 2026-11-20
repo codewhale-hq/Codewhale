@@ -5204,8 +5204,8 @@ mod tests {
         assert_eq!(cny_row.metadata.pricing, PickerPricing::Unknown);
         cny_row.id = "a-cny".into();
         row.id = "z-usd".into();
-        let mut prices = vec![cny_row, row.clone()];
-        sort_model_rows_for_view(&mut prices, |row| row, ModelListView::Cheap, &[]);
+        let mut prices = [&cny_row, &row];
+        sort_model_rows_for_view(&mut prices, |row| *row, ModelListView::Cheap, &[]);
         assert_eq!(prices[0].id, "z-usd");
         assert_eq!(prices[1].id, "a-cny");
         row.id = id.into();
