@@ -2388,6 +2388,9 @@ impl Expander {
             "start-stop-daemon" => {
                 self.record_start_stop_daemon(line, head, depth);
             }
+            "tmux" => {
+                self.record_tmux(line, head, dynamic, depth, &mut truncated);
+            }
             _ => {
                 if name == "launchctl" {
                     for verb_idx in
@@ -2471,6 +2474,401 @@ impl Expander {
             }
         }
         self.dynamic |= truncated;
+    }
+
+    fn record_tmux(
+        &mut self,
+        line: &Line,
+        head: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        for verb_idx in launcher_verb_targets(tokens, head + 1, &TMUX_GLOBAL_SPEC, truncated) {
+            if verb_idx < tokens.len() {
+                self.record_tmux_command_list(
+                    line,
+                    verb_idx,
+                    tokens.len(),
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+        }
+    }
+
+    fn record_tmux_command_list(
+        &mut self,
+        line: &Line,
+        start: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
+            self.dynamic = true;
+            return;
+        }
+        let tokens = &line.words;
+        let mut seg_start = start;
+        while seg_start < end {
+            let mut seg_end = seg_start;
+            while seg_end < end && tokens[seg_end] != ";" {
+                seg_end += 1;
+            }
+            while seg_start < seg_end && tokens[seg_start].is_empty() {
+                seg_start += 1;
+            }
+            if seg_start < seg_end {
+                self.record_tmux_verb(line, seg_start, seg_end, dynamic, depth, truncated);
+            }
+            seg_start = seg_end + 1;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_tmux_shell_verb(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        spec: &Wrapper,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        for landing in resolve_wrapper_targets(&tokens[..end], verb_idx + 1, spec, truncated) {
+            if landing < end {
+                let rest = &tokens[landing..end];
+                let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                if rest.len() > 1 {
+                    self.record(&slice_line_range(line, landing, end), depth + 1);
+                }
+            }
+        }
+    }
+
+    fn record_tmux_verb(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        if dynamic[verb_idx] || line.odd[verb_idx] {
+            self.dynamic = true;
+        }
+        match tokens[verb_idx].as_str() {
+            "new-session" | "new" | "new-window" | "neww" | "split-window" | "splitw"
+            | "respawn-pane" | "respawnp" | "respawn-window" | "respawnw" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_SUB_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "display-popup" | "popup" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_DISPLAY_POPUP_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "pipe-pane" | "pipep" => {
+                self.record_tmux_shell_verb(
+                    line,
+                    verb_idx,
+                    end,
+                    &TMUX_PIPE_PANE_SPEC,
+                    dynamic,
+                    depth,
+                    truncated,
+                );
+            }
+            "run-shell" | "run" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    verb_idx + 1,
+                    &TMUX_RUN_SHELL_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                        self.expand_tmux_command_string(
+                            &rest.join(" "),
+                            rest_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                        if rest.len() > 1 {
+                            self.record(&slice_line_range(line, landing, end), depth + 1);
+                        }
+                    }
+                }
+            }
+            "send-keys" | "send" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    verb_idx + 1,
+                    &TMUX_SEND_KEYS_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        for (offset, operand) in rest.iter().enumerate() {
+                            self.code_payload(operand, dynamic[landing + offset], depth);
+                        }
+                        if rest.len() > 1 {
+                            self.record(&slice_line_range(line, landing, end), depth + 1);
+                        }
+                    }
+                }
+            }
+            "if-shell" | "if" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    verb_idx + 1,
+                    &TMUX_IF_SHELL_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        for at in landing..end {
+                            self.expand_tmux_command_string(
+                                &tokens[at],
+                                dynamic[at],
+                                true,
+                                depth,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "confirm-before" | "confirm" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    verb_idx + 1,
+                    &TMUX_CONFIRM_BEFORE_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        let rest = &tokens[landing..end];
+                        let rest_dynamic = dynamic[landing..end].iter().any(|d| *d);
+                        self.expand_tmux_command_string(
+                            &rest.join(" "),
+                            rest_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                        if rest.len() > 1 {
+                            self.record_tmux_command_list(
+                                line,
+                                landing,
+                                end,
+                                dynamic,
+                                depth + 1,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "command-prompt" => {
+                self.record_tmux_command_prompt(line, verb_idx, end, dynamic, depth, truncated);
+            }
+            "bind-key" | "bind" => {
+                for landing in resolve_wrapper_targets(
+                    &tokens[..end],
+                    verb_idx + 1,
+                    &TMUX_BIND_KEY_SPEC,
+                    truncated,
+                ) {
+                    if landing < end {
+                        self.record_tmux_command_list(
+                            line,
+                            landing,
+                            end,
+                            dynamic,
+                            depth + 1,
+                            truncated,
+                        );
+                        if end - landing == 1 {
+                            self.expand_tmux_command_string(
+                                &tokens[landing],
+                                dynamic[landing],
+                                false,
+                                depth,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+            "source-file" | "source"
+                if !tmux_source_file_parse_only(tokens, verb_idx + 1, end, dynamic) =>
+            {
+                self.dynamic = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn record_tmux_command_prompt(
+        &mut self,
+        line: &Line,
+        verb_idx: usize,
+        end: usize,
+        dynamic: &[bool],
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        let tokens = &line.words;
+        let mut inputs: Vec<(String, bool)> = Vec::new();
+        let mut literal_inputs = false;
+        let mut at = verb_idx + 1;
+        while at < end {
+            let token = tokens[at].as_str();
+            if token == "--" || !token.starts_with('-') || token.len() == 1 {
+                break;
+            }
+            if token.starts_with("--") {
+                at += 1;
+                continue;
+            }
+            let flags = &token[1..];
+            let mut consumes_next = false;
+            for (offset, flag) in flags.char_indices() {
+                if flag == 'l' {
+                    literal_inputs = true;
+                    continue;
+                }
+                if flag == 'I' {
+                    let rest = &flags[offset + flag.len_utf8()..];
+                    if rest.is_empty() {
+                        if at + 1 < end {
+                            inputs.push((tokens[at + 1].clone(), dynamic[at + 1]));
+                        }
+                        consumes_next = true;
+                    } else {
+                        inputs.push((rest.to_string(), dynamic[at]));
+                    }
+                    break;
+                }
+                if TMUX_COMMAND_PROMPT_SPEC.short_values.contains(flag) {
+                    consumes_next = offset + flag.len_utf8() == flags.len();
+                    break;
+                }
+            }
+            at += if consumes_next { 2 } else { 1 };
+        }
+
+        let landings: Vec<usize> = resolve_wrapper_targets(
+            &tokens[..end],
+            verb_idx + 1,
+            &TMUX_COMMAND_PROMPT_SPEC,
+            truncated,
+        )
+        .into_iter()
+        .filter(|&landing| landing < end)
+        .collect();
+
+        if landings.is_empty() {
+            for (input, input_dynamic) in &inputs {
+                self.expand_tmux_command_string(input, *input_dynamic, true, depth, truncated);
+                if !literal_inputs && input.contains(',') {
+                    for part in input.split(',') {
+                        if !part.is_empty() {
+                            self.expand_tmux_command_string(
+                                part,
+                                *input_dynamic,
+                                true,
+                                depth,
+                                truncated,
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            for landing in landings {
+                let template = &tokens[landing];
+                let template_dynamic = dynamic[landing];
+                self.expand_tmux_command_string(template, template_dynamic, true, depth, truncated);
+                if template.contains('%') {
+                    for (input, input_dynamic) in &inputs {
+                        if *input_dynamic {
+                            self.dynamic = true;
+                        }
+                        let parts: Vec<&str> = if literal_inputs {
+                            vec![input.as_str()]
+                        } else {
+                            input.split(',').collect()
+                        };
+                        let substituted = substitute_tmux_prompt_template(template, &parts);
+                        self.expand_tmux_command_string(
+                            &substituted,
+                            template_dynamic || *input_dynamic,
+                            true,
+                            depth,
+                            truncated,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn expand_tmux_command_string(
+        &mut self,
+        payload: &str,
+        payload_dynamic: bool,
+        also_shell: bool,
+        depth: usize,
+        truncated: &mut bool,
+    ) {
+        if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
+            self.dynamic = true;
+            return;
+        }
+        if also_shell {
+            self.code_payload(payload, payload_dynamic, depth);
+        } else {
+            self.dynamic |= payload_dynamic;
+            if !payload.trim().is_empty() {
+                self.nested = true;
+            }
+        }
+        let (lines, uncertain) = tokenize_tmux_commands(payload);
+        self.dynamic |= uncertain;
+        for sub_line in &lines {
+            self.record_tmux_command_list(
+                sub_line,
+                0,
+                sub_line.words.len(),
+                &sub_line.dynamic,
+                depth + 1,
+                truncated,
+            );
+        }
     }
 
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
@@ -4104,7 +4502,7 @@ const DOCKER_EXEC_SPEC: Wrapper = Wrapper {
 const TMUX_GLOBAL_SPEC: Wrapper = Wrapper {
     name: "tmux",
     short_values: "cfLST",
-    short_switches: "28CDlNuvV",
+    short_switches: "28CDhlNuvV",
     long_values: &[],
     long_switches: &[],
     operands: 0,
@@ -4114,6 +4512,78 @@ const TMUX_SUB_SPEC: Wrapper = Wrapper {
     name: "tmux-sub",
     short_values: "ceFntxypP",
     short_switches: "AdDEPXhbkvI",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_DISPLAY_POPUP_SPEC: Wrapper = Wrapper {
+    name: "tmux-display-popup",
+    short_values: "bcdehsStTwxy",
+    short_switches: "BCEkKN",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_CONFIRM_BEFORE_SPEC: Wrapper = Wrapper {
+    name: "tmux-confirm-before",
+    short_values: "cpt",
+    short_switches: "by",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_COMMAND_PROMPT_SPEC: Wrapper = Wrapper {
+    name: "tmux-command-prompt",
+    short_values: "IptT",
+    short_switches: "1bFiklN",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_BIND_KEY_SPEC: Wrapper = Wrapper {
+    name: "tmux-bind-key",
+    short_values: "NT",
+    short_switches: "nr",
+    long_values: &[],
+    long_switches: &[],
+    operands: 1,
+};
+
+const TMUX_RUN_SHELL_SPEC: Wrapper = Wrapper {
+    name: "tmux-run-shell",
+    short_values: "cdt",
+    short_switches: "bCE",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_IF_SHELL_SPEC: Wrapper = Wrapper {
+    name: "tmux-if-shell",
+    short_values: "t",
+    short_switches: "bF",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_PIPE_PANE_SPEC: Wrapper = Wrapper {
+    name: "tmux-pipe-pane",
+    short_values: "t",
+    short_switches: "IOo",
+    long_values: &[],
+    long_switches: &[],
+    operands: 0,
+};
+
+const TMUX_SEND_KEYS_SPEC: Wrapper = Wrapper {
+    name: "tmux-send-keys",
+    short_values: "cNt",
+    short_switches: "FHKlMRX",
     long_values: &[],
     long_switches: &[],
     operands: 0,
@@ -4215,35 +4685,179 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
         subcmd: &ONE_OPERAND_SPEC,
         shell_string: false,
     },
-    VerbLauncher {
-        program: "tmux",
-        verbs: &[
-            "new-session",
-            "new",
-            "new-window",
-            "neww",
-            "split-window",
-            "splitw",
-            "respawn-pane",
-            "respawnp",
-            "respawn-window",
-            "respawnw",
-        ],
-        global: &TMUX_GLOBAL_SPEC,
-        subcmd: &TMUX_SUB_SPEC,
-        shell_string: true,
-    },
 ];
 
 fn slice_line(line: &Line, start: usize) -> Line {
+    slice_line_range(line, start, line.words.len())
+}
+
+fn slice_line_range(line: &Line, start: usize, end: usize) -> Line {
     Line {
-        words: line.words[start..].to_vec(),
-        dynamic: line.dynamic[start..].to_vec(),
-        odd: line.odd[start..].to_vec(),
-        quoted: line.quoted[start..].to_vec(),
+        words: line.words[start..end].to_vec(),
+        dynamic: line.dynamic[start..end].to_vec(),
+        odd: line.odd[start..end].to_vec(),
+        quoted: line.quoted[start..end].to_vec(),
         heredoc: false,
         stdin_piped: line.stdin_piped || line.heredoc,
     }
+}
+
+fn substitute_tmux_prompt_template(template: &str, inputs: &[&str]) -> String {
+    let mut out = template.to_string();
+    if let Some(first) = inputs.first()
+        && let Some(pos) = out.find("%%")
+    {
+        let len = if out[pos + 2..].starts_with('%') {
+            3
+        } else {
+            2
+        };
+        out.replace_range(pos..pos + len, first);
+    }
+    for (idx, input) in inputs.iter().take(9).enumerate() {
+        let placeholder = format!("%{}", idx + 1);
+        if out.contains(&placeholder) {
+            out = out.replace(&placeholder, input);
+        }
+    }
+    out
+}
+
+fn tmux_source_file_parse_only(
+    tokens: &[String],
+    start: usize,
+    end: usize,
+    dynamic: &[bool],
+) -> bool {
+    let mut parse_only = false;
+    let mut at = start;
+    while at < end {
+        if dynamic[at] {
+            return false;
+        }
+        let token = tokens[at].as_str();
+        if token == "--" {
+            return parse_only && !dynamic[at + 1..end].iter().any(|&d| d);
+        }
+        if !token.starts_with('-') || token.len() == 1 {
+            return parse_only && !dynamic[at..end].iter().any(|&d| d);
+        }
+        if token.starts_with("--") {
+            return false;
+        }
+        let flags = &token[1..];
+        let mut consumes_next = false;
+        for (offset, flag) in flags.char_indices() {
+            match flag {
+                'n' => parse_only = true,
+                'F' => return false,
+                'q' | 'v' => {}
+                't' => {
+                    if offset + flag.len_utf8() == flags.len() {
+                        if at + 1 >= end || dynamic[at + 1] {
+                            return false;
+                        }
+                        consumes_next = true;
+                    }
+                    break;
+                }
+                _ => return false,
+            }
+        }
+        at += if consumes_next { 2 } else { 1 };
+    }
+    parse_only
+}
+
+fn tokenize_tmux_commands(input: &str) -> (Vec<Line>, bool) {
+    let chars: Vec<char> = input.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+    let mut commands: Vec<Line> = Vec::new();
+    let mut line = Line::default();
+    let mut word = WordBuf::default();
+    let mut uncertain = false;
+    let flush_word = |word: &mut WordBuf, line: &mut Line| {
+        if word.started || !word.text.is_empty() {
+            line.words.push(std::mem::take(&mut word.text));
+            line.dynamic.push(false);
+            line.odd.push(word.odd);
+            line.quoted.push(word.quoted);
+            word.started = false;
+        }
+        word.quoted = false;
+        word.odd = false;
+    };
+
+    while i < n {
+        let c = chars[i];
+        match c {
+            '#' if !word.started && word.text.is_empty() => {
+                while i < n && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '\\' => {
+                if i + 1 < n {
+                    if chars[i + 1] != '\n' {
+                        word.text.push(chars[i + 1]);
+                        word.started = true;
+                        word.quoted = true;
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            '\'' => {
+                word.started = true;
+                word.quoted = true;
+                i += 1;
+                while i < n && chars[i] != '\'' {
+                    word.text.push(chars[i]);
+                    i += 1;
+                }
+                uncertain |= i >= n;
+                i = (i + 1).min(n);
+            }
+            '"' => {
+                word.started = true;
+                word.quoted = true;
+                i += 1;
+                while i < n && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < n {
+                        word.text.push(chars[i + 1]);
+                        i += 2;
+                    } else {
+                        word.text.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                uncertain |= i >= n;
+                i = (i + 1).min(n);
+            }
+            ' ' | '\t' => {
+                flush_word(&mut word, &mut line);
+                i += 1;
+            }
+            ';' | '\n' | '\r' => {
+                flush_word(&mut word, &mut line);
+                push_command(&mut commands, &mut line);
+                i += 1;
+            }
+            _ => {
+                if !is_plain_word_char(c, !word.started && word.text.is_empty()) {
+                    word.odd = true;
+                }
+                word.text.push(c);
+                word.started = true;
+                i += 1;
+            }
+        }
+    }
+    flush_word(&mut word, &mut line);
+    push_command(&mut commands, &mut line);
+    (commands, uncertain)
 }
 
 fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start: usize) -> Line {
@@ -6245,5 +6859,57 @@ mod tests {
         assert!(contains("ssh host ls <<EOF\n$(rm x)\nEOF", "rm x"));
         assert!(contains("numactl --strict rm", "rm"));
         assert!(!contains("numactl --strict echo rm", "rm"));
+    }
+
+    #[test]
+    fn tmux_execution_verbs_expand_payloads_and_keep_inert_verbs_clean() {
+        for command in [
+            "tmux display-popup 'rm x'",
+            "tmux popup -E -d /tmp -t s -w 80% -h 50% 'rm x'",
+            "tmux confirm-before 'rm x'",
+            "tmux confirm -b -c y -p 'ok?' -t s \"run-shell 'rm x'\"",
+            "tmux command-prompt -I 'rm x'",
+            "tmux command-prompt -I 'rm x' \"run-shell '%%'\"",
+            "tmux bind-key k run-shell 'rm x'",
+            "tmux bind -n -r -T root -N note F1 display-popup -E 'rm x'",
+            "tmux bind-key k \"run-shell 'rm x'\"",
+            "tmux '' display-popup 'rm x'",
+        ] {
+            assert!(
+                contains(command, "rm x"),
+                "{command}: {:?}",
+                expand(command)
+            );
+        }
+
+        for command in [
+            "tmux source-file f",
+            "tmux source ~/.tmux.conf",
+            "tmux source-file -n -F '#(rm x)'",
+            "tmux source-file -t -n f",
+            "tmux source-file -- -n",
+            "tmux bind-key k '$CMD'",
+        ] {
+            assert!(expand_for_platform(command, false).dynamic, "{command}");
+        }
+
+        for command in [
+            "tmux list-sessions",
+            "tmux ls",
+            "tmux display-message hi",
+            "tmux attach",
+            "tmux display-popup -C",
+            "tmux source-file -n ~/.tmux.conf",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(
+                !expansion.dynamic && !expansion.nested,
+                "{command}: {expansion:?}"
+            );
+        }
+
+        let bind_ls = expand_for_platform("tmux bind-key k ls", false);
+        assert!(!bind_ls.dynamic);
+        assert!(!bind_ls.commands.iter().any(|cmd| cmd == "ls"));
     }
 }
