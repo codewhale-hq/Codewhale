@@ -4,7 +4,7 @@
 //! request building (`build_chat_messages*`), and SSE parsing
 //! (`parse_sse_chunk_with_reasoning_style`) all live here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
@@ -1563,7 +1563,7 @@ impl CodewhaleClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let mut tool_indices = ChatToolIndices::new();
             let mut reasoning_detail_buffers: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
             let mut inline_reasoning_tags = InlineReasoningTagState::default();
             let reasoning_stream_style = reasoning_stream_style_for_route(
@@ -1824,6 +1824,9 @@ impl CodewhaleClient {
 
             release_stream_buffer(byte_buf);
             if !stream_failed && (saw_done || saw_finish_reason) {
+                for event in finish_chat_tool_calls(tool_indices.drain().map(|(_, call)| call)) {
+                    yield Ok(event);
+                }
                 yield Ok(StreamEvent::MessageStop);
             } else if !stream_failed {
                 yield Err(anyhow::anyhow!(
@@ -4003,12 +4006,16 @@ fn parse_chat_message_for_route(
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        let mut assigned_ids = tool_calls
+            .iter()
+            .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
         for (call_index, call) in tool_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("call_{call_index}"));
+                .unwrap_or_else(|| synthesize_chat_call_id(call_index, &mut assigned_ids));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),
@@ -4253,6 +4260,41 @@ enum SseDataFrame {
     Events(Vec<StreamEvent>),
 }
 
+type ChatToolIndices = HashMap<u32, (u32, Option<String>)>;
+
+fn synthesize_chat_call_id(ordinal: usize, assigned: &mut HashSet<String>) -> String {
+    let base = format!("call_missing_{ordinal}");
+    let mut id = base.clone();
+    let mut suffix = 0usize;
+    while !assigned.insert(id.clone()) {
+        suffix += 1;
+        id = format!("{base}_{suffix}");
+    }
+    id
+}
+
+fn finish_chat_tool_calls(
+    calls: impl Iterator<Item = (u32, Option<String>)>,
+) -> impl Iterator<Item = StreamEvent> {
+    let mut calls: Vec<_> = calls.collect();
+    calls.sort_unstable_by_key(|(block, _)| *block);
+    let mut assigned = calls.iter().filter_map(|(_, id)| id.clone()).collect();
+    calls
+        .into_iter()
+        .enumerate()
+        .flat_map(move |(ordinal, (index, id))| {
+            let pairing = id.is_none().then(|| StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::ToolCallIdDelta {
+                    id: synthesize_chat_call_id(ordinal, &mut assigned),
+                },
+            });
+            pairing
+                .into_iter()
+                .chain([StreamEvent::ContentBlockStop { index }])
+        })
+}
+
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
 // shared parser-state set (mirrored by `parse_sse_chunk*`); bundling them into a
 // struct would only add reborrow noise on this hot SSE path.
@@ -4262,7 +4304,7 @@ fn parse_sse_data_frame(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolIndices,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4296,7 +4338,7 @@ pub(super) fn parse_sse_chunk(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolIndices,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     is_reasoning_model: bool,
 ) -> Vec<StreamEvent> {
@@ -4325,7 +4367,7 @@ fn parse_sse_chunk_with_reasoning_style(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolIndices,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4587,8 +4629,29 @@ fn parse_sse_chunk_with_reasoning_style(
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tool_calls {
                     let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let wire_id = tc.get("id").and_then(Value::as_str);
                     let tool_block_index = match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            let (index, id) = entry.get_mut();
+                            if let Some(wire_id) = wire_id {
+                                if let Some(id) = id {
+                                    if id.as_str() != wire_id {
+                                        return vec![StreamEvent::Error {
+                                            error: json!({"message": "Conflicting tool call ids in provider stream"}),
+                                        }];
+                                    }
+                                } else {
+                                    *id = Some(wire_id.to_owned());
+                                    events.push(StreamEvent::ContentBlockDelta {
+                                        index: *index,
+                                        delta: Delta::ToolCallIdDelta {
+                                            id: wire_id.to_owned(),
+                                        },
+                                    });
+                                }
+                            }
+                            *index
+                        }
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             // Close text block if transitioning to tool use
                             if *text_started {
@@ -4607,20 +4670,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             }
 
                             let block_index = *content_index;
-                            let id = tc
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                // Some upstream gateways (and the responses-API
-                                // bridge) elide the `id` on the first chunk of a
-                                // tool call. Falling back to a constant string
-                                // collides when the model emits parallel tool
-                                // calls in the same delta — every call ended up
-                                // with the same id and downstream tool-result
-                                // routing matched the first one twice. Index by
-                                // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
+                            let id = wire_id.unwrap_or_default().to_owned();
                             let name = tc
                                 .get("function")
                                 .and_then(|f| f.get("name"))
@@ -4653,7 +4703,7 @@ fn parse_sse_chunk_with_reasoning_style(
                                 },
                             });
                             *content_index = (*content_index).saturating_add(1);
-                            entry.insert(block_index);
+                            entry.insert((block_index, wire_id.map(str::to_owned)));
                             block_index
                         }
                     };
@@ -4752,14 +4802,9 @@ fn parse_sse_chunk_with_reasoning_style(
                 *thinking_started = false;
             }
             // Close tool blocks
-            let mut open_tool_indices: Vec<u32> =
-                tool_indices.drain().map(|(_, idx)| idx).collect();
-            open_tool_indices.sort_unstable();
-            for tool_block_index in open_tool_indices {
-                events.push(StreamEvent::ContentBlockStop {
-                    index: tool_block_index,
-                });
-            }
+            events.extend(finish_chat_tool_calls(
+                tool_indices.drain().map(|(_, call)| call),
+            ));
 
             // Emit usage from the chunk if available
             let chunk_usage = chunk.get("usage").map(|u| parse_usage(Some(u)));
