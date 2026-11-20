@@ -17,7 +17,13 @@ const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
 fn managed_program_preserves_resolved_path_and_argument_boundaries() {
     const FIXTURE_ENV: &str = "CODEWHALE_TEST_ARGV_FIXTURE";
     if std::env::var(FIXTURE_ENV).as_deref() == Ok("1") {
-        println!("\nargv fixture: {:?}", std::env::args().collect::<Vec<_>>());
+        let mut output = std::io::stdout().lock();
+        writeln!(
+            output,
+            "\nargv fixture: {:?}",
+            std::env::args().collect::<Vec<_>>()
+        )
+        .unwrap();
         return;
     }
     let workspace = tempdir().expect("tempdir");
@@ -80,6 +86,22 @@ fn managed_program_preserves_resolved_path_and_argument_boundaries() {
             "{fixture:?}: {actual:?}"
         );
         assert_eq!(actual.exit_code, Some(0), "{fixture:?}: {actual:?}");
+        let first = manager
+            .read_output_chunk(&task_id, ShellOutputStream::Stdout, 0, 7, 0)
+            .unwrap();
+        let remaining = manager
+            .read_output_chunk(
+                &task_id,
+                ShellOutputStream::Stdout,
+                first.next_offset,
+                65_536,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            [first.bytes, remaining.bytes].concat(),
+            actual.stdout.as_bytes()
+        );
         let expected_stdout = String::from_utf8(expected.stdout).expect("fixture output");
         let expected_argv = expected_stdout
             .lines()
@@ -6719,6 +6741,26 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
         "{}",
         mid.content
     );
+
+    let mut payload = b"RAW_START\n".to_vec();
+    payload.resize(21 * 1024 * 1024, b'x');
+    payload.extend_from_slice(b"\nRAW_END\n");
+    std::fs::write(workspace.path().join("large.bin"), &payload).unwrap();
+    let raw = BashTool::new("Bash")
+        .execute(
+            json!({"command": "cat large.bin; printf 'stderr-end' >&2"}),
+            &base_ctx.clone().with_origin_tool_call_id("raw-over-cap"),
+        )
+        .await
+        .unwrap();
+    assert!(raw.success, "{}", raw.content);
+    let metadata = raw.metadata.unwrap();
+    assert_eq!(metadata["artifact_complete"], true);
+    payload.extend_from_slice(b"\n\nSTDERR:\nstderr-end");
+    let bytes = std::fs::read(metadata["artifact_path"].as_str().unwrap()).unwrap();
+    assert_eq!(bytes.len(), payload.len());
+    assert!(bytes == payload);
+    assert_eq!(metadata["original_byte_count"], payload.len() as u64);
 
     let ctx_fail = base_ctx.clone().with_origin_tool_call_id("call-fg-large-3");
     let fail_err = LowercaseBashTool
