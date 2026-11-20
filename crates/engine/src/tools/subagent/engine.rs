@@ -1519,28 +1519,26 @@ impl ChildJob {
             .map(|record| record.usage.clone());
         if result.status == SubAgentStatus::BudgetExhausted {
             let cause = reason.unwrap_or("child work budget exhausted");
-            if let Some(note) = budget_work_preservation_note(
+            let partial = result
+                .result
+                .take()
+                .unwrap_or_else(|| budget_handback::fallback_partial_text(messages));
+            let preservation_note = budget_work_preservation_note(
                 &self.authority.runtime.manager,
                 &self.authority.owner_agent_id,
                 cause,
             )
-            .await
-            {
-                result
-                    .result
-                    .get_or_insert_with(String::new)
-                    .push_str(&format!("\n\n{note}"));
-            }
-            let artifact = if let Some(body) = result.result.clone() {
-                budget_handback::write_digest_artifact(
-                    &self.authority.runtime,
-                    &self.authority.owner_agent_id,
-                    body,
-                )
-                .await
-            } else {
-                None
+            .await;
+            let digest = match preservation_note.as_deref() {
+                Some(note) => format!("{partial}\n\n{note}"),
+                None => partial.clone(),
             };
+            let artifact = budget_handback::write_digest_artifact(
+                &self.authority.runtime,
+                &self.authority.owner_agent_id,
+                digest,
+            )
+            .await;
             let mut handback_note = "The host preserves the recorded work without another model request; the assignment is not complete.".to_string();
             if let Some(artifact) = artifact {
                 handback_note.push_str(&format!(
@@ -1548,11 +1546,11 @@ impl ChildJob {
                     artifact.display()
                 ));
             }
-            result = budget_partial_result_with_note(
-                result,
-                reason.unwrap_or("child work budget exhausted"),
-                &handback_note,
-            );
+            if let Some(note) = preservation_note {
+                handback_note.push(' ');
+                handback_note.push_str(&note);
+            }
+            result = budget_partial_result_with_note(result, cause, &handback_note, &partial);
         }
         release_resident_leases_for(&self.authority.owner_agent_id);
         Ok(result)

@@ -69,8 +69,13 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
                     requests.len()
                 };
                 let choice = if call == 1 || mode == "tool-only" {
+                    let content = match mode {
+                        "tool-only" => Value::Null,
+                        "truncated" => json!(format!("RECORDED_FINDING{}TAIL", "界".repeat(4_000))),
+                        _ => json!("RECORDED_FINDING: checksum validation is missing."),
+                    };
                     json!({"index": 0, "message": {"role": "assistant",
-                        "content": if mode == "tool-only" { Value::Null } else { json!("RECORDED_FINDING: checksum validation is missing.") },
+                        "content": content,
                         "tool_calls": [{"id": format!("read-{call}"), "type": "function", "function": {
                             "name": "read", "arguments": "{\"path\":\"README.md\"}"
                         }}]}, "finish_reason": "tool_calls"})
@@ -297,6 +302,23 @@ async fn owner_step_limit_keeps_the_digest_as_the_deliverable() {
     );
     assert!(!text.contains("TRUNCATED_REPORT"), "{text}");
     assert!(text.contains("this child's deliverable"), "{text}");
+    assert!(text.contains("4000 of 4020 characters shown"), "{text}");
+    assert!(text.contains("transcript_handle"), "{text}");
+    assert!(text.ends_with(&"界".repeat(3_984)));
+    assert!(
+        result
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(
+                |block| matches!(block, ContentBlock::Text { text, .. } if text.ends_with("TAIL"))
+            )
+    );
+    let completion = fixture.completions.try_recv().unwrap();
+    assert!(completion.payload.contains("4000 of 4020 characters shown"));
 
     let state_root = fixture.manager.read().await.state_root.clone();
     let artifact = checked_subagent_state_path(
@@ -309,6 +331,8 @@ async fn owner_step_limit_keeps_the_digest_as_the_deliverable() {
     .unwrap();
     let saved = fs::read_to_string(&artifact).expect("digest artifact written");
     assert!(saved.contains("RECORDED_FINDING"), "{saved}");
+    assert!(saved.contains("4000 of 4020 characters shown"), "{saved}");
+    assert!(!saved.contains("TAIL"), "{saved}");
     assert!(!saved.contains("TRUNCATED_REPORT"), "{saved}");
     assert!(text.contains(&artifact.display().to_string()), "{text}");
 }

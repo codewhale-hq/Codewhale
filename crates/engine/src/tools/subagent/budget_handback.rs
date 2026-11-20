@@ -89,9 +89,20 @@ pub(super) async fn write_digest_artifact(
     }
 }
 
+pub(super) fn preview_partial_text(text: &str) -> String {
+    const MAX_TEXT_CHARS: usize = 4_000;
+    let total = text.chars().count();
+    if total <= MAX_TEXT_CHARS {
+        return text.to_string();
+    }
+    let preview: String = text.chars().take(MAX_TEXT_CHARS).collect();
+    format!(
+        "[Partial output truncated: {MAX_TEXT_CHARS} of {total} characters shown. To inspect the retained transcript, request agent status with detail and read its transcript_handle.]\n{preview}"
+    )
+}
+
 /// Everything is bounded; the parent gets evidence, never a report.
 pub fn fallback_partial_text(messages: &[Message]) -> String {
-    const MAX_TEXT_CHARS: usize = 4_000;
     const MAX_TOOL_ENTRIES: usize = 12;
     const MAX_THINKING_BYTES: usize = 1_500;
 
@@ -105,7 +116,7 @@ pub fn fallback_partial_text(messages: &[Message]) -> String {
             _ => None,
         })
     {
-        return text.chars().take(MAX_TEXT_CHARS).collect();
+        return preview_partial_text(text);
     }
     let mut tools = Vec::new();
     let mut extra_tools = 0usize;
