@@ -36,6 +36,7 @@ use codewhale_localization::{Locale, MessageId, tr};
 #[cfg(test)]
 use codewhale_runtime::config::ApprovalDefaultSelection;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -268,16 +269,31 @@ impl ApprovalRequest {
         )
     }
 
-    pub(crate) fn review_failure(&self) -> Option<&str> {
+    pub(crate) fn review_failure(&self) -> Option<(&str, &str)> {
         self.description
             .strip_prefix("Auto-Review could not finish (")?
             .split_once("); please decide.")
-            .map(|(reason, _)| reason)
+    }
+
+    fn localized_review_failure(locale: Locale, reason: &str) -> Cow<'_, str> {
+        let id = match reason {
+            "timed out" => MessageId::BackgroundOutcomeTimedOut,
+            "transport error" => MessageId::ApprovalReviewTransport,
+            "unparseable answer" => MessageId::ApprovalReviewUnparseable,
+            "incomplete answer" => MessageId::ApprovalReviewIncomplete,
+            "review context over budget" => MessageId::ApprovalReviewOverBudget,
+            _ => return Cow::Borrowed(reason),
+        };
+        tr(locale, id)
     }
 
     pub fn description_for_locale(&self, locale: Locale) -> String {
-        if self.review_failure().is_some() {
-            return self.description.clone();
+        if let Some((reason, detail)) = self.review_failure() {
+            let reason = Self::localized_review_failure(locale, reason);
+            let mut description =
+                tr(locale, MessageId::ApprovalReviewFallback).replace("{reason}", &reason);
+            description.push_str(detail);
+            return description;
         }
         match locale {
             Locale::En if self.category == ToolCategory::Shell => {
@@ -321,7 +337,7 @@ impl ApprovalRequest {
         })
     }
 
-    pub(crate) fn docked_parts(&self) -> (String, String, bool) {
+    pub(crate) fn docked_parts(&self, locale: Locale) -> (String, String, bool) {
         let parts = docked_prompt_parts(
             &self.tool_name,
             &self.params,
@@ -329,7 +345,12 @@ impl ApprovalRequest {
             &self.summary,
         );
         let verb = match self.review_failure() {
-            Some(reason) => format!("Auto-Review ({reason}) · {}", parts.verb),
+            Some((reason, _)) => format!(
+                "{} ({}) · {}",
+                tr(locale, MessageId::ConfigChoiceAutoReview),
+                Self::localized_review_failure(locale, reason),
+                parts.verb
+            ),
             None => parts.verb,
         };
         (verb, parts.subject, parts.outside_workspace)

@@ -490,7 +490,7 @@ impl AutomationsView {
                 }
             };
             let name = display_text(&row.record.name);
-            let schedule = format_schedule_badge(&row.record.rrule);
+            let schedule = format_schedule_badge(&row.record.rrule, self.locale);
             let next_label = tr(self.locale, MessageId::AutomationNextLabel);
             let next_run = self.next_run_text(row);
             let pointer = codewhale_tui_kit::glyphs::selection_marker(selected);
@@ -624,7 +624,7 @@ impl AutomationsView {
                 ),
                 Span::styled(sep, Style::default().fg(palette::BORDER_COLOR)),
                 Span::styled(
-                    format_schedule_badge(&record.rrule),
+                    format_schedule_badge(&record.rrule, self.locale),
                     Style::default().fg(palette::TEXT_SOFT),
                 ),
             ]),

@@ -322,7 +322,7 @@ impl AutomationPanelState {
 }
 
 #[must_use]
-pub(crate) fn format_schedule_badge(rrule: &str) -> String {
+pub(crate) fn format_schedule_badge(rrule: &str, locale: Locale) -> String {
     let trimmed = rrule.trim();
     if trimmed.is_empty() {
         return "-".to_string();
@@ -347,44 +347,44 @@ pub(crate) fn format_schedule_badge(rrule: &str) -> String {
         }
     }
     let time = byhour.map(|h| format!("{h:02}:{:02}", byminute.unwrap_or(0)));
+    let label = |id| tr(locale, id).to_lowercase();
+    let repeat = |id, n: u32| tr(locale, id).replace("{count}", &n.to_string());
+    let with_time = |label: String, time: Option<String>| match time {
+        Some(time) => format!("{label} {time}"),
+        None => label,
+    };
     match freq.map(str::to_ascii_uppercase).as_deref() {
         Some("CRON") => match expr {
             Some(e) if !e.is_empty() => format!("cron {e}"),
             _ => trimmed.to_string(),
         },
-        Some("MINUTELY") => match interval {
-            Some(n) if n > 1 => format!("every {n}m"),
-            _ => "every 1m".to_string(),
-        },
+        Some("MINUTELY") => repeat(
+            MessageId::AutomationScheduleMinutes,
+            interval.unwrap_or(1).max(1),
+        ),
         Some("HOURLY") => match interval {
-            Some(n) if n > 1 => format!("every {n}h"),
-            _ => "hourly".to_string(),
+            Some(n) if n > 1 => repeat(MessageId::AutomationScheduleHours, n),
+            _ => label(MessageId::AutomationEditorHourly),
         },
-        Some("DAILY") => match (interval, time) {
-            (Some(n), Some(t)) if n > 1 => format!("every {n}d {t}"),
-            (Some(n), None) if n > 1 => format!("every {n}d"),
-            (_, Some(t)) => format!("daily {t}"),
-            _ => "daily".to_string(),
-        },
+        Some("DAILY") => with_time(
+            match interval {
+                Some(n) if n > 1 => repeat(MessageId::AutomationScheduleDays, n),
+                _ => label(MessageId::AutomationEditorDaily),
+            },
+            time,
+        ),
         Some("WEEKLY") => {
             let mut label = match interval {
-                Some(n) if n > 1 => format!("every {n}w"),
-                _ => "weekly".to_string(),
+                Some(n) if n > 1 => repeat(MessageId::AutomationScheduleWeeks, n),
+                _ => label(MessageId::AutomationEditorWeekly),
             };
             if let Some(days) = byday.filter(|d| !d.is_empty()) {
                 label.push(' ');
                 label.push_str(days);
             }
-            if let Some(t) = time {
-                label.push(' ');
-                label.push_str(&t);
-            }
-            label
+            with_time(label, time)
         }
-        Some("MONTHLY") => match time {
-            Some(t) => format!("monthly {t}"),
-            None => "monthly".to_string(),
-        },
+        Some("MONTHLY") => with_time(label(MessageId::AutomationScheduleMonthly), time),
         _ => trimmed.to_string(),
     }
 }
@@ -392,6 +392,19 @@ pub(crate) fn format_schedule_badge(rrule: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_badges_translate_labels_and_preserve_rule_values() {
+        let rrule = "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;BYHOUR=9;BYMINUTE=5";
+        assert_eq!(
+            format_schedule_badge(rrule, Locale::En),
+            "every 2w MO,WE 09:05"
+        );
+        assert_eq!(
+            format_schedule_badge(rrule, Locale::Ja),
+            "2週間ごと MO,WE 09:05"
+        );
+    }
 
     fn record(id: &str, status: AutomationStatus) -> AutomationRecord {
         let now = Utc::now();

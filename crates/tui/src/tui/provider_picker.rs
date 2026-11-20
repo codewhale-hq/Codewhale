@@ -1267,7 +1267,7 @@ impl ProviderDashboardRow {
             && provider_descriptor(&self.provider_id).is_none()
     }
 
-    fn category_label(&self) -> &'static str {
+    fn category_label(&self) -> MessageId {
         if matches!(
             self.provider,
             ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm
@@ -1277,9 +1277,9 @@ impl ProviderDashboardRow {
                 ProviderAuthStatus::Local | ProviderAuthStatus::Optional
             )
         {
-            "Local"
+            MessageId::ProviderCategoryLocal
         } else if self.provider == ProviderKind::Custom {
-            "Custom"
+            MessageId::RouterPresetCustomLabel
         } else if matches!(
             self.provider,
             ProviderKind::Openrouter
@@ -1297,15 +1297,15 @@ impl ProviderDashboardRow {
                 | ProviderKind::OpencodeGo
                 | ProviderKind::OpencodeZen
         ) {
-            "Gateway"
+            MessageId::ProviderCategoryGateway
         } else {
-            "Direct"
+            MessageId::ProviderCategoryDirect
         }
     }
 
-    fn connection_badge(&self) -> (&'static str, &'static str, Color) {
+    fn connection_badge(&self) -> (&'static str, MessageId, Color) {
         if self.is_active {
-            ("★", "active", active_modal_accent_color())
+            ("★", MessageId::CtxInspActive, active_modal_accent_color())
         } else if matches!(
             self.readiness,
             ResolvedProviderReadiness::SavedLastCheckFailed { .. }
@@ -1313,7 +1313,7 @@ impl ProviderDashboardRow {
         ) {
             (
                 codewhale_tui_kit::glyphs::AVAILABLE,
-                "check failed",
+                MessageId::ProviderBadgeCheckFailed,
                 palette::STATUS_ERROR,
             )
         } else if matches!(
@@ -1326,13 +1326,13 @@ impl ProviderDashboardRow {
         ) {
             (
                 codewhale_tui_kit::glyphs::CURRENT,
-                "connected",
+                MessageId::ExtensionsStateConnected,
                 palette::STATUS_SUCCESS,
             )
         } else {
             (
                 codewhale_tui_kit::glyphs::AVAILABLE,
-                "not configured",
+                MessageId::ProviderBadgeNotConfigured,
                 palette::STATUS_WARNING,
             )
         }
@@ -3248,8 +3248,13 @@ impl ProviderPickerView {
         };
         let inner = if self.onboarding_mode {
             let mut frame = SurfaceFrame::new(title.trim());
-            if unicode_width::UnicodeWidthStr::width(title.trim()) + 15 <= usize::from(area.width) {
-                frame = frame.right_pill("Setup", Style::default().fg(palette::TEXT_MUTED));
+            let setup = self.tr(MessageId::ProviderSetupPill);
+            if unicode_width::UnicodeWidthStr::width(title.trim())
+                + unicode_width::UnicodeWidthStr::width(setup.as_ref())
+                + 10
+                <= usize::from(area.width)
+            {
+                frame = frame.right_pill(setup, Style::default().fg(palette::TEXT_MUTED));
             }
             let (inner, _) = render_rounded_card(area, buf, frame);
             inner
@@ -3675,7 +3680,8 @@ impl ProviderPickerView {
             .render(action, buf);
         let title_width = area.width.saturating_sub(action_width + 1);
         let (badge_glyph, badge_word, badge_color) = row.connection_badge();
-        let category = row.category_label();
+        let badge_word = self.tr(badge_word);
+        let category = self.tr(row.category_label());
         let name_budget = usize::from(title_width);
         let mut header_spans = vec![Span::styled(
             codewhale_tui_kit::ui_text::semantic_truncate(&row.display_name, name_budget),
@@ -11463,6 +11469,18 @@ mod tests {
         let rendered = render_text(&picker, 80, 12);
 
         assert!(rendered.contains("★ Ollama"));
+    }
+
+    #[test]
+    fn provider_detail_badge_and_category_use_the_selected_locale() {
+        let config = Config::default();
+        let mut picker =
+            ProviderPickerView::new(ProviderKind::Deepseek, &config).with_locale(Locale::ZhHans);
+        picker.toggle_view();
+
+        let rendered = render_text(&picker, 140, 26);
+        let compact = rendered.split_whitespace().collect::<String>();
+        assert!(compact.contains("活动中·直连"), "{rendered}");
     }
 
     #[test]

@@ -353,13 +353,14 @@ impl ModalView for ThemePickerView {
                 .right_pill(pill, Style::default().fg(live.text_muted)),
         );
 
+        let translate = |id| tr(self.locale, id);
         let content = render_modal_footer(
             inner,
             buf,
             &[
-                ActionHint::new("↑/↓", "preview"),
-                ActionHint::new("Enter", "save"),
-                ActionHint::new("Esc", "revert"),
+                ActionHint::new("↑/↓", translate(MessageId::ThemeActionPreview)),
+                ActionHint::new("Enter", translate(MessageId::RouterActionSave)),
+                ActionHint::new("Esc", translate(MessageId::ThemeActionRevert)),
             ],
         );
 
@@ -522,13 +523,17 @@ impl ModalView for ThemePickerView {
                 if is_saved {
                     header_spans.push(Span::raw("  "));
                     header_spans.push(Span::styled(
-                        format!("{} active", codewhale_tui_kit::glyphs::CURRENT),
+                        format!(
+                            "{} {}",
+                            codewhale_tui_kit::glyphs::CURRENT,
+                            translate(MessageId::CtxInspActive)
+                        ),
                         Style::default().fg(live.success),
                     ));
                 } else {
                     header_spans.push(Span::raw("  "));
                     header_spans.push(Span::styled(
-                        "live preview",
+                        translate(MessageId::ThemeLivePreview),
                         Style::default().fg(live.text_muted),
                     ));
                 }
@@ -539,48 +544,75 @@ impl ModalView for ThemePickerView {
                 )));
                 preview_lines.push(Line::from(""));
                 preview_lines.push(Line::from(Span::styled(
-                    "Palette",
+                    translate(MessageId::ThemePalette),
                     Style::default()
                         .fg(live.text_muted)
                         .add_modifier(Modifier::BOLD),
                 )));
                 preview_lines.push(Line::from(vec![
                     Span::styled("  ", Style::default().bg(live.surface_bg)),
-                    Span::styled(" Surface  ", Style::default().fg(live.text_muted)),
+                    Span::styled(
+                        format!(" {}  ", translate(MessageId::ThemeColorSurface)),
+                        Style::default().fg(live.text_muted),
+                    ),
                     Span::styled("  ", Style::default().bg(live.composer_bg)),
-                    Span::styled(" Panel  ", Style::default().fg(live.text_muted)),
+                    Span::styled(
+                        format!(" {}  ", translate(MessageId::ThemeColorPanel)),
+                        Style::default().fg(live.text_muted),
+                    ),
                     Span::styled("  ", Style::default().bg(live.selection_bg)),
-                    Span::styled(" Selection", Style::default().fg(live.text_muted)),
+                    Span::styled(
+                        format!(" {}", translate(MessageId::ThemeColorSelection)),
+                        Style::default().fg(live.text_muted),
+                    ),
                 ]));
                 preview_lines.push(Line::from(vec![
                     Span::styled(
                         codewhale_tui_kit::glyphs::CURRENT,
                         Style::default().fg(live.accent_primary),
                     ),
-                    Span::styled(" Accent  ", Style::default().fg(live.text_body)),
+                    Span::styled(
+                        format!(" {}  ", translate(MessageId::ThemeColorAccent)),
+                        Style::default().fg(live.text_body),
+                    ),
                     Span::styled(
                         codewhale_tui_kit::glyphs::CURRENT,
                         Style::default().fg(live.success),
                     ),
-                    Span::styled(" Ready  ", Style::default().fg(live.text_body)),
+                    Span::styled(
+                        format!(" {}  ", translate(MessageId::ThemeColorReady)),
+                        Style::default().fg(live.text_body),
+                    ),
                     Span::styled("◆", Style::default().fg(live.warning)),
-                    Span::styled(" Notice  ", Style::default().fg(live.text_body)),
+                    Span::styled(
+                        format!(" {}  ", translate(MessageId::ThemeColorNotice)),
+                        Style::default().fg(live.text_body),
+                    ),
                     Span::styled("✕", Style::default().fg(live.error_fg)),
-                    Span::styled(" Error", Style::default().fg(live.text_body)),
+                    Span::styled(
+                        format!(" {}", translate(MessageId::ThemeColorError)),
+                        Style::default().fg(live.text_body),
+                    ),
                 ]));
                 preview_lines.push(Line::from(""));
                 preview_lines.push(Line::from(Span::styled(
-                    "Sample",
+                    translate(MessageId::ThemeSample),
                     Style::default()
                         .fg(live.text_muted)
                         .add_modifier(Modifier::BOLD),
                 )));
                 preview_lines.push(Line::from(vec![
-                    Span::styled("Primary text ", Style::default().fg(live.text_body)),
-                    Span::styled("· muted metadata", Style::default().fg(live.text_muted)),
+                    Span::styled(
+                        format!("{} ", translate(MessageId::ThemeSamplePrimary)),
+                        Style::default().fg(live.text_body),
+                    ),
+                    Span::styled(
+                        format!("· {}", translate(MessageId::ThemeSampleMuted)),
+                        Style::default().fg(live.text_muted),
+                    ),
                 ]));
                 preview_lines.push(Line::from(Span::styled(
-                    " ▸ Selected row highlight ",
+                    format!(" ▸ {} ", translate(MessageId::ThemeSampleHighlight)),
                     menu_style::theme_selected_row_style(&live),
                 )));
                 Paragraph::new(preview_lines)
@@ -901,6 +933,24 @@ mod tests {
             );
             assert!(text.contains("Enter save"));
         }
+    }
+
+    #[test]
+    fn theme_preview_and_footer_use_the_selected_locale() {
+        let area = Rect::new(0, 0, 140, 32);
+        let mut view = ThemePickerView::new_with_background("system".to_string(), Locale::Fr, None);
+        view.handle_key(key(KeyCode::Down));
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let text = buf
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(text.contains("aperçu en direct"), "{text}");
+        assert!(text.contains("Exemple"), "{text}");
+        assert!(text.contains("Enter enregistrer"), "{text}");
     }
 
     #[test]

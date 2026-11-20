@@ -2201,7 +2201,7 @@ impl<'a> ApprovalWidget<'a> {
             ));
         }
 
-        let (raw_verb, raw_subject, outside_workspace) = self.request.docked_parts();
+        let (raw_verb, raw_subject, outside_workspace) = self.request.docked_parts(locale);
         let verb = visible_text(&raw_verb, ascii);
         let subject = visible_text(&raw_subject, ascii);
 
@@ -9650,6 +9650,23 @@ mod tests {
         ApprovalWidget::new(&request, &view).render(area, &mut buf);
         let drawer = buffer_text(&buf, area);
         assert!(drawer.contains(description), "{drawer}");
+
+        let mut localized =
+            crate::tui::approval::ApprovalView::new_for_locale(request.clone(), Locale::Fr);
+        let mut localized_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &localized).render(area, &mut localized_buf);
+        let localized_bar = buffer_text(&localized_buf, area);
+        assert!(localized_bar.contains("délai dépassé"), "{localized_bar}");
+        assert!(localized_bar.contains("printf value"), "{localized_bar}");
+
+        localized.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut localized_buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &localized).render(area, &mut localized_buf);
+        let localized_drawer = buffer_text(&localized_buf, area);
+        assert!(
+            localized_drawer.contains("À vous de décider."),
+            "{localized_drawer}"
+        );
     }
 
     #[test]
