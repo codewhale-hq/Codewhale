@@ -350,8 +350,9 @@ async fn every_action_accepts_its_full_legitimate_parameter_set() {
         (
             "search_content",
             json!({"action": "search_content", "pattern": "alpha", "path": ".",
-                   "include": ["*.txt"], "exclude": ["target/**"], "context_lines": 1,
-                   "case_insensitive": true, "max_results": 5}),
+                   "include": ["*.txt"], "exclude": ["target/**"],
+                   "replace_default_excludes": false, "mode": "matches",
+                   "context_lines": 1, "case_insensitive": true, "max_results": 5}),
         ),
         (
             "write",
@@ -554,8 +555,7 @@ fn primitive_schemas_are_separate_and_small_contract_shaped() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        // Lines are the only paging vocabulary; there is no byte knob.
-        ["limit", "offset", "path"]
+        ["limit", "offset", "pages", "path"]
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -602,9 +602,13 @@ async fn primitive_edit_applies_disjoint_matches_against_original() {
         "ALPHA-LONG\nbeta\ng\n"
     );
     assert_eq!(
-        result.content,
-        "Successfully replaced 2 block(s) in doc.txt."
+        result.content.lines().next(),
+        Some("Successfully replaced 2 block(s) in doc.txt.")
     );
+    assert!(result.content.contains("-alpha"), "{}", result.content);
+    assert!(result.content.contains("+ALPHA-LONG"), "{}", result.content);
+    assert!(result.content.contains("-gamma"), "{}", result.content);
+    assert!(result.content.contains("+g"), "{}", result.content);
 }
 
 #[tokio::test]

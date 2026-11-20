@@ -71,16 +71,23 @@ async fn contract_read_defaults_to_the_line_limit() {
     let result = ReadFileTool::execute_contract_read(json!({"path": "many.txt"}), &context)
         .await
         .expect("read result");
+    let expected_numbered = lines[..2_000]
+        .iter()
+        .enumerate()
+        .map(|(index, line)| format!("{}: {line}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert_eq!(
         result.content,
         format!(
-            "{}\n\n[Showing lines 1-2000 of 5001. Continue with offset=2001.]",
-            lines[..2_000].join("\n")
+            "[lines 1-2000 of 5000 | {} bytes | truncated=true]\n{}\n\n[Showing lines 1-2000 of 5000. Continue with offset=2001.]",
+            content.len(),
+            expected_numbered
         )
     );
     let metadata = result.metadata.clone().expect("paging metadata");
     assert_eq!(metadata["truncated"], true);
-    assert_eq!(metadata["line_count"], 5_001);
+    assert_eq!(metadata["line_count"], 5_000);
 }
 
 #[tokio::test]
@@ -92,20 +99,32 @@ async fn contract_read_returns_an_ordinary_source_file_whole_without_a_footer() 
     let result = ReadFileTool::execute_contract_read(json!({"path": "main.rs"}), &context)
         .await
         .expect("read result");
-    assert_eq!(result.content, content);
+    assert_eq!(
+        result.content,
+        format!(
+            "[lines 1-3 of 3 | {} bytes | truncated=false]\n1: fn main() {{\n2:     println!(\"hi\");\n3: }}",
+            content.len()
+        )
+    );
 }
 
 #[test]
 fn contract_read_truncates_long_lines_at_a_char_boundary() {
     let first = "é".repeat(30_000);
     let second = "z".repeat(60_000);
-    let window = contract_read_window(&format!("{first}\n{second}\n"), READ_DEFAULT_MAX_BYTES);
+    let window = contract_read_window(
+        &format!("{first}\n{second}"),
+        1,
+        2,
+        true,
+        READ_DEFAULT_MAX_BYTES,
+    );
     assert!(window.line_truncated);
     assert!(!window.truncated_by_bytes);
     assert_eq!(
         window.content,
         format!(
-            "{}... [line truncated at 2000 chars]\n{}... [line truncated at 2000 chars]\n",
+            "1: {}... [line truncated at 2000 chars]\n2: {}... [line truncated at 2000 chars]",
             "é".repeat(2_000),
             "z".repeat(2_000)
         )
@@ -150,13 +169,20 @@ async fn contract_read_has_no_model_byte_budget_knob() {
     std::fs::write(temporary.path().join("wide.txt"), &content).expect("fixture");
     let context = ToolContext::new(temporary.path());
 
-    // 199-byte lines: 256 fit the 51 200-byte cap (199 + 255 * 200).
     let capped = ReadFileTool::execute_contract_read(json!({"path": "wide.txt"}), &context)
         .await
         .expect("default read");
     assert!(
+        capped.content.starts_with(&format!(
+            "[lines 1-250 of 1500 | {} bytes | truncated=true]\n1: ",
+            content.len()
+        )),
+        "{}",
+        capped.content
+    );
+    assert!(
         capped.content.contains(
-            "[Showing lines 1-256 of 1500; output cap reached. Continue with offset=257.]"
+            "[Showing lines 1-250 of 1500; output cap reached. Continue with offset=251.]"
         ),
         "{}",
         capped.content
@@ -175,9 +201,6 @@ async fn contract_read_has_no_model_byte_budget_knob() {
 async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer() {
     let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
-    // 999-byte lines: 51 of them plus their 50 separators are 51 000 bytes,
-    // under the 51 200-byte budget; a 52nd line would cross it, so page one
-    // is exactly lines 1-51.
     let line = "z".repeat(999);
     let content = std::iter::repeat_n(line.as_str(), 2_000)
         .collect::<Vec<_>>()
@@ -198,7 +221,15 @@ async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer(
         footer,
         "[Showing lines 1-51 of 2000; output cap reached. Continue with offset=52.]"
     );
-    let shown = first.content.rsplit_once("\n\n").expect("body").0;
+    let body_with_header = first.content.rsplit_once("\n\n").expect("body").0;
+    let (header, shown) = body_with_header.split_once('\n').expect("header line");
+    assert_eq!(
+        header,
+        format!(
+            "[lines 1-51 of 2000 | {} bytes | truncated=true]",
+            content.len()
+        )
+    );
     assert_eq!(shown.lines().count(), 51);
 
     // The named continuation offset is exact: page two starts on line 52.
@@ -207,11 +238,14 @@ async fn contract_read_paginates_an_oversized_file_with_an_honest_budget_footer(
             .await
             .expect("second page");
     assert!(
-        second.content.starts_with(&line),
+        second.content.starts_with(&format!(
+            "[lines 52-101 of 2000 | {} bytes | truncated=true]\n52: {line}",
+            content.len()
+        )),
         "second page starts at the named offset"
     );
     assert!(
-        second.content.contains("Continue with offset=103"),
+        second.content.contains("Continue with offset=102"),
         "{}",
         second.content
     );
@@ -293,12 +327,19 @@ async fn contract_read_pages_stay_bounded_and_cover_the_whole_file() {
             "page {page} bounded: {}",
             result.content.len()
         );
-        let body = result
+        let body_with_header = result
             .content
             .rsplit_once("\n\n[")
             .map(|(body, _)| body)
             .unwrap_or(&result.content);
-        seen.extend(body.lines().map(str::to_string));
+        let (_, body) = body_with_header.split_once('\n').expect("header line");
+        for (idx, line) in body.lines().enumerate() {
+            let expected_prefix = format!("{}: ", offset + idx);
+            let stripped = line
+                .strip_prefix(&expected_prefix)
+                .unwrap_or_else(|| panic!("expected prefix {expected_prefix:?}, got {line:?}"));
+            seen.push(stripped.to_string());
+        }
         let truncated = metadata["truncated"].as_bool().expect("truncated flag");
         if !truncated {
             break;
@@ -322,11 +363,17 @@ async fn contract_read_metadata_for_ordinary_whole_read() {
     let result = ReadFileTool::execute_contract_read(json!({"path": "small.txt"}), &context)
         .await
         .expect("read result");
-    assert_eq!(result.content, content);
+    assert_eq!(
+        result.content,
+        format!(
+            "[lines 1-3 of 3 | {} bytes | truncated=false]\n1: alpha\n2: beta\n3: gamma",
+            content.len()
+        )
+    );
     let metadata = result.metadata.clone().expect("paging metadata");
     assert_eq!(metadata["size"], content.len() as u64);
     assert_eq!(metadata["truncated"], false);
-    assert_eq!(metadata["line_count"], 4);
+    assert_eq!(metadata["line_count"], 3);
 }
 
 /// #6283 AC3: grep-then-read flow — locate a marker with `grep_files`,
@@ -378,11 +425,8 @@ async fn grep_then_read_flow_targets_matched_lines() {
 async fn contract_read_truncates_a_huge_first_line_with_a_marker() {
     let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let temporary = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        temporary.path().join("huge.txt"),
-        "x".repeat(READ_DEFAULT_MAX_BYTES + 1),
-    )
-    .expect("fixture");
+    let size = READ_DEFAULT_MAX_BYTES + 1;
+    std::fs::write(temporary.path().join("huge.txt"), "x".repeat(size)).expect("fixture");
     let context = ToolContext::new(temporary.path());
     let result = ReadFileTool::execute_contract_read(json!({"path": "huge.txt"}), &context)
         .await
@@ -390,7 +434,7 @@ async fn contract_read_truncates_a_huge_first_line_with_a_marker() {
     assert_eq!(
         result.content,
         format!(
-            "{}... [line truncated at 2000 chars]",
+            "[lines 1-1 of 1 | {size} bytes | truncated=true]\n1: {}... [line truncated at 2000 chars]",
             "x".repeat(READ_MAX_LINE_CHARS)
         )
     );
@@ -410,7 +454,7 @@ async fn contract_read_offset_oob_and_limit_continuation_match_contract() {
     .expect("limited read");
     assert_eq!(
         limited.content,
-        "two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
+        "[lines 2-2 of 3 | 13 bytes | truncated=true]\n2: two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
     );
 
     let error =
@@ -440,7 +484,7 @@ async fn contract_read_accepts_whole_number_floats_and_still_refuses_fractions()
     .expect("float-typed ranged read");
     assert_eq!(
         ranged.content,
-        "two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
+        "[lines 2-2 of 3 | 13 bytes | truncated=true]\n2: two\n\n[Showing lines 2-2 of 3. Continue with offset=3.]"
     );
 
     for (key, bad) in [
@@ -481,7 +525,10 @@ async fn contract_read_uses_magic_not_extension_for_images() {
     let text = ReadFileTool::execute_contract_read(json!({"path": "plain.png"}), &context)
         .await
         .expect("fake extension remains text");
-    assert_eq!(text.content, "ordinary text");
+    assert_eq!(
+        text.content,
+        "[lines 1-1 of 1 | 13 bytes | truncated=false]\n1: ordinary text"
+    );
     let image = ReadFileTool::execute_contract_read(json!({"path": "renamed.data"}), &context)
         .await
         .expect("real image uses typed transport");
@@ -597,9 +644,16 @@ async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     .await
     .expect("edit");
     assert_eq!(
-        result.content,
-        "Successfully replaced 1 block(s) in doc.txt."
+        result.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in doc.txt.")
     );
+    assert!(
+        result.content.contains("--- a/doc.txt"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains("-beta"), "{}", result.content);
+    assert!(result.content.contains("+two"), "{}", result.content);
     assert_eq!(
         std::fs::read(&path).expect("updated"),
         "\u{FEFF}one\r\ntwo\r\n".as_bytes()
@@ -1050,24 +1104,171 @@ async fn contract_read_newline_dense_ranges_preserve_trailing_and_empty_lines() 
     fs::write(temporary.path().join("dense.txt"), &text).unwrap();
     let context = ToolContext::new(temporary.path());
     let result = ReadFileTool::execute_contract_read(
-        json!({"path": "dense.txt", "offset": text.len(), "limit": 2}),
+        json!({"path": "dense.txt", "offset": text.len() - 1, "limit": 2}),
         &context,
     )
     .await
     .unwrap();
-    assert_eq!(result.content, "\n");
+    assert_eq!(
+        result.content,
+        format!(
+            "[lines {}-{} of {} | {} bytes | truncated=false]\n{}: \n{}: ",
+            text.len() - 1,
+            text.len(),
+            text.len(),
+            text.len(),
+            text.len() - 1,
+            text.len()
+        )
+    );
     let metadata = result.metadata.as_ref().unwrap();
     assert_eq!(metadata["size"], text.len());
-    assert_eq!(metadata["line_count"], text.len() + 1);
+    assert_eq!(metadata["line_count"], text.len());
     assert_eq!(metadata["truncated"], false);
     let empty = ReadFileTool::execute_contract_read(
-        json!({"path": "dense.txt", "offset": text.len() + 1, "limit": 0}),
+        json!({"path": "dense.txt", "offset": text.len(), "limit": 0}),
         &context,
     )
     .await
     .unwrap();
     // limit=0 selects nothing; there is no line range to footer about.
-    assert_eq!(empty.content, "");
+    assert_eq!(
+        empty.content,
+        format!(
+            "[lines 0-0 of {} | {} bytes | truncated=true]",
+            text.len(),
+            text.len()
+        )
+    );
+}
+
+#[tokio::test]
+async fn contract_read_handles_empty_file_and_pdf_pages() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    fs::write(temporary.path().join("empty.txt"), "").expect("empty fixture");
+    fs::write(temporary.path().join("plain.txt"), "hello\n").expect("plain fixture");
+    let pdf_path = temporary.path().join("doc.pdf");
+    fs::write(&pdf_path, b"%PDF-1.7\n%%EOF").expect("pdf fixture");
+    let context = ToolContext::new(temporary.path());
+
+    let empty = ReadFileTool::execute_contract_read(json!({"path": "empty.txt"}), &context)
+        .await
+        .expect("empty file read");
+    assert_eq!(
+        empty.content,
+        "[lines 0-0 of 0 | 0 bytes | truncated=false]"
+    );
+    let empty_meta = empty.metadata.as_ref().expect("metadata");
+    assert_eq!(empty_meta["size"], 0);
+    assert_eq!(empty_meta["line_count"], 0);
+    assert_eq!(empty_meta["truncated"], false);
+
+    let oob =
+        ReadFileTool::execute_contract_read(json!({"path": "empty.txt", "offset": 2}), &context)
+            .await
+            .expect_err("offset beyond empty file");
+    assert!(oob.to_string().contains("(0 lines total)"), "{oob}");
+
+    let plain_with_pages =
+        ReadFileTool::execute_contract_read(json!({"path": "plain.txt", "pages": "1-2"}), &context)
+            .await
+            .expect("pages ignored for non-pdf");
+    assert_eq!(
+        plain_with_pages.content,
+        "[lines 1-1 of 1 | 6 bytes | truncated=false]\n1: hello"
+    );
+
+    let missing_bin = temporary.path().join("missing-pdftotext");
+    let invalid_pages = ReadFileTool::execute_contract_read_with_pdf(
+        json!({"path": "doc.pdf", "pages": "5-2"}),
+        &context,
+        super::super::pdf::PdfTextCommand::test(
+            missing_bin.as_os_str(),
+            Duration::from_secs(1),
+            None,
+        ),
+    )
+    .await
+    .expect_err("invalid pdf page range must fail");
+    assert!(
+        matches!(invalid_pages, ToolError::InvalidInput { .. }),
+        "{invalid_pages:?}"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fake_pdf = temporary.path().join("fake-pdftotext");
+        fs::write(
+            &fake_pdf,
+            "#!/bin/sh\nprintf 'args:%s\\nsecond line\\n' \"$*\"\n",
+        )
+        .expect("fake pdftotext");
+        fs::set_permissions(&fake_pdf, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let extracted = ReadFileTool::execute_contract_read_with_pdf(
+            json!({"path": "doc.pdf", "pages": "2-4"}),
+            &context,
+            super::super::pdf::PdfTextCommand::test(
+                fake_pdf.as_os_str(),
+                Duration::from_secs(5),
+                None,
+            ),
+        )
+        .await
+        .expect("pdf read with pages");
+        assert!(
+            extracted.content.starts_with(
+                "[lines 1-2 of 2 | 14 bytes | truncated=false]\n1: args:-layout -f 2 -l 4 "
+            ),
+            "{}",
+            extracted.content
+        );
+        assert!(
+            extracted.content.ends_with("\n2: second line"),
+            "{}",
+            extracted.content
+        );
+        let meta = extracted.metadata.as_ref().expect("pdf metadata");
+        assert_eq!(meta["size"], 14);
+        assert_eq!(meta["line_count"], 2);
+        assert_eq!(meta["truncated"], false);
+    }
+}
+
+#[tokio::test]
+async fn contract_read_rejects_images_on_unsupported_route_but_reads_text() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        temporary.path().join("shot.png"),
+        crate::image_attach::test_support::PNG_1X1,
+    )
+    .expect("png fixture");
+    fs::write(temporary.path().join("plain.png"), "not an image\n").expect("text fixture");
+    let mut context = ToolContext::new(temporary.path());
+    context.route_capabilities.image_input = codewhale_config::route::CapabilityState::Unsupported;
+
+    let error = ReadFileTool::execute_contract_read(json!({"path": "shot.png"}), &context)
+        .await
+        .expect_err("image read must fail on non-vision route");
+    let message = error.to_string();
+    assert!(
+        message.contains("does not support image input") && message.contains("/model"),
+        "{message}"
+    );
+    assert!(
+        context
+            .require_fresh_file_read(&temporary.path().join("shot.png"), "shot.png")
+            .is_err()
+    );
+
+    let text = ReadFileTool::execute_contract_read(json!({"path": "plain.png"}), &context)
+        .await
+        .expect("non-image text file still reads on text-only route");
+    assert_eq!(
+        text.content,
+        "[lines 1-1 of 1 | 13 bytes | truncated=false]\n1: not an image"
+    );
 }
 
 #[tokio::test]
@@ -1170,4 +1371,258 @@ async fn contract_read_admits_only_an_image_the_user_attached_from_outside_the_w
             .await
             .expect_err("an outside image the user never attached stays refused");
     assert!(matches!(error, ToolError::PathEscape { .. }), "{error:?}");
+}
+
+#[tokio::test]
+async fn contract_edit_returns_bounded_unified_diff_and_truncates_large_diffs() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let context = ToolContext::new(temporary.path());
+
+    let rs_path = temporary.path().join("sample.rs");
+    std::fs::write(&rs_path, "fn main() {\n    let x = 1;\n}\n").expect("fixture");
+    let small = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "sample.rs",
+            "edits": [{"oldText": "let x = 1;", "newText": "let   x=2;"}]
+        }),
+        &context,
+    )
+    .await
+    .expect("small edit");
+    assert_eq!(
+        small.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in sample.rs.")
+    );
+    assert!(
+        small.content.contains("--- a/sample.rs"),
+        "{}",
+        small.content
+    );
+    assert!(
+        small.content.contains("+++ b/sample.rs"),
+        "{}",
+        small.content
+    );
+    assert!(
+        small.content.contains("-    let x = 1;"),
+        "{}",
+        small.content
+    );
+    let final_rs = std::fs::read_to_string(&rs_path).expect("read rs");
+    let expected_line = final_rs
+        .lines()
+        .find(|line| line.contains('2'))
+        .expect("updated line");
+    assert!(
+        small.content.contains(&format!("+{expected_line}")),
+        "{}",
+        small.content
+    );
+
+    let big_before: String = (0..220).map(|i| format!("before_line_{i:03}\n")).collect();
+    let big_after: String = (0..220).map(|i| format!("after_line_{i:03}\n")).collect();
+    let big_path = temporary.path().join("big.txt");
+    std::fs::write(&big_path, &big_before).expect("fixture");
+    let big = EditFileTool::execute_contract_edits(
+        json!({
+            "path": "big.txt",
+            "edits": [{"oldText": big_before, "newText": big_after}]
+        }),
+        &context,
+    )
+    .await
+    .expect("large edit");
+    assert_eq!(
+        big.content.lines().next(),
+        Some("Successfully replaced 1 block(s) in big.txt.")
+    );
+    assert!(big.content.contains("diff truncated:"), "{}", big.content);
+    assert!(big.content.contains("+220/-220"), "{}", big.content);
+    assert!(
+        big.content.len() <= CONTRACT_DIFF_MAX_BYTES + 512,
+        "content too large: {}",
+        big.content.len()
+    );
+    let full_meta_diff = big.metadata.as_ref().expect("metadata")["mutation"]["diff"]
+        .as_str()
+        .expect("diff string");
+    assert!(full_meta_diff.contains("+after_line_219"));
+
+    let created_body: String = (0..180).map(|i| format!("created_line_{i:03}\n")).collect();
+    let created = WriteFileTool::execute_contract_write(
+        json!({"path": "brand_new.txt", "content": created_body}),
+        &context,
+    )
+    .await
+    .expect("create large file");
+    assert!(
+        created.content.starts_with("Successfully wrote "),
+        "{}",
+        created.content
+    );
+    assert!(
+        created.content.contains("created file has 180 lines"),
+        "{}",
+        created.content
+    );
+    assert!(
+        created.content.len() <= CONTRACT_CREATE_PREVIEW_MAX_BYTES + 512,
+        "created content too large: {}",
+        created.content.len()
+    );
+
+    let updated = WriteFileTool::execute_contract_write(
+        json!({"path": "sample.rs", "content": "fn main() {\n    let x = 99;\n}\n"}),
+        &context,
+    )
+    .await
+    .expect("update existing file");
+    assert!(
+        updated.content.starts_with("Successfully wrote "),
+        "{}",
+        updated.content
+    );
+    assert!(
+        updated.content.contains("+    let x = 99;"),
+        "{}",
+        updated.content
+    );
+}
+
+#[test]
+fn apply_contract_edits_accepts_unique_exact_match_despite_fuzzy_ambiguity() {
+    let base = "let a = \"hi\";\nlet a = “hi”;\n";
+    let updated = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "let a = \"hi\";".to_string(),
+            new_text: "let a = \"bye\";".to_string(),
+        }],
+        "quotes.rs",
+        false,
+    )
+    .expect("unique exact match must succeed even when fuzzy matches 2");
+    assert_eq!(updated, "let a = \"bye\";\nlet a = “hi”;\n");
+
+    let ws_base = "line one\nline one   \n";
+    let ws_updated = apply_contract_edits(
+        ws_base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "line one\n".to_string(),
+            new_text: "LINE ONE\n".to_string(),
+        }],
+        "spaces.txt",
+        false,
+    )
+    .expect("unique exact match with trailing-space twin must succeed");
+    assert_eq!(ws_updated, "LINE ONE\nline one   \n");
+}
+
+#[test]
+fn apply_contract_edits_uses_fuzzy_fallback_per_edit_without_mutating_exact_items() {
+    let base = "alpha “keep”   \nmid\nShe said “hello”—today.\n";
+    let updated = apply_contract_edits(
+        base,
+        &[
+            ContractEdit {
+                index: 0,
+                old_text: "alpha".to_string(),
+                new_text: "ALPHA".to_string(),
+            },
+            ContractEdit {
+                index: 1,
+                old_text: "She said \"hello\"-today.".to_string(),
+                new_text: "She said hello.".to_string(),
+            },
+        ],
+        "mixed.txt",
+        false,
+    )
+    .expect("mixed exact + fuzzy batch");
+    assert_eq!(updated, "ALPHA “keep”   \nmid\nShe said hello.\n");
+
+    let overlap = apply_contract_edits(
+        "She said “hello” today\n",
+        &[
+            ContractEdit {
+                index: 0,
+                old_text: "She said".to_string(),
+                new_text: "He said".to_string(),
+            },
+            ContractEdit {
+                index: 1,
+                old_text: "said \"hello\"".to_string(),
+                new_text: "whispered hi".to_string(),
+            },
+        ],
+        "overlap.txt",
+        false,
+    )
+    .expect_err("overlapping exact and fuzzy edits must fail");
+    assert!(overlap.to_string().contains("overlap"), "{overlap}");
+}
+
+#[test]
+fn contract_edit_not_found_includes_closest_match_snippet() {
+    let base = "fn alpha() {\n    let count = 1;\n    println!(\"{count}\");\n}\n";
+    let error = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "fn alpha() {\n    let count = 2;\n    println!(\"{count}\");\n}".to_string(),
+            new_text: "fn alpha() {}".to_string(),
+        }],
+        "src/lib.rs",
+        false,
+    )
+    .expect_err("mismatch must fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("Could not find the exact text in src/lib.rs."),
+        "{message}"
+    );
+    assert!(message.contains("Closest match (lines 1-4"), "{message}");
+    assert!(message.contains("2\t    let count = 1;"), "{message}");
+    assert!(
+        message.contains("first differing line is line 2"),
+        "{message}"
+    );
+
+    let first_line_wrong = apply_contract_edits(
+        base,
+        &[ContractEdit {
+            index: 0,
+            old_text: "// stale comment\n    let count = 1;\n    println!(\"{count}\");\n}"
+                .to_string(),
+            new_text: "fn beta() {}".to_string(),
+        }],
+        "src/lib.rs",
+        false,
+    )
+    .expect_err("first-line mismatch must fail");
+    let first_msg = first_line_wrong.to_string();
+    assert!(
+        first_msg.contains("Closest match (lines 1-4"),
+        "{first_msg}"
+    );
+    assert!(
+        first_msg.contains("first differing line is line 1"),
+        "{first_msg}"
+    );
+}
+
+#[tokio::test]
+async fn contract_read_on_a_directory_names_it_and_points_to_listing_tools() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(temporary.path().join("src")).expect("mkdir");
+    let context = ToolContext::new(temporary.path());
+
+    let error = ReadFileTool::execute_contract_read(json!({"path": "src"}), &context)
+        .await
+        .expect_err("directory read must fail")
+        .to_string();
+    assert!(error.contains("path is a directory"), "{error}");
+    assert!(error.contains("list_dir"), "{error}");
 }
