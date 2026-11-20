@@ -2185,6 +2185,7 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
         }
         // Invoke the original hook (prints to stderr, etc.)
         orig_hook(panic_info);
+        crate::tui::ui::mark_terminal_restored_by_panic();
     }));
 
     // Parse and freeze every startup authority before Tokio or any other
