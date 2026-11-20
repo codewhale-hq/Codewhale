@@ -963,6 +963,7 @@ mod tests {
             session: &id,
             thread: &thread,
             turn: "turn-current",
+            workspace: Path::new("/"),
             cursor: 0,
             emit: true,
             calls: HashMap::new(),
