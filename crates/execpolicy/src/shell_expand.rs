@@ -583,13 +583,12 @@ static WRAPPERS: &[Wrapper] = &[
             "offset",
             "length",
             "mode",
-            "strict",
             "shmmode",
             "shmid",
             "shm",
             "file",
         ],
-        long_switches: &["localalloc", "all", "hardware", "show", "touch"],
+        long_switches: &["localalloc", "all", "hardware", "show", "touch", "strict"],
         operands: 0,
     },
     Wrapper {
@@ -1309,6 +1308,8 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         control: false,
         redirects: false,
         deny_only: false,
+        inherited_stdin: false,
+        groups: Vec::new(),
     };
     // Native Windows shells preserve path separators. Also retain the POSIX
     // interpretation for Bash/WSL commands. Both passes use the same bounded,
@@ -1343,7 +1344,27 @@ struct Expander {
     control: bool,
     redirects: bool,
     deny_only: bool,
+    inherited_stdin: bool,
+    groups: Vec<Group>,
 }
+
+#[derive(Clone, Copy)]
+struct Group {
+    kind: GroupKind,
+    piped: bool,
+    start_cmd: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GroupKind {
+    Paren,
+    Keyword,
+}
+
+const KEYWORD_CONTINUES: &[&str] = &[
+    "{", "}", "if", "then", "elif", "else", "do", "while", "until", "for", "select", "case", "in",
+    "done", "fi", "esac", "!", "coproc", "time",
+];
 
 /// The word being read, with what the parser learned about it.
 #[derive(Default)]
@@ -1362,7 +1383,13 @@ struct WordBuf {
 }
 
 impl WordBuf {
-    fn flush(&mut self, line: &mut Line) {
+    fn flush(
+        &mut self,
+        line: &mut Line,
+        groups: &mut Vec<Group>,
+        last_closed_group: &mut Option<usize>,
+        cmd_count: usize,
+    ) {
         if self.started || !self.text.is_empty() || self.dynamic {
             if self.redirect_operand {
                 self.text.clear();
@@ -1373,6 +1400,35 @@ impl WordBuf {
                 let dynamic = self.dynamic
                     || (self.bracket && self.text.len() > 1 && self.text.contains(']'))
                     || (self.brace && (self.text.contains(',') || self.text.contains("..")));
+                let command_position = line
+                    .words
+                    .last()
+                    .is_none_or(|last| KEYWORD_CONTINUES.contains(&last.as_str()));
+                let mut closed = false;
+                if command_position && !self.quoted {
+                    match self.text.as_str() {
+                        "{" | "while" | "until" | "for" | "if" | "case" | "select" => {
+                            groups.push(Group {
+                                kind: GroupKind::Keyword,
+                                piped: line.stdin_piped,
+                                start_cmd: cmd_count,
+                            });
+                        }
+                        "}" | "done" | "fi" | "esac" => {
+                            if matches!(groups.last(), Some(g) if g.kind == GroupKind::Keyword) {
+                                *last_closed_group = groups.pop().map(|g| g.start_cmd);
+                                closed = true;
+                            }
+                        }
+                        "coproc" => {
+                            line.stdin_piped = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if !closed {
+                    *last_closed_group = None;
+                }
                 line.words.push(std::mem::take(&mut self.text));
                 line.dynamic.push(dynamic);
                 line.odd.push(self.odd);
@@ -1389,7 +1445,7 @@ impl WordBuf {
 }
 
 /// One simple command: its words, which of them are dynamic, and whether a
-/// heredoc feeds its stdin.
+/// heredoc or pipe/redirect feeds its stdin.
 #[derive(Default, Clone)]
 struct Line {
     words: Vec<String>,
@@ -1397,6 +1453,7 @@ struct Line {
     odd: Vec<bool>,
     quoted: Vec<bool>,
     heredoc: bool,
+    stdin_piped: bool,
 }
 
 /// How a shell invocation receives its script.
@@ -1475,11 +1532,18 @@ impl Expander {
         let chars: Vec<char> = input.chars().collect();
         let n = chars.len();
         let mut i = 0usize;
+        let prev_groups = std::mem::take(&mut self.groups);
         let mut commands: Vec<Line> = Vec::new();
-        let mut line = Line::default();
+        let mut line = Line {
+            stdin_piped: self.inherited_stdin,
+            ..Line::default()
+        };
         let mut word = WordBuf::default();
-        let mut nested: Vec<String> = Vec::new();
+        let mut nested: Vec<(String, bool)> = Vec::new();
         let mut heredocs = Vec::new();
+        let mut last_closed_group: Option<usize> = None;
+        let mut line_start_cmd = 0usize;
+        let mut after_pipe = false;
         // Set when the text does not parse cleanly (an unterminated quote,
         // substitution or heredoc, a `case` inside a substitution): where
         // this parser ends a region may not be where the shell ends it.
@@ -1497,6 +1561,7 @@ impl Expander {
                 // including an operator: `echo a\;b` is one word, not two
                 // commands. A backslash-newline is a line continuation.
                 '\\' if self.literal_backslashes => {
+                    after_pipe = false;
                     word.text.push('\\');
                     word.started = true;
                     i += 1;
@@ -1504,6 +1569,7 @@ impl Expander {
                 '\\' => {
                     if i + 1 < n {
                         if chars[i + 1] != '\n' {
+                            after_pipe = false;
                             word.text.push(chars[i + 1]);
                             word.started = true;
                             word.quoted = true;
@@ -1515,6 +1581,7 @@ impl Expander {
                 }
                 // Single quotes are fully literal: no substitution, no escapes.
                 '\'' => {
+                    after_pipe = false;
                     word.started = true;
                     word.quoted = true;
                     i += 1;
@@ -1527,6 +1594,7 @@ impl Expander {
                 }
                 // Double quotes suppress word splitting but NOT substitution.
                 '"' => {
+                    after_pipe = false;
                     word.started = true;
                     word.quoted = true;
                     i += 1;
@@ -1544,14 +1612,14 @@ impl Expander {
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_backtick(&chars, i);
                                 uncertain |= !certain;
-                                nested.push(inner);
+                                nested.push((inner, line.stdin_piped));
                                 i = next;
                             }
                             '$' if i + 1 < n && matches!(chars[i + 1], '(' | '{') => {
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_substitution(&chars, i + 1);
                                 uncertain |= !certain;
-                                nested.push(inner);
+                                nested.push((inner, line.stdin_piped));
                                 i = next;
                             }
                             ch => {
@@ -1567,6 +1635,7 @@ impl Expander {
                     i = (i + 1).min(n);
                 }
                 '$' if i + 1 < n && chars[i + 1] == '\'' => {
+                    after_pipe = false;
                     word.started = true;
                     word.quoted = true;
                     word.dynamic = true;
@@ -1586,11 +1655,12 @@ impl Expander {
                 // line in its own right; the substitution contributes no text
                 // to the enclosing word (we do not evaluate output).
                 '`' => {
+                    after_pipe = false;
                     word.started |= word.redirect_operand;
                     word.dynamic = true;
                     let (inner, next, certain) = read_backtick(&chars, i);
                     uncertain |= !certain;
-                    nested.push(inner);
+                    nested.push((inner, line.stdin_piped));
                     i = next;
                 }
                 // `$(…)`, and `${…}`: an expansion, not a command — but it can
@@ -1599,21 +1669,28 @@ impl Expander {
                 '$' | '<' | '>'
                     if i + 1 < n && (chars[i + 1] == '(' || (c == '$' && chars[i + 1] == '{')) =>
                 {
+                    after_pipe = false;
                     word.started |= word.redirect_operand;
                     word.dynamic = true;
                     let (inner, next, certain) = read_substitution(&chars, i + 1);
                     uncertain |= !certain;
-                    nested.push(inner);
+                    nested.push((inner, line.stdin_piped));
                     i = next;
                 }
                 '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
                     self.redirects = true;
-                    if !word.quoted && is_redirect_descriptor(&word.text) {
-                        word.text.clear();
-                        word.started = false;
+                    after_pipe = false;
+                    let redirects_stdin = consume_redirect_descriptor(&mut word);
+                    word.flush(
+                        &mut line,
+                        &mut self.groups,
+                        &mut last_closed_group,
+                        commands.len(),
+                    );
+                    if redirects_stdin {
+                        line.heredoc = true;
+                        line.stdin_piped = false;
                     }
-                    word.flush(&mut line);
-                    line.heredoc = true;
                     i += 2;
                     let strip_tabs = chars.get(i) == Some(&'-');
                     if strip_tabs {
@@ -1651,7 +1728,8 @@ impl Expander {
                     if let Some(delimiter) = shlex::split(&raw)
                         .and_then(|mut words| (words.len() == 1).then(|| words.remove(0)))
                     {
-                        heredocs.push((delimiter, literal, strip_tabs));
+                        let cmd_start = last_closed_group.unwrap_or(line_start_cmd);
+                        heredocs.push((delimiter, literal, strip_tabs, redirects_stdin, cmd_start));
                     }
                 }
                 // Unquoted redirections are syntax, even without whitespace.
@@ -1660,16 +1738,33 @@ impl Expander {
                 // nested substitutions are still checked as commands.
                 '<' | '>' | '&' if redirection_len(&chars[i..]) > 0 => {
                     self.redirects = true;
-                    if !word.quoted && is_redirect_descriptor(&word.text) {
-                        word.text.clear();
-                        word.started = false;
-                    }
-                    word.flush(&mut line);
+                    after_pipe = false;
+                    let redirects_stdin = consume_redirect_descriptor(&mut word);
+                    word.flush(
+                        &mut line,
+                        &mut self.groups,
+                        &mut last_closed_group,
+                        commands.len(),
+                    );
                     word.redirect_operand = true;
+                    if c == '<' && redirects_stdin {
+                        line.stdin_piped = true;
+                        line.heredoc = false;
+                        if let Some(start) = last_closed_group {
+                            for cmd in &mut commands[start..] {
+                                cmd.stdin_piped = true;
+                            }
+                        }
+                    }
                     i += redirection_len(&chars[i..]);
                 }
                 ' ' | '\t' => {
-                    word.flush(&mut line);
+                    word.flush(
+                        &mut line,
+                        &mut self.groups,
+                        &mut last_closed_group,
+                        commands.len(),
+                    );
                     i += 1;
                 }
                 // A subshell boundary. `$(`, `<(` and `>(` were consumed by the
@@ -1677,6 +1772,8 @@ impl Expander {
                 // command list of its own, not part of the surrounding word.
                 '(' | ')' => {
                     self.control = true;
+                    after_pipe = false;
+                    let enclosing_stdin = line.stdin_piped;
                     let glued = if c == '(' {
                         (word.started || !word.text.is_empty())
                             && chars.get(i + 1) != Some(&')')
@@ -1689,8 +1786,30 @@ impl Expander {
                             })
                     };
                     uncertain |= glued;
-                    word.flush(&mut line);
-                    end_command(&mut commands, &mut line);
+                    word.flush(
+                        &mut line,
+                        &mut self.groups,
+                        &mut last_closed_group,
+                        commands.len(),
+                    );
+                    let subshell = c == '(' && !glued && chars.get(i + 1) != Some(&'(');
+                    if subshell {
+                        self.groups.push(Group {
+                            kind: GroupKind::Paren,
+                            piped: line.stdin_piped,
+                            start_cmd: commands.len(),
+                        });
+                        last_closed_group = None;
+                    }
+                    end_command(&mut commands, &mut line, self.fresh_stdin());
+                    if c == ')'
+                        && matches!(self.groups.last(), Some(g) if g.kind == GroupKind::Paren)
+                    {
+                        last_closed_group = self.groups.pop().map(|g| g.start_cmd);
+                        line.stdin_piped = self.fresh_stdin();
+                    } else if !subshell {
+                        last_closed_group = None;
+                    }
                     word.redirect_operand = false;
                     if c == '(' && chars.get(i + 1) == Some(&'(') {
                         // `(( … ))` is arithmetic, where `<<` is a shift and
@@ -1700,7 +1819,7 @@ impl Expander {
                         // cannot swallow the lines after it.
                         let (inner, next, certain) = read_substitution(&chars, i);
                         uncertain |= !certain;
-                        nested.push(inner);
+                        nested.push((inner, enclosing_stdin));
                         i = next;
                     } else {
                         i += 1;
@@ -1710,74 +1829,113 @@ impl Expander {
                 // `;;`, `|&` and runs of newlines collapse into one break.
                 '\n' | '\r' | ';' | '&' | '|' => {
                     self.control = true;
-                    word.flush(&mut line);
-                    end_command(&mut commands, &mut line);
+                    let preserve_pipe =
+                        matches!(c, '\n' | '\r') && after_pipe && heredocs.is_empty();
+                    word.flush(
+                        &mut line,
+                        &mut self.groups,
+                        &mut last_closed_group,
+                        commands.len(),
+                    );
+                    last_closed_group = None;
+                    let next_stdin = if preserve_pipe {
+                        line.stdin_piped
+                    } else {
+                        self.fresh_stdin()
+                    };
+                    end_command(&mut commands, &mut line, next_stdin);
                     word.redirect_operand = false;
+                    if !preserve_pipe {
+                        after_pipe = false;
+                    }
+                    if c == '|' && chars.get(i + 1) == Some(&'|') {
+                        i += 1;
+                    } else if c == '|' {
+                        line.stdin_piped = true;
+                        after_pipe = true;
+                        if chars.get(i + 1) == Some(&'&') {
+                            i += 1;
+                        }
+                    }
                     i += 1;
-                    if c == '\n' && !heredocs.is_empty() {
-                        let shell_stdin = commands.iter().any(|line| {
-                            command_heads(&line.words).heads.iter().any(|&head| {
-                                let name = command_name(&line.words[head]);
-                                SHELL_NAMES.contains(&name.as_str())
-                                    || matches!(name.as_str(), "source" | "." | "at" | "batch")
-                            })
-                        });
-                        for (delimiter, literal, strip_tabs) in heredocs.drain(..) {
-                            let mut body = String::new();
-                            // A body that runs to the end of the input may be
-                            // a misread `<<`; what it swallowed is unexamined.
-                            let mut terminated = false;
-                            while i < n {
-                                let start = i;
-                                while i < n && chars[i] != '\n' {
-                                    i += 1;
-                                }
-                                let mut text: String = chars[start..i].iter().collect();
-                                if i < n {
-                                    i += 1;
-                                }
-                                // An unquoted heredoc joins escaped newlines
-                                // before checking its delimiter (E\ + OF can
-                                // terminate EOF). Do not swallow later code.
-                                while !literal
-                                    && text.chars().rev().take_while(|c| *c == '\\').count() % 2
-                                        == 1
-                                    && i < n
-                                {
-                                    text.pop();
+                    if c == '\n' {
+                        if !heredocs.is_empty() {
+                            for (delimiter, literal, strip_tabs, redirects_stdin, cmd_start) in
+                                heredocs.drain(..)
+                            {
+                                let shell_stdin = redirects_stdin
+                                    && commands[cmd_start..].iter().any(|line| {
+                                        command_heads(&line.words).heads.iter().any(|&head| {
+                                            let name = command_name(&line.words[head]);
+                                            SHELL_NAMES.contains(&name.as_str())
+                                                || matches!(
+                                                    name.as_str(),
+                                                    "source" | "." | "at" | "batch"
+                                                )
+                                                || (name == "ssh"
+                                                    && ssh_reads_stdin(&line.words, head))
+                                        })
+                                    });
+                                let mut body = String::new();
+                                // A body that runs to the end of the input may be
+                                // a misread `<<`; what it swallowed is unexamined.
+                                let mut terminated = false;
+                                while i < n {
                                     let start = i;
                                     while i < n && chars[i] != '\n' {
                                         i += 1;
                                     }
-                                    text.extend(chars[start..i].iter());
+                                    let mut text: String = chars[start..i].iter().collect();
                                     if i < n {
                                         i += 1;
                                     }
+                                    // An unquoted heredoc joins escaped newlines
+                                    // before checking its delimiter (E\ + OF can
+                                    // terminate EOF). Do not swallow later code.
+                                    while !literal
+                                        && text.chars().rev().take_while(|c| *c == '\\').count() % 2
+                                            == 1
+                                        && i < n
+                                    {
+                                        text.pop();
+                                        let start = i;
+                                        while i < n && chars[i] != '\n' {
+                                            i += 1;
+                                        }
+                                        text.extend(chars[start..i].iter());
+                                        if i < n {
+                                            i += 1;
+                                        }
+                                    }
+                                    let text = if strip_tabs {
+                                        text.trim_start_matches('\t')
+                                    } else {
+                                        &text
+                                    };
+                                    if text == delimiter {
+                                        terminated = true;
+                                        break;
+                                    }
+                                    body.push_str(text);
+                                    body.push('\n');
                                 }
-                                let text = if strip_tabs {
-                                    text.trim_start_matches('\t')
-                                } else {
-                                    &text
-                                };
-                                if text == delimiter {
-                                    terminated = true;
-                                    break;
+                                uncertain |= !terminated;
+                                if shell_stdin {
+                                    nested.push((body, false));
+                                } else if !literal {
+                                    let (bodies, certain) = heredoc_substitutions(&body);
+                                    uncertain |= !certain;
+                                    nested.extend(
+                                        bodies.into_iter().map(|body| (body, line.stdin_piped)),
+                                    );
                                 }
-                                body.push_str(text);
-                                body.push('\n');
-                            }
-                            uncertain |= !terminated;
-                            if shell_stdin {
-                                nested.push(body);
-                            } else if !literal {
-                                let (bodies, certain) = heredoc_substitutions(&body);
-                                uncertain |= !certain;
-                                nested.extend(bodies);
                             }
                         }
+                        line_start_cmd = commands.len();
                     }
                 }
                 _ => {
+                    after_pipe = false;
                     if c == '$' && starts_parameter(chars.get(i + 1)) {
                         word.dynamic = true;
                     }
@@ -1796,21 +1954,41 @@ impl Expander {
                 }
             }
         }
-        word.flush(&mut line);
-        end_command(&mut commands, &mut line);
+        word.flush(
+            &mut line,
+            &mut self.groups,
+            &mut last_closed_group,
+            commands.len(),
+        );
+        end_command(&mut commands, &mut line, self.fresh_stdin());
+        self.groups = prev_groups;
         self.dynamic |= uncertain;
 
         for line in &commands {
             self.record(line, depth);
         }
-        for inner in nested {
+        for (inner, piped) in nested {
+            let prev_stdin = self.inherited_stdin;
+            self.inherited_stdin |= piped;
             self.expand(&inner, depth + 1);
+            self.inherited_stdin = prev_stdin;
         }
+    }
+
+    fn fresh_stdin(&self) -> bool {
+        self.inherited_stdin || self.groups.last().is_some_and(|group| group.piped)
     }
 
     /// Record one word-split command line, plus the invocation hiding inside it
     /// when the head is a wrapper, and flag what cannot be resolved.
     fn record(&mut self, line: &Line, depth: usize) {
+        let prev_stdin = self.inherited_stdin;
+        self.inherited_stdin |= line.stdin_piped;
+        self.record_line(line, depth);
+        self.inherited_stdin = prev_stdin;
+    }
+
+    fn record_line(&mut self, line: &Line, depth: usize) {
         let tokens = &line.words;
         if tokens.is_empty() {
             return;
@@ -2032,6 +2210,8 @@ impl Expander {
             control: false,
             redirects: false,
             deny_only: true,
+            inherited_stdin: false,
+            groups: Vec::new(),
         };
         child.record(sub, depth);
         for cmd in child.extra_deny {
@@ -2116,9 +2296,13 @@ impl Expander {
                 if ssh_skips_remote_command(&tokens[head + 1..]) {
                     return;
                 }
-                for landing in resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated)
-                {
+                let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+                let mut remote_command = false;
+                let prev_stdin = self.inherited_stdin;
+                self.inherited_stdin |= line.stdin_piped || line.heredoc;
+                for &landing in &landings {
                     if landing < tokens.len() {
+                        remote_command = true;
                         let rest = &tokens[landing..];
                         let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
                         self.code_payload(&rest.join(" "), rest_dynamic, depth);
@@ -2126,6 +2310,12 @@ impl Expander {
                             self.record(&slice_line(line, landing), depth + 1);
                         }
                     }
+                }
+                self.inherited_stdin = prev_stdin;
+                if (!remote_command || landings.contains(&tokens.len()) || truncated)
+                    && line.stdin_piped
+                {
+                    self.dynamic = true;
                 }
             }
             "screen" => {
@@ -2390,6 +2580,7 @@ impl Expander {
                         odd: line.odd[start..end].to_vec(),
                         quoted: line.quoted[start..end].to_vec(),
                         heredoc: false,
+                        stdin_piped: line.stdin_piped || line.heredoc,
                     };
                     self.record(&payload, depth + 1);
                 }
@@ -2944,6 +3135,7 @@ fn slice_line(line: &Line, start: usize) -> Line {
         odd: line.odd[start..].to_vec(),
         quoted: line.quoted[start..].to_vec(),
         heredoc: false,
+        stdin_piped: line.stdin_piped || line.heredoc,
     }
 }
 
@@ -2968,6 +3160,7 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
         odd,
         quoted,
         heredoc: false,
+        stdin_piped: line.stdin_piped || line.heredoc,
     }
 }
 
@@ -2990,6 +3183,15 @@ fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
         i += 1;
     }
     found
+}
+
+fn ssh_reads_stdin(tokens: &[String], head: usize) -> bool {
+    if ssh_skips_remote_command(&tokens[head + 1..]) {
+        return false;
+    }
+    let mut truncated = false;
+    let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+    truncated || landings.is_empty() || landings.contains(&tokens.len())
 }
 
 fn ssh_skips_remote_command(args: &[String]) -> bool {
@@ -3290,6 +3492,17 @@ fn redirection_len(chars: &[char]) -> usize {
     }
 }
 
+fn consume_redirect_descriptor(word: &mut WordBuf) -> bool {
+    if !word.quoted && !word.dynamic && is_redirect_descriptor(&word.text) {
+        let is_stdin = word.text.bytes().all(|b| b == b'0');
+        word.text.clear();
+        word.started = false;
+        is_stdin
+    } else {
+        true
+    }
+}
+
 fn is_redirect_descriptor(word: &str) -> bool {
     if !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) {
         return true;
@@ -3314,18 +3527,20 @@ fn is_redirect_descriptor(word: &str) -> bool {
 /// (`if`, `then`, `while`, `do`, `!`, …) are dropped so the word after them is
 /// read as the command word. Every downstream consumer (wrapper detection,
 /// emission) then looks at real command words only.
-fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
-    let line = std::mem::take(line);
+fn end_command(commands: &mut Vec<Line>, line: &mut Line, fresh_stdin: bool) {
+    let line_old = std::mem::take(line);
+    line.stdin_piped = fresh_stdin;
     let mut piece = Line {
-        heredoc: line.heredoc,
+        heredoc: line_old.heredoc,
+        stdin_piped: line_old.stdin_piped,
         ..Line::default()
     };
-    for (((word, dynamic), odd), quoted) in line
+    for (((word, dynamic), odd), quoted) in line_old
         .words
         .into_iter()
-        .zip(line.dynamic)
-        .zip(line.odd)
-        .zip(line.quoted)
+        .zip(line_old.dynamic)
+        .zip(line_old.odd)
+        .zip(line_old.quoted)
     {
         if matches!(word.as_str(), "{" | "}") {
             push_command(commands, &mut piece);
@@ -3345,8 +3560,10 @@ fn end_command(commands: &mut Vec<Line>, line: &mut Line) {
 fn push_command(commands: &mut Vec<Line>, piece: &mut Line) {
     if !piece.words.is_empty() {
         let heredoc = piece.heredoc;
+        let stdin_piped = piece.stdin_piped;
         commands.push(std::mem::take(piece));
         piece.heredoc = heredoc;
+        piece.stdin_piped = stdin_piped;
     }
 }
 
@@ -4640,5 +4857,55 @@ mod tests {
         );
         assert!(expand_for_platform("$'rm' -f f", false).dynamic);
         assert!(expand_for_platform("$'\\x72m' f", false).dynamic);
+    }
+
+    #[test]
+    fn stdin_piped_propagation_and_numactl_strict() {
+        for command in [
+            "echo 'rm x' | ssh host",
+            "echo 'rm x' |& ssh host",
+            "echo 'rm x' |\nssh host",
+            "ssh host < script",
+            "ssh host 0< script",
+            "ssh host <<< 'rm x'",
+            "ssh host 0<<< 'rm x'",
+            "ssh host sh <<EOF\nrm x\nEOF",
+            "ssh host 'ssh host2' <<EOF\nrm x\nEOF",
+            "echo 'rm x' | find . -exec ssh host \\;",
+            "echo 'rm x' | { a; ssh host; }",
+            "echo 'rm x' | { { a; }; ssh host; }",
+            "echo 'rm x' | (a; ssh host)",
+            "{ a; ssh host; } <<< 'rm x'",
+            "(a; ssh host) < script",
+            "echo 'rm x' | echo $(ssh host)",
+            "echo 'rm x' | sh -c 'ssh host'",
+        ] {
+            assert!(expand_for_platform(command, false).dynamic, "{command}");
+        }
+        for command in [
+            "x || ssh host",
+            "echo x | y || ssh host",
+            "echo x | y && ssh host",
+            "echo x | y; ssh host",
+            "ssh host 3< f",
+            "ssh host {fd}< f",
+            "ssh host 3<<< 'rm x'",
+            "ssh host 3<&0",
+            "ssh host 3<<EOF\nrm x\nEOF",
+            "ssh host ls <<EOF\nrm x\nEOF",
+            "ssh host <<EOF\nls\nEOF",
+            "find . -exec ssh host \\;",
+            "echo x | { a; b; }; ssh host",
+            "echo x | (a; b); ssh host",
+            "{ a; ssh host; } 3< f",
+        ] {
+            let expansion = expand_for_platform(command, false);
+            assert!(!expansion.dynamic, "{command}: {expansion:?}");
+        }
+        assert!(contains("ssh host <<EOF\nrm x\nEOF", "rm x"));
+        assert!(!contains("ssh host ls <<EOF\nrm x\nEOF", "rm x"));
+        assert!(contains("ssh host ls <<EOF\n$(rm x)\nEOF", "rm x"));
+        assert!(contains("numactl --strict rm", "rm"));
+        assert!(!contains("numactl --strict echo rm", "rm"));
     }
 }
