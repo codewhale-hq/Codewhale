@@ -61,6 +61,9 @@ const MAX_COMMANDS: usize = 256;
 /// word behind wrapper words. Running out marks the command unresolved.
 const MAX_HEAD_STATES: usize = 512;
 
+const MAX_AWK_PROGRAM_BYTES: usize = 64 * 1024;
+const MAX_AWK_SCAN_STEPS: usize = 8 * MAX_AWK_PROGRAM_BYTES;
+
 /// A word that prefixes another command rather than being the command: the
 /// real invocation is what follows. Stripping it keeps `sudo rm -rf /`
 /// matchable by an `rm -rf /` rule.
@@ -2557,6 +2560,12 @@ impl Expander {
         }
 
         if !scripts.is_empty() {
+            let program_bytes =
+                scripts.iter().map(|script| script.len()).sum::<usize>() + scripts.len() - 1;
+            if program_bytes > MAX_AWK_PROGRAM_BYTES {
+                self.mark_awk_scan_incomplete();
+                return;
+            }
             let joined = scripts.join("\n");
             self.scan_awk_program(&joined, depth);
         }
@@ -2564,54 +2573,79 @@ impl Expander {
 
     fn scan_awk_program(&mut self, program: &str, depth: usize) {
         let tokens = lex_awk_tokens(program);
-        let n = tokens.len();
-        for idx in 0..n {
-            match &tokens[idx] {
-                AwkToken::Ident(name)
-                    if name == "system" && tokens.get(idx + 1) == Some(&AwkToken::LParen) =>
-                {
-                    let mut depth_paren = 1usize;
-                    let mut close = idx + 2;
-                    while close < n && depth_paren > 0 {
-                        match tokens[close] {
-                            AwkToken::LParen => depth_paren += 1,
-                            AwkToken::RParen => depth_paren -= 1,
-                            _ => {}
-                        }
-                        if depth_paren > 0 {
-                            close += 1;
-                        }
+        let mut closes = vec![None; tokens.len()];
+        let mut opens = Vec::new();
+        for (idx, token) in tokens.iter().enumerate() {
+            match token {
+                AwkToken::LParen => opens.push(idx),
+                AwkToken::RParen => {
+                    if let Some(open) = opens.pop() {
+                        closes[open] = Some(idx);
                     }
-                    if depth_paren == 0 {
-                        self.emit_awk_command_expr(&tokens[idx + 2..close], depth);
-                    } else {
-                        self.dynamic = true;
-                        self.nested = true;
-                    }
-                }
-                AwkToken::Pipe => {
-                    let mut after = idx + 1;
-                    while after < n && tokens[after] == AwkToken::Newline {
-                        after += 1;
-                    }
-                    let expr = if matches!(tokens.get(after), Some(AwkToken::Ident(s)) if s == "getline")
-                    {
-                        awk_pipe_lhs(&tokens[..idx])
-                    } else {
-                        awk_pipe_rhs(&tokens[after..])
-                    };
-                    self.emit_awk_command_expr(expr, depth);
                 }
                 _ => {}
             }
         }
+
+        let mut remaining = MAX_AWK_SCAN_STEPS;
+        for (idx, token) in tokens.iter().enumerate() {
+            let expr = match token {
+                AwkToken::Ident(name)
+                    if name == "system" && tokens.get(idx + 1) == Some(&AwkToken::LParen) =>
+                {
+                    if let Some(close) = closes[idx + 1] {
+                        Some(&tokens[idx + 2..close])
+                    } else {
+                        self.dynamic = true;
+                        self.nested = true;
+                        continue;
+                    }
+                }
+                AwkToken::Pipe => {
+                    let mut after = idx + 1;
+                    while tokens.get(after) == Some(&AwkToken::Newline) {
+                        after += 1;
+                    }
+                    if matches!(tokens.get(after), Some(AwkToken::Ident(s)) if s == "getline") {
+                        awk_pipe_lhs(&tokens[..idx], &mut remaining)
+                    } else {
+                        awk_pipe_rhs(&tokens[after..], &mut remaining)
+                    }
+                }
+                _ => continue,
+            };
+            let Some(expr) = expr else {
+                self.mark_awk_scan_incomplete();
+                return;
+            };
+            let Some(next) = remaining.checked_sub(expr.len()) else {
+                self.mark_awk_scan_incomplete();
+                return;
+            };
+            remaining = next;
+            if !self.emit_awk_command_expr(expr, depth, &mut remaining) {
+                self.mark_awk_scan_incomplete();
+                return;
+            }
+        }
     }
 
-    fn emit_awk_command_expr(&mut self, expr: &[AwkToken], depth: usize) {
+    fn mark_awk_scan_incomplete(&mut self) {
+        self.dynamic = true;
+        self.nested = true;
+        self.extra_deny_dropped |= self.deny_only;
+    }
+
+    fn emit_awk_command_expr(
+        &mut self,
+        expr: &[AwkToken],
+        depth: usize,
+        remaining: &mut usize,
+    ) -> bool {
         self.nested = true;
         if expr.is_empty() {
             self.dynamic = true;
-            return;
+            return true;
         }
         let mut joined = String::new();
         let mut paren_depth = 0usize;
@@ -2620,6 +2654,10 @@ impl Expander {
         for tok in expr {
             match tok {
                 AwkToken::Str(s) => {
+                    let Some(next) = remaining.checked_sub(s.len()) else {
+                        return false;
+                    };
+                    *remaining = next;
                     has_str = true;
                     joined.push_str(s);
                 }
@@ -2642,6 +2680,7 @@ impl Expander {
         } else {
             self.dynamic = true;
         }
+        true
     }
 
     fn record_sed_program(
@@ -3223,11 +3262,12 @@ fn is_awk_lhs_stop(tok: &AwkToken) -> bool {
     }
 }
 
-fn awk_pipe_lhs(before: &[AwkToken]) -> &[AwkToken] {
+fn awk_pipe_lhs<'a>(before: &'a [AwkToken], remaining: &mut usize) -> Option<&'a [AwkToken]> {
     let mut paren = 0usize;
     let mut bracket = 0usize;
     let mut start = before.len();
     while start > 0 {
+        *remaining = remaining.checked_sub(1)?;
         let tok = &before[start - 1];
         match tok {
             AwkToken::RParen => paren += 1,
@@ -3241,14 +3281,15 @@ fn awk_pipe_lhs(before: &[AwkToken]) -> &[AwkToken] {
         }
         start -= 1;
     }
-    &before[start..]
+    Some(&before[start..])
 }
 
-fn awk_pipe_rhs(after: &[AwkToken]) -> &[AwkToken] {
+fn awk_pipe_rhs<'a>(after: &'a [AwkToken], remaining: &mut usize) -> Option<&'a [AwkToken]> {
     let mut paren = 0usize;
     let mut bracket = 0usize;
     let mut end = 0usize;
     while end < after.len() {
+        *remaining = remaining.checked_sub(1)?;
         match &after[end] {
             AwkToken::LParen => paren += 1,
             AwkToken::RParen if paren > 0 => paren -= 1,
@@ -3271,7 +3312,7 @@ fn awk_pipe_rhs(after: &[AwkToken]) -> &[AwkToken] {
         }
         end += 1;
     }
-    &after[..end]
+    Some(&after[..end])
 }
 
 fn looks_like_bsd_sed_backup_suffix(token: &str) -> bool {
@@ -5276,6 +5317,30 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn awk_policy_scan_bounds_work_and_preserves_ordinary_programs() {
+        let program = "BEGIN { print 1 }\n#";
+        let padding = " ".repeat(MAX_AWK_PROGRAM_BYTES - program.len());
+        assert!(!expand_for_platform(&format!("awk '{program}{padding}'"), false).dynamic);
+        assert!(expand_for_platform(&format!("awk '{program}{padding} '"), false).dynamic);
+
+        let nested = expand_for_platform(r#"awk 'BEGIN { system(("printf ready")) }'"#, false);
+        assert!(nested.nested);
+        assert!(!nested.dynamic);
+        assert!(
+            nested
+                .commands
+                .iter()
+                .any(|command| command == "printf ready")
+        );
+
+        let tokens = lex_awk_tokens(r#"("printf ready")"#);
+        assert_eq!(awk_pipe_lhs(&tokens, &mut 3), Some(tokens.as_slice()));
+        assert_eq!(awk_pipe_rhs(&tokens, &mut 3), Some(tokens.as_slice()));
+        assert_eq!(awk_pipe_lhs(&tokens, &mut 2), None);
+        assert_eq!(awk_pipe_rhs(&tokens, &mut 2), None);
+    }
 
     fn expand(command: &str) -> Vec<String> {
         // Exercise the POSIX grammar consistently on every test host.

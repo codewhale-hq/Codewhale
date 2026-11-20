@@ -617,6 +617,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
 - **Tool-call identity:** generated IDs stay distinct from literal provider IDs, including when a provider sends the ID late in a stream. Thanks [@donglovejava](https://github.com/donglovejava) ([PR 7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
 - **Headless resume:** `exec --resume` asks for explicit provider or model reselection when the saved endpoint or account binding changes. (CW-8311)
 - **Terminal translations:** Auto-Review fallback, provider badges, theme previews, and automation schedules use the selected language.
