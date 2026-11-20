@@ -7510,6 +7510,11 @@ impl ToolSpec for BashTool {
         }
 
         let mut lifecycle_warning = None;
+        let timeout_bounds_ms = if self.optional_timeout {
+            (1, BASH_MAX_TIMEOUT_MS)
+        } else {
+            (1_000, 600_000)
+        };
         let mut receipt_identity = None;
         // #6689: the receipt exists for completion hooks to read. Without one
         // registered it would only ride along in tool metadata, which the
@@ -7575,7 +7580,7 @@ impl ToolSpec for BashTool {
                 shell_work_lifecycle_from_context(context),
                 None,
                 persist,
-                (1_000, 600_000),
+                timeout_bounds_ms,
             );
             if let (Ok(result), Some(permit)) = (&result, heavy_permit)
                 && let Some(task_id) = result.task_id.as_deref()
@@ -7603,11 +7608,7 @@ impl ToolSpec for BashTool {
                 policy_override,
                 extra_env,
                 matches!(context.shell_policy, ShellPolicy::ReadOnly) && !enforced_readonly,
-                if self.optional_timeout {
-                    (1, BASH_MAX_TIMEOUT_MS)
-                } else {
-                    (1_000, 600_000)
-                },
+                timeout_bounds_ms,
                 wants_receipt,
                 &mut receipt_identity,
             )
