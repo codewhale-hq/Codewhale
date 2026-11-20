@@ -4280,25 +4280,36 @@ impl SubAgentWorkflowDriver {
         &self,
         request: &mut TaskRequest,
     ) -> Result<Vec<HandoffArtifact>, DriverError> {
-        let Some(role) = request.role.as_deref().filter(|role| !role.is_empty()) else {
-            return Ok(Vec::new());
-        };
         if self.gate_specs.is_empty() {
             return Ok(Vec::new());
         }
+        let role = request
+            .role
+            .as_deref()
+            .filter(|role| !role.trim().is_empty())
+            .map(public_role_label)
+            .unwrap_or_else(|| {
+                request
+                    .subagent_type
+                    .as_deref()
+                    .and_then(FleetRole::parse)
+                    .unwrap_or(FleetRole::Worker)
+                    .as_str()
+                    .to_string()
+            });
 
         let (blocked, handoffs) = {
             let mut board = self
                 .gate_board
                 .lock()
                 .map_err(|_| DriverError::Rejected("workflow gate board lock poisoned".into()))?;
-            let blocked = board.role_is_blocked(&self.gate_specs, role).cloned();
+            let blocked = board.role_is_blocked(&self.gate_specs, &role).cloned();
             // Handoffs are consumed (removed from the board) as they are
             // delivered — but only when the role is actually admitted. A
             // blocked task must leave them in place for the retry after the
             // gate clears.
             let handoffs = if blocked.is_none() {
-                board.consume_handoffs_for(role, 4)
+                board.consume_handoffs_for(&role, 4)
             } else {
                 Vec::new()
             };
@@ -10844,7 +10855,7 @@ reviewer = "reviewer"
             on: GateOn::RoleComplete,
             gate: GateKind::Review,
             on_fail: codewhale_workflow::GateOnFail::Block,
-            blocks_role: Some("verifier".to_string()),
+            blocks_role: Some("test".to_string()),
             max_retries: 0,
             artifact_kind: Some("review_report".to_string()),
             require_explicit_verdict: true,
@@ -13532,6 +13543,74 @@ FINAL RECEIPT
             !driver.parent_cancel_token.is_cancelled(),
             "workflow stop is scoped to its subtree"
         );
+    }
+
+    #[tokio::test]
+    async fn workflow_gate_admission_uses_dispatch_role_without_changing_fleet_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for (requested_role, legacy_type, profile, resolved_role) in [
+            (Some("planner"), None, None, "planner"),
+            (Some("plan"), None, None, "planner"),
+            (None, Some("plan"), None, "planner"),
+            (None, None, None, "general"),
+            (Some("auditor"), None, Some("review-member"), "auditor"),
+        ] {
+            let gate: GateSpec = serde_json::from_value(json!({
+                "id": "findings", "role": "scout", "on": "role_complete",
+                "gate": "approve", "on_fail": "block", "blocks_role": resolved_role,
+                "artifact_kind": "findings", "require_explicit_verdict": true
+            }))
+            .expect("gate fixture");
+            let driver = native_lifecycle_driver(tmp.path(), vec![gate]);
+            let mut request = exact_task_request("planner");
+            request.role = requested_role.map(str::to_string);
+            request.subagent_type = legacy_type.map(str::to_string);
+            request.profile = profile.map(str::to_string);
+            let original = request.clone();
+            for verdict in [None, Some("FAIL\nmissing evidence")] {
+                if let Some(verdict) = verdict {
+                    driver.evaluate_gates_for_completed_role(&RuntimeTaskRecord {
+                        agent_id: "scout-1".to_string(),
+                        label: None,
+                        role: Some("scout".to_string()),
+                        status: IrWorkflowRunStatus::Succeeded,
+                        output: Some(verdict.to_string()),
+                        schema_error: None,
+                        usage: None,
+                    });
+                }
+                let error = driver
+                    .prepare_request_for_gates(&mut request)
+                    .expect_err("pending and failed gates reject the dispatch role");
+                assert!(error.to_string().contains(resolved_role), "{error}");
+                assert_eq!(request.description, original.description);
+            }
+            driver.evaluate_gates_for_completed_role(&RuntimeTaskRecord {
+                agent_id: "scout-2".to_string(),
+                label: None,
+                role: Some("scout".to_string()),
+                status: IrWorkflowRunStatus::Succeeded,
+                output: Some("PASS\nEvidence: both input results verified".to_string()),
+                schema_error: None,
+                usage: None,
+            });
+            let handoffs = driver
+                .prepare_request_for_gates(&mut request)
+                .expect("passed gate admits the dispatch role");
+            assert_eq!(handoffs.len(), 1);
+            assert!(request.description.contains("both input results verified"));
+            assert_eq!(request.role, original.role);
+            assert_eq!(request.profile, original.profile);
+            assert_eq!(request.subagent_type, original.subagent_type);
+            assert!(
+                driver
+                    .gate_board
+                    .lock()
+                    .expect("board")
+                    .artifacts
+                    .is_empty()
+            );
+        }
     }
 
     #[tokio::test]
