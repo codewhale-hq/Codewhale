@@ -814,6 +814,7 @@ impl ChildAuthority {
         }
         let mcp_registry = ToolRegistryBuilder::new()
             .with_mcp_tools(Arc::clone(pool))
+            .await
             .build(self.context());
         self.tools_for_model(&mcp_registry, &self.agent_type)
             .into_iter()

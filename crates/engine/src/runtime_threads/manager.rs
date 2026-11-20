@@ -11779,7 +11779,38 @@ impl RuntimeThreadManager {
         depth_from_tail: usize,
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
-        let source = self.get_thread(id).await?;
+        self.prepare_fork_at_user_message_from_source(
+            self.get_thread(id).await?,
+            depth_from_tail,
+            sessions_dir,
+            None,
+        )
+        .await
+    }
+
+    pub async fn prepare_retry_in_sessions_dir(
+        &self,
+        id: &str,
+        depth_from_tail: usize,
+        sessions_dir: &Path,
+    ) -> Result<PreparedThreadFork> {
+        let (admission, source) = self.thread_restore_guard(id).await?;
+        self.prepare_fork_at_user_message_from_source(
+            source,
+            depth_from_tail,
+            sessions_dir,
+            Some(admission),
+        )
+        .await
+    }
+
+    async fn prepare_fork_at_user_message_from_source(
+        &self,
+        source: ThreadRecord,
+        depth_from_tail: usize,
+        sessions_dir: &Path,
+        admission: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
+    ) -> Result<PreparedThreadFork> {
         anyhow::ensure!(
             source.executor.is_none(),
             "a session with another agent cannot be forked; its history lives in the agent"
@@ -11806,6 +11837,7 @@ impl RuntimeThreadManager {
             );
         }
         let target_turn_idx = user_turn_indices[user_turn_indices.len() - 1 - depth_from_tail];
+        drop(admission);
         let (captured_source, saved_prefix) = self
             .capture_native_fork_source(&source, &source_turns, sessions_dir)
             .await?;

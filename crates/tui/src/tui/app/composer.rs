@@ -909,7 +909,7 @@ impl App {
     #[cfg(test)]
     pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
         match self.paste_burst.flush_if_due(now) {
-            FlushResult::Paste(text) => {
+            FlushResult::Paste(text) | FlushResult::TextContinuation(text) => {
                 self.insert_str(&text);
                 true
             }

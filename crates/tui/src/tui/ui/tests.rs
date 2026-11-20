@@ -7553,6 +7553,38 @@ fn paste_safety_window_keeps_the_submit_cue_steady_while_routing_waits() {
 }
 
 #[test]
+fn chunked_raw_text_keeps_a_trailing_image_path_literal() {
+    let mut app = create_test_app();
+    app.use_paste_burst_detection = true;
+    app.bracketed_paste_seen = false;
+    app.bracketed_paste_trusted = false;
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("test.png");
+    std::fs::write(&image, []).unwrap();
+    let path = image.to_str().unwrap();
+    let now = Instant::now();
+    for _ in 0..100_000 {
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        crate::tui::paste::handle_paste_burst_key(&mut app, &key, now);
+        if !app.input.is_empty() {
+            break;
+        }
+    }
+    let prefix = app.input.clone();
+    assert!(prefix.len() >= 65_536);
+    for ch in path.chars() {
+        let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+        crate::tui::paste::handle_paste_burst_key(&mut app, &key, now);
+    }
+    assert!(flush_paste_burst_before_composer(
+        &mut app,
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
+    ));
+    assert_eq!(app.input, format!("{prefix}{path}"));
+    assert_eq!(app.composer_attachment_count(), 0);
+}
+
+#[test]
 fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     // `/model` opens a picker with its own query. A held paste-burst from
     // typing the slash command must not flush into the composer under it.

@@ -1336,7 +1336,7 @@ pub struct BackgroundShell {
 }
 
 #[derive(Clone)]
-struct ShellWorkLifecycle {
+pub(super) struct ShellWorkLifecycle {
     work: SharedWorkRuntime,
     session_id: String,
 }
@@ -2654,7 +2654,7 @@ impl ShellManager {
 
     /// Owner-aware execution with an optional Work Graph lifecycle sink.
     #[allow(clippy::too_many_arguments)]
-    fn execute_with_options_env_for_owner_and_work(
+    pub(super) fn execute_with_options_env_for_owner_and_work(
         &mut self,
         command: &str,
         working_dir: Option<&str>,
@@ -4169,7 +4169,7 @@ impl ShellManager {
 
     /// A terminal foreground result is already returned as the tool result;
     /// do not emit it again through the background-completion channel.
-    fn acknowledge_foreground_completion(&mut self, task_id: &str) {
+    pub(super) fn acknowledge_foreground_completion(&mut self, task_id: &str) {
         if let Some(shell) = self.processes.get_mut(task_id) {
             shell.completion_reported = true;
             // The caller already holds this job's `ShellResult`; the record only
@@ -4920,7 +4920,7 @@ fn shell_sandbox_denied_hint(context: &ToolContext, result: &ShellResult) -> Opt
     ))
 }
 
-fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
+pub(super) fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
     let agent_id = context
         .owner_agent_id
         .as_deref()
@@ -4938,7 +4938,9 @@ fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> 
     })
 }
 
-fn shell_work_lifecycle_from_context(context: &ToolContext) -> Option<ShellWorkLifecycle> {
+pub(super) fn shell_work_lifecycle_from_context(
+    context: &ToolContext,
+) -> Option<ShellWorkLifecycle> {
     context
         .runtime
         .work

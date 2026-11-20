@@ -1028,7 +1028,10 @@ fn strip_zsh_prompt_marks(raw: &str) -> String {
             rest = after;
             continue;
         }
-        let next_esc = rest[1..].find('\x1b').map_or(rest.len(), |idx| idx + 1);
+        let next_esc = rest
+            .match_indices('\x1b')
+            .find(|(offset, _)| *offset > 0)
+            .map_or(rest.len(), |(offset, _)| offset);
         out.push_str(&rest[..next_esc]);
         rest = &rest[next_esc..];
     }
@@ -2626,6 +2629,7 @@ mod tests {
             parse_completion_marker(raw_zsh, &state.marker),
             Some((0, "/tmp/work".to_string()))
         );
+        assert_eq!(strip_zsh_prompt_marks("é\x1b[0m🐳"), "é\x1b[0m🐳");
         let cleaned = clean_pty_output(raw_zsh, Some(&state));
         assert_eq!(cleaned, "/tmp/work\ncol1\tok\n");
         assert!(!cleaned.contains("__CODEWHALE_TERM_"));

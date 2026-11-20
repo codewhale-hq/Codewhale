@@ -404,7 +404,7 @@ pub(crate) fn re_decide_with_setup_path(
 fn opted_out(root: Option<&Path>) -> TelemetryDecision {
     if let Some(root) = root
         && root.is_dir()
-        && let Err(error) = buffer::wipe(root)
+        && let Err(error) = buffer::wipe_on_startup(root)
     {
         // A failed wipe fails **closed**: the tombstone is written first and is
         // never removed by the wipe, so even a partial failure leaves the

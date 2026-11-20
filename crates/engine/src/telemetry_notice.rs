@@ -291,7 +291,7 @@ fn apply_persistent_preference_at(
     // Wipe even if both durable writes fail: a successful tombstone stops the
     // already-armed process for the remainder of this session.
     let wipe_result = match telemetry_root.as_deref().filter(|root| root.is_dir()) {
-        Some(root) => codewhale_telemetry::buffer::wipe_after_preference_change(root),
+        Some(root) => codewhale_telemetry::buffer::wipe(root),
         None => Ok(()),
     };
     let durable = config_result.is_ok() || state_result.is_ok();

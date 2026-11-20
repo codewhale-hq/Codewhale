@@ -2467,9 +2467,7 @@ fn persistent_preference_waits_for_delivery_even_after_startup_budget() {
     let (finished, completion) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            finished
-                .send(buffer::wipe_after_preference_change(&root))
-                .expect("report wipe");
+            finished.send(buffer::wipe(&root)).expect("report wipe");
         });
         assert!(matches!(
             completion.recv_timeout(std::time::Duration::from_millis(3200)),
@@ -2498,7 +2496,7 @@ fn lockless_wipe_fallback_installs_non_empty_tombstone() {
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.try_write().expect("hold the privacy lock");
 
-    let err = buffer::wipe(&root).expect_err("busy lock returns error");
+    let err = buffer::wipe_on_startup(&root).expect_err("busy lock returns error");
     assert!(err.to_string().contains("lock stayed busy"));
     assert!(buffer::tombstone_present(&root));
     assert!(
