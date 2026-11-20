@@ -1839,15 +1839,7 @@ fn loopback_deepseek_base_url_runs_without_api_key() -> Result<()> {
 #[test]
 fn xiaomi_mimo_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-xiaomi-mimo-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-xiaomi-mimo-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -1880,15 +1872,7 @@ fn xiaomi_mimo_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
 #[test]
 fn wanjie_ark_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-wanjie-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-wanjie-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -1920,15 +1904,7 @@ fn wanjie_ark_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
 #[test]
 fn openai_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-openai-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-openai-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -2002,15 +1978,7 @@ fn openai_facade_custom_url_does_not_inherit_ambient_key() -> Result<()> {
 #[test]
 fn volcengine_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-volcengine-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-volcengine-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -2348,15 +2316,7 @@ fn ollama_custom_remote_does_not_inherit_cloud_env_key() -> Result<()> {
 #[test]
 fn siliconflow_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-siliconflow-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-siliconflow-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -2389,15 +2349,7 @@ fn siliconflow_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
 #[test]
 fn arcee_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-arcee-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-arcee-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
@@ -3614,15 +3566,7 @@ fn provider_capability_scenario_4() {
 #[test]
 fn huggingface_custom_env_urls_do_not_inherit_ambient_keys() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-huggingface-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root = crate::test_support::test_scratch_dir("codewhale-tui-huggingface-env-test");
 
     {
         let long_form_root = temp_root.join("long-form");
@@ -3690,15 +3634,8 @@ fn huggingface_custom_env_urls_do_not_inherit_ambient_keys() -> Result<()> {
 #[test]
 fn huggingface_short_custom_env_url_does_not_inherit_ambient_key() -> Result<()> {
     let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-huggingface-short-env-test-{}-{}",
-        std::process::id(),
-        nanos
-    ));
+    let temp_root =
+        crate::test_support::test_scratch_dir("codewhale-tui-huggingface-short-env-test");
     fs::create_dir_all(&temp_root)?;
     let _guard = EnvGuard::new(&temp_root);
 
