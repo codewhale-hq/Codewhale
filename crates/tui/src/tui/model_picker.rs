@@ -2650,6 +2650,10 @@ fn push_provider_model_rows(
             return;
         }
     };
+    let base_url = config.base_url_for_route(admitted);
+    let live_catalog_fingerprint =
+        codewhale_engine::provider_catalog_live::provider_owns_live_catalog(provider, &base_url)
+            .then(|| codewhale_config::catalog::base_url_fingerprint(&base_url));
     let checked = inventory
         .fetched_at
         .and_then(|time| i64::try_from(time).ok())
@@ -2678,12 +2682,16 @@ fn push_provider_model_rows(
             &id,
             codex_metadata,
         );
-        let provider_catalog_receipt = provider_catalog_receipt_for_route(
-            provider,
-            Some(identity.as_str()),
-            config,
-            metadata.source.as_ref(),
-        );
+        let provider_catalog_receipt = live_catalog_fingerprint.as_ref().map(|fingerprint| {
+            let endpoint_matches = match metadata.source.as_ref() {
+                Some(CatalogSource::Live {
+                    base_url_fingerprint,
+                    ..
+                }) => base_url_fingerprint == fingerprint,
+                _ => true,
+            };
+            (inventory.status.clone(), endpoint_matches)
+        });
         let mut hint = render_picker_model_hint(
             &id,
             Some(provider),
@@ -2740,43 +2748,6 @@ fn push_provider_model_rows(
             row.not_listed = not_listed;
         }
     }
-}
-
-fn provider_catalog_receipt_for_route(
-    provider: ProviderKind,
-    provider_identity: Option<&str>,
-    config: &Config,
-    source: Option<&CatalogSource>,
-) -> Option<(CatalogStatus, bool)> {
-    let admitted = match provider_identity {
-        Some(key) => config.legacy_selection_identity(key),
-        None => config.builtin_provider_identity(provider),
-    }
-    .ok()?;
-    (admitted.provider == provider).then_some(())?;
-    let identity = admitted.key.as_str();
-    let base_url = config.base_url_for_route(&admitted);
-    // One predicate with the active-provider refresh: any route whose roster
-    // is probed (named live gateways, custom hosts, and builtin names on a
-    // private endpoint) reports its freshness here, so a widened probe cannot
-    // leave this receipt behind.
-    if !codewhale_engine::provider_catalog_live::provider_owns_live_catalog(provider, &base_url) {
-        return None;
-    }
-    let endpoint_matches = match source {
-        Some(CatalogSource::Live {
-            base_url_fingerprint,
-            ..
-        }) => *base_url_fingerprint == codewhale_config::catalog::base_url_fingerprint(&base_url),
-        // A bundled/template fallback has no endpoint claim to compare. Its
-        // exact-scope status still matters: a first refresh failure must be
-        // visible even though no live row exists yet.
-        _ => true,
-    };
-    Some((
-        codewhale_engine::provider_catalog_live::status_for_route(provider, identity, &base_url),
-        endpoint_matches,
-    ))
 }
 
 fn push_auto_model_row(rows: &mut Vec<ModelPickerRow>, app: &App, config: &Config, hint: &str) {
@@ -6389,26 +6360,29 @@ mod tests {
             __cw_config_init_0_value.provider = __cw_config_init_0_0;
             __cw_config_init_0_value
         };
-        let base_url = config.base_url_for_route(
-            &config
-                .resolve_provider_selection_identity("openrouter")
-                .unwrap(),
-        );
+        let identity = config.test_identity_for_kind(ProviderKind::Openrouter);
+        let base_url = config.base_url_for_route(&identity);
         let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
-        codewhale_engine::provider_catalog_live::record_failure(
-            "openrouter",
-            &fingerprint,
-            CatalogRefreshError::Unauthorized,
+        let ticket = codewhale_engine::provider_catalog_live::begin_scoped_refresh(
+            &config, &identity, &base_url,
+        )
+        .expect("bind the OpenRouter refresh");
+        assert_eq!(
+            codewhale_engine::provider_catalog_live::record_failure_if_current(
+                &ticket,
+                identity.key.as_str(),
+                &fingerprint,
+                CatalogRefreshError::Unauthorized,
+            ),
+            Some(CatalogStatus::Failed {
+                reason: CatalogRefreshError::Unauthorized,
+            })
         );
 
-        let model = provider_catalog_model_ids(
-            ProviderKind::Openrouter,
-            ProviderKind::Openrouter.as_str(),
-            codewhale_config::descriptors::defaults::DEFAULT_OPENROUTER_BASE_URL,
-        )
-        .into_iter()
-        .next()
-        .expect("bundled OpenRouter fallback");
+        let model = provider_catalog_model_ids(identity.provider, identity.key.as_str(), &base_url)
+            .into_iter()
+            .next()
+            .expect("bundled OpenRouter fallback");
         let mut rows = Vec::new();
         let codex_roster = CodexModelRoster {
             models: Vec::new(),
@@ -6420,7 +6394,7 @@ mod tests {
         };
         push_provider_model_rows(
             &mut rows,
-            &config.test_identity_for_kind(ProviderKind::Openrouter),
+            &identity,
             vec![model.clone()],
             ProviderKind::Openrouter,
             &config,
@@ -6428,6 +6402,7 @@ mod tests {
             &codewhale_engine::provider_readiness::ProviderReadinessSnapshot::default(),
         );
         let row = rows.iter().find(|row| row.id == model).unwrap();
+        assert!(row.hint.contains("bundled"), "{}", row.hint);
         assert!(
             row.hint.contains("refresh failed (unauthorized)"),
             "{}",
@@ -6577,13 +6552,15 @@ model = "deepseek/deepseek-v4-flash"
         // The listing the relay answered, recorded the way the probe records
         // it. `command_code` is not the session's route, so the row can only
         // reach the default view through the relay-roster rule.
-        let base_url = "https://command.example.test/v1";
-        let fingerprint = codewhale_config::catalog::base_url_fingerprint(base_url);
-        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
-            ProviderKind::Custom,
-            "command_code",
-            base_url,
-        );
+        let identity = config
+            .resolve_provider_selection_identity("command_code")
+            .expect("custom relay route");
+        let base_url = config.base_url_for_route(&identity);
+        let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
+        let ticket = codewhale_engine::provider_catalog_live::begin_scoped_refresh(
+            &config, &identity, &base_url,
+        )
+        .expect("bind the relay refresh");
         let offering = |id: &str| codewhale_config::catalog::CatalogOffering {
             provider: "command_code".to_string(),
             wire_model_id: id.to_string(),
@@ -7040,21 +7017,23 @@ api_key = "fixture-xai-key"
                 app.note_route_used("openrouter", "stealth/ox-alpha");
 
                 let roster = |provider: ProviderKind, ids: &[&str], fetched_at: u64| {
-                    let base_url = config.base_url_for_route(
-                        &config
-                            .resolve_provider_selection_identity(provider.as_str())
-                            .unwrap(),
-                    );
+                    let identity = config.test_identity_for_kind(provider);
+                    let base_url = config.base_url_for_route(&identity);
                     let fingerprint = codewhale_config::catalog::base_url_fingerprint(&base_url);
-                    let _ = codewhale_engine::provider_catalog_live::record_success(
+                    let ticket = codewhale_engine::provider_catalog_live::begin_scoped_refresh(
+                        &config, &identity, &base_url,
+                    )
+                    .expect("bind the fixture roster refresh");
+                    codewhale_engine::provider_catalog_live::record_success_if_current(
+                        &ticket,
                         codewhale_config::catalog::ProviderCatalogDelta {
-                            provider: provider.as_str().to_string(),
+                            provider: identity.key.to_string(),
                             base_url_fingerprint: fingerprint.clone(),
                             fetched_at,
                             offerings: ids
                                 .iter()
                                 .map(|id| codewhale_config::catalog::CatalogOffering {
-                                    provider: provider.as_str().to_string(),
+                                    provider: identity.key.to_string(),
                                     wire_model_id: (*id).to_string(),
                                     endpoint_key: "chat".to_string(),
                                     source: CatalogSource::Live {
@@ -7065,10 +7044,11 @@ api_key = "fixture-xai-key"
                                 })
                                 .collect(),
                         },
-                    );
+                    )
+                    .expect("publish the fixture roster");
                     codewhale_engine::provider_catalog_live::status_for_route(
                         provider,
-                        provider.as_str(),
+                        identity.key.as_str(),
                         &base_url,
                     )
                 };
