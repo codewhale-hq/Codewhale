@@ -412,13 +412,15 @@ impl BoundedOutputAccumulator {
             + usize::from(selected.last().is_some_and(|byte| *byte != b'\n'));
         let mut content = String::from_utf8(selected).expect("stream decoder emits valid UTF-8");
 
-        if finalize && truncated && self.persisted_artifact.is_none() && self.temp.is_some() {
-            if !self.stream_finished {
-                return Err(io::Error::other(
-                    "shell output stream has not closed; retaining spill for retry",
-                ));
-            }
-            self.persist_temp_to_session_artifact()?;
+        if finalize
+            && truncated
+            && self.stream_finished
+            && self.persisted_artifact.is_none()
+            && self.temp.is_some()
+            && let Err(error) = self.persist_temp_to_session_artifact()
+            && self.spill_unavailable.is_none()
+        {
+            self.spill_unavailable = Some(spill_unavailable_reason(&error));
         }
         if truncated && finalize && self.persisted_artifact.is_none() {
             let reason = self.spill_unavailable.as_deref().unwrap_or(
@@ -1193,6 +1195,26 @@ mod tests {
         assert_eq!(
             std::fs::read(&artifact.absolute_path).expect("read artifact"),
             source
+        );
+    }
+
+    #[test]
+    fn unclosed_stream_overflow_returns_tail_instead_of_error() {
+        let _root = TestArtifactRootGuard::new();
+        let source = (0..=BOUNDED_OUTPUT_MAX_LINES)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut output =
+            BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("unclosed")));
+        output.append(source.as_bytes()).expect("append");
+        let snapshot = output.snapshot(true).expect("unclosed stream still yields output");
+        assert!(snapshot.truncated);
+        assert!(snapshot.persisted_artifact.is_none());
+        assert!(
+            snapshot.content.contains("Full output was not persisted"),
+            "{}",
+            snapshot.content
         );
     }
 

@@ -608,6 +608,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **Long shell output no longer turns into a tool error when a background process keeps the pipe open:** a `bash` or `run_tests` command that printed more than the in-memory limit while a detached child (for example `ssh -fN`) still held stdout, or a Windows cancel, now returns the retained tail with a "Full output was not persisted" notice instead of failing the call and retrying its completion every turn.
 - The offline model catalog uses the updated Models.dev prices for OpenRouter’s GLM 5.2 and DeepSeek V4 Pro routes.
 
 - Verbose Cargo tests keep recoverable shell output and flag omitted bytes. When capture is incomplete, the test result omits aggregate counts. Completed shell output remains retrievable after a provisional preview.
