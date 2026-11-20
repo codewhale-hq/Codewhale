@@ -8,13 +8,12 @@ impl Engine {
         turn: &mut TurnContext,
         tool_policy: &ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
-        client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("model_continuation");
         if self.rlm_host.is_some() {
             return self
-                .continue_rlm_model_step(turn, tool_policy, progress, client, response)
+                .continue_rlm_model_step(turn, tool_policy, progress, response)
                 .await;
         }
         let tool_registry = Some(&tool_policy.registry);
@@ -121,23 +120,6 @@ impl Engine {
                     .await;
                 turn.next_step();
                 return PhaseResult::Retry;
-            }
-
-            match self
-                .run_inline_repl_phase(
-                    turn,
-                    tool_policy,
-                    progress,
-                    client,
-                    &current_text_visible,
-                    has_sendable_assistant_content,
-                )
-                .await
-            {
-                PhaseResult::Ready(()) => {}
-                PhaseResult::Retry => return PhaseResult::Retry,
-                PhaseResult::Break => return PhaseResult::Break,
-                PhaseResult::Return(outcome) => return PhaseResult::Return(outcome),
             }
 
             // Issue #1727: the turn is now genuinely finishing with no

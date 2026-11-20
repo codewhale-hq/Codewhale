@@ -311,7 +311,10 @@ impl LspManager {
         text: &str,
         transport: Arc<dyn LspTransport>,
     ) -> Option<DiagnosticBlock> {
-        match self.poll_diagnostics_outcome(file, text, transport).await {
+        match self
+            .poll_diagnostics_outcome(file, text, transport, self.config.include_warnings)
+            .await
+        {
             DiagnosticPollOutcome::Success(result) if !result.block.items.is_empty() => {
                 Some(result.block)
             }
@@ -328,6 +331,7 @@ impl LspManager {
         file: &Path,
         text: &str,
         transport: Arc<dyn LspTransport>,
+        include_warnings: bool,
     ) -> DiagnosticPollOutcome {
         let wait = Duration::from_millis(self.config.poll_after_edit_ms);
         // The outer bound owns timeout reporting, including time waiting for
@@ -357,7 +361,6 @@ impl LspManager {
             freshness: Some(raw.freshness()),
         };
         // Filter, sort, and truncate.
-        let include_warnings = self.config.include_warnings;
         let mut items: Vec<Diagnostic> = raw
             .items
             .into_iter()
@@ -552,34 +555,7 @@ impl LspManager {
         }
         let wait = Duration::from_millis(self.config.poll_after_edit_ms);
         match operation {
-            "diagnostics" => {
-                let result = self
-                    .diagnostics_for_paths(&[file.to_path_buf()])
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or("LSP diagnostics returned no outcome")?;
-                match result.status {
-                    LintReadStatus::Error(error) => Err(error),
-                    LintReadStatus::Timeout { wait_ms } => {
-                        Err(format!("LSP diagnostics timed out after {wait_ms} ms"))
-                    }
-                    LintReadStatus::Success => Ok(serde_json::json!({
-                        "file": result.file.display().to_string(),
-                        "items": result.items.iter().map(|d| serde_json::json!({
-                            "line": d.line, "column": d.column,
-                            "severity": format!("{:?}", d.severity).to_ascii_lowercase(),
-                            "message": d.message,
-                        })).collect::<Vec<_>>(),
-                        "source_revision": result.freshness.source_revision,
-                        "document_version": result.freshness.document_version,
-                        "diagnostic_version": result.freshness.diagnostic_version,
-                        "freshness": result.freshness.freshness,
-                        "total_diagnostic_count": result.total_diagnostic_count,
-                        "truncated": result.truncated,
-                    })),
-                }
-            }
+            "diagnostics" => self.diagnostics_payload(file, None).await,
             "symbols" | "definition" | "references" => {
                 let text = self
                     .read_workspace_text(file)
@@ -662,6 +638,7 @@ impl LspManager {
                     "file": source_path,
                     "semantic_contract_version": 1,
                     "position_encoding": "utf-16",
+                    "position_base": 0,
                     "source_revision": source_revision,
                     "document_version": reply.document_version,
                     "freshness": if reply.document_version.is_some() { "verified" } else { "unverified" },
@@ -673,6 +650,116 @@ impl LspManager {
                 "unknown LSP operation '{other}'; use diagnostics, symbols, definition, or references"
             )),
         }
+    }
+
+    pub async fn diagnostics_payload(
+        &self,
+        file: &Path,
+        include_warnings: Option<bool>,
+    ) -> Result<serde_json::Value, String> {
+        let result = self
+            .diagnostics_for_paths_with_warnings(&[file.to_path_buf()], include_warnings)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("LSP diagnostics returned no outcome")?;
+        match result.status {
+            LintReadStatus::Error(error) => Err(error),
+            LintReadStatus::Timeout { wait_ms } => {
+                Err(format!("LSP diagnostics timed out after {wait_ms} ms"))
+            }
+            LintReadStatus::Success => Ok(serde_json::json!({
+                "file": result.file.display().to_string(),
+                "position_base": 1,
+                "items": result.items.iter().map(|d| serde_json::json!({
+                    "line": d.line, "column": d.column,
+                    "severity": format!("{:?}", d.severity).to_ascii_lowercase(),
+                    "message": d.message,
+                })).collect::<Vec<_>>(),
+                "source_revision": result.freshness.source_revision,
+                "document_version": result.freshness.document_version,
+                "diagnostic_version": result.freshness.diagnostic_version,
+                "freshness": result.freshness.freshness,
+                "total_diagnostic_count": result.total_diagnostic_count,
+                "truncated": result.truncated,
+            })),
+        }
+    }
+
+    pub async fn workspace_symbols(&self, query: &str) -> Result<serde_json::Value, String> {
+        const MAX_LOCATIONS: usize = 40;
+        if !self.config.enabled {
+            return Err("LSP is disabled ([lsp] enabled = false)".to_string());
+        }
+        let query = query.trim();
+        if query.is_empty() || query.len() > 1024 {
+            return Err("symbol query must be 1-1024 bytes".into());
+        }
+        let mut running: Vec<Arc<dyn LspTransport>> = self
+            .test_transports
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        let mut slots: Vec<TransportSlot> =
+            self.transports.lock().await.values().cloned().collect();
+        slots.extend(self.custom_transports.lock().await.values().cloned());
+        for slot in slots {
+            if let Ok(guard) = slot.try_lock()
+                && let Some(transport) = guard.as_ref().filter(|transport| transport.is_alive())
+            {
+                running.push(transport.clone());
+            }
+        }
+        if running.is_empty() {
+            return Err(
+                "no LSP server is running yet; pass `path` to a source file so its language server starts"
+                    .into(),
+            );
+        }
+        let wait = Duration::from_millis(self.config.poll_after_edit_ms);
+        let server_count = running.len();
+        let mut locations = Vec::new();
+        let mut truncated = false;
+        let mut omitted = 0;
+        let mut errors = Vec::new();
+        for transport in running {
+            match transport
+                .request(
+                    "workspace/symbol",
+                    serde_json::json!({"query": query}),
+                    wait,
+                )
+                .await
+            {
+                Ok(result) => {
+                    let (found, cut, skipped) =
+                        self.semantic_locations(&result, &self.workspace, "").await;
+                    locations.extend(found);
+                    truncated |= cut;
+                    omitted += skipped;
+                }
+                Err(err) => errors.push(err.to_string()),
+            }
+        }
+        if errors.len() == server_count {
+            return Err(errors.join("; "));
+        }
+        if locations.len() > MAX_LOCATIONS {
+            locations.truncate(MAX_LOCATIONS);
+            truncated = true;
+        }
+        Ok(serde_json::json!({
+            "operation": "symbols",
+            "query": query,
+            "semantic_contract_version": 1,
+            "position_encoding": "utf-16",
+            "position_base": 0,
+            "servers": server_count,
+            "failed_servers": errors.len(),
+            "locations": locations, "truncated": truncated, "omitted": omitted,
+        }))
     }
 
     async fn semantic_locations(
@@ -799,14 +886,24 @@ impl LspManager {
     /// Read diagnostics for several existing files through the shared LSP
     /// transport pool. Every attempted file gets an explicit outcome, and the
     /// same configured severity policy as post-edit diagnostics is applied:
-    /// errors are always retained and warnings depend on `include_warnings`.
+    /// errors are always retained and warnings follow the caller's override,
+    /// else `include_warnings`.
     pub async fn diagnostics_for_paths(
         &self,
         files: &[PathBuf],
     ) -> Result<Vec<LintReadResult>, String> {
+        self.diagnostics_for_paths_with_warnings(files, None).await
+    }
+
+    pub async fn diagnostics_for_paths_with_warnings(
+        &self,
+        files: &[PathBuf],
+        include_warnings: Option<bool>,
+    ) -> Result<Vec<LintReadResult>, String> {
         if !self.config.enabled {
             return Err("LSP is disabled ([lsp] enabled = false)".to_string());
         }
+        let include_warnings = include_warnings.unwrap_or(self.config.include_warnings);
 
         let mut results = Vec::with_capacity(files.len());
         for file in files {
@@ -838,7 +935,9 @@ impl LspManager {
                 });
                 continue;
             };
-            let outcome = self.poll_diagnostics_outcome(file, &text, transport).await;
+            let outcome = self
+                .poll_diagnostics_outcome(file, &text, transport, include_warnings)
+                .await;
             results.push(match outcome {
                 DiagnosticPollOutcome::Success(outcome) => LintReadResult {
                     file: outcome.block.file,
