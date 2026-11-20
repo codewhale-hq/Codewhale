@@ -4348,7 +4348,12 @@ impl SubAgentWorkflowDriver {
     }
 
     fn evaluate_gates_for_completed_role(&self, record: &RuntimeTaskRecord) {
-        let Some(role) = record.role.as_deref().filter(|role| !role.is_empty()) else {
+        let Some(role) = record
+            .role
+            .as_deref()
+            .filter(|role| !role.trim().is_empty())
+            .map(public_role_label)
+        else {
             return;
         };
         if self.gate_specs.is_empty() {
@@ -4357,7 +4362,7 @@ impl SubAgentWorkflowDriver {
         let specs = self
             .gate_specs
             .iter()
-            .filter(|spec| spec.on == GateOn::RoleComplete && spec.role.eq_ignore_ascii_case(role))
+            .filter(|spec| spec.on == GateOn::RoleComplete && spec.role.eq_ignore_ascii_case(&role))
             .cloned()
             .collect::<Vec<_>>();
         if specs.is_empty() {

@@ -976,10 +976,19 @@ impl TextInspection {
                 "total_lines": self.total_lines,
                 "matched_lines": self.matched_lines,
                 "matches_returned": self.matches.len(),
-                "results": self.matches.iter().map(|(line, window)| json!({
-                    "line": line,
-                    "excerpt": numbered(window, self.max_bytes / self.max_matches),
-                })).collect::<Vec<_>>(),
+                "results": self.matches.iter().map(|(line, window)| {
+                    let budget = self.max_bytes / self.max_matches;
+                    let fits = window.iter().map(|(_, text)| text.len() + 16).sum::<usize>() <= budget;
+                    let shown: Vec<(usize, String)> = if fits {
+                        window.clone()
+                    } else {
+                        window.iter().filter(|(number, _)| number == line).cloned().collect()
+                    };
+                    json!({
+                        "line": line,
+                        "excerpt": numbered(&shown, budget),
+                    })
+                }).collect::<Vec<_>>(),
             }),
             _ => unreachable!(),
         };

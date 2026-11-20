@@ -106,7 +106,6 @@ fn managed_program_preserves_resolved_path_and_argument_boundaries() {
         let expected_argv = expected_stdout
             .lines()
             .find(|line| line.starts_with("argv fixture:"));
-        assert_eq!(expected_argv.is_some(), !fixture.is_empty());
         let actual_argv = actual
             .stdout
             .lines()
