@@ -1443,10 +1443,11 @@ older thread records and clients that omit them retain their previous behavior.
 
 When `GET /v1/runtime/info` advertises
 `capabilities.exact_route_thread_create: true`, clients can send the model
-list's `route_selection` object (`route_id` and `binding_id`) on thread
-creation. Send the selected `model_provider`, exact wire `model` and
-`model_provider_id` when the list supplies one. Missing or malformed required
-fields return HTTP 400. If the selected route has changed or is unavailable,
+list's `route.selection` object (`route_id` and `binding_id`) as
+`route_selection` on thread creation. Send the selected `model_provider`,
+exact wire `model` and `model_provider_id` when the list supplies one.
+Missing or malformed required fields return HTTP 400. If the selected route
+has changed or is unavailable,
 the server returns HTTP 409 with `error.code: "route_selection_stale"` before
 creating a thread or emitting `thread.started`. Refresh the model list and
 ask the user to reselect. The selection participates in the creation
