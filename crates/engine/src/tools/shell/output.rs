@@ -1208,7 +1208,9 @@ mod tests {
         let mut output =
             BoundedOutputAccumulator::new_in(None, Some(test_artifact_spec("unclosed")));
         output.append(source.as_bytes()).expect("append");
-        let snapshot = output.snapshot(true).expect("unclosed stream still yields output");
+        let snapshot = output
+            .snapshot(true)
+            .expect("unclosed stream still yields output");
         assert!(snapshot.truncated);
         assert!(snapshot.persisted_artifact.is_none());
         assert!(
