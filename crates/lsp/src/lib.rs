@@ -33,7 +33,7 @@
 //! PHP, C#). See [`LspConfig`] for defaults and `config.example.toml` for
 //! documentation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -687,7 +687,7 @@ impl LspManager {
     }
 
     pub async fn workspace_symbols(&self, query: &str) -> Result<serde_json::Value, String> {
-        const MAX_LOCATIONS: usize = 40;
+        const MAX_SERVERS: usize = 16;
         if !self.config.enabled {
             return Err("LSP is disabled ([lsp] enabled = false)".to_string());
         }
@@ -695,61 +695,101 @@ impl LspManager {
         if query.is_empty() || query.len() > 1024 {
             return Err("symbol query must be 1-1024 bytes".into());
         }
-        let mut running: Vec<Arc<dyn LspTransport>> = self
-            .test_transports
+        let mut slots: BTreeMap<String, TransportSlot> = self
+            .transports
             .lock()
             .await
-            .values()
-            .cloned()
+            .iter()
+            .map(|(lang, slot)| (lang.as_key().to_owned(), slot.clone()))
             .collect();
-        let mut slots: Vec<TransportSlot> =
-            self.transports.lock().await.values().cloned().collect();
-        slots.extend(self.custom_transports.lock().await.values().cloned());
-        for slot in slots {
-            if let Ok(guard) = slot.try_lock()
-                && let Some(transport) = guard.as_ref().filter(|transport| transport.is_alive())
-            {
-                running.push(transport.clone());
-            }
-        }
-        if running.is_empty() {
-            return Err(
-                "no LSP server is running yet; pass `path` to a source file so its language server starts"
-                    .into(),
-            );
-        }
-        let wait = Duration::from_millis(self.config.poll_after_edit_ms);
-        let server_count = running.len();
-        let mut locations = Vec::new();
-        let mut truncated = false;
-        let mut omitted = 0;
-        let mut errors = Vec::new();
-        for transport in running {
-            match transport
-                .request(
-                    "workspace/symbol",
-                    serde_json::json!({"query": query}),
-                    wait,
-                )
+        slots.extend(
+            self.custom_transports
+                .lock()
                 .await
-            {
-                Ok(result) => {
-                    let (found, cut, skipped) =
-                        self.semantic_locations(&result, &self.workspace, "").await;
-                    locations.extend(found);
-                    truncated |= cut;
-                    omitted += skipped;
+                .iter()
+                .map(|(ext, slot)| (format!("extension:{ext}"), slot.clone())),
+        );
+        slots.extend(
+            self.test_transports
+                .lock()
+                .await
+                .iter()
+                .map(|(lang, transport)| {
+                    (
+                        lang.as_key().to_owned(),
+                        Arc::new(AsyncMutex::new(Some(transport.clone()))),
+                    )
+                }),
+        );
+
+        slots.retain(|_, slot| {
+            slot.try_lock().map_or(true, |transport| {
+                transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.is_alive())
+            })
+        });
+        let skipped_server_slots = slots.len().saturating_sub(MAX_SERVERS);
+        let wait = Duration::from_millis(self.config.poll_after_edit_ms);
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut requests = tokio::task::JoinSet::new();
+        for (server, slot) in slots.into_iter().take(MAX_SERVERS) {
+            let params = serde_json::json!({"query": query});
+            requests.spawn(async move {
+                let response = tokio::time::timeout_at(deadline, async {
+                    let transport = slot.lock().await.clone();
+                    let Some(transport) = transport.filter(|transport| transport.is_alive()) else {
+                        return Ok(None);
+                    };
+                    transport
+                        .request("workspace/symbol", params, wait)
+                        .await
+                        .map(Some)
+                        .map_err(|err| err.to_string())
+                })
+                .await
+                .unwrap_or_else(|_| Err("workspace symbol request timed out".into()));
+                (server, response)
+            });
+        }
+        let mut results = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+        while let Some(completed) = requests.join_next().await {
+            let (server, result) = completed.map_err(|err| err.to_string())?;
+            match result {
+                Ok(Some(value)) => {
+                    results.insert(server, value);
                 }
-                Err(err) => errors.push(err.to_string()),
+                Ok(None) => {}
+                Err(error) => {
+                    let reason: String = error
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(256)
+                        .collect();
+                    errors.insert(server, reason);
+                }
             }
         }
-        if errors.len() == server_count {
-            return Err(errors.join("; "));
+        if results.is_empty() {
+            return Err(if errors.is_empty() && skipped_server_slots != 0 {
+                format!(
+                    "no available server among the first {MAX_SERVERS} slots; use a source path to select a language server"
+                )
+            } else if errors.is_empty() {
+                "no LSP server is running yet; pass `path` to a source file so its language server starts".into()
+            } else {
+                errors
+                    .iter()
+                    .map(|(server, reason)| format!("{server}: {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            });
         }
-        if locations.len() > MAX_LOCATIONS {
-            locations.truncate(MAX_LOCATIONS);
-            truncated = true;
-        }
+        let server_count = results.len() + errors.len();
+        let raw = serde_json::Value::Array(results.into_values().collect());
+        let (locations, truncated, omitted) =
+            self.semantic_locations(&raw, &self.workspace, "").await;
         Ok(serde_json::json!({
             "operation": "symbols",
             "query": query,
@@ -758,7 +798,9 @@ impl LspManager {
             "position_base": 0,
             "servers": server_count,
             "failed_servers": errors.len(),
-            "locations": locations, "truncated": truncated, "omitted": omitted,
+            "server_errors": errors,
+            "skipped_server_slots": skipped_server_slots,
+            "locations": locations, "truncated": truncated || skipped_server_slots != 0, "omitted": omitted,
         }))
     }
 
@@ -1302,6 +1344,57 @@ pub mod tests {
             Ok(self.result.clone())
         }
         async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn workspace_symbols_waits_for_startup_and_orders_and_bounds_all_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("lib.rs");
+        tokio::fs::write(&file, "fn f() {}").await.unwrap();
+        let manager = LspManager::new(LspConfig::default(), root.path().to_owned());
+        let symbols = |name: &str| {
+            let symbol = serde_json::json!({
+                "name": name, "kind": 12,
+                "location": {"uri":client::uri_from_path(&file),"range":{
+                    "start":{"line":0,"character":3},"end":{"line":0,"character":4}
+                }}
+            });
+            Arc::new(SemanticFixture {
+                result: serde_json::json!(vec![symbol; 25]),
+                mutate: None,
+            })
+        };
+        let slot = TransportSlot::default();
+        let mut starting = slot.lock().await;
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(Language::Python, slot.clone());
+        manager
+            .install_test_transport(Language::Rust, symbols("rust"))
+            .await;
+        manager
+            .install_test_transport(Language::Go, Arc::new(FakeTransport::new(vec![])))
+            .await;
+        let search = manager.workspace_symbols("f");
+        tokio::pin!(search);
+        tokio::select! {
+            biased;
+            result = &mut search => panic!("search skipped a starting server: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        *starting = Some(symbols("python"));
+        drop(starting);
+        let payload = search.await.unwrap();
+        assert_eq!(payload["servers"], 3);
+        assert_eq!(payload["failed_servers"], 1);
+        assert!(payload["server_errors"]["go"].is_string());
+        assert_eq!(payload["truncated"], true);
+        let locations = payload["locations"].as_array().unwrap();
+        assert_eq!(locations.len(), 40);
+        assert!(locations[..25].iter().all(|item| item["name"] == "python"));
+        assert!(locations[25..].iter().all(|item| item["name"] == "rust"));
     }
 
     #[tokio::test]

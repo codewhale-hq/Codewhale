@@ -13,7 +13,7 @@ use codewhale_lsp::LintReadStatus;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_str, required_str,
+    optional_bool_opt, optional_str, required_str,
 };
 
 /// Model-callable LSP intelligence surface.
@@ -83,15 +83,8 @@ impl ToolSpec for LspTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let operation = required_str(&input, "operation")?;
-        let path_raw = optional_str(&input, "path")?;
-        let include_warnings = input
-            .get("include_warnings")
-            .map(|value| {
-                value
-                    .as_bool()
-                    .ok_or_else(|| ToolError::invalid_input("include_warnings must be a boolean"))
-            })
-            .transpose()?;
+        let path_raw = optional_str(&input, "path")?.filter(|path| !path.trim().is_empty());
+        let include_warnings = optional_bool_opt(&input, "include_warnings")?;
         let line = input.get("line").and_then(|v| v.as_u64()).map(|n| n as u32);
         let character = input
             .get("character")
@@ -183,6 +176,7 @@ struct ReadLintsFile {
 
 #[derive(Serialize)]
 struct ReadLintsOutput {
+    position_base: u8,
     files: Vec<ReadLintsFile>,
     file_count: usize,
     total_file_count: usize,
@@ -319,6 +313,7 @@ async fn execute_read_lints(input: Value, context: &ToolContext) -> Result<ToolR
     }
 
     let mut output = ReadLintsOutput {
+        position_base: 1,
         files,
         file_count: total_file_count,
         total_file_count,
@@ -596,6 +591,16 @@ mod tests {
             );
         }
         assert_eq!(transport.request_calls.load(Ordering::Relaxed), 2);
+        for path in [Value::Null, json!(" ")] {
+            let result = LspTool.execute(
+                json!({"operation":"symbols","path":path,"query":"Foo","include_warnings":null}),
+                &ctx,
+            ).await.unwrap();
+            let payload: Value = serde_json::from_str(&result.content).unwrap();
+            assert_eq!(payload["servers"], 1);
+            assert_eq!(payload["position_base"], 0);
+        }
+        assert_eq!(transport.request_calls.load(Ordering::Relaxed), 4);
     }
 
     #[tokio::test]
@@ -917,6 +922,7 @@ mod tests {
             .await
             .expect("read_lints with include_warnings");
         let payload: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(payload["position_base"], 1);
         let severities = payload["files"][0]["diagnostics"]
             .as_array()
             .unwrap()
