@@ -14,6 +14,87 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
 
 #[test]
+fn managed_program_preserves_resolved_path_and_argument_boundaries() {
+    const FIXTURE_ENV: &str = "CODEWHALE_TEST_ARGV_FIXTURE";
+    if std::env::var(FIXTURE_ENV).as_deref() == Ok("1") {
+        println!("\nargv fixture: {:?}", std::env::args().collect::<Vec<_>>());
+        return;
+    }
+    let workspace = tempdir().expect("tempdir");
+    let program = std::env::current_exe().expect("test executable");
+    let program = program.to_str().expect("UTF-8 test executable");
+    let mut manager = ShellManager::new(workspace.path().to_path_buf());
+    for fixture in [
+        r"C:\work\R&D\Cargo.toml",
+        r"C:\work\sample project\Cargo.toml",
+        r"C:\work\O'Brien\Cargo.toml",
+        r"C:\work\文档\Cargo.toml",
+        r"C:\work\sample project\",
+        "sample \"quoted\" name",
+        "",
+    ] {
+        let args = vec![
+            "--nocapture".to_string(),
+            "--exact".to_string(),
+            "tools::shell::tests::managed_program_preserves_resolved_path_and_argument_boundaries"
+                .to_string(),
+            "--skip".to_string(),
+            fixture.to_string(),
+        ];
+        let expected = Command::new(program)
+            .env(FIXTURE_ENV, "1")
+            .args(&args)
+            .current_dir(workspace.path())
+            .output()
+            .expect("direct fixture");
+        assert!(expected.status.success(), "{fixture:?}: {expected:?}");
+        let started = manager
+            .execute_with_options_env_for_owner_and_work(
+                "argv fixture (display only)",
+                Some((program, &args)),
+                None,
+                30_000,
+                true,
+                None,
+                false,
+                Some(ExecutionSandboxPolicy::DangerFullAccess),
+                HashMap::from([(FIXTURE_ENV.to_string(), "1".to_string())]),
+                None,
+                "argv-fixture-session".to_string(),
+                None,
+                None,
+                None,
+                None,
+                false,
+                (1_000, 600_000),
+            )
+            .expect("managed fixture");
+        let task_id = started.task_id.expect("background job");
+        let _ = manager.write_stdin(&task_id, "", true);
+        let actual = manager
+            .get_output(&task_id, true, BACKGROUND_COMPLETION_WAIT_MS)
+            .expect("fixture completion");
+        assert_eq!(
+            actual.status,
+            ShellStatus::Completed,
+            "{fixture:?}: {actual:?}"
+        );
+        assert_eq!(actual.exit_code, Some(0), "{fixture:?}: {actual:?}");
+        let expected_stdout = String::from_utf8(expected.stdout).expect("fixture output");
+        let expected_argv = expected_stdout
+            .lines()
+            .find(|line| line.starts_with("argv fixture:"));
+        assert_eq!(expected_argv.is_some(), !fixture.is_empty());
+        let actual_argv = actual
+            .stdout
+            .lines()
+            .find(|line| line.starts_with("argv fixture:"));
+        assert_eq!(actual_argv, expected_argv, "{fixture:?}: {}", actual.stdout);
+        assert_eq!(actual.stderr.as_bytes(), expected.stderr, "{fixture:?}");
+    }
+}
+
+#[test]
 fn shell_catalog_guidance_matches_execution() {
     let tool = LowercaseBashTool;
     let schema = tool.input_schema();
@@ -4623,6 +4704,7 @@ fn bounded_job_delta_returns_only_new_output() {
         .execute_with_options_env_for_owner_and_work(
             "printf 'first-chunk\\n'; while [ ! -e go ]; do sleep 0.05; done; printf 'second-chunk\\n'",
             None,
+            None,
             60_000,
             true,
             None,
@@ -5779,6 +5861,7 @@ async fn busy_work_graph_still_runs_the_command() {
         let result = manager
             .execute_with_options_env_for_owner_and_work(
                 &format!("echo ran > {marker}"),
+                None,
                 None,
                 10_000,
                 background,
