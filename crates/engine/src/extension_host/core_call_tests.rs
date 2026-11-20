@@ -5271,7 +5271,7 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
 
     let _grants = TestGrants::only(&[DshService::Workspace, DshService::Catalog]);
     let mut f = fixture(true);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = codewhale_plugins::test_fixture::PluginTempDir::new().unwrap();
     let workspace = temp.path().join("workspace");
     let user_plugins = temp.path().join("plugins");
     std::fs::create_dir_all(&workspace).unwrap();
