@@ -582,6 +582,18 @@ fn bound_detail_value(value: &mut Value, offset: usize, limit: usize, budget: &m
     }
 }
 
+fn truncate_event_page(detail: &mut Value, offset: usize, retained: usize) {
+    if let Some(events) = detail
+        .get_mut("recent_events")
+        .and_then(Value::as_array_mut)
+        && events.len() > retained
+    {
+        events.truncate(retained);
+        detail["events_next_offset"] = json!(offset.saturating_add(retained));
+        detail["events_omitted"] = json!(true);
+    }
+}
+
 pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit: usize) -> Value {
     // The typed handle is the retrieval authority, not diagnostic prose.
     // Large earlier fields must never consume its lookup coordinates.
@@ -741,18 +753,10 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
             out["result"] = json!(result_text);
             out["result_truncated"] = json!(true);
         }
-        if let Some(events) = out.get_mut("recent_events").and_then(Value::as_array_mut)
-            && events.len() > 4
-        {
-            events.truncate(4);
-            out["events_omitted"] = json!(true);
-        }
+        truncate_event_page(&mut out, offset, 4);
     }
     if serde_json::to_vec(&out).map_or(true, |bytes| bytes.len() > DETAIL_STATUS_BYTES) {
-        if let Some(events) = out.get_mut("recent_events").and_then(Value::as_array_mut) {
-            events.clear();
-            out["events_omitted"] = json!(true);
-        }
+        truncate_event_page(&mut out, offset, 1);
         let status = out
             .pointer("/verification/status")
             .cloned()
@@ -793,6 +797,16 @@ pub(super) fn bounded_detail(value: Value, compact: Value, offset: usize, limit:
         });
         if let Some(handle) = handle {
             minimal["transcript_handle"] = handle;
+        }
+        for key in [
+            "recent_events",
+            "events_total",
+            "events_next_offset",
+            "events_omitted",
+        ] {
+            if let Some(value) = out.get_mut(key) {
+                minimal[key] = value.take();
+            }
         }
         out = minimal;
     }

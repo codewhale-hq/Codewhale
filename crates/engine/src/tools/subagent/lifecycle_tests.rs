@@ -528,6 +528,51 @@ async fn lifecycle_deliverable_preview_reports_omissions_and_detail_pages_the_fu
     assert_eq!(detail["verification"]["deliverables_next_offset"], 6);
 }
 
+#[test]
+fn lifecycle_oversized_event_pages_return_every_sequence_once() {
+    let expected: Vec<u64> = (1..=25).collect();
+    let events: Vec<Value> = expected
+        .iter()
+        .map(|seq| {
+            json!({
+                "seq": seq,
+                "status": "running_tool",
+                "timestamp_ms": 1_700_000_000_000_u64,
+                "message": "\u{0001}".repeat(160),
+                "tool_name": "x".repeat(64),
+            })
+        })
+        .collect();
+    let projection = json!({"worker_record": {"events": events}});
+    for (path_bytes, first_page_len) in [(0, 4), (6000, 1), (10000, 1)] {
+        let compact = json!({
+            "agent_id": "agent-test",
+            "write_progress": {"declared": ["x".repeat(path_bytes)]},
+        });
+        let mut seen = Vec::new();
+        loop {
+            let offset = seen.len();
+            let detail = lifecycle::bounded_detail(projection.clone(), compact.clone(), offset, 20);
+            let result = lifecycle::status_result(detail, false).unwrap();
+            assert!(result.content.len() <= 8192);
+            let page: Value = serde_json::from_str(&result.content).unwrap();
+            let rows = page["recent_events"].as_array().unwrap();
+            assert!(!rows.is_empty());
+            if offset == 0 {
+                assert_eq!(rows.len(), first_page_len);
+            }
+            assert_eq!(page["events_total"], expected.len());
+            seen.extend(rows.iter().map(|row| row["seq"].as_u64().unwrap()));
+            let Some(next) = page["events_next_offset"].as_u64() else {
+                break;
+            };
+            assert_eq!(next as usize, seen.len());
+            assert!(seen.len() < expected.len());
+        }
+        assert_eq!(seen, expected);
+    }
+}
+
 #[tokio::test]
 async fn lifecycle_running_row_reports_declared_vs_observed_writes() {
     // #6194 item 5: the parent sees the declared/observed write diff while
