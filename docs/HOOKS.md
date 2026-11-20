@@ -395,11 +395,14 @@ continues to receive the environment receipt only.
 **Mode-spelling note.** UI-fired events (`session_start`, `session_end`,
 `message_submit`, `tool_call_after`, `mode_change`, `on_error`, `turn_end`,
 `subagent_*`, `session_busy`, `session_idle`, `session_error`, `waiting_for_user`)
-set `DEEPSEEK_MODE` to the UI label — `ACT`, `PLAN`, `OPERATE`.
+set `DEEPSEEK_MODE` to the hook label: `ACT` in Work mode, `PLAN` in Plan mode.
 `tool_call_before` fires inside the engine and uses the engine's own mode
-spelling (`Agent`, `Plan`, `Operate`). `mode` conditions compare
+spelling (`Agent` in Work mode, `Plan`). `mode` conditions compare
 case-insensitively, so `{ type = "mode", mode = "plan" }` matches both, but a
 hook that string-matches `$DEEPSEEK_MODE` exactly should accept both spellings.
+`ACT` and `Agent` are the names Work mode had before it was renamed; they stay
+so existing hooks keep matching. The retired Operate mode is no longer sent as
+`OPERATE` or `Operate`; a session that would have used it reports Work mode.
 
 **`shell_env` is the narrow one.** It receives only `DEEPSEEK_TOOL_NAME` and
 `DEEPSEEK_TOOL_ARGS` — no session id, workspace, model, or mode. A
