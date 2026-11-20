@@ -3142,27 +3142,20 @@ impl ShellManager {
         } else {
             Some(new_shared_raw_output())
         };
-        let bounded_output = small_contract_mode.then(|| {
-            let session_artifact =
-                codewhale_runtime::artifacts::is_valid_session_id(&owner_session_id).then(|| {
-                    let raw_id = origin_tool_call_id
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("bash-{task_id}"));
-                    SessionArtifactSpec {
-                        session_id: owner_session_id.clone(),
-                        artifact_id: codewhale_runtime::artifacts::artifact_id_for_tool_call(
-                            &raw_id,
-                        ),
-                    }
+        let bounded_output =
+            small_contract_mode.then(|| {
+                let session_artifact = codewhale_runtime::artifacts::is_valid_session_id(
+                    &owner_session_id,
+                )
+                .then(|| SessionArtifactSpec {
+                    session_id: owner_session_id.clone(),
+                    artifact_id: codewhale_runtime::artifacts::artifact_id_for_tool_call(&task_id),
                 });
-            Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
-                self.output_spill_dir.as_deref(),
-                session_artifact,
-            )))
-        });
+                Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
+                    self.output_spill_dir.as_deref(),
+                    session_artifact,
+                )))
+            });
 
         #[cfg(windows)]
         let mut windows_job = None;

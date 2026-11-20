@@ -6631,6 +6631,12 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
     assert!(!base_ctx.auto_approve);
 
     let ctx_lowercase = base_ctx.clone().with_origin_tool_call_id("call-fg-large-1");
+    let preview = codewhale_runtime::artifacts::write_session_artifact_immutable(
+        "session-fg-art",
+        "art_call-fg-large-1",
+        b"still running",
+    )
+    .expect("store provisional output");
     let lowercase_cmd = "printf 'START_MARKER_0\\n'; i=1; while [ $i -le 1100 ]; do printf 'pad-a-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' \"$i\"; i=$((i+1)); done; printf 'MID_MARKER_PAST_30KB\\n'; while [ $i -le 2200 ]; do printf 'pad-b-%04d-yyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n' \"$i\"; i=$((i+1)); done; printf 'END_MARKER_TAIL\\n'";
     let lowercase_result = LowercaseBashTool
         .execute(json!({"command": lowercase_cmd}), &ctx_lowercase)
@@ -6641,11 +6647,13 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
     assert!(!lowercase_result.content.contains("START_MARKER_0"));
     assert!(!lowercase_result.content.contains("codewhale-bash-"));
     assert!(!lowercase_result.content.contains("/var/folders/"));
-    assert!(lowercase_result.content.contains("art_call-fg-large-1"));
     assert!(lowercase_result.content.contains("retrieve_tool_result"));
     assert!(lowercase_result.content.len() < 60_000);
     let lc_meta = lowercase_result.metadata.expect("lowercase metadata");
-    assert_eq!(lc_meta["artifact_id"], "art_call-fg-large-1");
+    let final_id = lc_meta["artifact_id"].as_str().expect("completed artifact");
+    assert_ne!(final_id, "art_call-fg-large-1");
+    assert!(lowercase_result.content.contains(final_id));
+    assert_eq!(std::fs::read(preview.0).unwrap(), b"still running");
     assert_eq!(lc_meta["artifact_session_id"], "session-fg-art");
     assert_eq!(lc_meta["truncated"], true);
     assert!(
@@ -6659,7 +6667,7 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
         let retrieved = RetrieveToolResultTool
             .execute(
                 json!({
-                    "ref": "art_call-fg-large-1",
+                    "ref": final_id,
                     "mode": "query",
                     "query": marker,
                 }),
@@ -6721,17 +6729,16 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
         .await
         .expect_err("nonzero foreground bash returns error");
     let fail_text = fail_err.to_string();
-    assert!(fail_text.contains("art_call-fg-large-3"), "{fail_text}");
     assert!(fail_text.contains("retrieve_tool_result"), "{fail_text}");
     assert!(!fail_text.contains("codewhale-bash-"), "{fail_text}");
-    assert_eq!(
-        fail_err.metadata().expect("fail metadata")["artifact_id"],
-        "art_call-fg-large-3"
-    );
+    let failure_id = fail_err.metadata().expect("fail metadata")["artifact_id"]
+        .as_str()
+        .expect("failed command artifact");
+    assert!(fail_text.contains(failure_id), "{fail_text}");
     let fail_retrieved = RetrieveToolResultTool
         .execute(
             json!({
-                "ref": "art_call-fg-large-3",
+                "ref": failure_id,
                 "mode": "query",
                 "query": "MID_MARKER_PAST_30KB",
             }),
