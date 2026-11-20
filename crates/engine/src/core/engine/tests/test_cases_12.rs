@@ -1488,7 +1488,7 @@ fn build_tool_context_preserves_read_snapshots_across_turns() {
     // not exist — the guard-then-bad-advice chain this release set out to close.
     assert!(
         err.to_string()
-            .contains("changed since the last File action=\"read\" call"),
+            .contains("changed since the last read call"),
         "stale-read refusal must name a live tool, got: {err}"
     );
 }

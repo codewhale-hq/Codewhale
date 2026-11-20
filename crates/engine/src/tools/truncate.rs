@@ -388,11 +388,24 @@ pub const SPILLOVER_PREVIEW_HINT: &str = "view full output in the tool details v
 /// promising retrieval there would just be a fourth dead route; say plainly
 /// that there is no tool call for it and name what does work instead.
 pub fn spillover_recovery_instruction(retrieval_ref: Option<&str>) -> String {
+    spillover_recovery_instruction_for(retrieval_ref, None)
+}
+
+fn spillover_recovery_instruction_for(
+    retrieval_ref: Option<&str>,
+    omitted_lines: Option<usize>,
+) -> String {
     match retrieval_ref {
+        Some(reference) if omitted_lines.is_some_and(|lines| lines <= 3) => format!(
+            "{SPILLOVER_RECOVERY_HINT} call retrieve_tool_result with ref=\"{reference}\" \
+             (it is one or a few long lines: mode=\"summary\" for its structure, \
+             mode=\"json\" with jsonpath=\"$.field\" for part of a JSON value, \
+             mode=\"query\" with query=\"…\" to search it)"
+        ),
         Some(reference) => format!(
             "{SPILLOVER_RECOVERY_HINT} call retrieve_tool_result with ref=\"{reference}\" \
-             (mode=\"tail\" for the end, mode=\"lines\" with lines=\"120-160\" for a range, \
-             mode=\"query\" with query=\"…\" to search it)"
+             (mode=\"tail\" for the end, mode=\"lines\" with lines=\"A-B\" for a line range, \
+             mode=\"query\" with query=\"…\" to search it, mode=\"json\" for JSON)"
         ),
         None => format!(
             "{SPILLOVER_RECOVERY_HINT} no tool call reaches this copy — re-run the command \
@@ -415,7 +428,7 @@ fn spillover_preview_footer(
         codewhale_runtime::artifacts::format_byte_size(
             omitted_bytes.try_into().unwrap_or(u64::MAX)
         ),
-        spillover_recovery_instruction(retrieval_ref)
+        spillover_recovery_instruction_for(retrieval_ref, Some(omitted_lines))
     )
 }
 
@@ -1640,6 +1653,14 @@ mod tests {
             let footer = spillover_preview_footer(4096, 120, "/tmp/x.txt", reference);
             assert!(footer.contains(SPILLOVER_RECOVERY_HINT), "{footer}");
         }
+    }
+
+    #[test]
+    fn single_line_spillover_footer_points_to_json_and_query_not_a_line_range() {
+        let footer = spillover_preview_footer(319_744, 1, "/tmp/x.txt", Some("art_1"));
+        assert!(footer.contains("mode=\"json\""), "{footer}");
+        assert!(footer.contains("mode=\"query\""), "{footer}");
+        assert!(!footer.contains("mode=\"lines\""), "{footer}");
     }
 
     #[test]

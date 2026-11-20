@@ -1086,13 +1086,7 @@ impl ToolContext {
         path: &Path,
         requested_path: &str,
     ) -> Result<(), ToolError> {
-        self.require_fresh_read_for(
-            path,
-            requested_path,
-            "File action=\"edit\"",
-            "File with action=\"read\"",
-            "File action=\"read\"",
-        )
+        self.require_fresh_read_for(path, requested_path, "edit", "read", "read")
     }
 
     pub fn require_fresh_read_before_write(

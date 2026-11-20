@@ -29,6 +29,13 @@ const MAX_JSON_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_QUERY_BYTES: usize = 4 * 1024;
 pub const MAX_REFERENCE_BYTES: usize = 32 * 1024;
+const MAX_JSON_SUMMARY_KEYS: usize = 40;
+const MAX_JSON_SUMMARY_CHILD_KEYS: usize = 16;
+const MAX_JSON_SUMMARY_DEPTH: usize = 3;
+const MAX_JSON_STRING_PREVIEW_CHARS: usize = 120;
+const MAX_JSON_ARRAY_SAMPLE_ITEMS: usize = 3;
+const MAX_JSON_SUGGESTED_QUERIES: usize = 6;
+const MAX_JSON_EXPAND_DEPTH: usize = 4;
 
 /// Retrieve summaries or slices of a prior spilled tool result.
 pub struct RetrieveToolResultTool;
@@ -325,6 +332,21 @@ impl ToolSpec for RetrieveToolResultTool {
             .await?;
             return ToolResult::json(&payload)
                 .map_err(|err| ToolError::execution_failed(err.to_string()));
+        }
+        if mode == "summary" && !snapshot.byte_slice.is_empty() {
+            let bytes = snapshot.byte_slice;
+            let total_bytes = snapshot.size_bytes;
+            let owned_reference = reference.to_string();
+            if let Some(payload) = evidence_owner_work(context, move |cancel| {
+                check_evidence_cancelled(cancel)?;
+                summarize_json_artifact(&owned_reference, &bytes, total_bytes, max_bytes, cancel)
+            })
+            .await?
+            {
+                return ToolResult::json(&payload).map_err(|err| {
+                    ToolError::execution_failed(format!("failed to serialize result: {err}"))
+                });
+            }
         }
         let inspection = snapshot
             .inspection?
@@ -748,6 +770,35 @@ impl TextInspection {
         Ok((line_no, line[..end].to_string()))
     }
 
+    fn retain_tail(
+        &mut self,
+        line_no: usize,
+        line: &str,
+        limit: usize,
+    ) -> Result<(usize, String), ToolError> {
+        let keep = limit.saturating_add(4);
+        let start = if line.len() <= keep {
+            0
+        } else {
+            let mut idx = line.len() - keep;
+            while idx < line.len() && !line.is_char_boundary(idx) {
+                idx += 1;
+            }
+            idx
+        };
+        let slice = &line[start..];
+        let size = slice
+            .len()
+            .saturating_add(std::mem::size_of::<(usize, String)>());
+        if self.retained_bytes.saturating_add(size) > MAX_SELECTION_BYTES {
+            return Err(ToolError::execution_failed(
+                "text selection exceeds the 8 MiB inspection memory limit; reduce line_count, context_lines or max_bytes, or use mode=bytes",
+            ));
+        }
+        self.retained_bytes += size;
+        Ok((line_no, slice.to_string()))
+    }
+
     fn release(&mut self, record: &(usize, String)) {
         self.retained_bytes = self.retained_bytes.saturating_sub(
             record
@@ -790,7 +841,7 @@ impl TextInspection {
             {
                 self.release(&record);
             }
-            let record = self.retain(line_no, line, budget)?;
+            let record = self.retain_tail(line_no, line, budget)?;
             self.trailing.push_back(record);
         }
         if self.mode == "summary"
@@ -900,7 +951,7 @@ impl TextInspection {
                 "non_empty_lines": self.non_empty_lines,
                 "signal_lines": self.signal_lines,
                 "head": numbered(&self.leading, self.max_bytes / 2),
-                "tail": render_numbered_lines(self.trailing.iter().map(|(n, text)| (*n, text.as_str())), self.max_bytes / 2),
+                "tail": render_tail_numbered_lines(&self.trailing, self.max_bytes / 2),
                 "hint": "Use mode=head, tail, lines, or query to retrieve a narrower slice."
             }),
             "head" | "tail" => json!({
@@ -908,7 +959,7 @@ impl TextInspection {
                 "mode": self.mode,
                 "total_lines": self.total_lines,
                 "line_count": self.line_count,
-                "excerpt": if self.mode == "head" { numbered(&self.leading, self.max_bytes) } else { render_numbered_lines(self.trailing.iter().map(|(n, text)| (*n, text.as_str())), self.max_bytes) },
+                "excerpt": if self.mode == "head" { numbered(&self.leading, self.max_bytes) } else { render_tail_numbered_lines(&self.trailing, self.max_bytes) },
             }),
             "lines" => json!({
                 "ref": reference,
@@ -982,6 +1033,8 @@ async fn stream_evidence(
     let mut chunk = [0u8; 64 * 1024];
     let mut line = Vec::new();
     let mut byte_slice = Vec::new();
+    let mut json_candidate = mode == "summary" && initial_size <= MAX_JSON_BYTES;
+    let mut json_leading_checked = false;
     loop {
         if context
             .cancel_token
@@ -1033,6 +1086,28 @@ async fn stream_evidence(
                 ));
             }
             byte_slice.extend_from_slice(&chunk[..n]);
+        } else if mode == "summary" && json_candidate {
+            if !json_leading_checked
+                && let Some(&first) = chunk[..n]
+                    .iter()
+                    .find(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                json_leading_checked = true;
+                if !matches!(first, b'{' | b'[') {
+                    json_candidate = false;
+                    byte_slice.clear();
+                    byte_slice.shrink_to_fit();
+                }
+            }
+            if json_candidate {
+                if total > MAX_JSON_BYTES {
+                    json_candidate = false;
+                    byte_slice.clear();
+                    byte_slice.shrink_to_fit();
+                } else {
+                    byte_slice.extend_from_slice(&chunk[..n]);
+                }
+            }
         }
         if mode == "bytes" {
             let first = offset.max(start);
@@ -1199,7 +1274,398 @@ fn parse_positive_line(raw: &str, field: &str) -> Result<usize, ToolError> {
     })
 }
 
+fn expand_embedded_json(value: &mut Value, depth: usize) {
+    if depth >= MAX_JSON_EXPAND_DEPTH {
+        return;
+    }
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim_start();
+            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                && let Ok(mut parsed) = serde_json::from_str::<Value>(text)
+            {
+                expand_embedded_json(&mut parsed, depth + 1);
+                *value = parsed;
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut().take(32) {
+                expand_embedded_json(item, depth + 1);
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values_mut().take(MAX_JSON_SUMMARY_KEYS) {
+                expand_embedded_json(val, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn looks_like_base64_blob(s: &str) -> bool {
+    if s.len() >= 128
+        && s.starts_with("data:")
+        && s.split_once(',')
+            .is_some_and(|(head, _)| head.contains(";base64"))
+    {
+        return true;
+    }
+    if s.len() < 256 || s.starts_with("http://") || s.starts_with("https://") || s.starts_with('/')
+    {
+        return false;
+    }
+    let mut has_upper = false;
+    let mut has_lower = false;
+    let mut has_digit_or_sym = false;
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' => has_upper = true,
+            b'a'..=b'z' => has_lower = true,
+            b'0'..=b'9' | b'+' | b'/' | b'=' | b'-' | b'_' => has_digit_or_sym = true,
+            _ => return false,
+        }
+    }
+    has_upper && has_lower && has_digit_or_sym
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn jsonpath_key_segment(key: &str) -> Option<String> {
+    if !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        Some(format!(".{key}"))
+    } else if !key.contains(']') && !key.contains('\'') {
+        Some(format!("['{key}']"))
+    } else {
+        None
+    }
+}
+
+fn describe_json_scalar_sample(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::Null,
+        Value::Bool(b) => json!(b),
+        Value::Number(n) => json!(n),
+        Value::String(s) => {
+            if looks_like_base64_blob(s) {
+                json!(format!("<base64 omitted ({} bytes)>", s.len()))
+            } else {
+                json!(truncate_line(s, 60))
+            }
+        }
+        Value::Array(items) => json!(format!("[array({})]", items.len())),
+        Value::Object(map) => json!(format!("{{object({} keys)}}", map.len())),
+    }
+}
+
+fn describe_json_value(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::Null => json!({ "type": "null" }),
+        Value::Bool(b) => json!({ "type": "boolean", "preview": b }),
+        Value::Number(n) => json!({ "type": "number", "preview": n }),
+        Value::String(s) => {
+            if looks_like_base64_blob(s) {
+                json!({
+                    "type": "string",
+                    "bytes": s.len(),
+                    "format": "base64",
+                    "preview": format!("<base64 omitted ({} bytes)>", s.len()),
+                })
+            } else {
+                json!({
+                    "type": "string",
+                    "bytes": s.len(),
+                    "preview": truncate_line(s, MAX_JSON_STRING_PREVIEW_CHARS),
+                })
+            }
+        }
+        Value::Array(items) => {
+            let mut element_types = Vec::new();
+            for item in items.iter().take(100) {
+                let kind = json_type_name(item);
+                if !element_types.contains(&kind) {
+                    element_types.push(kind);
+                }
+            }
+            let mut desc = serde_json::Map::new();
+            desc.insert("type".to_string(), json!("array"));
+            desc.insert("length".to_string(), json!(items.len()));
+            if !element_types.is_empty() {
+                desc.insert("element_types".to_string(), json!(element_types));
+            }
+            if let Some(first) = items.first()
+                && depth < MAX_JSON_SUMMARY_DEPTH
+            {
+                match first {
+                    Value::Object(obj) => {
+                        if depth == 0 {
+                            desc.insert(
+                                "first_element".to_string(),
+                                describe_json_value(first, depth + 1),
+                            );
+                        } else {
+                            let elem_keys: Vec<String> = obj.keys().take(12).cloned().collect();
+                            desc.insert("element_keys".to_string(), json!(elem_keys));
+                            if obj.len() > 12 {
+                                desc.insert(
+                                    "omitted_element_keys".to_string(),
+                                    json!(obj.len() - 12),
+                                );
+                            }
+                        }
+                    }
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        let sample: Vec<Value> = items
+                            .iter()
+                            .take(MAX_JSON_ARRAY_SAMPLE_ITEMS)
+                            .map(describe_json_scalar_sample)
+                            .collect();
+                        desc.insert("sample".to_string(), json!(sample));
+                    }
+                    Value::Array(_) => {}
+                }
+            }
+            Value::Object(desc)
+        }
+        Value::Object(map) => {
+            let mut desc = serde_json::Map::new();
+            desc.insert("type".to_string(), json!("object"));
+            desc.insert("key_count".to_string(), json!(map.len()));
+            if depth < MAX_JSON_SUMMARY_DEPTH {
+                let limit = if depth == 0 {
+                    MAX_JSON_SUMMARY_CHILD_KEYS
+                } else {
+                    8
+                };
+                let mut children = serde_json::Map::new();
+                for (k, v) in map.iter().take(limit) {
+                    children.insert(k.clone(), describe_json_value(v, depth + 1));
+                }
+                desc.insert("keys".to_string(), Value::Object(children));
+                if map.len() > limit {
+                    desc.insert("omitted_keys".to_string(), json!(map.len() - limit));
+                }
+            } else {
+                let names: Vec<String> = map.keys().take(12).cloned().collect();
+                desc.insert("keys".to_string(), json!(names));
+                if map.len() > 12 {
+                    desc.insert("omitted_keys".to_string(), json!(map.len() - 12));
+                }
+            }
+            Value::Object(desc)
+        }
+    }
+}
+
+fn push_unique_query(out: &mut Vec<String>, query: String) {
+    if out.len() < MAX_JSON_SUGGESTED_QUERIES && !out.contains(&query) {
+        out.push(query);
+    }
+}
+
+fn collect_suggested_queries(root: &Value) -> Vec<String> {
+    let mut queries = Vec::new();
+    match root {
+        Value::Object(map) => {
+            for (key, value) in map.iter().take(MAX_JSON_SUMMARY_KEYS) {
+                if queries.len() >= MAX_JSON_SUGGESTED_QUERIES {
+                    break;
+                }
+                let Some(seg) = jsonpath_key_segment(key) else {
+                    continue;
+                };
+                let base = format!("${seg}");
+                match value {
+                    Value::String(s) if looks_like_base64_blob(s) => continue,
+                    Value::Array(items) if !items.is_empty() => {
+                        if let Some(Value::Object(first_obj)) = items.first() {
+                            if let Some(Value::Object(inner)) = first_obj.get("text") {
+                                for (inner_k, inner_v) in inner.iter().take(2) {
+                                    if let Some(inner_seg) = jsonpath_key_segment(inner_k) {
+                                        let inner_path = format!("{base}[0].text{inner_seg}");
+                                        if matches!(inner_v, Value::Array(arr) if !arr.is_empty()) {
+                                            push_unique_query(
+                                                &mut queries,
+                                                format!("{inner_path}[0]"),
+                                            );
+                                        } else {
+                                            push_unique_query(&mut queries, inner_path);
+                                        }
+                                    }
+                                }
+                            } else {
+                                push_unique_query(&mut queries, format!("{base}[0]"));
+                                if let Some((first_k, _)) = first_obj.iter().next()
+                                    && let Some(k_seg) = jsonpath_key_segment(first_k)
+                                {
+                                    push_unique_query(&mut queries, format!("{base}[*]{k_seg}"));
+                                }
+                            }
+                        } else {
+                            push_unique_query(&mut queries, format!("{base}[0]"));
+                        }
+                    }
+                    Value::Object(child) => {
+                        push_unique_query(&mut queries, base.clone());
+                        if let Some((child_k, _)) = child.iter().next()
+                            && let Some(c_seg) = jsonpath_key_segment(child_k)
+                        {
+                            push_unique_query(&mut queries, format!("{base}{c_seg}"));
+                        }
+                    }
+                    _ => push_unique_query(&mut queries, base),
+                }
+            }
+            if queries.is_empty() {
+                for key in map.keys().take(2) {
+                    if let Some(seg) = jsonpath_key_segment(key) {
+                        push_unique_query(&mut queries, format!("${seg}"));
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            if let Some(first) = items.first() {
+                push_unique_query(&mut queries, "$[0]".to_string());
+                if let Value::Object(obj) = first {
+                    for key in obj.keys().take(3) {
+                        if let Some(seg) = jsonpath_key_segment(key) {
+                            push_unique_query(&mut queries, format!("$[*]{seg}"));
+                        }
+                    }
+                }
+            } else {
+                push_unique_query(&mut queries, "$".to_string());
+            }
+        }
+        _ => push_unique_query(&mut queries, "$".to_string()),
+    }
+    queries
+}
+
+fn bound_json_summary(mut payload: Value, max_bytes: usize) -> Value {
+    if serde_json::to_string(&payload).map_or(usize::MAX, |s| s.len()) <= max_bytes {
+        return payload;
+    }
+    if let Some(obj) = payload.as_object_mut() {
+        let mut dropped = obj.get("omitted_keys").and_then(Value::as_u64).unwrap_or(0);
+        while serde_json::to_string(&Value::Object(obj.clone())).map_or(usize::MAX, |s| s.len())
+            > max_bytes
+        {
+            let removed = obj
+                .get_mut("keys")
+                .and_then(Value::as_object_mut)
+                .and_then(|keys| {
+                    let last = keys.keys().next_back()?.clone();
+                    keys.remove(&last)
+                });
+            if removed.is_none() {
+                break;
+            }
+            dropped += 1;
+            obj.insert("omitted_keys".to_string(), json!(dropped));
+        }
+    }
+    if serde_json::to_string(&payload).map_or(usize::MAX, |s| s.len()) <= max_bytes {
+        return payload;
+    }
+    crate::tools::truncate::shrink_json(payload, max_bytes).0
+}
+
+fn summarize_json_artifact(
+    reference: &str,
+    bytes: &[u8],
+    total_bytes: u64,
+    max_bytes: usize,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Option<Value>, ToolError> {
+    let Ok(mut root) = serde_json::from_slice::<Value>(bytes) else {
+        return Ok(None);
+    };
+    if !matches!(root, Value::Object(_) | Value::Array(_)) {
+        return Ok(None);
+    }
+    check_evidence_cancelled(cancel)?;
+    expand_embedded_json(&mut root, 0);
+    check_evidence_cancelled(cancel)?;
+    let suggested_queries = collect_suggested_queries(&root);
+    let hint = if suggested_queries.is_empty() {
+        "Use mode=\"json\" with jsonpath=\"$\" to inspect structured values, or mode=\"query\" to search text.".to_string()
+    } else {
+        let examples = suggested_queries
+            .iter()
+            .take(3)
+            .map(|q| format!("\"{q}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Use mode=\"json\" with jsonpath (for example {examples}) to fetch specific fields without loading the full artifact."
+        )
+    };
+    let payload = match &root {
+        Value::Object(map) => {
+            let mut keys = serde_json::Map::new();
+            for (k, v) in map.iter().take(MAX_JSON_SUMMARY_KEYS) {
+                keys.insert(k.clone(), describe_json_value(v, 0));
+            }
+            let mut obj = serde_json::Map::new();
+            obj.insert("ref".to_string(), json!(reference));
+            obj.insert("mode".to_string(), json!("summary"));
+            obj.insert("format".to_string(), json!("json"));
+            obj.insert("root_type".to_string(), json!("object"));
+            obj.insert("total_bytes".to_string(), json!(total_bytes));
+            obj.insert("key_count".to_string(), json!(map.len()));
+            obj.insert("keys".to_string(), Value::Object(keys));
+            if map.len() > MAX_JSON_SUMMARY_KEYS {
+                obj.insert(
+                    "omitted_keys".to_string(),
+                    json!(map.len() - MAX_JSON_SUMMARY_KEYS),
+                );
+            }
+            obj.insert("suggested_queries".to_string(), json!(suggested_queries));
+            obj.insert("hint".to_string(), json!(hint));
+            Value::Object(obj)
+        }
+        Value::Array(items) => {
+            let mut element_types = Vec::new();
+            for item in items.iter().take(100) {
+                let kind = json_type_name(item);
+                if !element_types.contains(&kind) {
+                    element_types.push(kind);
+                }
+            }
+            let mut obj = serde_json::Map::new();
+            obj.insert("ref".to_string(), json!(reference));
+            obj.insert("mode".to_string(), json!("summary"));
+            obj.insert("format".to_string(), json!("json"));
+            obj.insert("root_type".to_string(), json!("array"));
+            obj.insert("total_bytes".to_string(), json!(total_bytes));
+            obj.insert("length".to_string(), json!(items.len()));
+            obj.insert("element_types".to_string(), json!(element_types));
+            if let Some(first) = items.first() {
+                obj.insert("sample_element".to_string(), describe_json_value(first, 0));
+            }
+            obj.insert("suggested_queries".to_string(), json!(suggested_queries));
+            obj.insert("hint".to_string(), json!(hint));
+            Value::Object(obj)
+        }
+        _ => unreachable!(),
+    };
+    Ok(Some(bound_json_summary(payload, max_bytes)))
+}
+
 fn is_signal_line(line: &str) -> bool {
+    if looks_like_base64_blob(line.trim()) {
+        return false;
+    }
     let lower = line.to_lowercase();
     [
         "error",
@@ -1230,6 +1696,37 @@ fn render_numbered_lines<'a>(
         }
     }
     truncate_text(&rendered, max_bytes)
+}
+
+fn render_tail_numbered_lines(
+    lines: &std::collections::VecDeque<(usize, String)>,
+    max_bytes: usize,
+) -> String {
+    let mut selected: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for (line_no, text) in lines.iter().rev() {
+        let entry = format!("{line_no}: {text}");
+        if selected.is_empty() && entry.len() > max_bytes {
+            let prefix = format!("{line_no}: [truncated to max_bytes] ");
+            if prefix.len() >= max_bytes {
+                return truncate_text(&entry, max_bytes);
+            }
+            let keep = max_bytes - prefix.len();
+            let raw_start = text.len().saturating_sub(keep);
+            let start = (raw_start..=text.len())
+                .find(|idx| text.is_char_boundary(*idx))
+                .unwrap_or(text.len());
+            return format!("{prefix}{}", &text[start..]);
+        }
+        let sep = usize::from(!selected.is_empty());
+        if used + sep + entry.len() > max_bytes {
+            break;
+        }
+        used += sep + entry.len();
+        selected.push(entry);
+    }
+    selected.reverse();
+    selected.join("\n")
 }
 
 fn truncate_text(text: &str, max_bytes: usize) -> String {
@@ -1562,13 +2059,40 @@ mod tests {
         assert!(envelope.len() > 300_000 && !envelope.contains('\n'));
         write_owned_legacy("call-json", &envelope, session_id);
 
-        let summary =
+        let summary_result =
             execute_tool_in_session(json!({"ref": "call-json", "mode": "summary"}), session_id)
                 .unwrap();
-        let summary: Value = serde_json::from_str(&summary.content).unwrap();
-        assert!(summary["total_lines"].as_u64().unwrap() > 100, "{summary}");
-        assert_eq!(summary["long_lines_split_at_bytes"], WRAP_LINE_BYTES);
-        assert!(summary["head"].as_str().unwrap().len() <= DEFAULT_MAX_BYTES / 2);
+        assert!(
+            summary_result.content.len() <= DEFAULT_MAX_BYTES,
+            "{}",
+            summary_result.content.len()
+        );
+        let summary: Value = serde_json::from_str(&summary_result.content).unwrap();
+        assert_eq!(summary["format"], "json", "{summary}");
+        assert_eq!(summary["root_type"], "object", "{summary}");
+        assert_eq!(summary["total_bytes"], envelope.len(), "{summary}");
+        assert_eq!(summary["keys"]["content"]["type"], "array", "{summary}");
+        assert_eq!(
+            summary["keys"]["content"]["first_element"]["keys"]["text"]["keys"]["workflow_runs"]["length"],
+            30,
+            "{summary}"
+        );
+        assert!(
+            summary["hint"].as_str().unwrap().contains("mode=\"json\""),
+            "{summary}"
+        );
+        assert!(summary.get("head").is_none(), "{summary}");
+        assert!(summary.get("tail").is_none(), "{summary}");
+
+        let head_res =
+            execute_tool_in_session(json!({"ref": "call-json", "mode": "head"}), session_id)
+                .unwrap();
+        let head_body: Value = serde_json::from_str(&head_res.content).unwrap();
+        assert!(
+            head_body["total_lines"].as_u64().unwrap() > 100,
+            "{head_body}"
+        );
+        assert_eq!(head_body["long_lines_split_at_bytes"], WRAP_LINE_BYTES);
 
         let ids = execute_tool_in_session(
             json!({"ref": "call-json", "mode": "json", "jsonpath": "$.content[0].text.workflow_runs[*].id"}),
@@ -1885,5 +2409,104 @@ mod tests {
     }
     fn scopeguard_for_test(prior: Option<PathBuf>) -> ArtifactRootGuard {
         ArtifactRootGuard { prior }
+    }
+
+    #[test]
+    fn summary_returns_smart_json_schema_skipping_base64_and_distinct_text_tail() {
+        let _lock = test_lock();
+        let tmp = tempdir().unwrap();
+        let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
+        let session_id = "session-smart-summary";
+
+        let fake_b64 = format!(
+            "iVBORw0KGgoAAAANSUhEUgAA{}ErRoR{}FaIlEd{}",
+            "AbCdEfGh01234567+/".repeat(400),
+            "ZyXwVuTs98765432+/".repeat(400),
+            "MnOpQrSt11223344=="
+        );
+        let json_doc = json!({
+            "status": "ok",
+            "count": 42,
+            "items": [
+                {"id": "a1", "title": "first"},
+                {"id": "a2", "title": "second"}
+            ],
+            "screenshot_base64": fake_b64,
+        })
+        .to_string();
+        assert!(!json_doc.contains('\n'));
+        write_owned_legacy("call-b64-json", &json_doc, session_id);
+
+        let res = execute_tool_in_session(
+            json!({"ref": "call-b64-json", "mode": "summary"}),
+            session_id,
+        )
+        .unwrap();
+        assert!(res.content.len() <= DEFAULT_MAX_BYTES);
+        let body: Value = serde_json::from_str(&res.content).unwrap();
+        assert_eq!(body["format"], "json");
+        assert_eq!(body["root_type"], "object");
+        assert_eq!(body["total_bytes"], json_doc.len());
+        assert_eq!(body["key_count"], 4);
+        assert_eq!(body["keys"]["status"]["preview"], "ok");
+        assert_eq!(body["keys"]["count"]["preview"], 42);
+        assert_eq!(body["keys"]["items"]["type"], "array");
+        assert_eq!(body["keys"]["items"]["length"], 2);
+        assert_eq!(body["keys"]["screenshot_base64"]["format"], "base64");
+        assert!(
+            !res.content.contains("iVBORw0KGgo"),
+            "base64 payload leaked into summary: {}",
+            res.content
+        );
+        assert!(body.get("signal_lines").is_none());
+        let hint = body["hint"].as_str().unwrap();
+        assert!(hint.contains("mode=\"json\""), "{hint}");
+        assert!(
+            body["suggested_queries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|q| q.as_str().is_some_and(|s| s.starts_with("$.items"))),
+            "{body}"
+        );
+
+        let array_doc = json!([{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]).to_string();
+        write_owned_legacy("call-array-json", &array_doc, session_id);
+        let arr_res = execute_tool_in_session(
+            json!({"ref": "call-array-json", "mode": "summary"}),
+            session_id,
+        )
+        .unwrap();
+        let arr_body: Value = serde_json::from_str(&arr_res.content).unwrap();
+        assert_eq!(arr_body["root_type"], "array");
+        assert_eq!(arr_body["length"], 2);
+        assert!(
+            arr_body["suggested_queries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("$[0]")),
+            "{arr_body}"
+        );
+
+        let long_non_json = format!(
+            "HEAD_START_{}_MIDDLE_{}_TAIL_END",
+            "x".repeat(4_000),
+            "y".repeat(12_000)
+        );
+        assert!(!long_non_json.contains('\n'));
+        write_owned_legacy("call-long-text", &long_non_json, session_id);
+        let text_res = execute_tool_in_session(
+            json!({"ref": "call-long-text", "mode": "summary"}),
+            session_id,
+        )
+        .unwrap();
+        let text_body: Value = serde_json::from_str(&text_res.content).unwrap();
+        let head = text_body["head"].as_str().unwrap();
+        let tail = text_body["tail"].as_str().unwrap();
+        assert!(head.contains("HEAD_START_"), "{head}");
+        assert!(!head.contains("TAIL_END"), "{head}");
+        assert!(tail.contains("TAIL_END"), "{tail}");
+        assert!(!tail.contains("HEAD_START_"), "{tail}");
+        assert_ne!(head, tail);
     }
 }
