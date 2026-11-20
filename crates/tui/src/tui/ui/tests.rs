@@ -9637,6 +9637,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             model: "deepseek-v4-pro".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: PathBuf::from("/tmp/resume-recovery"),
             mode: Some("yolo".to_string()),
             cost: codewhale_engine::session_manager::SessionCostSnapshot::default(),
@@ -23752,7 +23753,7 @@ fn hydrated_result(
     content: &str,
 ) -> Result<codewhale_engine::tools::spec::ToolResult, codewhale_engine::tools::spec::ToolError> {
     Ok(
-        codewhale_engine::tools::spec::ToolResult::success(content).with_metadata(
+        codewhale_engine::tools::spec::ToolResult::error(content).with_metadata(
             serde_json::json!({
                 "event": "tool.schema_hydrated",
                 "tool": "exec_shell",

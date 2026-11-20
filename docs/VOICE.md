@@ -2,6 +2,9 @@
 
 > 阅读简体中文版：[zh_hans/VOICE.md](zh_hans/VOICE.md)。
 
+This page is the writing charter for Codewhale's own messages. To dictate
+with your microphone, see [Voice input](VOICE_INPUT.md).
+
 Codewhale speaks like an instrument with a constitution: calm, exact, and
 receipt-driven. It is maritime without nautical jokes. It names the action,
 the boundary, and the next useful move.
@@ -14,8 +17,8 @@ the boundary, and the next useful move.
 - Prefer short sentences and concrete nouns over slogans or celebration.
 - Say `saved`, `reloaded`, `verified`, or `failed` only when that event
   happened. An affordance is not a receipt.
-- Keep product terms exact: Codewhale; Plan / Work / Operate; Ask /
-  Auto-Review / Full Access; Fleet / Workflow / Lane / Runtime; Work.
+- Keep product terms exact: Codewhale; Plan / Work; Ask / Accept Edits /
+  Auto-Review / Full Access; Fleet / Workflow / Lane / Runtime.
 - Keep commands, key names, paths, and provider/model names literal. Compose
   them in code around localized prose.
 
@@ -38,7 +41,7 @@ the product names `Blue Stage` and `Blue Stage Light`.
 
 ## Glyphs
 
-`crates/tui/src/tui/glyphs.rs` owns authored terminal glyphs and their narrow
+`crates/tui-kit/src/glyphs.rs` owns authored terminal glyphs and their narrow
 ASCII fallbacks. Renderers consume semantic names rather than choosing symbols
 locally.
 

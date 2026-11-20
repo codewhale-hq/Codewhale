@@ -381,7 +381,12 @@ async fn child_wall_time_is_unbounded_unless_an_owner_sets_it() {
             }
         };
         let receipt: Value = serde_json::from_str(&result.content).unwrap();
-        assert_eq!(receipt["effective_limits"]["max_steps"], owner_steps);
+        let expected_steps = if owner_steps == 0 {
+            WorkerRuntimeProfile::EXPLORE_MAX_STEPS
+        } else {
+            owner_steps
+        };
+        assert_eq!(receipt["effective_limits"]["max_steps"], expected_steps);
         assert!(receipt["effective_limits"]["wall_deadline_ms"].is_null());
         assert_eq!(receipt["ignored_limit_fields"].as_array().unwrap().len(), 4);
         let guard = manager.read().await;

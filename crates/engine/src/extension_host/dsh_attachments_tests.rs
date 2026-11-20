@@ -685,7 +685,7 @@ async fn a_revoked_or_disabled_owner_cannot_read_or_save() {
 
     let _policy = TestPolicyGuard::extension_host(true);
     let _offer = TestOffer::only(&[HostService::Attachments]);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = codewhale_plugins::test_fixture::PluginTempDir::new().unwrap();
     let root = temp.path();
     let config = DiscoveryConfig {
         workspace: root.join("project"),

@@ -389,7 +389,7 @@ pub struct WorkerRuntimeProfile {
 }
 
 impl WorkerRuntimeProfile {
-    /// Default model turns for every role: unbounded unless explicitly capped.
+    pub const EXPLORE_MAX_STEPS: u32 = 24;
     pub const READ_ONLY_MAX_STEPS: u32 = 0;
     pub const GENERAL_MAX_STEPS: u32 = 0;
 
@@ -397,8 +397,8 @@ impl WorkerRuntimeProfile {
     #[must_use]
     pub const fn default_max_steps(role: FleetRole) -> u32 {
         match role {
-            FleetRole::Scout
-            | FleetRole::Reviewer
+            FleetRole::Scout => Self::EXPLORE_MAX_STEPS,
+            FleetRole::Reviewer
             | FleetRole::Planner
             | FleetRole::Verifier
             | FleetRole::Consultant => Self::READ_ONLY_MAX_STEPS,
@@ -741,9 +741,16 @@ mod tests {
     }
 
     #[test]
-    fn role_step_budgets_are_unbounded_by_default_and_profile_owned() {
+    fn role_step_budgets_bound_explore_and_stay_profile_owned() {
+        assert_eq!(
+            WorkerRuntimeProfile::for_role(FleetRole::Scout).max_steps,
+            WorkerRuntimeProfile::EXPLORE_MAX_STEPS
+        );
+        assert_eq!(
+            WorkerRuntimeProfile::default_max_steps(FleetRole::Scout),
+            24
+        );
         for role in [
-            FleetRole::Scout,
             FleetRole::Reviewer,
             FleetRole::Planner,
             FleetRole::Verifier,
@@ -788,7 +795,7 @@ mod tests {
         assert_eq!(
             consultant.max_steps,
             WorkerRuntimeProfile::READ_ONLY_MAX_STEPS,
-            "consultants are unbounded by default like every other role"
+            "consultants are unbounded by default"
         );
     }
 

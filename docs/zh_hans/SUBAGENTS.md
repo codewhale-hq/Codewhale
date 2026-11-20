@@ -238,8 +238,9 @@ max_admitted = 200
 # Operator-selected Runtime delegation depth. Omit to leave it uncapped.
 # This explicit value restricts descendants to six levels.
 max_depth = 6
-# Omitted or zero model-step budget is unbounded. Set a positive value only
-# when an operator deliberately wants a per-child cap.
+# Omitted or zero model-step budget is unbounded, except `explore` children,
+# which default to 24 steps. Set a positive value only when an operator
+# deliberately wants a per-child cap; it also replaces the explore default.
 default_max_steps = 0
 default_wall_time_secs = 0
 

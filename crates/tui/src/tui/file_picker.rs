@@ -31,9 +31,11 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+use crate::tui::views::rounded::{
+    pad_selected_line, render_rounded_footer, render_rounded_surface,
+};
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_panel_scroll_rail, render_underwater_surface,
+    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_panel_scroll_rail,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
@@ -635,9 +637,14 @@ impl ModalView for FilePickerView {
             tr(self.locale, MessageId::FilePickerMatchesPlural)
                 .replace("{count}", &match_count.to_string())
         };
-        let inner = render_underwater_surface(area, buf, title);
+        let meta = if self.is_loading || self.is_rescanning {
+            Some(tr(self.locale, MessageId::FilePickerScanning).into_owned())
+        } else {
+            Some("@path".to_string())
+        };
+        let inner = render_rounded_surface(area, buf, title, meta, true);
 
-        let content = render_modal_footer(
+        let content = render_rounded_footer(
             inner,
             buf,
             &[
@@ -656,12 +663,11 @@ impl ModalView for FilePickerView {
             true,
         );
 
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
+        let rule = if ascii { "-" } else { "─" };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        // Query line.
         lines.push(Line::from(vec![
             Span::styled("> ", Style::default().fg(palette::WHALE_ACTION).bold()),
-            // Explicit ink: the picker paints WHALE_BG, so an unstyled query
-            // would inherit a dark terminal default on light-profile terminals.
             Span::styled(
                 self.query.clone(),
                 Style::default().fg(palette::TEXT_PRIMARY),
@@ -669,16 +675,18 @@ impl ModalView for FilePickerView {
             Span::styled(
                 " ",
                 Style::default()
-                    .fg(palette::WHALE_BG)
+                    .fg(palette::COMPOSER_BG)
                     .bg(palette::WHALE_ACTION),
             ),
         ]));
-        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            rule.repeat(usize::from(content.width)),
+            Style::default().fg(palette::BORDER_COLOR),
+        )));
 
         let end = (self.scroll + visible).min(self.filtered.len());
         self.last_row_hitboxes.borrow_mut().clear();
         if self.is_loading || (self.is_rescanning && self.filtered.is_empty()) {
-            // "No matches" would be a lie while the walk is still running.
             lines.push(Line::from(Span::styled(
                 format!("  {}", tr(self.locale, MessageId::FilePickerScanning)),
                 Style::default().fg(palette::TEXT_MUTED),
@@ -689,14 +697,10 @@ impl ModalView for FilePickerView {
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         } else {
+            let row_width = usize::from(content.width);
             for idx in self.scroll..end {
                 let path = &self.candidates[self.filtered[idx]];
                 let selected = idx == self.selected;
-                let style = if selected {
-                    menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
-                } else {
-                    Style::default().fg(palette::TEXT_PRIMARY)
-                };
                 let prefix = format!("{} ", codewhale_tui_kit::glyphs::selection_marker(selected));
                 let marker_field = if content.width >= 18 {
                     format!("{} ", self.relevance.markers_for(path))
@@ -704,10 +708,50 @@ impl ModalView for FilePickerView {
                     String::new()
                 };
                 let reserved = prefix.chars().count() + marker_field.chars().count();
-                let display =
-                    truncate_path(path, (content.width as usize).saturating_sub(reserved));
-                let mut line = Line::from(format!("{prefix}{marker_field}{display}"));
-                line.style = style;
+                let display = truncate_path(path, row_width.saturating_sub(reserved));
+                let line = if selected {
+                    let sel = menu_style::selected_row_style();
+                    pad_selected_line(
+                        Line::from(Span::styled(
+                            format!("{prefix}{marker_field}{display}"),
+                            sel,
+                        )),
+                        row_width,
+                        sel,
+                    )
+                } else {
+                    let mut spans = vec![Span::styled(
+                        prefix,
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )];
+                    if !marker_field.is_empty() {
+                        let marker_color = if marker_field.trim().is_empty() {
+                            palette::TEXT_MUTED
+                        } else {
+                            palette::WHALE_LIVE
+                        };
+                        spans.push(Span::styled(
+                            marker_field,
+                            Style::default().fg(marker_color),
+                        ));
+                    }
+                    if let Some((dir, file)) = display.rsplit_once('/') {
+                        spans.push(Span::styled(
+                            format!("{dir}/"),
+                            Style::default().fg(palette::TEXT_MUTED),
+                        ));
+                        spans.push(Span::styled(
+                            file.to_string(),
+                            Style::default().fg(palette::TEXT_PRIMARY),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            display,
+                            Style::default().fg(palette::TEXT_PRIMARY),
+                        ));
+                    }
+                    Line::from(spans)
+                };
                 let y = content
                     .y
                     .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
@@ -1073,8 +1117,6 @@ mod tests {
 
     #[test]
     fn query_line_carries_explicit_ink_on_the_dark_surface() {
-        // The picker paints WHALE_BG, so the typed query must carry its own
-        // fg: light-profile terminals default to black ink.
         let dir = TempDir::new().expect("tempdir");
         let mut picker =
             FilePickerView::new_with_relevance(dir.path(), FilePickerRelevance::default());
@@ -1094,7 +1136,7 @@ mod tests {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
                 let symbol = cell.symbol();
-                if symbol.trim().is_empty() || symbol == ">" {
+                if symbol.trim().is_empty() || matches!(symbol, ">" | "│" | "|") {
                     continue;
                 }
                 assert_eq!(
@@ -1508,7 +1550,7 @@ mod tests {
             );
             assert_eq!(
                 buf[(w / 2, h / 2)].bg,
-                palette::WHALE_BG,
+                palette::COMPOSER_BG,
                 "{w}x{h}: modal interior must be opaque"
             );
             for (y, row) in rows.iter().enumerate() {

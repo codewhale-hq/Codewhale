@@ -2,7 +2,8 @@
   "name": "codewhale",
   "private": true,
   "scripts": {
-    "test": "npm test --workspaces --if-present && npm --prefix crates/engine/extension-host test && npm --prefix web test",
+    "ensure:extension-host": "node -e \"const fs=require('node:fs'),cp=require('node:child_process'),d='crates/engine/extension-host',l=d+'/package-lock.json',p=d+'/node_modules/.package-lock.json';if(!fs.existsSync(p)||fs.statSync(l).mtimeMs>fs.statSync(p).mtimeMs){const a=['--prefix',d,'ci','--ignore-scripts'],e=process.env.npm_execpath,r=e&&/\\.[cm]?js$/i.test(e)?cp.spawnSync(process.execPath,[e,...a],{stdio:'inherit'}):cp.spawnSync('npm',a,{stdio:'inherit',shell:process.platform==='win32'});if(r.error)console.error(r.error);process.exit(r.status??1)}\"",
+    "test": "npm test --workspaces --if-present && npm run ensure:extension-host && npm --prefix crates/engine/extension-host test && npm --prefix web test",
     "check:web": "npm --prefix web run check"
   },
   "workspaces": [

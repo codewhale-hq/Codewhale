@@ -60,7 +60,7 @@ impl ToolSpec for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a file. Returns up to 2000 lines per call within a 51200-byte output cap; a line longer than 2000 chars is truncated with a marker. Use offset and limit to read a line range or continue a large file; the footer names the next offset. Responses report byte size, line count, and truncated. PNG/JPEG/GIF/WebP return as visible image content (large images downscaled); read an image instead of OCR or screenshots."
+        "Read a file. Returns a header with line range, total lines, byte size, and truncated flag followed by 1-based numbered lines (`N: <line>`), up to 2000 lines per call within a 51200-byte output cap; a line longer than 2000 chars is truncated with a marker. Use offset and limit to read a line range or continue a large file; the footer names the next offset. For PDFs, text is extracted when pdftotext is installed and optional pages (e.g. \"1-5\" or \"10\") selects a page range. PNG/JPEG/GIF/WebP return as visible image content on vision-capable routes (large images downscaled); read an image instead of OCR or screenshots, and use `read_media` for crop regions or explicit detail levels."
     }
 
     fn input_schema(&self) -> Value {
@@ -78,6 +78,10 @@ impl ToolSpec for ReadTool {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of lines to return. Defaults to 2000."
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "Optional PDF page range (e.g. \"1-5\" or \"10\"); ignored for non-PDF files."
                 }
             },
             "required": ["path"],

@@ -64,10 +64,12 @@ use codewhale_runtime::child_env;
 use codewhale_sandbox::{
     CommandSpec, ExecEnv, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxType,
 };
+#[cfg(any(test, feature = "test-support"))]
+use output::new_shared_raw_output;
 use output::{
-    BoundedOutputAccumulator, BoundedOutputSnapshot, RAW_STREAM_SETTLED_TAIL_BYTES,
-    RawOutputBuffer, SharedRawOutput, new_shared_raw_output, tail_from_buffer, tail_text,
-    take_delta_from_buffer,
+    BoundedOutputAccumulator, BoundedOutputSnapshot, PersistedShellArtifact, RAW_STREAM_MAX_BYTES,
+    RAW_STREAM_SETTLED_TAIL_BYTES, RawOutputBuffer, SessionArtifactSpec, SharedRawOutput,
+    persist_shell_output_artifact, tail_from_buffer, tail_text, take_delta_from_buffer,
 };
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
@@ -167,7 +169,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         format!(
-            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `working_dir`/`cwd` to exec_shell",
+            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `cwd` to `bash`",
             path.display()
         )
     })?;
@@ -178,7 +180,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         return Err(anyhow!(
-            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `working_dir`/`cwd`",
+            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `cwd` to `bash`",
             path.display()
         ));
     }
@@ -445,6 +447,7 @@ pub struct ShellCompletionEvidence {
     stderr: Vec<u8>,
     stdout_omitted: usize,
     stderr_omitted: usize,
+    persisted_artifact: Option<PersistedShellArtifact>,
 }
 
 impl ShellCompletionEvidence {
@@ -479,7 +482,7 @@ impl ShellCompletionEvidence {
             value
         }
 
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "schema": "codewhale.shell_completion.evidence.v1",
             "task_id": self.event.task_id,
             "command": self.event.command,
@@ -490,9 +493,24 @@ impl ShellCompletionEvidence {
             "origin_turn_id": self.event.origin_turn_id,
             "stdout": stream(&self.stdout, self.stdout_omitted),
             "stderr": stream(&self.stderr, self.stderr_omitted),
-        })
-        .to_string()
-        .into_bytes()
+        });
+        if let Some(artifact) = self.persisted_artifact.as_ref() {
+            stamp_persisted_shell_artifact_metadata(
+                &mut payload["stdout"],
+                artifact,
+                &self.event.stdout_tail,
+            );
+        }
+        payload.to_string().into_bytes()
+    }
+
+    pub fn needs_evidence_artifact(&self) -> bool {
+        self.stdout_omitted > 0
+            || self.stderr_omitted > 0
+            || self.event.stdout_len > SHELL_COMPLETION_TAIL_BYTES
+            || self.event.stderr_len > SHELL_COMPLETION_TAIL_BYTES
+            || self.event.stdout_tail.as_bytes() != self.stdout.as_slice()
+            || self.event.stderr_tail.as_bytes() != self.stderr.as_slice()
     }
 }
 
@@ -546,6 +564,24 @@ pub struct ShellDeltaResult {
     pub stderr_total_len: usize,
 }
 
+struct RawShellDelta {
+    command: String,
+    task_id: String,
+    status: ShellStatus,
+    exit_code: Option<i64>,
+    duration_ms: u64,
+    stdout: String,
+    stderr: String,
+    stdout_delta_len: usize,
+    stderr_delta_len: usize,
+    stdout_total_len: usize,
+    stderr_total_len: usize,
+    sandboxed: bool,
+    sandbox_type: Option<String>,
+    sandbox_denied: bool,
+    persisted_artifact: Option<PersistedShellArtifact>,
+}
+
 /// Which of a job's raw output streams to read. Stderr is a separate stream
 /// only for piped jobs; PTY and merged modes fold it into stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,7 +591,7 @@ pub enum ShellOutputStream {
 }
 
 /// A non-consuming window of a job's raw output stream at absolute byte
-/// offsets. Unlike [`ShellManager::get_output_delta`], reading a chunk never
+/// offsets. Unlike delta polling, reading a chunk never
 /// advances anyone else's cursor, so several HTTP clients can follow the same
 /// job without splitting the stream.
 pub struct ShellOutputChunk {
@@ -1091,7 +1127,14 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    buffer
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_read_error();
+                    break;
+                }
             }
         }
     })
@@ -1100,6 +1143,7 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
 fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
     mut reader: R,
     output: Arc<Mutex<BoundedOutputAccumulator>>,
+    raw: SharedRawOutput,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 4096];
@@ -1107,6 +1151,13 @@ fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if !raw
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .append(&chunk[..n])
+                    {
+                        return;
+                    }
                     let mut guard = output.lock().unwrap_or_else(|error| error.into_inner());
                     if let Err(error) = guard.append(&chunk[..n]) {
                         guard.record_error(&error);
@@ -1308,7 +1359,7 @@ pub struct BackgroundShell {
 }
 
 #[derive(Clone)]
-struct ShellWorkLifecycle {
+pub(super) struct ShellWorkLifecycle {
     work: SharedWorkRuntime,
     session_id: String,
 }
@@ -1565,6 +1616,12 @@ impl BackgroundShell {
         if self.status == ShellStatus::Running {
             return;
         }
+        if let Some(output) = self.bounded_output.as_ref() {
+            output
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release_temp();
+        }
         for buffer in [Some(&self.stdout_buffer), self.stderr_buffer.as_ref()]
             .into_iter()
             .flatten()
@@ -1673,6 +1730,14 @@ impl BackgroundShell {
     /// bound discarded. Callers that publish these bytes as evidence must
     /// declare the omission rather than presenting a clipped stream as exact.
     fn retained_output_bytes_with_omissions(&self) -> (Vec<u8>, Vec<u8>, usize, usize) {
+        if let Some(output) = self.bounded_output.as_ref()
+            && let Some((bytes, omitted)) = output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retained_raw_bytes()
+        {
+            return (bytes, Vec::new(), omitted, 0);
+        }
         if let Some(snapshot) = self.bounded_output_snapshot(false).ok().flatten() {
             let omitted = snapshot.total_bytes.saturating_sub(snapshot.retained_bytes);
             return (snapshot.content.into_bytes(), Vec::new(), omitted, 0);
@@ -1695,9 +1760,17 @@ impl BackgroundShell {
         (stdout_bytes, stderr_bytes, stdout_omitted, stderr_omitted)
     }
 
-    fn take_delta(&mut self) -> (String, String, usize, usize, usize, usize) {
-        // Only the bytes after the cursor: returning the whole retained tail
-        // made every `wait` poll repeat output the caller already holds.
+    fn take_delta(
+        &mut self,
+    ) -> (
+        String,
+        String,
+        usize,
+        usize,
+        usize,
+        usize,
+        Option<PersistedShellArtifact>,
+    ) {
         let bounded_delta = self.bounded_output.as_ref().and_then(|output| {
             let output = output.lock().unwrap_or_else(|error| error.into_inner());
             let total = output.total_bytes();
@@ -1710,21 +1783,31 @@ impl BackgroundShell {
             let delta_len = total_bytes.saturating_sub(self.stdout_cursor);
             self.stdout_cursor = total_bytes;
             if delta_len == 0 {
-                return (String::new(), String::new(), 0, 0, total_bytes, 0);
+                return (String::new(), String::new(), 0, 0, total_bytes, 0, None);
             }
             self.last_output_at = Instant::now();
             self.last_observed_output_len = total_bytes;
+            let mut persisted_artifact = None;
             if omitted > 0
                 && let Some(output) = self.bounded_output.as_ref()
             {
-                let notice = output
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .omitted_notice(omitted);
+                let mut guard = output.lock().unwrap_or_else(|error| error.into_inner());
+                let notice = guard.omitted_notice(omitted);
+                persisted_artifact = guard.persisted_artifact();
                 delta.insert_str(0, &notice);
             }
-            return (delta, String::new(), delta_len, 0, total_bytes, 0);
+            return (
+                delta,
+                String::new(),
+                delta_len,
+                0,
+                total_bytes,
+                0,
+                persisted_artifact,
+            );
         }
+        let previous_stdout = self.stdout_cursor;
+        let previous_stderr = self.stderr_cursor;
         let (stdout_delta, stdout_total) =
             take_delta_from_buffer(&self.stdout_buffer, &mut self.stdout_cursor);
         let (stderr_delta, stderr_total) = if let Some(buffer) = self.stderr_buffer.as_ref() {
@@ -1733,8 +1816,8 @@ impl BackgroundShell {
             (Vec::new(), 0)
         };
 
-        let stdout_delta_len = stdout_delta.len();
-        let stderr_delta_len = stderr_delta.len();
+        let stdout_delta_len = self.stdout_cursor.saturating_sub(previous_stdout);
+        let stderr_delta_len = self.stderr_cursor.saturating_sub(previous_stderr);
 
         if stdout_delta_len > 0 || stderr_delta_len > 0 {
             self.last_output_at = Instant::now();
@@ -1748,6 +1831,7 @@ impl BackgroundShell {
             stderr_delta_len,
             stdout_total,
             stderr_total,
+            None,
         )
     }
 
@@ -1817,57 +1901,118 @@ impl BackgroundShell {
         Ok(())
     }
 
-    /// Get a snapshot of the current state
     pub fn snapshot(&self) -> Result<ShellResult> {
+        self.snapshot_with_artifact(self.status != ShellStatus::Running)
+            .map(|(result, _)| result)
+    }
+
+    fn snapshot_with_artifact(
+        &self,
+        finalize: bool,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
-        if let Some(snapshot) = self.bounded_output_snapshot(self.status != ShellStatus::Running)? {
-            return Ok(ShellResult {
-                task_id: Some(self.id.clone()),
-                status: self.status.clone(),
-                exit_code: self.exit_code,
-                stdout: snapshot.content,
-                stderr: String::new(),
-                duration_ms: self.wall_millis(),
-                stdout_len: snapshot.total_bytes,
-                stderr_len: 0,
-                stdout_omitted: snapshot.total_bytes.saturating_sub(snapshot.retained_bytes),
-                stderr_omitted: 0,
-                stdout_truncated: snapshot.truncated,
-                stderr_truncated: false,
-                sandboxed,
-                sandbox_type: sandboxed.then(|| self.sandbox_type.to_string()),
-                sandbox_denied: false,
-            });
+        if let Some(snapshot) = self.bounded_output_snapshot(finalize)? {
+            return Ok((
+                ShellResult {
+                    task_id: Some(self.id.clone()),
+                    status: self.status.clone(),
+                    exit_code: self.exit_code,
+                    stdout: snapshot.content,
+                    stderr: String::new(),
+                    duration_ms: self.wall_millis(),
+                    stdout_len: snapshot.total_bytes,
+                    stderr_len: 0,
+                    stdout_omitted: snapshot.total_bytes.saturating_sub(snapshot.retained_bytes),
+                    stderr_omitted: 0,
+                    stdout_truncated: snapshot.truncated,
+                    stderr_truncated: false,
+                    sandboxed,
+                    sandbox_type: sandboxed.then(|| self.sandbox_type.to_string()),
+                    sandbox_denied: false,
+                },
+                snapshot.persisted_artifact,
+            ));
         }
         let (stdout_full, stderr_full, stdout_total, stderr_total) = self.full_output();
         let (stdout, stdout_meta) = truncate_with_meta(&stdout_full);
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_full);
-        // `truncate_with_meta` can only see the bytes still held. Fold in what
-        // the in-memory bound dropped so a >16 MiB stream reports its real
-        // length and its real omission instead of silently shrinking (#5472).
         let stdout_dropped = stdout_total.saturating_sub(stdout_meta.original_len);
         let stderr_dropped = stderr_total.saturating_sub(stderr_meta.original_len);
-        Ok(ShellResult {
-            task_id: Some(self.id.clone()),
-            status: self.status.clone(),
-            exit_code: self.exit_code,
-            stdout,
-            stderr,
-            duration_ms: self.wall_millis(),
-            stdout_len: stdout_total,
-            stderr_len: stderr_total,
-            stdout_omitted: stdout_meta.omitted.saturating_add(stdout_dropped),
-            stderr_omitted: stderr_meta.omitted.saturating_add(stderr_dropped),
-            stdout_truncated: stdout_meta.truncated || stdout_dropped > 0,
-            stderr_truncated: stderr_meta.truncated || stderr_dropped > 0,
-            sandboxed,
-            sandbox_type: if sandboxed {
-                Some(self.sandbox_type.to_string())
-            } else {
-                None
+        let stdout_truncated = stdout_meta.truncated || stdout_dropped > 0;
+        let stderr_truncated = stderr_meta.truncated || stderr_dropped > 0;
+        let persisted_artifact = if finalize && (stdout_truncated || stderr_truncated) {
+            self.publish_raw_output()?
+        } else {
+            None
+        };
+        Ok((
+            ShellResult {
+                task_id: Some(self.id.clone()),
+                status: self.status.clone(),
+                exit_code: self.exit_code,
+                stdout,
+                stderr,
+                duration_ms: self.wall_millis(),
+                stdout_len: stdout_total,
+                stderr_len: stderr_total,
+                stdout_omitted: stdout_meta.omitted.saturating_add(stdout_dropped),
+                stderr_omitted: stderr_meta.omitted.saturating_add(stderr_dropped),
+                stdout_truncated,
+                stderr_truncated,
+                sandboxed,
+                sandbox_type: if sandboxed {
+                    Some(self.sandbox_type.to_string())
+                } else {
+                    None
+                },
+                sandbox_denied: self.sandbox_denied(),
             },
-            sandbox_denied: self.sandbox_denied(),
-        })
+            persisted_artifact,
+        ))
+    }
+
+    fn publish_raw_output(&self) -> Result<Option<PersistedShellArtifact>> {
+        if !codewhale_runtime::artifacts::is_valid_session_id(&self.owner_session_id) {
+            return Ok(None);
+        }
+        let mut stdout = self.stdout_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let stderr = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buffer| buffer.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(artifact) = stdout.artifact() {
+            return Ok(Some(artifact));
+        }
+        if !stdout.capture_complete() || stderr.as_ref().is_some_and(|s| !s.capture_complete()) {
+            return Ok(None);
+        }
+        let key = self.origin_tool_call_id.as_deref().unwrap_or(&self.id);
+        let publish = stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, key);
+        let publish = match publish {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && key != self.id => {
+                stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, &self.id)
+            }
+            other => other,
+        };
+        Ok(Some(publish?))
+    }
+
+    fn finalize_output_artifact(&self) -> Result<Option<PersistedShellArtifact>> {
+        if let Some(snapshot) = self.bounded_output_snapshot(true)? {
+            return Ok(snapshot.persisted_artifact);
+        }
+        let large = [&self.stdout_buffer]
+            .into_iter()
+            .chain(self.stderr_buffer.iter())
+            .any(|buffer| {
+                let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                guard.total_len() > RAW_STREAM_MAX_BYTES
+            });
+        if large {
+            self.publish_raw_output()
+        } else {
+            Ok(None)
+        }
     }
 
     fn bounded_output_snapshot(&self, finalize: bool) -> Result<Option<BoundedOutputSnapshot>> {
@@ -1988,7 +2133,22 @@ impl BackgroundShell {
     }
 
     fn completion_evidence(&self) -> ShellCompletionEvidence {
-        let event = self.completion_event();
+        let mut event = self.completion_event();
+        let persisted_artifact = self.bounded_output.as_ref().and_then(|output| {
+            output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .persisted_artifact()
+        });
+        let persisted_artifact = persisted_artifact.or_else(|| {
+            self.stdout_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .artifact()
+        });
+        if let Some(artifact) = persisted_artifact.as_ref() {
+            event.evidence_ref = Some(artifact.artifact_id.clone());
+        }
         let (stdout, stderr, stdout_omitted, stderr_omitted) =
             self.retained_output_bytes_with_omissions();
         ShellCompletionEvidence {
@@ -1997,6 +2157,7 @@ impl BackgroundShell {
             stderr,
             stdout_omitted,
             stderr_omitted,
+            persisted_artifact,
         }
     }
 
@@ -2108,7 +2269,7 @@ pub fn inherited_interactive_terminal_refusal() -> Option<&'static str> {
         "Inherited interactive terminal takeover is unavailable on Unix because foreground TTY \
          ownership cannot be transferred safely. Use Bash with `background: true, tty: true`, \
          then continue it with `action: \"interact\"` and the returned `task_id`; alternatively \
-         use `terminal/run` and `terminal/send`, or launch the command in a new terminal. For \
+         use `terminal_run` and `terminal_send`, or launch the command in a new terminal. For \
          non-interactive work, omit `interactive: true`.",
     )
 }
@@ -2470,6 +2631,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2506,6 +2668,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2542,6 +2705,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2562,9 +2726,10 @@ impl ShellManager {
 
     /// Owner-aware execution with an optional Work Graph lifecycle sink.
     #[allow(clippy::too_many_arguments)]
-    fn execute_with_options_env_for_owner_and_work(
+    pub(super) fn execute_with_options_env_for_owner_and_work(
         &mut self,
         command: &str,
+        program_args: Option<(&str, &[String])>,
         working_dir: Option<&str>,
         timeout_ms: u64,
         background: bool,
@@ -2596,7 +2761,18 @@ impl ShellManager {
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
 
         // Create command spec and prepare sandboxed environment
-        let spec = if let Some(workspace) = readonly_workspace {
+        let spec = if let Some((program, args)) = program_args {
+            anyhow::ensure!(
+                readonly_workspace.is_none(),
+                "explicit argv cannot use shell read-only validation"
+            );
+            CommandSpec::program(
+                program,
+                args.to_vec(),
+                work_dir.clone(),
+                Duration::from_millis(timeout_ms),
+            )
+        } else if let Some(workspace) = readonly_workspace {
             if readonly_command_needs_shell(command) {
                 let script = hardened_readonly_script(command, workspace)?;
                 CommandSpec::shell(&script, work_dir.clone(), Duration::from_millis(timeout_ms))
@@ -2638,7 +2814,9 @@ impl ShellManager {
         }
 
         if background {
-            let bounded_output = timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS);
+            let bounded_output = !tty
+                && !persist_pending
+                && (program_args.is_some() || timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS));
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
@@ -3012,20 +3190,36 @@ impl ShellManager {
             ));
         }
 
-        let stdout_buffer = new_shared_raw_output();
+        let spool = !small_contract_mode
+            && !persist_pending
+            && codewhale_runtime::artifacts::is_valid_session_id(&owner_session_id);
+        let stdout_buffer = RawOutputBuffer::for_job(
+            if small_contract_mode {
+                RAW_STREAM_SETTLED_TAIL_BYTES
+            } else {
+                RAW_STREAM_MAX_BYTES
+            },
+            spool,
+        );
         let stderr_buffer = if tty || persist_pending || small_contract_mode {
             None
         } else {
-            Some(new_shared_raw_output())
+            Some(RawOutputBuffer::for_job(RAW_STREAM_MAX_BYTES, spool))
         };
-        // The spill file is best-effort: a full disk or exhausted descriptor
-        // table must not make `echo ok` unrunnable (that is exactly how the
-        // owner's session got wedged under swap exhaustion).
-        let bounded_output = small_contract_mode.then(|| {
-            Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
-                self.output_spill_dir.as_deref(),
-            )))
-        });
+        let bounded_output =
+            small_contract_mode.then(|| {
+                let session_artifact = codewhale_runtime::artifacts::is_valid_session_id(
+                    &owner_session_id,
+                )
+                .then(|| SessionArtifactSpec {
+                    session_id: owner_session_id.clone(),
+                    artifact_id: codewhale_runtime::artifacts::artifact_id_for_tool_call(&task_id),
+                });
+                Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
+                    self.output_spill_dir.as_deref(),
+                    session_artifact,
+                )))
+            });
 
         #[cfg(windows)]
         let mut windows_job = None;
@@ -3151,7 +3345,11 @@ impl ShellManager {
             let (stdout_thread, stderr_thread) =
                 if let (Some(reader), Some(output)) = (combined_reader, bounded_output.as_ref()) {
                     (
-                        Some(spawn_bounded_reader_thread(reader, Arc::clone(output))),
+                        Some(spawn_bounded_reader_thread(
+                            reader,
+                            Arc::clone(output),
+                            Arc::clone(&stdout_buffer),
+                        )),
                         None,
                     )
                 } else {
@@ -3293,13 +3491,22 @@ impl ShellManager {
         })
     }
 
-    /// Get output from a background process
     pub fn get_output(
         &mut self,
         task_id: &str,
         block: bool,
         timeout_ms: u64,
     ) -> Result<ShellResult> {
+        self.get_output_with_artifact(task_id, block, timeout_ms)
+            .map(|(result, _)| result)
+    }
+
+    fn get_output_with_artifact(
+        &mut self,
+        task_id: &str,
+        block: bool,
+        timeout_ms: u64,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let shell = self
             .processes
             .get_mut(task_id)
@@ -3316,15 +3523,28 @@ impl ShellManager {
                 std::thread::sleep(Duration::from_millis(100));
             }
 
-            // If still running after timeout
             if shell.status == ShellStatus::Running {
-                return shell.snapshot();
+                return shell.snapshot_with_artifact(false);
             }
         } else {
             shell.poll();
         }
 
-        shell.snapshot()
+        shell.snapshot_with_artifact(shell.status != ShellStatus::Running)
+    }
+
+    pub(super) fn test_output(
+        &mut self,
+        task_id: &str,
+        session_id: &str,
+    ) -> Result<(ShellResult, serde_json::Value)> {
+        self.require_session_owner(task_id, session_id)?;
+        let (snapshot, artifact) = self.get_output_with_artifact(task_id, false, 0)?;
+        let mut metadata = json!({});
+        if let Some(artifact) = artifact {
+            stamp_persisted_shell_artifact_metadata(&mut metadata, &artifact, &snapshot.stdout);
+        }
+        Ok((snapshot, metadata))
     }
 
     /// Poll a job and return only its status.
@@ -3334,7 +3554,7 @@ impl ShellManager {
     /// raw buffers to build it. On a command printing 50 MB that was ~1.5 GB of
     /// allocate-and-drop churn per wait, all of it thrown away (#5472 finding 1,
     /// the transient term). Status is what the loop actually needs.
-    fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
+    pub(super) fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
         let shell = self
             .processes
             .get_mut(task_id)
@@ -3408,62 +3628,92 @@ impl ShellManager {
         self.write_stdin(task_id, input, close)
     }
 
-    /// Get incremental output from a background process, consuming any new output.
+    fn get_raw_output_delta(
+        &mut self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> Result<RawShellDelta> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        wait_while_running(shell, wait, timeout_ms);
+        let finalized_artifact = if shell.status != ShellStatus::Running {
+            shell.finalize_output_artifact()?
+        } else {
+            None
+        };
+        let (
+            stdout,
+            stderr,
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total_len,
+            stderr_total_len,
+            persisted_artifact,
+        ) = shell.take_delta();
+        let persisted_artifact = finalized_artifact.or(persisted_artifact);
+        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
+        let sandbox_denied = shell.sandbox_denied();
+        let status = shell.status.clone();
+        if status != ShellStatus::Running {
+            shell.completion_reported = true;
+            shell.release_delivered_output();
+        }
+
+        Ok(RawShellDelta {
+            command: shell.command.clone(),
+            task_id: shell.id.clone(),
+            status,
+            exit_code: shell.exit_code,
+            duration_ms: u64::try_from(shell.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout,
+            stderr,
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total_len,
+            stderr_total_len,
+            sandboxed,
+            sandbox_type: sandboxed.then(|| shell.sandbox_type.to_string()),
+            sandbox_denied,
+            persisted_artifact,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     fn get_output_delta(
         &mut self,
         task_id: &str,
         wait: bool,
         timeout_ms: u64,
     ) -> Result<ShellDeltaResult> {
-        let shell = self
-            .processes
-            .get_mut(task_id)
-            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
-        wait_while_running(shell, wait, timeout_ms);
-        if shell.status != ShellStatus::Running && shell.owner_agent.is_some() {
-            shell.completion_reported = true;
-        }
-
-        let (
-            stdout_delta,
-            stderr_delta,
-            stdout_delta_len,
-            stderr_delta_len,
-            stdout_total,
-            stderr_total,
-        ) = shell.take_delta();
-        let (stdout, stdout_meta) = truncate_with_meta(&stdout_delta);
-        let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
-        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
-
-        let command = shell.command.clone();
+        let raw = self.get_raw_output_delta(task_id, wait, timeout_ms)?;
+        let (stdout, stdout_meta) = truncate_with_meta(&raw.stdout);
+        let (stderr, stderr_meta) = truncate_with_meta(&raw.stderr);
         let result = ShellResult {
-            task_id: Some(shell.id.clone()),
-            status: shell.status.clone(),
-            exit_code: shell.exit_code,
+            task_id: Some(raw.task_id),
+            status: raw.status,
+            exit_code: raw.exit_code,
             stdout,
             stderr,
-            duration_ms: u64::try_from(shell.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            stdout_len: stdout_meta.original_len.max(stdout_delta_len),
-            stderr_len: stderr_meta.original_len.max(stderr_delta_len),
+            duration_ms: raw.duration_ms,
+            stdout_len: stdout_meta.original_len.max(raw.stdout_delta_len),
+            stderr_len: stderr_meta.original_len.max(raw.stderr_delta_len),
             stdout_omitted: stdout_meta.omitted,
             stderr_omitted: stderr_meta.omitted,
             stdout_truncated: stdout_meta.truncated,
             stderr_truncated: stderr_meta.truncated,
-            sandboxed,
-            sandbox_type: if sandboxed {
-                Some(shell.sandbox_type.to_string())
-            } else {
-                None
-            },
-            sandbox_denied: shell.sandbox_denied(),
+            sandboxed: raw.sandboxed,
+            sandbox_type: raw.sandbox_type,
+            sandbox_denied: raw.sandbox_denied,
         };
 
         Ok(ShellDeltaResult {
-            command,
+            command: raw.command,
             result,
-            stdout_total_len: stdout_total,
-            stderr_total_len: stderr_total,
+            stdout_total_len: raw.stdout_total_len,
+            stderr_total_len: raw.stderr_total_len,
         })
     }
 
@@ -3593,25 +3843,32 @@ impl ShellManager {
         ))
     }
 
-    /// Kill a running background process
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
+        self.kill_with_artifact(task_id).map(|(result, _)| result)
+    }
+
+    fn kill_with_artifact(
+        &mut self,
+        task_id: &str,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let shell = self
             .processes
             .get_mut(task_id)
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
 
         shell.kill()?;
-        shell.snapshot()
+        shell.snapshot_with_artifact(true)
     }
 
     pub fn mark_cancel_reported(&mut self, result: &ShellResult) {
-        if result.status == ShellStatus::Killed
+        if result.status != ShellStatus::Running
             && let Some(shell) = result
                 .task_id
                 .as_deref()
                 .and_then(|id| self.processes.get_mut(id))
         {
             shell.completion_reported = true;
+            shell.release_delivered_output();
         }
     }
 
@@ -3782,15 +4039,15 @@ impl ShellManager {
         self.get_output_delta(task_id, wait, timeout_ms)
     }
 
-    fn get_output_delta_for_session(
+    fn get_raw_output_delta_for_session(
         &mut self,
         active_session_id: &str,
         task_id: &str,
         wait: bool,
         timeout_ms: u64,
-    ) -> Result<ShellDeltaResult> {
+    ) -> Result<RawShellDelta> {
         self.require_session_owner(task_id, active_session_id)?;
-        self.get_output_delta(task_id, wait, timeout_ms)
+        self.get_raw_output_delta(task_id, wait, timeout_ms)
     }
 
     /// Read a job's raw stream at an absolute byte offset without consuming
@@ -4011,6 +4268,10 @@ impl ShellManager {
                 && shell.status != ShellStatus::Running
                 && !shell.completion_reported
             {
+                if let Err(error) = shell.finalize_output_artifact() {
+                    tracing::warn!(task_id = %shell.id, %error, "shell completion artifact publication failed; retaining output for retry");
+                    continue;
+                }
                 shell.completion_reported = true;
                 completions.push(shell.completion_evidence());
                 // The bytes are now in the caller's hands (they become a durable
@@ -4025,7 +4286,7 @@ impl ShellManager {
 
     /// A terminal foreground result is already returned as the tool result;
     /// do not emit it again through the background-completion channel.
-    fn acknowledge_foreground_completion(&mut self, task_id: &str) {
+    pub(super) fn acknowledge_foreground_completion(&mut self, task_id: &str) {
         if let Some(shell) = self.processes.get_mut(task_id) {
             shell.completion_reported = true;
             // The caller already holds this job's `ShellResult`; the record only
@@ -4776,7 +5037,7 @@ fn shell_sandbox_denied_hint(context: &ToolContext, result: &ShellResult) -> Opt
     ))
 }
 
-fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
+pub(super) fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
     let agent_id = context
         .owner_agent_id
         .as_deref()
@@ -4794,7 +5055,9 @@ fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> 
     })
 }
 
-fn shell_work_lifecycle_from_context(context: &ToolContext) -> Option<ShellWorkLifecycle> {
+pub(super) fn shell_work_lifecycle_from_context(
+    context: &ToolContext,
+) -> Option<ShellWorkLifecycle> {
     context
         .runtime
         .work
@@ -5609,7 +5872,7 @@ async fn execute_foreground_via_background(
     timeout_bounds_ms: (u64, u64),
     wants_receipt: bool,
     receipt_identity: &mut Option<ShellExecutionIdentity>,
-) -> Result<ShellResult> {
+) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
     let timeout_ms =
         timeout_ms.map(|timeout| timeout.clamp(timeout_bounds_ms.0, timeout_bounds_ms.1));
     let spawn_timeout_ms = timeout_ms.unwrap_or(timeout_bounds_ms.1);
@@ -5639,6 +5902,7 @@ async fn execute_foreground_via_background(
         let lifecycle = shell_work_lifecycle_from_context(context);
         let spawned = manager.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir.as_deref(),
             spawn_timeout_ms,
             true,
@@ -5734,7 +5998,7 @@ async fn execute_foreground_via_background(
                 .shell_manager
                 .lock()
                 .map_err(|_| anyhow!("shell manager lock poisoned"))?;
-            let result = manager.kill(&task_id);
+            let result = manager.kill_with_artifact(&task_id);
             if result.is_ok() {
                 manager.acknowledge_foreground_completion(&task_id);
                 foreground.armed = false;
@@ -5742,10 +6006,6 @@ async fn execute_foreground_via_background(
             return result;
         }
 
-        // Poll status only. The snapshot — and the buffer clones behind it — is
-        // built once, when there is actually a result to return (#5472). Both
-        // happen under one lock acquisition so the record cannot be evicted
-        // between observing that it finished and reading its result.
         let finished = {
             let mut manager = context
                 .shell_manager
@@ -5757,14 +6017,11 @@ async fn execute_foreground_via_background(
                 }
                 let snapshot = manager.get_output(&task_id, false, 0)?;
                 foreground.armed = false;
-                return Ok(snapshot);
+                return Ok((snapshot, None));
             }
             if manager.poll_status(&task_id)? == ShellStatus::Running {
                 None
             } else {
-                // #6689: a status from a failed wait is neither an observed
-                // exit nor an interruption, so the receipt is left out rather
-                // than reporting a guessed state.
                 if manager
                     .processes
                     .get(&task_id)
@@ -5772,9 +6029,7 @@ async fn execute_foreground_via_background(
                 {
                     *receipt_identity = None;
                 }
-                let snapshot = manager.get_output(&task_id, false, 0)?;
-                // Ordering matters: the snapshot is taken before the
-                // acknowledgement releases the retained bytes.
+                let snapshot = manager.get_output_with_artifact(&task_id, false, 0)?;
                 manager.acknowledge_foreground_completion(&task_id);
                 Some(snapshot)
             }
@@ -5785,12 +6040,6 @@ async fn execute_foreground_via_background(
             return Ok(snapshot);
         }
 
-        // The foreground budget is how long the turn waits, never how long
-        // the command may live. Past it the process keeps running as a
-        // background job — exactly as Ctrl+B would move it — and the model
-        // gets the output so far plus the job id to wait on, read, or cancel.
-        // Killing here threw away minutes of a build or test run and made the
-        // model start it over.
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let mut manager = context
                 .shell_manager
@@ -5801,7 +6050,7 @@ async fn execute_foreground_via_background(
             }
             let snapshot = manager.get_output(&task_id, false, 0)?;
             foreground.armed = false;
-            return Ok(snapshot);
+            return Ok((snapshot, None));
         }
 
         tokio::time::sleep(Duration::from_millis(poll_tick_ms)).await;
@@ -6036,6 +6285,80 @@ fn contract_bash_error_status(result: &ShellResult, timeout_ms: Option<u64>) -> 
     }
 }
 
+fn combine_full_shell_streams(stdout: &str, stderr: &str) -> String {
+    if stderr.is_empty() {
+        stdout.to_string()
+    } else if stdout.is_empty() {
+        format!("STDERR:\n{stderr}")
+    } else {
+        format!("{stdout}\n\nSTDERR:\n{stderr}")
+    }
+}
+
+fn format_persisted_shell_artifact_footer(artifact: &PersistedShellArtifact) -> String {
+    let label = if artifact.complete {
+        "Full output"
+    } else {
+        "Output excerpt"
+    };
+    format!(
+        "[{label} saved as artifact {}; {}]",
+        artifact.artifact_id,
+        crate::tools::truncate::spillover_recovery_instruction(Some(&artifact.artifact_id)),
+    )
+}
+
+fn stamp_persisted_shell_artifact_metadata(
+    metadata: &mut serde_json::Value,
+    artifact: &PersistedShellArtifact,
+    preview_source: &str,
+) {
+    let Some(obj) = metadata.as_object_mut() else {
+        return;
+    };
+    let absolute = serde_json::Value::String(artifact.absolute_path.display().to_string());
+    let relative =
+        codewhale_runtime::artifacts::format_artifact_relative_path(&artifact.relative_path);
+    let mut preview: String = preview_source.chars().take(200).collect();
+    if preview_source.chars().count() > 200 {
+        preview.push_str("...");
+    }
+    obj.insert("spillover_path".into(), absolute.clone());
+    obj.insert("artifact_path".into(), absolute);
+    obj.insert("artifact_id".into(), artifact.artifact_id.clone().into());
+    obj.insert(
+        "artifact_session_id".into(),
+        artifact.session_id.clone().into(),
+    );
+    obj.insert("artifact_relative_path".into(), relative.into());
+    obj.insert("artifact_byte_size".into(), artifact.byte_size.into());
+    obj.insert("artifact_digest".into(), artifact.digest.clone().into());
+    obj.insert(
+        "content_digest".into(),
+        format!("sha256:{}", artifact.digest).into(),
+    );
+    obj.insert("artifact_preview".into(), preview.into());
+    obj.insert("truncated".into(), true.into());
+    obj.insert("artifact_complete".into(), artifact.complete.into());
+    if artifact.complete {
+        obj.insert("original_byte_count".into(), artifact.byte_size.into());
+    }
+}
+
+fn attach_shell_artifact_to_tool_result(
+    result: &mut ToolResult,
+    artifact: &PersistedShellArtifact,
+) {
+    if !result.content.contains(&artifact.artifact_id) {
+        result.content.push_str("\n\n");
+        result
+            .content
+            .push_str(&format_persisted_shell_artifact_footer(artifact));
+    }
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    stamp_persisted_shell_artifact_metadata(metadata, artifact, &result.content);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish_contract_bash_result(
     result: ShellResult,
@@ -6047,6 +6370,7 @@ fn finish_contract_bash_result(
     readonly_denied_hint: Option<&str>,
     explicit_background: bool,
     description: Option<&str>,
+    persisted_artifact: Option<PersistedShellArtifact>,
 ) -> Result<ToolResult, ToolError> {
     let sandbox_denied_hint = if network_restricted_hint.is_none() {
         readonly_denied_hint
@@ -6092,6 +6416,15 @@ fn finish_contract_bash_result(
     }
     if let Some(hint) = sandbox_denied_hint {
         metadata["sandbox_denied_hint"] = json!(hint);
+    }
+    if let Some(artifact) = persisted_artifact.as_ref() {
+        if !output.contains(&artifact.artifact_id) {
+            if !output.is_empty() {
+                output.push_str("\n\n");
+            }
+            output.push_str(&format_persisted_shell_artifact_footer(artifact));
+        }
+        stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
     }
     if result.status == ShellStatus::Running {
         let task_id = result.task_id.as_deref().unwrap_or("unknown");
@@ -7062,39 +7395,60 @@ impl ToolSpec for BashTool {
             let started = std::time::Instant::now();
             let backend_result = backend.exec(command, &extra_env).await;
 
-            let result = match backend_result {
+            let (result, persisted_artifact) = match backend_result {
                 Ok(output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
-                    ShellResult {
-                        task_id: None,
-                        status: if output.exit_code == 0 {
-                            ShellStatus::Completed
-                        } else {
-                            ShellStatus::Failed
+                    let persisted_artifact = if stdout_meta.truncated || stderr_meta.truncated {
+                        let session_id = context.state_namespace.clone();
+                        let origin_tool_call_id = context.origin_tool_call_id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let full_combined =
+                                combine_full_shell_streams(&output.stdout, &output.stderr);
+                            persist_shell_output_artifact(
+                                &session_id,
+                                origin_tool_call_id.as_deref(),
+                                &format!("bash-sandbox-{}", Uuid::new_v4().simple()),
+                                full_combined.as_bytes(),
+                            )
+                            .ok()
+                        })
+                        .await
+                        .map_err(|err| ToolError::execution_failed(err.to_string()))?
+                    } else {
+                        None
+                    };
+                    (
+                        ShellResult {
+                            task_id: None,
+                            status: if output.exit_code == 0 {
+                                ShellStatus::Completed
+                            } else {
+                                ShellStatus::Failed
+                            },
+                            exit_code: Some(i64::from(output.exit_code)),
+                            stdout,
+                            stderr,
+                            duration_ms: u64::try_from(started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                            stdout_len: stdout_meta.original_len,
+                            stderr_len: stderr_meta.original_len,
+                            stdout_omitted: stdout_meta.omitted,
+                            stderr_omitted: stderr_meta.omitted,
+                            stdout_truncated: stdout_meta.truncated,
+                            stderr_truncated: stderr_meta.truncated,
+                            sandboxed: true,
+                            sandbox_type: Some("opensandbox".to_string()),
+                            sandbox_denied: false,
                         },
-                        exit_code: Some(i64::from(output.exit_code)),
-                        stdout,
-                        stderr,
-                        duration_ms: u64::try_from(started.elapsed().as_millis())
-                            .unwrap_or(u64::MAX),
-                        stdout_len: stdout_meta.original_len,
-                        stderr_len: stderr_meta.original_len,
-                        stdout_omitted: stdout_meta.omitted,
-                        stderr_omitted: stderr_meta.omitted,
-                        stdout_truncated: stdout_meta.truncated,
-                        stderr_truncated: stderr_meta.truncated,
-                        sandboxed: true,
-                        sandbox_type: Some("opensandbox".to_string()),
-                        sandbox_denied: false,
-                    }
+                        persisted_artifact,
+                    )
                 }
                 Err(e) => {
                     return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
                 }
             };
 
-            // Build result (reuse the existing output rendering below).
             let stdout_summary = summarize_output(&result.stdout);
             let stderr_summary = summarize_output(&result.stderr);
             let summary = if !stderr_summary.is_empty() {
@@ -7149,6 +7503,11 @@ impl ToolSpec for BashTool {
             attach_shell_owner_metadata(&mut metadata, context);
             attach_cargo_failure_summary(&mut metadata, command, &result);
             attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
+            if let Some(artifact) = persisted_artifact.as_ref() {
+                output.push_str("\n\n");
+                output.push_str(&format_persisted_shell_artifact_footer(artifact));
+                stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
+            }
 
             return Ok(ToolResult {
                 content: output,
@@ -7158,6 +7517,11 @@ impl ToolSpec for BashTool {
         }
 
         let mut lifecycle_warning = None;
+        let timeout_bounds_ms = if self.optional_timeout {
+            (1, BASH_MAX_TIMEOUT_MS)
+        } else {
+            (1_000, 600_000)
+        };
         let mut receipt_identity = None;
         // #6689: the receipt exists for completion hooks to read. Without one
         // registered it would only ride along in tool metadata, which the
@@ -7197,7 +7561,7 @@ impl ToolSpec for BashTool {
                             lifecycle_warning = Some(err.to_string());
                         }
                     }
-                    Ok(result)
+                    Ok((result, None))
                 }
                 Err(err) => Err(err),
             }
@@ -7208,6 +7572,7 @@ impl ToolSpec for BashTool {
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             let result = manager.execute_with_options_env_for_owner_and_work(
                 command,
+                None,
                 working_dir.as_deref(),
                 timeout_value_ms,
                 true,
@@ -7222,7 +7587,7 @@ impl ToolSpec for BashTool {
                 shell_work_lifecycle_from_context(context),
                 None,
                 persist,
-                (1_000, 600_000),
+                timeout_bounds_ms,
             );
             if let (Ok(result), Some(permit)) = (&result, heavy_permit)
                 && let Some(task_id) = result.task_id.as_deref()
@@ -7236,7 +7601,7 @@ impl ToolSpec for BashTool {
             {
                 let _ = manager.tag_description(task_id, Some(description));
             }
-            result
+            result.map(|result| (result, None))
         } else {
             execute_foreground_via_background(
                 context,
@@ -7250,11 +7615,7 @@ impl ToolSpec for BashTool {
                 policy_override,
                 extra_env,
                 matches!(context.shell_policy, ShellPolicy::ReadOnly) && !enforced_readonly,
-                if self.optional_timeout {
-                    (1, BASH_MAX_TIMEOUT_MS)
-                } else {
-                    (1_000, 600_000)
-                },
+                timeout_bounds_ms,
                 wants_receipt,
                 &mut receipt_identity,
             )
@@ -7262,7 +7623,7 @@ impl ToolSpec for BashTool {
         };
 
         match result {
-            Ok(result) => {
+            Ok((result, persisted_artifact)) => {
                 let backgrounded_foreground =
                     !background && !interactive && result.status == ShellStatus::Running;
                 if (background || backgrounded_foreground)
@@ -7279,8 +7640,6 @@ impl ToolSpec for BashTool {
                     .cancel_token
                     .as_ref()
                     .is_some_and(|token| token.is_cancelled());
-                // Lowercase `bash` joins stdout and stderr on one pipe, so
-                // its preview is combined output, not stdout.
                 let execution_receipt = receipt_identity.as_ref().and_then(|identity| {
                     shell_execution_receipt(
                         identity,
@@ -7311,6 +7670,7 @@ impl ToolSpec for BashTool {
                         readonly_sandbox_hint,
                         background,
                         description.as_deref(),
+                        persisted_artifact,
                     );
                 }
                 let task_id_str = result.task_id.clone().unwrap_or_default();
@@ -7503,6 +7863,11 @@ impl ToolSpec for BashTool {
                 attach_shell_owner_metadata(&mut metadata, context);
                 attach_cargo_failure_summary(&mut metadata, command, &result);
                 attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    output.push_str("\n\n");
+                    output.push_str(&format_persisted_shell_artifact_footer(artifact));
+                    stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
+                }
 
                 Ok(ToolResult {
                     content: output,
@@ -7569,21 +7934,31 @@ impl BashTool {
         };
         let timeout_ms = wait_timeout_ms(input)?;
 
-        let (delta, interruption) = if wait {
+        let ((delta, persisted_artifact), interruption) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
         } else {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            let delta = manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, timeout_ms)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-            (delta, None)
+            let raw = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                manager
+                    .get_raw_output_delta_for_session(
+                        &context.state_namespace,
+                        task_id,
+                        false,
+                        timeout_ms,
+                    )
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
+            };
+            (finalize_raw_shell_delta(raw, context), None)
         };
 
         let status = delta.result.status.clone();
         let mut result = build_shell_delta_tool_result(delta, context);
+        if let Some(artifact) = persisted_artifact.as_ref() {
+            attach_shell_artifact_to_tool_result(&mut result, artifact);
+        }
         if let Some(metadata) = result.metadata.as_mut()
             && let Some(object) = metadata.as_object_mut()
         {
@@ -7856,14 +8231,25 @@ impl BashTool {
                 .as_ref()
                 .is_some_and(|token| token.is_cancelled())
             {
-                let mut manager = context
-                    .shell_manager
-                    .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-                let delta = manager
-                    .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
-                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                let raw = {
+                    let mut manager = context
+                        .shell_manager
+                        .lock()
+                        .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                    manager
+                        .get_raw_output_delta_for_session(
+                            &context.state_namespace,
+                            task_id,
+                            false,
+                            0,
+                        )
+                        .map_err(|err| ToolError::execution_failed(err.to_string()))?
+                };
+                let (delta, persisted_artifact) = finalize_raw_shell_delta(raw, context);
                 let mut result = build_shell_delta_tool_result(delta, context);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    attach_shell_artifact_to_tool_result(&mut result, artifact);
+                }
                 if let Some(metadata) = result.metadata.as_mut()
                     && let Some(object) = metadata.as_object_mut()
                 {
@@ -7872,22 +8258,27 @@ impl BashTool {
                 return Ok(result);
             }
 
-            let delta = {
+            let raw = {
                 let mut manager = context
                     .shell_manager
                     .lock()
                     .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
                 manager
-                    .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                    .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?
             };
 
-            if !delta.result.stdout.is_empty()
-                || !delta.result.stderr.is_empty()
-                || delta.result.status != ShellStatus::Running
+            if !raw.stdout.is_empty()
+                || !raw.stderr.is_empty()
+                || raw.status != ShellStatus::Running
                 || elapsed >= timeout_ms
             {
-                return Ok(build_shell_delta_tool_result(delta, context));
+                let (delta, persisted_artifact) = finalize_raw_shell_delta(raw, context);
+                let mut result = build_shell_delta_tool_result(delta, context);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    attach_shell_artifact_to_tool_result(&mut result, artifact);
+                }
+                return Ok(result);
             }
 
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -8163,7 +8554,13 @@ async fn wait_for_shell_delta_cancellable(
     context: &ToolContext,
     task_id: &str,
     timeout_ms: u64,
-) -> Result<(ShellDeltaResult, Option<ShellWaitInterruption>), ToolError> {
+) -> Result<
+    (
+        (ShellDeltaResult, Option<PersistedShellArtifact>),
+        Option<ShellWaitInterruption>,
+    ),
+    ToolError,
+> {
     let detach = {
         let mut manager = context
             .shell_manager
@@ -8178,31 +8575,41 @@ async fn wait_for_shell_delta_cancellable(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut stdout_accum = String::new();
     let mut stderr_accum = String::new();
+    let mut stdout_delta_total = 0usize;
+    let mut stderr_delta_total = 0usize;
+    let mut persisted_artifact: Option<PersistedShellArtifact> = None;
 
     let mut poll_tick_ms: u64 = FOREGROUND_POLL_INITIAL_MS;
-    let (command, result, stdout_total_len, stderr_total_len) = loop {
+    let mut last_raw = loop {
         let canceled = context
             .cancel_token
             .as_ref()
             .is_some_and(|token| token.is_cancelled());
         if canceled || detach.load(Ordering::Acquire) {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            let delta = manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-            append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
+            let mut raw = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                manager
+                    .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
+            };
+            append_raw_shell_delta(
+                &mut stdout_accum,
+                &mut stderr_accum,
+                &mut stdout_delta_total,
+                &mut stderr_delta_total,
+                &mut persisted_artifact,
+                &mut raw,
+            );
+            raw.stdout = stdout_accum;
+            raw.stderr = stderr_accum;
+            raw.stdout_delta_len = stdout_delta_total;
+            raw.stderr_delta_len = stderr_delta_total;
+            raw.persisted_artifact = persisted_artifact;
             return Ok((
-                shell_delta_with_accumulated_output(
-                    delta.command,
-                    delta.result,
-                    &stdout_accum,
-                    &stderr_accum,
-                    delta.stdout_total_len,
-                    delta.stderr_total_len,
-                ),
+                finalize_raw_shell_delta(raw, context),
                 Some(if canceled {
                     ShellWaitInterruption::Canceled
                 } else {
@@ -8211,81 +8618,126 @@ async fn wait_for_shell_delta_cancellable(
             ));
         }
 
-        let delta = {
+        let mut raw = {
             let mut manager = context
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?
         };
+        append_raw_shell_delta(
+            &mut stdout_accum,
+            &mut stderr_accum,
+            &mut stdout_delta_total,
+            &mut stderr_delta_total,
+            &mut persisted_artifact,
+            &mut raw,
+        );
 
-        let stdout_total_len = delta.stdout_total_len;
-        let stderr_total_len = delta.stderr_total_len;
-        let command = delta.command.clone();
-        append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
-
-        let status = delta.result.status.clone();
-        if status != ShellStatus::Running || Instant::now() >= deadline {
-            break (command, delta.result, stdout_total_len, stderr_total_len);
+        if raw.status != ShellStatus::Running || Instant::now() >= deadline {
+            break raw;
         }
 
         tokio::time::sleep(Duration::from_millis(poll_tick_ms)).await;
         poll_tick_ms = (poll_tick_ms * 2).min(FOREGROUND_POLL_MAX_MS);
     };
 
-    Ok((
-        shell_delta_with_accumulated_output(
-            command,
-            result,
-            &stdout_accum,
-            &stderr_accum,
-            stdout_total_len,
-            stderr_total_len,
-        ),
-        None,
-    ))
+    last_raw.stdout = stdout_accum;
+    last_raw.stderr = stderr_accum;
+    last_raw.stdout_delta_len = stdout_delta_total;
+    last_raw.stderr_delta_len = stderr_delta_total;
+    last_raw.persisted_artifact = persisted_artifact;
+    Ok((finalize_raw_shell_delta(last_raw, context), None))
 }
 
-fn append_shell_delta_output(
+fn append_bounded_accum(accum: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    accum.push_str(chunk);
+    if accum.len() > RAW_STREAM_MAX_BYTES {
+        let mut start = accum.len().saturating_sub(RAW_STREAM_MAX_BYTES);
+        while start < accum.len() && !accum.is_char_boundary(start) {
+            start += 1;
+        }
+        accum.drain(..start);
+    }
+}
+
+fn append_raw_shell_delta(
     stdout_accum: &mut String,
     stderr_accum: &mut String,
-    result: &ShellResult,
+    stdout_delta_total: &mut usize,
+    stderr_delta_total: &mut usize,
+    persisted_artifact: &mut Option<PersistedShellArtifact>,
+    raw: &mut RawShellDelta,
 ) {
-    if !result.stdout.is_empty() {
-        stdout_accum.push_str(&result.stdout);
-    }
-    if !result.stderr.is_empty() {
-        stderr_accum.push_str(&result.stderr);
+    append_bounded_accum(stdout_accum, &raw.stdout);
+    append_bounded_accum(stderr_accum, &raw.stderr);
+    *stdout_delta_total = stdout_delta_total.saturating_add(raw.stdout_delta_len);
+    *stderr_delta_total = stderr_delta_total.saturating_add(raw.stderr_delta_len);
+    if let Some(artifact) = raw.persisted_artifact.take() {
+        *persisted_artifact = Some(artifact);
     }
 }
 
-fn shell_delta_with_accumulated_output(
-    command: String,
-    mut result: ShellResult,
-    stdout_accum: &str,
-    stderr_accum: &str,
-    stdout_total_len: usize,
-    stderr_total_len: usize,
-) -> ShellDeltaResult {
-    let (stdout, stdout_meta) = truncate_with_meta(stdout_accum);
-    let (stderr, stderr_meta) = truncate_with_meta(stderr_accum);
-    result.stdout = stdout;
-    result.stderr = stderr;
-    result.stdout_len = stdout_meta.original_len;
-    result.stderr_len = stderr_meta.original_len;
-    result.stdout_omitted = stdout_meta.omitted;
-    result.stderr_omitted = stderr_meta.omitted;
-    result.stdout_truncated = stdout_meta.truncated;
-    result.stderr_truncated = stderr_meta.truncated;
+fn finalize_raw_shell_delta(
+    raw: RawShellDelta,
+    context: &ToolContext,
+) -> (ShellDeltaResult, Option<PersistedShellArtifact>) {
+    let (stdout, stdout_meta) = truncate_with_meta(&raw.stdout);
+    let (stderr, stderr_meta) = truncate_with_meta(&raw.stderr);
+    let persisted_artifact = raw.persisted_artifact.or_else(|| {
+        if stdout_meta.truncated || stderr_meta.truncated {
+            let full_combined = combine_full_shell_streams(&raw.stdout, &raw.stderr);
+            persist_shell_output_artifact(
+                &context.state_namespace,
+                None,
+                &format!("shell-wait-{}-{}", raw.task_id, Uuid::new_v4().simple()),
+                full_combined.as_bytes(),
+            )
+            .ok()
+            .map(|mut artifact| {
+                artifact.complete = false;
+                artifact
+            })
+        } else {
+            None
+        }
+    });
+    let result = ShellResult {
+        task_id: Some(raw.task_id),
+        status: raw.status,
+        exit_code: raw.exit_code,
+        stdout,
+        stderr,
+        duration_ms: raw.duration_ms,
+        stdout_len: stdout_meta.original_len.max(raw.stdout_delta_len),
+        stderr_len: stderr_meta.original_len.max(raw.stderr_delta_len),
+        stdout_omitted: stdout_meta
+            .omitted
+            .saturating_add(raw.stdout_delta_len.saturating_sub(raw.stdout.len())),
+        stderr_omitted: stderr_meta
+            .omitted
+            .saturating_add(raw.stderr_delta_len.saturating_sub(raw.stderr.len())),
+        stdout_truncated: stdout_meta.truncated || raw.stdout_delta_len > raw.stdout.len(),
+        stderr_truncated: stderr_meta.truncated || raw.stderr_delta_len > raw.stderr.len(),
+        sandboxed: raw.sandboxed,
+        sandbox_type: raw.sandbox_type,
+        sandbox_denied: raw.sandbox_denied,
+    };
 
-    ShellDeltaResult {
-        command,
-        result,
-        stdout_total_len,
-        stderr_total_len,
-    }
+    (
+        ShellDeltaResult {
+            command: raw.command,
+            result,
+            stdout_total_len: raw.stdout_total_len,
+            stderr_total_len: raw.stderr_total_len,
+        },
+        persisted_artifact,
+    )
 }
 
 /// Refuse a notes target this auto-approved tool must not append to.
@@ -8471,4 +8923,31 @@ pub fn foreground_command_requests_detach(command: &str) -> bool {
             )
         })
     })
+}
+
+#[cfg(test)]
+mod working_dir_error_tests {
+    use super::validate_shell_working_dir;
+    use tempfile::tempdir;
+
+    #[test]
+    fn working_dir_errors_name_bash_instead_of_exec_shell() {
+        let tmp = tempdir().expect("tempdir");
+        let missing = tmp.path().join("does-not-exist");
+        let missing_err = validate_shell_working_dir(&missing, true)
+            .expect_err("missing dir must fail")
+            .to_string();
+        assert!(missing_err.contains("`bash`"), "{missing_err}");
+        assert!(missing_err.contains("`cwd`"), "{missing_err}");
+        assert!(!missing_err.contains("exec_shell"), "{missing_err}");
+
+        let file = tmp.path().join("plain.txt");
+        std::fs::write(&file, "x").expect("write");
+        let not_dir_err = validate_shell_working_dir(&file, false)
+            .expect_err("file path must fail")
+            .to_string();
+        assert!(not_dir_err.contains("`bash`"), "{not_dir_err}");
+        assert!(not_dir_err.contains("`cwd`"), "{not_dir_err}");
+        assert!(!not_dir_err.contains("exec_shell"), "{not_dir_err}");
+    }
 }

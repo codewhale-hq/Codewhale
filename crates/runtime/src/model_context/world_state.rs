@@ -141,10 +141,10 @@ impl WorldState {
     }
 
     #[must_use]
-    pub fn with_token_budget(mut self, body: impl Into<String>) -> Self {
+    pub fn with_session_relay(mut self, body: impl Into<String>) -> Self {
         self.upsert(ModelContextFragment::new(
-            FragmentId::TokenBudget,
-            FragmentRole::TokenBudget,
+            FragmentId::SessionRelay,
+            FragmentRole::SessionRelay,
             body,
         ));
         self

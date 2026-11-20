@@ -847,6 +847,9 @@ binary.
 
 ## ACP stdio adapter: `codewhale serve --acp`
 
+For editor setup (including Zed), permissions and limits, see
+[Use Codewhale from your editor](ACP.md).
+
 ACP JSON-RPC over newline-delimited stdio is a transport over the existing
 RuntimeThreadManager and Engine. It has no provider/tool round loop, executable
 registry, prompt composer, or conversation writer of its own. The server loads
@@ -913,6 +916,13 @@ produced.
 
 Tool updates begin `pending`. `in_progress` means Core reached final dispatch;
 `completed`/`failed` and typed image blocks come from the actual Core result.
+A read or edit tool call names its file in `locations` as an absolute path
+(relative paths resolve against the session workspace). A file write or edit
+start carries an ACP `diff` of the requested text: `oldText` is the edit's
+search text and is absent for a write, so it is not a whole-file before image
+and `apply_patch` has none. The same diff leads the content of the call's
+permission request and completion update, so the editor keeps showing it. Shell output arrives as text content; ACP has no
+editor-owned `terminal` content on this transport.
 `session/request_permission` correlates a private JSON-RPC ID to the same
 Runtime-minted pending approval and Core execution ID. When a plugin tool asks
 the core to run a tool that needs approval (`exec.core`), the request is shown
@@ -1431,7 +1441,23 @@ tools remain blocked even if listed in `allowed_tools`, and non-empty rules
 participate in creation idempotency fingerprints. These fields are additive:
 older thread records and clients that omit them retain their previous behavior.
 
+When `GET /v1/runtime/info` advertises
+`capabilities.exact_route_thread_create: true`, clients can send the model
+list's `route.selection` object (`route_id` and `binding_id`) as
+`route_selection` on thread creation. Send the selected `model_provider`,
+exact wire `model` and `model_provider_id` when the list supplies one.
+Missing or malformed required fields return HTTP 400. If the selected route
+has changed or is unavailable,
+the server returns HTTP 409 with `error.code: "route_selection_stale"` before
+creating a thread or emitting `thread.started`. Refresh the model list and
+ask the user to reselect. The selection participates in the creation
+fingerprint when using `operation_key`. A matching committed retry still
+returns the original thread if the route has since changed.
+
 ### Sessions on other agents (external agent threads)
+
+For installation, sign-in and a runnable example, see
+[Run other agents in Codewhale](OTHER_AGENTS.md).
 
 `POST /v1/threads` with `executor` runs the thread's turns on an agent CLI
 already installed and signed in on this computer, over Agent Client Protocol,
@@ -2573,13 +2599,13 @@ conversations that both use `term-1` in one folder get two shells. These
 routes attach to those shells and never create one, because conjuring a shell
 from an HTTP request would give the client a terminal the Engine does not
 know about. Input is attributable by route: `input` is the client's writer,
-`terminal/send` is the agent's.
+`terminal_send` is the agent's.
 
 - `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
   terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
   the thread's live shells, newest activity first. `terminal_id` is issued
   when the shell starts and is never reused; the agent's terminal tool results
-  carry the same value as `terminal_session_id`, and `terminal/reset` also
+  carry the same value as `terminal_session_id`, and `terminal_reset` also
   reports `previous_session_id`. `instance` names this Engine process's
   terminal registry. While a shell lives, `state` is its latest command's
   state (`running`, `idle`, `canceled`, `failed`, `stale_lost` or `reset`);
@@ -2625,7 +2651,7 @@ Reconnect and restart semantics:
   confirm `instance` is the one recorded, and resume each `terminal_id` from
   its stored cursor. Only retained output is replayed; `gap` reports what the
   ring lost.
-- **Reset** (`terminal/reset`): the shell is killed and a new one starts under
+- **Reset** (`terminal_reset`): the shell is killed and a new one starts under
   the same name with a new `terminal_id`. The old identity is `404`; the list
   shows the replacement, and a client switches to it only on the person's
   choice.
@@ -2633,7 +2659,7 @@ Reconnect and restart semantics:
   `exit_code` until the agent resets it or the Engine restarts.
 - **Engine restart**: live shells end with the process. The list reports a
   different `instance` and none of the old identities, which answer `404`. No
-  shell is recreated and no command is rerun; a later `terminal/run` with the
+  shell is recreated and no command is rerun; a later `terminal_run` with the
   same name starts a new identity.
 - **Input across a failure**: input already sent cannot be retracted. A client
   that loses the connection before the response cannot know whether the bytes
@@ -3590,8 +3616,11 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 ```
 
 Reports which external agent CLIs this computer already has, without starting a
-session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary is looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+session. The [agent registry](../crates/engine/src/fleet/agents.rs) lists the
+recognized agents. `state` is `installed` or `not_installed`; a binary is
+looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT
+suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user
+bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
@@ -4418,3 +4447,6 @@ establish complete chat or Codex parity.
 A local whale's `SOUL.md` describes its personality and voice. Read the exact local file with `GET /v1/whale/soul` and save it with `PUT /v1/whale/soul`. Both operations require the host Runtime token. The response carries the path, text, revision and writable state. Send the returned revision quoted in `If-Match` with a JSON object containing `text`. A stale edit returns HTTP 412 so the editor can keep the draft. Files are private to the current OS user (mode 0600 on Unix), UTF-8, regular single-link files with a 16 KiB limit. An existing `SOUL.md` requires a matching `whale.toml` identity (`id = "default"`); an absent local whale is created only by an explicit save. A concurrent edit returns HTTP 409 instead of waiting for the other writer. An explicitly imported account whale has a read-only local copy.
 
 The root Engine captures the local whale's voice at turn admission and charges it to the global instruction budget. The instruction receipt includes `whale_soul_source_path` and `whale_soul_revision`; internal follow-ups reuse the captured voice. Its personality applies within the existing permissions.
+
+
+The additive exact-route inventory and fenced thread-selection fields are documented in [Route inventory](ROUTE_INVENTORY.md).

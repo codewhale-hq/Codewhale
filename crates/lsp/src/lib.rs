@@ -33,7 +33,7 @@
 //! PHP, C#). See [`LspConfig`] for defaults and `config.example.toml` for
 //! documentation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -311,7 +311,10 @@ impl LspManager {
         text: &str,
         transport: Arc<dyn LspTransport>,
     ) -> Option<DiagnosticBlock> {
-        match self.poll_diagnostics_outcome(file, text, transport).await {
+        match self
+            .poll_diagnostics_outcome(file, text, transport, self.config.include_warnings)
+            .await
+        {
             DiagnosticPollOutcome::Success(result) if !result.block.items.is_empty() => {
                 Some(result.block)
             }
@@ -328,6 +331,7 @@ impl LspManager {
         file: &Path,
         text: &str,
         transport: Arc<dyn LspTransport>,
+        include_warnings: bool,
     ) -> DiagnosticPollOutcome {
         let wait = Duration::from_millis(self.config.poll_after_edit_ms);
         // The outer bound owns timeout reporting, including time waiting for
@@ -357,7 +361,6 @@ impl LspManager {
             freshness: Some(raw.freshness()),
         };
         // Filter, sort, and truncate.
-        let include_warnings = self.config.include_warnings;
         let mut items: Vec<Diagnostic> = raw
             .items
             .into_iter()
@@ -552,35 +555,7 @@ impl LspManager {
         }
         let wait = Duration::from_millis(self.config.poll_after_edit_ms);
         match operation {
-            "diagnostics" => {
-                let result = self
-                    .diagnostics_for_paths(&[file.to_path_buf()])
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or("LSP diagnostics returned no outcome")?;
-                match result.status {
-                    LintReadStatus::Error(error) => Err(error),
-                    LintReadStatus::Timeout { wait_ms } => {
-                        Err(format!("LSP diagnostics timed out after {wait_ms} ms"))
-                    }
-                    LintReadStatus::Success => Ok(serde_json::json!({
-                        "file": result.file.display().to_string(),
-                        "position_base": 1,
-                        "items": result.items.iter().map(|d| serde_json::json!({
-                            "line": d.line, "column": d.column,
-                            "severity": format!("{:?}", d.severity).to_ascii_lowercase(),
-                            "message": d.message,
-                        })).collect::<Vec<_>>(),
-                        "source_revision": result.freshness.source_revision,
-                        "document_version": result.freshness.document_version,
-                        "diagnostic_version": result.freshness.diagnostic_version,
-                        "freshness": result.freshness.freshness,
-                        "total_diagnostic_count": result.total_diagnostic_count,
-                        "truncated": result.truncated,
-                    })),
-                }
-            }
+            "diagnostics" => self.diagnostics_payload(file, None).await,
             "symbols" | "definition" | "references" => {
                 let text = self
                     .read_workspace_text(file)
@@ -675,6 +650,166 @@ impl LspManager {
                 "unknown LSP operation '{other}'; use diagnostics, symbols, definition, or references"
             )),
         }
+    }
+
+    pub async fn diagnostics_payload(
+        &self,
+        file: &Path,
+        include_warnings: Option<bool>,
+    ) -> Result<serde_json::Value, String> {
+        let result = self
+            .diagnostics_for_paths_with_warnings(&[file.to_path_buf()], include_warnings)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("LSP diagnostics returned no outcome")?;
+        match result.status {
+            LintReadStatus::Error(error) => Err(error),
+            LintReadStatus::Timeout { wait_ms } => {
+                Err(format!("LSP diagnostics timed out after {wait_ms} ms"))
+            }
+            LintReadStatus::Success => Ok(serde_json::json!({
+                "file": result.file.display().to_string(),
+                "position_base": 1,
+                "items": result.items.iter().map(|d| serde_json::json!({
+                    "line": d.line, "column": d.column,
+                    "severity": format!("{:?}", d.severity).to_ascii_lowercase(),
+                    "message": d.message,
+                })).collect::<Vec<_>>(),
+                "source_revision": result.freshness.source_revision,
+                "document_version": result.freshness.document_version,
+                "diagnostic_version": result.freshness.diagnostic_version,
+                "freshness": result.freshness.freshness,
+                "total_diagnostic_count": result.total_diagnostic_count,
+                "truncated": result.truncated,
+            })),
+        }
+    }
+
+    pub async fn workspace_symbols(&self, query: &str) -> Result<serde_json::Value, String> {
+        const MAX_SERVERS: usize = 16;
+        if !self.config.enabled {
+            return Err("LSP is disabled ([lsp] enabled = false)".to_string());
+        }
+        let query = query.trim();
+        if query.is_empty() || query.len() > 1024 {
+            return Err("symbol query must be 1-1024 bytes".into());
+        }
+        let mut slots: BTreeMap<String, TransportSlot> = self
+            .transports
+            .lock()
+            .await
+            .iter()
+            .map(|(lang, slot)| (lang.as_key().to_owned(), slot.clone()))
+            .collect();
+        slots.extend(
+            self.custom_transports
+                .lock()
+                .await
+                .iter()
+                .map(|(ext, slot)| (format!("extension:{ext}"), slot.clone())),
+        );
+        slots.extend(
+            self.test_transports
+                .lock()
+                .await
+                .iter()
+                .map(|(lang, transport)| {
+                    (
+                        lang.as_key().to_owned(),
+                        Arc::new(AsyncMutex::new(Some(transport.clone()))),
+                    )
+                }),
+        );
+
+        slots.retain(|_, slot| {
+            slot.try_lock().map_or(true, |transport| {
+                transport
+                    .as_ref()
+                    .is_some_and(|transport| transport.is_alive())
+            })
+        });
+        let skipped_server_slots = slots.len().saturating_sub(MAX_SERVERS);
+        let wait = Duration::from_millis(self.config.poll_after_edit_ms);
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut requests = tokio::task::JoinSet::new();
+        for (server, slot) in slots.into_iter().take(MAX_SERVERS) {
+            let params = serde_json::json!({"query": query});
+            requests.spawn(async move {
+                let response = async {
+                    let transport = tokio::time::timeout_at(deadline, slot.lock())
+                        .await
+                        .map_err(|_| {
+                            "workspace symbol request timed out waiting for startup".to_owned()
+                        })?
+                        .clone();
+                    let Some(transport) = transport.filter(|transport| transport.is_alive()) else {
+                        return Ok(None);
+                    };
+                    transport
+                        .request(
+                            "workspace/symbol",
+                            params,
+                            deadline.saturating_duration_since(tokio::time::Instant::now()),
+                        )
+                        .await
+                        .map(Some)
+                        .map_err(|err| err.to_string())
+                }
+                .await;
+                (server, response)
+            });
+        }
+        let mut results = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+        while let Some(completed) = requests.join_next().await {
+            let (server, result) = completed.map_err(|err| err.to_string())?;
+            match result {
+                Ok(Some(value)) => {
+                    results.insert(server, value);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let reason: String = error
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(256)
+                        .collect();
+                    errors.insert(server, reason);
+                }
+            }
+        }
+        if results.is_empty() {
+            return Err(if errors.is_empty() && skipped_server_slots != 0 {
+                format!(
+                    "no available server among the first {MAX_SERVERS} slots; use a source path to select a language server"
+                )
+            } else if errors.is_empty() {
+                "no LSP server is running yet; pass `path` to a source file so its language server starts".into()
+            } else {
+                errors
+                    .iter()
+                    .map(|(server, reason)| format!("{server}: {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            });
+        }
+        let server_count = results.len() + errors.len();
+        let raw = serde_json::Value::Array(results.into_values().collect());
+        let (locations, truncated, omitted) =
+            self.semantic_locations(&raw, &self.workspace, "").await;
+        Ok(serde_json::json!({
+            "operation": "symbols",
+            "query": query,
+            "semantic_contract_version": 1,
+            "position_encoding": "utf-16",
+            "position_base": 0,
+            "servers": server_count,
+            "failed_servers": errors.len(),
+            "server_errors": errors,
+            "skipped_server_slots": skipped_server_slots,
+            "locations": locations, "truncated": truncated || skipped_server_slots != 0, "omitted": omitted,
+        }))
     }
 
     async fn semantic_locations(
@@ -801,14 +936,24 @@ impl LspManager {
     /// Read diagnostics for several existing files through the shared LSP
     /// transport pool. Every attempted file gets an explicit outcome, and the
     /// same configured severity policy as post-edit diagnostics is applied:
-    /// errors are always retained and warnings depend on `include_warnings`.
+    /// errors are always retained and warnings follow the caller's override,
+    /// else `include_warnings`.
     pub async fn diagnostics_for_paths(
         &self,
         files: &[PathBuf],
     ) -> Result<Vec<LintReadResult>, String> {
+        self.diagnostics_for_paths_with_warnings(files, None).await
+    }
+
+    pub async fn diagnostics_for_paths_with_warnings(
+        &self,
+        files: &[PathBuf],
+        include_warnings: Option<bool>,
+    ) -> Result<Vec<LintReadResult>, String> {
         if !self.config.enabled {
             return Err("LSP is disabled ([lsp] enabled = false)".to_string());
         }
+        let include_warnings = include_warnings.unwrap_or(self.config.include_warnings);
 
         let mut results = Vec::with_capacity(files.len());
         for file in files {
@@ -840,7 +985,9 @@ impl LspManager {
                 });
                 continue;
             };
-            let outcome = self.poll_diagnostics_outcome(file, &text, transport).await;
+            let outcome = self
+                .poll_diagnostics_outcome(file, &text, transport, include_warnings)
+                .await;
             results.push(match outcome {
                 DiagnosticPollOutcome::Success(outcome) => LintReadResult {
                     file: outcome.block.file,
@@ -1205,6 +1352,57 @@ pub mod tests {
             Ok(self.result.clone())
         }
         async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn workspace_symbols_waits_for_startup_and_orders_and_bounds_all_servers() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("lib.rs");
+        tokio::fs::write(&file, "fn f() {}").await.unwrap();
+        let manager = LspManager::new(LspConfig::default(), root.path().to_owned());
+        let symbols = |name: &str| {
+            let symbol = serde_json::json!({
+                "name": name, "kind": 12,
+                "location": {"uri":client::uri_from_path(&file),"range":{
+                    "start":{"line":0,"character":3},"end":{"line":0,"character":4}
+                }}
+            });
+            Arc::new(SemanticFixture {
+                result: serde_json::json!(vec![symbol; 25]),
+                mutate: None,
+            })
+        };
+        let slot = TransportSlot::default();
+        let mut starting = slot.lock().await;
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(Language::Python, slot.clone());
+        manager
+            .install_test_transport(Language::Rust, symbols("rust"))
+            .await;
+        manager
+            .install_test_transport(Language::Go, Arc::new(FakeTransport::new(vec![])))
+            .await;
+        let search = manager.workspace_symbols("f");
+        tokio::pin!(search);
+        tokio::select! {
+            biased;
+            result = &mut search => panic!("search skipped a starting server: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        *starting = Some(symbols("python"));
+        drop(starting);
+        let payload = search.await.unwrap();
+        assert_eq!(payload["servers"], 3);
+        assert_eq!(payload["failed_servers"], 1);
+        assert!(payload["server_errors"]["go"].is_string());
+        assert_eq!(payload["truncated"], true);
+        let locations = payload["locations"].as_array().unwrap();
+        assert_eq!(locations.len(), 40);
+        assert!(locations[..25].iter().all(|item| item["name"] == "python"));
+        assert!(locations[25..].iter().all(|item| item["name"] == "rust"));
     }
 
     #[tokio::test]

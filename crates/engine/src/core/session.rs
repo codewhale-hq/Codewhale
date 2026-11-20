@@ -263,14 +263,12 @@ impl ToolActivationCache {
                 delta.rejected.push(name.clone());
                 continue;
             }
-            if self.names.contains(name) {
-                batch.push(name.clone());
-                continue;
-            }
             let protected = self
                 .names
                 .iter()
-                .filter(|cached| batch.contains(*cached) || self.pinned(cached))
+                .filter(|cached| {
+                    *cached != name && (batch.contains(*cached) || self.pinned(cached))
+                })
                 .chain(std::iter::once(name))
                 .cloned()
                 .collect::<Vec<_>>();
@@ -279,14 +277,12 @@ impl ToolActivationCache {
                 continue;
             }
             batch.push(name.clone());
+            if self.names.contains(name) {
+                continue;
+            }
             self.names.push_back(name.clone());
             while Self::exceeds_budget(&self.names.iter().cloned().collect::<Vec<_>>(), measure)? {
-                let keep = batch
-                    .iter()
-                    .chain(requested.iter())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let Some(index) = self.eviction_candidate(&keep) else {
+                let Some(index) = self.eviction_candidate(&batch) else {
                     break;
                 };
                 if let Some(evicted) = self.names.remove(index) {
@@ -310,6 +306,7 @@ impl ToolActivationCache {
             .cloned()
             .collect();
         delta.evicted.retain(|name| !retained.contains(name));
+        delta.held.retain(|name| !retained.contains(name));
         delta.evicted.sort();
         delta.evicted.dedup();
         delta.rejected.sort();
@@ -917,5 +914,52 @@ mod tests {
         cache.clear();
 
         assert_eq!(cache.names().count(), 0);
+    }
+
+    #[test]
+    fn cached_tools_obey_budget_and_pinned_cached_tools_are_not_double_counted() {
+        let big = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES * 5 / 8;
+        let catalog = vec![
+            deferred_tool("cached_big", big),
+            deferred_tool("new_big", big),
+        ];
+        let mut cache = ToolActivationCache::default();
+        cache.activate(&catalog, &["cached_big".to_string()]);
+        cache.begin_turn();
+        cache.begin_turn();
+
+        let delta = cache.activate(&catalog, &["new_big".to_string(), "cached_big".to_string()]);
+
+        assert_eq!(delta.admitted, vec!["new_big"]);
+        assert_eq!(delta.evicted, vec!["cached_big"]);
+        assert_eq!(delta.held, vec!["cached_big"]);
+        assert!(cache.total_serialized_bytes(&catalog) <= TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES);
+
+        let med = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES * 5 / 16;
+        let small = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 4;
+        let pinned_catalog = vec![
+            deferred_tool("pinned_a", med),
+            deferred_tool("pinned_b", med),
+            deferred_tool("new_small", small),
+        ];
+        let mut pinned_cache = ToolActivationCache::default();
+        pinned_cache.activate(
+            &pinned_catalog,
+            &["pinned_a".to_string(), "pinned_b".to_string()],
+        );
+        assert!(pinned_cache.record_use("pinned_a"));
+        assert!(pinned_cache.record_use("pinned_b"));
+
+        let pinned_delta = pinned_cache.activate(
+            &pinned_catalog,
+            &["new_small".to_string(), "pinned_b".to_string()],
+        );
+
+        assert_eq!(pinned_delta.admitted, vec!["new_small", "pinned_b"]);
+        assert!(pinned_delta.held.is_empty());
+        assert_eq!(
+            pinned_cache.names().collect::<Vec<_>>(),
+            vec!["pinned_a", "pinned_b", "new_small"]
+        );
     }
 }

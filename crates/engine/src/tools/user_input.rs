@@ -175,36 +175,43 @@ impl UserInputRequest {
     }
 
     pub fn validate_with_limits(&self, limits: UserInputLimits) -> Result<(), ToolError> {
-        self.validate_transport()?;
         if self.questions.is_empty() {
             return Err(ToolError::invalid_input(
                 "request_user_input.questions must be non-empty",
             ));
         }
         if self.questions.len() > limits.max_questions {
-            // Name the ceiling *and* where to raise it: a rejection the model
-            // cannot act on just burns another turn (#5949).
             return Err(ToolError::invalid_input(format!(
                 "request_user_input.questions must contain 1 to {max} items (got {got}); \
-                 raise the ceiling with `{MAX_QUESTIONS_KEY}` in config.toml \
+                 ask the most important {max} now and the rest after the answers. \
+                 The user can raise the ceiling with `{MAX_QUESTIONS_KEY}` in config.toml \
                  (supported range {MIN_CONFIGURABLE_QUESTIONS}..={MAX_CONFIGURABLE_QUESTIONS})",
                 max = limits.max_questions,
                 got = self.questions.len(),
             )));
         }
         for q in &self.questions {
-            if q.options.len() < MIN_CONFIGURABLE_OPTIONS || q.options.len() > limits.max_options {
+            let got = q.options.len();
+            if got < MIN_CONFIGURABLE_OPTIONS {
                 return Err(ToolError::invalid_input(format!(
-                    "request_user_input.questions.options must contain \
-                     {MIN_CONFIGURABLE_OPTIONS} to {max} items (got {got}); \
-                     raise the ceiling with `{MAX_OPTIONS_KEY}` in config.toml \
-                     (supported range {MIN_CONFIGURABLE_OPTIONS}..={MAX_CONFIGURABLE_OPTIONS})",
+                    "request_user_input question `{id}` needs {MIN_CONFIGURABLE_OPTIONS} to {max} options (got {got}); \
+                     offer at least two concrete choices, recommended first. The user can always type another answer.",
+                    id = q.id,
                     max = limits.max_options,
-                    got = q.options.len(),
+                )));
+            }
+            if got > limits.max_options {
+                return Err(ToolError::invalid_input(format!(
+                    "request_user_input question `{id}` allows at most {max} options (got {got}); \
+                     keep the strongest {max} or split it into two questions. \
+                     The user can raise the ceiling with `{MAX_OPTIONS_KEY}` in config.toml \
+                     (supported range {MIN_CONFIGURABLE_OPTIONS}..={MAX_CONFIGURABLE_OPTIONS})",
+                    id = q.id,
+                    max = limits.max_options,
                 )));
             }
         }
-        Ok(())
+        self.validate_transport()
     }
 
     pub fn validate_transport(&self) -> Result<(), ToolError> {
@@ -437,11 +444,6 @@ impl ToolSpec for RequestUserInputTool {
                                 },
                                 "minItems": MIN_CONFIGURABLE_OPTIONS,
                                 "maxItems": self.limits.max_options
-                            },
-                            "allow_free_text": {
-                                "type": "boolean",
-                                "description": "When true, also offer a free-text 'Other' response. Defaults to false.",
-                                "default": false
                             },
                             "multi_select": {
                                 "type": "boolean",
@@ -676,7 +678,7 @@ mod tests {
             }]
         });
         let err = UserInputRequest::from_value(&input).expect_err("5 options must fail");
-        assert!(err.to_string().contains("2 to 4 items"));
+        assert!(err.to_string().contains("at most 4 options (got 5)"));
     }
 
     fn yes_no_question(header: &str, id: &str) -> UserInputQuestion {

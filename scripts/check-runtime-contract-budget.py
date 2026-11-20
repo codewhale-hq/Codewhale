@@ -548,7 +548,7 @@ def check_fragment_caps() -> None:
         "Route",
         "AgentTopology",
         "SkillsTools",
-        "TokenBudget",
+        "SessionRelay",
         "ProjectInstructions",
         "Constitution",
     ]

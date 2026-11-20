@@ -49,6 +49,10 @@ impl ToolSpec for ProjectMapTool {
         ApprovalRequirement::Auto
     }
 
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let max_depth = optional_u64(&input, "max_depth", 3)? as usize;
         let map = generate_project_map(&context.workspace, max_depth, context.follow_symlinks)?;

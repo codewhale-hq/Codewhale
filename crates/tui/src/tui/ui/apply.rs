@@ -1796,6 +1796,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 // Restore may have queued a legacy configuration notice.
                 // Admit it first so the confirmed resume remains the latest
                 // toast instead of being immediately covered on the next draw.
@@ -1917,6 +1918,7 @@ async fn apply_command_result_inner(
                         config: app.compaction_config(),
                     })
                     .await;
+                let _ = engine_handle.try_send(Op::ListSubAgents);
                 if is_full_reset {
                     persist_full_reset_snapshot(app);
                 }
@@ -3699,14 +3701,12 @@ pub(crate) async fn apply_approval_decision(
             .insert(event.approval_grouping_key.clone());
     }
 
-    if matches!(
+    let rules_persisted = matches!(
         event.decision,
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession
     ) && !event.persistent_rules.is_empty()
         && !event.timed_out
-    {
-        persist_rules_from_approval(app, config, &event.persistent_rules);
-    }
+        && persist_rules_from_approval(app, config, &event.persistent_rules);
 
     if event.decision == ReviewDecision::Denied && !event.timed_out {
         app.approval_session_denied.insert(event.approval_key);
@@ -3720,6 +3720,7 @@ pub(crate) async fn apply_approval_decision(
         && let Some(subject) = event.subject
     {
         let (outcome, receipt_subject) = if event.decision == ReviewDecision::Approved
+            && rules_persisted
             && event
                 .persistent_rules
                 .iter()
@@ -4146,7 +4147,12 @@ pub(crate) async fn apply_provider_picker_test_connection_with_verifier(
     }
     match outcome {
         Ok(roster) => {
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .active_route_api_key_read_only()
+                .is_ok_and(|current| current == api_key)
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             app.provider_health.record_models_probe_success(
                 &scoped_config,
                 &identity,
@@ -4251,7 +4257,15 @@ pub(crate) async fn apply_provider_picker_api_key_with_verifier(
         Ok(roster) => {
             // Before the model pick reads the route roster: list what this
             // key can call today, not catalog rows the provider has retired.
-            publish_verified_roster(&identity, &base_url, roster);
+            if scoped_config
+                .set_provider_api_key_override(&identity, Some(api_key.clone()))
+                .is_ok()
+                && scoped_config
+                    .active_route_api_key_read_only()
+                    .is_ok_and(|current| current == codewhale_secrets::normalize_api_key(&api_key))
+            {
+                publish_verified_roster(&scoped_config, &identity, &base_url, roster);
+            }
             // Keep the readiness row aligned with the live check the wizard
             // just completed. This probe only proves the endpoint and
             // credentials are reachable: the model is chosen after the probe,

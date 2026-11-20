@@ -6,7 +6,7 @@
 本页是**手动、可选、绝不自动化**的。CI 里没有任何东西、没有测试、没有构建脚本、
 也没有技能（skill）会运行这些命令。仓库的自动化测试套件在设计上就不含提供商（provider）；
 至于在没有提供商时究竟断言了什么，见
-[`crates/tui/assets/skills-catalog-matrix.json`](../../crates/tui/assets/skills-catalog-matrix.json)
+[`crates/skills/assets/skills-catalog-matrix.json`](../../crates/skills/assets/skills-catalog-matrix.json)
 以及目录矩阵（catalog-matrix）测试。
 
 只有当你想要回答一个很窄的问题时才运行它：*在这台机器上，一条通往真实模型的真实路由

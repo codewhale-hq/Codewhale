@@ -135,8 +135,7 @@ pub const MATRIX_BORDER_RGB: (u8, u8, u8) = (0, 204, 0); // #00CC00
 // whale's ivory ink on both sides. This is the charcoal alternative to the
 // terminal's navy "Underwater" default in 0.10.0. The
 // 0.10.0 action pair uses glacial blue on charcoal and deep ocean blue on
-// paper. The GPUI desktop does not paint these values: its theme is the
-// separate `GPUI_*` / `GPUI_LIGHT_*` set below.
+// paper.
 //
 // Every pair audited by `contrast::theme_contrast_violations` clears its
 // floor: body roles clear 4.5:1 on all four surfaces, hint/dim and the

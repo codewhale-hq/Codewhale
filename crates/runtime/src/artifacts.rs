@@ -232,6 +232,79 @@ pub fn write_session_artifact_immutable(
     Ok((absolute_path, relative_path))
 }
 
+pub fn write_session_artifact_immutable_from_reader(
+    session_id: &str,
+    artifact_id: &str,
+    reader: &mut (impl io::Read + io::Seek),
+) -> io::Result<(PathBuf, PathBuf, u64, String)> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, SeekFrom};
+
+    struct HashingReader<'a, R> {
+        reader: &'a mut R,
+        hash: Sha256,
+        byte_size: u64,
+    }
+    impl<R: Read> Read for HashingReader<'_, R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.reader.read(buffer)?;
+            self.hash.update(&buffer[..count]);
+            self.byte_size += count as u64;
+            Ok(count)
+        }
+    }
+
+    let relative_path = session_artifact_relative_path(artifact_id);
+    let absolute_path =
+        session_artifact_absolute_path(session_id, &relative_path).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid session artifact path")
+        })?;
+    let destination = open_session_relative(session_id, &relative_path, true)?;
+    let start = reader.stream_position()?;
+    let mut hashing = HashingReader {
+        reader,
+        hash: Sha256::new(),
+        byte_size: 0,
+    };
+    let result = destination.publish_from_reader(&mut hashing);
+    let byte_size = hashing.byte_size;
+    let digest = crate::hashing::hex_bytes(hashing.hash.finalize());
+    match result {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            reader.seek(SeekFrom::Start(start))?;
+            let mut existing = destination.open_file()?;
+            let mut source_bytes = [0; 8192];
+            let mut existing_bytes = [0; 8192];
+            loop {
+                let count = match reader.read(&mut source_bytes) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => result?,
+                };
+                let same_length = match existing.read_exact(&mut existing_bytes[..count]) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
+                    Err(error) => return Err(error),
+                };
+                if !same_length
+                    || existing_bytes[..count] != source_bytes[..count]
+                    || (count == 0 && existing.read(&mut existing_bytes[..1])? != 0)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "immutable artifact handle already contains different bytes",
+                    ));
+                }
+                if count == 0 {
+                    break;
+                }
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok((absolute_path, relative_path, byte_size, digest))
+}
+
 /// Write arbitrary fetched bytes into a session artifact with a validated
 /// extension. Media fetches use this after magic-byte validation.
 pub fn write_session_artifact_bytes(
@@ -390,6 +463,79 @@ mod tests {
         assert_eq!(std::fs::read(first).unwrap(), bytes);
     }
 
+    #[test]
+    fn streamed_artifact_is_bounded_exact_and_replay_safe() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        struct ChunkedFile(std::fs::File);
+        impl Read for ChunkedFile {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                assert!(buffer.len() <= 64 * 1024);
+                let limit = buffer.len().min(997);
+                self.0.read(&mut buffer[..limit])
+            }
+        }
+        impl Seek for ChunkedFile {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.0.seek(position)
+            }
+        }
+
+        let _guard = TEST_ARTIFACT_SESSIONS_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let _root = set_test_sessions_root(tmp.path().join("sessions"));
+        let mut fixture = tempfile::tempfile().unwrap();
+        let chunk = [0xab; 8192];
+        for _ in 0..1024 {
+            fixture.write_all(&chunk).unwrap();
+        }
+        fixture.rewind().unwrap();
+        let mut source = ChunkedFile(fixture);
+        let first = write_session_artifact_immutable_from_reader(
+            "session-stream",
+            "art_large",
+            &mut source,
+        )
+        .unwrap();
+        assert_eq!(first.2, 8 * 1024 * 1024);
+        let mut expected = sha2::Sha256::default();
+        use sha2::Digest;
+        for _ in 0..1024 {
+            expected.update(chunk);
+        }
+        assert_eq!(first.3, crate::hashing::hex_bytes(expected.finalize()));
+        source.rewind().unwrap();
+        let replay = write_session_artifact_immutable_from_reader(
+            "session-stream",
+            "art_large",
+            &mut source,
+        )
+        .unwrap();
+        assert_eq!(first, replay);
+        source.0.rewind().unwrap();
+        source.0.write_all(b"changed").unwrap();
+        source.rewind().unwrap();
+        assert_eq!(
+            write_session_artifact_immutable_from_reader(
+                "session-stream",
+                "art_large",
+                &mut source
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let mut stored = std::fs::File::open(first.0).unwrap();
+        let mut actual = [0; 8192];
+        for _ in 0..1024 {
+            stored.read_exact(&mut actual).unwrap();
+            assert_eq!(actual, chunk);
+        }
+        assert_eq!(stored.read(&mut actual).unwrap(), 0);
+    }
+
     #[cfg(unix)]
     #[test]
     fn immutable_session_artifact_rejects_symlinked_parent() {
@@ -407,6 +553,14 @@ mod tests {
                 "session-a",
                 Path::new("artifacts/handoff.json"),
                 b"private"
+            )
+            .is_err()
+        );
+        assert!(
+            write_session_artifact_immutable_from_reader(
+                "session-a",
+                "art_stream",
+                &mut io::Cursor::new(b"private")
             )
             .is_err()
         );
@@ -428,6 +582,45 @@ mod tests {
         assert!(write_session_relative_immutable("session-a", &relative, b"payload").is_err());
         assert!(!sessions.join("session-a/artifacts/art_failed.txt").exists());
     }
+    #[test]
+    fn streamed_artifact_read_failure_publishes_nothing() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        struct FailingReader(io::Cursor<Vec<u8>>);
+        impl Read for FailingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.0.position() >= 4096 {
+                    return Err(io::Error::other("fixture read failure"));
+                }
+                let limit = buffer.len().min(4096);
+                self.0.read(&mut buffer[..limit])
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.0.seek(position)
+            }
+        }
+
+        let _guard = TEST_ARTIFACT_SESSIONS_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        let _root = set_test_sessions_root(sessions.clone());
+        let mut source = FailingReader(io::Cursor::new(vec![0xcd; 8192]));
+        let error =
+            write_session_artifact_immutable_from_reader("session-a", "art_failed", &mut source)
+                .unwrap_err();
+        assert_eq!(error.to_string(), "fixture read failure");
+        assert_eq!(
+            std::fs::read_dir(sessions.join("session-a/artifacts"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
     #[cfg(unix)]
     fn check_mutable_parent_links(binary: bool) {
         let _guard = TEST_ARTIFACT_SESSIONS_GUARD

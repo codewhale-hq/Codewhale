@@ -1040,6 +1040,7 @@ pub async fn run_tui(
     // can undo it. Not in `lib.rs`: this must not run for the non-TUI
     // subcommands.
     job_control_guard::install_job_control_guard();
+    let _ = take_terminal_restored_by_panic();
 
     // This sets local terminal attributes; it is not a terminal-response probe.
     // Do it on the owning thread, as on resume, so blocking-pool scheduling
@@ -1387,6 +1388,7 @@ pub async fn run_tui(
 
     // Restore before admitting initial input, including resumed conversations.
     let engine_handle = spawn_tui_engine_with_session(&mut app, config, None).await?;
+    let _ = engine_handle.try_send(Op::ListSubAgents);
     codewhale_runtime::startup_trace::mark("engine_spawned");
     // The translation client is optional: it never crashes the TUI on
     // startup, even when the API key is missing, the base URL is malformed,
@@ -2265,6 +2267,23 @@ pub(crate) async fn run_event_loop(
             // `resume_after_child_terminal`, and calling the latter here would
             // falsely clear a child's gate.
             app.status_message = Some("Resumed after suspend".to_string());
+            app.needs_redraw = true;
+            terminal_repaint = FrameRepaint::Clear;
+        }
+
+        if rearm_terminal_if_restored_by_panic(
+            event_broker.is_paused(),
+            || require_foreground_terminal_owner().is_ok(),
+            || {
+                resume_terminal(
+                    terminal,
+                    app.use_alt_screen(),
+                    app.use_mouse_capture,
+                    app.use_bracketed_paste,
+                    app.synchronized_output_enabled,
+                )
+            },
+        )? {
             app.needs_redraw = true;
             terminal_repaint = FrameRepaint::Clear;
         }
@@ -4510,12 +4529,14 @@ pub(crate) async fn run_event_loop(
                         let prompt_summary = bound_agent_activity_text(&prompt);
                         app.agent_progress
                             .insert(id.clone(), format!("starting: {prompt_summary}"));
+                        let now = Instant::now();
                         let meta = app.agent_progress_meta.entry(id.clone()).or_default();
-                        meta.parent_run_id = parent_run_id;
+                        meta.started_at.get_or_insert(now);
+                        meta.parent_run_id = parent_run_id.clone();
                         meta.spawn_depth = spawn_depth;
                         // The engine's name for the child, before any snapshot
                         // arrives, so the first label is already the right one.
-                        meta.display_name = display_name;
+                        meta.display_name = display_name.clone();
                         meta.current_activity = worker_status.map(|status| {
                             AgentCurrentActivity::bounded(
                                 status.into(),
@@ -4527,11 +4548,21 @@ pub(crate) async fn run_event_loop(
                         meta.current_tool = None;
                         record_agent_spawned_route(app, &id, &model);
                         if app.agent_activity_started_at.is_none() {
-                            app.agent_activity_started_at = Some(Instant::now());
+                            app.agent_activity_started_at = Some(now);
                         }
                         // #3030: Assign a stable user-facing label for this
                         // agent and keep the raw id out of the status bar.
                         apply_agent_spawned_status_and_observer(app, &id, &prompt, &prompt_summary);
+                        crate::tui::subagent_routing::upsert_roster_spawn(
+                            app,
+                            &owner_session_id,
+                            &id,
+                            &prompt_summary,
+                            worker_status,
+                            parent_run_id.as_deref(),
+                            &model,
+                            display_name.as_deref(),
+                        );
                         subagent_list_refresh_requested = true;
                     }
                     EngineEvent::AgentProgress {
@@ -4559,9 +4590,11 @@ pub(crate) async fn run_event_loop(
                         } else {
                             app.agent_progress.insert(id.clone(), display.clone());
                         }
+                        let now = Instant::now();
                         let meta = app.agent_progress_meta.entry(id.clone()).or_default();
-                        meta.last_progress_at = Some(Instant::now());
-                        meta.parent_run_id = parent_run_id;
+                        meta.started_at.get_or_insert(now);
+                        meta.last_progress_at = Some(now);
+                        meta.parent_run_id = parent_run_id.clone();
                         meta.spawn_depth = spawn_depth;
                         let current_tool = activity
                             .tool_name
@@ -4576,7 +4609,7 @@ pub(crate) async fn run_event_loop(
                         ));
                         meta.current_tool = current_tool;
                         if app.agent_activity_started_at.is_none() {
-                            app.agent_activity_started_at = Some(Instant::now());
+                            app.agent_activity_started_at = Some(now);
                         }
                         // #3030: progress can arrive before AgentSpawned is
                         // observed — assign the stable label on first sight.
@@ -4585,6 +4618,14 @@ pub(crate) async fn run_event_loop(
                         // child tool call looked like the turn being watched
                         // (#6565).
                         let _ = app.ensure_agent_label(&id);
+                        crate::tui::subagent_routing::upsert_roster_progress(
+                            app,
+                            &owner_session_id,
+                            &id,
+                            &display,
+                            &activity,
+                            parent_run_id.as_deref(),
+                        );
                         // A progress-first agent (its AgentSpawned was dropped
                         // under channel pressure) exists only in agent_progress
                         // until a ListSubAgents refresh promotes it into
@@ -4619,6 +4660,8 @@ pub(crate) async fn run_event_loop(
                         id,
                         result,
                         outcome,
+                        parent_run_id,
+                        usage,
                         display_name,
                         ..
                     } if event_owner_is_active(
@@ -4630,8 +4673,26 @@ pub(crate) async fn run_event_loop(
                             app.agent_progress_meta
                                 .entry(id.clone())
                                 .or_default()
-                                .display_name = display_name;
+                                .display_name = display_name.clone();
                         }
+                        let agent_elapsed_ms = app
+                            .work_surface
+                            .frozen_agent_elapsed_ms(&id)
+                            .or_else(|| {
+                                app.subagent_cache
+                                    .iter()
+                                    .find(|agent| agent.agent_id == id)
+                                    .map(|agent| agent.duration_ms)
+                            })
+                            .or_else(|| {
+                                app.agent_progress_meta
+                                    .get(&id)
+                                    .and_then(|meta| meta.started_at)
+                                    .map(|started| {
+                                        u64::try_from(started.elapsed().as_millis())
+                                            .unwrap_or(u64::MAX)
+                                    })
+                            });
                         let subagent_elapsed = app
                             .agent_activity_started_at
                             .or(app.turn_started_at)
@@ -4646,6 +4707,17 @@ pub(crate) async fn run_event_loop(
                         app.agent_progress.remove(&id);
                         crate::tui::pending_requests::clear_for_agent(app, &id);
                         let terminal_status = outcome;
+                        crate::tui::subagent_routing::upsert_roster_terminal(
+                            app,
+                            &owner_session_id,
+                            &id,
+                            terminal_status.as_ref(),
+                            &result,
+                            parent_run_id.as_deref(),
+                            usage.as_ref(),
+                            display_name.as_deref(),
+                            agent_elapsed_ms,
+                        );
                         if let Some(terminal_status) = terminal_status.as_ref() {
                             apply_subagent_terminal_projection(
                                 app,
@@ -4770,6 +4842,11 @@ pub(crate) async fn run_event_loop(
                             subagent_message_refreshes_workspace_context(&message);
                         let updated_transcript =
                             handle_subagent_mailbox_for_turn(app, &turn_id, seq, &message);
+                        crate::tui::subagent_routing::upsert_roster_from_mailbox(
+                            app,
+                            &owner_session_id,
+                            &message,
+                        );
                         if let Some((agent_id, status, result)) =
                             subagent_terminal_projection_from_mailbox(&message)
                         {
@@ -5527,6 +5604,7 @@ pub(crate) async fn run_event_loop(
             && underwater_motion_visible
             && !ambient_settled
             && !browsing_history
+            && crate::tui::underwater::ambient_motion_terminal_supported(app)
             && (shell_phase_working || empty_water_visible);
         let underwater_completion_motion = shell_motion_enabled
             && underwater_atmosphere_enabled
@@ -5558,15 +5636,27 @@ pub(crate) async fn run_event_loop(
         // Read once here so the animation tick and the frame limiter below
         // agree on the same tier for this frame.
         let cadence_tier = transcript_cadence_tier(app, has_running_agents);
-        let underwater_motion =
-            underwater_ambient_motion || underwater_completion_motion || launch_motion;
+        let underwater_life_motion = !underwater_surface_obscured
+            && crate::tui::underwater::ambient_life_motion_enabled(app)
+            && app.viewport.last_transcript_area.is_some_and(|area| {
+                area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
+                    && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
+            });
+        let underwater_life_only = underwater_life_motion
+            && !(status_motion
+                || underwater_ambient_motion
+                || underwater_completion_motion
+                || launch_motion);
+        let underwater_motion = underwater_ambient_motion
+            || underwater_completion_motion
+            || launch_motion
+            || underwater_life_motion;
         let animation_active = status_motion || underwater_motion;
-        let animation_interval = Duration::from_millis(animation_interval_ms(
-            app,
-            status_motion,
-            underwater_motion,
-            cadence_tier,
-        ));
+        let animation_interval = Duration::from_millis(if underwater_life_only {
+            crate::tui::ocean::AMBIENT_LIFE_INTERVAL_MS
+        } else {
+            animation_interval_ms(app, status_motion, underwater_motion, cadence_tier)
+        });
         let idle_facts = IdleFacts {
             has_running_agents,
             animation_active: animation_active
@@ -8432,16 +8522,21 @@ pub(crate) async fn run_plugin_oauth_from_tui(
             )
             .await?;
         }
-        let ticket = codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
+        let base_url = config.base_url_for_route(&identity);
+        codewhale_engine::provider_catalog_live::begin_refresh_for_identity(
             identity.provider,
             &provider,
-            &config.base_url_for_route(&identity),
+            &base_url,
         );
         if !logout {
             let mut scoped = config.clone();
             scoped
                 .scope_to_provider_identity(&identity)
                 .map_err(anyhow::Error::msg)?;
+            let ticket = codewhale_engine::provider_catalog_live::begin_scoped_refresh(
+                &scoped, &identity, &base_url,
+            )
+            .map_err(anyhow::Error::msg)?;
             let client = codewhale_engine::client::CodewhaleClient::for_catalog_refresh(&scoped)?;
             let delta = client
                 .fetch_catalog_delta()
@@ -8661,7 +8756,7 @@ async fn open_agents_register(app: &mut App, engine_handle: &EngineHandle) {
         app.view_stack
             .push(crate::tui::views::SubAgentsView::for_app(app, agents));
     }
-    let _ = engine_handle.send(Op::ListSubAgents).await;
+    let _ = engine_handle.try_send(Op::ListSubAgents);
     app.needs_redraw = true;
 }
 

@@ -63,17 +63,54 @@ pub async fn update_from_chatgpt(config: &Config) -> Result<CodexModelRoster, &'
     let prepared = config.clone();
     #[cfg(any(test, feature = "test-support"))]
     let ticket = crate::test_support::env_scope_ticket();
-    let (path, client, config) = tokio::task::spawn_blocking(move || {
-        #[cfg(any(test, feature = "test-support"))]
-        let _membership = crate::test_support::join_env_scope(ticket);
-        prepare_chatgpt_refresh(&prepared)
-    })
-    .await
-    .map_err(|_| "chatgpt_plan_credentials_unavailable")??;
+    let (path, client, config, identity, observation, refresh_ticket, _refresh) =
+        tokio::task::spawn_blocking(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = crate::test_support::join_env_scope(ticket);
+            let (path, client, config) = prepare_chatgpt_refresh(&prepared)?;
+            let identity = config
+                .active_provider_identity()
+                .map_err(|_| "provider_identity_changed")?;
+            let (_, generation) = crate::provider_catalog_live::inventory_scope(&config, &identity)
+                .map_err(|_| "provider_identity_changed")?;
+            let refresh = crate::provider_catalog_live::try_inventory_refresh(&identity)
+                .ok_or("refresh_pending")?;
+            let observation =
+                crate::provider_readiness::inventory_observation_for_route(&config, &identity);
+            let refresh_ticket = crate::provider_catalog_live::begin_inventory_refresh(
+                &identity,
+                &config.base_url_for_route(&identity),
+                generation,
+            )
+            .ok_or("refresh_superseded")?;
+            Ok::<_, &'static str>((
+                path,
+                client,
+                config,
+                identity,
+                observation,
+                refresh_ticket,
+                refresh,
+            ))
+        })
+        .await
+        .map_err(|_| "chatgpt_plan_credentials_unavailable")??;
     let available = tokio::time::timeout(std::time::Duration::from_secs(20), client.list_models())
         .await
-        .map_err(|_| "chatgpt_models_timeout")?
-        .map_err(|_| "chatgpt_models_unavailable")?;
+        .map_err(|_| {
+            crate::provider_catalog_live::record_inventory_error(
+                &refresh_ticket,
+                Some(codewhale_config::catalog::CatalogRefreshError::Network),
+            );
+            "chatgpt_models_timeout"
+        })?
+        .map_err(|_| {
+            crate::provider_catalog_live::record_inventory_error(
+                &refresh_ticket,
+                Some(codewhale_config::catalog::CatalogRefreshError::Network),
+            );
+            "chatgpt_models_unavailable"
+        })?;
     // Catalog ordering and labels are provider facts. The basic official
     // listing does not establish context limits or reasoning effort tiers.
     if available.iter().any(|model| {
@@ -83,6 +120,10 @@ pub async fn update_from_chatgpt(config: &Config) -> Result<CodexModelRoster, &'
                 .as_ref()
                 .is_some_and(|name| name.len() > 512 || name.chars().any(char::is_control))
     }) {
+        crate::provider_catalog_live::record_inventory_error(
+            &refresh_ticket,
+            Some(codewhale_config::catalog::CatalogRefreshError::InvalidResponse),
+        );
         return Err("chatgpt_models_invalid_response");
     }
     let models = available
@@ -101,23 +142,44 @@ pub async fn update_from_chatgpt(config: &Config) -> Result<CodexModelRoster, &'
     };
     #[cfg(any(test, feature = "test-support"))]
     let ticket = crate::test_support::env_scope_ticket();
-    tokio::task::spawn_blocking(move || {
+    let publication_ticket = refresh_ticket.clone();
+    let result = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = crate::test_support::join_env_scope(ticket);
-        if snapshot_path(&config).as_ref() != Some(&path) {
+        if snapshot_path(&config).as_ref() != Some(&path)
+            || crate::provider_readiness::inventory_observation_for_route(&config, &identity)
+                != observation
+        {
             return Err("refresh_credentials_changed");
         }
         let encoded = serde_json::to_vec(&snapshot).map_err(|_| "cache_write_failed")?;
         if encoded.len() as u64 > MAX_MODEL_CACHE_BYTES {
             return Err("chatgpt_models_response_too_large");
         }
-        codewhale_config::persistence::atomic_write(&path, &encoded)
-            .map_err(|_| "cache_write_failed")?;
-        invalidate_roster_cache();
-        Ok(load_snapshot(&path, Utc::now()))
+        crate::provider_catalog_live::with_current_route_ticket(
+            &refresh_ticket,
+            identity.provider,
+            identity.key.as_str(),
+            &config.base_url_for_route(&identity),
+            || {
+                codewhale_config::persistence::atomic_write(&path, &encoded)
+                    .map_err(|_| "cache_write_failed")?;
+                invalidate_roster_cache();
+                Ok(load_snapshot(&path, Utc::now()))
+            },
+        )
+        .ok_or("refresh_superseded")?
     })
     .await
-    .map_err(|_| "cache_write_failed")?
+    .map_err(|_| "cache_write_failed")?;
+    crate::provider_catalog_live::record_inventory_error(
+        &publication_ticket,
+        result
+            .as_ref()
+            .err()
+            .map(|_| codewhale_config::catalog::CatalogRefreshError::Network),
+    );
+    result
 }
 
 pub fn spawn_refresh_if_stale(config: &Config) {

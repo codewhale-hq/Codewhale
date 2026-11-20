@@ -1785,6 +1785,7 @@ mod shell_ceiling_tests {
                 "exec_shell",
                 "task_shell_start",
                 "task_shell_wait",
+                "terminal_*",
                 "terminal/*",
                 "write_file",
                 "apply_patch",
@@ -2644,6 +2645,7 @@ permissions = "read_only"
             "exec_shell",
             "exec_shell_interact",
             "task_shell_start",
+            "terminal_run",
             "terminal/run",
         ] {
             assert!(

@@ -30,16 +30,16 @@ use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKin
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
+    widgets::{Padding, Paragraph, Widget, Wrap},
 };
 
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::history::HistoryCell;
 use crate::tui::views::{
-    ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
-    centered_modal_area, render_modal_footer, render_modal_surface,
+    ActionHint, CommandPaletteAction, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent,
+    centered_modal_area, render_modal_footer, render_modal_rule, render_rounded_modal,
 };
 use codewhale_config::ProviderKind;
 use codewhale_engine::client::system_one::DecisionRouterRoute;
@@ -705,22 +705,13 @@ impl ModalView for RouterSetupView {
             .unwrap_or(u16::MAX)
             .saturating_add(6);
         let popup_area = centered_modal_area(area, 96, popup_height, 44, 10);
-        render_modal_surface(area, popup_area, buf);
-
-        let title = format!(" {} ", tr(self.locale, MessageId::RouterSetupTitle));
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                title,
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::uniform(1));
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup_area,
+            buf,
+            SurfaceFrame::new(tr(self.locale, MessageId::RouterSetupTitle))
+                .padding(Padding::uniform(1)),
+        );
 
         let locale = self.locale;
         let hints = match self.mode {
@@ -738,9 +729,9 @@ impl ModalView for RouterSetupView {
         self.row_hitboxes.borrow_mut().clear();
 
         let muted = Style::default().fg(palette::TEXT_MUTED);
-        let mut lines = Vec::new();
         match &self.mode {
             Mode::Confirm { lines: result, .. } => {
+                let mut lines = Vec::new();
                 for line in result {
                     lines.push(Line::from(Span::styled(
                         line.clone(),
@@ -752,11 +743,11 @@ impl ModalView for RouterSetupView {
                     tr(self.locale, MessageId::RouterTestSaveHint).into_owned(),
                     muted,
                 )));
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .render(content, buf);
             }
             Mode::Pick => {
-                // Label + hint per row when everything fits; otherwise one
-                // line per row, windowed so the focused row is always drawn
-                // (compact terminals, e.g. 40x12).
                 let height = usize::from(content.height);
                 let width = usize::from(content.width);
                 let two_line = height >= 2 + self.rows.len() * 2;
@@ -771,15 +762,23 @@ impl ModalView for RouterSetupView {
                     .cursor
                     .saturating_sub(visible - 1)
                     .min(self.rows.len().saturating_sub(visible));
-                if header > 0 {
-                    lines.push(Line::from(Span::styled(
+                if header > 0 && content.height > 0 {
+                    Paragraph::new(Line::from(Span::styled(
                         codewhale_tui_kit::ui_text::semantic_truncate(&self.current, width),
                         muted,
-                    )));
+                    )))
+                    .render(Rect::new(content.x, content.y, content.width, 1), buf);
                 }
-                if header > 1 {
-                    lines.push(Line::from(""));
+                if header > 1 && content.height > 1 {
+                    render_modal_rule(Rect::new(content.x, content.y + 1, content.width, 1), buf);
                 }
+                let list_area = Rect {
+                    y: content.y.saturating_add(header as u16),
+                    height: content.height.saturating_sub(header as u16),
+                    ..content
+                };
+                let mut lines = Vec::new();
+                let mut selected_row_y: Option<u16> = None;
                 for (idx, row) in self.rows.iter().enumerate().skip(start).take(visible) {
                     let is_cursor = idx == self.cursor;
                     let label_style = if is_cursor {
@@ -789,17 +788,34 @@ impl ModalView for RouterSetupView {
                     } else {
                         muted
                     };
+                    let dot_style = if is_cursor {
+                        menu_style::selected_row_style()
+                    } else if row.available {
+                        Style::default().fg(palette::STATUS_SUCCESS)
+                    } else {
+                        Style::default().fg(palette::TEXT_DIM)
+                    };
                     let pointer = codewhale_tui_kit::glyphs::selection_marker(is_cursor);
-                    let row_y = content
+                    let dot = if row.available {
+                        codewhale_tui_kit::glyphs::CURRENT
+                    } else {
+                        "○"
+                    };
+                    let row_y = list_area
                         .y
                         .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
-                    lines.push(Line::from(Span::styled(
-                        codewhale_tui_kit::ui_text::semantic_truncate(
-                            &format!("{pointer} {}", row.label),
-                            width,
+                    if is_cursor && row_y < list_area.bottom() {
+                        selected_row_y = Some(row_y);
+                    }
+                    let label_budget = width.saturating_sub(4);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{pointer} "), label_style),
+                        Span::styled(format!("{dot} "), dot_style),
+                        Span::styled(
+                            codewhale_tui_kit::ui_text::semantic_truncate(&row.label, label_budget),
+                            label_style,
                         ),
-                        label_style,
-                    )));
+                    ]));
                     if two_line {
                         lines.push(Line::from(Span::styled(
                             format!(
@@ -812,15 +828,20 @@ impl ModalView for RouterSetupView {
                             muted,
                         )));
                     }
-                    self.row_hitboxes
-                        .borrow_mut()
-                        .push((idx, Rect::new(content.x, row_y, content.width, row_height)));
+                    self.row_hitboxes.borrow_mut().push((
+                        idx,
+                        Rect::new(list_area.x, row_y, list_area.width, row_height),
+                    ));
                 }
+                if let Some(y) = selected_row_y {
+                    buf.set_style(
+                        Rect::new(list_area.x, y, list_area.width, 1),
+                        menu_style::selected_row_bg_style(),
+                    );
+                }
+                Paragraph::new(lines).render(list_area, buf);
             }
         }
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(content, buf);
     }
 }
 

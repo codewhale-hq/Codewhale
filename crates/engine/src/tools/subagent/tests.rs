@@ -7958,14 +7958,20 @@ async fn issue_5633_catalog_and_dispatch_are_one_grant() {
         // can never call what it cannot see. `Bash`/`exec_shell` are hidden
         // execution-compatibility aliases, so they never appear in any
         // catalog — under a non-Full grant they are still refused by name.
-        for name in ["terminal/run", "terminal/send"] {
+        for name in ["terminal_run", "terminal_send"] {
             assert_eq!(
                 catalog.contains(name),
                 full_shell,
                 "{role:?}: {name} visibility must equal the shell grant"
             );
         }
-        for name in ["Bash", "exec_shell", "terminal/run", "task_shell_start"] {
+        for name in [
+            "Bash",
+            "exec_shell",
+            "terminal_run",
+            "terminal/run",
+            "task_shell_start",
+        ] {
             assert!(!catalog.contains(name) || full_shell, "{role:?}: {name}");
             if !full_shell {
                 let dispatch = registry
@@ -8178,8 +8184,8 @@ async fn route_resolution_matrix_uses_explicit_model_strength_routes() {
             requested_route: ModelRoute::Inherit,
             expected_route: ModelRoute::Inherit,
             expected_model: "deepseek-v4-pro",
-            expected_reasoning: Some("max"),
-            expected_tuning_effort: Some(ReasoningEffort::Max),
+            expected_reasoning: Some("high"),
+            expected_tuning_effort: Some(ReasoningEffort::High),
         },
         RouteCase {
             agent_type: FleetRole::Scout,
@@ -8484,11 +8490,11 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "speech",
         "task_shell_wait",
         "tasks",
-        "terminal/cancel",
-        "terminal/reset",
-        "terminal/run",
-        "terminal/send",
-        "terminal/wait",
+        "terminal_cancel",
+        "terminal_reset",
+        "terminal_run",
+        "terminal_send",
+        "terminal_wait",
         "todo_write",
         // `tts` is a hidden compat alias for `speech` since #5941.
         "tui_help",
@@ -8804,12 +8810,11 @@ fn small_surface_starts_with_core_tools_and_read_only_goal_control() {
             "bash",
             "edit",
             "file_search",
-            "get_goal",
             "grep_files",
+            "list_dir",
             "load_skill",
             "present",
             "read",
-            "task_shell_wait",
             "todo_write",
             "tool_search",
             "write",
@@ -8911,32 +8916,32 @@ async fn small_surface_read_only_child_runs_well_formed_deferred_first_call() {
     assert_eq!(
         catalog
             .iter()
-            .find(|tool| tool.name == "list_dir")
+            .find(|tool| tool.name == "get_goal")
             .and_then(|tool| tool.defer_loading),
         Some(true),
-        "list_dir is a deferred evidence tool for Scouts"
+        "get_goal is a deferred evidence tool for Scouts"
     );
     let mut surface = ChildSurfaceProbe::new(catalog, &[]);
-    assert!(!model_tool_names(model_request_tools(&mut surface)).contains("list_dir"));
-    let listing = execute_surface_tool(&registry, &mut surface, "list_dir", json!({}))
+    assert!(!model_tool_names(model_request_tools(&mut surface)).contains("get_goal"));
+    let listing = execute_surface_tool(&registry, &mut surface, "get_goal", json!({}))
         .await
         .expect("well-formed first call executes");
     assert!(
         !listing.contains("was deferred"),
         "the call ran instead of returning its schema: {listing}"
     );
-    assert!(model_tool_names(model_request_tools(&mut surface)).contains("list_dir"));
+    assert!(model_tool_names(model_request_tools(&mut surface)).contains("get_goal"));
 
     let hint = execute_surface_tool(
         &registry,
         &mut ChildSurfaceProbe::new(registry.deferred_catalog_for_model(&FleetRole::Scout), &[]),
-        "list_dir",
+        "get_goal",
         json!({"directory": "."}),
     )
     .await
     .expect("malformed first call returns the schema");
     assert!(
-        hint.contains("was deferred") && hint.contains("path"),
+        hint.contains("was deferred") && hint.contains("Expected fields"),
         "{hint}"
     );
 
@@ -9191,12 +9196,11 @@ fn small_surface_depth_cap_removes_only_agent() {
             "bash",
             "edit",
             "file_search",
-            "get_goal",
             "grep_files",
+            "list_dir",
             "load_skill",
             "present",
             "read",
-            "task_shell_wait",
             "todo_write",
             "tool_search",
             "write"
@@ -13287,7 +13291,7 @@ fn child_system_prompt_inherits_the_sessions_reviewed_memory_packet() {
     let mut context = ToolContext::new(&workspace);
     context.memory_path = Some(memory_path);
     let assignment = SubAgentAssignment::new("deploy check".to_string(), None);
-    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+    let system = build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &context);
 
     assert!(system.contains("codewhale.memory.context.v1"), "{system}");
     assert!(system.contains(deploy), "{system}");
@@ -13330,7 +13334,7 @@ fn child_system_prompt_inherits_the_sessions_reviewed_memory_packet() {
     );
     assert_eq!(nested.context.memory_path, context.memory_path);
     let nested_system =
-        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &nested.context);
+        build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &nested.context);
     assert!(
         nested_system.contains("codewhale.memory.context.v1"),
         "nested children read the same memory packet: {nested_system}"
@@ -13348,7 +13352,7 @@ fn child_system_prompt_omits_memory_when_the_session_has_none() {
     // Memory disabled for the session: the context carries no path at all.
     let disabled = ToolContext::new(&workspace);
     let system =
-        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &disabled);
+        build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &disabled);
     assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
     assert!(!system.contains("## Memory Hygiene"), "{system}");
 
@@ -13356,7 +13360,7 @@ fn child_system_prompt_omits_memory_when_the_session_has_none() {
     let (memory_path, _store, _access) = native_memory_fixture(tmp.path(), &[]);
     let mut enabled = ToolContext::new(&workspace);
     enabled.memory_path = Some(memory_path);
-    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &enabled);
+    let system = build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &enabled);
     assert!(!system.contains("codewhale.memory.context.v1"), "{system}");
     assert!(!system.contains("## Memory Hygiene"), "{system}");
 }
@@ -13373,7 +13377,7 @@ fn child_system_prompt_honours_a_reviewed_off_memory() {
     let mut context = ToolContext::new(&workspace);
     context.memory_path = Some(memory_path);
     let assignment = SubAgentAssignment::new("review".to_string(), None);
-    let system = build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &context);
+    let system = build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &context);
 
     assert!(
         !system.contains(rule),
@@ -13383,121 +13387,26 @@ fn child_system_prompt_honours_a_reviewed_off_memory() {
 }
 
 #[test]
-fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
+fn child_system_prompt_carries_no_skill_index() {
     let _env = crate::test_support::lock_test_env();
     let tmp = tempdir().expect("tempdir");
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("home"));
     let workspace = tmp.path().join("workspace");
     crate::test_support::trust_workspace(&workspace);
     let native_skill = workspace.join(".agents/skills/native-review");
-    let plugin_root = workspace.join(".codewhale/plugins/demo");
     std::fs::create_dir_all(&native_skill).expect("native Skill dir");
-    std::fs::create_dir_all(plugin_root.join("skills/review")).expect("plugin Skill dir");
     std::fs::write(
         native_skill.join("SKILL.md"),
         "---\nname: native-review\ndescription: native workspace review\n---\nbody\n",
     )
     .expect("native Skill");
-    std::fs::write(
-        plugin_root.join("plugin.toml"),
-        "schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n",
-    )
-    .expect("plugin manifest");
-    std::fs::write(
-        plugin_root.join("skills/review/SKILL.md"),
-        "---\nname: review\ndescription: reviewed plugin review\n---\nbody\n",
-    )
-    .expect("plugin Skill");
-    let config = codewhale_plugins::discovery::DiscoveryConfig {
-        workspace: workspace.clone(),
-        user_plugins_dir: tmp.path().join("user-plugins"),
-        workspace_plugins_dir: workspace.join(".codewhale/plugins"),
-        builtin_plugin_dirs: Vec::new(),
-        state_path: tmp.path().join("plugin-state/state.json"),
-    };
-    let mut plugins = codewhale_plugins::discovery::discover_with_config(&config);
-    plugins.trust("demo").expect("trust plugin");
-    plugins.enable("demo").expect("enable plugin");
-    let context = ToolContext::new(&workspace).with_plugin_registry(Arc::new(plugins));
+    let context = ToolContext::new(&workspace);
     let assignment = SubAgentAssignment::new("review".to_string(), None);
-    let system =
-        build_subagent_system_prompt_with_skills(&FleetRole::Reviewer, &assignment, &context);
-
-    assert!(system.contains("- native-review:"), "{system}");
-    assert!(system.contains("- demo:review:"), "{system}");
-    assert!(
-        system.contains("reviewed plugin snapshot: demo ("),
-        "{system}"
-    );
-    assert!(system.contains("use load_skill"), "{system}");
-    assert!(
-        !system.contains(&plugin_root.display().to_string()),
-        "{system}"
-    );
-    assert_eq!(
-        subagent_request_system_prompt(&system),
-        SystemPrompt::Text(system.clone()),
-        "fresh children receive the catalog at system precedence"
-    );
-
-    let fork_context = SubAgentForkContext {
-        messages: vec![Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "parent".to_string(),
-                cache_control: None,
-            }],
-        }],
-        structured_state_block: None,
-        work_source: None,
-    };
-    let forked = build_initial_subagent_messages_with_system(
-        "review",
-        &assignment,
-        &FleetRole::Reviewer,
-        &system,
-        Some(&fork_context),
-    );
-    assert!(
-        forked
-            .iter()
-            .filter(|message| message.role == "system")
-            .any(|message| message_text(message).contains("- demo:review:")),
-        "forked children must receive the same resolved catalog"
-    );
-
-    let mut direct_child = runtime_with_depth(1, None);
-    direct_child.context = context.clone();
-    let (nested_runtime, _nested_rx) = runtime_for_nested_agent_tools(
-        &direct_child,
-        "agent_parent",
-        SubAgentForkContext {
-            messages: Vec::new(),
-            structured_state_block: None,
-            work_source: None,
-        },
-    );
-    let nested_system = build_subagent_system_prompt_with_skills(
-        &FleetRole::Reviewer,
-        &assignment,
-        &nested_runtime.context,
-    );
-    assert!(nested_system.contains("- demo:review:"), "{nested_system}");
-
-    let isolated_workspace = tmp.path().join("isolated-worktree");
-    std::fs::create_dir_all(&isolated_workspace).expect("isolated worktree");
-    let isolated_plugins = context
-        .plugin_registry
-        .as_ref()
-        .expect("plugin registry")
-        .rediscover_for_workspace(&isolated_workspace);
-    let isolated = ToolContext::new(&isolated_workspace).with_plugin_registry(isolated_plugins);
-    let isolated_system =
-        build_subagent_system_prompt_with_skills(&FleetRole::Reviewer, &assignment, &isolated);
-    assert!(
-        !isolated_system.contains("- demo:review:"),
-        "workspace plugin authority must not leak into another worktree: {isolated_system}"
-    );
+    for role in [FleetRole::Scout, FleetRole::Reviewer, FleetRole::Worker] {
+        let system = build_subagent_system_prompt_with_memory(&role, &assignment, &context);
+        assert!(!system.contains("native-review"), "{system}");
+        assert!(!system.contains("native workspace review"), "{system}");
+    }
 }
 
 #[test]
@@ -13515,6 +13424,7 @@ fn subagent_done_sentinel_format_is_well_formed() {
     assert_eq!(parsed["agent_id"], "agent_xyz");
     assert_eq!(parsed["status"], "completed");
     assert_eq!(parsed["agent_type"], "general");
+    assert_eq!(parsed["name"], subagent_result_display_name(&res));
     assert_eq!(parsed["summary_location"], "previous_line");
     // issue #2652: a complete (non-truncated) summary is tagged as such.
     assert_eq!(parsed["summary_kind"], "complete");
@@ -16602,6 +16512,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
         root_person_messages: std::sync::Arc::default(),
         root_approved_plan: None,
         parent_pinned_project_instructions: std::sync::Arc::default(),
+        isolated_worktree: false,
         parent_auto_review_state: None,
         approval_receipt_store: Some(Ok(crate::approval_log::ApprovalReceiptStore::new(
             crate::test_support::test_scratch_dir("codewhale-child-approval-tests"),
@@ -16627,7 +16538,7 @@ pub fn stub_runtime() -> SubAgentRuntime {
 /// *some* `CodewhaleClient` because `SubAgentRuntime.client` isn't
 /// `Option<...>`. `Config::default()` is enough — `CodewhaleClient::new`
 /// only validates that an API key field exists, not that the key works.
-fn stub_runtime_for_provider(provider: &str) -> SubAgentRuntime {
+pub(super) fn stub_runtime_for_provider(provider: &str) -> SubAgentRuntime {
     let mut runtime = stub_runtime();
     let (client, config) = stub_client_for_provider(provider);
     runtime.client = client;
@@ -19254,7 +19165,11 @@ fn format_step_counter_keeps_concrete_budgets() {
 
 #[test]
 fn child_step_limits_preserve_the_owners_allowance() {
-    assert_eq!(resolve_max_steps(FleetRole::Scout, None, None), 0);
+    assert_eq!(
+        resolve_max_steps(FleetRole::Scout, None, None),
+        WorkerRuntimeProfile::EXPLORE_MAX_STEPS
+    );
+    assert_eq!(resolve_max_steps(FleetRole::Worker, None, None), 0);
     assert_eq!(resolve_max_steps(FleetRole::Scout, Some(0), Some(90)), 90);
     assert_eq!(resolve_max_steps(FleetRole::Builder, Some(7), None), 7);
     assert_eq!(
@@ -23217,6 +23132,8 @@ fn indirect_execution_payloads_are_refused_at_dispatch() {
 #[test]
 fn a_verifier_runs_bounded_test_selections_and_nothing_else_at_dispatch() {
     let (_tmp, registry) = read_only_with_shell_registry();
+    assert!(registry.grant_blocks_tool("task_shell_wait"));
+    assert!(!registry.can_collect_background_tests());
 
     for (name, input) in [
         ("Run", json!({"action": "tests"})),
@@ -23722,7 +23639,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
 // 94,121B on this machine.
-const PARENT_SURFACE_BYTE_CEILING: usize = 94_121;
+const PARENT_SURFACE_BYTE_CEILING: usize = 95_779;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
@@ -23735,7 +23652,7 @@ async fn read_only_child_envelope_stays_within_measured_ceiling() {
 
     let assignment = make_assignment();
     let system_prompt =
-        build_subagent_system_prompt_with_skills(&FleetRole::Scout, &assignment, &runtime.context);
+        build_subagent_system_prompt_with_memory(&FleetRole::Scout, &assignment, &runtime.context);
     let messages = build_initial_subagent_messages_with_system(
         "Inspect the runtime evidence and report",
         &assignment,
@@ -24135,7 +24052,8 @@ async fn spawn_receipt_compacts_and_verbose_restores_the_archive() {
     assert!(compact.get("checkpoint").is_none());
     assert!(compact.get("artifacts").is_none());
     assert!(compact.get("takeover").is_none());
-    assert!(compact.get("transcript_handle").is_none());
+    assert!(compact["transcript_handle"].is_object());
+    assert_eq!(compact["role"], json!("explore"));
     assert!(compact.get("verification").is_none());
     assert_eq!(compact["child_route"]["model_id"], json!("glm-5"));
     // The poll path must survive compaction — a spawn ack's one job is
@@ -24150,8 +24068,8 @@ async fn spawn_receipt_compacts_and_verbose_restores_the_archive() {
         "{compact}"
     );
     assert!(
-        compact_len < 1_024,
-        "compact spawn receipt must stay under 1KB, got {compact_len}B (full: {full_len}B)"
+        compact_len <= lifecycle::COMPACT_SPAWN_BYTES,
+        "compact spawn receipt must stay within budget, got {compact_len}B (full: {full_len}B)"
     );
     assert!(
         full_len > compact_len,
@@ -29837,7 +29755,7 @@ async fn auto_review_subagent_return_check_outage_prepends_could_not_review_warn
     })
     .await;
 
-    assert_eq!(review_bodies.lock().expect("review bodies").len(), 1);
+    assert_eq!(review_bodies.lock().expect("review bodies").len(), 2);
     let snapshot = manager
         .read()
         .await
@@ -30191,4 +30109,68 @@ async fn a_sub_agent_finishes_when_its_usage_source_changed_route() {
     let worker = manager.get_worker_record(agent_id).expect("worker record");
     assert!(worker.has_unreported_usage);
     assert!(worker.source_usage_records.contains_key(&key));
+}
+
+#[test]
+fn child_inherits_parent_instructions_once_with_scope_cap() {
+    let pinned = crate::project_context::PinnedProjectInstructions {
+        user_level: Some("Prefer hosted CI.".to_string()),
+        repository_level: Some("é".repeat(INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES)),
+        ..Default::default()
+    };
+    let section = subagent_inherited_instructions_section(&pinned).expect("section");
+    assert_eq!(section.matches("<inherited_instructions").count(), 2);
+    assert!(section.contains("scope=\"user\">\nPrefer hosted CI.\n"));
+    assert!(section.contains("[truncated: read the source instruction file for the rest]"));
+    assert!(section.len() < INHERITED_INSTRUCTIONS_SCOPE_MAX_BYTES + 1024);
+    assert!(
+        subagent_inherited_instructions_section(
+            &crate::project_context::PinnedProjectInstructions::default()
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn read_only_role_with_write_brief_is_refused_naming_writer_roles() {
+    let runtime = stub_runtime();
+    let request = parse_spawn_request(&json!({
+        "prompt": "write the receipt",
+        "type": "test",
+        "deliverables": ["receipts/run.json"],
+    }))
+    .expect("parse");
+    let err = refuse_write_brief_for_read_only_role(&runtime, &request, None)
+        .expect_err("read-only role with deliverables must refuse at start")
+        .to_string();
+    assert!(err.contains("type=test cannot write files"), "{err}");
+    assert!(err.contains("deliverables"), "{err}");
+    assert!(err.contains("type=general"), "{err}");
+    assert!(err.contains("type=implement"), "{err}");
+    let ok =
+        parse_spawn_request(&json!({"prompt": "run the gates", "type": "test"})).expect("parse");
+    refuse_write_brief_for_read_only_role(&runtime, &ok, None).expect("no write brief");
+}
+
+#[test]
+fn child_capability_block_states_workspace_worktree_and_blocker_rule() {
+    let mut runtime = stub_runtime();
+    runtime.isolated_worktree = true;
+    let grant =
+        codewhale_agent_contract::worker_profile::ChildGrant::for_role(&FleetRole::Verifier);
+    let block = subagent_capability_block("Pilot", &runtime, &grant, Some("ci/task"));
+    assert!(block.contains("You are Pilot."), "{block}");
+    assert!(
+        block.contains("isolated git worktree on branch `ci/task`"),
+        "{block}"
+    );
+    assert!(block.contains("Files: read-only"), "{block}");
+    assert!(
+        block.contains("Shell: no shell; only the bounded verification tools"),
+        "{block}"
+    );
+    assert!(
+        block.contains("as a BLOCKER naming the exact command"),
+        "{block}"
+    );
 }

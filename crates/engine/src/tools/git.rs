@@ -22,11 +22,20 @@ use super::spec::{
 
 const DEFAULT_UNIFIED: u64 = 3;
 const MAX_UNIFIED: u64 = 50;
+const MAX_GIT_DIFF_REV_LEN: usize = 1024;
 
 /// Resolve untrusted revision text before using it as an argument to another
 /// Git command. Only a verified commit ID crosses that option boundary.
 pub(super) async fn resolve_commit_ref(workspace: &Path, base: &str) -> Result<String, ToolError> {
-    let revision = format!("{base}^{{commit}}");
+    resolve_commit_ref_named(workspace, "base", base).await
+}
+
+async fn resolve_commit_ref_named(
+    workspace: &Path,
+    label: &str,
+    rev: &str,
+) -> Result<String, ToolError> {
+    let revision = format!("{rev}^{{commit}}");
     let output = run_git_command_async(
         workspace.to_path_buf(),
         vec![
@@ -39,17 +48,127 @@ pub(super) async fn resolve_commit_ref(workspace: &Path, base: &str) -> Result<S
     .await?;
     if !output.status.success() {
         return Err(ToolError::invalid_input(format!(
-            "Invalid git base ref '{base}': {}",
+            "Invalid git {label} ref '{rev}': {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(ToolError::execution_failed(
-            "git resolved base to an invalid commit id",
-        ));
+        return Err(ToolError::execution_failed(format!(
+            "git resolved {label} to an invalid commit id"
+        )));
     }
     Ok(commit)
+}
+
+enum GitDiffRev<'a> {
+    Single(&'a str),
+    TwoDot(&'a str, &'a str),
+    ThreeDot(&'a str, &'a str),
+}
+
+fn validate_git_diff_single_rev(label: &str, value: &str) -> Result<(), ToolError> {
+    if value.is_empty() {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} must not be empty"
+        )));
+    }
+    if value.len() > MAX_GIT_DIFF_REV_LEN {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} exceeds {MAX_GIT_DIFF_REV_LEN} bytes"
+        )));
+    }
+    if value.starts_with('-') || value.starts_with('^') || value.starts_with(':') {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} must not start with '-', '^', or ':'"
+        )));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} must not contain whitespace"
+        )));
+    }
+    if value.chars().any(|ch| ch == '\0' || ch.is_control()) {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} must not contain control characters"
+        )));
+    }
+    if value.contains("..") {
+        return Err(ToolError::invalid_input(format!(
+            "git diff {label} must be a single revision, not a range"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_git_diff_rev(rev: &str) -> Result<GitDiffRev<'_>, ToolError> {
+    if rev.is_empty() {
+        return Err(ToolError::invalid_input("git diff rev must not be empty"));
+    }
+    if rev.len() > MAX_GIT_DIFF_REV_LEN {
+        return Err(ToolError::invalid_input(format!(
+            "git diff rev exceeds {MAX_GIT_DIFF_REV_LEN} bytes"
+        )));
+    }
+    if rev.starts_with('-') || rev.starts_with('^') || rev.starts_with(':') {
+        return Err(ToolError::invalid_input(
+            "git diff rev must not start with '-', '^', or ':'",
+        ));
+    }
+    if rev.chars().any(char::is_whitespace) {
+        return Err(ToolError::invalid_input(
+            "git diff rev must not contain whitespace",
+        ));
+    }
+    if rev.chars().any(|ch| ch == '\0' || ch.is_control()) {
+        return Err(ToolError::invalid_input(
+            "git diff rev must not contain control characters",
+        ));
+    }
+    if let Some((left, right)) = rev.split_once("...") {
+        if left.is_empty() && right.is_empty() {
+            return Err(ToolError::invalid_input(
+                "git diff rev range must specify at least one revision",
+            ));
+        }
+        if left.contains("..")
+            || right.contains("..")
+            || right.starts_with('.')
+            || left.ends_with('.')
+        {
+            return Err(ToolError::invalid_input(
+                "git diff rev contains an invalid range operator",
+            ));
+        }
+        let left = if left.is_empty() { "HEAD" } else { left };
+        let right = if right.is_empty() { "HEAD" } else { right };
+        validate_git_diff_single_rev("rev", left)?;
+        validate_git_diff_single_rev("rev", right)?;
+        return Ok(GitDiffRev::ThreeDot(left, right));
+    }
+    if let Some((left, right)) = rev.split_once("..") {
+        if left.is_empty() && right.is_empty() {
+            return Err(ToolError::invalid_input(
+                "git diff rev range must specify at least one revision",
+            ));
+        }
+        if left.contains("..")
+            || right.contains("..")
+            || right.starts_with('.')
+            || left.ends_with('.')
+        {
+            return Err(ToolError::invalid_input(
+                "git diff rev contains an invalid range operator",
+            ));
+        }
+        let left = if left.is_empty() { "HEAD" } else { left };
+        let right = if right.is_empty() { "HEAD" } else { right };
+        validate_git_diff_single_rev("rev", left)?;
+        validate_git_diff_single_rev("rev", right)?;
+        return Ok(GitDiffRev::TwoDot(left, right));
+    }
+    validate_git_diff_single_rev("rev", rev)?;
+    Ok(GitDiffRev::Single(rev))
 }
 
 // === GitStatusTool ===
@@ -175,6 +294,18 @@ impl ToolSpec for GitDiffTool {
                     "maximum": MAX_UNIFIED,
                     "default": DEFAULT_UNIFIED,
                     "description": "Number of context lines to include around changes."
+                },
+                "rev": {
+                    "type": "string",
+                    "description": "Optional revision or range to diff (e.g. HEAD~3, main..HEAD, main...HEAD). Cannot be combined with base or target."
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Optional base revision to diff from (diffs against working tree/index, or to target when target is set)."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Optional target revision to diff to (requires base)."
                 }
             },
             "additionalProperties": false
@@ -200,9 +331,78 @@ impl ToolSpec for GitDiffTool {
 
 async fn git_diff(input: Value, context: ToolContext) -> Result<ToolResult, ToolError> {
     let path = optional_str(&input, "path")?.map(str::to_string);
-    let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
     let cached = optional_bool(&input, "cached", false)?;
     let unified = optional_u64(&input, "unified", DEFAULT_UNIFIED)?.min(MAX_UNIFIED);
+    let rev = optional_str(&input, "rev")?.map(str::to_string);
+    let base = optional_str(&input, "base")?.map(str::to_string);
+    let target = optional_str(&input, "target")?.map(str::to_string);
+
+    if rev.is_some() && (base.is_some() || target.is_some()) {
+        return Err(ToolError::invalid_input(
+            "cannot combine rev with base or target; use either rev or base/target",
+        ));
+    }
+    if target.is_some() && base.is_none() {
+        return Err(ToolError::invalid_input(
+            "target requires base when diffing revisions",
+        ));
+    }
+    if cached && base.is_some() && target.is_some() {
+        return Err(ToolError::invalid_input(
+            "cannot combine cached=true with both base and target",
+        ));
+    }
+
+    let parsed_rev = match rev.as_deref() {
+        Some(value) => {
+            let parsed = parse_git_diff_rev(value)?;
+            if cached && !matches!(parsed, GitDiffRev::Single(_)) {
+                return Err(ToolError::invalid_input(
+                    "cannot combine cached=true with a revision range in rev",
+                ));
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+    if let Some(base_ref) = base.as_deref() {
+        validate_git_diff_single_rev("base", base_ref)?;
+    }
+    if let Some(target_ref) = target.as_deref() {
+        validate_git_diff_single_rev("target", target_ref)?;
+    }
+
+    let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
+
+    let mut rev_args: Vec<String> = Vec::new();
+    match parsed_rev {
+        Some(GitDiffRev::Single(single)) => {
+            rev_args.push(resolve_commit_ref_named(&git_ctx.working_dir, "rev", single).await?);
+        }
+        Some(GitDiffRev::TwoDot(left, right)) => {
+            let left_sha = resolve_commit_ref_named(&git_ctx.working_dir, "rev", left).await?;
+            let right_sha = resolve_commit_ref_named(&git_ctx.working_dir, "rev", right).await?;
+            rev_args.push(format!("{left_sha}..{right_sha}"));
+        }
+        Some(GitDiffRev::ThreeDot(left, right)) => {
+            let left_sha = resolve_commit_ref_named(&git_ctx.working_dir, "rev", left).await?;
+            let right_sha = resolve_commit_ref_named(&git_ctx.working_dir, "rev", right).await?;
+            rev_args.push(format!("{left_sha}...{right_sha}"));
+        }
+        None => {
+            if let Some(base_ref) = base.as_deref() {
+                let base_sha =
+                    resolve_commit_ref_named(&git_ctx.working_dir, "base", base_ref).await?;
+                rev_args.push(base_sha);
+                if let Some(target_ref) = target.as_deref() {
+                    let target_sha =
+                        resolve_commit_ref_named(&git_ctx.working_dir, "target", target_ref)
+                            .await?;
+                    rev_args.push(target_sha);
+                }
+            }
+        }
+    }
 
     let mut args = vec![
         "-c".to_string(),
@@ -214,6 +414,10 @@ async fn git_diff(input: Value, context: ToolContext) -> Result<ToolResult, Tool
     args.push(format!("--unified={unified}"));
     if cached {
         args.push("--cached".to_string());
+    }
+    if !rev_args.is_empty() {
+        args.push("--end-of-options".to_string());
+        args.extend(rev_args);
     }
     if let Some(pathspec) = &git_ctx.pathspec {
         args.push("--".to_string());
@@ -242,6 +446,9 @@ async fn git_diff(input: Value, context: ToolContext) -> Result<ToolResult, Tool
         "pathspec": git_ctx.pathspec,
         "cached": cached,
         "unified": unified,
+        "rev": rev,
+        "base": base,
+        "target": target,
     })))
 }
 

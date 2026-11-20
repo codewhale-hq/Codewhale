@@ -18,14 +18,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget},
+    widgets::{Padding, Paragraph, Widget},
 };
 
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
-    centered_modal_area, render_modal_footer, render_modal_surface, render_panel_scroll_rail,
+    ActionHint, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent, action_footer_lines,
+    centered_modal_area, render_modal_footer, render_modal_rule, render_panel_scroll_rail,
+    render_rounded_modal,
 };
 use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
@@ -231,22 +232,18 @@ impl ModalView for StatusPickerView {
         let popup_area =
             centered_modal_area(area, 64, unpadded_height.saturating_add(2 * pad), 40, 8);
 
-        render_modal_surface(area, popup_area, buf);
-
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                tr(self.locale, MessageId::StatusPickerTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG))
-            .padding(Padding::new(1, 1, pad, pad));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+        let enabled_count = self.selected.iter().filter(|&&on| on).count();
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup_area,
+            buf,
+            SurfaceFrame::new(tr(self.locale, MessageId::StatusPickerTitle))
+                .right_pill(
+                    format!("{enabled_count}/{}", self.rows.len()),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )
+                .padding(Padding::new(1, 1, pad, pad)),
+        );
 
         let content = render_modal_footer(inner, buf, &hints);
 
@@ -257,12 +254,23 @@ impl ModalView for StatusPickerView {
             .width
             .saturating_sub(u16::from(visible_rows < self.rows.len()));
 
-        let mut lines: Vec<Line> = Vec::with_capacity(visible_rows + 2);
-        lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::StatusPickerInstruction),
-            Style::default().fg(palette::TEXT_MUTED),
-        )));
-        lines.push(Line::from(""));
+        if content.height >= 1 {
+            Paragraph::new(Line::from(Span::styled(
+                tr(self.locale, MessageId::StatusPickerInstruction),
+                Style::default().fg(palette::TEXT_MUTED),
+            )))
+            .render(Rect::new(content.x, content.y, content.width, 1), buf);
+        }
+        if content.height >= 2 {
+            render_modal_rule(Rect::new(content.x, content.y + 1, content.width, 1), buf);
+        }
+
+        let list_area = Rect {
+            y: content.y.saturating_add(2),
+            height: content.height.saturating_sub(2),
+            ..content
+        };
+        let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
 
         for (idx, item) in self
             .rows
@@ -274,8 +282,8 @@ impl ModalView for StatusPickerView {
             self.row_hitboxes.borrow_mut().push((
                 idx,
                 Rect::new(
-                    content.x,
-                    content.y + 2 + (idx - row_start) as u16,
+                    list_area.x,
+                    list_area.y + (idx - row_start) as u16,
                     row_width,
                     1,
                 ),
@@ -290,6 +298,13 @@ impl ModalView for StatusPickerView {
                 Style::default().fg(palette::TEXT_PRIMARY)
             } else {
                 Style::default().fg(palette::TEXT_MUTED)
+            };
+            let mark_style = if is_cursor {
+                menu_style::selected_row_style()
+            } else if checked {
+                Style::default().fg(palette::STATUS_SUCCESS)
+            } else {
+                Style::default().fg(palette::TEXT_DIM)
             };
             let hint_style = if is_cursor {
                 menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
@@ -315,7 +330,7 @@ impl ModalView for StatusPickerView {
                 );
                 lines.push(Line::from(vec![
                     Span::styled(format!(" {pointer} "), row_style),
-                    Span::styled(mark.to_string(), row_style),
+                    Span::styled(mark.to_string(), mark_style),
                     Span::styled(" ", row_style),
                     Span::styled(label.to_string(), row_style),
                     Span::styled("  ", row_style),
@@ -324,13 +339,9 @@ impl ModalView for StatusPickerView {
             }
         }
 
-        Paragraph::new(lines).render(content, buf);
+        Paragraph::new(lines).render(list_area, buf);
         render_panel_scroll_rail(
-            Rect {
-                y: content.y.saturating_add(2),
-                height: content.height.saturating_sub(2),
-                ..content
-            },
+            list_area,
             buf,
             self.rows.len(),
             row_start,

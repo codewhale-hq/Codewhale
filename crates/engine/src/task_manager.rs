@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(any(test, feature = "test-support"))]
 use std::time::Duration as StdDuration;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -3212,7 +3212,7 @@ impl TaskManager {
                             break (guard.preserve_timeout_reason(exec_result), false);
                         }
                         // A ready event channel must not starve a due write.
-                        _ = tokio::time::sleep_until(persist_at.into()), if dirty => {
+                        _ = tokio::time::sleep_until(persist_at), if dirty => {
                             match self.flush_task(&task_id).await {
                                 Ok(()) => {
                                     dirty = false;
@@ -8444,12 +8444,6 @@ mod tests {
     /// window longer than the idle deadline fed only by ToolHeartbeat, then
     /// completion. Pins the supervisor side of the heartbeat chain — the
     /// worker idle watchdog must count heartbeats as progress.
-    ///
-    /// Margins: heartbeats every 30 ms across a 1.2 s window against a 500 ms
-    /// idle deadline. The window still outlasts the deadline (so the test
-    /// fails if heartbeats stop counting), while a loaded runner would need a
-    /// half-second stall to starve it; the 150 ms default deadline did starve
-    /// on hosted Windows.
     struct ToolHeartbeatExecutor;
 
     const HEARTBEAT_TEST_IDLE_PROGRESS: Duration = Duration::from_millis(500);
@@ -8500,7 +8494,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn worker_supervisor_honors_tool_heartbeats_during_silent_tools() -> Result<()> {
         let root = tempfile::tempdir()?;
         let mut config = short_test_config(root.path().to_path_buf());

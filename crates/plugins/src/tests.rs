@@ -227,6 +227,10 @@ fn declarative_runtime_sources_survive_restart_only_from_the_staged_snapshot() {
             "{capability:?} must never execute from mutable source"
         );
     }
+    assert!(staged_root.join("commands/plugin-hello.md").is_file());
+    let root = fixture.workspace.parent().unwrap().to_path_buf();
+    drop(fixture);
+    assert!(!root.try_exists().unwrap());
 }
 
 #[test]

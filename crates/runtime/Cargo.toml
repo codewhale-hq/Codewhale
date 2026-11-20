@@ -77,7 +77,7 @@ tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["serde"] }
 wait-timeout = "0.2"
 
 [dev-dependencies]

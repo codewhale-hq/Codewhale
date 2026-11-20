@@ -359,6 +359,7 @@ mod tests {
             model: "deepseek-chat".to_string(),
             model_provider: "deepseek".to_string(),
             model_provider_id: None,
+            exec_route_binding: None,
             workspace: PathBuf::from(workspace),
             mode: Some("agent".to_string()),
             cost: Default::default(),

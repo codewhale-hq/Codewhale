@@ -764,8 +764,16 @@ impl Engine {
                     &serde_json::json!({}),
                 )
                 .is_ok();
+        let admitted_mcp: HashSet<_> = authority
+            .tools_for_model(&surface.registry, &authority.agent_type)
+            .into_iter()
+            .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
+            .map(|tool| tool.name)
+            .collect();
         surface.catalog.retain(|tool| {
-            surface.registry.contains(&tool.name)
+            (surface.registry.contains(&tool.name)
+                && (!crate::mcp::McpPool::is_mcp_tool(&tool.name)
+                    || admitted_mcp.contains(&tool.name)))
                 || (discoverable && codewhale_tools::names::is_tool_search_tool(&tool.name))
                 || (code_mode && tool.name == tool_catalog::EXECUTE_TOOLS_TOOL_NAME)
         });
