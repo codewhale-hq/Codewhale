@@ -571,6 +571,21 @@ fn lifecycle_oversized_event_pages_return_every_sequence_once() {
         }
         assert_eq!(seen, expected);
     }
+
+    let last_page = |bytes| {
+        lifecycle::bounded_detail(
+            projection.clone(),
+            json!({"agent_id":"agent-test","write_progress":{"declared":["x".repeat(bytes)]}}),
+            expected.len() - 1,
+            20,
+        )
+    };
+    let available = 8192 - serde_json::to_vec(&last_page(0)).unwrap().len();
+    let result = lifecycle::status_result(last_page(available), false).unwrap();
+    assert!(result.content.len() <= 8192);
+    let page: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(page["recent_events"][0]["seq"], 25);
+    assert!(page.get("events_next_offset").is_none());
 }
 
 #[tokio::test]
