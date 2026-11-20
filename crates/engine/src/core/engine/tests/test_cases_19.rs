@@ -646,6 +646,7 @@ async fn background_completion_after_a_turn_is_delivered_once_on_the_next_turn()
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn task_shell_wait_suppresses_duplicate_background_shell_completion_event() {
     use crate::tools::shell::{LowercaseBashTool, ShellStatus};
     use crate::tools::spec::{ToolContext, ToolSpec};

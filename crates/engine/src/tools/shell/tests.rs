@@ -6520,6 +6520,7 @@ async fn lowercase_bash_persists_description_respects_cwd_and_supports_backgroun
 
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn foreground_bash_large_output_persists_session_artifact_readable_via_retrieve_tool_result()
 {
     use crate::tools::tool_result_retrieval::RetrieveToolResultTool;
