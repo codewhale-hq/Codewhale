@@ -235,16 +235,6 @@ impl SessionBootSurface {
         }
     }
 
-    /// Enabled servers known to be connecting before any name has arrived.
-    ///
-    /// The first launch frame can have `mcp_initializing` set with an empty
-    /// name list; without this a 23-server workspace would paint nothing at
-    /// all until the first boot event lands.
-    #[must_use]
-    pub fn connecting_without_names(&self) -> usize {
-        self.unnamed_connecting
-    }
-
     #[must_use]
     pub fn quiet_announced(
         mut self,
