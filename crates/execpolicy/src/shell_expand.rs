@@ -1462,6 +1462,12 @@ struct Line {
     stdin_piped: bool,
 }
 
+fn inherit_group_stdin(commands: &mut [Line]) {
+    for command in commands.iter_mut().filter(|command| !command.heredoc) {
+        command.stdin_piped = true;
+    }
+}
+
 /// How a shell invocation receives its script.
 enum ShellInput {
     /// `-c` / `--command`: the word at each offset may be the command line.
@@ -1761,9 +1767,7 @@ impl Expander {
                         line.stdin_piped = true;
                         line.heredoc = false;
                         if let Some(start) = last_closed_group {
-                            for cmd in &mut commands[start..] {
-                                cmd.stdin_piped = true;
-                            }
+                            inherit_group_stdin(&mut commands[start..]);
                         }
                     }
                     i += redirection_len(&chars[i..]);
@@ -4470,6 +4474,28 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_input_preserves_command_owned_stdin() {
+        let mut commands = [
+            Line::default(),
+            Line {
+                stdin_piped: true,
+                ..Line::default()
+            },
+            Line {
+                heredoc: true,
+                ..Line::default()
+            },
+        ];
+
+        inherit_group_stdin(&mut commands);
+
+        assert_eq!(
+            commands.map(|command| (command.stdin_piped, command.heredoc)),
+            [(true, false), (true, false), (false, true)]
+        );
+    }
 
     fn expand(command: &str) -> Vec<String> {
         // Exercise the POSIX grammar consistently on every test host.
