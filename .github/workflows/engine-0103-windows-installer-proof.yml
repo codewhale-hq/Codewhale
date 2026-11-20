@@ -1,0 +1,96 @@
+name: Engine 0.10.3 Windows installer proof
+
+on:
+  push:
+    branches: [ci/cw-7981-nsis-proof]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  install-upgrade-remove:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      BASELINE_SETUP_SHA256: b94d4a9f9d464ef8640b37dba664d7b574da6161b5d1ecf2fa6b551f24e9930a
+      ENGINE_SHA: 3805f6cc487cdaa3d8252f4edb95b679a63bd134
+      ENGINE_EXE_SHA256: a6a316b09ab77a576e51735969aba8f057fb4341ab01c983f30145b80ddf5f47
+      RC_RUN: '44744047573'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify artifact provenance
+        shell: pwsh
+        run: |
+          $head = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RC_RUN" --jq '.head_sha'
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:ENGINE_SHA) { throw 'RC source mismatch' }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: CodeWhaleSetup.exe
+          run-id: ${{ env.RC_RUN }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Install published baseline, upgrade and remove exact candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP ('engine-installer-' + [Guid]::NewGuid().ToString('N'))
+          $install = Join-Path $root 'install'
+          $bin = Join-Path $install 'bin'
+          $env:CODEWHALE_HOME = Join-Path $root 'state'
+          $env:CODEWHALE_TELEMETRY = '0'
+          $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+          $baseline = Join-Path $root 'baseline.exe'
+          New-Item -ItemType Directory -Path $root,$env:CODEWHALE_HOME | Out-Null
+          gh release download v0.10.2 --repo $env:GITHUB_REPOSITORY --pattern CodeWhaleSetup.exe --output $baseline
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $baseline).Hash.ToLowerInvariant() -cne $env:BASELINE_SETUP_SHA256) { throw 'Baseline setup digest mismatch' }
+          $setup = (Resolve-Path -LiteralPath 'candidate/CodeWhaleSetup.exe').Path
+          $setupDigest = (Get-FileHash -LiteralPath $setup).Hash.ToLowerInvariant()
+          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeWhale'
+          $product = 'HKCU:\Software\CodeWhale'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'CodeWhale/CodeWhale.lnk'
+          if ((Test-Path $registry) -or (Test-Path $product) -or (Test-Path $shortcut)) { throw 'Expected a clean disposable runner profile' }
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          function Read-Path {
+            $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          }
+          $initialPath = Read-Path
+          function Install([string]$package) {
+            $process = Start-Process -PassThru -Wait -FilePath $package -ArgumentList @('/S', "/D=$install")
+            if ($process.ExitCode -ne 0) { throw "Installer exit $($process.ExitCode)" }
+          }
+          function Check-Version([string]$expected) {
+            foreach ($name in @('codewhale.exe','codew.exe')) {
+              $binary = Join-Path $bin $name
+              $version = & $binary --version
+              if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "$name reported $version; expected $expected" }
+            }
+          }
+          Install $baseline
+          Check-Version 'codewhale 0.10.2 (ff466b2ed0bf)'
+          'unrelated' | Set-Content (Join-Path $bin 'unrelated.txt')
+          'saved state' | Set-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')
+          Install $setup
+          Check-Version "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0, 12)))"
+          foreach ($name in @('codewhale.exe','codew.exe')) {
+            if ((Get-FileHash -LiteralPath (Join-Path $bin $name)).Hash.ToLowerInvariant() -cne $env:ENGINE_EXE_SHA256) { throw "$name digest mismatch" }
+          }
+          if ((Get-ItemProperty -LiteralPath $registry).DisplayVersion -cne '0.10.3') { throw 'Upgrade registration version mismatch' }
+          if (@((Read-Path) -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw 'Expected one installed PATH entry' }
+          if (!(Test-Path $shortcut) -or !(Test-Path (Join-Path $bin 'codewhale.bat'))) { throw 'Missing launcher or Start Menu shortcut' }
+          $uninstaller = Join-Path $install 'Uninstall.exe'
+          $uninstallerHash = (Get-FileHash -LiteralPath $uninstaller).Hash.ToLowerInvariant()
+          $removed = Start-Process -PassThru -Wait -FilePath $uninstaller -ArgumentList '/S'
+          if ($removed.ExitCode -ne 0) { throw "Uninstaller exit $($removed.ExitCode)" }
+          foreach ($file in @($uninstaller,$shortcut,(Join-Path $bin 'codewhale.exe'),(Join-Path $bin 'codew.exe'),(Join-Path $bin 'codewhale.bat'),$registry,$product)) {
+            if (Test-Path -LiteralPath $file) { throw "Uninstall retained owned item $file" }
+          }
+          if ((Read-Path) -cne $initialPath) { throw 'Uninstaller did not restore original user PATH' }
+          if ((Get-Content (Join-Path $bin 'unrelated.txt')) -cne 'unrelated' -or (Get-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')) -cne 'saved state') { throw 'Uninstall changed unrelated files or state' }
+          $key.Close()
+          [ordered]@{ source=$env:ENGINE_SHA; rc_run=$env:RC_RUN; windows_build=[Environment]::OSVersion.Version.Build; baseline_setup_sha256=$env:BASELINE_SETUP_SHA256; setup_sha256=$setupDigest; codewhale_sha256=$env:ENGINE_EXE_SHA256; generated_uninstaller_sha256=$uninstallerHash; baseline_install=$true; upgrade=$true; uninstall=$true; path_restored=$true; state_preserved=$true } | ConvertTo-Json | Tee-Object -FilePath windows-installer-proof.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-installer-proof
+          path: windows-installer-proof.json
+          if-no-files-found: error
