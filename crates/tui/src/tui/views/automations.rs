@@ -439,6 +439,9 @@ impl AutomationsView {
 
     fn render_list(&self, area: Rect, buf: &mut Buffer) {
         self.list_body.set(area);
+        if area.is_empty() {
+            return;
+        }
         if let Some(problem) = self.problem.as_deref() {
             Paragraph::new(Line::from(Span::styled(
                 problem.to_string(),
@@ -954,6 +957,10 @@ impl ModalView for AutomationsView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        let area = area.intersection(buf.area);
+        self.new_button.set(Rect::ZERO);
+        self.edit_button.set(Rect::ZERO);
+        self.list_body.set(Rect::ZERO);
         if let Some(editor) = &self.editor {
             Clear.render(area, buf);
             Block::default()
@@ -976,7 +983,9 @@ impl ModalView for AutomationsView {
         let hints = self.footer_hints();
         let content = render_rounded_footer(surface, buf, &hints);
         let header = Paragraph::new(self.header_lines()).wrap(Wrap { trim: false });
-        let header_rows = u16::try_from(header.line_count(content.width)).unwrap_or(u16::MAX);
+        let header_rows = u16::try_from(header.line_count(content.width))
+            .unwrap_or(u16::MAX)
+            .min(content.height.saturating_sub(2));
         let show_divider = content.height >= header_rows.saturating_add(4);
         let header_height = header_rows
             .saturating_add(1)
@@ -985,14 +994,11 @@ impl ModalView for AutomationsView {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(header_height), Constraint::Min(1)])
             .split(content);
-        header.render(
-            Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, header_rows),
-            buf,
-        );
-        let button_y = chunks[0].y.saturating_add(header_rows);
+        let header_area = Rect::new(chunks[0].x, chunks[0].y, chunks[0].width, header_rows)
+            .intersection(chunks[0]);
+        header.render(header_area, buf);
+        let button_y = header_area.bottom();
         let mut x = chunks[0].x;
-        self.new_button.set(Rect::ZERO);
-        self.edit_button.set(Rect::ZERO);
         for (key, label, hit) in [
             ("n", MessageId::AutomationEditorNew, &self.new_button),
             ("e", MessageId::AutomationEditorEdit, &self.edit_button),
@@ -1004,7 +1010,7 @@ impl ModalView for AutomationsView {
             let width = u16::try_from(codewhale_tui_kit::ui_text::text_display_width(&text))
                 .unwrap_or(u16::MAX)
                 .min(chunks[0].right().saturating_sub(x));
-            let rect = Rect::new(x, button_y, width, 1);
+            let rect = Rect::new(x, button_y, width, 1).intersection(chunks[0]);
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!("[{key} "),
@@ -1293,6 +1299,66 @@ mod tests {
                     );
                     assert!(!view.new_button.get().is_empty(), "New remains accessible");
                     assert_eq!(view.rows.len(), 2, "feedback preserves definitions");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_receipts_keep_content_and_controls_inside_the_modal() {
+        let _env = crate::test_support::lock_test_env();
+        for (width, height) in [(40, 12), (60, 16), (80, 24), (100, 32), (140, 40)] {
+            for locale in [Locale::En, Locale::ZhHans] {
+                for detail in [false, true] {
+                    let area = Rect::new(3, 2, width, height);
+                    let canvas = Rect::new(0, 0, width + 6, height + 4);
+                    let mut view = view();
+                    view.locale = locale;
+                    view.detail_open = detail;
+                    view.show_action_receipt("Long action receipt 自动化操作结果 ".repeat(100));
+                    let mut expected = Buffer::empty(canvas);
+                    let surface = render_rounded_surface(
+                        area,
+                        &mut expected,
+                        tr(locale, MessageId::AutomationListHeading),
+                        Some(view.summary_meta()),
+                        true,
+                    );
+                    let content =
+                        render_rounded_footer(surface, &mut expected, &view.footer_hints());
+                    let mut actual = Buffer::empty(canvas);
+                    view.render(area, &mut actual);
+                    for y in canvas.y..canvas.bottom() {
+                        for x in canvas.x..canvas.right() {
+                            if !content.contains((x, y).into()) {
+                                assert_eq!(
+                                    actual[(x, y)],
+                                    expected[(x, y)],
+                                    "{area:?}/{locale:?}/{detail} at {x},{y}"
+                                );
+                            }
+                        }
+                    }
+                    for (code, button) in
+                        [('n', view.new_button.get()), ('e', view.edit_button.get())]
+                    {
+                        assert!(!button.is_empty(), "{area:?}/{locale:?}/{detail}");
+                        assert_eq!(button.intersection(content), button);
+                        assert_eq!(actual[(button.x, button.y)].symbol(), "[");
+                        view.handle_mouse(MouseEvent {
+                            kind: MouseEventKind::Down(MouseButton::Left),
+                            column: button.x,
+                            row: button.y,
+                            modifiers: KeyModifiers::NONE,
+                        });
+                        assert!(view.editor.is_some());
+                        view.handle_key(key(KeyCode::Esc));
+                        assert!(view.editor.is_none());
+                        view.handle_key(key(KeyCode::Char(code)));
+                        assert!(view.editor.is_some());
+                        view.handle_key(key(KeyCode::Esc));
+                        assert!(view.editor.is_none());
+                    }
                 }
             }
         }
