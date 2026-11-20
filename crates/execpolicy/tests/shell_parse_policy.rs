@@ -212,7 +212,46 @@ const HIDDEN_RM: &[&str] = &[
     "bundle exec rm x",
     "nix develop -c rm x",
     "nix develop .#dev -c bash -c 'rm x'",
+    "nix develop --command='rm x'",
+    "nix develop -crm x",
+    "nix shell --command='rm x'",
+    "nix develop --command=$(echo rm) -rf /",
+    "nix develop -c$(echo rm) x",
+    "nix shell --command=`echo rm` x",
     "nix-shell -p busybox --run 'rm x'",
+    "start-stop-daemon --start --exec=$(echo rm) -- x",
+    "start-stop-daemon -x$(echo rm) -- x",
+    "start-stop-daemon --exec=`echo rm` -S",
+    "start-stop-daemon --exec=${x:-rm} -S",
+    "launchctl submit -p$(echo rm) lbl",
+    "start-stop-daemon --start --exec $(echo rm) -- -rf /",
+    "launchctl submit -p $(echo rm) lbl",
+    "nix develop -c 'echo a; rm -rf /'",
+    "nix develop --command 'echo a; rm -rf /'",
+    "nix develop -c 'env rm -rf /'",
+    "true -- nix develop --command$(echo '=rm') -rf /",
+    "true -- nix develop -c $(echo 'rm -rf /')",
+    "true -- sh -c \"$(echo 'rm -rf /')\"",
+    "true -- su -c $(echo 'rm -rf /')",
+    "su -c$(echo 'rm x')",
+    "su --command$(echo '=rm') x",
+    "su --session-command$(echo '=rm') x",
+    "flock -c$(echo 'rm x')",
+    "script -qc$(echo 'rm x')",
+    "nix-shell --run$(echo '=rm x')",
+    "npx -c$(echo 'rm x')",
+    "npm exec -c$(echo 'rm x')",
+    "sh -c$(echo ' rm x') x",
+    "bash -c$(echo ' rm x')",
+    "env -S$(echo 'rm x')",
+    "env -S $(echo 'rm x')",
+    "env --split-string=$(echo 'rm x')",
+    "docker run --entrypoint $(echo rm) alpine",
+    "docker run --entrypoint=$(echo rm) alpine",
+    "docker run --entrypoint$(echo '=/bin/rm') alpine -rf /",
+    "pwsh -$(echo enc) x",
+    "true -- sh -c $(echo 'rm x')",
+    "true -- env -S $(echo 'rm x')",
     "docker run --rm alpine rm x",
     "docker run --entrypoint /bin/rm alpine -rf /",
     "docker exec ctr rm x",
@@ -256,6 +295,293 @@ const HIDDEN_RM: &[&str] = &[
     "at -f script.sh now",
     "at -f script.sh -l",
     "at -l -f script.sh",
+    // Option-scan helpers that consume a dynamic word: the landing set (or
+    // the flag it resolves to) is only known at run time.
+    "sudo -c$(echo 'rm x')",
+    "sudo -u $X rm x",
+    "sudo -E$(echo ' rm x')",
+    "sudo --$(echo ' rm x')",
+    "timeout $X",
+    "ssh $X 'rm x'",
+    "chroot $X rm x",
+    "tmux $X",
+    "env -u $X rm x",
+    "xargs -0$(echo ' rm')",
+    "watch -x$(echo ' rm x')",
+    "nsenter -t$X rm x",
+    "runuser -u $X -- rm x",
+    "systemd-run -p$X rm x",
+    "start-stop-daemon -S $X -- y",
+    "launchctl submit $X",
+    "exec -a$X rm x",
+    "su $X 'rm x'",
+    "su $(echo -c) 'rm x'",
+    "su $(echo --command) 'rm x'",
+    "npx $X 'rm x'",
+    "npm exec $X 'rm x'",
+    "nix-shell $X 'rm x'",
+    "nix-shell $(echo --run) 'rm x'",
+    "nix develop $X",
+    "cmd $X 'rm x'",
+    "sh -$X 'rm x'",
+    "bash --$X 'rm x'",
+    "nu --commands$X 'rm x'",
+    "fish --command$X 'rm x'",
+    "find . -exec$X rm {} \\;",
+    "find . -o$X rm {} \\;",
+    "screen -$X rm x",
+    "docker run $X alpine rm",
+    "docker exec $X",
+    "docker run -e $X alpine",
+    "docker run -e$(echo 'K=V --entrypoint /bin/rm') alpine -rf /",
+    "true -- sudo -u$X ls",
+    "true -- $v x",
+    "true -- su $(echo -c) 'rm x'",
+    "true -- sh -$X 'rm x'",
+    "true -- env --$(echo ' rm x')",
+    "true -- docker run -e $X alpine",
+    "true -- find . -exec$X rm {} \\;",
+    "true -- screen -$X rm x",
+    "true -- launchctl submit $X",
+    // `--rcfile`-final lines: the separated-value skip must not index past
+    // the end of the line.
+    "bash --rcfile",
+    "nu --init-file",
+    // Quoting pins a runtime-resolved word to one argv entry, but a quoted
+    // word in verb, action, option, or operand position can still resolve to
+    // a dangerous flag or payload.
+    "find . \"$X\" rm {} +",
+    "ssh \"$X\" host",
+    "ssh -o 'ProxyCommand=rm x' host",
+    "ssh -oProxyCommand='rm x' host",
+    "ssh -o 'PermitLocalCommand=yes' -o 'LocalCommand=rm x' host",
+    "docker \"$X\" --entrypoint=/bin/rm alpine",
+    "docker run \"$X\" alpine",
+    "docker exec \"$X\" ctr rm",
+    "docker exec \"$CTR\" rm",
+    "tmux \"$X\" 'rm x'",
+    "npm \"$X\" -c 'rm x'",
+    "launchctl \"$X\" 501 rm",
+    "nix \"$X\" --command rm",
+    "poetry \"$X\" rm",
+    "uv \"$X\" 'rm x'",
+    "pipx \"$X\" 'rm x'",
+    "bundle \"$X\" 'rm x'",
+    "npm exec -- \"$X\"",
+    "env -- \"$X\" rm",
+    "sudo \"$X\" -u root rm",
+    // A `--` tail is still command-shaped under heads whose operands are
+    // scripts (`s///e`, `system()`).
+    "sed -- \"$X\"",
+    "awk -- \"$X\"",
+    // OpenSSH `-o` values normalize whitespace around `=` and words.
+    "ssh -o 'PermitLocalCommand = yes' -o 'LocalCommand=rm x' host",
+    "ssh -o ' PermitLocalCommand=yes' -o 'LocalCommand=rm x' host",
+    "ssh -o 'PermitLocalCommand\t=\tyes' -o 'LocalCommand=rm x' host",
+    "ssh -o 'ProxyCommand = rm x' host",
+    "ssh -o 'ProxyCommand\trm x' host",
+    "ssh -o \"$OPT\" host",
+    // A remote shell runs whatever arrives on stdin.
+    "ssh host <<EOF\nrm x\nEOF",
+    "ssh host <<< 'rm x'",
+    "ssh host < cmds.sh",
+    "echo 'rm x' | ssh host",
+    "echo 'rm x' | mosh host",
+    "echo 'rm x' | dbclient host",
+    // PowerShell reads a bare `-` and piped stdin as a script.
+    "pwsh -",
+    "powershell -",
+    "pwsh <<EOF\nrm x\nEOF",
+    "echo 'rm x' | pwsh",
+    "echo 'rm x' | powershell",
+    // tmux `-c` is a command; the exec verbs run or type shell payloads.
+    "tmux -c 'rm x'",
+    "tmux run-shell 'rm x'",
+    "tmux run 'rm x'",
+    "tmux send-keys 'rm x' Enter",
+    "tmux if-shell 'true' 'rm x'",
+    "tmux pipe-pane 'rm x'",
+    // `screen -X` sends a command to a running session and composes with
+    // `-r`/`-R`/`-d` (which only select the session).
+    "screen -X screen rm x",
+    "screen -X exec rm x",
+    "screen -X eval 'rm x'",
+    "screen -X stuff 'rm x\n'",
+    "screen -X at 0 rm x",
+    "screen -r s -X stuff 'rm x\n'",
+    "screen -r 1 -X exec rm x",
+    "screen -dr -X exec rm x",
+    "screen -R s -X screen rm",
+    "screen -r s -Q stuff 'rm x\n'",
+    // Nested docker/podman verbs and buildx.
+    "docker container run alpine rm x",
+    "docker container exec ctr rm x",
+    "podman container run alpine rm x",
+    "podman container exec ctr rm x",
+    "docker create alpine rm x",
+    "docker compose exec svc rm x",
+    "docker compose run svc rm x",
+    "docker buildx bake --call 'system(\"rm x\")'",
+    "docker run --health-cmd 'rm x' alpine",
+    // kubectl exec runs the words after the pod operand.
+    "kubectl exec pod rm x",
+    "kubectl exec pod -- rm x",
+    "kubectl exec -c ctr pod rm x",
+    "kubectl exec -n ns pod rm x",
+    // Shell-family aliases that take `-c`.
+    "oil -c 'rm x'",
+    "ysh -c 'rm x'",
+    "pdksh -c 'rm x'",
+    "loksh -c 'rm x'",
+    "rksh -c 'rm x'",
+    "ion -c 'rm x'",
+    "ngs -c 'rm x'",
+    // GNU Parallel execs the compress program; bwrap argv is fd-resident.
+    "parallel --compress-program 'rm x' ::: y",
+    "parallel --compress-program='rm x' ::: y",
+    "parallel --compress-program=rm echo ::: y",
+    "parallel --compress-program='rm x' echo ::: y",
+    "parallel --decompress-program='rm x' echo ::: y",
+    "bwrap --args 3",
+    "bwrap --dev-bind / / --args=4",
+    // `xargs -I` marks its replacement words dynamic; a marked word in a
+    // script position (an `awk` program, a `-c` payload) cannot be scanned.
+    "xargs -I{} awk '{}'",
+    "xargs -I{} sh -c 'cat {}'",
+    "xargs -I{} sed -e '{}'",
+    // A runtime-resolved word in a script position fails closed.
+    "awk $PROG file",
+    "sed -e $PROG file",
+    "sed $PROG file",
+    "perl -e $PROG",
+    "python -c $PROG",
+    "node -e $PROG",
+    "ruby -e $PROG",
+    // Piped stdin rides through string payloads: the re-parsed line shares
+    // the wrapper's stdin (C1).
+    "printf 'rm x\n' | sh -c 'ssh host'",
+    "printf 'rm x\n' | bash -c 'ssh host'",
+    "printf 'rm x\n' | env sh -c 'ssh host'",
+    "printf 'rm x\n' | su -c 'ssh host'",
+    "printf 'rm x\n' | eval 'ssh host'",
+    "printf 'rm x\n' | eval 'echo x; ssh host'",
+    // A pipe mark survives `{ }`, `( )`, `|&` and every piece of a
+    // loop/conditional body — each shares the outer stdin (C2).
+    "printf 'rm x\n' | { cat; ssh host; }",
+    "printf 'rm x\n' | (cat; ssh host)",
+    "printf 'rm x\n' |& ssh host",
+    "printf 'rm x\n' | while read l; do ssh host; done",
+    "printf 'rm x\n' | if cat; then ssh host; fi",
+    "printf 'rm x\n' | for f in a; do ssh host; done",
+    "printf 'rm x\n' | case x in x) ssh host;; esac",
+    // `find -exec` children share find's stdin (C3).
+    "printf 'rm x\n' | find . -exec ssh host \\;",
+    "printf 'rm x\n' | find . -exec pwsh \\;",
+    // Interpreters read their program from stdin too: a pipe or heredoc is
+    // the script, as is a `-`/fd path operand or `-f`-style flag (C4).
+    "printf 'rm x\n' | python3",
+    "printf 'rm x\n' | perl",
+    "printf 'rm x\n' | ruby",
+    "printf 'rm x\n' | node",
+    "printf 'rm x\n' | php",
+    "printf 'rm x\n' | lua",
+    "printf 'rm x\n' | julia",
+    "printf 'rm x\n' | Rscript",
+    "printf 'rm x\n' | awk -f -",
+    "printf 'rm x\n' | awk -f /dev/stdin",
+    "printf 'rm x\n' | sed -f /dev/stdin",
+    "printf 'rm x\n' | sed -f -",
+    "python3 <<< 'rm x'",
+    "python3 - <<< 'rm x'",
+    "pwsh -File -",
+    "pwsh -File /dev/stdin",
+    // `docker compose` options sit between the group word and the verb
+    // (C5).
+    "docker compose -f x.yml exec svc rm x",
+    "docker compose -f=x exec svc rm x",
+    "docker compose --ansi never exec svc rm x",
+    "docker compose -p proj exec svc rm x",
+    "docker compose --project-name x exec svc rm x",
+    "docker compose --env-file e exec svc rm x",
+    "docker compose --project-directory d exec svc rm x",
+    "docker compose -H h exec svc rm x",
+    "docker compose -f x -f y exec svc rm x",
+    "docker --context prod compose exec svc rm x",
+    // `screen -X`/`at`/`eval`/`stuff` wrap the stuffed text as a session
+    // command line; the payload head is `stuff`, so dispatch it (C6).
+    "screen -r s -X at 0 stuff 'rm x'",
+    "screen -r s -X at 0 stuff rm x",
+    "screen -X 'stuff rm x'",
+    "screen -X eval 'stuff \"rm x\"'",
+    "screen -X eval stuff 'rm x'",
+    "screen -Q eval 'stuff \"rm x\"'",
+    "screen -r s -X eval 'stuff \"rm x\"'",
+    "screen -R s -Q at 0 stuff rm x",
+    // Interpreter option tables: missing value options and switches modeled
+    // as values hid the code flag behind them (C7).
+    "perl -M X -e $PROG",
+    "perl -n -e $PROG",
+    "perl -p -e $PROG",
+    "perl -i -e $PROG",
+    "python -X dev -c $PROG",
+    "python -O -c $PROG",
+    "python -s -c $PROG",
+    "python --check-hash-based-pycs always -c $PROG",
+    "php -B $PROG -r x",
+    "php -R $PROG",
+    "node --require r -e $PROG",
+    "node --import m -e $PROG",
+    "node --experimental-loader l -e $PROG",
+    "julia -i -e $PROG",
+    "julia -q -e $PROG",
+    "lua -i -e $PROG",
+    "lua -W -e $PROG",
+    "ruby -x -e $PROG",
+    "awk -l lib $PROG f",
+    "awk -i incl $PROG f",
+    "awk -o out $PROG f",
+    "awk -p prof $PROG f",
+    "Rscript -v -e $PROG",
+    // `kubectl run`/`debug` hand the post-`--` tail to the pod (C8).
+    "kubectl run x --image=i --command rm x",
+    "kubectl run x --image=i --command -- rm x",
+    "kubectl run x --image=i --restart=Never --command -- rm x",
+    "kubectl debug n --image=i -- rm x",
+    "kubectl debug n -it --image=i -- rm x",
+    // mosh runs its `--ssh`/`--server`/`--client` values to bootstrap (C9).
+    "mosh --ssh='ssh -oProxyCommand=rm' host",
+    "mosh --ssh 'ssh -o ProxyCommand=rm' host",
+    "mosh --server='rm x' host",
+    // The `--ssh` option payload survives wrapper prefixes (round 9).
+    "env mosh --ssh='ssh -oProxyCommand=rm' host",
+    // A `}` at command position closes one group, never two: nested `{ {…}; }`
+    // keeps the outer pipe mark on the commands between the closers (11b).
+    "printf 'rm x\n' | { { cat; }; cat; ssh host; }",
+    "printf 'rm x\n' | { { cat; }; ssh host; }",
+    "printf 'rm x\n' | while read l; do { { cat; }; ssh host; }; done",
+    // `screen -X` chains of `at`/`eval`/`command` stop at the depth budget
+    // instead of recursing; what is left unresolved fails closed (11b).
+    "screen -X 'eval eval eval eval eval eval eval eval eval eval eval eval stuff rm x'",
+    "screen -X 'at 0 at 0 at 0 at 0 at 0 at 0 at 0 at 0 at 0 at 0 stuff rm x'",
+    // Substitution bodies inherit the enclosing command's stdin: a piped
+    // command's `$(…)`, backticks and `<(…)`/`>(…)` bodies are piped too (11b).
+    "printf 'rm x\n' | echo \"$(ssh host)\"",
+    "printf 'rm x\n' | echo `ssh host`",
+    "printf 'rm x\n' | cat <(ssh host)",
+    "printf 'rm x\n' | cat >(ssh host)",
+    "printf 'rm x\n' | echo x`ssh host`y",
+    // `/proc/<pid>/fd/N` names a process's stdin like `/proc/self/fd/N` (11b).
+    "awk -f /proc/self/fd/0 <<< 'rm x'",
+    "sh /proc/12/fd/0 <<< 'rm x'",
+    // gawk `-i`/`--include` and `-l`/`--load` read library/extension code from
+    // a file operand, same fail-closed class as `-f` (11b).
+    "awk -l rmext $PROG",
+    "awk --load=rmext $PROG",
+    "awk --include rmext $PROG",
+    // A coprocess runs with a pipe as its stdin (11b).
+    "coproc ssh host",
+    "coproc sh -c 'ssh host'",
+    "coproc S { sh -c 'ssh host'; }",
 ];
 
 /// Literal spellings that were already denied and must stay denied.
@@ -286,6 +612,29 @@ fn budget_commands() -> Vec<String> {
     ]
 }
 
+/// Payloads wrapped deeper than one deny-only child: an unresolved innermost
+/// layer must mark every wrapper unresolved, not just the layer that hit the
+/// budget.
+fn deep_denied() -> Vec<String> {
+    let mut inner = "rm -rf /".to_string();
+    for _ in 0..12 {
+        inner = format!(
+            "sh -c \"{}\"",
+            inner.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+    }
+    let mut flag_chain = "-x rm".to_string();
+    for _ in 0..12 {
+        flag_chain = format!("-x start-stop-daemon -- {flag_chain}");
+    }
+    vec![
+        format!("true -- {inner}"),
+        inner,
+        format!("sh -c 'start-stop-daemon {flag_chain}'"),
+        format!("start-stop-daemon {flag_chain}"),
+    ]
+}
+
 fn denied(engine: &ExecPolicyEngine, command: &str) -> bool {
     let decision = engine
         .check(context(command, AskForApproval::Never))
@@ -300,6 +649,7 @@ fn denied(engine: &ExecPolicyEngine, command: &str) -> bool {
 #[test]
 fn deny_rules_hold_against_runtime_resolved_and_reserved_word_spellings() {
     let budget = budget_commands();
+    let deep = deep_denied();
     let mut missed = Vec::new();
     for engine in deny_rm_engines() {
         for command in HIDDEN_RM
@@ -307,6 +657,7 @@ fn deny_rules_hold_against_runtime_resolved_and_reserved_word_spellings() {
             .chain(LITERAL_RM)
             .copied()
             .chain(budget.iter().map(String::as_str))
+            .chain(deep.iter().map(String::as_str))
         {
             if !denied(&engine, command) {
                 missed.push(command.chars().take(80).collect::<String>());
@@ -395,6 +746,13 @@ fn ordinary_commands_stay_allowed_next_to_a_deny_rule() {
             "/lib64/ld-linux-x86-64.so.2 --list /bin/rm",
             "grep \"--\" rm notes.txt",
             "grep -- \"$PATTERN\" notes.txt",
+            // `||`, `&&` and `&` hand the next command the terminal's stdin;
+            // only `|` and `|&` propagate the pipe mark (11b).
+            "echo hi || ssh host",
+            "echo hi | cat && ssh host",
+            "echo hi | cat & ssh host",
+            "echo hi | cat; ssh host",
+            "echo hi || { cat; ssh host; }",
             "cargo test -p codewhale-engine -- --nocapture",
             "parallel echo ::: a b",
             "at -l",
@@ -570,5 +928,17 @@ fn subcommand_deny_rules_hold_against_glob_group_spellings() {
                 .expect("policy check");
             assert!(decision.allow, "{command:?} was denied: {decision:?}");
         }
+    }
+}
+
+#[test]
+fn a_deny_region_overflow_inside_a_double_dash_slice_still_fails_closed() {
+    let many = (0..300)
+        .map(|i| format!("c{i} x"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let command = format!("true -- bash -c '{many}; rm -rf /'");
+    for engine in deny_rm_engines() {
+        assert!(denied(&engine, &command), "cap-hidden rm must fail closed");
     }
 }
