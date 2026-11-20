@@ -48,7 +48,7 @@
 //! grammar, which finds their command words but not every cmd.exe or
 //! PowerShell construct.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Maximum nesting depth followed through substitutions and `-c` payloads.
 const MAX_DEPTH: usize = 8;
@@ -1302,6 +1302,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
         extra_deny: Vec::new(),
         seen: HashSet::new(),
         seen_extra_deny: HashSet::new(),
+        seen_extra_deny_depth: HashMap::new(),
         literal_backslashes: windows,
         dynamic: false,
         nested: false,
@@ -1316,6 +1317,7 @@ fn expand_for_platform(command: &str, windows: bool) -> Expansion {
     expander.expand(command, 0);
     if windows {
         expander.literal_backslashes = false;
+        expander.seen_extra_deny_depth.clear();
         expander.expand(command, 0);
     }
     Expansion {
@@ -1336,6 +1338,7 @@ struct Expander {
     extra_deny: Vec<String>,
     seen: HashSet<String>,
     seen_extra_deny: HashSet<String>,
+    seen_extra_deny_depth: HashMap<Line, usize>,
     literal_backslashes: bool,
     dynamic: bool,
     nested: bool,
@@ -1390,7 +1393,7 @@ impl WordBuf {
 
 /// One simple command: its words, which of them are dynamic, and whether a
 /// heredoc feeds its stdin.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq, Hash)]
 struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
@@ -1456,7 +1459,12 @@ impl Expander {
     /// Word-split `input` into command lines and record each one, recursing
     /// into every nested command text found along the way.
     fn expand(&mut self, input: &str, depth: usize) {
-        if depth > MAX_DEPTH || self.out.len() >= MAX_COMMANDS {
+        let at_cap = if self.deny_only {
+            self.extra_deny.len() >= MAX_COMMANDS
+        } else {
+            self.out.len() >= MAX_COMMANDS
+        };
+        if depth > MAX_DEPTH || at_cap {
             // Unexamined code is unresolved code.
             self.dynamic = true;
             return;
@@ -1811,12 +1819,19 @@ impl Expander {
     /// Record one word-split command line, plus the invocation hiding inside it
     /// when the head is a wrapper, and flag what cannot be resolved.
     fn record(&mut self, line: &Line, depth: usize) {
+        self.record_inner(line, depth, true);
+    }
+
+    fn record_inner(&mut self, line: &Line, depth: usize, scan_dash_dash: bool) {
         let tokens = &line.words;
         if tokens.is_empty() {
             return;
         }
         if depth > MAX_DEPTH {
             self.dynamic = true;
+            return;
+        }
+        if self.deny_only && self.extra_deny.len() >= MAX_COMMANDS {
             return;
         }
         self.emit(tokens);
@@ -2008,35 +2023,48 @@ impl Expander {
                 _ => self.record_launcher_commands(line, head, &dynamic, &name, depth),
             }
         }
-        for at in 0..tokens.len() {
-            if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
-                self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
+        if scan_dash_dash {
+            for at in 0..tokens.len() {
+                if self.extra_deny.len() >= MAX_COMMANDS {
+                    break;
+                }
+                if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
+                    self.record_extra_deny(slice_line(line, at + 1), depth + 1);
+                }
             }
         }
     }
 
-    fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
+    fn record_extra_deny(&mut self, sub: Line, depth: usize) {
         if depth > MAX_DEPTH || self.extra_deny.len() >= MAX_COMMANDS {
             return;
         }
-        let mut child = Expander {
-            out: Vec::new(),
-            out_words: Vec::new(),
-            extra_deny: Vec::new(),
-            seen: HashSet::new(),
-            seen_extra_deny: HashSet::new(),
-            literal_backslashes: self.literal_backslashes,
-            dynamic: false,
-            nested: false,
-            arguments_dynamic: false,
-            control: false,
-            redirects: false,
-            deny_only: true,
-        };
-        child.record(sub, depth);
-        for cmd in child.extra_deny {
-            self.emit_extra_deny(cmd);
+        if self
+            .seen_extra_deny_depth
+            .get(&sub)
+            .is_some_and(|&prev| prev <= depth)
+        {
+            return;
         }
+        self.seen_extra_deny_depth.insert(sub.clone(), depth);
+        let saved = (
+            self.dynamic,
+            self.nested,
+            self.arguments_dynamic,
+            self.control,
+            self.redirects,
+            self.deny_only,
+        );
+        self.deny_only = true;
+        self.record_inner(&sub, depth, false);
+        (
+            self.dynamic,
+            self.nested,
+            self.arguments_dynamic,
+            self.control,
+            self.redirects,
+            self.deny_only,
+        ) = saved;
     }
 
     fn record_launcher_commands(
@@ -2063,7 +2091,7 @@ impl Expander {
                             .find(|&i| matches!(tokens[i].as_str(), "-c" | "--command"))
                         && at + 1 < tokens.len()
                     {
-                        self.record(&slice_line(line, at + 1), depth + 1);
+                        self.record_inner(&slice_line(line, at + 1), depth + 1, false);
                     }
                 }
             }
@@ -2123,7 +2151,7 @@ impl Expander {
                         let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
                         self.code_payload(&rest.join(" "), rest_dynamic, depth);
                         if rest.len() > 1 {
-                            self.record(&slice_line(line, landing), depth + 1);
+                            self.record_inner(&slice_line(line, landing), depth + 1, false);
                         }
                     }
                 }
@@ -2136,7 +2164,7 @@ impl Expander {
                     resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC, &mut truncated)
                 {
                     if landing < tokens.len() {
-                        self.record(&slice_line(line, landing), depth + 1);
+                        self.record_inner(&slice_line(line, landing), depth + 1, false);
                     }
                 }
             }
@@ -2194,7 +2222,7 @@ impl Expander {
                                 for (ep_val, ep_idx) in entrypoints_before(image) {
                                     let combined =
                                         build_prefixed_line(&ep_val, ep_idx, line, image + 1);
-                                    self.record(&combined, depth + 1);
+                                    self.record_inner(&combined, depth + 1, false);
                                 }
                             }
                         }
@@ -2206,7 +2234,7 @@ impl Expander {
                         ) {
                             for (ep_val, ep_idx) in entrypoints_before(landing) {
                                 let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
-                                self.record(&combined, depth + 1);
+                                self.record_inner(&combined, depth + 1, false);
                             }
                             if landing < tokens.len() {
                                 if launcher.shell_string {
@@ -2214,10 +2242,14 @@ impl Expander {
                                     let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
                                     self.code_payload(&rest.join(" "), rest_dynamic, depth);
                                     if rest.len() > 1 {
-                                        self.record(&slice_line(line, landing), depth + 1);
+                                        self.record_inner(
+                                            &slice_line(line, landing),
+                                            depth + 1,
+                                            false,
+                                        );
                                     }
                                 } else {
-                                    self.record(&slice_line(line, landing), depth + 1);
+                                    self.record_inner(&slice_line(line, landing), depth + 1, false);
                                 }
                             }
                         }
@@ -2301,7 +2333,7 @@ impl Expander {
             && !prog.is_empty()
         {
             let combined = build_prefixed_line(&prog, prog_idx, line, args_start);
-            self.record(&combined, depth + 1);
+            self.record_inner(&combined, depth + 1, false);
         }
     }
 
@@ -4528,6 +4560,65 @@ mod tests {
         let deep = "$(".repeat(64) + "rm -rf /" + &")".repeat(64);
         let targets = expand(&deep);
         assert!(targets.len() <= MAX_COMMANDS);
+    }
+
+    #[test]
+    fn repeated_double_dash_segments_stay_bounded_and_preserve_deny_targets() {
+        let many = std::iter::once("true".to_string())
+            .chain((0..512).map(|i| format!("-- a{i}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let start = std::time::Instant::now();
+        let expansion = expand_command(&many);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "512-segment '--' expansion took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(expansion.commands, vec![many]);
+        assert_eq!(expansion.extra_deny_commands.len(), MAX_COMMANDS);
+
+        let below_cap = std::iter::once("true".to_string())
+            .chain((0..32).map(|i| format!("-- a{i}")))
+            .chain(std::iter::once("-- rm -rf /".to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let start = std::time::Instant::now();
+        let below = expand_command(&below_cap);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "32-segment '--' expansion took {:?}",
+            start.elapsed()
+        );
+        assert!(below.deny_commands().any(|cmd| cmd == "rm -rf /"));
+        assert!(!below.dynamic);
+
+        for repeated in [
+            format!("true{}", " -- eval".repeat(64)),
+            format!("screen{}", " -- screen".repeat(64)),
+        ] {
+            let start = std::time::Instant::now();
+            let expanded = expand_command(&repeated);
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(1),
+                "repeated launcher/eval '--' expansion took {:?}",
+                start.elapsed()
+            );
+            assert!(expanded.extra_deny_commands.len() <= MAX_COMMANDS);
+        }
+
+        let nested = expand_command("kubectl exec pod -- sh -c 'foo -- rm -rf /'");
+        assert!(nested.deny_commands().any(|cmd| cmd == "rm -rf /"));
+        assert!(!nested.dynamic);
+
+        let operand_dynamic = expand_command("grep -- \"$PATTERN\" -- notes.txt");
+        assert!(!operand_dynamic.dynamic);
+        assert!(operand_dynamic.arguments_dynamic);
+
+        assert!(expand_command("$(echo rm) -- a -- b").dynamic);
+
+        let win = expand_for_platform(r"kubectl exec pod -- sh -c 'rm -rf \/'", true);
+        assert!(win.deny_commands().any(|cmd| cmd == "rm -rf /"));
     }
 
     #[test]
