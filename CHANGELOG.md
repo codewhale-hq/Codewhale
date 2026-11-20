@@ -1322,6 +1322,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Contributors
 
+- **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
 - **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
