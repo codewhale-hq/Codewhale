@@ -1121,12 +1121,12 @@ provider = "alpha"
 provider = "alpha"
 base_url = "http://127.0.0.1:18001/v1"
 id = "Same"
-attachment = true
+modalities = { input = ["text", "image"], output = ["text"] }
 [[custom_models]]
 provider = "beta"
 base_url = "http://127.0.0.1:18002/v1"
 id = "Same"
-attachment = false
+modalities = { input = ["text"], output = ["text"] }
 [providers.alpha]
 kind = "openai-compatible"
 base_url = "http://127.0.0.1:18001/v1"
@@ -1165,10 +1165,11 @@ model = "Same"
             assert_eq!(
                 route.candidate.capabilities().image_input,
                 if identity == &alpha {
-                    codewhale_config::route::CapabilityState::Supported
+                    codewhale_config::route::CapabilityState::Unknown
                 } else {
                     codewhale_config::route::CapabilityState::Unsupported
-                }
+                },
+                "executable image capability for {identity:?}"
             );
             assert_eq!(
                 route.candidate.endpoint().base_url,
