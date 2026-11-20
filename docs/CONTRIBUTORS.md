@@ -79,6 +79,7 @@ changelog or release notes, and this contributor record.
 - **[vshulcz](https://github.com/vshulcz)** — documented a hybrid Claude bundle that installs declaratively with `/plugin install` and keeps its lifecycle hooks in `config.toml` ([#7346](https://github.com/codewhale-hq/Codewhale/pull/7346)).
 - **[deosiree](https://github.com/deosiree)** — bounded the terminal's wait for the session snapshot at turn end, so a newly started turn no longer freezes the UI ([#7360](https://github.com/codewhale-hq/Codewhale/pull/7360)).
 - **[ruanchaves](https://github.com/ruanchaves)** — kept MCP tools whose optional parameters carry a Pydantic `default: null` in Moonshot (Kimi) requests instead of dropping them ([#7364](https://github.com/codewhale-hq/Codewhale/pull/7364)).
+- **[swf1996120](https://github.com/swf1996120)** — found the mismatch between the per-pass PR review prompt and the caller inspection tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 
 </details>
 
