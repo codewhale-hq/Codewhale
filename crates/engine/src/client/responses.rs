@@ -1103,6 +1103,13 @@ impl CodewhaleClient {
                                 buf.push_str(&partial_json);
                             }
                         }
+                        Delta::ToolCallIdDelta { id } => {
+                            if let Some(ContentBlock::ToolUse { id: existing, .. }) =
+                                response.content.get_mut(i)
+                            {
+                                *existing = id;
+                            }
+                        }
                         Delta::SignatureDelta { .. } | Delta::ThoughtSignatureDelta { .. } => {}
                         Delta::ReasoningStateDelta { state } => {
                             if let Some(ContentBlock::Thinking {

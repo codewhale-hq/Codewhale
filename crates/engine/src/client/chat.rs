@@ -1867,6 +1867,9 @@ impl CodewhaleClient {
 
             release_stream_buffer(byte_buf);
             if !stream_failed && (saw_done || saw_finish_reason) {
+                for event in tool_indices.finish() {
+                    yield Ok(event);
+                }
                 yield Ok(StreamEvent::MessageStop);
             } else if !stream_failed {
                 yield Err(anyhow::anyhow!(
@@ -4046,12 +4049,16 @@ fn parse_chat_message_for_route(
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        let mut assigned_ids = tool_calls
+            .iter()
+            .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
         for (call_index, call) in tool_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("call_{call_index}"));
+                .unwrap_or_else(|| synthesize_chat_call_id(call_index, &mut assigned_ids));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),
@@ -4329,6 +4336,13 @@ impl ChatToolStream {
     ) -> Result<Option<usize>, &'static str> {
         let by_index = index.and_then(|i| self.by_index.get(&i).copied());
         if !self.google {
+            if by_index
+                .and_then(|slot| self.calls[slot].id.as_deref())
+                .zip(id)
+                .is_some_and(|(previous, current)| previous != current)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
             return Ok(by_index);
         }
         let by_id = id.and_then(|id| self.by_id.get(id).copied());
@@ -4351,7 +4365,7 @@ impl ChatToolStream {
         Err("Cannot match a tool call delta to its provider stream block")
     }
 
-    fn record_identity(&mut self, slot: usize, index: Option<u64>, id: Option<&str>) {
+    fn record_identity(&mut self, slot: usize, index: Option<u64>, id: Option<&str>) -> bool {
         let call = &mut self.calls[slot];
         if call.wire_index.is_none()
             && let Some(index) = index
@@ -4359,14 +4373,57 @@ impl ChatToolStream {
             self.by_index.insert(index, slot);
             call.wire_index = Some(index);
         }
-        if self.google
-            && call.id.is_none()
+        if call.id.is_none()
             && let Some(id) = id
         {
-            self.by_id.insert(id.to_owned(), slot);
+            if self.google {
+                self.by_id.insert(id.to_owned(), slot);
+            }
             call.id = Some(id.to_owned());
+            return true;
         }
+        false
     }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        self.previous_batch.clear();
+        self.by_index.clear();
+        self.by_id.clear();
+        finish_chat_tool_calls(self.calls.drain(..).map(|call| (call.block, call.id))).collect()
+    }
+}
+
+fn synthesize_chat_call_id(ordinal: usize, assigned: &mut HashSet<String>) -> String {
+    let base = format!("call_missing_{ordinal}");
+    let mut id = base.clone();
+    let mut suffix = 0usize;
+    while !assigned.insert(id.clone()) {
+        suffix += 1;
+        id = format!("{base}_{suffix}");
+    }
+    id
+}
+
+fn finish_chat_tool_calls(
+    calls: impl Iterator<Item = (u32, Option<String>)>,
+) -> impl Iterator<Item = StreamEvent> {
+    let mut calls: Vec<_> = calls.collect();
+    calls.sort_unstable_by_key(|(block, _)| *block);
+    let mut assigned = calls.iter().filter_map(|(_, id)| id.clone()).collect();
+    calls
+        .into_iter()
+        .enumerate()
+        .flat_map(move |(ordinal, (index, id))| {
+            let pairing = id.is_none().then(|| StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::ToolCallIdDelta {
+                    id: synthesize_chat_call_id(ordinal, &mut assigned),
+                },
+            });
+            pairing
+                .into_iter()
+                .chain([StreamEvent::ContentBlockStop { index }])
+        })
 }
 
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
@@ -4748,8 +4805,14 @@ fn parse_sse_chunk_with_reasoning_style(
                                     error: json!({ "message": "Duplicate tool call in provider stream batch" }),
                                 }];
                             }
-                            tool_indices.record_identity(slot, wire_index, id);
+                            let accepted_id = tool_indices.record_identity(slot, wire_index, id);
                             let call = &tool_indices.calls[slot];
+                            if accepted_id && let Some(id) = call.id.as_ref() {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ToolCallIdDelta { id: id.clone() },
+                                });
+                            }
                             if tool_indices.google
                                 && let Some(sig) = tc
                                     .pointer("/extra_content/google/thought_signature")
@@ -4783,18 +4846,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             }
 
                             let block_index = *content_index;
-                            let block_id = id
-                                .map(str::to_string)
-                                // Some upstream gateways (and the responses-API
-                                // bridge) elide the `id` on the first chunk of a
-                                // tool call. Falling back to a constant string
-                                // collides when the model emits parallel tool
-                                // calls in the same delta — every call ended up
-                                // with the same id and downstream tool-result
-                                // routing matched the first one twice. Index by
-                                // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
+                            let block_id = id.unwrap_or_default().to_owned();
                             let name =
                                 tool_name_or_fallback(name, &block_id, "Streaming response chunk");
                             let caller = tc.get("caller").and_then(|v| {
@@ -4942,12 +4994,7 @@ fn parse_sse_chunk_with_reasoning_style(
                 *thinking_started = false;
             }
             // Close tool blocks
-            tool_indices.previous_batch.clear();
-            tool_indices.by_index.clear();
-            tool_indices.by_id.clear();
-            for call in tool_indices.calls.drain(..) {
-                events.push(StreamEvent::ContentBlockStop { index: call.block });
-            }
+            events.extend(tool_indices.finish());
 
             // Emit usage from the chunk if available
             let chunk_usage = chunk.get("usage").map(|u| parse_usage(Some(u)));

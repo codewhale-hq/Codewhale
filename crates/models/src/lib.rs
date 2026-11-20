@@ -668,6 +668,8 @@ pub enum Delta {
     ThinkingDelta { thinking: String },
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
+    #[serde(skip)]
+    ToolCallIdDelta { id: String },
     /// Anthropic signed-thinking signature delta (#3014); arrives at the end
     /// of a thinking block on the native Messages stream.
     #[serde(rename = "signature_delta")]
