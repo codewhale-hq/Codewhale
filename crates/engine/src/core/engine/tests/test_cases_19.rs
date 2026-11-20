@@ -766,7 +766,16 @@ async fn task_shell_wait_suppresses_duplicate_background_shell_completion_event(
         .await
         .expect("retrieve large waited output");
     assert!(large_mid.success, "{}", large_mid.content);
-    assert!(large_mid.content.contains("BG_MID_PAST_30KB"));
+    let matches: serde_json::Value =
+        serde_json::from_str(&large_mid.content).expect("artifact query result");
+    assert_eq!(matches["matched_lines"], 1);
+    assert!(
+        matches["results"][0]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| excerpt.contains("BG_MID_PAST_30KB")),
+        "{}",
+        large_mid.content
+    );
 
     let cancel_started = LowercaseBashTool
         .execute(

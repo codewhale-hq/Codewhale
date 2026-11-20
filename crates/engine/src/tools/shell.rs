@@ -2814,8 +2814,9 @@ impl ShellManager {
         }
 
         if background {
-            let bounded_output =
-                program_args.is_some() || timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS);
+            let bounded_output = !tty
+                && !persist_pending
+                && (program_args.is_some() || timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS));
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
