@@ -114,11 +114,20 @@ pub fn render_ambient_life(
     {
         return stats;
     }
+    let mut protected_rows = protected.to_vec();
+    let text_right = area.right().saturating_sub(1);
+    for y in area.top()..area.bottom() {
+        let has_text = (area.left()..text_right)
+            .any(|x| buf[(x, y)].symbol().chars().any(|ch| !ch.is_whitespace()));
+        if has_text {
+            protected_rows.push(Rect::new(area.x, y, area.width, 1));
+        }
+    }
     let elapsed = std::time::Duration::from_millis(u64::try_from(elapsed_ms).unwrap_or(u64::MAX));
     codewhale_ratatui::Habitat::new(elapsed, codewhale_ratatui::MotionMode::Full)
         .ink(Some(ink))
         .presence(presence)
-        .protected(protected.to_vec())
+        .protected(protected_rows)
         .paint(area, buf, theme);
     pet_cameo::paint(area, buf, ink, lines, presence, whale, activity, &mut stats);
     stats
