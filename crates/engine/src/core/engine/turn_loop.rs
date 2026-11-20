@@ -994,9 +994,9 @@ impl Engine {
                 Ok(ApprovalResult::TimedOut) => {
                     Some("the approval request timed out before anyone answered".to_string())
                 }
-                Ok(ApprovalResult::RetryWithPolicy(_)) => {
-                    Some("inline REPL blocks cannot run under a changed sandbox policy".to_string())
-                }
+                Ok(ApprovalResult::RetryWithPolicy(_)) => Some(
+                    "recursive RLM rounds cannot run under a changed sandbox policy".to_string(),
+                ),
                 Err(error) => Some(error.to_string()),
             };
             if let Some(refusal) = refusal {

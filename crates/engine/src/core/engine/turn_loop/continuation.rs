@@ -67,13 +67,6 @@ impl Engine {
             return PhaseResult::Retry;
         }
 
-        // If no tool uses, check for inline REPL blocks (paper §2) or
-        // finish the turn. Honest ladder (NOTE-turn-loop-wrongness §3):
-        // 1) pending steers → resume, 2) queued subagent completions →
-        // resume, 3) REPL fences → run (empty cap may end), 4) goal
-        // continuation if under cap → resume, 5) else end. Healthy
-        // children continue in the background; their existence alone
-        // does not authorize another parent model request.
         if tool_uses.is_empty() && !fleet_no_progress_report {
             if !pending_steers.is_empty() {
                 if let Some(guard) = progress.fleet_denial_guard.as_mut() {

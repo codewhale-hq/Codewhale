@@ -1008,7 +1008,13 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
     use crate::llm_client::mock::{MockLlmClient, canned};
     use codewhale_models::{ContentBlock, Message};
 
-    for approve in [false, true] {
+    for (approval, should_run, read_only) in [
+        (ApprovalMode::Suggest, false, false),
+        (ApprovalMode::Suggest, true, false),
+        (ApprovalMode::Bypass, false, false),
+        (ApprovalMode::Bypass, false, true),
+        (ApprovalMode::Auto, true, false),
+    ] {
         let workspace = tempdir().expect("tempdir");
         let marker = workspace.path().join("nested-round-ran");
         let nested = format!(
@@ -1031,13 +1037,44 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
             canned::simple_text_turn("Done."),
         ]));
         let client: crate::core::model_client::SharedModelClient = mock.clone();
-        let config = fixture_config("captured-working-model");
+        let mut config = fixture_config("captured-working-model");
+        if approval == ApprovalMode::Bypass && !read_only {
+            let mut block = codewhale_runtime::config::AutoReviewRuleConfig::default();
+            block.id = Some("nested-note".into());
+            block.tool = Some(CODE_EXECUTION_TOOL_NAME.into());
+            block.reason = Some("recursive code blocked by fixture".into());
+            config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+                block: vec![block],
+                ..Default::default()
+            });
+        } else if approval == ApprovalMode::Auto {
+            for _ in 0..3 {
+                mock.push_message_response(guardian_fixture_response(
+                    r#"{"risk_level":"low","decision":"allow","reason":"write a fixture marker"}"#,
+                ));
+            }
+        }
         let mut engine_config = deterministic_engine_config(workspace.path());
+        engine_config.auto_review_policy =
+            crate::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
         engine_config.model = "captured-working-model".into();
         let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
         install_fixture_route(&mut engine);
-        engine.session.auto_approve = false;
-        engine.session.approval_mode = ApprovalMode::Suggest;
+        engine.session.auto_approve = approval == ApprovalMode::Bypass;
+        engine.session.approval_mode = approval;
+        if read_only {
+            let posture = engine.applied_runtime_authority();
+            engine
+                .apply_change_mode(
+                    posture.mode,
+                    posture.allow_shell,
+                    posture.trust_mode,
+                    true,
+                    approval,
+                    Some("read-only".into()),
+                )
+                .await;
+        }
         engine.session.add_message(Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -1045,9 +1082,16 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
                 cache_control: None,
             }],
         });
+        let context = admitted_context(&engine, "nested-gate-fixture-turn");
+        if read_only {
+            assert!(matches!(
+                context.elevated_sandbox_policy,
+                Some(codewhale_sandbox::SandboxPolicy::ReadOnly { .. })
+            ));
+        }
         let registry = crate::tools::ToolRegistryBuilder::new()
             .with_rlm_tool()
-            .build(admitted_context(&engine, "nested-gate-fixture-turn"));
+            .build(context);
         let policy = test_tool_surface(
             &engine,
             registry,
@@ -1062,42 +1106,58 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
             engine.run_turn(&mut turn, policy, None, None).await
         });
 
-        let events = handle.rx_event.clone();
-        let nested_card = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut rx = events.write().await;
-            while let Some(event) = rx.recv().await {
-                if let Event::ApprovalRequired { id, tool_name, .. } = event {
-                    if tool_name == CODE_EXECUTION_TOOL_NAME {
-                        return id;
+        if approval == ApprovalMode::Suggest {
+            let events = handle.rx_event.clone();
+            let nested_card = tokio::time::timeout(Duration::from_secs(30), async {
+                let mut rx = events.write().await;
+                while let Some(event) = rx.recv().await {
+                    if let Event::ApprovalRequired { id, tool_name, .. } = event {
+                        if tool_name == CODE_EXECUTION_TOOL_NAME {
+                            return id;
+                        }
+                        // The direct `rlm` call's own approval.
+                        handle.approve_tool_call(&id).await.expect("approve rlm");
                     }
-                    // The direct `rlm` call's own approval.
-                    handle.approve_tool_call(&id).await.expect("approve rlm");
                 }
-            }
-            panic!("event stream closed before the nested round asked for approval");
-        })
-        .await
-        .expect("the nested round must wait on its own approval card");
-        assert!(
-            nested_card.ends_with(".1"),
-            "the round is the rlm call's first nested request: {nested_card}"
-        );
-        assert!(!marker.exists(), "nothing runs before the decision");
+                panic!("event stream closed before the nested round asked for approval");
+            })
+            .await
+            .expect("the nested round must wait on its own approval card");
+            assert!(
+                nested_card.ends_with(".1"),
+                "the round is the rlm call's first nested request: {nested_card}"
+            );
+            assert!(!marker.exists(), "nothing runs before the decision");
 
-        if approve {
-            handle
-                .approve_tool_call(&nested_card)
-                .await
-                .expect("approve");
-        } else {
-            handle.deny_tool_call(&nested_card).await.expect("deny");
+            if should_run {
+                handle
+                    .approve_tool_call(&nested_card)
+                    .await
+                    .expect("approve");
+            } else {
+                handle.deny_tool_call(&nested_card).await.expect("deny");
+            }
         }
         let (status, error) = tokio::time::timeout(Duration::from_secs(60), task)
             .await
             .expect("turn deadline")
             .expect("turn task");
         assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-        assert_eq!(marker.exists(), approve, "approve={approve}");
+        assert_eq!(marker.exists(), should_run, "mode={approval:?}");
+        if approval != ApprovalMode::Suggest {
+            let mut rx = handle.rx_event.write().await;
+            assert!(
+                !std::iter::from_fn(|| rx.try_recv().ok())
+                    .any(|event| matches!(event, Event::ApprovalRequired { .. }))
+            );
+            if !read_only {
+                assert_eq!(
+                    mock.remaining_turns(),
+                    0,
+                    "the recursive reply must reach the gate"
+                );
+            }
+        }
     }
 }
 
