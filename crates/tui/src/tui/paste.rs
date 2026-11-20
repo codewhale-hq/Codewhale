@@ -790,7 +790,16 @@ mod tests {
     fn oversized_raw_and_bracketed_pastes_preserve_every_char_and_newline() {
         use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
 
-        let payload = "cw-7403-漢字-🐳-line\n".repeat(11_000);
+        // The 31-byte line is deliberate. Chunk boundaries drift against the
+        // 64 KiB cap instead of landing on it, so the "does this character
+        // still fit" branch is actually exercised. A line whose cycles divide
+        // the cap exactly — `cw-7403-漢字-🐳-line\n` is 25 bytes, and
+        // `25 × 2621` hits 65 525 with 11 bytes to spare — drains at the exact
+        // boundary every time and never trips that branch, so #7403's original
+        // drop rule could come back without failing this test (verified by
+        // injecting it: 0 bytes lost on the 25-byte line, 10 bytes lost on
+        // this one).
+        let payload = "cw-7403-漢字-🐳-paste-line\n".repeat(11_000);
         let character_count = payload.chars().count();
         assert!(payload.len() > 256 * 1024);
 
