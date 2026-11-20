@@ -966,6 +966,16 @@ async fn lifecycle_start_peek_and_status_detail_preserve_fields_and_strip_checkp
     );
     assert!(start_json["transcript_handle"].is_object());
 
+    let child = manager
+        .write()
+        .await
+        .agents
+        .get_mut(&agent_id)
+        .and_then(|agent| agent.task_handle.take())
+        .expect("started child has a task");
+    child.abort();
+    let _ = child.await;
+
     let giant_sig = "SIG_BASE64_".repeat(500);
     {
         let mut guard = manager.write().await;
@@ -1014,6 +1024,7 @@ async fn lifecycle_start_peek_and_status_detail_preserve_fields_and_strip_checkp
                 tool_name: Some("read".into()),
             });
         }
+        guard.persist_state_synchronously().unwrap();
     }
 
     let peek = tool
