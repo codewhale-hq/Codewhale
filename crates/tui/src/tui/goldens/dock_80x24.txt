@@ -1,24 +1,24 @@
-  Tasks 3    Fleet 1    Terminal    Context    Git    Cost                    × 
- To-do · 0/3 · 3 left                                                           
- 1 · ▸ work item 0                                                  in progress 
- 2 · ○ work item 1                                                      pending 
- 3 · ○ work item 2                                                      pending 
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-────────────────────────────────────────────────────────────────────────────────
+╭─ Tasks 3 ── Fleet 1 ── Terminal ── Context ── Git ── Cost ──────────────── × ╮
+│ To-do · 0/3 · 3 left                                                         │
+│ 1 · ▸ work item 0                                                in progress │
+│ 2 · ○ work item 1                                                    pending │
+│ 3 · ○ work item 2                                                    pending │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

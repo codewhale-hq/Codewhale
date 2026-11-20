@@ -44,7 +44,7 @@ fn specimen(area: Rect, buf: &mut Buffer, theme: &Theme, elapsed: Duration, moti
         main.width.min(58),
         main.height.saturating_sub(3).min(5),
     );
-    Message::new("Codewhale", "A fish school, a passing jellyfish, and rising bubbles.\nThe water gives way to words and decisions.").paint(prose, buf, theme);
+    Message::new("Codewhale", "A fish school, a far shoal, a passing jellyfish,\nsnow, bubbles and a distant whale. The water gives way to words.").paint(prose, buf, theme);
     if main.height >= 20 && main.width >= 30 {
         let width = main.width.min(30);
         let whale = Rect::new(

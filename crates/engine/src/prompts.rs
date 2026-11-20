@@ -108,7 +108,7 @@ pub fn resolve_handoff_path(workspace: &Path) -> (PathBuf, &'static str) {
 /// workspace-writable checkpoint with its own trim marker, and
 /// `[instruction_budget] policy = "refuse"` must not change how the relay is
 /// read.
-const RELAY_ARTIFACT_MAX_BYTES: usize = 100 * 1024;
+const RELAY_ARTIFACT_MAX_BYTES: usize = 3 * 1024;
 
 fn read_prompt_file_bounded(path: &Path, cap: usize) -> std::io::Result<(String, usize)> {
     read_prompt_text_bounded(std::fs::File::open(path)?, cap)
@@ -151,25 +151,6 @@ pub fn read_prompt_text_bounded(
         }
     };
     Ok((text, full_len))
-}
-
-/// Cap `trimmed` at `cap` bytes on a character boundary, noting what was
-/// omitted out of `total` (the file length when the read itself was bounded).
-pub fn cap_prompt_text(trimmed: &str, total: usize, cap: usize, hint: &str) -> String {
-    if trimmed.len() <= cap && total <= trimmed.len() {
-        return trimmed.to_string();
-    }
-    let head_end = (0..=cap.min(trimmed.len()))
-        .rev()
-        .find(|&i| trimmed.is_char_boundary(i))
-        .unwrap_or(0);
-    let total = total.max(trimmed.len());
-    format!(
-        "{}\n[…truncated: {} of {} bytes omitted — {hint}]",
-        &trimmed[..head_end],
-        total - head_end,
-        total
-    )
 }
 
 /// System prompt block appended when `translation_enabled` is true.
@@ -463,24 +444,25 @@ impl From<&PathBuf> for InstructionSource {
 /// callers can keep the default-uncluttered prompt for fresh workspaces.
 fn load_handoff_block(workspace: &Path) -> Option<String> {
     let (path, shown) = resolve_handoff_path(workspace);
-    // The relay is workspace-writable, so it gets the same per-file cap as
-    // an instructions file rather than an unbounded read into the prompt.
     let (raw, full_len) = read_prompt_file_bounded(&path, RELAY_ARTIFACT_MAX_BYTES).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let total = if raw.len() < full_len {
-        full_len
+    let truncated = raw.len() < full_len || trimmed.len() > RELAY_ARTIFACT_MAX_BYTES;
+    let relay = if truncated {
+        let window = &trimmed[..(0..=RELAY_ARTIFACT_MAX_BYTES.min(trimmed.len()))
+            .rev()
+            .find(|&i| trimmed.is_char_boundary(i))
+            .unwrap_or(0)];
+        let kept = window.rfind('\n').map_or(window, |end| &window[..end]);
+        format!(
+            "{}\n\n[Relay shortened here; read `{shown}` for the rest.]",
+            kept.trim_end()
+        )
     } else {
-        trimmed.len()
+        trimmed.to_string()
     };
-    let relay = cap_prompt_text(
-        trimmed,
-        total,
-        RELAY_ARTIFACT_MAX_BYTES,
-        "shorten the relay artifact",
-    );
     Some(format!(
         "## Previous Session Relay\n\nThe previous session in this workspace left a relay artifact at `{shown}`. Consider it the first artifact to read on this turn — open blockers, in-flight changes, and recent decisions live there. Update or rewrite it before exiting if state changes materially.\n\n{relay}"
     ))
@@ -1414,8 +1396,7 @@ pub fn system_prompt_with_instruction_assembly_for_host(
     // removed by the turn-meta diet — it is telemetry the model cannot act on).
     let route_body = render_route_fragment(&session_context);
 
-    // Token-budget / continuity fragment: prior-session handoff relay.
-    let token_budget_body = load_handoff_block(workspace);
+    let session_relay_body = load_handoff_block(workspace);
 
     let mut world_state = world_state_from_session_facts(
         Some(workspace_body.as_str()),
@@ -1423,7 +1404,7 @@ pub fn system_prompt_with_instruction_assembly_for_host(
         Some(route_body.as_str()),
         None, // AgentTopology is updated by runtime callers when available.
         None, // Skills stay in the constitution prefix (skills-dir-static).
-        token_budget_body.as_deref(),
+        session_relay_body.as_deref(),
     );
     // Project-instruction import (#3978, #4079) as a typed fragment with
     // hard caps — unified with `codewhale_core::fragments`. This covers
@@ -1683,7 +1664,7 @@ pub fn world_state_from_session_facts(
     route_body: Option<&str>,
     agent_topology_body: Option<&str>,
     skills_tools_body: Option<&str>,
-    token_budget_body: Option<&str>,
+    session_relay_body: Option<&str>,
 ) -> codewhale_runtime::model_context::WorldState {
     let mut state = codewhale_runtime::model_context::WorldState::new();
     if let Some(body) = workspace_body.filter(|s| !s.trim().is_empty()) {
@@ -1701,8 +1682,8 @@ pub fn world_state_from_session_facts(
     if let Some(body) = skills_tools_body.filter(|s| !s.trim().is_empty()) {
         state = state.with_skills_tools(body);
     }
-    if let Some(body) = token_budget_body.filter(|s| !s.trim().is_empty()) {
-        state = state.with_token_budget(body);
+    if let Some(body) = session_relay_body.filter(|s| !s.trim().is_empty()) {
+        state = state.with_session_relay(body);
     }
     state
 }
@@ -3825,20 +3806,25 @@ mod tests {
     }
 
     #[test]
-    fn oversized_relay_artifact_is_capped_like_an_instructions_file() {
+    fn oversized_relay_artifact_fits_its_fragment_and_points_at_the_file() {
         let tmp = tempdir().expect("tempdir");
         let dir = tmp.path().join(".codewhale");
         std::fs::create_dir_all(&dir).unwrap();
-        // 300 KiB relay: well past the per-file prompt cap.
-        std::fs::write(dir.join("handoff.md"), "R".repeat(300 * 1024)).unwrap();
+        let relay = "- runtime_handoff entry with detail\n".repeat(10 * 1024);
+        std::fs::write(dir.join("handoff.md"), &relay).unwrap();
 
         let block = super::load_handoff_block(tmp.path()).expect("relay block");
-        assert!(block.contains("[…truncated:"), "truncation marker missing");
         assert!(
-            block.len() < 110 * 1024,
-            "relay must be capped near 100 KiB, got {} bytes",
+            block.len() <= codewhale_core::fragments::DEFAULT_FRAGMENT_MAX_BYTES,
+            "relay must fit its fragment, got {} bytes",
             block.len()
         );
+        assert!(
+            block.contains("read `.codewhale/handoff.md` for the rest"),
+            "{block}"
+        );
+        let before_note = block.split("\n\n[Relay shortened").next().unwrap();
+        assert!(before_note.ends_with("with detail"), "{before_note}");
     }
 
     #[test]
@@ -4017,14 +4003,6 @@ mod tests {
             super::measure_static_prefix(Some(&with_volatile), &[])
                 > super::measure_static_prefix(Some(&one_block), &[])
         );
-    }
-
-    #[test]
-    fn relay_artifact_cap_unchanged() {
-        // The relay keeps its own 100 KiB cap; the instruction ceiling comes
-        // from `[instruction_budget] file_max_bytes` and must not change how a
-        // relay artifact is read.
-        assert_eq!(super::RELAY_ARTIFACT_MAX_BYTES, 100 * 1024);
     }
 
     #[test]

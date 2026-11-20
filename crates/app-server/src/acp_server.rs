@@ -7,7 +7,8 @@
 //! Known limits: a slow editor no longer slows a turn, because updates queue
 //! (SDK queue, then 256 frames of up to 8 MiB each) and memory is bounded only
 //! by what one turn emits; `$/cancel_request` for a running `session/prompt` is
-//! not honored (only `session/cancel` is).
+//! not honored (only `session/cancel` is). Requested file arguments carry no
+//! verified full preimage, so live approvals and replay omit structured diffs.
 use agent_client_protocol::Error as SdkError;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
@@ -541,7 +542,11 @@ impl AcpServer {
                             name: name.clone(),
                             input: input.clone(),
                         };
-                        updates.push(acp::SessionUpdate::ToolCall(tool_call_start(&call)));
+                        updates.push(acp::SessionUpdate::ToolCall(tool_call_start(
+                            &call,
+                            &saved.metadata.workspace,
+                            None,
+                        )));
                         calls.insert(key, call);
                     }
                     ContentBlock::ToolResult {
@@ -559,9 +564,11 @@ impl AcpServer {
                                 );
                             updates.push(acp::SessionUpdate::ToolCallUpdate(tool_call_update(
                                 &call,
+                                &saved.metadata.workspace,
                                 status,
                                 Some(&detail),
                                 &[],
+                                None,
                             )));
                         }
                     }
@@ -915,8 +922,9 @@ fn tool_call_kind(call: &PendingToolCall) -> acp::ToolKind {
         "apply_patch" | "write" | "edit" | "write_file" | "edit_file" => acp::ToolKind::Edit,
         "read" | "read_file" => acp::ToolKind::Read,
         "Git" => acp::ToolKind::Read,
-        "bash" | "Bash" | "terminal/run" | "terminal/send" | "terminal/wait"
-        | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
+        "bash" | "Bash" | "terminal_run" | "terminal_send" | "terminal_wait"
+        | "terminal_cancel" | "terminal_reset" | "terminal/run" | "terminal/send"
+        | "terminal/wait" | "terminal/cancel" | "terminal/reset" => acp::ToolKind::Execute,
         _ => acp::ToolKind::Other,
     }
 }
@@ -932,9 +940,15 @@ fn tool_call_title(call: &PendingToolCall) -> String {
         .or_else(|| call.input.get("pattern"))
         .or_else(|| call.input.get("task_id"))
         .and_then(Value::as_str);
+    let action = if call.name == "File" {
+        call.input.get("action").and_then(Value::as_str)
+    } else {
+        None
+    };
+    let name = action.map_or_else(|| call.name.clone(), |action| format!("File {action}"));
     match detail {
-        Some(detail) => format!("{}: {}", call.name, detail),
-        None => call.name.clone(),
+        Some(detail) => format!("{name}: {detail}"),
+        None => name,
     }
 }
 
@@ -949,22 +963,100 @@ fn truncate_for_acp(content: &str) -> String {
     format!("{truncated}\n… [truncated for display; the full result was sent to the model]")
 }
 
-fn tool_call_start(call: &PendingToolCall) -> acp::ToolCall {
-    acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
+fn tool_call_location(call: &PendingToolCall, workspace: &Path) -> Option<PathBuf> {
+    matches!(
+        tool_call_kind(call),
+        acp::ToolKind::Read | acp::ToolKind::Edit
+    )
+    .then(|| {
+        ["path", "file_path", "filePath"]
+            .iter()
+            .find_map(|key| call.input.get(*key).and_then(Value::as_str))
+    })
+    .flatten()
+    .filter(|path| !path.is_empty())
+    .and_then(|path| {
+        let resolved = codewhale_engine::tools::spec::resolve_home_path(path)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| workspace.join(path));
+        let normalized = codewhale_engine::tools::spec::normalize_path(&resolved);
+        normalized.to_str().map(PathBuf::from)
+    })
+}
+
+fn tool_call_requested_diffs(_call: &PendingToolCall, _workspace: &Path) -> Vec<acp::Diff> {
+    Vec::new()
+}
+
+fn external_locations(value: &Value) -> Option<Vec<acp::ToolCallLocation>> {
+    value.as_array().map(|entries| {
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.get("path").and_then(Value::as_str)?;
+                let mut location = acp::ToolCallLocation::new(PathBuf::from(path));
+                if let Some(line) = entry.get("line").and_then(Value::as_u64) {
+                    location = location.line(line as u32);
+                }
+                Some(location)
+            })
+            .collect()
+    })
+}
+
+fn tool_call_start(
+    call: &PendingToolCall,
+    workspace: &Path,
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
+) -> acp::ToolCall {
+    let foreign = external_locations.is_some();
+    let mut start = acp::ToolCall::new(call.execution_id.clone(), tool_call_title(call))
         .kind(tool_call_kind(call))
-        .status(acp::ToolCallStatus::Pending)
-        .raw_input((!call.input.is_null()).then(|| call.input.clone()))
+        .status(acp::ToolCallStatus::Pending);
+    if let Some(locations) = external_locations {
+        start = start.locations(locations);
+    } else {
+        start = start.locations(
+            tool_call_location(call, workspace)
+                .map(acp::ToolCallLocation::new)
+                .into_iter()
+                .collect(),
+        );
+    }
+    if !foreign {
+        start = start.content(
+            tool_call_requested_diffs(call, workspace)
+                .into_iter()
+                .map(acp::ToolCallContent::Diff)
+                .collect(),
+        );
+    }
+    start.raw_input((!call.input.is_null()).then(|| call.input.clone()))
 }
 
 fn tool_call_update(
     call: &PendingToolCall,
+    workspace: &Path,
     status: acp::ToolCallStatus,
     content: Option<&str>,
     rich_blocks: &[codewhale_tools::ToolResultContentBlock],
+    external_locations: Option<Vec<acp::ToolCallLocation>>,
 ) -> acp::ToolCallUpdate {
+    let foreign = external_locations.is_some();
     let mut fields = acp::ToolCallUpdateFields::new().status(status);
+    if let Some(locations) = external_locations {
+        fields = fields.locations(locations);
+    }
     if content.is_some() || !rich_blocks.is_empty() {
-        let mut blocks = Vec::with_capacity(rich_blocks.len() + usize::from(content.is_some()));
+        let mut blocks = Vec::with_capacity(rich_blocks.len() + 2);
+        if !foreign {
+            blocks.extend(
+                tool_call_requested_diffs(call, workspace)
+                    .into_iter()
+                    .map(acp::ToolCallContent::Diff),
+            );
+        }
         if let Some(content) = content {
             blocks.push(acp::ToolCallContent::from(truncate_for_acp(content)));
         }
@@ -1891,6 +1983,141 @@ mod tests {
     }
 
     #[test]
+    fn file_tool_start_preserves_requests_without_speculative_diffs() {
+        let directory = tempfile::tempdir().expect("workspace");
+        let workspace = directory.path();
+        std::fs::create_dir(workspace.join("src")).expect("source directory");
+        std::fs::write(workspace.join("src/lib.rs"), "prefix a middle c suffix")
+            .expect("existing file");
+        let at = |rel: &str| {
+            codewhale_engine::tools::spec::normalize_path(&workspace.join(rel))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let abs_new = codewhale_engine::tools::spec::normalize_path(&workspace.join("src/lib.rs"));
+        let abs_new_str = abs_new.to_string_lossy().into_owned();
+        let start = |name: &str, input: Value| {
+            to_wire(&tool_call_start(
+                &PendingToolCall {
+                    execution_id: "call-1".to_string(),
+                    name: name.to_string(),
+                    input,
+                },
+                workspace,
+                None,
+            ))
+            .expect("ACP tool call")
+        };
+        let edit = start(
+            "File",
+            json!({"action": "edit", "path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
+        );
+        assert_eq!(edit["locations"], json!([{"path": at("src/lib.rs")}]));
+        assert_eq!(edit["title"], "File edit: src/lib.rs");
+        assert_eq!(edit["rawInput"]["old_string"], "a");
+        assert!(edit.get("content").is_none_or(|c| c == &json!([])));
+        let write = start("write_file", json!({"path": abs_new_str, "content": "hi"}));
+        assert_eq!(write["locations"], json!([{"path": abs_new_str}]));
+        assert!(write.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(write["rawInput"]["content"], "hi");
+        let read = start("File", json!({"action": "read", "path": "README.md"}));
+        assert_eq!(read["locations"], json!([{"path": at("README.md")}]));
+        assert!(read.get("content").is_none_or(|c| c == &json!([])));
+        let shell = start("bash", json!({"command": "ls", "path": "x"}));
+        assert!(shell.get("locations").is_none_or(|l| l == &json!([])));
+        let aliased = start("write", json!({"file_path": "a.txt", "content": "x"}));
+        assert_eq!(aliased["locations"], json!([{"path": at("a.txt")}]));
+        let completed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "exec-edit".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "src/lib.rs", "search": "a", "replace": "b"}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+            None,
+        ))
+        .expect("ACP update");
+        assert_eq!(completed["content"].as_array().unwrap().len(), 1);
+        assert_eq!(completed["content"][0]["content"]["text"], "edited");
+        let home = codewhale_paths::user_home().expect("home");
+        let home_edit = start(
+            "File",
+            json!({"action": "edit", "path": "~/notes.txt", "old_string": "a", "new_string": "b"}),
+        );
+        let expected_home_note =
+            codewhale_engine::tools::spec::normalize_path(&home.join("notes.txt"));
+        assert_eq!(
+            home_edit["locations"],
+            json!([{"path": expected_home_note.to_string_lossy()}])
+        );
+        let edits_array = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": [
+                {"oldText": "a", "newText": "b"},
+                {"oldText": "c", "newText": "d"}
+            ]}),
+        );
+        assert!(edits_array.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(
+            edits_array["rawInput"]["edits"].as_array().unwrap().len(),
+            2
+        );
+        let encoded = start(
+            "edit",
+            json!({"path": "src/lib.rs", "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"}),
+        );
+        assert!(encoded.get("content").is_none_or(|c| c == &json!([])));
+        let dotted = start(
+            "File",
+            json!({"action": "read", "path": "./sub/../README.md"}),
+        );
+        assert_eq!(dotted["locations"], json!([{"path": at("README.md")}]));
+    }
+
+    #[test]
+    fn external_tool_start_forwards_agent_locations_without_fabricated_diff() {
+        let workspace = Path::new("/work/repo");
+        let start = to_wire(&tool_call_start(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            Some(vec![acp::ToolCallLocation::new(Path::new(
+                "/other/agent-workspace/notes.txt",
+            ))]),
+        ))
+        .expect("ACP tool call");
+        assert_eq!(
+            start["locations"],
+            json!([{"path": "/other/agent-workspace/notes.txt"}])
+        );
+        assert!(start["content"].as_array().is_none_or(|c| c.is_empty()));
+        let suppressed = to_wire(&tool_call_update(
+            &PendingToolCall {
+                execution_id: "call-1".to_string(),
+                name: "File".to_string(),
+                input: json!({"action": "edit", "path": "notes.txt", "edits": [{"oldText": "a", "newText": "b"}]}),
+            },
+            workspace,
+            acp::ToolCallStatus::Completed,
+            Some("edited"),
+            &[],
+            Some(Vec::new()),
+        ))
+        .expect("ACP update");
+        assert!(
+            suppressed["update"]["content"]
+                .as_array()
+                .is_none_or(|c| c.iter().all(|block| block["type"] != "diff"))
+        );
+    }
+
+    #[test]
     fn tool_update_emits_typed_acp_image_content() {
         let call = PendingToolCall {
             execution_id: uuid::Uuid::new_v4().to_string(),
@@ -1899,12 +2126,14 @@ mod tests {
         };
         let update = to_wire(&tool_call_update(
             &call,
+            Path::new("/"),
             acp::ToolCallStatus::Completed,
             Some("screenshot captured"),
             &[codewhale_tools::ToolResultContentBlock::Image {
                 mime_type: "image/png".to_string(),
                 data: "QUJD".to_string(),
             }],
+            None,
         ))
         .expect("ACP update");
         let content = update["content"].as_array().expect("ACP content blocks");
@@ -2465,9 +2694,15 @@ mod tests {
                     .await?;
                 let v = editor.until_permission().await?;
                 assert!(
-                    v.pointer("/params/toolCall/content/0/content/text")
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| !text.is_empty())
+                    v.pointer("/params/toolCall/content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|item| {
+                                item.pointer("/content/text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| !text.is_empty())
+                            })
+                        })
                 );
                 let detail = manager.get_thread_detail(&thread).await?;
                 let pending = detail

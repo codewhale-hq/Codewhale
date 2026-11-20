@@ -111,7 +111,7 @@ impl Engine {
             .with_file_tools()
             .with_present_tool()
             .with_show_data_tool()
-            // Foreground-only shell registration: never add terminal/*
+            // Foreground-only shell registration: never add terminal_*
             // lifecycle tools to Plan merely to keep the `bash` identity
             // stable across modes.
             .with_foreground_shell_tools()

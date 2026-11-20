@@ -4,93 +4,47 @@ use super::*;
 use crate::rlm::bridge::wait_for_deadline;
 
 impl Engine {
-    pub(super) async fn run_inline_repl_phase(
+    async fn run_rlm_code_round(
         &mut self,
         turn: &mut TurnContext,
         tool_policy: &ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
-        client: &SharedModelClient,
-        current_text_visible: &str,
-        has_sendable_assistant_content: bool,
+        code: String,
     ) -> PhaseResult<()> {
-        let tool_registry = Some(&tool_policy.registry);
-        // Inline ```repl execution — the normal Agent working kernel.
-        // The kernel is session-scoped: refresh its inspectable context
-        // for this model step, but preserve Python variables/imports
-        // from earlier steps. That keeps the simple `repl` route useful
-        // for sustained work instead of forcing the model through a
-        // separate open/eval/configure control surface.
-
-        // The kernel runs model-written Python, so it answers to the
-        // same command gate as `code_execution`: a narrowed tool
-        // surface (`exec --allowed-tools …`, or plain `exec`'s zero-tool
-        // surface, #6510) must not execute code through a fence.
-        // Plan mode withholds `code_execution` from the catalog, and a
-        // fence is not a way around that: it runs only when the tool is
-        // on this turn's surface, and only after the same approval.
-        let repl_fence_present = has_sendable_assistant_content
-            && codewhale_repl::fence::has_repl_block(current_text_visible);
-        let repl_fence_offered =
-            code_execution_offered(progress.mode, &progress.tool_catalog, tool_policy);
-        let mut repl_fence_skip_reason = (repl_fence_present && !repl_fence_offered)
-            .then(|| "code execution is not available on this turn".to_string());
-        let repl_blocks = if repl_fence_present && repl_fence_offered {
-            codewhale_repl::fence::extract_repl_blocks(current_text_visible)
-        } else {
-            Vec::new()
+        let Some(state) = self.rlm_host.as_ref() else {
+            return PhaseResult::Ready(());
         };
-        if !repl_blocks.is_empty() {
-            let approval_id = format!("{}-repl-{}", turn.id, turn.step);
-            repl_fence_skip_reason = if let Some(state) = self.rlm_host.as_ref() {
-                self.rlm_round_refusal(&repl_blocks[0].code, state.gate.as_ref())
-                    .await
+        let mut skip_reason =
+            if code_execution_offered(progress.mode, &progress.tool_catalog, tool_policy) {
+                self.rlm_round_refusal(&code, state.gate.as_ref()).await
             } else {
-                self.repl_fence_blocked_reason(
-                    &repl_blocks,
-                    "the reply's ```repl block(s) in the session REPL kernel",
-                    &approval_id,
-                    client.as_ref(),
-                    turn,
-                    tool_policy,
-                    &progress.tool_catalog,
-                    tool_registry,
-                    &mut progress.active_tool_names,
-                    &mut progress.tool_call_budget,
-                    progress.mode,
-                    progress.fleet_denial_guard.as_ref(),
-                )
-                .await
+                Some("code execution is not available on this turn".to_string())
             };
-            // Admission may have applied a pending posture change.
-            progress.mode = self.current_mode;
-            if self.turn_wall_clock.exhausted() {
-                let reason = "parent turn deadline exhausted before REPL execution".to_string();
-                repl_fence_skip_reason = Some(reason.clone());
-                progress.turn_error = Some(reason);
-            }
+        progress.mode = self.current_mode;
+        if skip_reason.is_none() && self.turn_wall_clock.exhausted() {
+            let reason = "parent turn deadline exhausted before REPL execution".to_string();
+            skip_reason = Some(reason.clone());
+            progress.turn_error = Some(reason);
         }
-        if let Some(reason) = repl_fence_skip_reason.as_deref() {
-            if self.rlm_host.is_some() {
-                return PhaseResult::Return((
-                    TurnOutcomeStatus::Failed,
-                    Some(format!("RLM code was not run: {reason}")),
-                ));
-            }
-            let _ = self
-                .send_event(Event::status(format!("REPL block not run: {reason}")))
-                .await;
+        if let Some(reason) = skip_reason {
+            return PhaseResult::Return((
+                TurnOutcomeStatus::Failed,
+                Some(format!("RLM code was not run: {reason}")),
+            ));
         }
-        if !repl_blocks.is_empty() && repl_fence_skip_reason.is_none() {
+        let repl_blocks = [codewhale_repl::ReplBlock {
+            code,
+            start_offset: 0,
+            end_offset: 0,
+        }];
+        {
             let repl_deadline = self.nested_work_deadline();
-            let sandbox_context = match self.rlm_host.as_ref() {
-                Some(state) => Some(state.caller.context.clone()),
-                None => self.live_tool_context(tool_registry),
-            };
-            let Some(sandbox_context) = sandbox_context else {
-                let reason = "REPL init failed: no sandbox context for this turn".to_string();
-                let _ = self.send_event(Event::status(reason.clone())).await;
-                progress.turn_error = Some(reason);
-                return PhaseResult::Break;
+            let Some(sandbox_context) = self
+                .rlm_host
+                .as_ref()
+                .map(|state| state.caller.context.clone())
+            else {
+                return PhaseResult::Ready(());
             };
             let kernel_policy = sandbox_context.elevated_sandbox_policy.clone();
             if self.repl_kernel_policy != kernel_policy {
@@ -126,53 +80,10 @@ impl Engine {
                 };
             }
 
-            if self.rlm_host.is_none() {
-                let kernel_context = self.repl_kernel_context();
-                let refresh_result = tokio::select! {
-                    biased;
-                    () = self.cancel_token.cancelled() => {
-                        Err("REPL context refresh cancelled".into())
-                    }
-                    () = wait_for_deadline(repl_deadline) => Err("parent turn deadline reached during REPL context refresh".into()),
-                    result = self.repl_kernel
-                        .as_mut()
-                        .expect("REPL kernel initialized above")
-                        .replace_context(&kernel_context) => result,
-                };
-                if let Err(e) = refresh_result {
-                    // A broken subprocess cannot be trusted to retain
-                    // state. Drop it so a later model step gets a clean,
-                    // freshly bootstrapped kernel instead of repeating a
-                    // hidden failure.
-                    self.repl_kernel = None;
-                    let _ = self
-                        .send_event(Event::status(format!("REPL context refresh failed: {e}")))
-                        .await;
-                    progress.turn_error = Some(format!("REPL context refresh failed: {e}"));
-                    return PhaseResult::Break;
-                }
-            }
-
-            // Child queries use the same object-safe client as the
-            // root turn. This follows the user-selected provider and
-            // lets deterministic/injected hosts exercise the exact
-            // same kernel contract, rather than quietly dropping
-            // programmatic recursion outside the legacy DeepSeek
-            // client path.
-            //
-            // Depth 0: the approval above covers the code in the
-            // fence, not code a child model writes later. A nested
-            // `rlm(...)` from a fence degrades to a one-shot child
-            // completion (text back to Python) instead of starting a
-            // sub-RLM whose code rounds would run unapproved.
             let captured = self
                 .rlm_host
                 .as_ref()
-                .map(|state| Arc::clone(&state.caller))
-                .or_else(|| {
-                    self.live_tool_context(tool_registry)
-                        .and_then(|context| context.rlm_caller.clone())
-                });
+                .map(|state| Arc::clone(&state.caller));
             let bridge = captured.as_deref().map(|caller| {
                 let depth = self.rlm_host.as_ref().map_or(0, |state| match state.mode {
                     crate::core::engine::rlm_host::RlmMode::Completion => 0,
@@ -191,8 +102,6 @@ impl Engine {
                     .with_deadline(repl_deadline)
                     .with_gate(self.rlm_host.as_ref().and_then(|state| state.gate.clone()))
             });
-            let repl_started = Instant::now();
-
             let mut final_result: Option<String> = None;
             let mut kernel_failed = false;
             for (i, block) in repl_blocks.iter().enumerate() {
@@ -282,28 +191,8 @@ impl Engine {
                                 UserInputProvenance::Runtime,
                             ))
                             .await;
-                        } else if self.rlm_host.is_some() {
-                            progress.consecutive_empty_repl_rounds = 0;
                         } else {
                             progress.consecutive_empty_repl_rounds = 0;
-                            let provenance_prefix =
-                                format!("Your emitted ```repl block (round {round_num}) result:");
-                            let feedback = if round.has_error {
-                                format!(
-                                    "{provenance_prefix} error\nstdout:\n{}\nstderr:\n{}",
-                                    round.stdout, round.stderr
-                                )
-                            } else {
-                                format!(
-                                    "{provenance_prefix}\n[{} child query RPC(s)]\n{}",
-                                    round.rpc_count, round.stdout
-                                )
-                            };
-                            self.add_session_message(self.runtime_text_message_with_turn_metadata(
-                                feedback,
-                                UserInputProvenance::Runtime,
-                            ))
-                            .await;
                         }
                     }
                     Err(e) => {
@@ -317,17 +206,15 @@ impl Engine {
                             UserInputProvenance::Runtime,
                         ))
                         .await;
-                        if self.rlm_host.is_some() {
-                            progress.turn_error = Some(
-                                if repl_deadline
-                                    .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
-                                {
-                                    format!("RLM original wall-clock deadline exhausted: {e}")
-                                } else {
-                                    e.clone()
-                                },
-                            );
-                        }
+                        progress.turn_error = Some(
+                            if repl_deadline
+                                .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                            {
+                                format!("RLM original wall-clock deadline exhausted: {e}")
+                            } else {
+                                e.clone()
+                            },
+                        );
                         // A transport error or timeout means Python
                         // may still be executing unknown code. Do not
                         // send another block into that process or
@@ -340,42 +227,13 @@ impl Engine {
 
             if kernel_failed {
                 self.repl_kernel = None;
-                if self.rlm_host.is_some() {
-                    return PhaseResult::Return((
-                        TurnOutcomeStatus::Failed,
-                        progress
-                            .turn_error
-                            .take()
-                            .or_else(|| Some("RLM Python execution failed".into())),
-                    ));
-                }
-            }
-
-            // Programmatic child calls are real provider work, not
-            // implementation detail. Fold their authoritative usage
-            // into the parent turn exactly once, including failures
-            // after a partial fan-out, so `/cost`, goals, and the
-            // final receipt cannot undercount the working kernel.
-            if self.rlm_host.is_none()
-                && let Some(bridge) = bridge.as_ref()
-            {
-                let snapshot = bridge.usage_snapshot().await;
-                turn.add_usage(&snapshot.usage);
-                let residual_dropped_records = snapshot
-                    .dropped_records
-                    .saturating_sub(u64::try_from(snapshot.drop_records.len()).unwrap_or(u64::MAX));
-                turn.add_routed_usage_dropped_records(residual_dropped_records);
-                if usage_has_reported_data(&snapshot.usage) {
-                    let _ = self
-                        .send_event(Event::RoutedTurnUsage {
-                            usage: snapshot.usage.clone(),
-                            duration_ms: u64::try_from(repl_started.elapsed().as_millis())
-                                .unwrap_or(u64::MAX),
-                            first_token_ms: None,
-                            request_ms: None,
-                        })
-                        .await;
-                }
+                return PhaseResult::Return((
+                    TurnOutcomeStatus::Failed,
+                    progress
+                        .turn_error
+                        .take()
+                        .or_else(|| Some("RLM Python execution failed".into())),
+                ));
             }
 
             if let Some(final_val) = final_result {
@@ -404,17 +262,14 @@ impl Engine {
                         )))
                         .await;
             turn.next_step();
-            return PhaseResult::Retry;
+            PhaseResult::Retry
         }
-
-        PhaseResult::Ready(())
     }
     pub(super) async fn continue_rlm_model_step(
         &mut self,
         turn: &mut TurnContext,
         tool_policy: &ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
-        client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
         let text = response.current_text_visible;
@@ -449,9 +304,8 @@ impl Engine {
             return PhaseResult::Retry;
         };
         state.consecutive_no_code = 0;
-        let canonical_fence = format!("```repl\n{code}\n``` ");
         match self
-            .run_inline_repl_phase(turn, tool_policy, progress, client, &canonical_fence, true)
+            .run_rlm_code_round(turn, tool_policy, progress, code)
             .await
         {
             PhaseResult::Ready(()) => PhaseResult::Return((

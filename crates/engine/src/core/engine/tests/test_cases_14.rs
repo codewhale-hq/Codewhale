@@ -685,6 +685,12 @@ fn detects_context_length_errors_from_provider_payloads() {
     assert!(!is_context_length_error_message(
         "SSE stream request failed: HTTP 400 Bad Request: model not found"
     ));
+    assert!(!is_context_length_error_message(
+        "Model output truncated: provider stopped at max_tokens"
+    ));
+    assert!(!is_context_length_error_message(
+        "Model response incomplete: provider stop reason `length`"
+    ));
 }
 
 /// #6374: the exhausted-recovery message must name levers the reader has.

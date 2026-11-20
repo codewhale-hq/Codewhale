@@ -145,16 +145,24 @@ fn record_ollama_tags_into_lake(
 pub async fn probe_live_local_ollama_catalog(config: &Config) -> Option<LiveLocalOllamaCatalog> {
     let endpoint_v1 = ollama_v1_base_url(config);
     let origin = ollama_native_origin(&endpoint_v1);
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
-        ProviderKind::Ollama,
-        "ollama",
-        &endpoint_v1,
-    );
+    let identity = config
+        .builtin_provider_identity(ProviderKind::Ollama)
+        .ok()?;
+    let ticket =
+        crate::provider_catalog_live::begin_scoped_refresh(config, &identity, &endpoint_v1).ok()?;
     let tags_url = format!("{origin}/api/tags");
     let (tags, mut profiles) = match fetch_text(&tags_url).await {
         Ok(body) => match parse_ollama_tags_with_profiles(&body) {
             Ok((tags, profiles)) if !tags.is_empty() => (tags, profiles),
-            Ok(_) => return None,
+            Ok((tags, profiles)) => {
+                record_ollama_tags_into_lake(&ticket, &endpoint_v1, &tags, &profiles, None);
+                return Some(LiveLocalOllamaCatalog {
+                    endpoint_v1,
+                    tags,
+                    ticket,
+                    chat_tag: None,
+                });
+            }
             Err(err) => {
                 tracing::debug!(target: "local_ollama", error = %err, "GET /api/tags returned unusable body");
                 (Vec::new(), std::collections::HashMap::new())
@@ -172,7 +180,16 @@ pub async fn probe_live_local_ollama_catalog(config: &Config) -> Option<LiveLoca
                 Ok(models) if !models.is_empty() => {
                     models.into_iter().map(|model| model.id).collect()
                 }
-                _ => return None,
+                Ok(_) => {
+                    record_ollama_tags_into_lake(&ticket, &endpoint_v1, &[], &profiles, None);
+                    return Some(LiveLocalOllamaCatalog {
+                        endpoint_v1,
+                        tags: Vec::new(),
+                        ticket,
+                        chat_tag: None,
+                    });
+                }
+                Err(_) => return None,
             },
             Err(_) => return None,
         }

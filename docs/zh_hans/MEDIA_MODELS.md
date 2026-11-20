@@ -8,7 +8,7 @@
 | 任务 | Codewhale 入口 | 限制 |
 | --- | --- | --- |
 | 文本转语音（TTS） | `speech` 工具；`codewhale --provider xiaomi-mimo speech "你好，Codewhale"`；`codewhale --provider deepseek speech "你好，Codewhale"`；CLI 别名 `tts`；Runtime `POST /v1/voice/tts` | 支持 Xiaomi MiMo（`mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesign`、`mimo-v2.5-tts-voiceclone` 及旧 `mimo-v2-tts`）与 DeepSeek Tools `/v1/tools/tts`（`deepseek-tts`，音色 `stella` / `tide`，格式 `wav` / `pcm`）。音色设计与克隆仍仅支持 Xiaomi MiMo，并需对应输入。 |
-| 语音转文字（STT/ASR） | 终端语音输入、Runtime `/v1/voice/*`（含上传音频 `POST /v1/voice/transcribe`，WAV/OGG）；GPUI 复用该路径 | 显式 `CODEWHALE_ASR_MODEL` 优先，否则检测本地 Whisper → Groq → 当前激活 DeepSeek（`/v1/tools/asr`，`deepseek-asr`）→ 配置的提供商（`mimo-v2.5-asr`）。本地 `tiny`；Groq `whisper-large-v3-turbo`；DeepSeek `deepseek-asr`。聊天端点不一定支持 ASR。 |
+| 语音转文字（STT/ASR） | 终端语音输入、Runtime `/v1/voice/*`（含上传音频 `POST /v1/voice/transcribe`，WAV/OGG）；桌面应用复用该路径。参见 [Voice input](../VOICE_INPUT.md) | 显式 `CODEWHALE_ASR_MODEL` 优先，否则检测本地 Whisper → Groq → 当前激活 DeepSeek（`/v1/tools/asr`，`deepseek-asr`）→ 配置的提供商（`mimo-v2.5-asr`）。本地 `tiny`；Groq `whisper-large-v3-turbo`；DeepSeek `deepseek-asr`。聊天端点不一定支持 ASR。 |
 | 视频理解 | 媒体附件/读取及适用提供商能力 | 读取视频、翻译字幕与生成视频是不同任务。 |
 | 视频生成 | 本次核查未发现一等生成工具/客户端 | 远程目录列出模型不等于有可执行生成路由。 |
 

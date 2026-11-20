@@ -1,7 +1,7 @@
 //! Workspace-confined file operations shared by Fleet artifacts and its ledger.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Component, Path};
 
 pub struct ConfinedDirEntry {
@@ -496,21 +496,30 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false, None).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace, None).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace, None)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false, Some(if executable { 0o755 } else { 0o644 }))
+        self.atomic_write_retained(
+            &mut io::Cursor::new(bytes),
+            false,
+            Some(if executable { 0o755 } else { 0o644 }),
+        )
     }
 
     fn atomic_write_retained(
         &self,
-        bytes: &[u8],
+        reader: &mut impl io::Read,
         replace: bool,
         mode: Option<u32>,
     ) -> io::Result<File> {
@@ -549,7 +558,7 @@ impl WorkspaceFile {
                     return Err(error);
                 }
             }
-            file.write_all(bytes)?;
+            io::copy(reader, &mut file)?;
             file.sync_all()?;
             if !replace
                 && rename_exclusive(
@@ -1103,16 +1112,21 @@ impl WorkspaceFile {
         self.atomic_write(bytes, false)
     }
 
+    pub fn publish_from_reader(&self, reader: &mut impl io::Read) -> io::Result<()> {
+        self.atomic_write_retained(reader, false).map(drop)
+    }
+
     pub fn replace(&self, bytes: &[u8]) -> io::Result<()> {
         self.atomic_write(bytes, true)
     }
 
     fn atomic_write(&self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        self.atomic_write_retained(bytes, replace).map(drop)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), replace)
+            .map(drop)
     }
 
     pub fn publish_retained(&self, bytes: &[u8], _executable: bool) -> io::Result<File> {
-        self.atomic_write_retained(bytes, false)
+        self.atomic_write_retained(&mut io::Cursor::new(bytes), false)
     }
 
     pub fn open_retained(&self) -> io::Result<File> {
@@ -1144,7 +1158,7 @@ impl WorkspaceFile {
         Ok(())
     }
 
-    fn atomic_write_retained(&self, bytes: &[u8], replace: bool) -> io::Result<File> {
+    fn atomic_write_retained(&self, reader: &mut impl io::Read, replace: bool) -> io::Result<File> {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{
             DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
@@ -1163,7 +1177,7 @@ impl WorkspaceFile {
                 })
         })?;
         let result = (|| {
-            temporary.write_all(bytes)?;
+            io::copy(reader, &mut temporary)?;
             temporary.as_file().sync_all()?;
 
             rename_windows_opened(temporary.as_file(), &self.filename, replace)
@@ -1658,6 +1672,9 @@ impl WorkspaceFile {
     }
     pub fn publish(&self, _: &[u8]) -> io::Result<()> {
         unreachable!()
+    }
+    pub fn publish_from_reader(&self, _: &mut impl io::Read) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
     }
     pub fn open_delivery(workspace: &Path, relative: &Path) -> io::Result<Self> {
         Self::open(workspace, relative, false)

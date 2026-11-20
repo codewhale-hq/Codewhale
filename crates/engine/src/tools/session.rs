@@ -9,9 +9,13 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
+use codewhale_models::{ContentBlock, Message, Role, turn_classify};
 use serde_json::{Value, json};
 
-use crate::session_manager::{SessionManager, SessionMetadata, workspace_scope_matches};
+use crate::session_manager::{
+    DEFAULT_SESSION_TITLE, SessionManager, SessionMetadata, conversation_title_prompt,
+    truncate_title, workspace_scope_matches,
+};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -60,16 +64,175 @@ fn checkpointed_ids(manager: &SessionManager) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-fn message_text(message: &codewhale_models::Message) -> String {
+fn message_text(message: &Message) -> String {
     message
         .content
         .iter()
         .filter_map(|block| match block {
-            codewhale_models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
+        })
+        .filter(|text| {
+            let text = text.trim();
+            !(text.starts_with("[tool_history_repair] Repaired ")
+                && text.ends_with(" orphan terminal result(s)."))
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn strip_leading_turn_meta(mut text: &str) -> &str {
+    text = text.trim();
+    while let Some((_, rest)) = text
+        .strip_prefix("<turn_meta>")
+        .and_then(|text| text.split_once("</turn_meta>"))
+    {
+        text = rest.trim_start();
+    }
+    text
+}
+
+fn is_internal_runtime_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if codewhale_core::prefix_cache::is_context_update_envelope(trimmed) {
+        return true;
+    }
+    if trimmed.starts_with("<codewhale:runtime_event ")
+        && trimmed.ends_with("</codewhale:runtime_event>")
+    {
+        return true;
+    }
+    if trimmed.starts_with('{')
+        && serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .is_some_and(|value| {
+                value["type"] == "current_deferred_toolbox"
+                    && value["active_deferred_tools"].is_array()
+            })
+    {
+        return true;
+    }
+    let instruction_header = codewhale_localization::tr(
+        codewhale_localization::Locale::En,
+        codewhale_localization::MessageId::InstructionNoticeHeader,
+    );
+    trimmed.lines().next().is_some_and(|line| {
+        line == instruction_header.as_ref()
+            || line == "Standing instructions were trimmed or skipped before this session started:"
+    })
+}
+
+fn user_message_text(message: &Message) -> Option<String> {
+    if turn_classify::is_runtime_owned_user_message(message)
+        || turn_classify::is_wire_compaction_checkpoint_message(message)
+    {
+        return None;
+    }
+    let turn_meta_index = turn_classify::turn_metadata_text(message).map(|(index, _)| index);
+    let parts: Vec<_> = message
+        .content
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != turn_meta_index)
+        .filter_map(|(_, block)| match block {
+            ContentBlock::Text { text, .. } => Some(strip_leading_turn_meta(text)),
+            _ => None,
+        })
+        .filter(|text| !is_internal_runtime_text(text))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn recall_title(metadata: &SessionMetadata, messages: &[Message]) -> String {
+    if !metadata.title_is_custom
+        && conversation_title_prompt(messages).is_some_and(|prompt| {
+            is_internal_runtime_text(prompt) && truncate_title(prompt, 50) == metadata.title
+        })
+    {
+        return messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .find_map(user_message_text)
+            .map_or_else(
+                || DEFAULT_SESSION_TITLE.to_string(),
+                |text| truncate_title(&text, 50),
+            );
+    }
+    metadata.title.clone()
+}
+
+fn assistant_tool_summary(message: &Message) -> Option<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for block in &message.content {
+        let name = match block {
+            ContentBlock::ToolUse { name, .. } | ContentBlock::ServerToolUse { name, .. } => {
+                name.as_str()
+            }
+            _ => continue,
+        };
+        if let Some((_, count)) = counts.iter_mut().find(|(seen, _)| *seen == name) {
+            *count += 1;
+        } else {
+            counts.push((name, 1));
+        }
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let rendered = counts
+        .into_iter()
+        .map(|(name, count)| {
+            if count > 1 {
+                format!("{name} x{count}")
+            } else {
+                name.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("[tools: {rendered}]"))
+}
+
+fn format_tail_message(message: &Message) -> Option<String> {
+    match &message.role {
+        Role::User => {
+            let text = user_message_text(message)?;
+            Some(format!(
+                "user: {}",
+                truncate_chars(&text, MAX_MESSAGE_CHARS)
+            ))
+        }
+        Role::Assistant => {
+            let text = message_text(message);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(format!(
+                    "assistant: {}",
+                    truncate_chars(trimmed, MAX_MESSAGE_CHARS)
+                ));
+            }
+            let tools = assistant_tool_summary(message)?;
+            Some(format!(
+                "assistant: {}",
+                truncate_chars(&tools, MAX_MESSAGE_CHARS)
+            ))
+        }
+        other => {
+            let text = message_text(message);
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let role = format!("{other:?}").to_lowercase();
+            Some(format!(
+                "{role}: {}",
+                truncate_chars(text, MAX_MESSAGE_CHARS)
+            ))
+        }
+    }
 }
 
 pub struct SessionSearchTool;
@@ -101,6 +264,10 @@ impl ToolSpec for SessionSearchTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Auto
+    }
+
+    fn supports_parallel(&self) -> bool {
+        true
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -194,6 +361,10 @@ impl ToolSpec for SessionGetTool {
         ApprovalRequirement::Auto
     }
 
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let session_id = input
             .get("session_id")
@@ -223,23 +394,13 @@ impl ToolSpec for SessionGetTool {
                 .messages
                 .iter()
                 .rev()
-                .filter_map(|message| {
-                    let text = message_text(message);
-                    if text.trim().is_empty() {
-                        return None;
-                    }
-                    let role = format!("{:?}", message.role).to_lowercase();
-                    Some(format!(
-                        "{role}: {}",
-                        truncate_chars(text.trim(), MAX_MESSAGE_CHARS)
-                    ))
-                })
+                .filter_map(format_tail_message)
                 .take(TAIL_MESSAGES)
                 .collect();
             let mut out = format!(
                 "Session {} \"{}\" — {} messages, last active {}{}\n",
                 session.metadata.id,
-                session.metadata.title,
+                recall_title(&session.metadata, &session.messages),
                 session.metadata.message_count,
                 session.metadata.updated_at.format("%Y-%m-%d %H:%M UTC"),
                 if interrupted {
@@ -249,7 +410,7 @@ impl ToolSpec for SessionGetTool {
                 },
             );
             if tail.is_empty() {
-                out.push_str("(no text messages)");
+                out.push_str("(no conversation messages)");
             } else {
                 out.push_str("Last messages (newest last):\n");
                 out.push_str(&tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
@@ -467,5 +628,129 @@ mod tests {
             .await
             .expect_err("missing session_id must fail");
         assert!(missing.to_string().contains("session_id"), "{missing}");
+    }
+
+    #[tokio::test]
+    async fn get_filters_runtime_injections_strips_turn_meta_and_summarizes_tool_only_turns() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _codewhale_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join("codewhale"));
+        let manager = SessionManager::default_location().expect("default manager");
+
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "<codewhale:runtime_event kind=\"mcp_configured_servers\" visibility=\"internal\">\n- demo\n</codewhale:runtime_event>".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: "<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+            message(
+                "user",
+                "Standing instructions were trimmed or skipped before this session started:\n- CLAUDE.md trimmed",
+            ),
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "<turn_meta>\nCurrent local date: 2026-11-18\n</turn_meta>\nInvestigate the auth regression".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: "<turn_meta>\nCurrent workspace: /ws\n</turn_meta>".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+            message(
+                "user",
+                r#"{"type":"current_deferred_toolbox","active_deferred_tools":["session_get"]}"#,
+            ),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "t1".to_string(),
+                        name: "read".to_string(),
+                        input: json!({"path": "src/auth.rs"}),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "t2".to_string(),
+                        name: "edit".to_string(),
+                        input: json!({"path": "src/auth.rs"}),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "t3".to_string(),
+                        name: "bash".to_string(),
+                        input: json!({"command": "cargo test"}),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                ],
+            },
+            message(
+                "user",
+                "<codewhale:runtime_event kind=\"child_subagent_completion\" visibility=\"internal\">\nchild finished\n</codewhale:runtime_event>",
+            ),
+            message("assistant", "Fixed token expiry check and verified tests."),
+        ];
+        let mut session = crate::session_manager::create_saved_session(
+            &messages,
+            "test-model",
+            &workspace,
+            12,
+            None,
+        );
+        session.metadata.id = "sess-clean-tail".to_string();
+        manager.save_session(&session).expect("save");
+
+        let context = ToolContext::new(workspace);
+        let result = SessionGetTool
+            .execute(json!({"session_id": "sess-clean-tail"}), &context)
+            .await
+            .expect("get");
+        let content = &result.content;
+        assert!(
+            content.starts_with("Session sess-clean-tail \"Investigate the auth regression\""),
+            "{content}"
+        );
+        assert!(
+            content.contains("user: Investigate the auth regression"),
+            "{content}"
+        );
+        assert!(
+            content.contains("assistant: [tools: read, edit, bash]"),
+            "{content}"
+        );
+        assert!(
+            content.contains("assistant: Fixed token expiry check and verified tests."),
+            "{content}"
+        );
+        assert!(!content.contains("<codewhale:runtime_event"), "{content}");
+        assert!(!content.contains("current_deferred_toolbox"), "{content}");
+        assert!(
+            !content.contains("Standing instructions were trimmed"),
+            "{content}"
+        );
+        assert!(!content.contains("<turn_meta>"), "{content}");
+        assert!(!content.contains("[tool_history_repair]"), "{content}");
     }
 }

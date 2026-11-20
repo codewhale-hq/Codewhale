@@ -1869,7 +1869,7 @@ mod provider_key_validation_tests {
             Some(codewhale_config::catalog::CatalogStatus::Fresh)
         );
         let generic = make_roster(&["qwen3:4b", "nomic-embed-text:latest"], &fingerprint);
-        publish_verified_roster(&identity, base_url, Some(generic));
+        publish_verified_roster(&config, &identity, base_url, Some(generic));
         let cached = codewhale_engine::provider_catalog_live::cached_entry_for_route(
             ProviderKind::Ollama,
             identity.key.as_str(),
@@ -1899,7 +1899,7 @@ mod provider_key_validation_tests {
             &["qwen3:4b", "nomic-embed-text:latest"],
             &base_url_fingerprint(empty_base_url),
         );
-        publish_verified_roster(&identity, empty_base_url, Some(generic));
+        publish_verified_roster(&config, &identity, empty_base_url, Some(generic));
         assert!(
             codewhale_engine::provider_catalog_live::cached_entry_for_route(
                 ProviderKind::Ollama,

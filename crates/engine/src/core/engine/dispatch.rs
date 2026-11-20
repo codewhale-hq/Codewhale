@@ -173,7 +173,12 @@ impl FleetDenialGuard {
         // neither new evidence nor a failure. Its own timeouts still govern it.
         if matches!(
             action,
-            "exec_shell_wait" | "exec_wait" | "terminal/wait" | "wait_for_dev_server" | "sleep"
+            "exec_shell_wait"
+                | "exec_wait"
+                | "terminal_wait"
+                | "terminal/wait"
+                | "wait_for_dev_server"
+                | "sleep"
         ) || name == "agent"
             && input
                 .get("action")
@@ -421,6 +426,8 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
     format_tool_error_with_schema(err, tool_name, None)
 }
 
+const VALID_SHAPE_MAX_BYTES: usize = 2 * 1024;
+
 pub(super) fn format_tool_error_with_schema(
     err: &ToolError,
     tool_name: &str,
@@ -487,12 +494,23 @@ pub(super) fn format_tool_error_with_schema(
         ToolError::NotAvailable { .. } => ("tool_not_available", Some("tool_name")),
         _ => return message,
     };
-    let valid_shape = input_schema.cloned().unwrap_or_else(|| {
-        serde_json::json!({
+    let valid_shape = match input_schema {
+        Some(schema) if schema.to_string().len() <= VALID_SHAPE_MAX_BYTES => schema.clone(),
+        Some(schema) => serde_json::json!({
+            "type": "object",
+            "required": schema.get("required").cloned().unwrap_or_else(|| serde_json::json!([])),
+            "properties": schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            "guidance": format!("Full field types are in the advertised input schema for '{tool_name}'")
+        }),
+        None => serde_json::json!({
             "type": "object",
             "guidance": format!("Use the advertised input schema for '{tool_name}'")
-        })
-    });
+        }),
+    };
     let feedback = serde_json::json!({
         "category": category,
         "bad_field": bad_field,

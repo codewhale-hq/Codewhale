@@ -25,7 +25,7 @@ pub enum FragmentId {
     Route,
     AgentTopology,
     SkillsTools,
-    TokenBudget,
+    SessionRelay,
     ProjectInstructions,
     Constitution,
 }
@@ -39,7 +39,7 @@ impl FragmentId {
             Self::Route => "route",
             Self::AgentTopology => "agent_topology",
             Self::SkillsTools => "skills_tools",
-            Self::TokenBudget => "token_budget",
+            Self::SessionRelay => "session_relay",
             Self::ProjectInstructions => "project_instructions",
             Self::Constitution => "constitution",
         }
@@ -52,7 +52,7 @@ impl FragmentId {
             Self::Route => "<!-- cw:ctx:route -->",
             Self::AgentTopology => "<!-- cw:ctx:agent_topology -->",
             Self::SkillsTools => "<!-- cw:ctx:skills_tools -->",
-            Self::TokenBudget => "<!-- cw:ctx:token_budget -->",
+            Self::SessionRelay => "<!-- cw:ctx:session_relay -->",
             Self::ProjectInstructions => "<!-- cw:ctx:project_instructions -->",
             Self::Constitution => "<!-- cw:ctx:constitution -->",
         }
@@ -65,7 +65,7 @@ impl FragmentId {
             Self::Route => FragmentRole::Route,
             Self::AgentTopology => FragmentRole::AgentTopology,
             Self::SkillsTools => FragmentRole::SkillsTools,
-            Self::TokenBudget => FragmentRole::TokenBudget,
+            Self::SessionRelay => FragmentRole::SessionRelay,
             Self::ProjectInstructions => FragmentRole::ProjectInstructions,
             Self::Constitution => FragmentRole::Constitution,
         }
@@ -78,7 +78,7 @@ impl FragmentId {
             Self::Route,
             Self::AgentTopology,
             Self::SkillsTools,
-            Self::TokenBudget,
+            Self::SessionRelay,
             Self::ProjectInstructions,
             Self::Constitution,
         ]
@@ -92,7 +92,7 @@ pub enum FragmentRole {
     Route,
     AgentTopology,
     SkillsTools,
-    TokenBudget,
+    SessionRelay,
     ProjectInstructions,
     Constitution,
 }
@@ -106,7 +106,7 @@ impl FragmentRole {
             Self::Route => "route",
             Self::AgentTopology => "agent_topology",
             Self::SkillsTools => "skills_tools",
-            Self::TokenBudget => "token_budget",
+            Self::SessionRelay => "session_relay",
             Self::ProjectInstructions => "project_instructions",
             Self::Constitution => "constitution",
         }

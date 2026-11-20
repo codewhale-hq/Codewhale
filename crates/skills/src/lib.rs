@@ -16,8 +16,8 @@ pub mod roots;
 mod system;
 #[allow(unused_imports)]
 pub use roots::{
-    CompatibleHarness, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor, SkillRootId,
-    SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
+    CompatibleHarness, SkillCatalogGroup, SkillRootAccess, SkillRootCatalog, SkillRootDescriptor,
+    SkillRootId, SkillRootKind, SkillScope, classify_configured_skills_dir, safe_display_path,
 };
 #[allow(unused_imports)]
 pub use system::is_exact_bundled_skill;
@@ -1064,6 +1064,19 @@ pub fn discover_in_workspace_with_mode_and_plugins(
         plugins,
     );
     with_untrusted_project_skills_warning(registry, workspace, None, mode)
+}
+
+#[must_use]
+pub fn skill_root_catalog_for_workspace(
+    workspace: &Path,
+    skills_dir: Option<&Path>,
+    config: &SkillsConfig,
+) -> (SkillRootCatalog, Option<PathBuf>) {
+    let mode = SkillDiscoveryMode::from_config(config);
+    let home = codewhale_paths::user_home();
+    let catalog = SkillRootCatalog::build(workspace, home.as_deref(), skills_dir)
+        .with_flat_workspace_root(mode.flat_workspace_root());
+    (catalog, home)
 }
 
 pub fn discover_for_workspace(

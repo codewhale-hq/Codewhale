@@ -95,9 +95,10 @@ if (committed.error) {
 
 // The shared parser refuses incomplete or malformed provider projections.
 const fresh = buildFacts();
-const docsPath = resolve(__dirname, "..", "data", "agent-docs.generated.json");
-if (!existsSync(docsPath) || JSON.stringify(JSON.parse(readFileSync(docsPath, "utf8"))) !== JSON.stringify(deriveAgentDocs(resolve(__dirname, ".."), REPO_ROOT))) {
-  console.error("[check-facts] FAIL — generated agent docs are stale; run npm run prebuild");
+try {
+  deriveAgentDocs(resolve(__dirname, ".."), REPO_ROOT);
+} catch (error) {
+  console.error(`[check-facts] FAIL — agent docs cannot be derived from lib/docs-map.ts: ${error.message}`);
   process.exit(1);
 }
 const featuresPath = resolve(__dirname, "..", "data", "features.generated.json");

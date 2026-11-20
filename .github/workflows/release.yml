@@ -634,7 +634,6 @@ jobs:
             docs/public-surface-facts.json
             docs/cloud-facts/stable.json
             web/lib/facts.generated.ts
-            web/data/agent-docs.generated.json
             web/data/agent-docs.release.json
             web/data/agent-docs.release-index.json
             web/data/features.generated.json

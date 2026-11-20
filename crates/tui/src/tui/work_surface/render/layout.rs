@@ -111,9 +111,6 @@ pub fn height(app: &mut App, width: u16, terminal_height: u16, rail_budget: u16)
     // by `top_cap`. An explicitly opened empty view keeps one row for its
     // "nothing here yet" line so cycling never lands on a blank band.
     let cap = top_cap(app, terminal_height, rail_budget);
-    // On compact terminals an explicit choice can fit in three rows:
-    // divider, tabs, and one usable content row. The usual five-row
-    // preference must not turn an accepted open command into a no-op.
     if cap < model::TOP_HEIGHT_MIN && (!explicit || cap < 3) {
         collapse_strip(app);
         return 0;
@@ -122,8 +119,10 @@ pub fn height(app: &mut App, width: u16, terminal_height: u16, rail_budget: u16)
         return cap;
     }
     let list_rows = rows.len().max(usize::from(explicit));
+    let body_width = if width >= 4 { width - 2 } else { width };
     let progress = u16::from(
-        top_todo_progress(app, &rows).is_some() && !progress_shares_goal_row(width, goal_rows > 0),
+        top_todo_progress(app, &rows).is_some()
+            && !progress_shares_goal_row(body_width, goal_rows > 0),
     );
     let desired = u16::try_from(list_rows)
         .unwrap_or(u16::MAX)

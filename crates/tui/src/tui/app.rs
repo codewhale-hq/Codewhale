@@ -632,6 +632,7 @@ pub struct AgentProgressMeta {
     /// and ordinary progress does not refresh that snapshot, so the quiet
     /// readout caps the engine's clock with this one.
     pub last_progress_at: Option<Instant>,
+    pub started_at: Option<Instant>,
 }
 
 /// Per-turn LSP repair-loop summary for the Turn Inspector (#4107).
@@ -1309,7 +1310,7 @@ pub enum SidebarRowAction {
     Command(String),
     /// Put a destructive command in the composer instead of executing it.
     /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
+    #[allow(dead_code)]
     PrefillCommand(String),
     /// Select the persistent Agents panel. This is deliberately a navigation
     /// action rather than a modal: the Subagents summary is a group door, so
@@ -2160,8 +2161,9 @@ pub struct App {
     /// boundary (`agent_id` → count), from the latest `AgentList` refresh.
     pub agent_queued_follow_ups: HashMap<String, usize>,
     /// Receipts-only roster of every agent that ran this session (#5479).
-    /// Refreshed wholesale on each `AgentList` event; shared by `/agents`,
-    /// the Agents register and the Price view.
+    /// Updated incrementally from session-scoped agent lifecycle events and
+    /// reconciled by `AgentList`; shared by `/agents`, the Agents register
+    /// and the Price view.
     pub agent_roster: Vec<codewhale_engine::agent_roster::AgentRosterRow>,
     /// Original conversation owner of the retained snapshot. A process boot
     /// marker or a worker's parent run is not a conversation identity.
@@ -5613,7 +5615,7 @@ impl App {
     /// `true` for the `Agent N` counter placeholder assigned before a child's
     /// dispatch metadata arrives. Placeholders are the only label that may be
     /// upgraded once the child's identity is observed.
-    fn is_agent_counter_placeholder(label: &str) -> bool {
+    pub(crate) fn is_agent_counter_placeholder(label: &str) -> bool {
         label
             .strip_prefix("Agent ")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -5632,6 +5634,12 @@ impl App {
                 self.agent_progress_meta
                     .get(agent_id)
                     .and_then(|meta| meta.display_name.clone())
+            })
+            .or_else(|| {
+                self.current_agent_roster()
+                    .iter()
+                    .find(|row| row.worker_id == agent_id)
+                    .map(|row| row.display_name.clone())
             })
             .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty() && name != agent_id)
@@ -5935,6 +5943,24 @@ impl App {
             self.mcp_announced_problems.clear();
             self.session_write_receipt = None;
             self.session_write_owner = None;
+            self.subagent_cache.clear();
+            self.subagent_terminal_seen_at.clear();
+            self.subagent_cache_received_at = None;
+            self.agent_progress.clear();
+            self.agent_progress_meta.clear();
+            self.subagent_card_index.clear();
+            self.last_fanout_card_index = None;
+            self.pending_subagent_dispatch = None;
+            self.agent_activity_started_at = None;
+            self.agent_counter = 0;
+            self.agent_label_map.clear();
+            self.agent_focus = None;
+            self.agent_queued_follow_ups.clear();
+            self.agent_roster.clear();
+            self.agent_roster_session_id = None;
+            self.agent_roster_print_requested = false;
+            self.coordination_detail = None;
+            self.work_surface.reset_session_state(session_id.as_deref());
         }
         self.current_session_id = session_id;
     }
@@ -7249,7 +7275,7 @@ impl App {
     /// Ceiling on how far the ambient clock advances per sampled frame.
     /// Bursty draw schedules (fast token streams) slow the aquarium down
     /// instead of teleporting creatures across the gap.
-    pub const AMBIENT_MAX_STEP_MS: u128 = 160;
+    pub const AMBIENT_MAX_STEP_MS: u128 = 260;
     /// Gentle-motion grace before a fully idle aquarium settles still.
     pub const AMBIENT_IDLE_SETTLE_MS: u64 = 6_000;
 

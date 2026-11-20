@@ -51,6 +51,14 @@ pub(super) fn full_native_registry(root: &std::path::Path) -> crate::tools::regi
 /// `tool_search` activation path. Shared by every site that writes
 /// tool names into prompts, briefs, or tool output.
 pub fn assert_text_names_only_callable_tools(label: &str, text: &str) {
+    assert_text_names_only_callable_tools_with_auto_active(label, text, &[]);
+}
+
+pub fn assert_text_names_only_callable_tools_with_auto_active(
+    label: &str,
+    text: &str,
+    auto_active: &[&str],
+) {
     use crate::core::engine::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
 
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -61,7 +69,9 @@ pub fn assert_text_names_only_callable_tools(label: &str, text: &str) {
         let name = tool.name().to_string();
         if !tool.model_visible() {
             hidden.push(name);
-        } else if !DEFAULT_ACTIVE_NATIVE_TOOLS.contains(&name.as_str()) {
+        } else if !DEFAULT_ACTIVE_NATIVE_TOOLS.contains(&name.as_str())
+            && !auto_active.contains(&name.as_str())
+        {
             deferred.push(name);
         }
     }

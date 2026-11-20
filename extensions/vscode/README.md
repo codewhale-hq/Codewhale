@@ -29,6 +29,9 @@ restore points, and the original terminal launch helpers.
 `127.0.0.1:7878` by default, starts it in a visible terminal on request, and
 never runs its own agent engine — the runtime is the single turn/event owner.
 
+Editors that speak the Agent Client Protocol, such as Zed, do not need this
+extension: see [Use Codewhale from your editor](https://github.com/codewhale-hq/Codewhale/blob/main/docs/ACP.md).
+
 ## Security posture
 
 - Runtime bearer tokens are stored in VS Code SecretStorage via

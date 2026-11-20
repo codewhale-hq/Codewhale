@@ -1164,6 +1164,7 @@ pub struct DshClientClosure {
     pub inject: Vec<String>,
     pub host_provided: Vec<String>,
     pub files: BTreeMap<String, String>,
+    pub imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     pub bytes: usize,
 }
 
@@ -1279,6 +1280,7 @@ fn package_target(manifest: &Value, subpath: &str) -> Option<String> {
 struct ClientScan<'a> {
     files: &'a BTreeMap<String, Vec<u8>>,
     closure: BTreeMap<String, String>,
+    imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     host: std::collections::BTreeSet<String>,
     bytes: usize,
 }
@@ -1347,7 +1349,7 @@ impl ClientScan<'_> {
             || name == "cosmokit"
             || name.starts_with("@deepseek-ai/")
         {
-            self.host.insert(name);
+            self.host.insert(specifier.to_string());
             return Ok(None);
         }
         Err(format!(
@@ -1371,6 +1373,7 @@ impl ClientScan<'_> {
         let dynamic = pattern(
             r#"\b(?:require|import)\s*\(\s*(?:[^\s"'\)]|"[^"\n]*"\s*[^\s,\)]|'[^'\n]*'\s*[^\s,\)])"#,
         );
+        let dynamic_import = pattern(r"\bimport\s*\(");
         let mut pending = vec![entry];
         while let Some(path) = pending.pop() {
             if self.closure.contains_key(&path) {
@@ -1391,6 +1394,9 @@ impl ClientScan<'_> {
             let text = std::str::from_utf8(&self.files[&path])
                 .map_err(|_| format!("`{path}` is not UTF-8"))?
                 .to_string();
+            if dynamic_import.is_match(&text) {
+                return Err(format!("`{path}` uses unsupported dynamic import"));
+            }
             if dynamic.is_match(&text) {
                 return Err(format!("`{path}` loads a module by a computed specifier"));
             }
@@ -1399,7 +1405,12 @@ impl ClientScan<'_> {
                     .get(1)
                     .or_else(|| capture.get(2))
                     .map_or("", |m| m.as_str());
-                if let Some(resolved) = self.resolve(&path, specifier)? {
+                let resolved = self.resolve(&path, specifier)?;
+                self.imports
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(specifier.to_string(), resolved.clone());
+                if let Some(resolved) = resolved {
                     pending.push(resolved);
                 }
             }
@@ -1430,6 +1441,7 @@ fn client_closure(
     let mut scan = ClientScan {
         files,
         closure: BTreeMap::new(),
+        imports: BTreeMap::new(),
         host: Default::default(),
         bytes: 0,
     };
@@ -1458,6 +1470,7 @@ fn client_closure(
         inject,
         host_provided: scan.host.into_iter().collect(),
         files: scan.closure,
+        imports: scan.imports,
         bytes: scan.bytes,
     })
 }

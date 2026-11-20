@@ -1,12 +1,12 @@
-  Settings  ────────────────────────────
- ‹ Appearance  1/7                    › 
-  Search: type to filter  (18/72)       
-   Display                            █ 
- ❯Theme  terminal               ‹ ›   █ 
-  Language  auto                ‹ ›   │ 
-  Background  (default)         ✎     │ 
-  Pet mode  Off                 [ ]   │ 
-  Quiet tran...  On             [x]   │ 
- Theme: terminal                        
-  Tab ⇆  ↑↓   Enter ↵  Esc ×            
-────────────────────────────────────────
+╭ Settings ──────── Appearance · 18/72 ╮
+│‹ Appearance  1/7                    ›│
+│ Search: type to filter  (18/72)      │
+│  Display                            █│
+│▸ Theme  terminal               ‹ ›  █│
+│  Language  auto                ‹ ›  ││
+│  Background  (default)         ✎    ││
+│  Pet mode  ○ Off                    ││
+│  Quiet tran...  ● On                ││
+│Theme: terminal                       │
+│Tab ⇆ · ↑↓ · Enter ↵ · Esc ×          │
+╰──────────────────────────────────────╯

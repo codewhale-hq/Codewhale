@@ -5,7 +5,7 @@
 This page is **manual, opt-in, and never automated.** Nothing in CI, no test,
 no build script, and no skill runs these commands. The repository's automated
 suite is provider-free by design; see
-[`crates/tui/assets/skills-catalog-matrix.json`](../crates/tui/assets/skills-catalog-matrix.json)
+[`crates/skills/assets/skills-catalog-matrix.json`](../crates/skills/assets/skills-catalog-matrix.json)
 and the catalog-matrix tests for what is actually asserted without a provider.
 
 Run this only when you want to answer one narrow question: *does a real route

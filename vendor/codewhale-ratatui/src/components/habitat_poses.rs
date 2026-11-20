@@ -25,7 +25,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-//! Bounded native replacements for the ASCII fish and jelly silhouettes.
+//! Bounded native poses for the habitat: fish, minnow, jellyfish, whale and
+//! a single-dot mote. The ASCII fallback keeps fish, jellyfish and bubbles.
 //! These are authored dot poses, not another simulation. The habitat owns
 //! travel, collision and lifetime from caller-supplied elapsed time. Two tiny immutable tables
 //! retain their rows so a frame borrows glyphs without allocating strings.
@@ -96,6 +97,93 @@ static JELLY: LazyLock<Vec<[String; 3]>> = LazyLock::new(|| {
         .collect()
 });
 
+// Far fish: 2 directions × 2 tail poses × 2 horizontal × 2 vertical dot offsets.
+static MINNOW: LazyLock<Vec<String>> = LazyLock::new(|| {
+    (0..16)
+        .map(|index| {
+            let dy = index % 2;
+            let dx = index / 2 % 2;
+            let pose = index / 4 % 2;
+            let right = index / 8 != 0;
+            let mut dots = Vec::from([(2, 1), (3, 1), (4, 1), (3, 0), (3, 2)]);
+            dots.extend(if pose == 0 {
+                [(0, 0), (1, 1), (0, 2)]
+            } else {
+                [(1, 0), (0, 1), (1, 2)]
+            });
+            if !right {
+                for point in &mut dots {
+                    point.0 = 4 - point.0;
+                }
+            }
+            raster(&dots, 3, 1, dx, dy).remove(0)
+        })
+        .collect()
+});
+
+// Whale: 2 directions × 4 fluke poses × 2 horizontal × 4 vertical dot offsets.
+static WHALE: LazyLock<Vec<[String; 3]>> = LazyLock::new(|| {
+    (0..64)
+        .map(|index| {
+            let dy = index % 4;
+            let dx = index / 4 % 2;
+            let pose = index / 8 % 4;
+            let right = index / 32 != 0;
+            let mut dots = Vec::from([
+                (8, 1),
+                (9, 1),
+                (10, 1),
+                (11, 1),
+                (12, 1),
+                (6, 2),
+                (7, 2),
+                (13, 2),
+                (14, 2),
+                (5, 3),
+                (15, 3),
+                (16, 4),
+                (17, 5),
+                (4, 4),
+                (16, 6),
+                (5, 6),
+                (6, 6),
+                (7, 6),
+                (8, 6),
+                (9, 6),
+                (10, 6),
+                (11, 6),
+                (12, 6),
+                (13, 6),
+                (14, 6),
+                (15, 6),
+                (10, 7),
+                (11, 7),
+                (3, 4),
+                (2, 4),
+            ]);
+            dots.extend(match pose {
+                0 => [(1, 3), (0, 2), (1, 2), (0, 1)],
+                1 => [(1, 4), (0, 3), (1, 3), (0, 4)],
+                2 => [(1, 5), (0, 5), (1, 6), (0, 6)],
+                _ => [(1, 4), (0, 4), (1, 5), (0, 5)],
+            });
+            if !right {
+                for point in &mut dots {
+                    point.0 = 17 - point.0;
+                }
+            }
+            let mut rows = raster(&dots, 10, 3, dx, dy).into_iter();
+            std::array::from_fn(|_| rows.next().expect("three whale rows"))
+        })
+        .collect()
+});
+
+static MOTE: LazyLock<Vec<String>> = LazyLock::new(|| {
+    (0..8)
+        .map(|index| raster(&[(index % 2, index / 2)], 1, 1, 0, 0).remove(0))
+        .collect()
+});
+
 fn raster(
     dots: &[(usize, usize)],
     width: usize,
@@ -134,4 +222,16 @@ pub(super) fn fish(right: bool, pose: usize, dx: usize, dy: usize) -> &'static s
 
 pub(super) fn jelly(pose: usize, dx: usize, dy: usize) -> &'static [String; 3] {
     &JELLY[pose % 16 * 8 + dx % 2 * 4 + dy % 4]
+}
+
+pub(super) fn minnow(right: bool, pose: usize, dx: usize, dy: usize) -> &'static str {
+    &MINNOW[usize::from(right) * 8 + pose % 2 * 4 + dx % 2 * 2 + dy % 2]
+}
+
+pub(super) fn whale(right: bool, pose: usize, dx: usize, dy: usize) -> &'static [String; 3] {
+    &WHALE[usize::from(right) * 32 + pose % 4 * 8 + dx % 2 * 4 + dy % 4]
+}
+
+pub(super) fn mote(dx: usize, dy: usize) -> &'static str {
+    &MOTE[dy % 4 * 2 + dx % 2]
 }

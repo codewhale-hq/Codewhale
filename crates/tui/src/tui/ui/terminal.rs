@@ -211,6 +211,36 @@ pub(crate) fn live_alt_screen() -> bool {
     LIVE_ALT_SCREEN.load(Ordering::Acquire)
 }
 
+static RESTORED_BY_PANIC: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_terminal_restored_by_panic() {
+    RESTORED_BY_PANIC.store(true, Ordering::Release);
+}
+
+pub(crate) fn take_terminal_restored_by_panic() -> bool {
+    RESTORED_BY_PANIC.swap(false, Ordering::AcqRel)
+}
+
+pub(crate) fn rearm_terminal_if_restored_by_panic<O, F>(
+    events_paused: bool,
+    owns_foreground_terminal: O,
+    rearm: F,
+) -> Result<bool>
+where
+    O: FnOnce() -> bool,
+    F: FnOnce() -> Result<()>,
+{
+    if !RESTORED_BY_PANIC.load(Ordering::Acquire)
+        || events_paused
+        || !owns_foreground_terminal()
+        || !take_terminal_restored_by_panic()
+    {
+        return Ok(false);
+    }
+    rearm()?;
+    Ok(true)
+}
+
 /// Enter the alternate screen and, only once the escape went out, record it
 /// as live. Every alternate-screen entry in the crate goes through here so
 /// `live_alt_screen()` never says a screen the terminal is not on.
@@ -487,6 +517,7 @@ pub(crate) fn resume_terminal(
     // No trustworthy focus transition exists while reporting is disabled.
     // Resume from the quiet/focused state and wait for a real FocusLost.
     crate::tui::notifications::set_terminal_focused(true);
+    let _ = take_terminal_restored_by_panic();
     enable_raw_mode()?;
     if use_alt_screen {
         enter_alt_screen(terminal.backend_mut())?;
@@ -1356,6 +1387,89 @@ mod screen_mode_tests {
         let mut backend = backend;
         backend.set_terminal_size(Size::new(80, 24));
         assert_eq!(inline_viewport_rows(&backend), 24);
+    }
+
+    #[test]
+    fn caught_panic_rearms_terminal_once_foreground_and_unpaused() {
+        let _lock = crate::test_support::lock_test_env();
+        let _ = take_terminal_restored_by_panic();
+
+        let mut foreground_checks = 0usize;
+        let mut rearms = 0usize;
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || {
+                    foreground_checks += 1;
+                    true
+                },
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("no-op when no panic restore occurred")
+        );
+        assert_eq!(foreground_checks, 0);
+        assert_eq!(rearms, 0);
+
+        let caught = std::panic::catch_unwind(|| {
+            mark_terminal_restored_by_panic();
+            panic!("simulated caught panic");
+        });
+        assert!(caught.is_err());
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                true,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("paused terminal defers re-arm")
+        );
+        assert_eq!(rearms, 0);
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || false,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("background process group defers re-arm")
+        );
+        assert_eq!(rearms, 0);
+
+        assert!(
+            rearm_terminal_if_restored_by_panic(
+                false,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("foreground unpaused loop re-arms once")
+        );
+        assert_eq!(rearms, 1);
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("re-arm flag stays cleared after recovery")
+        );
+        assert_eq!(rearms, 1);
     }
 }
 

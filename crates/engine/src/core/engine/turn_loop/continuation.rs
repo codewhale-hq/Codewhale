@@ -8,13 +8,12 @@ impl Engine {
         turn: &mut TurnContext,
         tool_policy: &ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
-        client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("model_continuation");
         if self.rlm_host.is_some() {
             return self
-                .continue_rlm_model_step(turn, tool_policy, progress, client, response)
+                .continue_rlm_model_step(turn, tool_policy, progress, response)
                 .await;
         }
         let tool_registry = Some(&tool_policy.registry);
@@ -68,13 +67,6 @@ impl Engine {
             return PhaseResult::Retry;
         }
 
-        // If no tool uses, check for inline REPL blocks (paper §2) or
-        // finish the turn. Honest ladder (NOTE-turn-loop-wrongness §3):
-        // 1) pending steers → resume, 2) queued subagent completions →
-        // resume, 3) REPL fences → run (empty cap may end), 4) goal
-        // continuation if under cap → resume, 5) else end. Healthy
-        // children continue in the background; their existence alone
-        // does not authorize another parent model request.
         if tool_uses.is_empty() && !fleet_no_progress_report {
             if !pending_steers.is_empty() {
                 if let Some(guard) = progress.fleet_denial_guard.as_mut() {
@@ -121,23 +113,6 @@ impl Engine {
                     .await;
                 turn.next_step();
                 return PhaseResult::Retry;
-            }
-
-            match self
-                .run_inline_repl_phase(
-                    turn,
-                    tool_policy,
-                    progress,
-                    client,
-                    &current_text_visible,
-                    has_sendable_assistant_content,
-                )
-                .await
-            {
-                PhaseResult::Ready(()) => {}
-                PhaseResult::Retry => return PhaseResult::Retry,
-                PhaseResult::Break => return PhaseResult::Break,
-                PhaseResult::Return(outcome) => return PhaseResult::Return(outcome),
             }
 
             // Issue #1727: the turn is now genuinely finishing with no

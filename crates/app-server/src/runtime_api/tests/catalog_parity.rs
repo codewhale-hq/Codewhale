@@ -382,7 +382,7 @@ async fn one_captured_catalog_reads_the_same_on_every_model_surface() -> Result<
         r#"provider = "anthropic"
 
 [providers.anthropic]
-api_key = "parity-fixture-key"
+auth_mode = "none"
 model = "claude-opus-5"
 
 [providers.zai]

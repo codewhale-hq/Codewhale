@@ -451,16 +451,41 @@ impl Engine {
         if prefix_check.get("tools_changed").and_then(Value::as_bool) == Some(true)
             || (self.session.prefix_stability.is_none() && declared_change.is_some())
         {
-            let snapshot = json!({
-                "type": "current_deferred_toolbox",
-                "active_deferred_tools": active_tools.iter().flatten().filter(|tool| tool.defer_loading.unwrap_or(false)).map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
-                "authority": "This current deferred toolbox supersedes earlier activation, eviction and unavailable notices. Tools loaded eagerly remain available. Every execution still requires current permission.",
-            });
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
-                snapshot.to_string(),
-                UserInputProvenance::Runtime,
-            ))
-            .await;
+            let active_deferred_tools: Vec<&str> = active_tools
+                .iter()
+                .flatten()
+                .filter(|tool| {
+                    tool.defer_loading.unwrap_or(false)
+                        && self
+                            .session
+                            .tool_activation_cache
+                            .names()
+                            .any(|cached| cached == tool.name)
+                })
+                .map(|tool| tool.name.as_str())
+                .collect();
+            let previous_deferred = self
+                .session
+                .messages
+                .iter()
+                .rev()
+                .find_map(crate::runtime_handoff::deferred_toolbox_tools);
+            let deferred_changed = match previous_deferred.as_deref() {
+                None => !active_deferred_tools.is_empty(),
+                Some(previous) => {
+                    previous.len() != active_deferred_tools.len()
+                        || previous
+                            .iter()
+                            .zip(active_deferred_tools.iter())
+                            .any(|(left, right)| left != right)
+                }
+            };
+            if deferred_changed {
+                self.add_session_message(crate::runtime_handoff::deferred_toolbox_runtime_message(
+                    &active_deferred_tools,
+                ))
+                .await;
+            }
         }
 
         for notice in self.take_auto_review_retry_notices() {

@@ -375,7 +375,7 @@ owner = "crates/engine/src/model_routing.rs"
 [[feature]]
 id = "model-catalog-refresh"
 name = "Model catalog refresh"
-summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+summary = "Refresh model facts and exact provider rosters; selection is fenced to the account and endpoint."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.3"
@@ -563,7 +563,7 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skill plugins"
-summary = "A plugin kind: trusted instruction packages with bundle policy, invocation controls and configurable index limits."
+summary = "Trusted instruction packages with bundle policy, invocation controls, and project-first catalog lookup."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
@@ -572,7 +572,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Everything you add is a plugin: installs, reviews and trusts bundles, shows status, restores missing reviewed snapshots."
+summary = "Install, review and trust bundles, preview and import local DSH packages, and restore reviewed snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"

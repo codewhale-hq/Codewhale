@@ -59,6 +59,7 @@ export type RuntimeCapabilities = {
   session_provider_keys: boolean
   threads: boolean
   thread_create_idempotency: boolean
+  exact_route_thread_create: boolean
   thread_idle_precondition: boolean
   thread_patch_undo_turn_id: boolean
   thread_scoped_reads: boolean

@@ -4167,7 +4167,8 @@ async fn stale_handshake_cannot_be_restamped_after_config_reload() {
     }));
     connection.catalog_generation = pool.current_catalog_generation();
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-    pool.reload_from_config_sources(true).unwrap();
+    pool.reload_from_config_sources(ConfigRefresh::Reconnect)
+        .unwrap();
     let error = pool
         .store_ready_connection("local".to_string(), connection)
         .unwrap_err();
@@ -4803,6 +4804,7 @@ async fn mcp_pool_call_tool_preserves_tool_names_with_dashes() {
     }];
 
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
     })
@@ -4928,6 +4930,7 @@ async fn mcp_pool_call_tool_preserves_server_names_with_underscores() {
     }];
 
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
     })
@@ -4991,6 +4994,7 @@ async fn mcp_pool_hides_and_rejects_ambiguous_model_tool_names() {
     }];
 
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: HashMap::new(),
     })
@@ -5421,6 +5425,7 @@ fn lazy_boot_scopes_pending_connects_and_tracks_in_flight() {
     let mut lazy_cfg = test_server_config();
     lazy_cfg.lazy = true;
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers: HashMap::from([
             ("needed".to_string(), required_cfg),
@@ -9306,6 +9311,7 @@ async fn mcp_ceiling_denied_server_is_absent_across_cached_boot_meta_auth_and_ru
     config.command = None;
     config.scopes = vec!["read".to_string()];
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         servers: HashMap::from([("private_a".to_string(), config.clone())]),
         timeouts: McpTimeouts::default(),
     })
@@ -9448,6 +9454,7 @@ async fn mcp_ceiling_child_scoped_meta_calls_do_not_widen_or_mutate_sibling_poli
     let private = ceiling_test_connection("private_a", Arc::clone(&sent));
     let public = ceiling_test_connection("public", Arc::clone(&sent));
     let mut pool = McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         servers: HashMap::from([
             ("private_a".to_string(), private.config.clone()),
             ("public".to_string(), public.config.clone()),
@@ -9654,6 +9661,7 @@ fn supervised_pool(name: &str) -> McpPool {
     let mut servers = HashMap::new();
     servers.insert(name.to_string(), test_server_config());
     McpPool::new(McpConfig {
+        delegated_operations: Default::default(),
         timeouts: McpTimeouts::default(),
         servers,
     })
@@ -10826,6 +10834,142 @@ async fn initialize_ignores_non_string_instructions_without_failing_the_handshak
         .await
         .expect("non-string instructions must not fail the handshake");
     assert_eq!(conn.instructions(), None);
+}
+
+#[tokio::test]
+async fn delegated_read_binds_the_approved_payload_to_one_live_operation() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("mcp.json");
+    let server: McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "https://catalog.invalid/mcp",
+        "headers": {"Authorization": "Bearer fixture-only"}
+    }))?;
+    let allowed = serde_json::json!({"isbn": "sample"});
+    let binding = static_mcp_binding(&server).unwrap();
+    let settings = serde_json::json!({
+        "servers": {"books": server, "other": server},
+        "delegated_operations": {"books": {
+            "read": {"effect": "read", "binding_sha256": binding, "input_schema": {}, "allowed_arguments": [allowed]},
+            "delete": {"effect": "mutate", "binding_sha256": binding, "input_schema": {}, "allowed_arguments": [allowed]}
+        }}
+    });
+    std::fs::write(&path, serde_json::to_vec(&settings)?)?;
+    let mut pool = McpPool::from_config_path(&path)?;
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    for name in ["books", "other"] {
+        let mut conn = ceiling_test_connection(name, Arc::clone(&sent));
+        conn.config = server.clone();
+        conn.catalog_generation = pool.current_catalog_generation();
+        pool.connections.insert(name.into(), conn);
+    }
+    let name = "mcp_books_read";
+    let shared = Arc::new(tokio::sync::Mutex::new(pool));
+    let role = codewhale_agent_contract::role::FleetRole::Scout;
+    let mut runtime = crate::tools::subagent::stub_runtime();
+    runtime.worker_profile =
+        codewhale_agent_contract::worker_profile::WorkerRuntimeProfile::for_role(role.clone());
+    runtime.mcp_pool = Some(Arc::clone(&shared));
+    let scope = vec![
+        name.to_owned(),
+        "mcp_books_delete".to_owned(),
+        "mcp_other_read".to_owned(),
+    ];
+    let authority = crate::tools::subagent::engine::ChildAuthority::capture(
+        runtime,
+        role.clone(),
+        "fixture".into(),
+        "fixture".into(),
+        Some(scope),
+    );
+    let registry = crate::tools::ToolRegistryBuilder::new()
+        .with_mcp_tools(Arc::clone(&shared))
+        .await
+        .build(authority.context());
+    let names = crate::core::engine::Engine::probe_child_catalog(&authority, &registry)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert!(names.contains(&name.to_owned()), "{names:?}");
+    assert!(!names.contains(&"mcp_books_delete".to_owned()));
+    assert!(!names.contains(&"mcp_other_read".to_owned()));
+    authority.validate(&registry, name, &allowed)?;
+    assert!(
+        authority
+            .validate(&registry, name, &serde_json::json!({"isbn":"other"}))
+            .is_err()
+    );
+    assert!(
+        authority
+            .validate(&registry, "mcp_books_delete", &allowed)
+            .is_err()
+    );
+    let mut pool = shared.lock().await;
+    let grant = pool.delegated_read(name).expect("approved catalog read");
+    assert!(pool.delegated_read("mcp_books_delete").is_none());
+    assert!(pool.delegated_read("mcp_other_read").is_none());
+    assert!(
+        pool.call_delegated_read(&grant, name, serde_json::json!({"isbn": "other"}), &[])
+            .await
+            .is_err()
+    );
+    assert!(
+        pool.call_delegated_read(&grant, "mcp_other_read", allowed.clone(), &[])
+            .await
+            .is_err()
+    );
+    assert!(
+        pool.call_delegated_read(&grant, name, allowed.clone(), &[name.into()])
+            .await
+            .is_err()
+    );
+    pool.call_delegated_read(&grant, name, allowed.clone(), &[])
+        .await?;
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    let mut replacement = ceiling_test_connection("books", Arc::clone(&sent));
+    replacement.config = server.clone();
+    replacement.catalog_generation = pool.current_catalog_generation();
+    let original = pool
+        .connections
+        .insert("books".into(), replacement)
+        .unwrap();
+    assert!(
+        pool.call_delegated_read(&grant, name, allowed.clone(), &[])
+            .await
+            .is_err()
+    );
+    drop(original);
+    let current = pool.delegated_read(name).unwrap();
+    let modified = std::fs::metadata(&path)?.modified()?;
+    let mut revoked = settings;
+    revoked["delegated_operations"] = serde_json::json!({});
+    std::fs::write(&path, serde_json::to_vec(&revoked)?)?;
+    std::fs::File::options()
+        .write(true)
+        .open(&path)?
+        .set_modified(modified)?;
+    assert!(
+        pool.call_delegated_read(&current, name, allowed, &[])
+            .await
+            .is_err()
+    );
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn resolved_operation_requires_the_same_server_and_definition() {
+    let mut pool = McpPool::new(McpConfig::default());
+    pool.insert_test_connection("books", &["lookup"], None);
+    pool.insert_test_connection("library", &["lookup"], None);
+    let route = pool
+        .capture_tool_route("books".into(), "lookup".into())
+        .unwrap();
+    let timeouts = pool.config.timeouts;
+    assert!(route.permits(&pool.connections["books"], timeouts));
+    assert!(!route.permits(&pool.connections["library"], timeouts));
+    let conn = pool.connections.get_mut("books").unwrap();
+    conn.tools[0].input_schema = serde_json::json!({"type": "object", "required": ["isbn"]});
+    assert!(!route.permits(conn, timeouts));
 }
 
 #[tokio::test]

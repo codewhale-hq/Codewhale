@@ -79,11 +79,13 @@ use codewhale_engine::fleet::worker_runtime::fleet_write_roots;
 use codewhale_engine::mcp::McpPool;
 use codewhale_engine::runtime_threads::{
     MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
-    manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
-    manager::RuntimeThreadManagerConfig, manager::RuntimeTurnOperationReceipt,
-    manager::SharedRuntimeThreadManager, manager::StartTurnRequest, manager::StartWatchTurnRequest,
-    manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
-    manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
+    manager::CreateThreadRequest, manager::ExternalApprovalDecision,
+    manager::RuntimeThreadCreateConflict, manager::RuntimeThreadCreateRouteConflict,
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    manager::RuntimeTurnOperationReceipt, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest, manager::StartWatchTurnRequest, manager::SteerTurnRequest,
+    manager::ThreadDetail, manager::ThreadListFilter, manager::UpdateThreadRequest,
+    manager::UsageGroupBy, manager::UsageTotals,
 };
 use codewhale_runtime::config::{Config, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
@@ -1695,6 +1697,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         session_provider_keys: false,
         threads: true,
         thread_create_idempotency: true,
+        exact_route_thread_create: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
         thread_scoped_reads: true,
@@ -4098,13 +4101,15 @@ async fn create_thread(
     if req.mode.as_ref().is_none_or(|m| m.trim().is_empty()) {
         req.mode = Some("agent".to_string());
     }
-    refresh_local_default_catalog(
-        &state,
-        req.model.as_deref(),
-        req.model_provider.as_deref(),
-        req.model_provider_id.as_deref(),
-    )
-    .await;
+    if req.route_selection.is_none() {
+        refresh_local_default_catalog(
+            &state,
+            req.model.as_deref(),
+            req.model_provider.as_deref(),
+            req.model_provider_id.as_deref(),
+        )
+        .await;
+    }
 
     let thread = state
         .runtime_threads
@@ -4117,9 +4122,9 @@ async fn create_thread(
         .map_err(|e| {
             if let Some(refusal) = external_agent_refusal(&e).or_else(|| mode_refusal(&e)) {
                 refusal
-            } else if e
-                .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
-            {
+            } else if e.is::<RuntimeThreadCreateRouteConflict>() {
+                ApiError::conflict(e.to_string()).with_code("route_selection_stale")
+            } else if e.is::<RuntimeThreadCreateConflict>() {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
@@ -13097,6 +13102,8 @@ struct RefreshProviderModelsResponse {
 /// Entry in `GET /v1/providers/{id}/models`.
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route: Option<codewhale_engine::model_inventory::ExactRouteModel>,
     /// Canonical model id suitable for `POST /v1/threads`'s `model` field.
     id: String,
     /// Image-input support reported by the exact resolved provider/model
@@ -13113,6 +13120,11 @@ struct ProviderModelEntry {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelsResponse {
+    inventory_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inventory_status: Option<codewhale_config::catalog::CatalogStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_supported: Option<bool>,
     provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_provider_id: Option<String>,
@@ -13202,20 +13214,84 @@ fn paginate_provider_models(
         )));
     }
 
+    let exact_query = params.filter.as_deref().unwrap_or_default().trim();
+    let rank = |entry: &ProviderModelEntry| {
+        if filter.is_empty() {
+            return 0;
+        }
+        if !filter.is_empty() && entry.id == exact_query {
+            return 0;
+        }
+        let id = entry.id.to_lowercase();
+        let name = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        let alias = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("canonical_model_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        if id == filter || name == filter || alias == filter {
+            1
+        } else if id.starts_with(&filter) || name.starts_with(&filter) || alias.starts_with(&filter)
+        {
+            2
+        } else {
+            3
+        }
+    };
     models.sort_by(|left, right| {
-        left.id
-            .to_lowercase()
-            .cmp(&right.id.to_lowercase())
+        rank(left)
+            .cmp(&rank(right))
+            .then_with(|| {
+                if filter.is_empty() {
+                    left.route
+                        .as_ref()
+                        .and_then(|row| row.provider_rank)
+                        .unwrap_or(usize::MAX)
+                        .cmp(
+                            &right
+                                .route
+                                .as_ref()
+                                .and_then(|row| row.provider_rank)
+                                .unwrap_or(usize::MAX),
+                        )
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| left.id.to_lowercase().cmp(&right.id.to_lowercase()))
             .then_with(|| left.id.cmp(&right.id))
     });
-    models.dedup_by(|left, right| left.id.eq_ignore_ascii_case(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
     if models.len() > MAX_PROVIDER_MODELS_CATALOG_SIZE {
         return Err(ApiError::internal(format!(
             "Provider model catalog exceeds the safe {MAX_PROVIDER_MODELS_CATALOG_SIZE}-row limit"
         )));
     }
     if !filter.is_empty() {
-        models.retain(|entry| entry.id.to_lowercase().contains(&filter));
+        models.retain(|entry| {
+            entry.id.to_lowercase().contains(&filter)
+                || ["name", "canonical_model_id"].iter().any(|key| {
+                    entry
+                        .facts
+                        .as_ref()
+                        .and_then(|facts| facts.get(*key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value.to_lowercase().contains(&filter))
+                })
+                || provider.to_lowercase().contains(&filter)
+                || params
+                    .model_provider_id
+                    .as_ref()
+                    .is_some_and(|id| id.to_lowercase().contains(&filter))
+        });
     }
 
     // A live catalog can refresh between requests. Bind the opaque position
@@ -13258,7 +13334,7 @@ fn paginate_provider_models(
             version: PROVIDER_MODELS_CURSOR_VERSION,
             provider: provider.to_string(),
             filter,
-            catalog_fingerprint,
+            catalog_fingerprint: catalog_fingerprint.clone(),
             route_fingerprint,
             offset: end,
         })?)
@@ -13267,6 +13343,9 @@ fn paginate_provider_models(
     };
 
     Ok(ProviderModelsResponse {
+        inventory_revision: catalog_fingerprint,
+        inventory_status: None,
+        discovery_supported: None,
         provider: provider.to_string(),
         model_provider_id: params.model_provider_id.clone(),
         models: page,
@@ -13275,75 +13354,18 @@ fn paginate_provider_models(
     })
 }
 
-fn push_unique_model(models: &mut Vec<String>, model: &str) {
-    let model = model.trim();
-    if !model.is_empty()
-        && !models
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(model))
-    {
-        models.push(model.to_string());
-    }
-}
-
 fn provider_models_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
 ) -> Vec<String> {
-    if config.verify_provider_identity(identity).is_err() {
-        return Vec::new();
-    }
-    let provider = identity.provider;
-    let mut models = Vec::new();
-    if let Some(model) = config
-        .provider_config_for(identity)
-        .and_then(|entry| entry.model.as_deref())
-    {
-        push_unique_model(&mut models, model);
-    }
-    if config.active_provider_identity().ok().as_ref() == Some(identity) {
-        let active_model = provider_default_model_for_api(config, identity);
-        if !active_model.trim().eq_ignore_ascii_case("auto") {
-            push_unique_model(&mut models, &active_model);
-        }
-    }
-    let exact_catalog = codewhale_engine::provider_catalog_live::cached_entry_for_route(
-        provider,
-        identity.key.as_str(),
-        &config.base_url_for_route(identity),
+    codewhale_engine::model_inventory::exact_route_inventory(
+        config,
+        identity,
+        &Default::default(),
+        &[],
     )
-    .ok()
-    .flatten()
-    .is_some_and(|entry| entry.fetched_at > 0);
-    // A pass-through provider normally lists only what its own live catalog
-    // returned. When that catalog cannot exist (an OAuth route), the catalog
-    // lake's next layers (Models.dev, then the bundled snapshot) answer.
-    if !config.model_ids_pass_through_for_provider(identity)
-        || exact_catalog
-        || codewhale_engine::provider_lake::live_catalog_unavailable(config, identity)
-    {
-        for model in codewhale_engine::provider_lake::models_for_provider(config, identity) {
-            push_unique_model(&mut models, &model);
-        }
-    }
-    for model in config.custom_models.as_deref().unwrap_or_default() {
-        if codewhale_runtime::config::configured_model_for_route(
-            config,
-            provider,
-            identity.key.as_str(),
-            &config.base_url_for_route(identity),
-            &model.id,
-        )
-        .is_some()
-            && !models.contains(&model.id)
-        {
-            models.push(model.id.clone());
-        }
-    }
-    if provider == ProviderKind::Ollama {
-        models.retain(|model| !codewhale_runtime::config::is_unresolved_local_ollama_model(model));
-    }
-    models
+    .map(|inventory| inventory.models.into_iter().map(|row| row.model).collect())
+    .unwrap_or_default()
 }
 
 fn provider_model_image_input_for_api(
@@ -13394,6 +13416,7 @@ fn provider_model_entry_for_api(
 
     let provider = identity.provider;
     let mut entry = ProviderModelEntry {
+        route: None,
         image_input: provider_model_image_input_for_api(config, identity, &model),
         output_token_limit: provider_model_output_token_limit_for_api(config, identity, &model),
         id: model,
@@ -13867,26 +13890,40 @@ async fn list_provider_models(
         let config = state.config.read().clone();
         secrets::invalidate_stale_account_catalog(&config);
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
-        let route = serde_json::to_vec(&(
-            identity.persisted_kind(),
-            identity.persisted_id(),
-            config.base_url_for_route(&identity),
-        ))
-        .map_err(|error| {
-            ApiError::internal(format!("Could not fingerprint provider route: {error}"))
-        })?;
-        let route_fingerprint = Some(codewhale_runtime::hashing::sha256_hex(route));
-        let models = provider_models_for_api(&config, &identity)
-            .into_iter()
-            .map(|id| provider_model_entry_for_api(&config, &identity, id))
+        let inventory = codewhale_engine::model_inventory::exact_route_inventory(
+            &config,
+            &identity,
+            &state.runtime_threads.provider_readiness_snapshot(),
+            &[],
+        )
+        .map_err(ApiError::bad_request)?;
+        let route_fingerprint = Some(inventory.revision.clone());
+        let models = inventory
+            .models
+            .iter()
+            .cloned()
+            .map(|route| {
+                let mut entry =
+                    provider_model_entry_for_api(&config, &identity, route.model.clone());
+                entry.route = Some(route);
+                entry
+            })
             .collect();
-        paginate_provider_models(
+        if !inventory.is_current(&config, &identity) {
+            return Err(ApiError::conflict(
+                "Inventory changed while reading; retry the exact route",
+            ));
+        }
+        let mut response = paginate_provider_models(
             identity.persisted_kind(),
             models,
             &params,
             route_fingerprint,
-        )
-        .map(Json)
+        )?;
+        response.inventory_revision = inventory.revision;
+        response.inventory_status = Some(inventory.status);
+        response.discovery_supported = Some(inventory.discovery_supported);
+        Ok(Json(response))
     })
     .await
     .map_err(|_| ApiError::internal("Provider model listing failed"))?
@@ -15438,6 +15475,17 @@ async fn list_memory(
     State(state): State<RuntimeApiState>,
     Query(query): Query<ListMemoryQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let store = native_store_for_state(&state);
+    tokio::task::spawn_blocking(move || list_memory_sync(store, state.workspace, query))
+        .await
+        .map_err(|error| ApiError::internal(format!("memory list worker stopped: {error}")))?
+}
+
+fn list_memory_sync(
+    store: codewhale_runtime::native_memory::NativeMemoryStore,
+    workspace: PathBuf,
+    query: ListMemoryQuery,
+) -> Result<Json<Value>, ApiError> {
     let limit = match query.limit.unwrap_or(MEMORY_LIST_DEFAULT_LIMIT) {
         0 => {
             return Err(ApiError::bad_request("limit must be at least 1"));
@@ -15450,15 +15498,14 @@ async fn list_memory(
         n => n,
     };
 
-    let store = native_store_for_state(&state);
     let root = store.root().to_path_buf();
-    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &state.workspace)?;
+    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &workspace)?;
     if scope_filter.is_none() {
         // "all" is global memory plus this repository's. With no identity
         // (no origin remote, or git unavailable) there is no workspace memory
         // to show, and the listing still serves global memory.
         workspace_id =
-            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&state.workspace)
+            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace)
                 .unwrap_or_else(|error| {
                     tracing::warn!("memory list shows global memory only: {error}");
                     None
@@ -15472,7 +15519,7 @@ async fn list_memory(
         }
         match scope_filter {
             None if workspace_id.is_some() => {
-                store.search_in_workspace(workspace_id.as_deref(), &state.workspace, q, limit)
+                store.search_in_workspace(workspace_id.as_deref(), &workspace, q, limit)
             }
             None => store.search(q, limit),
             Some(codewhale_runtime::native_memory::MemoryScope::Global) => {
@@ -15482,16 +15529,21 @@ async fn list_memory(
                         .collect()
                 })
             }
-            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => store
-                .search_for_workspace(&state.workspace, q, limit)
-                .map(|h| {
+            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => {
+                store.search_for_workspace(&workspace, q, limit).map(|h| {
                     h.into_iter()
                         .filter(|h| scope_label_for_source(&h.source, &root) == "workspace")
                         .collect()
-                }),
+                })
+            }
         }
     } else {
-        store.list_all(scope_filter, workspace_id.as_deref(), limit)
+        store.list_in_workspace(
+            scope_filter,
+            workspace_id.as_deref(),
+            Some(&workspace),
+            limit,
+        )
     }
     .map_err(|e| ApiError::internal(format!("memory list error: {e}")))?;
 

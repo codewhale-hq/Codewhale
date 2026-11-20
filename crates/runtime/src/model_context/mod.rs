@@ -102,22 +102,22 @@ mod tests {
             "model: deepseek-v4\nmode: agent",
         ));
         previous.upsert(ModelContextFragment::new(
-            FragmentId::TokenBudget,
-            FragmentRole::TokenBudget,
+            FragmentId::SessionRelay,
+            FragmentRole::SessionRelay,
             "budget: 100000\ncompaction: idle",
         ));
 
         let mut next = previous.clone();
         next.upsert(ModelContextFragment::new(
-            FragmentId::TokenBudget,
-            FragmentRole::TokenBudget,
+            FragmentId::SessionRelay,
+            FragmentRole::SessionRelay,
             "budget: 100000\ncompaction: pending",
         ));
 
         let diff = next.render_diff(Some(&previous));
         assert_eq!(diff.retained, vec![FragmentId::Route.marker().to_string()]);
         assert_eq!(diff.updated.len(), 1);
-        assert_eq!(diff.updated[0].id, FragmentId::TokenBudget);
+        assert_eq!(diff.updated[0].id, FragmentId::SessionRelay);
         assert!(diff.updated[0].content.contains("compaction: pending"));
     }
 
