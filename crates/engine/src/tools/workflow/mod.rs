@@ -13601,7 +13601,7 @@ FINAL RECEIPT
                 label: None,
                 role: Some("scout".to_string()),
                 status: IrWorkflowRunStatus::Succeeded,
-                output: Some("PASS\nEvidence: both input results verified".to_string()),
+                output: Some("PASS\nFindings:\n- both input results verified".to_string()),
                 schema_error: None,
                 usage: None,
             });
