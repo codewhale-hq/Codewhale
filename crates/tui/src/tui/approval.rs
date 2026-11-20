@@ -268,7 +268,17 @@ impl ApprovalRequest {
         )
     }
 
+    pub(crate) fn review_failure(&self) -> Option<&str> {
+        self.description
+            .strip_prefix("Auto-Review could not finish (")?
+            .split_once("); please decide.")
+            .map(|(reason, _)| reason)
+    }
+
     pub fn description_for_locale(&self, locale: Locale) -> String {
+        if self.review_failure().is_some() {
+            return self.description.clone();
+        }
         match locale {
             Locale::En if self.category == ToolCategory::Shell => {
                 "Review the command before it runs.".to_string()
@@ -318,7 +328,11 @@ impl ApprovalRequest {
             &self.workspace,
             &self.summary,
         );
-        (parts.verb, parts.subject, parts.outside_workspace)
+        let verb = match self.review_failure() {
+            Some(reason) => format!("Auto-Review ({reason}) · {}", parts.verb),
+            None => parts.verb,
+        };
+        (verb, parts.subject, parts.outside_workspace)
     }
 
     #[must_use]

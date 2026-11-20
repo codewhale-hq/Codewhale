@@ -1964,7 +1964,7 @@ impl<'a> ApprovalWidget<'a> {
             push_destructive_approval_semantics(&mut body, locale, false);
         }
 
-        if critical || details.is_empty() {
+        if critical || details.is_empty() || self.request.review_failure().is_some() {
             body.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(label_about(locale), Style::default().fg(palette::TEXT_HINT)),
@@ -9630,6 +9630,30 @@ mod tests {
         let rendered = buffer_text(&menu_buf, area);
         assert!(rendered.contains('\u{25b8}'), "{rendered}");
         assert!(rendered.contains('\u{2500}'), "{rendered}");
+    }
+
+    #[test]
+    fn approval_inline_explains_auto_review_timeout_and_keeps_the_command() {
+        let description = "Auto-Review could not finish (timed out); please decide.";
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "review-fallback",
+            "bash",
+            description,
+            &serde_json::json!({"command": "printf value"}),
+            "bash:printf",
+        );
+        let area = Rect::new(0, 0, 120, 40);
+        let bar = render_approval_request(&request, area);
+        assert!(
+            bar.contains("Auto-Review (timed out)") && bar.contains("printf value"),
+            "{bar}"
+        );
+        let mut view = crate::tui::approval::ApprovalView::new(request.clone());
+        view.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let mut buf = Buffer::empty(area);
+        ApprovalWidget::new(&request, &view).render(area, &mut buf);
+        let drawer = buffer_text(&buf, area);
+        assert!(drawer.contains(description), "{drawer}");
     }
 
     #[test]
