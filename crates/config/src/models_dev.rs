@@ -22,10 +22,6 @@ use crate::route::{
     WireModelId,
 };
 
-/// Provider catalog endpoint used by Models.dev.
-pub const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
-/// Provider-agnostic model metadata endpoint used by Models.dev.
-pub const MODELS_DEV_MODELS_URL: &str = "https://models.dev/models.json";
 /// Combined `{ models, providers }` endpoint used by Models.dev.
 pub const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/catalog.json";
 

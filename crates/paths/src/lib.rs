@@ -91,16 +91,6 @@ pub fn codewhale_home_is_explicit() -> bool {
     path_env("CODEWHALE_HOME").is_some()
 }
 
-/// Return the legacy `DEEPSEEK_HOME` compatibility override, if configured.
-///
-/// New state must use [`codewhale_home`]. This resolver exists only for readers
-/// whose persisted format still explicitly supports the legacy environment
-/// alias.
-#[must_use]
-pub fn legacy_deepseek_home_override() -> Option<PathBuf> {
-    path_env("DEEPSEEK_HOME")
-}
-
 /// Resolve the user's platform home, preferring `HOME` before `USERPROFILE`.
 ///
 /// The explicit environment order makes CLI, state, config, and secret paths
