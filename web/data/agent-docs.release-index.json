@@ -23,6 +23,9 @@
     "plugins",
     "runtime-api",
     "web",
+    "memory",
+    "read-media",
+    "github-action",
     "troubleshooting",
     "contribution",
     "runtime-reference",
@@ -32,5 +35,7 @@
     "constitution",
     "tools"
   ],
-  "omitted": []
+  "omitted": [
+    "cloud-dispatch"
+  ]
 }
