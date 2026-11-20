@@ -273,6 +273,7 @@ fn provider_projection(value: &Value, urls: &mut OpaqueUrls, secret: Option<&str
                     if !matches!(
                         key.as_str(),
                         "results"
+                            | "organic_results"
                             | "title"
                             | "name"
                             | "url"
