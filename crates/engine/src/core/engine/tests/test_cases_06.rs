@@ -1015,7 +1015,12 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
         (ApprovalMode::Bypass, false, true),
         (ApprovalMode::Auto, true, false),
     ] {
-        let workspace = tempdir().expect("tempdir");
+        let workspace = if cfg!(target_os = "linux") && read_only {
+            tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        } else {
+            tempdir()
+        }
+        .expect("RLM fixture workspace");
         let marker = workspace.path().join("nested-round-ran");
         let path = marker.display().to_string();
         let nested = format!(
