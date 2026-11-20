@@ -820,7 +820,7 @@ pub(super) fn replace_runtime_mcp_tools(
     refreshed.sort_by(|a, b| a.name.cmp(&b.name));
     for tool in refreshed {
         let stays_active = previously_active.contains(&tool.name)
-            || always_load.contains(&tool.name)
+            || super::tool_catalog::always_load_matches(always_load, &tool.name)
             || !tool.defer_loading.unwrap_or(false);
         if stays_active {
             active_tool_names.insert(tool.name.clone());
@@ -1099,13 +1099,14 @@ impl Engine {
                 && !policy.denies_tool(&tool.name)
                 && (self.child_host.is_none() || policy.registry.contains(&tool.name))
         });
+        let always_load = self.effective_tools_always_load();
         if replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
             refreshed,
             self.current_mode,
-            &self.config.tools_always_load,
+            &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
         ) {
@@ -1230,22 +1231,24 @@ impl Engine {
         completions
             .into_iter()
             .map(|mut completion| {
-                let tool_call_id =
-                    format!("background-shell-completion-{}", completion.event.task_id);
-                let artifact_id =
-                    codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
-                let bytes = completion.artifact_bytes();
-                match codewhale_runtime::artifacts::write_session_artifact_immutable(
-                    &self.session.id,
-                    &artifact_id,
-                    &bytes,
-                ) {
-                    Ok(_) => completion.event.evidence_ref = Some(artifact_id),
-                    Err(error) => tracing::warn!(
-                        task_id = %completion.event.task_id,
-                        %error,
-                        "background shell completion evidence could not be retained"
-                    ),
+                if completion.needs_evidence_artifact() {
+                    let tool_call_id =
+                        format!("background-shell-completion-{}", completion.event.task_id);
+                    let artifact_id =
+                        codewhale_runtime::artifacts::artifact_id_for_tool_call(&tool_call_id);
+                    let bytes = completion.artifact_bytes();
+                    match codewhale_runtime::artifacts::write_session_artifact_immutable(
+                        &self.session.id,
+                        &artifact_id,
+                        &bytes,
+                    ) {
+                        Ok(_) => completion.event.evidence_ref = Some(artifact_id),
+                        Err(error) => tracing::warn!(
+                            task_id = %completion.event.task_id,
+                            %error,
+                            "background shell completion evidence could not be retained"
+                        ),
+                    }
                 }
                 completion.event
             })
@@ -1863,6 +1866,57 @@ impl Engine {
                 .names()
                 .map(str::to_string),
         );
+        if self
+            .config
+            .goal_state
+            .lock()
+            .is_ok_and(|goal| goal.is_active())
+        {
+            let _ = super::tool_catalog::activate_goal_followup_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
+        let has_active_background_shells = self
+            .shell_manager
+            .lock()
+            .map(|mut manager| {
+                manager
+                    .list_jobs_for_session(&self.session.id)
+                    .into_iter()
+                    .any(|job| {
+                        !job.stale && job.status == crate::tools::shell::ShellStatus::Running
+                    })
+            })
+            .unwrap_or(false);
+        if has_active_background_shells {
+            let _ = super::tool_catalog::activate_background_shell_tools(
+                &tool_catalog,
+                &mut active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client.as_ref(),
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        &tool_catalog,
+                        names,
+                    )
+                },
+            );
+        }
         // This is a fresh admitted turn, whose permitted outbound tools may
         // differ from the previous turn (ACP narrowing or a child report).
         // Declare only that actual boundary change; the request-time C5 guard
@@ -3372,34 +3426,38 @@ impl Engine {
                 cache.record_use(&plan.name);
             }
         }
-        let activation = cache.activate_measured(
-            tool_catalog,
-            &deferred_tools_hydrated_in_order,
-            &mut |names| {
-                super::tool_catalog::measure_deferred_tools(
-                    client,
-                    &self.session.model,
-                    self.session.reasoning_effort.as_deref(),
-                    tool_policy.strict_tool_mode,
-                    tool_catalog,
-                    names,
-                )
-            },
-        );
-        let activation = match activation {
-            Ok(activation) => activation,
-            Err(error) => {
-                for plan in &mut plans {
-                    if deferred_tools_hydrated_in_order.contains(&plan.name)
-                        && plan.guard_result.is_some()
-                        && plan.blocked_error.is_none()
-                    {
-                        tool_call_budget.refund();
-                        plan.guard_result = None;
-                        plan.blocked_error = Some(error.clone());
+        let active_before_hydration = active_tool_names.clone();
+        let activation = if deferred_tools_hydrated_in_order.is_empty() {
+            Default::default()
+        } else {
+            match cache.activate_measured(
+                tool_catalog,
+                &deferred_tools_hydrated_in_order,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            ) {
+                Ok(activation) => activation,
+                Err(error) => {
+                    for plan in &mut plans {
+                        if deferred_tools_hydrated_in_order.contains(&plan.name)
+                            && plan.guard_result.is_some()
+                            && plan.blocked_error.is_none()
+                        {
+                            tool_call_budget.refund();
+                            plan.guard_result = None;
+                            plan.blocked_error = Some(error.clone());
+                        }
                     }
+                    Default::default()
                 }
-                Default::default()
             }
         };
         for plan in &mut plans {
@@ -3423,12 +3481,12 @@ impl Engine {
             active_tool_names,
             activation.evicted.iter().cloned(),
         );
+        active_tool_names.extend(activation.admitted.iter().cloned());
         // Admitting or evicting deferred tools changes the request-visible
         // tool catalog for the rest of this turn. That is a legitimate,
         // nameable header change — declare it so the prefix pin re-pins under
         // `change:tool_surface` instead of tripping the C5 drift guard.
-        if !activation.admitted.is_empty() || !activation.evicted.is_empty() {
-            active_tool_names.extend(activation.admitted.iter().cloned());
+        if *active_tool_names != active_before_hydration {
             self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
         }
         PlannedToolCalls {
@@ -5590,6 +5648,65 @@ impl Engine {
                             output.content.push_str(&format!("\nDeferred retrieval schema unavailable: {error}. The evidence is retained; tool_search can rediscover the recovery tool."));
                             false
                         });
+                    if (outcome.name == "create_goal" && output.success)
+                        || (goal_tool_ran
+                            && self
+                                .config
+                                .goal_state
+                                .lock()
+                                .is_ok_and(|goal| goal.is_active()))
+                    {
+                        tool_surface_changed |= super::tool_catalog::activate_goal_followup_tools(
+                            tool_catalog,
+                            active_tool_names,
+                            &mut self.session.tool_activation_cache,
+                            &mut |names| {
+                                super::tool_catalog::measure_deferred_tools(
+                                    client,
+                                    &self.session.model,
+                                    self.session.reasoning_effort.as_deref(),
+                                    strict_tool_mode,
+                                    tool_catalog,
+                                    names,
+                                )
+                            },
+                        )
+                        .unwrap_or(false);
+                    }
+                    if super::tool_catalog::is_shell_tool_name(&outcome.name)
+                        && self
+                            .shell_manager
+                            .lock()
+                            .map(|mut manager| {
+                                manager
+                                    .list_jobs_for_session(&self.session.id)
+                                    .into_iter()
+                                    .any(|job| {
+                                        !job.stale
+                                            && job.status
+                                                == crate::tools::shell::ShellStatus::Running
+                                    })
+                            })
+                            .unwrap_or(false)
+                    {
+                        tool_surface_changed |=
+                            super::tool_catalog::activate_background_shell_tools(
+                                tool_catalog,
+                                active_tool_names,
+                                &mut self.session.tool_activation_cache,
+                                &mut |names| {
+                                    super::tool_catalog::measure_deferred_tools(
+                                        client,
+                                        &self.session.model,
+                                        self.session.reasoning_effort.as_deref(),
+                                        strict_tool_mode,
+                                        tool_catalog,
+                                        names,
+                                    )
+                                },
+                            )
+                            .unwrap_or(false);
+                    }
                     // A runtime MCP connection change — a completed login OR
                     // a live 401 that dropped one — rewrites the callable
                     // tool surface. Replace the pool's whole slice before
@@ -5611,13 +5728,14 @@ impl Engine {
                         let surface_budget = self
                             .turn_tool_surface_budget
                             .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
+                        let always_load = self.effective_tools_always_load();
                         tool_surface_changed |= replace_runtime_mcp_tools(
                             tool_catalog,
                             active_tool_names,
                             &universe,
                             refreshed,
                             self.current_mode,
-                            &self.config.tools_always_load,
+                            &always_load,
                             surface_budget,
                         );
                     }
@@ -5659,7 +5777,7 @@ impl Engine {
                         self.session.working_set.observe_tool_call(
                             &tool_name_for_ws,
                             &tool_input,
-                            Some(&output_for_context),
+                            output.success.then_some(output_for_context.as_str()),
                             &self.session.workspace,
                         );
                         let category = crate::core::authority::get_tool_category_for_call(
@@ -5772,7 +5890,7 @@ impl Engine {
                     self.session.working_set.observe_tool_call(
                         &tool_name_for_ws,
                         &tool_input,
-                        Some(&error),
+                        None,
                         &self.session.workspace,
                     );
                     if let Some(model_call) = outcome.model_call {

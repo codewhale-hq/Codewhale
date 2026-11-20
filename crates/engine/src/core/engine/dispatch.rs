@@ -173,7 +173,12 @@ impl FleetDenialGuard {
         // neither new evidence nor a failure. Its own timeouts still govern it.
         if matches!(
             action,
-            "exec_shell_wait" | "exec_wait" | "terminal/wait" | "wait_for_dev_server" | "sleep"
+            "exec_shell_wait"
+                | "exec_wait"
+                | "terminal_wait"
+                | "terminal/wait"
+                | "wait_for_dev_server"
+                | "sleep"
         ) || name == "agent"
             && input
                 .get("action")

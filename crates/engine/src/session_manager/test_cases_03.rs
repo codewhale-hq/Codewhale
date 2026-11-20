@@ -1045,7 +1045,7 @@
         let hint = session_recovery_hint(&workspace, Some("sess-live"))
             .expect("hint for interrupted prior session");
         assert!(hint.contains("prior-sess-prior"), "{hint}");
-        assert!(hint.contains("session_search"), "{hint}");
+        assert!(hint.contains("session_get"), "{hint}");
         assert!(hint.contains("/resume"), "{hint}");
 
         // The live session's own checkpoint is never reported as prior work.

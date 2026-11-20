@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "Prompt für das Modell. Setze -- vor einen Prompt, der mit - beginnt oder eine exec-Option als wörtlichen Text enthält; --prompt-file - liest die Standardeingabe.",
   "ExecFlagAfterPrompt": "{flag} steht nach dem Prompt und würde als Text behandelt. Setze Optionen vor den Prompt oder wörtlichen Optionstext nach --.",
   "InstructionNoticeHeader": "Dauerhafte Anweisungen wurden vor Sitzungsbeginn gekürzt oder übersprungen:",
-  "InstructionNoticeFooter": "Führe /context report aus, um die vollständige Aufschlüsselung pro Quelle zu sehen.",
   "InstructionNoticeMore": "…und {count} weitere; die vollständige Liste steht in /context report.",
   "InstructionNoticeLine": "Anweisungen: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " {kept_bytes} von {total_bytes} Bytes und ~{kept_tokens} von ~{total_tokens} geschätzten Tokens behalten",

@@ -710,7 +710,8 @@ impl ChildAuthority {
                 lower.as_str(),
                 "exec_wait" | "exec_interact" | "task_shell_start" | "task_shell_wait"
             )
-            || lower.starts_with("terminal/");
+            || lower.starts_with("terminal/")
+            || lower.starts_with("terminal_");
         raw_shell
             && self.grant.shell < codewhale_agent_contract::worker_profile::ShellGrant::Full
             && !self.allows_bounded_readonly_bash(name)

@@ -5144,6 +5144,10 @@ pub struct TestManagerGuard(Option<Arc<ExtensionHostManager>>);
 
 #[cfg(any(test, feature = "test-support"))]
 impl TestManagerGuard {
+    pub fn current() -> Option<Arc<ExtensionHostManager>> {
+        TEST_MANAGER.with(|cell| cell.borrow().clone())
+    }
+
     pub fn install(manager: Arc<ExtensionHostManager>) -> Self {
         install_ports();
         Self(TEST_MANAGER.with(|cell| cell.replace(Some(manager))))

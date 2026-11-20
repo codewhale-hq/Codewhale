@@ -199,23 +199,11 @@ impl ToolSpec for ApplyPatchTool {
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Unified diff patch content"
+                    "description": "Unified diff patch content. Pass exactly one of `patch` or `replace`."
                 },
                 "replace": {
                     "type": "array",
-                    "description": "Optional full file replacements (path + content).",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string" },
-                            "content": { "type": "string" }
-                        },
-                        "required": ["path", "content"]
-                    }
-                },
-                "changes": {
-                    "type": "array",
-                    "description": "Deprecated compatibility alias for `replace` (full file replacements by path + content).",
+                    "description": "Full file replacements (path + content); use instead of `patch`.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -239,12 +227,7 @@ impl ToolSpec for ApplyPatchTool {
                         "{EXPECTED_HASH_DESCRIPTION} Verifies the patch target — the `path` argument when given, otherwise the first file the patch touches; other files in a multi-file patch are not hash-checked."
                     )
                 }
-            },
-            "oneOf": [
-                { "required": ["patch"] },
-                { "required": ["replace"] },
-                { "required": ["changes"] }
-            ]
+            }
         })
     }
 
@@ -419,7 +402,7 @@ fn verify_patch_expected_hash(
     Err(ToolError::execution_failed(format!(
         "File `patch` refused: {target} changed since it was read. \
          expected_hash was {expected} but the file is now {actual}, so nothing was written. \
-         Recovery: call File with action=\"read\" path=\"{target}\" to get the current contents \
+         Recovery: call read with path=\"{target}\" to get the current contents \
          and its content_hash, then rebuild the patch against them."
     )))
 }
@@ -1335,24 +1318,12 @@ mod tests {
     }
 
     #[test]
-    fn input_schema_exposes_replace_and_deprecated_changes_alias() {
+    fn input_schema_exposes_replace_without_top_level_combinators() {
         let schema = ApplyPatchTool.input_schema();
 
         assert_eq!(schema["properties"]["replace"]["type"], "array");
-        assert_eq!(schema["properties"]["changes"]["type"], "array");
-        assert!(
-            schema["properties"]["changes"]["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("Deprecated"))
-        );
-        assert_eq!(
-            schema["oneOf"],
-            json!([
-                { "required": ["patch"] },
-                { "required": ["replace"] },
-                { "required": ["changes"] }
-            ])
-        );
+        assert!(schema["properties"].get("changes").is_none());
+        assert!(schema.get("oneOf").is_none(), "{schema}");
     }
 
     #[test]

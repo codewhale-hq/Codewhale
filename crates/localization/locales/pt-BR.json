@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "Prompt enviado ao modelo. Coloque -- antes de um prompt que comece com - ou contenha uma opção literal de exec; use --prompt-file - para ler a entrada padrão.",
   "ExecFlagAfterPrompt": "{flag} aparece após o prompt e seria tratado como texto. Coloque as opções antes do prompt ou, para usá-las como texto literal, após --.",
   "InstructionNoticeHeader": "Instruções permanentes foram cortadas ou ignoradas antes do início desta sessão:",
-  "InstructionNoticeFooter": "Execute /context report para ver o detalhamento completo por fonte.",
   "InstructionNoticeMore": "…e mais {count}; a lista completa está em /context report.",
   "InstructionNoticeLine": "instruções: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " mantidos {kept_bytes} de {total_bytes} bytes e ~{kept_tokens} de ~{total_tokens} tokens estimados",

@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "Indicació que s’enviarà al model. Posa -- abans d’una indicació que comenci amb - o contingui una opció literal d’exec; fes servir --prompt-file - per llegir l’entrada estàndard.",
   "ExecFlagAfterPrompt": "{flag} apareix després de la indicació i es tractaria com a text. Posa les opcions abans de la indicació o, per usar-les com a text literal, després de --.",
   "InstructionNoticeHeader": "S'han retallat o ometut instruccions permanents abans de començar aquesta sessió:",
-  "InstructionNoticeFooter": "Executeu /context report per veure el desglossament complet per font.",
   "InstructionNoticeMore": "…i {count} més; la llista completa és a /context report.",
   "InstructionNoticeLine": "instruccions: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " s'han conservat {kept_bytes} de {total_bytes} bytes i ~{kept_tokens} de ~{total_tokens} tokens estimats",

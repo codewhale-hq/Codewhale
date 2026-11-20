@@ -369,7 +369,9 @@ does not run readiness probes and does not block mutations on readiness.
 
 Parents, fresh and nested children, and `/context` use the same ambient-index renderer. `[skills] listing_max_description_chars` controls the per-entry ceiling (1–40,000; default 120). `listing_budget_fraction` controls the share of the resolved route window (greater than 0 and at most 1; default 0.002), estimated at four characters per token. The total index retains a 2,400-character floor and 40,000-character ceiling. Explicit profile values override inherited values independently. Changing a route recomputes its budget; it does not silently change the description setting.
 
-The renderer favors `Use when:` triggers, shortens descriptions before falling back to names, and reports shortened/omitted entries. Descriptions exceeding the configured cap without a trigger also produce a load warning. `/skills inspect` shows a localized note with the same effective cap, and `/context` repeats the loss count. `load_skill name="list"` and exact-name loading retain full text. These limits govern ambient routing metadata, not skill bodies or external MCP resource descriptions.
+The renderer favors `Use when:` triggers, shortens descriptions before falling back to names, and reports shortened/omitted entries. Descriptions exceeding the configured cap without a trigger also produce a load warning. `/skills inspect` shows a localized note with the same effective cap, and `/context` repeats the loss count. These limits govern ambient routing metadata, not skill bodies or external MCP resource descriptions.
+
+`load_skill name="list"` shows concise descriptions for project and Codewhale skills and counts global compatible skills by source. Use `name="list-all"` or `include_external=true` to list those skills individually. A multi-word `query` searches names, aliases, and descriptions across both groups; only loading an exact name returns the full skill body.
 
 ```toml
 # Optional override for discovery preference (not automatically a write target

@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "Prompt untuk dikirim ke model. Letakkan -- sebelum prompt yang diawali - atau memuat flag exec sebagai teks literal; gunakan --prompt-file - untuk membaca input standar.",
   "ExecFlagAfterPrompt": "{flag} muncul setelah prompt dan akan dianggap sebagai teks. Letakkan flag sebelum prompt, atau letakkan flag yang dimaksudkan sebagai teks literal setelah --.",
   "InstructionNoticeHeader": "Instruksi tetap dipangkas atau dilewati sebelum sesi ini dimulai:",
-  "InstructionNoticeFooter": "Jalankan /context report untuk rincian lengkap per sumber.",
   "InstructionNoticeMore": "…dan {count} lagi; daftar lengkap ada di /context report.",
   "InstructionNoticeLine": "instruksi: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " dipertahankan {kept_bytes} dari {total_bytes} byte dan ~{kept_tokens} dari ~{total_tokens} token perkiraan",

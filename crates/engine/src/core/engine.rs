@@ -11002,9 +11002,8 @@ impl Engine {
             self.emit_session_updated().await;
         }
         for body in notices {
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
+            self.add_session_message(crate::runtime_handoff::instruction_notice_runtime_message(
                 body,
-                crate::core::ops::UserInputProvenance::Runtime,
             ))
             .await;
         }

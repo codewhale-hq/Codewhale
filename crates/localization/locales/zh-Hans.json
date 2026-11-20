@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "发送给模型的提示词。若以 - 开头或包含作为文本的 exec 标志，请在提示词前加 --；使用 --prompt-file - 读取标准输入。",
   "ExecFlagAfterPrompt": "{flag} 位于提示词之后，会被当作文本。请将标志放在提示词之前，或将作为文本的标志放在 -- 之后。",
   "InstructionNoticeHeader": "常驻指令在本会话开始前已被截断或跳过：",
-  "InstructionNoticeFooter": "运行 /context report 查看按来源划分的完整明细。",
   "InstructionNoticeMore": "…另有 {count} 项；完整列表见 /context report。",
   "InstructionNoticeLine": "指令：{scope} {label}（{origin}, {action}, {limit}）",
   "InstructionNoticeTrimmed": " 保留 {total_bytes} 字节中的 {kept_bytes} 字节，以及约 {total_tokens} 估算 token 中的约 {kept_tokens}",

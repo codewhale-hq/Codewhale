@@ -2564,7 +2564,6 @@
   "ExecPromptHelp": "모델에 보낼 프롬프트입니다. -로 시작하거나 exec 플래그를 일반 텍스트로 포함하는 프롬프트 앞에는 --를 넣으세요. 표준 입력을 읽으려면 --prompt-file -를 사용하세요.",
   "ExecFlagAfterPrompt": "{flag}가 프롬프트 뒤에 있어 텍스트로 처리됩니다. 플래그는 프롬프트 앞에 넣고, 일반 텍스트로 사용할 플래그는 -- 뒤에 넣으세요.",
   "InstructionNoticeHeader": "상시 지침이 이 세션이 시작되기 전에 잘리거나 건너뛰어졌습니다:",
-  "InstructionNoticeFooter": "소스별 전체 내역은 /context report를 실행하세요.",
   "InstructionNoticeMore": "…외 {count}건. 전체 목록은 /context report에 있습니다.",
   "InstructionNoticeLine": "지침: {scope} {label} ({origin}, {action}, {limit})",
   "InstructionNoticeTrimmed": " {total_bytes}바이트 중 {kept_bytes}바이트, 추정 ~{total_tokens}토큰 중 ~{kept_tokens}토큰 유지",

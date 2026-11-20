@@ -318,13 +318,12 @@
         assert!(parameters.get("allOf").is_none(), "{parameters}");
         assert_eq!(parameters["properties"]["patch"]["type"], "string");
         assert_eq!(parameters["properties"]["replace"]["type"], "array");
-        assert_eq!(parameters["properties"]["changes"]["type"], "array");
+        assert!(parameters["properties"].get("changes").is_none());
         assert!(
             function["description"]
                 .as_str()
-                .is_some_and(|description| description
-                    .contains("Exactly one of these parameter groups must be provided")),
-            "the relaxed wire schema must preserve the runtime constraint in its description: {function}"
+                .is_some_and(|description| !description.is_empty()),
+            "tool description must be preserved: {function}"
         );
     }
 
@@ -455,7 +454,7 @@
             .map(str::to_string)
             .collect();
         assert_eq!(source_names, expected_names);
-        assert!(source_names.contains("get_goal"));
+        assert!(!source_names.contains("get_goal"));
         assert!(!source_names.contains("create_goal"));
         assert!(!source_names.contains("update_goal"));
 

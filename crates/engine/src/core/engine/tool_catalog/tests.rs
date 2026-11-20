@@ -104,15 +104,13 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "read",
             "write",
             "edit",
+            "list_dir",
             "file_search",
             "grep_files",
             "bash",
             "agent",
             "todo_write",
             "create_goal",
-            "get_goal",
-            "update_goal",
-            "task_shell_wait",
             "present",
             "load_skill"
         ]
@@ -121,15 +119,13 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
         "agent",
         "bash",
         "create_goal",
-        "get_goal",
-        "update_goal",
         "edit",
         "file_search",
         "grep_files",
+        "list_dir",
         "load_skill",
         "present",
         "read",
-        "task_shell_wait",
         "todo_write",
         "tool_search",
         "write",
@@ -143,6 +139,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "read",
             "write",
             "edit",
+            "list_dir",
             "file_search",
             "grep_files",
             "bash",
@@ -309,10 +306,9 @@ fn searching_for_an_eager_tool_is_not_reported_as_cache_rejected() {
 
 #[test]
 fn regex_search_matches_displayed_tool_names_case_insensitively() {
-    let mut catalog = vec![tool("Web"), tool("automation")];
-    for tool in &mut catalog {
-        tool.defer_loading = Some(true);
-    }
+    let mut catalog = vec![tool("read"), tool("Web"), tool("automation")];
+    catalog[1].defer_loading = Some(true);
+    catalog[2].defer_loading = Some(true);
     let mut active = initial_active_tools(&catalog);
     let mut cache = ToolActivationCache::default();
 
@@ -682,4 +678,470 @@ fn strict_mode_marks_compatible_tools_strict() {
     assert_eq!(tools[0].strict, Some(true));
     assert_eq!(tools[0].input_schema["required"], json!([]));
     assert!(tools[0].input_schema.get("additionalProperties").is_none());
+}
+
+#[test]
+fn deferred_toolbox_runtime_message_is_minimal_and_roundtrips_with_legacy_meta() {
+    let message = crate::runtime_handoff::deferred_toolbox_runtime_message(&["Git", "Web"]);
+    assert!(codewhale_models::turn_classify::is_runtime_owned_user_message(&message));
+    assert_eq!(message.content.len(), 2);
+    let meta = match &message.content[1] {
+        codewhale_models::ContentBlock::Text { text, .. } => text.as_str(),
+        other => panic!("expected text metadata block, got {other:?}"),
+    };
+    assert_eq!(
+        meta,
+        "<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>"
+    );
+    assert!(!meta.contains("Current local date:"));
+    assert!(!meta.contains("Repo Working Set"));
+    assert_eq!(
+        crate::runtime_handoff::deferred_toolbox_tools(&message),
+        Some(vec!["Git".to_string(), "Web".to_string()])
+    );
+
+    let legacy = codewhale_models::Message {
+        role: codewhale_models::Role::User,
+        content: vec![
+            codewhale_models::ContentBlock::Text {
+                text: r#"{"type":"current_deferred_toolbox","active_deferred_tools":["Run"]}"#
+                    .to_string(),
+                cache_control: None,
+            },
+            codewhale_models::ContentBlock::Text {
+                text: "<turn_meta>\nCurrent local date: 2026-11-18\nInput provenance: runtime (non-authoritative)\n## Repo Working Set\n</turn_meta>".to_string(),
+                cache_control: None,
+            },
+        ],
+    };
+    assert_eq!(
+        crate::runtime_handoff::deferred_toolbox_tools(&legacy),
+        Some(vec!["Run".to_string()])
+    );
+}
+
+#[test]
+fn eager_wire_tools_never_enter_tool_search_or_activation_cache() {
+    let mut catalog = vec![
+        tool("mcp_demo_authenticate"),
+        tool("mcp_demo_wait_for"),
+        tool("mcp_demo_eager_active"),
+        tool("mcp_demo_deferred_query"),
+    ];
+    let always_load = HashSet::from([
+        "mcp_demo_authenticate".to_string(),
+        "mcp_demo_wait*".to_string(),
+    ]);
+    apply_mcp_tool_deferral(&mut catalog, AppMode::Agent, &always_load);
+    assert_eq!(catalog[0].defer_loading, Some(false));
+    assert_eq!(catalog[1].defer_loading, Some(false));
+    assert_eq!(catalog[2].defer_loading, Some(true));
+    assert_eq!(catalog[3].defer_loading, Some(true));
+
+    let mut active = initial_active_tools(&catalog);
+    active.insert("mcp_demo_eager_active".to_string());
+    let mut cache = ToolActivationCache::default();
+
+    for query in ["authenticate", "wait", "eager_active", "mcp_demo"] {
+        let result = execute_tool_search_with_cache(
+            codewhale_tools::names::TOOL_SEARCH_NAME,
+            &json!({"query": query, "match": "bm25"}),
+            &catalog,
+            &mut active,
+            &mut cache,
+        )
+        .expect("search succeeds");
+        let refs = result.metadata.expect("metadata")["tool_references"].clone();
+        if query == "mcp_demo" {
+            assert_eq!(refs, json!(["mcp_demo_deferred_query"]));
+        } else {
+            assert_eq!(refs, json!([]), "query={query}");
+        }
+    }
+    assert_eq!(
+        cache.names().collect::<Vec<_>>(),
+        vec!["mcp_demo_deferred_query"]
+    );
+}
+
+#[test]
+fn readmission_search_input_matches_exact_name_without_newline_leak() {
+    let input = super::readmission_search_input("web.run");
+    let query = input["query"].as_str().expect("query string");
+    assert_eq!(query, "^web\\.run$");
+    assert!(!query.contains('\n'));
+    assert!(!query.contains("\\n"));
+
+    let mut target = tool("web.run");
+    target.defer_loading = Some(true);
+    let mut prefix_collision = tool("web.run_extended");
+    prefix_collision.defer_loading = Some(true);
+    let mut desc_collision = tool("other_tool");
+    desc_collision.description = "wraps web.run internally".to_string();
+    desc_collision.defer_loading = Some(true);
+
+    let catalog = vec![prefix_collision, desc_collision, target];
+    let mut active = initial_active_tools(&catalog);
+    let mut cache = ToolActivationCache::default();
+    let result = execute_tool_search_with_cache(
+        codewhale_tools::names::TOOL_SEARCH_NAME,
+        &input,
+        &catalog,
+        &mut active,
+        &mut cache,
+    )
+    .expect("readmission search");
+    assert_eq!(
+        result.metadata.expect("metadata")["tool_references"],
+        json!(["web.run"])
+    );
+}
+
+#[test]
+fn terminal_underscore_tools_are_visible_and_slash_aliases_stay_hidden() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let registry = crate::tools::registry::ToolRegistryBuilder::new()
+        .with_terminal_tools()
+        .build(crate::tools::spec::ToolContext::new(tmp.path()));
+    let visible: BTreeSet<String> = registry
+        .to_api_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    let canonical = [
+        "terminal_run",
+        "terminal_send",
+        "terminal_wait",
+        "terminal_cancel",
+        "terminal_reset",
+    ];
+    let legacy = [
+        "terminal/run",
+        "terminal/send",
+        "terminal/wait",
+        "terminal/cancel",
+        "terminal/reset",
+    ];
+    for (new_name, old_name) in canonical.iter().zip(legacy.iter()) {
+        assert!(
+            visible.contains(*new_name),
+            "{new_name} must be model-visible"
+        );
+        assert!(!visible.contains(*old_name), "{old_name} must be hidden");
+        assert!(
+            registry.contains(old_name),
+            "{old_name} must remain replayable"
+        );
+        assert!(tool_matches_any_rule(&[(*old_name).to_string()], new_name));
+        assert!(tool_matches_any_rule(&[(*new_name).to_string()], old_name));
+        assert!(tool_matches_any_rule(&["terminal/*".to_string()], new_name));
+        assert!(tool_matches_any_rule(&["terminal_*".to_string()], old_name));
+    }
+}
+
+#[test]
+fn deferred_schema_hydration_returns_error_with_field_details() {
+    let mut deferred = test_tool(
+        "update_goal",
+        json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["complete", "blocked", "yield"],
+                    "description": "Terminal or yield transition for the active goal."
+                },
+                "verification": {
+                    "type": "object",
+                    "description": "Structured proof for completion.",
+                    "required": ["status"],
+                    "properties": {
+                        "status": {"type": "string", "enum": ["passed", "not_applicable"]},
+                        "check": {"type": "string"}
+                    }
+                },
+                "tags": {
+                    "type": "array",
+                    "description": "Optional labels.",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["status"]
+        }),
+    );
+    deferred.defer_loading = Some(true);
+
+    let result = super::deferred_tool_schema_hydration_result(&deferred, &json!({}));
+    assert!(!result.success);
+    assert!(result.content.contains("status: string (complete | blocked | yield) required — Terminal or yield transition for the active goal."), "{}", result.content);
+    assert!(result.content.contains("verification: object {check: string, status: string (passed | not_applicable) required} — Structured proof for completion."), "{}", result.content);
+    assert!(
+        result
+            .content
+            .contains("tags: array<string> — Optional labels."),
+        "{}",
+        result.content
+    );
+}
+
+#[test]
+fn goal_followup_tools_defer_by_default_and_auto_activate_together() {
+    let mut catalog = vec![tool("create_goal"), tool("get_goal"), tool("update_goal")];
+    apply_native_tool_deferral(&mut catalog, &HashSet::new());
+    assert_eq!(catalog[0].defer_loading, Some(false));
+    assert_eq!(catalog[1].defer_loading, Some(true));
+    assert_eq!(catalog[2].defer_loading, Some(true));
+
+    let mut active = initial_active_tools(&catalog);
+    assert!(active.contains("create_goal"));
+    assert!(!active.contains("get_goal"));
+    assert!(!active.contains("update_goal"));
+
+    let mut cache = ToolActivationCache::default();
+    let changed =
+        super::activate_goal_followup_tools(&catalog, &mut active, &mut cache, &mut |names| {
+            ToolActivationCache::test_measure(&catalog, names)
+        })
+        .expect("goal followup activation");
+    assert!(changed);
+    assert!(active.contains("get_goal"));
+    assert!(active.contains("update_goal"));
+
+    let changed_again =
+        super::activate_goal_followup_tools(&catalog, &mut active, &mut cache, &mut |_| {
+            panic!("already-active goal tools must not re-measure")
+        })
+        .expect("idempotent activation");
+    assert!(!changed_again);
+}
+
+#[test]
+fn activate_result_dependencies_skips_when_already_active_or_eager() {
+    let mut retrieval = tool("retrieve_tool_result");
+    retrieval.defer_loading = Some(true);
+    let catalog = vec![retrieval];
+    let mut active = initial_active_tools(&catalog);
+    active.remove("retrieve_tool_result");
+    let mut cache = ToolActivationCache::default();
+    let spilled = crate::tools::spec::ToolResult::success("preview")
+        .with_metadata(json!({"evidence_available": true}));
+
+    let first = super::activate_result_dependencies(
+        &catalog,
+        &mut active,
+        &mut cache,
+        &spilled,
+        &mut |names| ToolActivationCache::test_measure(&catalog, names),
+    )
+    .expect("first spill activates retrieval");
+    assert!(first);
+    assert!(active.contains("retrieve_tool_result"));
+
+    let second = super::activate_result_dependencies(
+        &catalog,
+        &mut active,
+        &mut cache,
+        &spilled,
+        &mut |_| panic!("second spill must not re-measure or re-activate"),
+    )
+    .expect("second spill is a no-op");
+    assert!(!second);
+}
+
+#[test]
+fn task_shell_wait_defers_by_default_and_auto_activates_on_background_shell_job() {
+    let mut catalog = vec![tool("bash"), tool("task_shell_wait")];
+    apply_native_tool_deferral(&mut catalog, &HashSet::new());
+    assert_eq!(catalog[0].defer_loading, Some(false));
+    assert_eq!(catalog[1].defer_loading, Some(true));
+
+    let mut active = initial_active_tools(&catalog);
+    assert!(active.contains("bash"));
+    assert!(!active.contains("task_shell_wait"));
+
+    let mut cache = ToolActivationCache::default();
+    let background_bash = crate::tools::spec::ToolResult::success("Background task started")
+        .with_metadata(json!({"status": "Running", "backgrounded": true, "task_id": "shell_1"}));
+    let activated = super::activate_result_dependencies(
+        &catalog,
+        &mut active,
+        &mut cache,
+        &background_bash,
+        &mut |names| ToolActivationCache::test_measure(&catalog, names),
+    )
+    .expect("background bash activates task_shell_wait");
+    assert!(activated);
+    assert!(active.contains("task_shell_wait"));
+
+    let repeated =
+        super::activate_background_shell_tools(&catalog, &mut active, &mut cache, &mut |_| {
+            panic!("already-active task_shell_wait must not re-measure")
+        })
+        .expect("idempotent activation");
+    assert!(!repeated);
+
+    let mut active_exec = initial_active_tools(&catalog);
+    let mut cache_exec = ToolActivationCache::default();
+    let exec_running = crate::tools::spec::ToolResult::success("Background task started")
+        .with_metadata(json!({"status": "Running", "task_id": "shell_2"}));
+    let activated_exec = super::activate_result_dependencies(
+        &catalog,
+        &mut active_exec,
+        &mut cache_exec,
+        &exec_running,
+        &mut |names| ToolActivationCache::test_measure(&catalog, names),
+    )
+    .expect("exec_shell running task activates task_shell_wait");
+    assert!(activated_exec);
+    assert!(active_exec.contains("task_shell_wait"));
+}
+
+#[test]
+fn bm25_tool_search_expands_curated_synonyms_without_false_substring_hits() {
+    let mut catalog = [
+        "read_media",
+        "Git",
+        "Run",
+        "terminal_run",
+        "task_shell_wait",
+        "agent",
+        "workflow",
+        "remember",
+        "Web",
+        "lsp",
+        "todo_write",
+        "tasks",
+        "thread_status",
+        "prune_cache",
+    ]
+    .into_iter()
+    .map(|name| {
+        let mut entry = tool(name);
+        entry.description = format!("Tool {name}");
+        entry.defer_loading = Some(true);
+        entry
+    })
+    .collect::<Vec<_>>();
+    catalog.push({
+        let mut entry = tool("mcp_git_status");
+        entry.description = "MCP repo status".to_string();
+        entry.defer_loading = Some(true);
+        entry
+    });
+
+    let active = HashSet::new();
+    let cases = [
+        ("screenshot", "read_media"),
+        ("pdf", "read_media"),
+        ("image", "read_media"),
+        ("branch", "Git"),
+        ("diff", "Git"),
+        ("commit", "Git"),
+        ("lint", "Run"),
+        ("build", "Run"),
+        ("check", "Run"),
+        ("pty", "terminal_run"),
+        ("bg", "task_shell_wait"),
+        ("background", "task_shell_wait"),
+        ("subagent", "agent"),
+        ("delegate", "agent"),
+        ("worker", "agent"),
+        ("spawn", "agent"),
+        ("memory", "remember"),
+        ("note", "remember"),
+        ("http", "Web"),
+        ("url", "Web"),
+        ("definition", "lsp"),
+        ("references", "lsp"),
+        ("diagnostics", "lsp"),
+        ("checklist", "todo_write"),
+        ("plan", "todo_write"),
+    ];
+    for (query, expected) in cases {
+        let matches = super::discover_tools_with_bm25_like(&catalog, query, 8, &active, None);
+        assert!(
+            matches.iter().any(|name| name == expected),
+            "query {query:?} should find {expected:?}, got {matches:?}"
+        );
+    }
+
+    let pdf_matches = super::discover_tools_with_bm25_like(&catalog, "pdf", 8, &active, None);
+    assert!(
+        !pdf_matches.iter().any(|name| name == "thread_status"),
+        "synonym expansion must not match substrings inside words: {pdf_matches:?}"
+    );
+    let lint_matches = super::discover_tools_with_bm25_like(&catalog, "lint", 8, &active, None);
+    assert!(
+        !lint_matches.iter().any(|name| name == "prune_cache"),
+        "synonym expansion must not match substrings inside words: {lint_matches:?}"
+    );
+    let exact_git = super::discover_tools_with_bm25_like(&catalog, "git", 8, &active, None);
+    assert_eq!(exact_git.first().map(String::as_str), Some("Git"));
+}
+
+#[test]
+fn deferred_named_batch_keeps_execute_tools_schema_minimal() {
+    let step_schema = json!({"type": "object", "properties": {
+        "target": {"type": "string", "description": "x".repeat(400)},
+        "find": {"type": "object", "properties": {"query": {"type": "string"}}}
+    }});
+    let mut batch = tool("mcp_cu_run_actions");
+    batch.description = "Run several computer-use steps.".repeat(20);
+    batch.defer_loading = Some(true);
+    batch.input_schema = json!({
+        "type": "object",
+        "required": ["steps"],
+        "properties": {"steps": {
+            "type": "array", "minItems": 1, "maxItems": 8,
+            "items": {"type": "object", "required": ["tool"], "properties": {
+                "tool": {"type": "string", "enum": ["click", "drag"]},
+                "arguments": {"type": "object", "oneOf": [step_schema.clone(), step_schema]}
+            }}
+        }}
+    });
+    let mut catalog = vec![
+        crate::tools::codemode::execute_tools_tool_definition(),
+        batch,
+    ];
+    let members = vec!["click".to_string(), "drag".to_string()];
+    assert!(super::configure_composition_entry(
+        &mut catalog,
+        Some("mcp_cu_run_actions"),
+        &members
+    ));
+    let offered = &catalog[0].input_schema["properties"]["batch"];
+    let rendered = offered.to_string();
+    assert!(!rendered.contains("xxxxxxxx"), "{rendered}");
+    assert!(!rendered.contains("computer-use steps"), "{rendered}");
+    assert!(rendered.contains("tool_search"), "{rendered}");
+    assert!(super::offered_batch_allows(
+        &catalog,
+        "mcp_cu_run_actions",
+        &json!({"steps": [{"tool": "click", "arguments": {}}]})
+    ));
+}
+
+#[test]
+fn tool_search_ranks_first_party_names_above_mcp_description_hits() {
+    let mut run = tool("Run");
+    run.defer_loading = Some(true);
+    let mut git = tool("Git");
+    git.defer_loading = Some(true);
+    let mut computer = tool("mcp_cu_run_actions");
+    computer.description = "Run tests, run actions, run anything on the desktop.".to_string();
+    computer.defer_loading = Some(true);
+    let mut notebook = tool("mcp_db_run_notebook");
+    notebook.description = "Run a notebook".to_string();
+    notebook.defer_loading = Some(true);
+    let catalog = vec![computer, notebook, run, git];
+    let found = super::discover_tools_with_bm25_like(
+        &catalog,
+        "run tests cargo",
+        super::TOOL_SEARCH_DEFAULT_MAX_RESULTS,
+        &HashSet::new(),
+        None,
+    );
+    assert_eq!(found.first().map(String::as_str), Some("Run"), "{found:?}");
+    assert!(!found.iter().any(|name| name == "Git"), "{found:?}");
+    assert!(found.len() <= 4, "{found:?}");
 }
