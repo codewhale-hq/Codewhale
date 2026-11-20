@@ -730,6 +730,7 @@ struct DshClosure {
     package: String,
     entry: String,
     files: BTreeMap<String, String>,
+    imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     host_provided: Vec<String>,
 }
 
@@ -941,6 +942,18 @@ fn dsh_client_closure(conversion: &Value) -> Option<DshClosure> {
     if !files.contains_key(&entry) {
         return None;
     }
+    let imports: BTreeMap<String, BTreeMap<String, Option<String>>> =
+        serde_json::from_value(closure.get("imports")?.clone()).ok()?;
+    for (from, edges) in &imports {
+        if !files.contains_key(from)
+            || edges
+                .values()
+                .flatten()
+                .any(|target| !files.contains_key(target))
+        {
+            return None;
+        }
+    }
     Some(DshClosure {
         package: closure
             .get("package")
@@ -949,6 +962,7 @@ fn dsh_client_closure(conversion: &Value) -> Option<DshClosure> {
             .to_string(),
         entry,
         files,
+        imports,
         host_provided: closure
             .get("host_provided")
             .and_then(Value::as_array)
@@ -1100,27 +1114,8 @@ const DSH_BOOTSTRAP_HEAD: &str = r#""use strict";
   var files = {
 "#;
 
-const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
-  var probes = ["", ".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs", "/index.cjs"];
+const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = Object.create(null);
   var hostRequire = null;
-  function normalize(path) {
-    var out = [];
-    path.split("/").forEach(function (part) {
-      if (part === "" || part === ".") return;
-      if (part === "..") out.pop();
-      else out.push(part);
-    });
-    return out.join("/");
-  }
-  function resolve(from, id) {
-    var cut = from.lastIndexOf("/");
-    var dir = cut < 0 ? "" : from.slice(0, cut) + "/";
-    var base = normalize(dir + id);
-    for (var i = 0; i < probes.length; i++) {
-      if (Object.prototype.hasOwnProperty.call(files, base + probes[i])) return base + probes[i];
-    }
-    return null;
-  }
   function load(path) {
     if (Object.prototype.hasOwnProperty.call(cache, path)) return cache[path].exports;
     var module = { exports: {} };
@@ -1130,11 +1125,13 @@ const DSH_BOOTSTRAP_TAIL: &str = r#"  var cache = {};
   }
   function makeRequire(from) {
     return function (id) {
-      if (id.charAt(0) === ".") {
-        var resolved = resolve(from, id);
-        if (resolved === null) throw new Error("the plugin client requires a file outside its reviewed closure: " + id);
-        return load(resolved);
+      var edges = imports[from];
+      if (typeof id !== "string" || !edges || !Object.prototype.hasOwnProperty.call(edges, id)) {
+        throw new Error("the plugin client requires an undeclared module: " + id);
       }
+      var resolved = edges[id];
+      if (resolved !== null) return load(resolved);
+      if (hosts.indexOf(id) < 0) throw new Error("the plugin client requires an undeclared host service: " + id);
       return hostRequire(id);
     };
   }
@@ -1164,9 +1161,9 @@ fn dsh_bootstrap(
         out.push_str(&quote(path)?);
         out.push_str(": function (module, exports, require) {\n");
         if path.ends_with(".json") {
-            out.push_str("module.exports = ");
-            out.push_str(text);
-            out.push(';');
+            out.push_str("module.exports = JSON.parse(");
+            out.push_str(&quote(text)?);
+            out.push_str(");");
         } else {
             out.push_str(text);
         }
@@ -1181,6 +1178,15 @@ fn dsh_bootstrap(
             &closure.package
         })?,
         quote(&closure.entry)?
+    ));
+    let imports = serde_json::to_string(&closure.imports)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    let hosts = serde_json::to_string(&closure.host_provided)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    out.push_str(&format!(
+        "  var imports = JSON.parse({});\n  var hosts = JSON.parse({});\n",
+        quote(&imports)?,
+        quote(&hosts)?
     ));
     out.push_str(DSH_BOOTSTRAP_TAIL);
     Ok(out.into_bytes())
@@ -2698,7 +2704,8 @@ mod review_tests {
             "client_closures": [{
                 "root": "",
                 "entry": "client.js",
-                "files": { "client.js": "h1", "util.js": "h2" }
+                "files": { "client.js": "h1", "util.js": "h2" },
+                "imports": { "client.js": { "./util": "util.js" } }
             }]
         }))
         .expect("authored closure");
@@ -2717,6 +2724,72 @@ mod review_tests {
             let out: serde_json::Value = serde_json::from_str(&out).unwrap();
             assert_eq!(out["apply"], "function");
             assert_eq!(out["out"][0], 1);
+        }
+    }
+
+    #[test]
+    fn dsh_bootstrap_uses_only_admitted_edges_for_cycles_json_packages_and_hosts() {
+        for prefix in ["", "lib/"] {
+            let entry = format!("{prefix}client.js");
+            let helper = format!("{prefix}helper.cjs");
+            let verified = vec![
+                (
+                    entry.clone(),
+                    br#"exports.ready = 7;
+var helper = require('./helper');
+var data = require('./data.json');
+var packageValue = require('mapped');
+exports.apply = function () {
+  var denied = 0;
+  for (var id of ['./unlisted', 'unknown-service', './helper.cjs']) {
+    try { require(id); } catch (_) { denied++; }
+  }
+  return [helper.ready, data.value, packageValue.value, require('react').id, denied];
+};"#
+                    .to_vec(),
+                ),
+                (
+                    helper.clone(),
+                    b"exports.ready = require('./client').ready;".to_vec(),
+                ),
+                ("data.json".into(), br#"{"value":2}"#.to_vec()),
+                (
+                    "node_modules/mapped/selected.cjs".into(),
+                    b"exports.value = 3;".to_vec(),
+                ),
+                (
+                    "unlisted.js".into(),
+                    b"throw new Error('must not execute');".to_vec(),
+                ),
+            ];
+            let files: std::collections::BTreeMap<_, _> = verified
+                .iter()
+                .map(|(path, _)| (path.clone(), "hash"))
+                .collect();
+            let conversion = serde_json::json!({"client_closures": [{
+                "root": "", "entry": entry, "files": files, "host_provided": ["react"],
+                "imports": {
+                    (entry.clone()): {"./helper": helper, "./data.json": "data.json", "mapped": "node_modules/mapped/selected.cjs", "react": null},
+                    (helper.clone()): {"./client": entry}
+                }
+            }]});
+            let closure = dsh_client_closure(&conversion).unwrap();
+            let source =
+                String::from_utf8(dsh_bootstrap("mapped", &closure, &verified).unwrap()).unwrap();
+            let out = crate::runtime_api::tests::bootstrap_loads_in_node(&source)
+                .expect("node required for module map regression");
+            let out: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(out["out"], serde_json::json!([7, 2, 3, "react", 3]));
+            let mut missing = conversion.clone();
+            missing["client_closures"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("imports");
+            assert!(dsh_client_closure(&missing).is_none());
+            let mut outside = conversion;
+            outside["client_closures"][0]["imports"][&entry]["./helper"] =
+                serde_json::json!("outside.js");
+            assert!(dsh_client_closure(&outside).is_none());
         }
     }
 

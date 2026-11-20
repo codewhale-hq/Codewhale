@@ -224,6 +224,20 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
     let workspace = tmp.path().join("ws");
     fs::create_dir_all(&root)?;
     let package = write_dsh_package(tmp.path(), "panel", DSH_CLIENT)?;
+    fs::write(
+        package.join("lib/util.js"),
+        "require('./client'); exports.v = require('./data.json').value + require('mapped').value; if (require('react-dom/client').id !== 'react-dom/client' || require('react/jsx-runtime').id !== 'react/jsx-runtime') throw new Error('host subpath mismatch');",
+    )?;
+    fs::write(package.join("lib/data.json"), r#"{"value":-2}"#)?;
+    fs::create_dir_all(package.join("node_modules/mapped"))?;
+    fs::write(
+        package.join("node_modules/mapped/package.json"),
+        r#"{"exports":{".":{"import":"./selected.cjs","default":"./missing.cjs"}}}"#,
+    )?;
+    fs::write(
+        package.join("node_modules/mapped/selected.cjs"),
+        "exports.value = 3;",
+    )?;
 
     let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
         return Ok(());

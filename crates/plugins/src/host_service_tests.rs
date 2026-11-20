@@ -461,6 +461,7 @@ fn the_importer_asks_only_for_services_its_own_server_modules_inject() {
         inject: vec!["remote".into()],
         host_provided: Vec::new(),
         files: [("source/lib/client.js".to_string(), String::new())].into(),
+        imports: Default::default(),
         bytes: 0,
     };
     let rows = vec!["demo".to_string(), "@scope/row".to_string()];

@@ -203,3 +203,46 @@ contains the process under a deadline and cancellation. Other Git commands and
 subprocess APIs retain the Native sandbox restrictions. Native v8 requires
 re-review before this additional compatibility path is admitted. The
 published plugin's end-to-end review flow is not yet qualified.
+
+## Reviewed client module map (CW-8288)
+
+The CommonJS client bootstrap consumes the import edges recorded by the existing
+conversion resolver in `CONVERSION.json`. That report and the source files remain
+bound to the staged bundle hash; activation policy v9 invalidates prior native
+review receipts. Missing maps require reconversion and review. Each edge names a
+file in the reviewed closure or an exact declared host module. Runtime does not
+probe paths, read arbitrary disk, or resolve npm dependencies. The existing
+revision, file-hash and authority checks still guard bootstrap delivery.
+
+The admitted subset includes root and nested client entries, relative path
+normalization and extension/index probes, JSON, CommonJS cycles, and contained
+package targets selected by the existing export-condition order. Client exports
+select `import`, `default`, then `.`; dependency exports select `import`, `browser`,
+`require`, then `default`. These are resolver priorities, not general Node export
+semantics. The existing resolver's `main`/subpath fallback is unchanged.
+
+Known limitations: ESM execution and dynamic `import()` are unsupported. Computed
+module requests are rejected by the conservative source scan; any request absent
+from the admitted map fails at runtime. The scan is not a general JavaScript
+parser. Host module declarations do not grant broker/tool/UI permissions. Linked
+dependency directories and ordinary symlinks are rejected; contained dependency
+file links are skipped and are not loadable aliases. This is not general symlink
+or arbitrary npm compatibility. Revocation prevents subsequent asset/host calls;
+it does not erase JavaScript already delivered to a frame.
+
+### Pending installed qualification
+
+This Engine-only change does not establish installed compatibility.
+
+- **CW-8014:** record exact installed Engine SHA and activation policy; install a
+  fixture, review and enable it, invoke its actual command/tool, then revoke and
+  capture denied subsequent calls. Include root/nested imports, cycles, JSON,
+  contained export conditions, boundary refusals, changed bundle digest and
+  unsupported dynamic requests. Record each result and any skipped case.
+- **CW-8019:** additionally record exact installed App SHA; mount and use the
+  fixture panel through the App, verify its imports and declared host modules,
+  then capture post-revocation UI asset and bridge denials. A Node bootstrap test
+  or a visible panel entry alone does not prove this journey.
+
+No installed Engine/App run, provider inference, upload or publication is part of
+this local fixture qualification.
