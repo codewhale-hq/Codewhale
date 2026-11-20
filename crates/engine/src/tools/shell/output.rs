@@ -303,59 +303,69 @@ impl BoundedOutputAccumulator {
     }
 
     fn persist_temp_to_session_artifact(&mut self) -> io::Result<()> {
-        let Some(mut temp) = self.temp.take() else {
+        let Some(temp) = self.temp.as_mut() else {
             return Ok(());
         };
         let Some(spec) = self.session_artifact.as_ref() else {
             self.spill_unavailable =
                 Some("session artifact storage is unavailable without an active session".into());
-            return Ok(());
+            return Err(io::Error::other(self.spill_unavailable.clone().unwrap()));
         };
         temp.flush()?;
-        let mut raw_bytes = Vec::new();
         temp.as_file_mut().seek(SeekFrom::Start(0))?;
-        temp.as_file_mut().read_to_end(&mut raw_bytes)?;
-        match persist_shell_bytes_with_spec(spec, &raw_bytes) {
-            Ok(artifact) => {
-                self.persisted_artifact = Some(artifact);
+        let result = codewhale_runtime::artifacts::write_session_artifact_immutable_from_reader(
+            &spec.session_id,
+            &spec.artifact_id,
+            temp.as_file_mut(),
+        );
+        match result {
+            Ok((absolute_path, relative_path, byte_size, digest)) => {
+                self.persisted_artifact = Some(PersistedShellArtifact {
+                    artifact_id: spec.artifact_id.clone(),
+                    session_id: spec.session_id.clone(),
+                    absolute_path,
+                    relative_path,
+                    byte_size,
+                    digest,
+                });
+                self.spill_unavailable = None;
+                self.temp.take();
+                Ok(())
             }
             Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    session_id = %spec.session_id,
-                    artifact_id = %spec.artifact_id,
-                    "shell output session artifact could not be written; keeping bounded tail only"
-                );
                 self.spill_unavailable = Some(spill_unavailable_reason(&error));
+                Err(error)
             }
         }
-        Ok(())
     }
 
-    pub(super) fn read_full_bytes(&self) -> Option<Vec<u8>> {
-        if let Some(artifact) = self.persisted_artifact.as_ref() {
-            let mut file = codewhale_runtime::artifacts::open_session_relative(
+    pub(super) fn retained_raw_bytes(&self) -> Option<(Vec<u8>, usize)> {
+        let mut file = if let Some(artifact) = self.persisted_artifact.as_ref() {
+            codewhale_runtime::artifacts::open_session_relative(
                 &artifact.session_id,
                 &artifact.relative_path,
                 false,
             )
             .ok()?
             .open_file()
+            .ok()?
+        } else {
+            self.temp.as_ref()?.reopen().ok()?
+        };
+        let size = file.metadata().ok()?.len();
+        let omitted = size.saturating_sub(BOUNDED_OUTPUT_MAX_BYTES as u64);
+        file.seek(SeekFrom::Start(omitted)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(BOUNDED_OUTPUT_MAX_BYTES as u64)
+            .read_to_end(&mut bytes)
             .ok()?;
-            let mut raw_bytes = Vec::new();
-            file.read_to_end(&mut raw_bytes).ok()?;
-            return Some(raw_bytes);
-        }
-        let temp = self.temp.as_ref()?;
-        let mut file = temp.as_file().try_clone().ok()?;
-        file.seek(SeekFrom::Start(0)).ok()?;
-        let mut raw_bytes = Vec::new();
-        file.read_to_end(&mut raw_bytes).ok()?;
-        Some(raw_bytes)
+        Some((bytes, usize::try_from(omitted).unwrap_or(usize::MAX)))
     }
 
     pub(super) fn release_temp(&mut self) {
-        self.temp.take();
+        if self.persisted_artifact.is_some() || self.selected().0.len() == self.total_bytes {
+            self.temp.take();
+        }
     }
 
     pub(super) fn persisted_artifact(&self) -> Option<PersistedShellArtifact> {
@@ -399,12 +409,13 @@ impl BoundedOutputAccumulator {
             + usize::from(selected.last().is_some_and(|byte| *byte != b'\n'));
         let mut content = String::from_utf8(selected).expect("stream decoder emits valid UTF-8");
 
-        if finalize && self.stream_finished && self.persisted_artifact.is_none() {
-            if truncated {
-                self.persist_temp_to_session_artifact()?;
-            } else {
-                self.temp.take();
+        if finalize && truncated && self.persisted_artifact.is_none() && self.temp.is_some() {
+            if !self.stream_finished {
+                return Err(io::Error::other(
+                    "shell output stream has not closed; retaining spill for retry",
+                ));
             }
+            self.persist_temp_to_session_artifact()?;
         }
         if truncated && finalize && self.persisted_artifact.is_none() {
             let reason = self.spill_unavailable.as_deref().unwrap_or(

@@ -2354,6 +2354,7 @@ fn completion_evidence_preserves_arbitrary_stream_bytes() {
         stderr: stderr.clone(),
         stdout_omitted: 0,
         stderr_omitted: 0,
+        persisted_artifact: None,
     };
 
     let payload: serde_json::Value =
@@ -6656,4 +6657,112 @@ async fn foreground_bash_large_output_persists_session_artifact_readable_via_ret
         .await
         .expect("retrieve failing bash artifact");
     assert!(fail_retrieved.content.contains("MID_MARKER_PAST_30KB"));
+}
+
+#[test]
+fn bounded_spill_finalization_retries_before_acknowledging_wait_or_completion() {
+    let _lock = codewhale_runtime::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    struct ResetRoot(Option<std::path::PathBuf>);
+    impl Drop for ResetRoot {
+        fn drop(&mut self) {
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+        }
+    }
+    let fixture = tempdir().unwrap();
+    let sessions = fixture.path().join("sessions");
+    let _root = ResetRoot(
+        codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(sessions.clone())),
+    );
+    for wait in [true, false] {
+        let session = if wait {
+            "wait-session"
+        } else {
+            "drain-session"
+        };
+        let mut manager = ShellManager::new(fixture.path().to_path_buf());
+        manager.seed_finished_record_for_test("fixture-job", Duration::ZERO);
+        let mut output = BoundedOutputAccumulator::new_in(
+            Some(fixture.path()),
+            Some(SessionArtifactSpec {
+                session_id: session.into(),
+                artifact_id: "art_fixture".into(),
+            }),
+        );
+        let chunk = [0xff; 4096];
+        for _ in 0..512 {
+            output.append(&chunk).unwrap();
+        }
+        let shell = manager.processes.get_mut("fixture-job").unwrap();
+        shell.owner_session_id = session.into();
+        shell.status = ShellStatus::Running;
+        shell.bounded_output = Some(Arc::new(Mutex::new(output)));
+        let running = shell.take_delta();
+        assert!(running.2 > 16 * 1024);
+        assert!(running.6.is_none());
+        shell
+            .bounded_output
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .finish()
+            .unwrap();
+        shell.status = ShellStatus::Completed;
+        std::fs::create_dir_all(sessions.join(session)).unwrap();
+        let blocked = sessions.join(session).join("artifacts");
+        std::fs::write(&blocked, b"fixture obstruction").unwrap();
+        let cursor = shell.stdout_cursor;
+        if wait {
+            assert!(
+                manager
+                    .get_raw_output_delta("fixture-job", false, 0)
+                    .is_err()
+            );
+        } else {
+            assert!(manager.drain_finished_jobs_with_evidence().is_empty());
+        }
+        let shell = &manager.processes["fixture-job"];
+        assert!(!shell.completion_reported);
+        assert_eq!(shell.stdout_cursor, cursor);
+        assert_eq!(
+            shell
+                .bounded_output
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .retained_raw_bytes()
+                .unwrap()
+                .0,
+            vec![0xff; 16 * 1024]
+        );
+        std::fs::remove_file(&blocked).unwrap();
+        let artifact = if wait {
+            let result = manager
+                .get_raw_output_delta("fixture-job", false, 0)
+                .unwrap();
+            assert!(result.stdout.is_empty());
+            assert_eq!(result.stdout_delta_len, 0);
+            result.persisted_artifact.unwrap()
+        } else {
+            let completions = manager.drain_finished_jobs_with_evidence();
+            assert_eq!(completions.len(), 1);
+            let evidence = &completions[0];
+            assert!(evidence.stdout.len() <= 16 * 1024);
+            assert!(evidence.artifact_bytes().len() < 32 * 1024);
+            let payload: Value = serde_json::from_slice(&evidence.artifact_bytes()).unwrap();
+            assert_eq!(payload["stdout"]["artifact_id"], "art_fixture");
+            evidence.persisted_artifact.clone().unwrap()
+        };
+        assert!(manager.processes["fixture-job"].completion_reported);
+        let raw = vec![0xff; 2 * 1024 * 1024];
+        assert_eq!(std::fs::read(&artifact.absolute_path).unwrap(), raw);
+        assert_eq!(artifact.byte_size, raw.len() as u64);
+        assert_eq!(
+            artifact.digest,
+            codewhale_runtime::hashing::sha256_hex(&raw)
+        );
+    }
 }

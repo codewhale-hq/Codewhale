@@ -446,6 +446,7 @@ pub struct ShellCompletionEvidence {
     stderr: Vec<u8>,
     stdout_omitted: usize,
     stderr_omitted: usize,
+    persisted_artifact: Option<PersistedShellArtifact>,
 }
 
 impl ShellCompletionEvidence {
@@ -480,7 +481,7 @@ impl ShellCompletionEvidence {
             value
         }
 
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "schema": "codewhale.shell_completion.evidence.v1",
             "task_id": self.event.task_id,
             "command": self.event.command,
@@ -491,9 +492,15 @@ impl ShellCompletionEvidence {
             "origin_turn_id": self.event.origin_turn_id,
             "stdout": stream(&self.stdout, self.stdout_omitted),
             "stderr": stream(&self.stderr, self.stderr_omitted),
-        })
-        .to_string()
-        .into_bytes()
+        });
+        if let Some(artifact) = self.persisted_artifact.as_ref() {
+            stamp_persisted_shell_artifact_metadata(
+                &mut payload["stdout"],
+                artifact,
+                &self.event.stdout_tail,
+            );
+        }
+        payload.to_string().into_bytes()
     }
 
     pub fn needs_evidence_artifact(&self) -> bool {
@@ -1708,12 +1715,12 @@ impl BackgroundShell {
     /// declare the omission rather than presenting a clipped stream as exact.
     fn retained_output_bytes_with_omissions(&self) -> (Vec<u8>, Vec<u8>, usize, usize) {
         if let Some(output) = self.bounded_output.as_ref()
-            && let Some(full_bytes) = output
+            && let Some((bytes, omitted)) = output
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .read_full_bytes()
+                .retained_raw_bytes()
         {
-            return (full_bytes, Vec::new(), 0, 0);
+            return (bytes, Vec::new(), omitted, 0);
         }
         if let Some(snapshot) = self.bounded_output_snapshot(false).ok().flatten() {
             let omitted = snapshot.total_bytes.saturating_sub(snapshot.retained_bytes);
@@ -2080,7 +2087,16 @@ impl BackgroundShell {
     }
 
     fn completion_evidence(&self) -> ShellCompletionEvidence {
-        let event = self.completion_event();
+        let mut event = self.completion_event();
+        let persisted_artifact = self.bounded_output.as_ref().and_then(|output| {
+            output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .persisted_artifact()
+        });
+        if let Some(artifact) = persisted_artifact.as_ref() {
+            event.evidence_ref = Some(artifact.artifact_id.clone());
+        }
         let (stdout, stderr, stdout_omitted, stderr_omitted) =
             self.retained_output_bytes_with_omissions();
         ShellCompletionEvidence {
@@ -2089,6 +2105,7 @@ impl BackgroundShell {
             stderr,
             stdout_omitted,
             stderr_omitted,
+            persisted_artifact,
         }
     }
 
@@ -3532,6 +3549,13 @@ impl ShellManager {
             .get_mut(task_id)
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
         wait_while_running(shell, wait, timeout_ms);
+        let finalized_artifact = if shell.status != ShellStatus::Running {
+            shell
+                .bounded_output_snapshot(true)?
+                .and_then(|snapshot| snapshot.persisted_artifact)
+        } else {
+            None
+        };
         let (
             stdout,
             stderr,
@@ -3541,6 +3565,7 @@ impl ShellManager {
             stderr_total_len,
             persisted_artifact,
         ) = shell.take_delta();
+        let persisted_artifact = finalized_artifact.or(persisted_artifact);
         let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
         let sandbox_denied = shell.sandbox_denied();
         let status = shell.status.clone();
@@ -4155,6 +4180,10 @@ impl ShellManager {
                 && shell.status != ShellStatus::Running
                 && !shell.completion_reported
             {
+                if let Err(error) = shell.bounded_output_snapshot(true) {
+                    tracing::warn!(task_id = %shell.id, %error, "shell completion artifact publication failed; retaining output for retry");
+                    continue;
+                }
                 shell.completion_reported = true;
                 completions.push(shell.completion_evidence());
                 // The bytes are now in the caller's hands (they become a durable
