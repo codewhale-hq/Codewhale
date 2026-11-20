@@ -82,6 +82,7 @@ pub fn node_for_tests(test: &str) -> Option<PathBuf> {
 /// (trusted) and enabled through the real registry. Callers must hold a
 /// `TestPolicyGuard::extension_host(true)` on this thread.
 pub struct FixturePlugins {
+    _temp: tempfile::TempDir,
     pub config: DiscoveryConfig,
     pub root: PathBuf,
     /// The stub built-in command catalog, so a fixture plugin's commands can
@@ -94,9 +95,9 @@ impl FixturePlugins {
         use codewhale_plugins::install::{
             DEFAULT_MAX_SIZE_BYTES, PluginInstallOutcome, PluginInstallSource, install,
         };
-        let temp = crate::test_support::test_scratch_dir("plugins");
-        let workspace = temp.join("project");
-        let user = temp.join("user");
+        let temp = tempfile::tempdir_in(crate::test_support::test_scratch_root()).unwrap();
+        let workspace = temp.path().join("project");
+        let user = temp.path().join("user");
         std::fs::create_dir_all(&workspace).unwrap();
         for name in names {
             let outcome = install(
@@ -119,7 +120,7 @@ impl FixturePlugins {
             user_plugins_dir: user,
             workspace_plugins_dir: workspace.join(".codewhale/plugins"),
             builtin_plugin_dirs: Vec::new(),
-            state_path: temp.join("state/plugin-state.json"),
+            state_path: temp.path().join("state/plugin-state.json"),
         };
         let mut registry = discover_with_config(&config);
         for name in names {
@@ -130,8 +131,9 @@ impl FixturePlugins {
                 .enable(name)
                 .unwrap_or_else(|e| panic!("enable {name}: {e}"));
         }
-        let root = temp.join("home");
+        let root = temp.path().join("home");
         let fixture = Self {
+            _temp: temp,
             config,
             root,
             _commands: stub_builtin_commands(),
