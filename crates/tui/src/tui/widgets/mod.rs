@@ -2233,7 +2233,8 @@ impl<'a> ApprovalWidget<'a> {
             tr(locale, MessageId::ConfigSectionPermissions),
         );
         let show_permission_hint = self.view.offers_permission_settings()
-            && left_budget >= left_used + verb.width() + 9 + permission_hint.width();
+            && left_budget
+                >= left_used + verb.width() + 1 + subject.width().min(48) + permission_hint.width();
         let left_budget = if show_permission_hint {
             left_budget - permission_hint.width()
         } else {
