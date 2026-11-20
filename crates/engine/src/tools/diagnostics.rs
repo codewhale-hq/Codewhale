@@ -85,7 +85,21 @@ impl ToolSpec for DiagnosticsTool {
             Err(err) => (None, Some(err.to_string())),
         };
 
-        let git = probe_git(&context.workspace);
+        let workspace = context.workspace.clone();
+        let (git, bwrap_available, cgroup_version, rustc_version, cargo_version) =
+            tokio::task::spawn_blocking(move || {
+                (
+                    probe_git(&workspace),
+                    probe_bwrap_available(),
+                    probe_cgroup_version(),
+                    probe_version("rustc", &["--version"], &workspace),
+                    probe_version("cargo", &["--version"], &workspace),
+                )
+            })
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!("diagnostics probe stopped: {error}"))
+            })?;
         let sandbox_type = match context.shell_manager.lock() {
             Ok(manager) => manager.configured_sandbox_type().map(|s| s.to_string()),
             Err(poisoned) => poisoned
@@ -94,12 +108,6 @@ impl ToolSpec for DiagnosticsTool {
                 .map(|s| s.to_string()),
         };
         let sandbox_available = sandbox_type.is_some();
-
-        // Bubblewrap availability (#2184).
-        let bwrap_available = probe_bwrap_available();
-
-        // Cgroup version (Linux only).
-        let cgroup_version = probe_cgroup_version();
 
         let trusted_external_paths = context
             .trusted_external_paths
@@ -117,8 +125,8 @@ impl ToolSpec for DiagnosticsTool {
             sandbox_type,
             bwrap_available,
             cgroup_version,
-            rustc_version: probe_version("rustc", &["--version"], &context.workspace),
-            cargo_version: probe_version("cargo", &["--version"], &context.workspace),
+            rustc_version,
+            cargo_version,
             trusted_external_paths,
         };
 

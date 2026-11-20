@@ -102,8 +102,8 @@ one-shot user approval. The approved policy affects only that call.
 Both tools read source from stdin, return stdout/stderr/return_code, and keep
 the existing timeout and process-tree cleanup. They are not persistent REPLs;
 tracebacks refer to stdin rather than a temporary script path. The persistent
-Python kernels behind `rlm` and inline `repl` fences start through the same
-launcher, so they run under the same effective policy.
+Python kernels behind `rlm` start through the same launcher, so they run under
+the same effective policy.
 
 Platform/backend limits of the shared launcher still apply: no available local
 wrapper means workspace-write remains unenforced, while read-only is refused.
@@ -119,10 +119,10 @@ does not mean "unable to research."
 
 The durable `github`, `automation`, and `rlm` action families are also deferred
 by default. `rlm` owns `open`, `eval`, `configure`, and `close` actions for a
-persistent local Python session. Inline ```` ```repl ```` fences in a reply run in
-the same kind of kernel only when `code_execution` is on the turn's surface
-(never in Plan mode), only when the fence opens its own line, and only after
-`code_execution`'s approval under the session posture. These kernels start
+persistent local Python session. A ```` ```repl ```` fence in an ordinary reply is
+text and never runs; only a recursive `rlm` turn executes its fenced code, and
+only when `code_execution` is on that turn's surface (never in Plan mode) and
+after `code_execution`'s approval under the session posture. These kernels start
 through the launcher `code_execution` uses, with the sanitized child
 environment, so the session's sandbox policy and wrapper apply to them: a
 read-only policy without an enforcing wrapper refuses to start one, and a

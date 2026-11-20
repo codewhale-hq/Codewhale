@@ -28,7 +28,8 @@ impl ToolSpec for LspTool {
     fn description(&self) -> &'static str {
         "Query the configured session LSP for diagnostics, symbols, definitions, \
          references, or read_lints: 1-16 newline-separated files with \
-         success/error/timeout; warnings follow include_warnings."
+         success/error/timeout; include_warnings overrides the session setting. \
+         symbols with a query may omit path to search running servers."
     }
 
     fn input_schema(&self) -> Value {
@@ -42,7 +43,7 @@ impl ToolSpec for LspTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Source path. For read_lints: 1-16 newline-separated workspace-relative files."
+                    "description": "Source path; optional for symbols with a query. For read_lints: 1-16 newline-separated workspace-relative files."
                 },
                 "line": {
                     "type": "integer",
@@ -58,9 +59,13 @@ impl ToolSpec for LspTool {
                 "query": {
                     "type": "string",
                     "description": "Workspace symbol query."
+                },
+                "include_warnings": {
+                    "type": "boolean",
+                    "description": "diagnostics/read_lints: include warnings (default: session [lsp] include_warnings)."
                 }
             },
-            "required": ["operation", "path"]
+            "required": ["operation"]
         })
     }
 
@@ -72,9 +77,21 @@ impl ToolSpec for LspTool {
         ApprovalRequirement::Auto
     }
 
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let operation = required_str(&input, "operation")?;
-        let path_raw = required_str(&input, "path")?;
+        let path_raw = optional_str(&input, "path")?;
+        let include_warnings = input
+            .get("include_warnings")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| ToolError::invalid_input("include_warnings must be a boolean"))
+            })
+            .transpose()?;
         let line = input.get("line").and_then(|v| v.as_u64()).map(|n| n as u32);
         let character = input
             .get("character")
@@ -84,12 +101,17 @@ impl ToolSpec for LspTool {
 
         if operation == "read_lints" {
             let paths = path_raw
+                .ok_or_else(|| ToolError::missing_field("path"))?
                 .split('\n')
                 .map(str::trim)
                 .filter(|path| !path.is_empty())
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>();
-            return execute_read_lints(json!({"paths": paths}), context).await;
+            return execute_read_lints(
+                json!({"paths": paths, "include_warnings": include_warnings}),
+                context,
+            )
+            .await;
         }
 
         let manager = context.lsp_manager.as_ref().ok_or_else(|| {
@@ -98,11 +120,26 @@ impl ToolSpec for LspTool {
             )
         })?;
 
-        let path = context.resolve_path(path_raw)?;
-        let payload = manager
-            .intelligence(operation, &path, line, character, query)
-            .await
-            .map_err(ToolError::execution_failed)?;
+        let payload = match path_raw {
+            None if operation == "symbols" => {
+                let query = query
+                    .filter(|query| !query.trim().is_empty())
+                    .ok_or_else(|| ToolError::missing_field("path or query"))?;
+                manager.workspace_symbols(query).await
+            }
+            None => return Err(ToolError::missing_field("path")),
+            Some(path_raw) => {
+                let path = context.resolve_path(path_raw)?;
+                if operation == "diagnostics" {
+                    manager.diagnostics_payload(&path, include_warnings).await
+                } else {
+                    manager
+                        .intelligence(operation, &path, line, character, query)
+                        .await
+                }
+            }
+        }
+        .map_err(ToolError::execution_failed)?;
 
         Ok(ToolResult::success(
             serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
@@ -210,7 +247,10 @@ async fn execute_read_lints(input: Value, context: &ToolContext) -> Result<ToolR
         )
     })?;
     let results = manager
-        .diagnostics_for_paths(&paths)
+        .diagnostics_for_paths_with_warnings(
+            &paths,
+            input.get("include_warnings").and_then(Value::as_bool),
+        )
         .await
         .map_err(ToolError::execution_failed)?;
 
@@ -868,6 +908,31 @@ mod tests {
         assert_eq!(severities, vec!["error"]);
         assert_eq!(payload["files"][0]["total_diagnostic_count"], 1);
         assert_eq!(payload["files"][0]["count_complete"], true);
+
+        let result = LspTool
+            .execute(
+                json!({"operation": "read_lints", "path": "lib.rs", "include_warnings": true}),
+                &ctx,
+            )
+            .await
+            .expect("read_lints with include_warnings");
+        let payload: Value = serde_json::from_str(&result.content).unwrap();
+        let severities = payload["files"][0]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["severity"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(severities, vec!["error", "warning"]);
+        let result = LspTool
+            .execute(
+                json!({"operation": "diagnostics", "path": "lib.rs", "include_warnings": true}),
+                &ctx,
+            )
+            .await
+            .expect("diagnostics with include_warnings");
+        let payload: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(payload["items"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
