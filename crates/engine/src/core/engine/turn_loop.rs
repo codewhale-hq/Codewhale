@@ -3362,6 +3362,84 @@ impl Engine {
     /// model-visible tool-result messages; those are handled by the result phase.
     /// The optional outcome slots retain the existing index-based collector shape.
     #[allow(clippy::too_many_arguments)] // phase fns mirror the turn pipeline shape
+    async fn execute_tool_search_plan(
+        &mut self,
+        plan: ToolExecutionPlan,
+        nested_gate_env: &mut NestedGateEnv<'_>,
+        tool_catalog: &mut Vec<codewhale_models::Tool>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+    ) -> ToolExecOutcome {
+        let started_at = Instant::now();
+        let activity_tx = self.tx_event.clone();
+        let activity = super::tool_execution::OperationSpanGuard::start(
+            &activity_tx,
+            &plan.id,
+            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
+            Some(crate::tools::activity::action_id(&plan.name, &plan.input)),
+            Some(self.cancel_token.clone()),
+        )
+        .await;
+        let active_before_search = active_tool_names.clone();
+        let discovery = self
+            .discover_mcp_for_tool_search(
+                (&plan.name, &plan.input),
+                nested_gate_env.tool_policy,
+                tool_catalog,
+                active_tool_names,
+                None,
+            )
+            .await;
+        let result = discovery.and_then(|()| {
+            super::tool_catalog::execute_tool_search_measured(
+                &plan.name,
+                &plan.input,
+                tool_catalog,
+                active_tool_names,
+                &mut self.session.tool_activation_cache,
+                &mut |names| {
+                    super::tool_catalog::measure_deferred_tools(
+                        nested_gate_env.client,
+                        &self.session.model,
+                        self.session.reasoning_effort.as_deref(),
+                        nested_gate_env.tool_policy.strict_tool_mode,
+                        tool_catalog,
+                        names,
+                    )
+                },
+            )
+        });
+        activity
+            .complete(crate::tools::activity::operation_outcome(
+                &result.clone().map(RichToolResult::plain),
+                self.cancel_token.is_cancelled(),
+            ))
+            .await;
+        if *active_tool_names != active_before_search {
+            self.session.pending_prefix_change_reason = Some("tool_surface".to_string());
+        }
+
+        let _ = self
+            .send_event(Event::ToolCallComplete {
+                model_call: plan.model_call.clone(),
+                id: plan.id.clone(),
+                name: plan.name.clone(),
+                result: result.clone(),
+            })
+            .await;
+
+        ToolExecOutcome {
+            model_call: plan.model_call,
+            index: plan.index,
+            id: plan.id,
+            name: plan.name,
+            input: plan.input,
+            started_at,
+            terminal: ToolExecutionOutcome::from_legacy(result),
+            content_blocks: Vec::new(),
+            original_content_digest: None,
+        }
+    }
+
     async fn execute_planned_tools(
         &mut self,
         plans: Vec<ToolExecutionPlan>,
@@ -3554,6 +3632,7 @@ impl Engine {
                     })
                     .collect();
                 let mut tool_tasks = FuturesUnordered::new();
+                let mut deferred_tool_searches = Vec::new();
                 let shell_permits = Arc::new(tokio::sync::Semaphore::new(
                     resolve_max_parallel_shell_exec(
                         self.config
@@ -3612,6 +3691,10 @@ impl Engine {
                             content_blocks: Vec::new(),
                             original_content_digest: None,
                         });
+                        continue;
+                    }
+                    if is_tool_search_tool(&plan.name) {
+                        deferred_tool_searches.push(plan);
                         continue;
                     }
                     let registry = tool_registry;
@@ -3768,6 +3851,24 @@ impl Engine {
                 // completed results finish guarded projection in the same
                 // FuturesUnordered authority before cancelled fallbacks settle.
                 drop(tool_tasks);
+                if !deferred_tool_searches.is_empty() {
+                    if self.cancel_token.is_cancelled() {
+                        parallel_cancelled = true;
+                    } else {
+                        for plan in deferred_tool_searches {
+                            let index = plan.index;
+                            let outcome = self
+                                .execute_tool_search_plan(
+                                    plan,
+                                    nested_gate_env,
+                                    tool_catalog,
+                                    active_tool_names,
+                                )
+                                .await;
+                            outcomes[index] = Some(outcome);
+                        }
+                    }
+                }
                 if parallel_cancelled {
                     for (index, model_call, id, name, input) in parallel_plan_receipts {
                         if outcomes[index].is_some() {
@@ -3854,80 +3955,16 @@ impl Engine {
                     }
 
                     if is_tool_search_tool(&tool_name) {
-                        let started_at = Instant::now();
-                        let activity_tx = self.tx_event.clone();
-                        let activity = super::tool_execution::OperationSpanGuard::start(
-                            &activity_tx,
-                            &tool_id,
-                            codewhale_protocol::engine_owner::OwnerActivityKind::Searching,
-                            Some(crate::tools::activity::action_id(&tool_name, &tool_input)),
-                            Some(self.cancel_token.clone()),
-                        )
-                        .await;
-                        // Tool-search activation changes the request-visible
-                        // catalog for the rest of the turn; declare it so the
-                        // next request re-pins under `change:tool_surface`
-                        // instead of tripping the C5 drift guard.
-                        let active_before_search = active_tool_names.clone();
-                        let discovery = self
-                            .discover_mcp_for_tool_search(
-                                (&tool_name, &tool_input),
-                                nested_gate_env.tool_policy,
+                        let index = plan.index;
+                        let outcome = self
+                            .execute_tool_search_plan(
+                                plan,
+                                nested_gate_env,
                                 tool_catalog,
                                 active_tool_names,
-                                None,
                             )
                             .await;
-                        let result = discovery.and_then(|()| {
-                            super::tool_catalog::execute_tool_search_measured(
-                                &tool_name,
-                                &tool_input,
-                                tool_catalog,
-                                active_tool_names,
-                                &mut self.session.tool_activation_cache,
-                                &mut |names| {
-                                    super::tool_catalog::measure_deferred_tools(
-                                        nested_gate_env.client,
-                                        &self.session.model,
-                                        self.session.reasoning_effort.as_deref(),
-                                        nested_gate_env.tool_policy.strict_tool_mode,
-                                        tool_catalog,
-                                        names,
-                                    )
-                                },
-                            )
-                        });
-                        activity
-                            .complete(crate::tools::activity::operation_outcome(
-                                &result.clone().map(RichToolResult::plain),
-                                self.cancel_token.is_cancelled(),
-                            ))
-                            .await;
-                        if *active_tool_names != active_before_search {
-                            self.session.pending_prefix_change_reason =
-                                Some("tool_surface".to_string());
-                        }
-
-                        let _ = self
-                            .send_event(Event::ToolCallComplete {
-                                model_call: plan.model_call.clone(),
-                                id: tool_id.clone(),
-                                name: tool_name.clone(),
-                                result: result.clone(),
-                            })
-                            .await;
-
-                        outcomes[plan.index] = Some(ToolExecOutcome {
-                            model_call: plan.model_call.clone(),
-                            index: plan.index,
-                            id: tool_id,
-                            name: tool_name,
-                            input: tool_input,
-                            started_at,
-                            terminal: ToolExecutionOutcome::from_legacy(result),
-                            content_blocks: Vec::new(),
-                            original_content_digest: None,
-                        });
+                        outcomes[index] = Some(outcome);
                         continue;
                     }
 
