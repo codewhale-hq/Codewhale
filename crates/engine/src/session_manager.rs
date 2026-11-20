@@ -2725,9 +2725,9 @@ impl SessionManager {
         &self.sessions_dir
     }
 
-    pub fn exec_route_binding_key(&self, create: bool) -> anyhow::Result<[u8; 32]> {
+    pub fn exec_route_binding_key(sessions_dir: &Path, create: bool) -> anyhow::Result<[u8; 32]> {
         use ring::rand::SecureRandom as _;
-        let directory = self.sessions_dir.canonicalize()?.join(".exec-route");
+        let directory = sessions_dir.join(".exec-route");
         let directory = if create {
             codewhale_config::private_directory::PrivateDirectory::open(&directory)?
         } else {

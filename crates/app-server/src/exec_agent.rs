@@ -3540,11 +3540,15 @@ async fn load_exec_route_binding_key(
     manager: Result<Arc<SessionManager>>,
     create: bool,
 ) -> Option<[u8; 32]> {
-    match codewhale_runtime::runtime_control::owner_work(move || {
-        manager?.exec_route_binding_key(create)
-    })
-    .await
-    {
+    let result = async {
+        let sessions_dir = tokio::fs::canonicalize(manager?.sessions_dir()).await?;
+        codewhale_runtime::runtime_control::owner_work(move || {
+            SessionManager::exec_route_binding_key(&sessions_dir, create)
+        })
+        .await
+    }
+    .await;
+    match result {
         Ok(key) => Some(key),
         Err(error) => {
             tracing::debug!(%error, "exec route binding key unavailable");
@@ -4159,7 +4163,8 @@ api_key = "{api_key}"
         const ORIGINAL_KEY: &str = "fixture-account-one";
         const REBOUND_KEY: &str = "fixture-account-two";
         let manager = SessionManager::new(store.clone())?;
-        let key = manager.exec_route_binding_key(true)?;
+        let key =
+            SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, true)?;
         let current = binding(&key, ORIGINAL, ORIGINAL_KEY)?;
         let mut saved = session_manager::create_saved_session_with_mode(
             &[],
@@ -4181,7 +4186,8 @@ api_key = "{api_key}"
         drop(manager);
 
         let manager = SessionManager::new(store)?;
-        let reopened_key = manager.exec_route_binding_key(false)?;
+        let reopened_key =
+            SessionManager::exec_route_binding_key(&manager.sessions_dir().canonicalize()?, false)?;
         let required = required_exec_resume_binding(Some(&saved), false);
         check_exec_resume_endpoint(required, Some(&reopened_key), ORIGINAL)?;
         check_exec_resume_authority(required, &binding(&reopened_key, ORIGINAL, ORIGINAL_KEY)?)?;
