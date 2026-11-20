@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-19T07:35:11.527Z",
+  "generatedAt": "2026-11-20T05:25:20.068Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -1162,7 +1162,7 @@ export const FACTS: RepoFacts = {
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=22",
   "toolCount": 83,
-  "contributorCount": 435,
+  "contributorCount": 439,
   "license": "MIT",
   "latestPublishedRelease": {
     "tag": "v0.10.2",
