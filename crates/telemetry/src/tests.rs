@@ -2457,6 +2457,34 @@ fn arm_reinstalls_tombstone_if_permission_flips_false_after_removal() {
 }
 
 #[test]
+fn persistent_preference_waits_for_delivery_even_after_startup_budget() {
+    let home = temp_home();
+    let root = root_of(&home);
+    buffer::ensure_dir(&root).expect("telemetry root");
+    let file = std::fs::File::create(buffer::lock_path(&root)).expect("privacy lock");
+    let mut lock = fd_lock::RwLock::new(file);
+    let guard = lock.try_write().expect("hold delivery lock");
+    let (finished, completion) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            finished
+                .send(buffer::wipe_after_preference_change(&root))
+                .expect("report wipe");
+        });
+        assert!(matches!(
+            completion.recv_timeout(std::time::Duration::from_millis(3200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        completion
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("wipe completed")
+            .expect("wipe succeeded");
+    });
+    assert!(buffer::tombstone_present(&root));
+}
+
+#[test]
 fn lockless_wipe_fallback_installs_non_empty_tombstone() {
     let home = temp_home();
     let root = root_of(&home);

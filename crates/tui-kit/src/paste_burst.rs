@@ -10,14 +10,6 @@ const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(120);
 const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(8);
 #[cfg(windows)]
 const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
-/// Bound on "still one paste stream" for newline absorption. Windows Terminal
-/// injects pasted console records at its own pace, and a loaded runner can
-/// space them tens of milliseconds apart — past the burst-forming interval,
-/// so such a paste never buffers even though its Enters are paste payload.
-/// 60ms is far below a deliberate submit after typing and well inside the
-/// 120ms suppression budget. Elsewhere the bound stays at the burst interval:
-/// a deliberate Enter pressed inside a fast typing run must still submit, so
-/// the wider band is only bought where slow paste injection is proven.
 #[cfg(not(windows))]
 const PASTE_BURST_STREAM_WINDOW: Duration = PASTE_BURST_CHAR_INTERVAL;
 #[cfg(windows)]
@@ -27,11 +19,6 @@ const PASTE_BURST_STREAM_WINDOW: Duration = Duration::from_millis(60);
 pub struct PasteBurst {
     last_plain_char_time: Option<Instant>,
     consecutive_plain_char_burst: u16,
-    /// Plain chars in the still-live input stream: paced further apart than
-    /// the burst-forming interval but within the active idle timeout of each
-    /// other. Windows Terminal can inject a raw paste at its own pace (tens
-    /// of ms between records on a loaded runner); such a stream never forms
-    /// a burst buffer, yet its newlines are still paste payload.
     stream_chars: u16,
     burst_window_until: Option<Instant>,
     buffer: String,
@@ -66,8 +53,14 @@ impl PasteBurst {
     }
 
     fn push_bounded(&mut self, ch: char) {
-        if self.buffer.len() + ch.len_utf8() <= PASTE_BURST_MAX_BYTES {
-            self.buffer.push(ch);
+        self.buffer.push(ch);
+    }
+
+    pub fn take_chunk_if_full(&mut self) -> Option<String> {
+        if self.buffer.len() >= PASTE_BURST_MAX_BYTES {
+            Some(std::mem::take(&mut self.buffer))
+        } else {
+            None
         }
     }
 
@@ -200,11 +193,6 @@ impl PasteBurst {
 
     pub fn newline_should_insert_instead_of_submit(&self, now: Instant) -> bool {
         let in_burst_window = self.burst_window_until.is_some_and(|until| now <= until);
-        // A paste paced slower than the burst-forming interval still delivers
-        // its newlines as paste payload: the stream counter proves several
-        // raw chars just arrived, and the stream window bounds how stale the
-        // last one may be. A lone typed or IME-committed char never reaches
-        // the threshold, so a deliberate Enter still submits.
         let stream_recent = self.stream_chars >= PASTE_BURST_MIN_CHARS
             && self
                 .last_plain_char_time
@@ -677,5 +665,44 @@ mod tests {
             ),
             "Enter more than the stream window after the last char submits"
         );
+    }
+
+    #[test]
+    fn large_raw_cjk_multiline_paste_preserves_every_char_and_newline_via_chunks() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+        let line = "漢字テスト🐳line\n";
+        let payload: String = line.repeat(6_000);
+        assert!(payload.len() > PASTE_BURST_MAX_BYTES * 2);
+
+        let mut assembled = String::new();
+        let mut chunk_count = 0usize;
+        let mut now = t0;
+        for ch in payload.chars() {
+            now += Duration::from_micros(100);
+            if ch == '\n' {
+                assert!(burst.append_newline_if_active(now));
+            } else {
+                match burst.on_plain_char(ch, now) {
+                    CharDecision::RetainFirstChar => {}
+                    CharDecision::BeginBuffer => burst.begin_buffer_from_now(ch, now),
+                    CharDecision::BeginBufferFromPending | CharDecision::BufferAppend => {
+                        burst.append_char_to_buffer(ch, now);
+                    }
+                }
+            }
+            if let Some(chunk) = burst.take_chunk_if_full() {
+                assembled.push_str(&chunk);
+                chunk_count += 1;
+            }
+        }
+        let flush_at = now + PasteBurst::recommended_active_flush_delay();
+        match burst.flush_if_due(flush_at) {
+            FlushResult::Paste(rest) => assembled.push_str(&rest),
+            _ => panic!("expected final Paste flush"),
+        }
+        assert!(chunk_count >= 2);
+        assert_eq!(assembled.len(), payload.len());
+        assert_eq!(assembled, payload);
     }
 }

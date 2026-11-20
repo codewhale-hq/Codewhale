@@ -386,7 +386,7 @@ struct NotListed {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct EffectivePickerMetadata {
     display_name: Option<String>,
-    declared_input_price: Option<String>,
+    declared_usd_input_price: Option<String>,
     context_window: Option<u32>,
     /// The context window came through the legacy provider fallback rather
     /// than an offering, catalog row, roster, or operator override — shown,
@@ -3608,7 +3608,7 @@ fn input_price_per_million(row: &ModelPickerRow) -> Option<f64> {
     if matches!(row.metadata.source, Some(CatalogSource::ConfigOverride)) {
         return row
             .metadata
-            .declared_input_price
+            .declared_usd_input_price
             .as_ref()
             .and_then(|price| price.parse().ok());
     }
@@ -3722,7 +3722,7 @@ fn effective_picker_metadata_with_codex(
             reasoning_unknown: registry
                 .as_ref()
                 .is_none_or(|meta| meta.reasoning.is_none()),
-            declared_input_price: None,
+            declared_usd_input_price: None,
             price_basis: None,
             wire_model_id: None,
             canonical_model: None,
@@ -3746,7 +3746,8 @@ fn effective_picker_metadata_with_codex(
         let (wire_model_id, canonical_model) = picker_offering_identity(offering.as_ref(), id);
         return EffectivePickerMetadata {
             display_name: declared.display_name.clone(),
-            declared_input_price: declared
+            declared_usd_input_price: declared
+                .to_catalog_offering()
                 .cost
                 .as_ref()
                 .and_then(|cost| cost.input)
@@ -3935,7 +3936,7 @@ fn effective_picker_metadata_with_codex(
                     offering.reasoning.is_none()
                 })
         },
-        declared_input_price: None,
+        declared_usd_input_price: None,
         price_basis,
         wire_model_id,
         canonical_model,
@@ -5195,6 +5196,20 @@ mod tests {
             )),
             metadata.max_output
         );
+        assert_eq!(input_price_per_million(&row), Some(0.4));
+        let mut cny_row = row.clone();
+        config.custom_models.as_mut().unwrap()[0].cost_currency = Some("CNY".into());
+        cny_row.metadata = effective_picker_metadata(&config, Some(ProviderKind::Deepseek), id);
+        assert_eq!(input_price_per_million(&cny_row), None);
+        assert_eq!(cny_row.metadata.pricing, PickerPricing::Unknown);
+        cny_row.id = "a-cny".into();
+        row.id = "z-usd".into();
+        let mut prices = vec![cny_row, row.clone()];
+        sort_model_rows_for_view(&mut prices, |row| row, ModelListView::Cheap, &[]);
+        assert_eq!(prices[0].id, "z-usd");
+        assert_eq!(prices[1].id, "a-cny");
+        row.id = id.into();
+        config.custom_models.as_mut().unwrap()[0].cost_currency = None;
         // /load replaces the same metadata alongside the provider route.
         let mut reloaded = config.clone();
         reloaded.custom_models.as_mut().unwrap()[0].reasoning = None;

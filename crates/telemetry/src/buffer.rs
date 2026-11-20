@@ -416,10 +416,19 @@ fn try_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<Op
     }
 }
 
-fn with_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
-    let file = open_lock(root)?;
-    let deadline = Instant::now() + PRIVACY_LOCK_BUDGET;
-    let mut lock = fd_lock::RwLock::new(file);
+fn with_flock<T>(
+    root: &Path,
+    timeout: Option<Duration>,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let mut lock = fd_lock::RwLock::new(open_lock(root)?);
+    let Some(timeout) = timeout else {
+        let _guard = lock
+            .write()
+            .context("failed to acquire the telemetry privacy lock")?;
+        return operation();
+    };
+    let deadline = Instant::now() + timeout;
     loop {
         match lock.try_write() {
             Ok(_guard) => return operation(),
@@ -439,7 +448,7 @@ fn with_flock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T
 pub fn with_lock<T>(root: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
-    with_flock(root, operation)
+    with_flock(root, Some(PRIVACY_LOCK_BUDGET), operation)
 }
 
 /// Run `operation` holding the exclusive compaction lock if it is free.
@@ -505,9 +514,17 @@ pub fn truncate(path: &Path) -> Result<()> {
 /// logs it — but the tombstone alone already makes the buffer permanently
 /// undrainable, so a failed wipe fails **closed**.
 pub fn wipe(root: &Path) -> Result<()> {
+    wipe_with_timeout(root, Some(PRIVACY_LOCK_BUDGET))
+}
+
+pub fn wipe_after_preference_change(root: &Path) -> Result<()> {
+    wipe_with_timeout(root, None)
+}
+
+fn wipe_with_timeout(root: &Path, timeout: Option<Duration>) -> Result<()> {
     let gate = process_gate(root);
     let _turn = wait_turn(&gate);
-    match with_flock(root, || {
+    match with_flock(root, timeout, || {
         write_tombstone(root)?;
 
         let mut failure: Option<anyhow::Error> = None;

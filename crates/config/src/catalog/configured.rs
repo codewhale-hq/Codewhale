@@ -79,6 +79,8 @@ impl ConfiguredModel {
             provider_api: Some(self.base_url.clone()),
             limit: self.limit.clone(),
             cost,
+            cost_source: (self.resolved_cost_currency() != Some(crate::pricing::Currency::Usd))
+                .then_some(CatalogSource::ConfigOverride),
             modalities: self.modalities.clone(),
             attachment: self.attachment,
             reasoning: self.reasoning,
@@ -291,6 +293,32 @@ cost = { input = 1.0, output = 3.0 }
 
         assert_eq!(models[0].resolved_cost_currency(), Some(Currency::Cny));
         assert!(models[0].to_catalog_offering().cost.is_none());
+        let configured = models[0].to_catalog_offering();
+        assert_eq!(configured.cost_source, Some(CatalogSource::ConfigOverride));
+        let lower = CatalogOffering {
+            cost: models[1].cost.clone(),
+            cost_source: None,
+            source: CatalogSource::Bundled,
+            ..configured.clone()
+        };
+        let mut completed = configured.clone();
+        completed.complete_from(&lower, Some(&models[0].base_url));
+        assert!(completed.cost.is_none());
+        assert_eq!(completed.pricing_source(), &CatalogSource::ConfigOverride);
+        let snapshot = crate::catalog::CatalogCompiler::new()
+            .with_bundled(vec![lower.clone()])
+            .with_overrides(vec![configured])
+            .compile();
+        assert_eq!(snapshot.offerings.len(), 1);
+        let merged = &snapshot.offerings[0];
+        assert!(merged.cost.is_none());
+        assert_eq!(merged.pricing_source(), &CatalogSource::ConfigOverride);
+        assert!(crate::pricing::OfferingPricing::from_catalog_offering(merged).is_none());
+        let mut usd = models[0].clone();
+        usd.cost_currency = Some("USD".into());
+        let mut usd_offering = usd.to_catalog_offering();
+        usd_offering.complete_from(&lower, Some(&usd.base_url));
+        assert_eq!(usd_offering.cost, usd.cost);
 
         assert_eq!(models[1].resolved_cost_currency(), Some(Currency::Usd));
         assert_eq!(

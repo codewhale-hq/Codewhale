@@ -524,6 +524,133 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn first_fork_accepts_only_verified_checkpoint_migration() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        for missing_checkpoint in [false, true] {
+            for mutation in [
+                "none",
+                "length",
+                "hash",
+                "cursor",
+                "retained",
+                "timestamp",
+                "state",
+            ] {
+                let dir = tempfile::tempdir()?;
+                let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+                let manager = RuntimeThreadManager::open(
+                    config(),
+                    dir.path().to_path_buf(),
+                    test_manager_config(dir.path().join("runtime")),
+                )?;
+                let thread = manager
+                    .create_thread(CreateThreadRequest {
+                        workspace: Some(dir.path().to_path_buf()),
+                        ..Default::default()
+                    })
+                    .await?;
+                let messages = vec![
+                    msg(Role::User, "first"),
+                    msg(Role::Assistant, "first answer"),
+                    msg(Role::User, "second"),
+                    msg(Role::Assistant, "second answer"),
+                ];
+                manager
+                    .seed_thread_from_messages(&thread.id, &messages)
+                    .await?;
+                let sessions = crate::session_manager::SessionManager::new(
+                    manager.sessions_dir().to_path_buf(),
+                )?;
+                let document = crate::session_manager::create_saved_session_with_id_and_mode(
+                    Uuid::new_v4().to_string(),
+                    &messages,
+                    &thread.model,
+                    dir.path(),
+                    0,
+                    None,
+                    Some("agent"),
+                );
+                sessions.save_session(&document)?;
+                {
+                    let _admission = manager.session_checkpoint_guard().await;
+                    manager
+                        .set_thread_session_checkpoint(&thread.id, &document)
+                        .await?;
+                }
+                let mut legacy = manager.store.load_thread(&thread.id)?;
+                if missing_checkpoint {
+                    legacy.saved_session_checkpoint = None;
+                } else {
+                    legacy
+                        .saved_session_checkpoint
+                        .as_mut()
+                        .unwrap()
+                        .messages_len = None;
+                }
+                manager.store.save_thread(&legacy)?;
+                let turns = manager.store.list_turns_for_thread(&thread.id)?;
+                let prepared = manager
+                    .prepare_fork_dropping_user_turn_in_sessions_dir(
+                        &thread.id,
+                        &turns.last().unwrap().id,
+                        manager.sessions_dir(),
+                    )
+                    .await?;
+                let mut current = manager.store.load_thread(&thread.id)?;
+                let checkpoint = current.saved_session_checkpoint.as_mut().unwrap();
+                assert_eq!(checkpoint.messages_len, Some(4));
+                match mutation {
+                    "length" => checkpoint.messages_len = Some(3),
+                    "hash" => checkpoint.messages_sha256 = "changed".into(),
+                    "cursor" => checkpoint.covered_turn_id = None,
+                    "retained" => checkpoint.retained_messages = Some(1),
+                    "timestamp" => current.updated_at += chrono::Duration::seconds(1),
+                    "state" => current.latest_turn_id = Some("concurrent".into()),
+                    _ => {}
+                }
+                manager.store.save_thread(&current)?;
+                let result = manager.publish_prepared_fork_guarded(prepared).await;
+                if mutation == "none" {
+                    let (forked, original, _, _) = result?;
+                    assert_eq!(original.as_deref(), Some("second"));
+                    assert_eq!(manager.restore_thread_messages(&forked)?, messages[..2]);
+                    assert_ne!(forked.session_id, current.session_id);
+                } else {
+                    let error =
+                        result.expect_err("unverified source changes must reject publication");
+                    assert!(
+                        format!("{error:#}").contains("source thread changed while preparing fork"),
+                        "{error:#}"
+                    );
+                    assert_eq!(
+                        manager
+                            .list_threads(ThreadListFilter::IncludeArchived, None)
+                            .await?
+                            .len(),
+                        1
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(manager.store.load_thread(&thread.id)?)?,
+                    serde_json::to_value(&current)?
+                );
+                assert_eq!(
+                    serde_json::to_value(manager.store.list_turns_for_thread(&thread.id)?)?,
+                    serde_json::to_value(&turns)?
+                );
+                assert_eq!(
+                    sessions
+                        .resume_session(&document.metadata.id)?
+                        .session
+                        .messages,
+                    messages
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The legacy prefix search must agree with `serde_json`'s own encoding
     /// of a slice, for every prefix length.
     #[test]

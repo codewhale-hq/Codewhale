@@ -371,6 +371,22 @@ pub fn handle_launch_composer_key(app: &mut App, key: KeyEvent) -> LaunchCompose
     let card_up = app.launch.dissolve_started_ms.is_none();
     match key.code {
         KeyCode::Enter
+            if app.use_paste_burst_detection
+                && !app.bracketed_paste_seen
+                && !(app.bracketed_paste_trusted && app.use_bracketed_paste)
+                && key.modifiers == KeyModifiers::NONE
+                && app
+                    .paste_burst
+                    .newline_should_insert_instead_of_submit(std::time::Instant::now()) =>
+        {
+            if app.launch.return_to_session {
+                app.launch.dismiss();
+            } else {
+                app.launch.dissolve_card(app.ambient_clock_ms);
+            }
+            LaunchComposerKey::ComposerAuthority
+        }
+        KeyCode::Enter
             if crate::tui::composer_ui::composer_submit_chord(key, multiline).is_some() =>
         {
             if key.modifiers != KeyModifiers::NONE

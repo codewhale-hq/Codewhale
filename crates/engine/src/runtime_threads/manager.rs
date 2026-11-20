@@ -828,6 +828,23 @@ fn item_terminal_event(status: TurnItemLifecycleStatus) -> &'static str {
     }
 }
 
+fn legacy_session_checkpoint(
+    messages: &[Message],
+    turns: &[TurnRecord],
+    covered: usize,
+) -> Result<SavedSessionCheckpoint> {
+    Ok(SavedSessionCheckpoint {
+        publication_observation: None,
+        covered_turn_id: covered
+            .checked_sub(1)
+            .and_then(|index| turns.get(index))
+            .map(|turn| turn.id.clone()),
+        messages_sha256: session_messages_sha256(messages)?,
+        messages_len: Some(messages.len()),
+        retained_messages: None,
+    })
+}
+
 pub(super) fn thread_execution_state_matches(left: &ThreadRecord, right: &ThreadRecord) -> bool {
     left.schema_version == right.schema_version
         && left.id == right.id
@@ -3094,6 +3111,7 @@ pub(super) struct ActiveThreads {
 }
 
 pub(super) struct NativeForkSource {
+    pub(super) verified_checkpoint: Option<SavedSessionCheckpoint>,
     pub(super) sessions_dir: PathBuf,
     pub(super) session: Option<crate::session_manager::SavedSession>,
     pub(super) goal: Option<crate::session_manager::SessionGoalState>,
@@ -11184,8 +11202,23 @@ impl RuntimeThreadManager {
             } else {
                 (None, None, None, None)
             };
+            let verified_checkpoint = match (&source.saved_session_checkpoint, &session, &prefix) {
+                (Some(checkpoint), Some(session), _) => {
+                    let mut checkpoint = checkpoint.clone();
+                    checkpoint.messages_len =
+                        checkpoint_prefix_len(&checkpoint, &session.messages)?;
+                    Some(checkpoint)
+                }
+                (None, Some(session), Some((_, covered))) => Some(legacy_session_checkpoint(
+                    &session.messages,
+                    &turns,
+                    *covered,
+                )?),
+                _ => source.saved_session_checkpoint.clone(),
+            };
             Ok((
                 NativeForkSource {
+                    verified_checkpoint,
                     sessions_dir,
                     session,
                     goal,
@@ -11459,12 +11492,14 @@ impl RuntimeThreadManager {
         let covered_turn_id = covered
             .checked_sub(1)
             .map(|index| cloned_records[index].0.id.clone());
+        let verified_checkpoint = captured_source.verified_checkpoint.clone();
         self.pause_for_fork_prepare_test_hook().await;
         let (forked, _source_lease, target_lease) = self
             .bind_fork_to_own_session(forked, captured_source, prefix, covered_turn_id)
             .await?;
         self.commit_staged_fork(
             &source,
+            verified_checkpoint,
             &forked,
             &cloned_records,
             sessions_dir,
@@ -12270,12 +12305,14 @@ impl RuntimeThreadManager {
     )> {
         let (captured_source, prefix, covered_turn_id) = prepared.own_session;
         let sessions_dir = captured_source.sessions_dir.clone();
+        let verified_checkpoint = captured_source.verified_checkpoint.clone();
         let (thread, _source_lease, target_lease) = self
             .bind_fork_to_own_session(prepared.thread, captured_source, prefix, covered_turn_id)
             .await?;
         prepared.thread = thread;
         self.commit_staged_fork(
             &prepared.source_snapshot,
+            verified_checkpoint,
             &prepared.thread,
             &prepared.records,
             &sessions_dir,
@@ -12326,6 +12363,7 @@ impl RuntimeThreadManager {
     async fn commit_staged_fork(
         &self,
         source_snapshot: &ThreadRecord,
+        verified_checkpoint: Option<SavedSessionCheckpoint>,
         thread: &ThreadRecord,
         records: &[(TurnRecord, Vec<TurnItemRecord>)],
         sessions_dir: &Path,
@@ -12357,17 +12395,12 @@ impl RuntimeThreadManager {
                 .await?;
             self.ensure_accepting_execution()?;
             let same_state = thread_execution_state_matches(source_snapshot, &current_source);
-            let only_checkpoint_filled = source_snapshot.saved_session_checkpoint.is_none()
-                && current_source.saved_session_checkpoint.is_some()
-                && {
-                    let mut tolerant = source_snapshot.clone();
-                    tolerant.saved_session_checkpoint =
-                        current_source.saved_session_checkpoint.clone();
-                    thread_execution_state_matches(&tolerant, &current_source)
-                };
+            let mut migrated_source = source_snapshot.clone();
+            migrated_source.saved_session_checkpoint = verified_checkpoint;
             anyhow::ensure!(
-                (same_state && current_source.updated_at == source_snapshot.updated_at)
-                    || only_checkpoint_filled,
+                current_source.updated_at == source_snapshot.updated_at
+                    && (same_state
+                        || thread_execution_state_matches(&migrated_source, &current_source)),
                 "source thread changed while preparing fork; source retained"
             );
             let store = self.store.clone();
@@ -17291,7 +17324,7 @@ source_usage_records: Default::default(),
         turns: &[TurnRecord],
         covered: usize,
     ) {
-        let Ok(messages_sha256) = session_messages_sha256(messages) else {
+        let Ok(checkpoint) = legacy_session_checkpoint(messages, turns, covered) else {
             return;
         };
         let _thread_mutation = self.store.thread_mutation.lock();
@@ -17301,17 +17334,7 @@ source_usage_records: Default::default(),
         if stored.session_id != thread.session_id || stored.saved_session_checkpoint.is_some() {
             return;
         }
-        stored.saved_session_checkpoint = Some(SavedSessionCheckpoint {
-            publication_observation: None,
-
-            covered_turn_id: covered
-                .checked_sub(1)
-                .and_then(|index| turns.get(index))
-                .map(|turn| turn.id.clone()),
-            messages_sha256,
-            messages_len: Some(messages.len()),
-            retained_messages: None,
-        });
+        stored.saved_session_checkpoint = Some(checkpoint);
         if let Err(error) = self.store.save_thread(&stored) {
             tracing::debug!(thread_id = %thread.id, %error, "migrated legacy checkpoint was not saved");
         }

@@ -100,6 +100,9 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
                 return false;
             }
             if app.paste_burst.append_newline_if_active(now) {
+                if let Some(chunk) = app.paste_burst.take_chunk_if_full() {
+                    app.insert_str(&chunk);
+                }
                 return true;
             }
             if app.paste_burst.newline_should_insert_instead_of_submit(now) {
@@ -128,6 +131,9 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
                 let rapid_chars = app.paste_burst.note_plain_char(now);
                 if app.paste_burst.is_buffering() {
                     app.paste_burst.append_char_to_buffer(c, now);
+                    if let Some(chunk) = app.paste_burst.take_chunk_if_full() {
+                        app.insert_str(&chunk);
+                    }
                 } else {
                     if let Some(pending) = app.paste_burst.flush_before_modified_input() {
                         app.insert_str(&pending);
@@ -166,6 +172,9 @@ pub fn handle_paste_burst_decision(
         CharDecision::RetainFirstChar => true,
         CharDecision::BeginBufferFromPending | CharDecision::BufferAppend => {
             app.paste_burst.append_char_to_buffer(c, now);
+            if let Some(chunk) = app.paste_burst.take_chunk_if_full() {
+                app.insert_str(&chunk);
+            }
             true
         }
         CharDecision::BeginBuffer => {
@@ -326,12 +335,6 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn slow_paced_mixed_ascii_cjk_paste_keeps_newlines() {
-        // Windows Terminal injects pasted console records at its own pace —
-        // tens of ms apart on a loaded runner, past the 8ms burst-forming
-        // interval, so this paste never buffers. Each Enter is still paste
-        // payload: the stream heuristic must insert '\n', not consume the
-        // key as a submit (which lost every newline — the draft stashed as
-        // one 733-char line).
         let expected: String = (1..=6)
             .map(|n| format!("cw-clipboard-{n:02} 漢字 🐳 line {n}"))
             .collect::<Vec<_>>()
@@ -355,30 +358,15 @@ mod tests {
         assert_eq!(app.input, expected);
     }
 
-    /// The composer-side Enter gate runs on the same clock the burst machine
-    /// records: the key event's observed timestamp. On the real Windows
-    /// Terminal harness the paste stream was recorded ~1ms apart in observed
-    /// time while the input queue carried ~170ms of processing backlog —
-    /// evaluating the predicate at `Instant::now()` read the stream as
-    /// stale, so the Enter fell through to `submit_input`, the bounced
-    /// submit pushed a modal, and lines 6-7 of the paste were eaten.
     #[test]
     fn composer_enter_uses_event_observed_time_not_processing_time() {
         let mut app = test_app();
-        // The stream ended ~880ms ago: chars observed at 5ms cadence, the
-        // ~1ms-apart shape the real Windows Terminal run produced, so the
-        // burst forms and the Enter lands inside its 120ms suppression
-        // window. All of it sat in the input queue until now, so a
-        // processing-time probe reads the last char as ~920ms stale and
-        // submits mid-paste — the revert this test exists to catch.
         let t0 = Instant::now() - Duration::from_millis(880);
         for (i, ch) in "cw-clipboard-01".chars().enumerate() {
             let now = t0 + Duration::from_millis(5 * i as u64);
             app.flush_paste_burst_if_due(now);
             assert!(handle_paste_burst_key(&mut app, &plain(ch), now));
         }
-        // The Enter was observed 40ms after the last char — on its own
-        // clock, unambiguous paste payload: a newline, not a submit.
         let enter_observed_at = t0 + Duration::from_millis(5 * 15 + 40);
         app.flush_paste_burst_if_due(enter_observed_at);
         assert!(
@@ -514,9 +502,6 @@ mod tests {
             );
         }
 
-        // Paste-speed non-ASCII characters buffer like an ASCII burst; the
-        // Enter suppression window kept the newline from submitting
-        // prematurely and the idle flush commits the run in one insert.
         app.flush_paste_burst_if_due(t0 + Duration::from_secs(1));
         assert_eq!(app.input, pasted);
     }
@@ -776,5 +761,75 @@ mod tests {
         // handler returns false; we only assert the short-circuit
         // contract here).
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn large_cjk_raw_paste_burst_preserves_every_char_and_newline() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let line = "cw-漢字-🐳-line\n";
+        let payload = line.repeat(4_500);
+        assert!(payload.len() > 80 * 1024);
+
+        let mut now = Instant::now();
+        for ch in payload.chars() {
+            now += Duration::from_micros(100);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(handle_paste_burst_key(&mut app, &key, now));
+        }
+        let flush_at =
+            now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
+        if let codewhale_tui_kit::paste_burst::FlushResult::Paste(rest) =
+            app.paste_burst.flush_if_due(flush_at)
+        {
+            app.insert_str(&rest);
+        }
+        assert_eq!(app.input.len(), payload.len());
+        assert_eq!(app.input, payload);
+    }
+
+    #[test]
+    fn launch_composer_preserves_newlines_during_active_paste_burst() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+        app.launch.visible = true;
+        app.launch.composer_focus = true;
+
+        let payload = "cw-clipboard-01 漢字 🐳 line 1\ncw-clipboard-02 漢字 🐳 line 2\ncw-clipboard-03 漢字 🐳 line 3";
+        let mut now = Instant::now();
+        for ch in payload.chars() {
+            now += Duration::from_millis(1);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            let launch_verdict = crate::tui::underwater::handle_launch_composer_key(&mut app, key);
+            assert!(
+                matches!(
+                    launch_verdict,
+                    crate::tui::underwater::LaunchComposerKey::ComposerAuthority
+                ),
+                "raw paste key {ch:?} on launch screen must route to ComposerAuthority"
+            );
+            assert!(handle_paste_burst_key(&mut app, &key, now));
+        }
+        let flush_at =
+            now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
+        if let codewhale_tui_kit::paste_burst::FlushResult::Paste(rest) =
+            app.paste_burst.flush_if_due(flush_at)
+        {
+            app.insert_str(&rest);
+        }
+        assert_eq!(app.input, payload);
     }
 }
