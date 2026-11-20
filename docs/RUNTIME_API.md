@@ -847,6 +847,9 @@ binary.
 
 ## ACP stdio adapter: `codewhale serve --acp`
 
+For editor setup (including Zed), permissions and limits, see
+[Use Codewhale from your editor](ACP.md).
+
 ACP JSON-RPC over newline-delimited stdio is a transport over the existing
 RuntimeThreadManager and Engine. It has no provider/tool round loop, executable
 registry, prompt composer, or conversation writer of its own. The server loads
@@ -1432,6 +1435,9 @@ participate in creation idempotency fingerprints. These fields are additive:
 older thread records and clients that omit them retain their previous behavior.
 
 ### Sessions on other agents (external agent threads)
+
+For installation, sign-in and a runnable example, see
+[Run other agents in Codewhale](OTHER_AGENTS.md).
 
 `POST /v1/threads` with `executor` runs the thread's turns on an agent CLI
 already installed and signed in on this computer, over Agent Client Protocol,
@@ -3585,8 +3591,11 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 ```
 
 Reports which external agent CLIs this computer already has, without starting a
-session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
-OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy, Grok, Qwen Code and GitHub Copilot CLI. `state` is `installed` or `not_installed`; a binary is looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
+session. The [agent registry](../crates/engine/src/fleet/agents.rs) lists the
+recognized agents. `state` is `installed` or `not_installed`; a binary is
+looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT
+suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user
+bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter

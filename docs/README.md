@@ -21,6 +21,8 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 ## Using Codewhale
 
 - [Local browser client](WEB.md) (`codewhale web`)
+- [Use Codewhale from your editor](ACP.md) (`codewhale serve --acp`)
+- [Run other agents in Codewhale](OTHER_AGENTS.md)
 - [Agent fleet](FLEET.md), [sub-agents](SUBAGENTS.md), and the
   [fleet and workflow tutorial](FLEET_WORKFLOW_TUTORIAL.md)
 - [Workflow authoring](WORKFLOW_AUTHORING.md),
