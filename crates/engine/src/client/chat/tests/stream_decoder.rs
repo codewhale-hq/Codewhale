@@ -1009,6 +1009,89 @@ fn non_streaming_assigns_unique_fallback_ids_to_parallel_tool_calls_missing_id()
     .expect("distinct fallback ids pass whole-response admission");
 }
 
+/// The fallback uses a reserved `call_missing_` prefix, so a provider that
+/// literally sends `call_1` cannot collide with the synthesized id for an
+/// id-less call at index 1.
+#[test]
+fn decoder_fallback_id_does_not_collide_with_literal_call_index_id() {
+    let events = decode_chunk(
+        r#"{"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"call_1","function":{"name":"grep_files","arguments":"{}"}},
+                {"index":1,"function":{"name":"read_file","arguments":"{}"}}
+            ]}}]}"#,
+    );
+
+    let ids: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ContentBlockStart {
+                content_block: ContentBlockStart::ToolUse { id, .. },
+                ..
+            } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(ids.len(), 2, "expected two tool-use blocks; got {events:?}");
+    assert_eq!(ids[0], "call_1");
+    assert_eq!(
+        ids[1], "call_missing_1",
+        "the id-less call must use the reserved fallback prefix; got {ids:?}"
+    );
+    assert_ne!(ids[0], ids[1]);
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("a literal call_1 and a synthesized call_missing_1 are distinct");
+}
+
+/// Twin of `decoder_fallback_id_does_not_collide_with_literal_call_index_id`
+/// for the non-streaming parser.
+#[test]
+fn non_streaming_fallback_id_does_not_collide_with_literal_call_index_id() {
+    let payload: Value = serde_json::from_str(
+        r#"{
+                "id": "chatcmpl_3",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            { "id": "call_1", "function": { "name": "grep_files", "arguments": "{}" } },
+                            { "function": { "name": "read_file", "arguments": "{}" } }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            }"#,
+    )
+    .expect("valid response");
+
+    let parsed = parse_chat_message(&payload).expect("message parses");
+    let ids: Vec<&str> = parsed
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(ids.len(), 2, "expected two tool-use blocks; got {ids:?}");
+    assert_eq!(ids[0], "call_1");
+    assert_eq!(
+        ids[1], "call_missing_1",
+        "the id-less call must use the reserved fallback prefix; got {ids:?}"
+    );
+    assert_ne!(ids[0], ids[1]);
+    crate::client::validate_tool_call_ids_for_protocol(
+        codewhale_config::provider::WireFormat::ChatCompletions,
+        ids.iter().copied(),
+    )
+    .expect("a literal call_1 and a synthesized call_missing_1 are distinct");
+}
+
 #[test]
 fn decoder_preserves_upstream_tool_call_id_when_present() {
     // Counter-test to the fallback regression: when the upstream chunk

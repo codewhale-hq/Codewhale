@@ -4008,7 +4008,11 @@ fn parse_chat_message_for_route(
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("call_{call_index}"));
+                // A provider that literally sends `call_1` must not collide
+                // with the synthesized id for an id-less call at index 1.
+                // The reserved `call_missing_` prefix keeps fallback ids out
+                // of the provider's own `call_<n>` namespace.
+                .unwrap_or_else(|| format!("call_missing_{call_index}"));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),
@@ -4619,8 +4623,11 @@ fn parse_sse_chunk_with_reasoning_style(
                                 // with the same id and downstream tool-result
                                 // routing matched the first one twice. Index by
                                 // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
+                                // fallback unique within the response. The
+                                // reserved `call_missing_` prefix also keeps a
+                                // provider's literal `call_<n>` id from
+                                // colliding with a synthesized one.
+                                .unwrap_or_else(|| format!("call_missing_{block_index}"));
                             let name = tc
                                 .get("function")
                                 .and_then(|f| f.get("name"))
