@@ -7396,15 +7396,13 @@ permissions = "read_only"
             .expect_err("a blocking gate on `implement` must still see `implement`");
         assert!(err.to_string().contains("implement"), "{err}");
 
-        // The same gate does *not* block a task carrying the member id, which
-        // is exactly why stamping the id into `role` silently disabled it.
-        let mut by_id = exact_task_request("builder");
-        by_id.role = Some("implementer".to_string());
-        by_id.profile = None;
-        assert!(
-            driver.prepare_request_for_gates(&mut by_id).is_ok(),
-            "the profile id is not the semantic role the gate keys on"
-        );
+        let mut alias = exact_task_request("builder");
+        alias.role = Some("implementer".to_string());
+        alias.profile = None;
+        let err = driver
+            .prepare_request_for_gates(&mut alias)
+            .expect_err("the legacy implementer alias must see the same gate");
+        assert!(err.to_string().contains("implement"), "{err}");
     }
 
     /// A task whose `role` and `profile` name different members is rejected
