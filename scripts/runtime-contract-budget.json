@@ -22,43 +22,43 @@
     "fixture_id": "representative-v1",
     "stages": {
       "base": {
-        "bytes": 5749,
-        "identity_sha256": "579434afc65f306b8331bec823d299de3b26218fe78de115afde76624a3f6cd6"
+        "bytes": 5761,
+        "identity_sha256": "df227bb2b66a04a0770271cb9e65b2331a7ec1fbe23c5dca694fc8e08f48d975"
       },
       "goal": {
-        "bytes": 6793,
+        "bytes": 6805,
         "delta_bytes": 81,
-        "identity_sha256": "6d80fe53aa0ed4fee8666a0010259d7e847836ce6ac1a1e59feae8a61911412f"
+        "identity_sha256": "55e8c340d2aa16350595a2695cab1e79627908c488ab4d24c667afdb330c0dc2"
       },
       "handoff": {
-        "bytes": 7181,
-        "delta_bytes": 388,
-        "identity_sha256": "853833db95ceda99ac15497a6f409bb18cdc9314608bd6cd1816d8c27704ae9e"
+        "bytes": 7194,
+        "delta_bytes": 389,
+        "identity_sha256": "83600739b1e12117872006cced0c34360b22748f350b74ede3d2f9e7a5442bf0"
       },
       "instructions": {
-        "bytes": 5749,
+        "bytes": 5761,
         "delta_bytes": 0,
-        "identity_sha256": "579434afc65f306b8331bec823d299de3b26218fe78de115afde76624a3f6cd6"
+        "identity_sha256": "df227bb2b66a04a0770271cb9e65b2331a7ec1fbe23c5dca694fc8e08f48d975"
       },
       "memory": {
-        "bytes": 6712,
+        "bytes": 6724,
         "delta_bytes": 963,
-        "identity_sha256": "798de8352eaab5a5917698b0b5c006624e83203f7cb709587a4e8c9b81dc7ec1"
+        "identity_sha256": "519972b308bbba8d115764387de04d2631a80475e868ba0dad0d90857abfbbbe"
       },
       "project": {
-        "bytes": 5749,
+        "bytes": 5761,
         "delta_bytes": 0,
-        "identity_sha256": "579434afc65f306b8331bec823d299de3b26218fe78de115afde76624a3f6cd6"
+        "identity_sha256": "df227bb2b66a04a0770271cb9e65b2331a7ec1fbe23c5dca694fc8e08f48d975"
       },
       "skill": {
-        "bytes": 5749,
+        "bytes": 5761,
         "delta_bytes": 0,
-        "identity_sha256": "579434afc65f306b8331bec823d299de3b26218fe78de115afde76624a3f6cd6"
+        "identity_sha256": "df227bb2b66a04a0770271cb9e65b2331a7ec1fbe23c5dca694fc8e08f48d975"
       }
     },
     "system_prompt_blocks": 5,
-    "total_bytes": 7181,
-    "total_tokens_est": 1796
+    "total_bytes": 7194,
+    "total_tokens_est": 1799
   },
   "schema_version": 1,
   "skill_discovery": {
@@ -79,22 +79,22 @@
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 5744,
-        "system_prompt_tokens_est": 1436
+        "system_prompt_bytes": 5756,
+        "system_prompt_tokens_est": 1439
       },
       "operate": {
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 5744,
-        "system_prompt_tokens_est": 1436
+        "system_prompt_bytes": 5756,
+        "system_prompt_tokens_est": 1439
       },
       "plan": {
         "mode_instructions_bytes": 0,
         "mode_instructions_tokens_est": 0,
         "system_prompt_blocks": 4,
-        "system_prompt_bytes": 5744,
-        "system_prompt_tokens_est": 1436
+        "system_prompt_bytes": 5756,
+        "system_prompt_tokens_est": 1439
       }
     }
   },
@@ -103,9 +103,9 @@
     "modes": {
       "act": {
         "active": {
-          "bytes": 31345,
-          "identity_sha256": "b65a725eff7dfecae4ab406ec82bb87cfee959def9f2482c33527675a6a7fdb1",
-          "tokens_est": 7837,
+          "bytes": 27096,
+          "identity_sha256": "5b9de9df84da662214a4733e968ea24095ec8c25acfe3bdf53ae1cc504418d74",
+          "tokens_est": 6774,
           "tool_names": [
             "agent",
             "bash",
@@ -113,23 +113,21 @@
             "edit",
             "execute_tools",
             "file_search",
-            "get_goal",
             "grep_files",
+            "list_dir",
             "load_skill",
             "present",
             "read",
-            "task_shell_wait",
             "todo_write",
             "tool_search",
-            "update_goal",
             "write"
           ],
-          "tools": 16
+          "tools": 14
         },
         "full": {
-          "bytes": 90036,
-          "identity_sha256": "d67b680503178673d506a71f502e1d7b89087d1a3c6833dda45b14143d6a630e",
-          "tokens_est": 22509,
+          "bytes": 89938,
+          "identity_sha256": "147be37c265bcfe7f513ffc77d575026ea0a64f699ff0be0ecada4ae0d2daf94",
+          "tokens_est": 22485,
           "tool_names": [
             "Git",
             "Run",
@@ -171,11 +169,11 @@
             "speech",
             "task_shell_wait",
             "tasks",
-            "terminal/cancel",
-            "terminal/reset",
-            "terminal/run",
-            "terminal/send",
-            "terminal/wait",
+            "terminal_cancel",
+            "terminal_reset",
+            "terminal_run",
+            "terminal_send",
+            "terminal_wait",
             "todo_write",
             "tool_search",
             "tui_help",
@@ -191,9 +189,9 @@
       },
       "operate": {
         "active": {
-          "bytes": 31345,
-          "identity_sha256": "b65a725eff7dfecae4ab406ec82bb87cfee959def9f2482c33527675a6a7fdb1",
-          "tokens_est": 7837,
+          "bytes": 27096,
+          "identity_sha256": "5b9de9df84da662214a4733e968ea24095ec8c25acfe3bdf53ae1cc504418d74",
+          "tokens_est": 6774,
           "tool_names": [
             "agent",
             "bash",
@@ -201,23 +199,21 @@
             "edit",
             "execute_tools",
             "file_search",
-            "get_goal",
             "grep_files",
+            "list_dir",
             "load_skill",
             "present",
             "read",
-            "task_shell_wait",
             "todo_write",
             "tool_search",
-            "update_goal",
             "write"
           ],
-          "tools": 16
+          "tools": 14
         },
         "full": {
-          "bytes": 90036,
-          "identity_sha256": "d67b680503178673d506a71f502e1d7b89087d1a3c6833dda45b14143d6a630e",
-          "tokens_est": 22509,
+          "bytes": 89938,
+          "identity_sha256": "147be37c265bcfe7f513ffc77d575026ea0a64f699ff0be0ecada4ae0d2daf94",
+          "tokens_est": 22485,
           "tool_names": [
             "Git",
             "Run",
@@ -259,11 +255,11 @@
             "speech",
             "task_shell_wait",
             "tasks",
-            "terminal/cancel",
-            "terminal/reset",
-            "terminal/run",
-            "terminal/send",
-            "terminal/wait",
+            "terminal_cancel",
+            "terminal_reset",
+            "terminal_run",
+            "terminal_send",
+            "terminal_wait",
             "todo_write",
             "tool_search",
             "tui_help",
@@ -279,31 +275,30 @@
       },
       "plan": {
         "active": {
-          "bytes": 28564,
-          "identity_sha256": "1fc2bf6f4ef5d7562fa066bb1888ec80e780f07ea304ca0115073b67c56cbff9",
-          "tokens_est": 7141,
+          "bytes": 25707,
+          "identity_sha256": "3f1da9847644dd6b343bffe0f2e2f4f87b3d0c83828df40b2123839158fa9dc9",
+          "tokens_est": 6427,
           "tool_names": [
             "agent",
             "bash",
             "create_goal",
             "edit",
             "file_search",
-            "get_goal",
             "grep_files",
+            "list_dir",
             "load_skill",
             "present",
             "read",
             "todo_write",
             "tool_search",
-            "update_goal",
             "write"
           ],
-          "tools": 14
+          "tools": 13
         },
         "full": {
-          "bytes": 59433,
+          "bytes": 59608,
           "identity_sha256": "191267223f8667b24726e08d57e13acdc84e7a7e5507591a6212946f8026d15a",
-          "tokens_est": 14859,
+          "tokens_est": 14902,
           "tool_names": [
             "Git",
             "Web",
