@@ -81,7 +81,7 @@ colored = "3.0.0"
 futures-util = "0.3.31"
 tokio-tungstenite = "0.30"
 ignore = "0.4"
-parking_lot = "0.12"
+parking_lot = "0.13"
 qrcode = { version = "0.14", default-features = false }
 regex = "1.11"
 rmcp = { version = "3.9.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
