@@ -6193,6 +6193,9 @@ pub(crate) async fn run_event_loop(
                                 return Ok(());
                             }
                         }
+                        crate::tui::underwater::LaunchAction::ShowRecent => {
+                            app.launch.expand_recent();
+                        }
                         crate::tui::underwater::LaunchAction::BrowseSessions => {
                             // A launched command dissolves the card; Esc
                             // out of the picker brings it back.
@@ -6201,9 +6204,6 @@ pub(crate) async fn run_event_loop(
                                 SessionPickerView::new(&app.workspace, app.ui_locale)
                                     .with_current_session(app.current_session_id.as_deref()),
                             );
-                        }
-                        crate::tui::underwater::LaunchAction::McpRemedy => {
-                            type_launch_mcp_remedy(app);
                         }
                         crate::tui::underwater::LaunchAction::McpManager => {
                             app.launch.dissolve_card(app.ambient_clock_ms);
@@ -6779,6 +6779,16 @@ pub(crate) async fn run_event_loop(
                             // over the full row list (Enter still runs a row
                             // the plan shed on a tiny stage).
                             let rows = crate::tui::underwater::launch_rows_for_app(app);
+                            if delta < 0
+                                && app.launch.menu_selected.is_none()
+                                && rows
+                                    .iter()
+                                    .any(|row| row.id == crate::tui::app::LaunchRowId::ShowRecent)
+                            {
+                                app.launch.expand_recent();
+                                app.needs_redraw = true;
+                                continue;
+                            }
                             let entries = rows.len().max(1) as i32;
                             // First arrow lands on the first row; Up lands on
                             // the newest recent session, else the last row.
@@ -6786,7 +6796,11 @@ pub(crate) async fn run_event_loop(
                                 None if delta < 0 => rows
                                     .iter()
                                     .position(|row| {
-                                        matches!(row.id, crate::tui::app::LaunchRowId::Recent(_))
+                                        matches!(
+                                            row.id,
+                                            crate::tui::app::LaunchRowId::Recent(_)
+                                                | crate::tui::app::LaunchRowId::SeeAll
+                                        )
                                     })
                                     .unwrap_or((entries - 1) as usize),
                                 None => 0,
@@ -6883,6 +6897,9 @@ pub(crate) async fn run_event_loop(
                         crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
                             crate::tui::underwater::open_launch_resume_confirm(app, &session_id);
                         }
+                        crate::tui::underwater::LaunchAction::ShowRecent => {
+                            app.launch.expand_recent();
+                        }
                         crate::tui::underwater::LaunchAction::BrowseSessions => {
                             // A launched command dissolves the card; Esc
                             // out of the picker brings it back.
@@ -6891,9 +6908,6 @@ pub(crate) async fn run_event_loop(
                                 SessionPickerView::new(&app.workspace, app.ui_locale)
                                     .with_current_session(app.current_session_id.as_deref()),
                             );
-                        }
-                        crate::tui::underwater::LaunchAction::McpRemedy => {
-                            type_launch_mcp_remedy(app);
                         }
                         crate::tui::underwater::LaunchAction::McpManager => {
                             app.launch.dissolve_card(app.ambient_clock_ms);

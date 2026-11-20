@@ -3517,7 +3517,7 @@ pub(crate) fn empty_composer_visual_rows(
     1
 }
 
-fn composer_chat_color(app: &App) -> Option<Color> {
+pub(crate) fn composer_chat_color(app: &App) -> Option<Color> {
     let name = app.composer_color.as_deref()?;
     let (dark, light, ansi) = match name {
         "red" => ((0xF2, 0x5F, 0x5C), (0xC6, 0x28, 0x28), Color::Red),

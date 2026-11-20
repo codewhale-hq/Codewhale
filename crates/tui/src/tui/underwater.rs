@@ -51,13 +51,9 @@ pub enum LaunchAction {
     ResumeSession(String),
     /// The see-all overflow: open the full session picker.
     BrowseSessions,
+    ShowRecent,
     /// Inspect and manage the servers counted by the MCP summary.
     McpManager,
-    /// The MCP problems row: type the remedy it prints into the composer
-    /// (`/mcp login <name>` or `/mcp`). Typing beats copying — it works over
-    /// SSH where a clipboard may not exist, and the user sees the command
-    /// before Enter sends it (#6085).
-    McpRemedy,
     Help,
 }
 
@@ -173,6 +169,18 @@ fn launch_recent_entries(app: &App) -> (Vec<LaunchRecentEntry>, bool) {
 /// Both painting and input use the same primary action on revisited home.
 fn home_card_rows(app: &App, recent: &[LaunchRecentEntry], has_more: bool) -> Vec<LaunchCardRow> {
     let mut rows = launch_card_rows(app.ui_locale, recent, has_more);
+    if !app.launch.recent_expanded && has_more && !app.launch.recent.is_empty() {
+        rows[1].id = crate::tui::app::LaunchRowId::ShowRecent;
+        rows[1].label = format!(
+            "{}  {}",
+            tr(app.ui_locale, MessageId::LaunchRecentHeading),
+            if crate::tui::color_compat::ascii_safe_enabled() {
+                "Up"
+            } else {
+                "↑"
+            },
+        );
+    }
     if app.launch.return_to_session {
         rows[0].id = crate::tui::app::LaunchRowId::ReturnToSession;
         rows[0].label = format!(
@@ -196,19 +204,18 @@ pub fn launch_rows_for_app(app: &App) -> Vec<LaunchCardRow> {
     let (recent, _) = launch_recent_entries(app);
     // An empty pane has no navigable rows, including before its first paint.
     // A preserved multiline draft can legitimately leave no room for home.
-    let mut superset = home_card_rows(app, &recent, true);
-    // MCP rows join the same ordering only when the boot block painted them.
-    for id in [
-        crate::tui::app::LaunchRowId::McpManager,
-        crate::tui::app::LaunchRowId::McpRemedy,
-    ] {
-        superset.push(LaunchCardRow {
-            id,
-            label: String::new(),
-            detail: String::new(),
-            prominent: false,
-        });
-    }
+    let recent = if app.launch.recent_expanded {
+        recent.as_slice()
+    } else {
+        &[]
+    };
+    let mut superset = home_card_rows(app, recent, true);
+    superset.push(LaunchCardRow {
+        id: crate::tui::app::LaunchRowId::McpManager,
+        label: String::new(),
+        detail: String::new(),
+        prominent: false,
+    });
     app.launch
         .row_hitboxes
         .iter()
@@ -262,8 +269,8 @@ pub fn launch_row_click_action(id: &crate::tui::app::LaunchRowId) -> LaunchActio
             LaunchAction::ResumeSession(session_id.clone())
         }
         crate::tui::app::LaunchRowId::SeeAll => LaunchAction::BrowseSessions,
+        crate::tui::app::LaunchRowId::ShowRecent => LaunchAction::ShowRecent,
         crate::tui::app::LaunchRowId::McpManager => LaunchAction::McpManager,
-        crate::tui::app::LaunchRowId::McpRemedy => LaunchAction::McpRemedy,
     }
 }
 
@@ -441,6 +448,11 @@ pub fn handle_launch_composer_key(app: &mut App, key: KeyEvent) -> LaunchCompose
         // in the composer keeps Esc's composer meaning.
         KeyCode::Esc if card_up && app.launch.menu_selected.is_some() => {
             app.launch.menu_selected = None;
+            LaunchComposerKey::Consumed
+        }
+        KeyCode::Esc if card_up && app.launch.recent_expanded => {
+            app.launch.recent_expanded = false;
+            app.launch.hovered_row = None;
             LaunchComposerKey::Consumed
         }
         KeyCode::Esc if !card_up && app.input.is_empty() => {
@@ -1292,243 +1304,6 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     lines
 }
 
-/// The remedy the problems row prints, as the command Enter/click types into
-/// the composer (#6085): `/mcp login <name>` when a server wants a login,
-/// else `/mcp` for failures. `None` when nothing is wrong. One helper serves
-/// the row's tail and its action, so what is painted is what runs.
-pub(crate) fn mcp_remedy_command(app: &App) -> Option<String> {
-    use crate::tui::session_boot::{McpServerBootState, PluginBootSummary, SessionBootSurface};
-    let boot = SessionBootSurface::from_parts(
-        app.mcp_snapshot.as_ref(),
-        app.mcp_boot_initializing(),
-        &app.mcp_connecting,
-        app.mcp_configured_count,
-        PluginBootSummary::default(),
-    );
-    let first_in = |state: McpServerBootState| -> Option<&str> {
-        boot.servers
-            .iter()
-            .find(|row| row.state == state)
-            .map(|row| row.name.as_str())
-    };
-    if let Some(name) = first_in(McpServerBootState::NeedsLogin) {
-        return Some(format!("/mcp login {name}"));
-    }
-    first_in(McpServerBootState::Failed).map(|_| "/mcp".to_string())
-}
-
-/// The launch screen's MCP block: what actually became of the configured
-/// servers, painted under the recent-work list.
-///
-/// The Tideline footer has one clause for this whole fact, so a 23-server
-/// workspace rendered as `MCP · 1 connecting · alibaba-cloud-ops` — one
-/// arbitrary name, every failure hidden (founder, 2026-09-09). The launch
-/// screen has the rows the footer does not, so the two states that carry a
-/// remedy get a row each and *name* their servers; the healthy majority stays
-/// a count, because a list of things that worked is not information. A server
-/// that needs a login and a server that could not connect are different
-/// problems with different fixes, so they never share a row.
-///
-/// State comes from [`crate::tui::session_boot::SessionBootSurface`], the one
-/// MCP status owner; this is only its launch projection, and it computes
-/// nothing about a server itself.
-///
-/// The problems row is selectable (#6085): `problems_row` is its index within
-/// `lines`, which `launch_empty_state` turns into a hitbox so the row joins
-/// the card's shared paint/click/keyboard ordering. Enter or click types the
-/// printed remedy into the composer — the user sees the command before a
-/// second Enter sends it.
-struct McpLaunchBlock {
-    lines: Vec<Line<'static>>,
-    problems_row: Option<usize>,
-}
-
-fn mcp_launch_lines(app: &App, text_width: usize) -> McpLaunchBlock {
-    use crate::tui::session_boot::{
-        ITEM_SEPARATOR, McpServerBootState, PluginBootSummary, SessionBootPhase, SessionBootSurface,
-    };
-
-    // MCP only: the plugin half of the boot surface has its own footer chip
-    // and its own screen, and walking the plugin registry every frame to
-    // discard it would be waste.
-    let boot = SessionBootSurface::from_parts(
-        app.mcp_snapshot.as_ref(),
-        app.mcp_boot_initializing(),
-        &app.mcp_connecting,
-        app.mcp_configured_count,
-        PluginBootSummary::default(),
-    );
-    if boot.phase == SessionBootPhase::Hidden || text_width == 0 {
-        return McpLaunchBlock {
-            lines: Vec::new(),
-            problems_row: None,
-        };
-    }
-    let theme = &app.ui_theme;
-    let locale = app.ui_locale;
-    let names_in = |state: McpServerBootState| -> Vec<&str> {
-        boot.servers
-            .iter()
-            .filter(|row| row.state == state)
-            .map(|row| row.name.as_str())
-            .collect()
-    };
-    let failed = names_in(McpServerBootState::Failed);
-    let needs_login = names_in(McpServerBootState::NeedsLogin);
-    let connected = names_in(McpServerBootState::Connected).len();
-    // Before the first boot event the names have not arrived, but the count
-    // has; without it a 23-server workspace would paint nothing at all.
-    let connecting = names_in(McpServerBootState::Connecting)
-        .len()
-        .max(boot.connecting_without_names());
-
-    let indent = 0;
-    let lane = text_width.saturating_sub(indent);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // The summary carries every non-zero state, because it is also the floor:
-    // when the pane can afford one row of this block, that row still has to
-    // say two servers failed. Order is by what the reader must act on, so the
-    // tail shed below gives up `connected` first — and while anything is in
-    // flight that clause leads, since a boot that has connected nothing yet
-    // must never read as a boot that finished with nothing connected.
-    // `label (n)` rather than `n label`: number agreement is a grammar this
-    // renderer cannot get right in fifteen languages.
-    let mut parts: Vec<String> = Vec::new();
-    let mut count_part = |id: MessageId, count: usize| {
-        if count > 0 {
-            parts.push(format!("{} ({count})", tr(locale, id)));
-        }
-    };
-    count_part(MessageId::McpStateConnecting, connecting);
-    count_part(MessageId::McpStateFailed, failed.len());
-    count_part(MessageId::McpStateAuthorizationRequired, needs_login.len());
-    count_part(MessageId::ExtensionsStateConnected, connected);
-    if parts.is_empty() {
-        parts.push(format!(
-            "{} (0)",
-            tr(locale, MessageId::ExtensionsStateConnected)
-        ));
-    }
-    let mut summary = format!("MCP{ITEM_SEPARATOR}{}", parts.join(ITEM_SEPARATOR));
-    while parts.len() > 1 && text_display_width(&summary) > text_width {
-        parts.pop();
-        summary = format!("MCP{ITEM_SEPARATOR}{}", parts.join(ITEM_SEPARATOR));
-    }
-    lines.push(Line::from(Span::styled(
-        semantic_truncate(&summary, text_width),
-        Style::default().fg(if !failed.is_empty() {
-            theme.error_fg
-        } else if !needs_login.is_empty() {
-            theme.warning
-        } else {
-            theme.text_muted
-        }),
-    )));
-
-    // One problems row answers *which* and *what to type*: `✕` groups the
-    // failed names, `⚠` switches the group to names that want a login, and
-    // the remedy rides at the tail. Narrow panes shed the hint, then names
-    // from the tail into `+N`, and finally the row itself — never the
-    // summary. Glyph *and* state grouping carry the difference, so it
-    // survives a monochrome terminal and a colour-blind reader.
-    let mut problems_row = None;
-    if !failed.is_empty() || !needs_login.is_empty() {
-        let hint = match (needs_login.first(), failed.is_empty()) {
-            (Some(name), true) => format!("/mcp login {name}"),
-            (Some(name), false) => format!("/mcp{ITEM_SEPARATOR}/mcp login {name}"),
-            (None, false) => "/mcp".to_string(),
-            (None, true) => String::new(),
-        };
-        let problems = mcp_problems_row(&failed, &needs_login, &hint, lane);
-        if let Some(text) = problems {
-            let mut spans = Vec::with_capacity(2);
-            if indent > 0 {
-                spans.push(Span::raw(" ".repeat(indent)));
-            }
-            spans.push(Span::styled(
-                text,
-                Style::default().fg(if failed.is_empty() {
-                    theme.warning
-                } else {
-                    theme.error_fg
-                }),
-            ));
-            problems_row = Some(lines.len());
-            lines.push(Line::from(spans));
-        }
-    }
-    McpLaunchBlock {
-        lines,
-        problems_row,
-    }
-}
-
-/// One problems row: `✕ alibaba-cloud-ops · aws-mcp · ⚠ slack +4 · /mcp`.
-///
-/// `✕` opens the failed group, `⚠` opens the needs-login group, and the
-/// remedy sits at the tail. Shedding folds names into `+N` from the tail
-/// while the remedy holds — at each width the named command is tried first,
-/// then bare `/mcp`, then none — and when even `✕ +2 · ⚠ +5` cannot fit
-/// the row is dropped whole: the summary above still says the count.
-fn mcp_problems_row(
-    failed: &[&str],
-    needs_login: &[&str],
-    hint: &str,
-    lane: usize,
-) -> Option<String> {
-    use crate::tui::session_boot::ITEM_SEPARATOR;
-    use codewhale_tui_kit::glyphs::{ATTENTION, FAILED};
-
-    let group = |glyph: &str, names: &[&str], shown: usize, row: &mut String| {
-        if names.is_empty() {
-            return;
-        }
-        if !row.is_empty() {
-            row.push_str(ITEM_SEPARATOR);
-        }
-        row.push_str(glyph);
-        row.push(' ');
-        if shown > 0 {
-            row.push_str(&names[..shown].join(ITEM_SEPARATOR));
-            let extra = names.len() - shown;
-            if extra > 0 {
-                row.push_str(ITEM_SEPARATOR);
-                row.push('+');
-                row.push_str(&extra.to_string());
-            }
-        } else {
-            row.push('+');
-            row.push_str(&names.len().to_string());
-        }
-    };
-    let total = failed.len() + needs_login.len();
-    for shown in (0..=total).rev() {
-        let failed_shown = shown.min(failed.len());
-        let login_shown = shown.saturating_sub(failed_shown);
-        let mut body = String::new();
-        group(FAILED, failed, failed_shown, &mut body);
-        group(ATTENTION, needs_login, login_shown, &mut body);
-        for tail in [hint, "/mcp", ""] {
-            if tail.is_empty() && !hint.is_empty() && shown > 0 {
-                continue;
-            }
-            let mut row = body.clone();
-            if !tail.is_empty() {
-                row.push_str(ITEM_SEPARATOR);
-                row.push_str(tail);
-            }
-            if text_display_width(&row) <= lane {
-                return Some(row);
-            }
-        }
-    }
-    None
-}
-
-/// Ease every painted glyph toward the water behind it. `dissolve` is
-/// `card_dissolve_progress` — 0 is full ink, 1 is gone. Spans without a
-/// foreground (padding, blanks) carry nothing to fade.
 fn fade_lines(lines: &mut [Line<'static>], dissolve: f32, water: Color) {
     for line in lines.iter_mut() {
         for span in line.spans.iter_mut() {
@@ -1554,9 +1329,6 @@ struct LaunchFit {
     blanks: usize,
     shown: usize,
     see_all: bool,
-    /// Rows of the MCP block, tail-first as the pane shrinks. The block
-    /// always costs one separator row on top of these, so it never reads as
-    /// another session in the list above it.
     mcp: usize,
     /// Blank rows per separator. A pane with height to spare spends it on
     /// breathing room before it spends it on more content: one blank line
@@ -1580,12 +1352,11 @@ impl LaunchFit {
             + self.shown
             + (self.see_all as usize)
             + self.mcp
-            + (self.mcp > 0) as usize * self.gap
     }
 }
 
 /// Shed the card down to `height`, in a fixed order: rhythm, the migration
-/// notice, the MCP block's detail, identity/help chrome, then the tail of
+/// notice, release notes, identity/help chrome, then the tail of
 /// the recent list. The overflow row keeps any hidden sessions reachable.
 /// The "no model connected" line goes last of all: on a keyless first run
 /// it is the only thing on the card that explains why nothing will answer.
@@ -1596,22 +1367,24 @@ impl LaunchFit {
 /// truth that the footer chip could not.
 fn launch_fit(
     height: usize,
-    recent: usize,
+    recent: Option<usize>,
     has_more: bool,
     notice: bool,
     whats_new: usize,
     mcp: usize,
     setup: bool,
 ) -> LaunchFit {
+    let expanded = recent.is_some();
+    let recent = recent.unwrap_or_default();
     let mut fit = LaunchFit {
         brand: true,
         context: true,
-        help: true,
+        help: expanded,
         notice,
         whats_new,
         setup,
-        heading: recent > 0 || has_more,
-        blanks: LAUNCH_SEPARATORS,
+        heading: expanded && (recent > 0 || has_more),
+        blanks: if expanded { LAUNCH_SEPARATORS } else { 1 },
         shown: recent,
         see_all: has_more,
         mcp,
@@ -1630,24 +1403,19 @@ fn launch_fit(
                     fit.whats_new -= 1;
                 }
             }
-            5 => {
-                while fit.mcp > 1 && fit.rows() > height {
-                    fit.mcp -= 1;
-                }
-            }
-            6 => fit.help = false,
-            7 => fit.context = false,
-            8 => fit.heading = false,
-            9 => fit.brand = false,
-            10 => {
+            5 => fit.help = false,
+            6 => fit.context = false,
+            7 => fit.heading = false,
+            8 => fit.brand = false,
+            9 => {
                 while fit.shown > 0 && fit.rows() > height {
                     fit.shown -= 1;
                     fit.see_all = true;
                 }
             }
-            11 => fit.mcp = 0,
-            12 => fit.see_all = false,
-            13 => fit.setup = false,
+            10 => fit.mcp = 0,
+            11 => fit.see_all = false,
+            12 => fit.setup = false,
             _ => break,
         }
         step += 1;
@@ -1719,36 +1487,40 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         };
     }
 
-    let (entries, has_more) = launch_recent_entries(app);
+    let (entries, has_more) = if app.launch.recent_expanded {
+        launch_recent_entries(app)
+    } else {
+        (
+            Vec::new(),
+            app.launch.has_scoped_sessions || !app.launch.recent.is_empty(),
+        )
+    };
     // Nothing will answer a message until a model is connected; the card
     // says so instead of letting the first Enter fail silently (UX-3).
     let no_model_connected = app.onboarding_needs_api_key;
-    // Built before the fit ladder runs: how many rows the block wants is a
-    // fact about this workspace's servers, not about the pane.
-    let mcp_block = mcp_launch_lines(app, text_width);
+    let mcp_configured = app.mcp_configured_count > 0
+        || app
+            .mcp_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.servers.is_empty());
     let whats_new_lines = whats_new_launch_lines(app, text_width);
-    // Brand occupies the header only; recent titles retain the whole reading lane.
-    // Scale the canonical raster derivative before sacrificing any controls.
-    use codewhale_tui_kit::mark::MarkSize;
     let mut mark = if crate::tui::color_compat::ascii_safe_enabled() {
         None
-    } else if height >= 14 && text_width >= 40 {
-        Some(MarkSize::Large)
     } else if height >= 8 && text_width >= 26 {
-        Some(MarkSize::Small)
+        Some(["⢀⣴⡶⠟⠻⠧⠤   ", "⢾⣯⣀⣀⣤⣤⣶⣶⣶⡶", "⠈⠛⠿⢿⣿⣷⡿⠿⠋ "].as_slice())
     } else if height >= 4 && text_width >= 19 {
-        Some(MarkSize::Tiny)
+        Some(["⣠⠖⠛⠛⢒⣀⣀", "⠙⠷⣾⣿⣽⠿⠋"].as_slice())
     } else {
         None
     };
-    let mark_extra = mark.map_or(0, |size| usize::from(size.cells().1).saturating_sub(2));
+    let mark_extra = mark.map_or(0, |size| size.len().saturating_sub(2));
     let mut fit = launch_fit(
         height.saturating_sub(mark_extra),
-        entries.len(),
+        app.launch.recent_expanded.then_some(entries.len()),
         has_more,
         app.launch.claude_code_detected,
         whats_new_lines.len(),
-        mcp_block.lines.len(),
+        usize::from(mcp_configured),
         no_model_connected,
     );
     if mark.is_some() && !(fit.brand && fit.context) {
@@ -1756,16 +1528,16 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         mark = None;
         fit = launch_fit(
             height,
-            entries.len(),
+            app.launch.recent_expanded.then_some(entries.len()),
             has_more,
             app.launch.claude_code_detected,
             whats_new_lines.len(),
-            mcp_block.lines.len(),
+            usize::from(mcp_configured),
             no_model_connected,
         );
     }
     let header_width =
-        text_width.saturating_sub(mark.map_or(0, |size| usize::from(size.cells().0) + 2));
+        text_width.saturating_sub(mark.map_or(0, |size| text_display_width(size[0]) + 2));
     let spacious = fit.blanks == LAUNCH_SEPARATORS;
     let visible: Vec<LaunchRecentEntry> = entries.into_iter().take(fit.shown).collect();
     let card_rows = home_card_rows(app, &visible, fit.see_all);
@@ -1815,8 +1587,17 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         text.push(Some(Line::from(spans)));
     }
     if let Some(mark) = mark {
-        text.resize_with(usize::from(mark.cells().1), || None);
-        for (row, dots) in mark.rows().iter().enumerate() {
+        text.resize_with(mark.len(), || None);
+        let accent = crate::tui::widgets::composer_chat_color(app).unwrap_or(theme.accent_primary);
+        for (row, dots) in mark.iter().enumerate() {
+            let highlight = if row == 0 {
+                0.64
+            } else if row == 1 {
+                0.34
+            } else {
+                0.0
+            };
+            let ink = codewhale_tui_kit::mark::lerp_color(accent, theme.text_body, highlight);
             let mut spans = vec![
                 Span::styled(
                     codewhale_tui_kit::mark::reveal_row(
@@ -1828,7 +1609,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
                             }),
                         app.motion_policy().allows_decorative() && !app.launch.return_to_session,
                     ),
-                    Style::default().fg(theme.accent_primary),
+                    Style::default().fg(ink),
                 ),
                 Span::raw("  "),
             ];
@@ -1968,24 +1749,34 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         }
     }
 
-    // MCP status, under the recent-work list, where the founder asked for it
-    // (2026-09-09): the footer chip could name one server out of 23 and hid
-    // every failure behind a count.
     if fit.mcp > 0 {
-        for _ in 0..fit.gap {
-            text.push(None);
-        }
-        for (offset, line) in mcp_block.lines.into_iter().enumerate() {
-            if offset >= fit.mcp {
-                break;
-            }
-            if offset == 0 {
-                rows.push((crate::tui::app::LaunchRowId::McpManager, text.len()));
-            } else if mcp_block.problems_row == Some(offset) {
-                rows.push((crate::tui::app::LaunchRowId::McpRemedy, text.len()));
-            }
-            text.push(Some(line));
-        }
+        let connectors = tr(locale, MessageId::ExtensionsTabConnectors);
+        let required_problems = app.mcp_snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .servers
+                .iter()
+                .filter(|server| {
+                    server.enabled
+                        && server.required
+                        && !server.connected
+                        && (server.error.is_some() || server.auth_required)
+                })
+                .count()
+        });
+        let (label, ink) = if required_problems > 0 {
+            let error = tr(locale, MessageId::ExtensionsStateError);
+            (
+                format!("{connectors} · {error} ({required_problems})"),
+                theme.warning,
+            )
+        } else {
+            (format!("{connectors}  /mcp"), theme.text_soft)
+        };
+        rows.push((crate::tui::app::LaunchRowId::McpManager, text.len()));
+        text.push(Some(Line::from(Span::styled(
+            semantic_truncate(&label, text_width),
+            Style::default().fg(ink),
+        ))));
     }
 
     // Keep the invitation and recent work ahead of command instructions.
@@ -2034,9 +1825,12 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     // A little top breathing room only comes from unused space. Compact
     // terminals never sacrifice a control for this composition.
     if height >= 16 {
-        // Use spare height to balance the launcher above the composer. Leave
-        // the bottom half as breathing room; controls never lose a row.
-        let top = height.saturating_sub(text.len()) / 2;
+        let spare = height.saturating_sub(text.len());
+        let top = if app.launch.recent_expanded {
+            spare / 2
+        } else {
+            spare.saturating_sub(2)
+        };
         lines.resize_with(top, || Line::from(""));
     }
     let block_rows = text.len().min(height.saturating_sub(lines.len()));
@@ -2095,8 +1889,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
 mod launch_card_tests {
     use super::{
         LAUNCH_CARD_MEASURE, LaunchAction, launch_empty_state, launch_fit, launch_recent_entries,
-        launch_row_click_action, launch_rows_for_app, refresh_launch_row_hitboxes,
-        run_launch_card_row, text_display_width,
+        launch_rows_for_app, refresh_launch_row_hitboxes, run_launch_card_row, text_display_width,
     };
     use crate::tui::app::{App, LaunchRecentSession, LaunchRowId};
     use ratatui::layout::Rect;
@@ -2108,6 +1901,7 @@ mod launch_card_tests {
             crate::tui::test_support::test_tui_options(std::env::temp_dir()),
         );
         app.launch.visible = true;
+        app.launch.recent_expanded = true;
         app.launch.claude_code_detected = false;
         app.launch.recent = titles
             .iter()
@@ -2409,64 +2203,46 @@ mod launch_card_tests {
         }
     }
 
-    // --- MCP status, under the recent list ------------------------------
-
-    /// The defect this block was built for: the footer chip named one server
-    /// out of twenty-three and reported every other state as a bare count, so
-    /// ten servers sitting unauthenticated were invisible. Failed and
-    /// needs-login are different problems with different fixes and must never
-    /// collapse into one clause — and the block is two lines at most now:
-    /// the summary owns the counts, one problems row names what broke.
     #[test]
-    fn the_mcp_block_names_what_broke_and_separates_it_from_what_needs_a_login() {
-        let app = with_mcp(app_with_recent(&["one", "two"], 2));
-        let lines = painted(&app, 120, 30);
-        // The summary owns the totals, and every non-zero state is on it.
-        let summary = lines
-            .iter()
-            .find(|line| line.contains("MCP"))
-            .expect("the MCP summary");
-        assert!(summary.contains("connection failed (2)"), "{summary:?}");
-        assert!(
-            summary.contains("authorization required (5)"),
-            "ten servers at not-logged-in were invisible before this: {summary:?}",
-        );
-        // One problems row answers *which*: ✕ groups the failures, ⚠ groups
-        // the logins, and the remedy rides at the tail.
-        let problems: Vec<_> = lines
-            .iter()
-            .filter(|line| {
-                line.contains(codewhale_tui_kit::glyphs::FAILED)
-                    || line.contains(codewhale_tui_kit::glyphs::ATTENTION)
-            })
-            .collect();
-        assert_eq!(problems.len(), 1, "one problems row: {lines:#?}");
-        let row = problems[0];
-        assert!(row.contains("alibaba-cloud-ops"), "{row:?}");
-        assert!(row.contains("aws-mcp"), "{row:?}");
-        assert!(row.contains("slack"), "{row:?}");
-        // The remedy is the command to type, not advice about typing one —
-        // the named form sheds to bare `/mcp` before any name does.
-        assert!(row.contains("/mcp"), "{row:?}");
-    }
-
-    /// While the boot is in flight the block must not read as a finished one.
-    #[test]
-    fn a_boot_in_flight_says_connecting_rather_than_connected() {
-        let mut app = app_with_recent(&["one"], 1);
-        app.set_mcp_boot_initializing(true);
-        app.mcp_configured_count = 23;
-        app.mcp_connecting = Vec::new();
-        let lines = painted(&app, 120, 30);
-        let summary = lines
-            .iter()
-            .find(|line| line.contains("MCP"))
-            .expect("the MCP summary");
-        assert!(summary.contains("connecting (23)"), "{summary:?}");
-        assert!(
-            !summary.contains("connected"),
-            "a boot with nothing connected yet claimed a count: {summary:?}",
-        );
+    fn startup_keeps_session_and_connector_details_behind_their_controls() {
+        let mut app = with_mcp(app_with_recent(&["Private draft title"], 1));
+        app.launch.recent_expanded = false;
+        for (width, height) in [(40, 8), (80, 24), (140, 36)] {
+            let area = Rect::new(0, 0, width, height);
+            refresh_launch_row_hitboxes(&mut app, area);
+            let ids = row_ids(&app);
+            assert_eq!(
+                ids,
+                [
+                    LaunchRowId::NewSession,
+                    LaunchRowId::ShowRecent,
+                    LaunchRowId::McpManager
+                ]
+            );
+            assert_eq!(app.launch.menu_selected, None);
+            let text = painted(&app, width, height).join("\n");
+            assert!(text.contains("Recent") && text.contains("/mcp"), "{text}");
+            for hidden in [
+                "Private draft title",
+                "alibaba-cloud-ops",
+                "authorization required",
+                "/mcp login",
+            ] {
+                assert!(!text.contains(hidden), "{text}");
+            }
+        }
+        let server = app
+            .mcp_snapshot
+            .as_mut()
+            .unwrap()
+            .servers
+            .iter_mut()
+            .find(|server| server.name == "alibaba-cloud-ops")
+            .unwrap();
+        server.required = true;
+        let text = painted(&app, 80, 24).join("\n");
+        assert!(text.contains("Connectors · error (1)"), "{text}");
+        assert!(!text.contains("alibaba-cloud-ops"), "{text}");
     }
 
     #[test]
@@ -2478,7 +2254,13 @@ mod launch_card_tests {
                         for mcp in 0usize..=4 {
                             for setup in [false, true] {
                                 let fit = launch_fit(
-                                    height, recent, has_more, notice, whats_new, mcp, setup,
+                                    height,
+                                    Some(recent),
+                                    has_more,
+                                    notice,
+                                    whats_new,
+                                    mcp,
+                                    setup,
                                 );
                                 assert!(fit.rows() <= height.max(1), "{height} {recent}: {fit:?}");
                                 assert!(fit.shown <= recent);
@@ -2527,9 +2309,9 @@ mod launch_card_tests {
         assert!(text.contains("New session"));
         assert!(!text.contains("Recent"));
         assert!(!text.contains("No recent sessions"));
-        assert!(!launch_fit(24, 0, false, false, 0, 0, false).heading);
-        assert!(launch_fit(24, 0, true, false, 0, 0, false).heading);
-        assert!(launch_fit(24, 0, true, false, 0, 0, false).see_all);
+        assert!(!launch_fit(24, Some(0), false, false, 0, 0, false).heading);
+        assert!(launch_fit(24, Some(0), true, false, 0, 0, false).heading);
+        assert!(launch_fit(24, Some(0), true, false, 0, 0, false).see_all);
     }
 
     // --- the row reads as one object -----------------------------------
@@ -2617,9 +2399,7 @@ mod launch_card_tests {
 
     #[test]
     fn a_tall_pane_breathes_and_a_short_one_gives_the_rhythm_up_first() {
-        // Counting blank *painted* rows would be wrong: the mark column sits
-        // behind the first six of them. The rhythm is the gap between the
-        // new-session entry and the heading below it.
+        // Measure the gap between the new-session entry and the heading.
         let app = app_with_recent(&["one", "two", "three", "four", "five"], 9);
 
         let tall = painted(&app, 120, 30);
@@ -2671,39 +2451,6 @@ mod launch_card_tests {
         }
     }
 
-    // --- the problems row runs the remedy it prints (#6085) -------------
-
-    #[test]
-    fn mcp_problems_row_joins_the_shared_row_ordering() {
-        let mut app = with_mcp(app_with_recent(&["one", "two"], 9));
-        refresh_launch_row_hitboxes(&mut app, Rect::new(0, 0, 120, 30));
-
-        let ids = row_ids(&app);
-        assert_eq!(
-            ids.last(),
-            Some(&LaunchRowId::McpRemedy),
-            "the problems row is the last row in the painted ordering"
-        );
-
-        // Keyboard: arrowing onto the last row and pressing Enter runs the
-        // remedy action, through the same arm a click reaches.
-        let rows = launch_rows_for_app(&app);
-        assert_eq!(
-            rows.last().map(|row| row.id.clone()),
-            Some(LaunchRowId::McpRemedy),
-            "Up/Down must be able to land on the painted problems row"
-        );
-        assert_eq!(
-            run_launch_card_row(&rows, Some(rows.len() - 1)),
-            LaunchAction::McpRemedy
-        );
-        assert_eq!(
-            launch_row_click_action(&LaunchRowId::McpRemedy),
-            LaunchAction::McpRemedy,
-            "click and Enter share one contract"
-        );
-    }
-
     #[test]
     fn launch_healthy_mcp_and_recent_rows_have_visible_focus_in_their_click_lane() {
         let mut app = with_mcp(app_with_recent(&["Recent proof"], 1));
@@ -2725,7 +2472,6 @@ mod launch_card_tests {
                 run_launch_card_row(&rows, Some(mcp)),
                 LaunchAction::McpManager
             );
-            assert!(!row_ids(&app).contains(&LaunchRowId::McpRemedy));
 
             for index in [1, mcp] {
                 app.launch.menu_selected = None;
@@ -2752,69 +2498,6 @@ mod launch_card_tests {
                 assert_eq!(selected.lines[y].spans[0].style.bg, None);
             }
         }
-    }
-
-    #[test]
-    fn mcp_warning_ink_survives_selection_and_compact_layout() {
-        let mut app = with_mcp(app_with_recent(&["Recent proof"], 1));
-        for (width, height) in [(40, 12), (80, 24), (140, 40)] {
-            let area = Rect::new(0, 0, width, height);
-            let layout = launch_empty_state(&app, area);
-            let index = layout
-                .rows
-                .iter()
-                .position(|(id, _)| *id == LaunchRowId::McpManager)
-                .unwrap();
-            app.launch.menu_selected = Some(index);
-            let selected = launch_empty_state(&app, area);
-            let (_, y) = selected.rows[index];
-            let summary = selected.lines[y]
-                .spans
-                .iter()
-                .find(|span| span.content.starts_with("MCP"))
-                .unwrap();
-            assert_eq!(summary.style.fg, Some(app.ui_theme.error_fg));
-            assert_eq!(
-                summary.style.bg,
-                codewhale_tui_kit::menu_style::selected_row_bg_style().bg
-            );
-        }
-    }
-
-    #[test]
-    fn mcp_remedy_action_types_the_command_into_the_composer() {
-        let mut app = with_mcp(app_with_recent(&["one"], 9));
-        app.launch.menu_selected = Some(0);
-
-        crate::tui::ui::type_launch_mcp_remedy(&mut app);
-
-        // `slack` is the fixture's first needs-login server; typing the
-        // printed remedy beats copying it — no clipboard to depend on.
-        assert_eq!(app.input, "/mcp login slack");
-        assert_eq!(app.cursor_position, app.input.chars().count());
-        assert_eq!(app.launch.menu_selected, None);
-    }
-
-    #[test]
-    fn mcp_remedy_preserves_a_draft_and_opens_the_manager() {
-        let mut app = with_mcp(app_with_recent(&["one"], 9));
-        app.launch.return_to_session = true;
-        app.input = "unsent draft".into();
-        app.cursor_position = 4;
-        crate::tui::ui::type_launch_mcp_remedy(&mut app);
-        assert_eq!(app.input, "unsent draft");
-        assert_eq!(app.cursor_position, 4);
-        assert_eq!(
-            app.view_stack.top_kind(),
-            Some(crate::tui::views::ModalKind::Extensions),
-        );
-    }
-
-    #[test]
-    fn mcp_remedy_action_is_a_noop_when_nothing_is_wrong() {
-        let mut app = app_with_recent(&["one"], 9);
-        crate::tui::ui::type_launch_mcp_remedy(&mut app);
-        assert!(app.input.is_empty());
     }
 
     /// The migration notice ends with the reassurance that nothing applies

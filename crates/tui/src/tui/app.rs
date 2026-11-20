@@ -682,12 +682,9 @@ pub enum LaunchRowId {
     ReturnToSession,
     Recent(String),
     SeeAll,
+    ShowRecent,
     /// Open the MCP manager from the status summary, including healthy servers.
     McpManager,
-    /// The MCP problems row: Enter/click types the remedy command into the
-    /// composer (`/mcp login <name>` or `/mcp`) instead of making the user
-    /// retype what the card printed (#6085).
-    McpRemedy,
 }
 
 /// How many recent sessions the startup card lists inline before the
@@ -721,6 +718,7 @@ pub struct LaunchState {
     /// must not say "no recent sessions yet" while `/resume` lists them;
     /// when they exist it shows the see-all row instead of the lie.
     pub has_scoped_sessions: bool,
+    pub recent_expanded: bool,
     /// Whether launch keys type into the pre-session composer. The composer
     /// is the launch screen's one focus owner, so this is `true` from first
     /// paint. The composer itself is the session `App`'s own
@@ -844,6 +842,7 @@ impl LaunchState {
             recent,
             total_workspace_sessions,
             has_scoped_sessions,
+            recent_expanded: false,
             composer_focus: true,
             row_hitboxes: Vec::new(),
             hovered_row: None,
@@ -874,6 +873,12 @@ impl LaunchState {
         self.has_scoped_sessions = any_scoped;
     }
 
+    pub fn expand_recent(&mut self) {
+        self.recent_expanded = true;
+        self.menu_selected = None;
+        self.hovered_row = None;
+    }
+
     /// Begin the card dissolve once (idempotent). The first keystroke or a
     /// launched command dissolves the launch card.
     pub fn dissolve_card(&mut self, now_ms: u128) {
@@ -892,6 +897,7 @@ impl LaunchState {
         self.menu_selected = None;
         self.hovered_row = None;
         self.status = None;
+        self.recent_expanded = false;
         self.refresh_recent();
     }
 
