@@ -1541,7 +1541,8 @@ fn bound_text(
     spill_id: &str,
     session: &str,
 ) -> (Value, Option<Truncation>) {
-    if text.len() <= cap {
+    let encoded_len = serde_json::to_string(&text).map_or(text.len(), |encoded| encoded.len());
+    if encoded_len <= cap {
         return (Value::String(text), None);
     }
     let head = char_prefix(&text, cap / 2);
@@ -1751,6 +1752,25 @@ mod tests {
         let (value, truncated) = bound_json(json!({"a": 1}), 1024, "bound-small", "");
         assert!(truncated.is_none());
         assert_eq!(value, json!({"a": 1}));
+    }
+
+    #[test]
+    fn bound_json_cuts_escape_heavy_strings_by_encoded_size() {
+        let _guard = crate::tools::truncate::TEST_SPILLOVER_GUARD
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let spill_root = tempfile::tempdir().unwrap();
+        let previous =
+            crate::tools::truncate::set_test_spillover_root(Some(spill_root.path().to_path_buf()));
+        let (value, truncated) = bound_json(
+            json!("line\n".repeat(3000)),
+            16 * 1024,
+            "bound-escaped",
+            "session-bound",
+        );
+        crate::tools::truncate::set_test_spillover_root(previous);
+        assert!(truncated.is_some(), "escape-heavy string is reported cut");
+        assert!(value.to_string().len() <= 16 * 1024);
     }
 
     #[test]
