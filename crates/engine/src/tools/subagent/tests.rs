@@ -23128,7 +23128,7 @@ fn indirect_execution_payloads_are_refused_at_dispatch() {
 #[test]
 fn a_verifier_runs_bounded_test_selections_and_nothing_else_at_dispatch() {
     let (_tmp, registry) = read_only_with_shell_registry();
-    assert!(registry.grant_blocks_tool(&registry.registry, "task_shell_wait"));
+    assert!(registry.grant_blocks_tool("task_shell_wait"));
     assert!(!registry.can_collect_background_tests());
 
     for (name, input) in [
