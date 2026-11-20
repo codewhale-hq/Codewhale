@@ -974,7 +974,9 @@ async fn lifecycle_start_peek_and_status_detail_preserve_fields_and_strip_checkp
         .and_then(|agent| agent.task_handle.take())
         .expect("started child has a task");
     child.abort();
-    let _ = child.await;
+    if let Err(error) = child.await {
+        assert!(error.is_cancelled(), "started child panicked: {error}");
+    }
 
     let giant_sig = "SIG_BASE64_".repeat(500);
     {
