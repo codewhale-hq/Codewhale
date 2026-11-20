@@ -52,8 +52,8 @@ pub fn isolated_test_state_root() -> &'static Path {
     })
 }
 
-pub fn test_scratch_dir(prefix: &str) -> PathBuf {
-    let root = TEST_SCRATCH_ROOT.get_or_init(|| {
+pub fn test_scratch_root() -> &'static Path {
+    TEST_SCRATCH_ROOT.get_or_init(|| {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -70,8 +70,11 @@ pub fn test_scratch_dir(prefix: &str) -> PathBuf {
         });
         remove_test_roots_at_exit();
         root
-    });
-    root.join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
+    })
+}
+
+pub fn test_scratch_dir(prefix: &str) -> PathBuf {
+    test_scratch_root().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
 }
 
 static ISOLATED_TEST_STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();

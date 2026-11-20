@@ -31,7 +31,7 @@ struct Plugins {
 
 impl Plugins {
     fn new(plugins: &[(&str, &[&str])]) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(crate::test_support::test_scratch_root()).unwrap();
         let root = temp.path();
         let config = DiscoveryConfig {
             workspace: root.join("project"),
