@@ -617,6 +617,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- **Workflow gates block roles written with older names:** a gate whose `role` or `blocks_role` uses an alias such as `implementer`, `verify` or `verifier` now matches the canonical role a task is dispatched under, so the blocked role waits for the gate and receives its handoffs instead of running early.
 - Workflow gates apply to implicit roles. A blocked planner cannot start a reducer or receive its inputs until the gate passes.
 
 - **Tool surface fixes:** a ```` ```repl ```` block in an ordinary assistant reply is now shown as text and never executed (only a recursive `rlm` turn runs its fenced Python); the `lsp` tool accepts `include_warnings` for `diagnostics`/`read_lints`, lets `symbols` with a `query` omit `path` to search session language servers in a stable order with shared result bounds, and can run in parallel with other reads; `remember` reports why a proposal was rejected or could not be stored and adds `action: "list"` to look up current notes for a correction, without initializing an absent store, checking workspace freshness and applying the limit only to eligible notes; the `diagnostics` tool runs its git/toolchain probes off the async runtime; and resuming a crashed session preserves signed thinking and interrupted turn boundaries during tool-history repair.

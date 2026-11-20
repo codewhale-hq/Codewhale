@@ -19,30 +19,29 @@ Implementation sources:
 
 ## Default-active contract
 
-The 0.10.3 source candidate starts new turns with fourteen eager native names
+The 0.10.3 source candidate starts new turns with twelve eager native names
 plus synthetic `tool_search`. This is the current source contract, not a
 claim about the published v0.10.2 release.
 
 1. `read`
 2. `write`
 3. `edit`
-4. `file_search`
-5. `grep_files`
-6. `bash`
-7. `agent`
-8. `todo_write`
-9. `create_goal`
-10. `get_goal`
-11. `update_goal`
-12. `task_shell_wait`
-13. `present`
-14. `load_skill`
-15. `tool_search` (synthetic, always active)
+4. `list_dir`
+5. `file_search`
+6. `grep_files`
+7. `bash`
+8. `agent`
+9. `todo_write`
+10. `create_goal`
+11. `present`
+12. `load_skill`
+13. `tool_search` (synthetic, always active)
 
-The fourteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The twelve native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/engine/src/core/engine/tool_catalog.rs`. An authority boundary may
 remove `agent` at the maximum child depth, and Plan registers only the
-foreground shell surface (so no `task_shell_wait`). Route size alone must not
+foreground shell surface. `get_goal`, `update_goal` and `task_shell_wait`
+activate on demand once a goal or background shell exists. Route size alone must not
 change this core vocabulary. `workflow`, `context_archive_get` and
 `context_archive_search` remain available through `tool_search` when policy
 permits; they are no longer eager names.
@@ -304,8 +303,8 @@ loaded through `tool_search` when needed.
 
 `bash` runs one cancellable foreground command. It does not carry background,
 TTY, wait, interact, or cancel action fields. Stateful process and terminal
-control stays out of the shell schema: `task_shell_wait` is eager for the
-background jobs `bash` starts, while interactive terminal control remains
+control stays out of the shell schema: `task_shell_wait` activates once
+`bash` starts a background job, while interactive terminal control remains
 deferred behind `tool_search`; neither enlarges the first-turn shell schema.
 
 Use `tasks` when the work itself needs a durable lifecycle, structured gates,

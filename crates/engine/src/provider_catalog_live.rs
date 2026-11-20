@@ -151,11 +151,10 @@ pub fn record_inventory_error(
         && let Some(fence) =
             fences.get_mut(&storage_provider(ticket.provider_kind, &ticket.provider))
         && fence.generation == ticket.generation
+        && fence.error != error
     {
-        if fence.error != error {
-            fence.error = error;
-            fence.revision.fetch_add(2, Ordering::SeqCst);
-        }
+        fence.error = error;
+        fence.revision.fetch_add(2, Ordering::SeqCst);
     }
 }
 

@@ -317,6 +317,7 @@ pub(super) struct PluginUiSlotResponse {
     pub(super) revision: String,
 }
 
+#[derive(Debug)]
 enum UiFileError {
     Missing,
     TooLarge,

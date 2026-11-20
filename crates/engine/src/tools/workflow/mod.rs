@@ -4061,9 +4061,13 @@ impl SubAgentWorkflowDriver {
         state: Arc<WorkflowWorkspaceState>,
         total_budget: Option<u64>,
         fleet: WorkflowFleetBinding,
-        gate_specs: Vec<GateSpec>,
+        mut gate_specs: Vec<GateSpec>,
         workspace: PathBuf,
     ) -> Arc<Self> {
+        for spec in &mut gate_specs {
+            spec.role = public_role_label(&spec.role);
+            spec.blocks_role = spec.blocks_role.as_deref().map(public_role_label);
+        }
         let fleet_name = fleet.name();
         let workflow_cfg = workflow_config_for(&runtime);
         let parent_cancel_token = runtime.cancel_token.clone();
@@ -10855,7 +10859,7 @@ reviewer = "reviewer"
             on: GateOn::RoleComplete,
             gate: GateKind::Review,
             on_fail: codewhale_workflow::GateOnFail::Block,
-            blocks_role: Some("test".to_string()),
+            blocks_role: Some("verifier".to_string()),
             max_retries: 0,
             artifact_kind: Some("review_report".to_string()),
             require_explicit_verdict: true,
