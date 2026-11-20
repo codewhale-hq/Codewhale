@@ -4493,4 +4493,60 @@ mod tests {
         );
         assert!(right_edge.contains(&"#"), "{right_edge:?}");
     }
+
+    #[test]
+    fn fleet_tab_badges_and_never_claims_empty_after_midturn_agent_completion() {
+        use crate::tui::subagent_routing::{
+            apply_subagent_terminal_projection, upsert_roster_spawn, upsert_roster_terminal,
+        };
+
+        let mut app = app();
+        app.work_surface.placement = WorkSurfacePlacement::Bottom;
+        app.work_surface.effective_placement = WorkSurfacePlacement::Bottom;
+        app.set_current_session_id(Some(SESSION.to_string()));
+
+        for (id, name, status) in [
+            ("agent_one", "scout", SubAgentStatus::Completed),
+            ("agent_two", "reviewer", SubAgentStatus::Cancelled),
+        ] {
+            app.agent_progress
+                .insert(id.to_string(), "working".to_string());
+            upsert_roster_spawn(
+                &mut app,
+                SESSION,
+                id,
+                "inspect crate",
+                Some(AgentWorkerStatus::Running),
+                None,
+                "gemini-4-hydrogen",
+                Some(name),
+            );
+            super::model::resolve_view(&mut app);
+            assert_eq!(app.work_surface.panel, super::RailPanel::Agents);
+            upsert_roster_terminal(
+                &mut app,
+                SESSION,
+                id,
+                Some(&status),
+                "finished",
+                None,
+                None,
+                Some(name),
+                Some(5_000),
+            );
+            apply_subagent_terminal_projection(&mut app, id, status, Some("finished".to_string()));
+        }
+
+        assert!(app.subagent_cache.is_empty());
+        assert!(app.agent_progress.is_empty());
+        assert!(super::height(&mut app, 100, 30, AMPLE_BUDGET) > 0);
+        let text = render_text(&mut app, 100, 8);
+        assert!(text.contains("Fleet 2"), "{text}");
+        assert!(text.contains("scout"), "{text}");
+        assert!(text.contains("reviewer"), "{text}");
+        assert!(
+            !text.to_ascii_lowercase().contains("no agents have run"),
+            "{text}"
+        );
+    }
 }
