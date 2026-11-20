@@ -3125,14 +3125,14 @@ fn validate_runtime_gates(gates: &mut [GateSpec]) -> Result<(), ToolError> {
                 "Workflow gates require non-empty, unique ids",
             ));
         }
-        gate.role = gate.role.trim().to_lowercase();
+        gate.role = public_role_label(&gate.role).to_lowercase();
         if gate.role.is_empty() {
             return Err(ToolError::invalid_input(
                 "Workflow gate role must not be empty",
             ));
         }
         if let Some(role) = gate.blocks_role.as_mut() {
-            *role = role.trim().to_lowercase();
+            *role = public_role_label(role).to_lowercase();
             if role.is_empty() {
                 return Err(ToolError::invalid_input(
                     "Workflow gate blocks_role must not be empty",
@@ -3185,7 +3185,9 @@ fn validate_gate_phase_order(spec: &WorkflowSpec) -> Result<(), ToolError> {
             match node {
                 WorkflowNode::Leaf(leaf) if leaf.profile.is_none() => {
                     let role = leaf.role.as_ref()?;
-                    first.entry(role.trim().to_lowercase()).or_insert(order);
+                    first
+                        .entry(public_role_label(role).to_lowercase())
+                        .or_insert(order);
                     order += 1;
                 }
                 WorkflowNode::Sequence(sequence) => {
@@ -13782,8 +13784,12 @@ FINAL RECEIPT
         let mut gates: Vec<GateSpec> = serde_json::from_value(json!([gate])).expect("gates");
         validate_runtime_gates(&mut gates).expect("normalize gate");
         assert_eq!(gates[0].id, "check");
-        assert_eq!(gates[0].role, "scout");
+        assert_eq!(gates[0].role, "explore");
         assert_eq!(gates[0].blocks_role.as_deref(), Some("reviewer"));
+        let mut custom = gates.clone();
+        custom[0].role = " Release_Lead ".to_string();
+        validate_runtime_gates(&mut custom).expect("custom gate role");
+        assert_eq!(custom[0].role, "release_lead");
         let mut duplicate = vec![gates[0].clone(), gates[0].clone()];
         assert!(validate_runtime_gates(&mut duplicate).is_err());
         for (field, value) in [
@@ -13813,14 +13819,14 @@ FINAL RECEIPT
         for needle in ["`v1`", "blocks_role", "`implement`"] {
             assert!(message.contains(needle), "{message}");
         }
-        gates[0].blocks_role = Some(" Implement ".to_string());
+        gates[0].blocks_role = Some(" Implementer ".to_string());
         assert!(validate_runtime_gates(&mut gates).is_err());
         gates[0].blocks_role = Some("verify".to_string());
         validate_runtime_gates(&mut gates).expect("blocking a later role stays valid");
         let mut reverse = gates[0].clone();
         reverse.id = "reverse".to_string();
-        reverse.role = "verify".to_string();
-        reverse.blocks_role = Some("implement".to_string());
+        reverse.role = "verifier".to_string();
+        reverse.blocks_role = Some("builder".to_string());
         gates.push(reverse);
         assert!(
             validate_runtime_gates(&mut gates)
@@ -13831,7 +13837,7 @@ FINAL RECEIPT
         let mut board = LaneGateBoard::new("cycle");
         board.install_gates(&gates);
         assert!(board.role_is_blocked(&gates, "implement").is_some());
-        assert!(board.role_is_blocked(&gates, "verify").is_some());
+        assert!(board.role_is_blocked(&gates, "test").is_some());
         gates.pop();
         for backward in [false, true] {
             let mut phases = vec![
