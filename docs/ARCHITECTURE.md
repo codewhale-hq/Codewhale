@@ -20,7 +20,7 @@ boundary has held since v0.9.1):
 <img src="assets/architecture.webp" alt="Codewhale architecture: clients reach the one turn loop, Engine::run_turn, through the CLI or the Runtime API; the engine uses crates/core to build requests, runs tools under approval and sandbox policy, routes to any provider through crates/config, and logs everything model-visible to the session store." width="1000">
 
 The diagram draws the Runtime API and the task manager as their own boxes; today
-both are hosted inside `crates/tui`, as the note above says. The GPUI desktop
+both are hosted inside `crates/tui`, as the note above says. The desktop
 app and the VS Code extension live outside this repository. The arrow from the
 engine to the session log follows the "model-visible means logged" contract
 rather than a traced write path.
@@ -120,6 +120,9 @@ rather than a traced write path.
 - **`settings.rs`** - Runtime settings management
 
 ### Workspace Crates
+
+The complete list, generated from the manifests, is in
+[Workspace crates](reference/crates.md). The notes below explain the main ones.
 
 - **`crates/cli`** - The canonical `codewhale` executable and command interface.
   It owns commands such as `auth`, `metrics` and `update`, and invokes terminal
