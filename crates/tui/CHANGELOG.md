@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TUI keeps per-workspace plugin commands and requires saved rules for always-allowed receipts:** listing another workspace's plugin commands no longer evicts the first workspace's cached plugin command sources on subsequent reads, and the `Always allowed in this repo` approval receipt is now emitted only when persisting the permission rule to disk succeeds.
 - **Cached toolbox tools obey the schema budget and `execute_tools` bounds escaped string returns:** `tool_search` now runs already-cached tools through the same protected-set budget check as newly admitted ones (without double-counting pinned tools or reporting retained tools as held), and `execute_tools` string truncation now measures JSON-encoded byte length so escape-heavy strings cannot exceed the 16 KiB return cap.
 
 ## [0.10.3] - 2026-11-18

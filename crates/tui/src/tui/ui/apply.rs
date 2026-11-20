@@ -3699,14 +3699,12 @@ pub(crate) async fn apply_approval_decision(
             .insert(event.approval_grouping_key.clone());
     }
 
-    if matches!(
+    let rules_persisted = matches!(
         event.decision,
         ReviewDecision::Approved | ReviewDecision::ApprovedForSession
     ) && !event.persistent_rules.is_empty()
         && !event.timed_out
-    {
-        persist_rules_from_approval(app, config, &event.persistent_rules);
-    }
+        && persist_rules_from_approval(app, config, &event.persistent_rules);
 
     if event.decision == ReviewDecision::Denied && !event.timed_out {
         app.approval_session_denied.insert(event.approval_key);
@@ -3720,6 +3718,7 @@ pub(crate) async fn apply_approval_decision(
         && let Some(subject) = event.subject
     {
         let (outcome, receipt_subject) = if event.decision == ReviewDecision::Approved
+            && rules_persisted
             && event
                 .persistent_rules
                 .iter()
