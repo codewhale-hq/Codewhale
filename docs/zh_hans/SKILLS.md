@@ -174,7 +174,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ### 目录夹具矩阵（无需提供商）
 
-[`crates/tui/assets/skills-catalog-matrix.json`](../../crates/tui/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/skills/src/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
+[`crates/skills/assets/skills-catalog-matrix.json`](../../crates/skills/assets/skills-catalog-matrix.json) 是一张**编写**的期望表，覆盖每个内置 skill：规范名称、层级、调用、别名、是否渲染为环境目录条目，以及它的哪些别名被另一个规范名称遮蔽。`crates/skills/src/catalog_matrix.rs` 中的测试断言该夹具与 `BUNDLED_SKILLS` 之间存在一一对应，因此随附包不能在没有显式夹具更新的情况下改变。
 
 这些测试断言什么、不断言什么：
 

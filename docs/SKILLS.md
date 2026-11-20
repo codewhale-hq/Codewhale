@@ -244,7 +244,7 @@ still enters context only through `load_skill`.
 
 ### Catalog fixture matrix (provider-free)
 
-[`crates/tui/assets/skills-catalog-matrix.json`](../crates/tui/assets/skills-catalog-matrix.json)
+[`crates/skills/assets/skills-catalog-matrix.json`](../crates/skills/assets/skills-catalog-matrix.json)
 is an **authored** expectation table covering every bundled skill: canonical
 name, tier, invocation, aliases, whether it renders as an ambient catalogue
 entry, and which of its aliases are shadowed by another canonical name. The
