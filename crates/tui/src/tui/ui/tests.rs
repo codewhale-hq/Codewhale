@@ -1266,6 +1266,34 @@ fn shift_tab_cycles_permission_from_every_shell_surface() {
 }
 
 #[test]
+fn second_shift_tab_does_not_cycle_permissions_over_a_pending_approval() {
+    let mut app = focus_test_app();
+    app.view_stack.push(ApprovalView::new(ApprovalRequest::new(
+        "approval-permissions",
+        "read_file",
+        "Read a file",
+        &serde_json::json!({"path": "notes.md"}),
+        "approval-permissions-key",
+    )));
+    app.view_stack
+        .push(ConfigView::open_permission_choices(&app));
+    for key in [
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+    ] {
+        assert_eq!(shell_binding_for_key(&app, &key), None);
+    }
+    let _ = app.view_stack.pop();
+    let _ = app.view_stack.pop();
+    app.view_stack.push(ConfigView::new_for_app(&app));
+    let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+    assert_eq!(
+        shell_binding_for_key(&app, &key),
+        Some(ShellBindingId::PermissionCycle)
+    );
+}
+
+#[test]
 fn focus_owner_follows_the_surface_that_owns_the_keys() {
     let mut app = focus_test_app();
     assert_eq!(app.focus(), Focus::Composer);

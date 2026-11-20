@@ -761,7 +761,12 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
 /// `view_stack`, `launch.visible`, or — the bug this replaces — whether the
 /// composer happens to hold text.
 pub(crate) fn shell_binding_for_key(app: &App, key: &KeyEvent) -> Option<ShellBindingId> {
-    crate::tui::shell_key_routing::route(app.focus(), key)
+    let focus = app.focus();
+    crate::tui::shell_key_routing::route(focus, key).filter(|binding| {
+        !(*binding == ShellBindingId::PermissionCycle
+            && focus == crate::tui::shell_key_routing::Focus::Modal(ModalKind::Config)
+            && app.view_stack.contains_kind(ModalKind::Approval))
+    })
 }
 
 /// What pressing Tab did — see [`dispatch_tab_key`].
