@@ -855,4 +855,103 @@ mod tests {
         }
         assert_eq!(app.input, payload);
     }
+
+    /// Drive a raw (non-bracketed) paste one key event per character and
+    /// commit every chunk the burst machinery hands back. Mirrors what the
+    /// event loop does: intermediate chunks arrive as `insert_str`, and the
+    /// final flush is either a first `Paste` or the tail of a `TextContinuation`.
+    fn feed_raw_paste(app: &mut App, payload: &str) {
+        let mut now = Instant::now();
+        for ch in payload.chars() {
+            now += Duration::from_micros(100);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(app, &key, now),
+                "raw paste character {ch:?} must be handled by paste-burst detection"
+            );
+        }
+        let flush_at =
+            now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
+        match app.paste_burst.flush_if_due(flush_at) {
+            codewhale_tui_kit::paste_burst::FlushResult::Paste(rest)
+            | codewhale_tui_kit::paste_burst::FlushResult::TextContinuation(rest) => {
+                app.insert_str(&rest);
+            }
+            _ => {}
+        }
+    }
+
+    /// #7403: the raw path caps each buffered chunk at
+    /// `PASTE_BURST_MAX_BYTES` (64 KiB) and flushes the chunk into the
+    /// composer before buffering continues. The cap is therefore a chunk
+    /// size, never a data limit — a paste four times the cap must land
+    /// whole.
+    ///
+    /// The payload mixes ASCII, CJK and an astral-plane emoji so a byte cap
+    /// can never be mistaken for a char cap: a dropped tail shows up as a
+    /// shorter `input` whatever the encoding, and a byte/char mix-up in the
+    /// cursor bookkeeping shows up in `cursor_position`.
+    #[test]
+    fn raw_paste_of_a_quarter_mib_lands_complete_in_the_composer() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let line = "cw-7403-漢字-🐳-paste-line\n";
+        let payload = line.repeat(11_000);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(
+            app.input.len(),
+            payload.len(),
+            "a >64 KiB raw paste must not lose a single byte"
+        );
+        assert_eq!(app.input, payload);
+        assert_eq!(
+            app.cursor_position,
+            payload.chars().count(),
+            "the cursor must land at the end of the whole paste"
+        );
+    }
+
+    /// #7403 acceptance: the bracketed path (`Event::Paste` →
+    /// `insert_paste_text`) and the raw path (one key event per character)
+    /// must deliver identical text for the same oversized payload. Chunking
+    /// is an internal detail of the burst fallback; it must never make one
+    /// path preserve less than the other.
+    #[test]
+    fn bracketed_and_raw_paths_agree_on_a_quarter_mib_payload() {
+        let payload = "cw-7403-漢字-🐳-line\n".repeat(11_000);
+        assert!(payload.len() > 256 * 1024);
+
+        let mut bracketed = test_app();
+        bracketed.insert_paste_text(&payload);
+
+        let mut raw = test_app();
+        raw.use_paste_burst_detection = true;
+        raw.bracketed_paste_seen = false;
+        raw.bracketed_paste_trusted = false;
+        feed_raw_paste(&mut raw, &payload);
+
+        assert_eq!(
+            bracketed.input, payload,
+            "the bracketed path must be lossless"
+        );
+        assert_eq!(raw.input, payload, "the raw path must be lossless");
+        assert_eq!(
+            raw.input, bracketed.input,
+            "both paste paths must deliver identical text"
+        );
+    }
 }
