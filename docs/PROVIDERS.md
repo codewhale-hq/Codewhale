@@ -71,6 +71,7 @@ against the vendor's own docs before trusting any value here:
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
+| LLMTR | `https://llmtr.com/v1` | `minimax/minimax-m3.1-flash`; namespaced `vendor/model` ids, including `llmtr/` hosts | `LLMTR_API_KEY` |
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
 Tinker in `/provider` or configure the named route below. Its documented
@@ -159,6 +160,8 @@ pick the route per request; a `provider/model` id such as
 providers' rates with no markup. The authority is
 `GET https://api.opper.ai/v3/compat/models` with your key.
 Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
+
+LLMTR is an OpenAI-compatible gateway. Model ids are namespaced `vendor/model` ids such as `minimax/minimax-m3.1-flash`; ids under `llmtr/` are hosted in Turkey, and other vendor/model ids route to their vendors. The authority is `GET https://llmtr.com/v1/models` with your key. Create a key at <https://llmtr.com/dashboard/keys>.
 
 Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
 `tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.
