@@ -339,7 +339,7 @@ fn spawn_cargo_in_shell_manager(
             "cargo is not installed or not in PATH",
         ));
     };
-    let shell_command = render_cargo_shell_command(&cargo, args)?;
+    let command = format!("{cargo} {args:?}");
     let cwd = workspace.display().to_string();
     let mut env = HashMap::new();
     crate::tools::shell::insert_agent_mark_env(&mut env, context);
@@ -349,7 +349,8 @@ fn spawn_cargo_in_shell_manager(
         .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
     let spawned = manager
         .execute_with_options_env_for_owner_and_work(
-            &shell_command,
+            &command,
+            Some((&cargo, args)),
             Some(&cwd),
             BACKGROUND_TESTS_TIMEOUT_MS,
             true,
@@ -597,32 +598,6 @@ async fn run_cargo_with_auto_background(
         let remaining = deadline.saturating_duration_since(Instant::now());
         tokio::time::sleep(remaining.min(Duration::from_millis(poll_ms))).await;
         poll_ms = (poll_ms * 2).min(FOREGROUND_POLL_MAX_MS);
-    }
-}
-
-fn render_cargo_shell_command(cargo: &str, args: &[String]) -> Result<String, ToolError> {
-    #[cfg(windows)]
-    {
-        let _ = cargo;
-        let mut parts = vec!["cargo".to_string()];
-        for arg in args {
-            if arg.is_empty()
-                || arg
-                    .bytes()
-                    .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'\'' | b'$' | b'`'))
-            {
-                parts.push(format!("'{}'", arg.replace('\'', "''")));
-            } else {
-                parts.push(arg.clone());
-            }
-        }
-        Ok(parts.join(" "))
-    }
-    #[cfg(not(windows))]
-    {
-        shlex::try_join(std::iter::once(cargo).chain(args.iter().map(String::as_str))).map_err(
-            |err| ToolError::execution_failed(format!("failed to render cargo command: {err}")),
-        )
     }
 }
 

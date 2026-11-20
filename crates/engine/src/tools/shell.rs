@@ -2470,6 +2470,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2506,6 +2507,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2542,6 +2544,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2565,6 +2568,7 @@ impl ShellManager {
     pub(super) fn execute_with_options_env_for_owner_and_work(
         &mut self,
         command: &str,
+        program_args: Option<(&str, &[String])>,
         working_dir: Option<&str>,
         timeout_ms: u64,
         background: bool,
@@ -2596,7 +2600,18 @@ impl ShellManager {
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
 
         // Create command spec and prepare sandboxed environment
-        let spec = if let Some(workspace) = readonly_workspace {
+        let spec = if let Some((program, args)) = program_args {
+            anyhow::ensure!(
+                readonly_workspace.is_none(),
+                "explicit argv cannot use shell read-only validation"
+            );
+            CommandSpec::program(
+                program,
+                args.to_vec(),
+                work_dir.clone(),
+                Duration::from_millis(timeout_ms),
+            )
+        } else if let Some(workspace) = readonly_workspace {
             if readonly_command_needs_shell(command) {
                 let script = hardened_readonly_script(command, workspace)?;
                 CommandSpec::shell(&script, work_dir.clone(), Duration::from_millis(timeout_ms))
@@ -5641,6 +5656,7 @@ async fn execute_foreground_via_background(
         let lifecycle = shell_work_lifecycle_from_context(context);
         let spawned = manager.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir.as_deref(),
             spawn_timeout_ms,
             true,
@@ -7210,6 +7226,7 @@ impl ToolSpec for BashTool {
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             let result = manager.execute_with_options_env_for_owner_and_work(
                 command,
+                None,
                 working_dir.as_deref(),
                 timeout_value_ms,
                 true,
