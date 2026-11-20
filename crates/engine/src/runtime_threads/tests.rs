@@ -16032,6 +16032,7 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
     const RESULT_SECRET: &str = "dynamic-result-secret";
     let executor = manager.clone();
     let executor_thread_id = thread.id.clone();
+    let mut events = manager.subscribe_events();
     let execution = tokio::spawn(async move {
         DynamicToolExecutor::execute_dynamic_tool(
             &executor,
@@ -16043,18 +16044,25 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
         .await
     });
 
-    let pending = tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
-            let detail = manager.get_thread_detail(&thread.id).await?;
-            if let Some(call) = detail.pending_dynamic_tool_calls.first() {
-                break Ok::<_, anyhow::Error>((detail.latest_seq, call.clone()));
+            let event = events.recv().await?;
+            if event.event == "tool_call.requested"
+                && event.thread_id == thread.id
+                && event.turn_id.as_deref() == Some(turn.id.as_str())
+            {
+                return Ok::<_, anyhow::Error>(());
             }
-            sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .context("dynamic tool call did not reach the canonical snapshot")??;
-    let (snapshot_seq, call) = pending;
+    .context("dynamic tool request event did not arrive")??;
+    let detail = manager.get_thread_detail(&thread.id).await?;
+    let snapshot_seq = detail.latest_seq;
+    let call = detail
+        .pending_dynamic_tool_calls
+        .first()
+        .context("durable dynamic tool request is missing from the canonical snapshot")?;
     assert_eq!(call.thread_id, thread.id);
     assert_eq!(call.turn_id, turn.id);
     assert_eq!(call.namespace.as_deref(), Some("bench"));
