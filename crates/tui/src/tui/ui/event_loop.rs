@@ -1036,6 +1036,7 @@ pub async fn run_tui(
     // can undo it. Not in `lib.rs`: this must not run for the non-TUI
     // subcommands.
     job_control_guard::install_job_control_guard();
+    let _ = take_terminal_restored_by_panic();
 
     // This sets local terminal attributes; it is not a terminal-response probe.
     // Do it on the owning thread, as on resume, so blocking-pool scheduling
@@ -2261,6 +2262,23 @@ pub(crate) async fn run_event_loop(
             // `resume_after_child_terminal`, and calling the latter here would
             // falsely clear a child's gate.
             app.status_message = Some("Resumed after suspend".to_string());
+            app.needs_redraw = true;
+            terminal_repaint = FrameRepaint::Clear;
+        }
+
+        if rearm_terminal_if_restored_by_panic(
+            event_broker.is_paused(),
+            || require_foreground_terminal_owner().is_ok(),
+            || {
+                resume_terminal(
+                    terminal,
+                    app.use_alt_screen(),
+                    app.use_mouse_capture,
+                    app.use_bracketed_paste,
+                    app.synchronized_output_enabled,
+                )
+            },
+        )? {
             app.needs_redraw = true;
             terminal_repaint = FrameRepaint::Clear;
         }
