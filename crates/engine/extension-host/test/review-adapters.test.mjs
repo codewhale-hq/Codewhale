@@ -15,6 +15,7 @@ const params=id=>({owner,execution_id:id,ticket:'opaque-core-execution-grant',de
 const part={number:1,diff_fingerprint:'sha256:'+'a'.repeat(64),diff_chars:42,file_count:1,files:['a/x b/x']}
 const manifest={base_sha:'b'.repeat(40),head_sha:'a'.repeat(40),diff_fingerprint:'sha256:'+'c'.repeat(64),diff_chars:42,file_count:1,binary_file_patches:0,binary_contents_semantically_inspected:false,max_chars_per_pass:40000,passes:[part],skipped_files:[]}
 const passInput=()=>({number:7,view:{title:'untrusted title',body:'untrusted body'},manifest,pass:part,diff:'diff --git a/x b/x\n+END\n',context:{files:[{path:'x',source:'漢字e\u0301',head_sha:manifest.head_sha}],limit:64},sort_keys:true})
+const callerGuidance = 'If the prompt omits relevant caller bodies and read-only tools are offered, inspect those callers with the tools. Anchor findings to the commentable diff and scope coverage claims to the pass manifest.'
 const sorted=value=>Array.isArray(value)?value.map(sorted):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,value])=>[key,sorted(value)])):value
 const envelopeBytes=value=>8+Buffer.byteLength(`{"jsonrpc":"2.0","id":18446744073709551615,"result":${JSON.stringify(value)}}`)
 
@@ -32,6 +33,7 @@ test('complete pass preserves exact Core manifest, source provenance and seriali
  assert.deepEqual(parsed.manifest,input.manifest);assert.deepEqual(parsed.pass,input.pass);assert.deepEqual(parsed.repository_context,input.context)
  assert.deepEqual(parsed.pull_request,{number:7,title:input.view.title,description:input.view.body});assert.equal(parsed.diff,input.diff)
  assert.equal(parsed.untrusted_repository_data,true);assert.ok(parsed.task.includes('No build or tests have been run.'))
+ assert.ok(parsed.task.includes(callerGuidance))
  assert.equal(content,JSON.stringify(sorted(parsed)))
  input.sort_keys=false;const preserved=transform('review_pass_prompt',input).result.content
  assert.ok(preserved.startsWith('{"task":'));assert.deepEqual(JSON.parse(preserved),parsed)
@@ -40,6 +42,7 @@ test('partial pass explicitly carries every unread file and never invents full c
  const input=passInput();input.manifest={...manifest,skipped_files:[{file:'a/unread b/unread',chars:30000,reason:'beyond the max_passes budget'}]};input.context=null
  const parsed=JSON.parse(transform('review_pass_prompt',input).result.content)
  assert.ok(parsed.task.includes('partial review (pass 1 of 1)'));assert.ok(parsed.task.includes('a/unread b/unread (30000 chars; beyond the max_passes budget)'));assert.ok(parsed.task.includes('Do not claim full coverage.'))
+ assert.ok(parsed.task.includes(callerGuidance))
  assert.equal(parsed.repository_context,null);assert.deepEqual(parsed.manifest,input.manifest)
 })
 test('complete captured review larger than one MiB is accepted with the final patch intact',()=>{
