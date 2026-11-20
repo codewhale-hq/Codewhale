@@ -1017,9 +1017,9 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
     ] {
         let workspace = tempdir().expect("tempdir");
         let marker = workspace.path().join("nested-round-ran");
+        let path = marker.display().to_string();
         let nested = format!(
-            "```repl\nopen({:?}, 'w').write('x')\nFINAL('nested done')\n```",
-            marker.display().to_string()
+            "```repl\ntry:\n    open({path:?}, 'w').write('x')\nexcept PermissionError:\n    FINAL('fixture write refused')\nelse:\n    FINAL('nested done')\n```"
         );
         let rlm = crate::tools::rlm::RLM_TOOL_NAME;
         let mock = std::sync::Arc::new(MockLlmClient::new(vec![
@@ -1142,20 +1142,31 @@ async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
             .await
             .expect("turn deadline")
             .expect("turn task");
-        assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-        assert_eq!(marker.exists(), should_run, "mode={approval:?}");
+        assert_eq!(
+            status,
+            TurnOutcomeStatus::Completed,
+            "mode={approval:?}, read_only={read_only}, should_run={should_run}, {error:?}"
+        );
+        assert_eq!(
+            marker.exists(),
+            should_run,
+            "mode={approval:?}, read_only={read_only}"
+        );
         if approval != ApprovalMode::Suggest {
             let mut rx = handle.rx_event.write().await;
             assert!(
                 !std::iter::from_fn(|| rx.try_recv().ok())
                     .any(|event| matches!(event, Event::ApprovalRequired { .. }))
             );
-            if !read_only {
-                assert_eq!(
-                    mock.remaining_turns(),
-                    0,
-                    "the recursive reply must reach the gate"
-                );
+            assert_eq!(
+                mock.remaining_turns(),
+                0,
+                "the recursive reply must reach the gate"
+            );
+            if read_only {
+                assert!(mock.captured_requests().iter().flat_map(|request| &request.messages)
+                    .flat_map(|message| &message.content).any(|block| matches!(block, ContentBlock::ToolResult { content, .. } if content.contains("fixture write refused"))),
+                    "the read-only child kernel must report refusing the attempted write");
             }
         }
     }
