@@ -58,7 +58,6 @@ MUST_SWEEP = (".gitattributes", "scripts/command-migration-topology.json", "docs
 GENERATED_BY_DERIVE_FACTS = (
     "web/lib/facts.generated.ts",
     "web/data/features.generated.json",
-    "web/data/agent-docs.generated.json",
 )
 BUILTIN_STD = {"crate", "self", "super", "std", "core", "alloc", "Self"}
 
