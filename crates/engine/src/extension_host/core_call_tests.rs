@@ -5271,9 +5271,9 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
 
     let _grants = TestGrants::only(&[DshService::Workspace, DshService::Catalog]);
     let mut f = fixture(true);
-    let temp = tempfile::tempdir().unwrap();
-    let workspace = temp.path().join("workspace");
-    let user_plugins = temp.path().join("plugins");
+    let temp = crate::test_support::test_scratch_dir("catalog");
+    let workspace = temp.join("workspace");
+    let user_plugins = temp.join("plugins");
     std::fs::create_dir_all(&workspace).unwrap();
     let bundle = |name: &str, extension: Value| {
         let dir = user_plugins.join(name);
@@ -5307,7 +5307,7 @@ async fn dsh_catalog_arm_plans_reviewed_installs_approved_routes_and_a_keyless_b
         user_plugins_dir: user_plugins.clone(),
         workspace_plugins_dir: workspace.join(".codewhale/plugins"),
         builtin_plugin_dirs: Vec::new(),
-        state_path: temp.path().join("state/plugins.json"),
+        state_path: temp.join("state/plugins.json"),
     };
     let mut reviewed = discover_with_config(&discovery);
     reviewed.trust("route-demo").unwrap();
