@@ -25,13 +25,13 @@ use codewhale_plugins::host_services::{
 const HOST: u64 = 7;
 
 struct Plugins {
-    _temp: tempfile::TempDir,
+    _temp: codewhale_plugins::test_fixture::PluginTempDir,
     config: DiscoveryConfig,
 }
 
 impl Plugins {
     fn new(plugins: &[(&str, &[&str])]) -> Self {
-        let temp = tempfile::tempdir_in(crate::test_support::test_scratch_root()).unwrap();
+        let temp = codewhale_plugins::test_fixture::PluginTempDir::new().unwrap();
         let root = temp.path();
         let config = DiscoveryConfig {
             workspace: root.join("project"),
