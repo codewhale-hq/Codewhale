@@ -7,7 +7,8 @@
 //! Known limits: a slow editor no longer slows a turn, because updates queue
 //! (SDK queue, then 256 frames of up to 8 MiB each) and memory is bounded only
 //! by what one turn emits; `$/cancel_request` for a running `session/prompt` is
-//! not honored (only `session/cancel` is).
+//! not honored (only `session/cancel` is). Requested file arguments carry no
+//! verified full preimage, so live approvals and replay omit structured diffs.
 use agent_client_protocol::Error as SdkError;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
@@ -938,9 +939,15 @@ fn tool_call_title(call: &PendingToolCall) -> String {
         .or_else(|| call.input.get("pattern"))
         .or_else(|| call.input.get("task_id"))
         .and_then(Value::as_str);
+    let action = if call.name == "File" {
+        call.input.get("action").and_then(Value::as_str)
+    } else {
+        None
+    };
+    let name = action.map_or_else(|| call.name.clone(), |action| format!("File {action}"));
     match detail {
-        Some(detail) => format!("{}: {}", call.name, detail),
-        None => call.name.clone(),
+        Some(detail) => format!("{name}: {detail}"),
+        None => name,
     }
 }
 
@@ -977,13 +984,8 @@ fn tool_call_location(call: &PendingToolCall, workspace: &Path) -> Option<PathBu
     })
 }
 
-fn tool_call_requested_diffs(call: &PendingToolCall, workspace: &Path) -> Vec<acp::Diff> {
-    if tool_call_kind(call) != acp::ToolKind::Edit {
-        return Vec::new();
-    }
-    tool_call_location(call, workspace)
-        .map(|path| tool_call_diffs(call, &path))
-        .unwrap_or_default()
+fn tool_call_requested_diffs(_call: &PendingToolCall, _workspace: &Path) -> Vec<acp::Diff> {
+    Vec::new()
 }
 
 fn external_locations(value: &Value) -> Option<Vec<acp::ToolCallLocation>> {
@@ -1030,52 +1032,6 @@ fn tool_call_start(
         );
     }
     start.raw_input((!call.input.is_null()).then(|| call.input.clone()))
-}
-
-fn tool_call_diffs(call: &PendingToolCall, path: &Path) -> Vec<acp::Diff> {
-    let text = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|key| call.input.get(*key).and_then(Value::as_str))
-    };
-    if let Some(content) = text(&["content"]) {
-        return vec![acp::Diff::new(path, content)];
-    }
-    // The model-facing edit contract is edits[] = {oldText, newText}, which may
-    // also arrive as a JSON-encoded string.
-    let edits = call
-        .input
-        .get("edits")
-        .and_then(|value| match value {
-            Value::String(encoded) => serde_json::from_str::<Value>(encoded).ok(),
-            _ => Some(value.clone()),
-        })
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default();
-    let diffs: Vec<acp::Diff> = edits
-        .iter()
-        .filter_map(|edit| {
-            let old = edit.get("oldText").and_then(Value::as_str)?;
-            let new = edit.get("newText").and_then(Value::as_str)?;
-            Some(acp::Diff::new(path.to_path_buf(), new).old_text(old.to_string()))
-        })
-        .collect();
-    if !diffs.is_empty() {
-        return diffs;
-    }
-    let (Some(search), Some(replace)) = (
-        text(&["search", "old_string", "old_str", "oldText", "old_text"]),
-        text(&[
-            "replace",
-            "new_string",
-            "new_str",
-            "newText",
-            "new_text",
-            "replacement",
-        ]),
-    ) else {
-        return Vec::new();
-    };
-    vec![acp::Diff::new(path, replace).old_text(search.to_string())]
 }
 
 fn tool_call_update(
@@ -2026,15 +1982,18 @@ mod tests {
     }
 
     #[test]
-    fn file_tool_start_names_absolute_location_and_requested_diff() {
-        let workspace = Path::new("/work/repo");
+    fn file_tool_start_preserves_requests_without_speculative_diffs() {
+        let directory = tempfile::tempdir().expect("workspace");
+        let workspace = directory.path();
+        std::fs::create_dir(workspace.join("src")).expect("source directory");
+        std::fs::write(workspace.join("src/lib.rs"), "prefix a middle c suffix")
+            .expect("existing file");
         let at = |rel: &str| {
             codewhale_engine::tools::spec::normalize_path(&workspace.join(rel))
                 .to_string_lossy()
                 .into_owned()
         };
-        let abs_new =
-            codewhale_engine::tools::spec::normalize_path(&std::env::temp_dir().join("new.txt"));
+        let abs_new = codewhale_engine::tools::spec::normalize_path(&workspace.join("src/lib.rs"));
         let abs_new_str = abs_new.to_string_lossy().into_owned();
         let start = |name: &str, input: Value| {
             to_wire(&tool_call_start(
@@ -2053,18 +2012,13 @@ mod tests {
             json!({"action": "edit", "path": "src/lib.rs", "old_string": "a", "new_string": "b"}),
         );
         assert_eq!(edit["locations"], json!([{"path": at("src/lib.rs")}]));
-        assert_eq!(
-            edit["content"],
-            json!([{"type": "diff", "path": at("src/lib.rs"), "oldText": "a", "newText": "b"}])
-        );
+        assert_eq!(edit["title"], "File edit: src/lib.rs");
+        assert_eq!(edit["rawInput"]["old_string"], "a");
+        assert!(edit.get("content").is_none_or(|c| c == &json!([])));
         let write = start("write_file", json!({"path": abs_new_str, "content": "hi"}));
         assert_eq!(write["locations"], json!([{"path": abs_new_str}]));
-        assert_eq!(write["content"][0]["newText"], "hi");
-        assert!(
-            write["content"][0]
-                .get("oldText")
-                .is_none_or(Value::is_null)
-        );
+        assert!(write.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(write["rawInput"]["content"], "hi");
         let read = start("File", json!({"action": "read", "path": "README.md"}));
         assert_eq!(read["locations"], json!([{"path": at("README.md")}]));
         assert!(read.get("content").is_none_or(|c| c == &json!([])));
@@ -2085,9 +2039,8 @@ mod tests {
             None,
         ))
         .expect("ACP update");
-        assert_eq!(completed["content"][0]["type"], "diff");
-        assert_eq!(completed["content"][0]["newText"], "b");
-        assert_eq!(completed["content"][1]["content"]["text"], "edited");
+        assert_eq!(completed["content"].as_array().unwrap().len(), 1);
+        assert_eq!(completed["content"][0]["content"]["text"], "edited");
         let home = codewhale_paths::user_home().expect("home");
         let home_edit = start(
             "File",
@@ -2106,14 +2059,16 @@ mod tests {
                 {"oldText": "c", "newText": "d"}
             ]}),
         );
-        assert_eq!(edits_array["content"][0]["type"], "diff");
-        assert_eq!(edits_array["content"][0]["newText"], "b");
-        assert_eq!(edits_array["content"][1]["newText"], "d");
+        assert!(edits_array.get("content").is_none_or(|c| c == &json!([])));
+        assert_eq!(
+            edits_array["rawInput"]["edits"].as_array().unwrap().len(),
+            2
+        );
         let encoded = start(
             "edit",
             json!({"path": "src/lib.rs", "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"}),
         );
-        assert_eq!(encoded["content"][0]["newText"], "b");
+        assert!(encoded.get("content").is_none_or(|c| c == &json!([])));
         let dotted = start(
             "File",
             json!({"action": "read", "path": "./sub/../README.md"}),

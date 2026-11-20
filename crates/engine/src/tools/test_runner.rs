@@ -144,6 +144,20 @@ impl ToolSpec for RunTestsTool {
                 ));
             }
         };
+        let explicit_background = if context
+            .child_host
+            .as_ref()
+            .is_some_and(|child| !child.is_tool_allowed("task_shell_wait"))
+        {
+            if explicit_background == Some(true) {
+                return Err(ToolError::invalid_input(
+                    "This child cannot collect a background test job; run in the foreground",
+                ));
+            }
+            Some(false)
+        } else {
+            explicit_background
+        };
         let timeout_ms = match input.get("timeout_ms") {
             None | Some(Value::Null) => None,
             Some(value) => {
@@ -334,7 +348,7 @@ fn spawn_cargo_in_shell_manager(
         .lock()
         .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
     let spawned = manager
-        .execute_with_options_env_for_session(
+        .execute_with_options_env_for_owner_and_work(
             &shell_command,
             Some(&cwd),
             BACKGROUND_TESTS_TIMEOUT_MS,
@@ -343,7 +357,14 @@ fn spawn_cargo_in_shell_manager(
             false,
             context.elevated_sandbox_policy.clone(),
             env,
-            &context.state_namespace,
+            super::shell::shell_job_owner_from_context(context),
+            context.state_namespace.clone(),
+            context.origin_tool_call_id.clone(),
+            context.origin_turn_id.clone(),
+            super::shell::shell_work_lifecycle_from_context(context),
+            None,
+            false,
+            (1_000, BACKGROUND_TESTS_TIMEOUT_MS),
         )
         .map_err(|err| ToolError::execution_failed(format!("Failed to start cargo test: {err}")))?;
     let task_id = spawned
@@ -491,6 +512,7 @@ async fn run_cargo_with_auto_background(
                     .read_output_chunk(&task_id, ShellOutputStream::Stderr, 0, usize::MAX, 0)
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
                     .unwrap_or_default();
+                manager.acknowledge_foreground_completion(&task_id);
                 Some((probe.status, probe.exit_code, stdout, stderr))
             }
         };
@@ -521,6 +543,9 @@ async fn run_cargo_with_auto_background(
                 let snapshot = manager
                     .get_output(&task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                if snapshot.status != ShellStatus::Running {
+                    manager.acknowledge_foreground_completion(&task_id);
+                }
                 let age = manager.last_output_age_ms(&task_id);
                 let progress = manager.running_progress(&task_id);
                 (snapshot, age, progress)
@@ -1362,6 +1387,62 @@ mod tests {
             true,
         );
         assert!(!go_pass.zero_tests_matched);
+    }
+
+    #[tokio::test]
+    async fn background_cargo_preserves_child_ownership_and_settlement() {
+        if !cargo_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = init_cargo_project(tmp.path());
+        fs::write(
+            project_dir.join("src/lib.rs"),
+            "#[test] fn waits() { std::thread::sleep(std::time::Duration::from_secs(2)); }",
+        )
+        .expect("write test");
+        let ctx = ToolContext::new(&project_dir)
+            .with_owner_agent("test-child", "verifier")
+            .with_origin_tool_call_id("test-call")
+            .with_origin_turn_id("test-turn");
+        let result = RunTestsTool
+            .execute(json!({"background": true}), &ctx)
+            .await
+            .expect("launch cargo");
+        let output: RunTestsOutput = serde_json::from_str(&result.content).expect("json");
+        let task_id = output.task_id.expect("task id");
+        {
+            let mut manager = ctx.shell_manager.lock().expect("shell manager");
+            let job = manager
+                .list_jobs_for_session(&ctx.state_namespace)
+                .into_iter()
+                .find(|job| job.id == task_id)
+                .expect("child job");
+            assert_eq!(job.owner_agent_id.as_deref(), Some("test-child"));
+            assert_eq!(job.owner_agent_name.as_deref(), Some("verifier"));
+            assert_eq!(job.origin_tool_call_id.as_deref(), Some("test-call"));
+            assert_eq!(job.origin_turn_id.as_deref(), Some("test-turn"));
+            assert_eq!(
+                manager.running_owner_agent_ids_for_session(&ctx.state_namespace),
+                vec!["test-child".to_string()]
+            );
+        }
+        let settled = super::super::shell::BashTool::alias("task_shell_wait", "wait")
+            .execute(json!({"task_id": task_id, "timeout_ms": 30_000}), &ctx)
+            .await
+            .expect("wait for child cargo");
+        assert!(settled.success, "{}", settled.content);
+        let mut manager = ctx.shell_manager.lock().expect("shell manager");
+        assert!(
+            manager
+                .running_owner_agent_ids_for_session(&ctx.state_namespace)
+                .is_empty()
+        );
+        assert!(
+            manager
+                .drain_finished_jobs_with_evidence_for_session(&ctx.state_namespace)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
