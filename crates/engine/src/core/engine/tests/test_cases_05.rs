@@ -1419,20 +1419,26 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                 })
                 .await
                 .expect("steer channel open");
-            assert_eq!(accepted.await.unwrap(), handle::SteerOutcome::Accepted);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), accepted)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("{phase}: steering must preempt an indefinitely silent request")
+                })
+                .unwrap();
+            assert_eq!(outcome, handle::SteerOutcome::Accepted);
             assert!(
                 dropped.load(Ordering::SeqCst),
                 "{phase}: obsolete request must close before steer acceptance"
             );
         };
-        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
             tokio::join!(
                 engine.run_turn(&mut turn, surface, Some(Arc::clone(&children)), None),
                 steer
             )
         })
         .await
-        .expect("steering must preempt an indefinitely silent request");
+        .unwrap_or_else(|_| panic!("{phase}: steered turn must finish"));
         assert_eq!(status, TurnOutcomeStatus::Completed, "{phase}: {error:?}");
         assert_eq!(client.calls.load(Ordering::SeqCst), 3, "{phase}");
         let requests = client.requests.lock().unwrap().clone();

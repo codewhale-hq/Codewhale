@@ -878,8 +878,8 @@ fn code_execution_offered(
 }
 
 impl Engine {
-    /// Inline ```repl blocks run model-written Python in the session kernel,
-    /// so they are admitted exactly like a `code_execution` call carrying
+    /// A recursive RLM round runs model-written Python in a child kernel,
+    /// so it is admitted exactly like a `code_execution` call carrying
     /// the same code: planned by `plan_tool_calls` (mode, allow/deny lists,
     /// before-tool hooks, Auto-Review floor and reviewer, repo law, the
     /// registry approval) and, when the plan still needs it, approved through
@@ -889,8 +889,8 @@ impl Engine {
     async fn repl_fence_blocked_reason(
         &mut self,
         blocks: &[codewhale_repl::ReplBlock],
-        // What the approval card says would run, e.g. "the reply's ```repl
-        // block(s) in the session REPL kernel".
+        // What the approval card says would run, e.g. "a recursive RLM
+        // round's Python in a child kernel".
         what_runs: &str,
         approval_id: &str,
         client: &dyn crate::core::model_client::ModelClient,
@@ -994,9 +994,9 @@ impl Engine {
                 Ok(ApprovalResult::TimedOut) => {
                     Some("the approval request timed out before anyone answered".to_string())
                 }
-                Ok(ApprovalResult::RetryWithPolicy(_)) => {
-                    Some("inline REPL blocks cannot run under a changed sandbox policy".to_string())
-                }
+                Ok(ApprovalResult::RetryWithPolicy(_)) => Some(
+                    "recursive RLM rounds cannot run under a changed sandbox policy".to_string(),
+                ),
                 Err(error) => Some(error.to_string()),
             };
             if let Some(refusal) = refusal {
@@ -2052,7 +2052,7 @@ impl Engine {
                 }
             };
             let response = match self
-                .continue_model_step(turn, &tool_policy, &mut progress, &client, response)
+                .continue_model_step(turn, &tool_policy, &mut progress, response)
                 .await
             {
                 PhaseResult::Ready(value) => value,
@@ -7089,29 +7089,6 @@ impl Engine {
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
         self.session.messages.clone().into()
-    }
-
-    /// The persistent working kernel gets the full durable transcript as data,
-    /// not as another prompt. Python helpers can search and chunk it without
-    /// reinflating the model's visible context, while ordinary variables stay
-    /// in the same kernel across steps and user turns.
-    fn repl_kernel_context(&self) -> String {
-        let payload = serde_json::json!({
-            "schema": "codewhale.persistent_kernel_context.v1",
-            "session": {
-                "id": self.session.id,
-                "workspace": self.session.workspace,
-                "model": self.session.model,
-                "message_count": self.session.messages.len(),
-            },
-            "messages": self.messages_with_turn_metadata(),
-        });
-        serde_json::to_string_pretty(&payload).unwrap_or_else(|error| {
-            format!(
-                "{{\"schema\":\"codewhale.persistent_kernel_context.v1\",\"serialization_error\":{}}}",
-                serde_json::Value::String(error.to_string())
-            )
-        })
     }
 
     /// This session's authoritative To-do state (#3983).

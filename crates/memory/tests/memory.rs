@@ -14,6 +14,60 @@ fn setup() -> (Store, Access, Scope) {
     let access = Access::operator(vec![scope.clone()]).unwrap();
     (Store::in_memory_with_clock(|| NOW).unwrap(), access, scope)
 }
+#[test]
+fn listing_an_existing_v1_store_preserves_disk_schema_and_future_aliases() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.sqlite");
+    let legacy = dir.path().join("legacy.sqlite");
+    let (_, access, scope) = setup();
+    let mut current = Store::open(&source).unwrap();
+    let memory = active(
+        &mut current,
+        &access,
+        &scope,
+        "legacy-note",
+        "Reviewed legacy fact.",
+    );
+    drop(current);
+    std::fs::File::create(&legacy).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let conn = rusqlite::Connection::open(&legacy).unwrap();
+    conn.execute_batch(include_str!("../src/sql/schema.sql"))
+        .unwrap();
+    conn.execute("ATTACH DATABASE ?1 AS fixture", [source.to_str().unwrap()])
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO memories SELECT * FROM fixture.memories; UPDATE memories SET rowid=8",
+    )
+    .unwrap();
+    drop(conn);
+
+    let reader = Store::open_for_listing(&legacy).unwrap().unwrap();
+    let notes = reader.list_current(&access, 2).unwrap();
+    assert_eq!(notes[0].id, memory.id);
+    assert_eq!(reader.numeric_id(&access, &memory.id).unwrap(), 1);
+    drop(reader);
+    let check = rusqlite::Connection::open(&legacy).unwrap();
+    assert_eq!(
+        check
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(check);
+    assert_eq!(
+        Store::open(&legacy)
+            .unwrap()
+            .numeric_id(&access, &memory.id)
+            .unwrap(),
+        1
+    );
+}
+
 fn draft(scope: Scope, body: &str) -> Draft {
     Draft::note(
         scope,
