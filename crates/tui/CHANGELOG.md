@@ -1220,6 +1220,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Contributors
 
+- **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
 - **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)). Allowed an optional host policy on model HTTP clients ([#7251](https://github.com/codewhale-hq/Codewhale/pull/7251)).
