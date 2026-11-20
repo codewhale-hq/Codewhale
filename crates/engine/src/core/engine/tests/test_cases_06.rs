@@ -1231,6 +1231,98 @@ async fn narrowing_the_posture_discards_python_kernels() {
 }
 
 #[tokio::test]
+async fn repl_fence_does_not_run_when_code_execution_is_not_allowed() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    let fence = "```repl\nprint('fence ran')\n```";
+    for (allowed, disallowed) in [
+        (Some(Vec::new()), None),
+        (Some(vec!["read_file".to_string()]), None),
+        (None, Some(vec!["code_execution".to_string()])),
+    ] {
+        let workspace = tempdir().expect("tempdir");
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(fence)]));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let config = EngineConfig {
+            allowed_tools: allowed.clone(),
+            disallowed_tools: disallowed.clone(),
+            ..deterministic_engine_config(workspace.path())
+        };
+        let (mut engine, _handle) =
+            Engine::new_with_model_client(config, &Config::default(), client);
+        engine.session.add_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Answer.".to_string(),
+                cache_control: None,
+            }],
+        });
+        let registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
+            workspace.path().to_path_buf(),
+        ));
+        let policy = test_tool_surface(&engine, registry, None, AppMode::Agent);
+        let mut turn = crate::core::turn::TurnContext::new(4);
+        let (status, error) = engine.run_turn(&mut turn, policy, None, None).await;
+
+        let case = format!("allowed={allowed:?} disallowed={disallowed:?}");
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{case}: {error:?}");
+        assert!(
+            engine.repl_kernel.is_none(),
+            "{case}: kernel must not start"
+        );
+        assert_eq!(mock.call_count(), 1, "{case}: no follow-up model call");
+    }
+}
+
+#[tokio::test]
+async fn plan_mode_repl_fence_does_not_execute() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    let workspace = tempdir().expect("tempdir");
+    let marker = workspace.path().join("fence-ran");
+    let fence = format!(
+        "```repl\nopen({:?}, 'w').write('x')\n```",
+        marker.display().to_string()
+    );
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(&fence)]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    engine.session.auto_approve = true;
+    engine.session.add_message(Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "Plan only.".to_string(),
+            cache_control: None,
+        }],
+    });
+    let registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
+        workspace.path().to_path_buf(),
+    ));
+    let policy = test_tool_surface(
+        &engine,
+        registry,
+        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
+        AppMode::Plan,
+    );
+    let mut turn = crate::core::turn::TurnContext::new(4);
+    let (status, error) = engine.run_turn(&mut turn, policy, None, None).await;
+
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+    assert!(
+        engine.repl_kernel.is_none(),
+        "kernel must not start in Plan"
+    );
+    assert!(!marker.exists(), "fenced Python must not run in Plan");
+    assert_eq!(mock.call_count(), 1, "no follow-up model call");
+}
+
+#[tokio::test]
 async fn prose_repl_fence_never_executes_outside_rlm() {
     use crate::llm_client::mock::{MockLlmClient, canned};
     use codewhale_models::{ContentBlock, Message};
