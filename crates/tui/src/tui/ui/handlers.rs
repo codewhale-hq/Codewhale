@@ -2289,7 +2289,7 @@ pub(crate) async fn handle_view_events(
                         // Keep the saved-store confinement check a pure
                         // comparison on this runtime (#6522).
                         codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
-                        let respawn = match apply_loaded_session_config_snapshot(
+                        let outcome = match apply_loaded_session_config_snapshot(
                             app,
                             config,
                             session,
@@ -2311,7 +2311,17 @@ pub(crate) async fn handle_view_events(
                                 continue;
                             }
                         };
-                        sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
+                        // The loaded conversation names a store this host does
+                        // not hold. Rebind before any turn can run on it; a
+                        // failure is reported and the conversation stays
+                        // loaded but idle rather than silently writing nowhere.
+                        if let Some(binding) = outcome.adopt_store.clone()
+                            && let Err(err) = adopt_runtime_store(app, config, binding).await
+                        {
+                            app.status_message = Some(err);
+                        }
+                        let respawn = outcome.respawn;
+                        sync_runtime_workspace_state_from_app(app, app.workspace.clone()).await;
                         // #6150 audit: these sends may await a full op channel,
                         // and that await is load-bearing — the session switch
                         // is already committed UI-side, so each op must land in

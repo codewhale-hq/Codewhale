@@ -1746,7 +1746,7 @@ async fn apply_command_result_inner(
                     &session.metadata.title,
                 );
                 codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
-                let respawn = match apply_loaded_session_config_snapshot(
+                let outcome = match apply_loaded_session_config_snapshot(
                     app,
                     config,
                     session,
@@ -1765,7 +1765,13 @@ async fn apply_command_result_inner(
                         return Ok(false);
                     }
                 };
-                sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
+                if let Some(binding) = outcome.adopt_store.clone()
+                    && let Err(err) = adopt_runtime_store(app, config, binding).await
+                {
+                    app.status_message = Some(err);
+                }
+                let respawn = outcome.respawn;
+                sync_runtime_workspace_state_from_app(app, app.workspace.clone()).await;
                 if respawn {
                     replace_tui_engine(app, config, engine_handle).await;
                 } else {
@@ -4692,7 +4698,7 @@ pub(crate) fn apply_loaded_session(
     config: &mut Config,
     session: &SavedSession,
 ) -> Result<(), String> {
-    apply_loaded_session_with_goal(app, config, session.clone(), None)
+    apply_loaded_session_with_goal(app, config, session.clone(), None).map(|_| ())
 }
 
 /// Install a loaded session as the live conversation. The session is taken
@@ -4704,19 +4710,16 @@ pub(crate) fn apply_loaded_session_with_goal(
     config: &mut Config,
     mut session: SavedSession,
     goal: Option<&codewhale_engine::session_manager::SessionGoalState>,
-) -> Result<(), String> {
+) -> Result<Option<codewhale_engine::runtime_threads::RuntimeStoreBinding>, String> {
     let mut recovered_binding = None;
+    // Set when the loaded conversation names a store this host does not hold
+    // and the switch may adopt it. The caller must rebind its task manager
+    // before the conversation can run a turn on that store.
+    let mut adopt_target_store = false;
     if let Some(binding) = session.metadata.runtime_store.as_ref()
         && let Some(tasks) = app.runtime_services.task_manager.as_ref()
         && tasks.session_store_binding().as_ref() != Some(binding)
     {
-        // A switch can rebind the conversation but cannot carry the saved
-        // store's durable work into the running host, so it may only adopt a
-        // store there is nothing to lose from leaving: one that is missing, or
-        // one that exists and is provably empty *and* provably unheld, with no
-        // scope-pinned automation. A force-quit leaves the second shape — the
-        // store is on disk, ownerless and holding zero events — and refusing
-        // it protected nothing while making the session unopenable (#6207).
         let refusal = if binding
             .is_missing_session_store()
             .map_err(|error| error.to_string())?
@@ -4742,33 +4745,67 @@ pub(crate) fn apply_loaded_session_with_goal(
                 session.metadata.id
             ));
         }
-        if recovered_binding.is_none() {
-            let reason = refusal
-                .map(|refusal| format!(" ({refusal})"))
-                .unwrap_or_default();
-            // Name the real condition and the path that actually works. The
-            // old wording ("resume it in a new Codewhale process") sent users
-            // in circles: starting a new process and then picking the session
-            // from `/resume` lands here again, because that is this same
-            // switch path. Opening the session *at launch* is a different
-            // route — `TaskManager::start` passes the saved binding through to
-            // `open_for_session`, which validates the existing store and
-            // adopts it (runtime_threads.rs, `validate_existing_store` then
-            // `open_inner`). So the advice has to say which one (#6207, #6225).
+        // A populated store is no longer a reason to refuse.
+        //
+        // The old rule refused any target whose `threads/` directory held a
+        // single record, on the theory that a switch "cannot carry that
+        // store's queued work across". It still cannot — but it does not have
+        // to. A switch never discards a store: the host keeps the one it
+        // holds, and the target stays on disk for whichever process opens it
+        // next. What a switch must not do is release a store that still needs
+        // *this* process, which is a property of the store being left, not of
+        // the one being entered. So `HasDurableWork` stops being a refusal and
+        // the check moves to the current store below.
+        //
+        // The refusals that remain are the ones that make the target
+        // unusable from here: another process holds its lock, the path is not
+        // a confined store directory, or an automation is pinned to its
+        // execution scope.
+        let adoptable = refusal.is_none();
+        if let Some(refusal) = refusal
+            && matches!(
+                refusal,
+                crate::runtime_threads::StoreAdoptionRefusal::Unconfined
+                    | crate::runtime_threads::StoreAdoptionRefusal::NotADirectory
+                    | crate::runtime_threads::StoreAdoptionRefusal::ScopePinnedAutomation
+            )
+        {
             return Err(format!(
-                "This session's saved Runtime store belongs to a different host{reason}. \
-                 Switching to it from inside a running session cannot carry that \
-                 store's queued work across, but opening it directly can: run \
-                 `codewhale resume {}` from your shell.",
+                "This session's saved Runtime store cannot be opened from here ({refusal}): \
+                 run `codewhale resume {}` from your shell.",
                 session.metadata.id
             ));
         }
+        adopt_target_store = adoptable;
     }
     if app.session_transition_blocked() {
         return Err(
             "runtime work is active; wait for the current turn, maintenance, and background tasks to finish, or cancel that specific work before switching sessions".to_string(),
         );
     }
+    if adopt_target_store && let Some(tasks) = app.runtime_services.task_manager.as_ref() {
+        // Releasing the store this host holds is only safe when nothing in it
+        // still waits on this process. Approvals and user-input prompts live
+        // in memory, so a restart could not recover them either — dropping
+        // them here would strand every waiter.
+        if tasks.has_unsettled_requests() {
+            return Err(
+                "This session's Runtime store has tool approvals or user input still waiting. \
+                 Answer them, or stop that work, before switching sessions."
+                    .to_string(),
+            );
+        }
+        if let Some(disposable) = tasks.current_store_is_disposable()
+            && !disposable.map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "The Runtime store this session is running on still holds work. \
+                 Finish or stop it before switching to session {}.",
+                session.metadata.id
+            ));
+        }
+    }
+
     if let Some(goal) = goal {
         goal.validate()
             .map_err(|error| format!("saved session goal is invalid: {error}"))?;
@@ -5004,6 +5041,12 @@ pub(crate) fn apply_loaded_session_with_goal(
         .as_ref()
         .map(|_| codewhale_engine::session_manager::SessionWriteOwner::control());
     app.session_title = Some(session.metadata.title.clone());
+    // Read the target store before the metadata moves into `app`: the caller
+    // rebinds onto this exact binding, so it must be the value that was
+    // validated above, not a re-read of the document from disk.
+    let adopt_store = adopt_target_store
+        .then(|| session.metadata.runtime_store.clone())
+        .flatten();
     app.current_session_metadata = Some(session.metadata);
     reset_approval_scope_for_new_conversation(app);
     if let Some(binding) = recovered_binding {
@@ -5052,7 +5095,21 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.refresh_agent_approved_plugins_notice();
     app.scroll_to_bottom();
-    Ok(())
+    // A `recovered_binding` case repaired the *document* to name this host's
+    // store, so there is nothing to adopt. `adopt_store` is the other
+    // direction: the document names a store this host must take over.
+    Ok(adopt_store)
+}
+
+#[derive(Debug)]
+pub(crate) struct LoadedSessionOutcome {
+    /// Whether the engine must be rebuilt (provider, workspace, or route
+    /// changed, or a file `/load` supplied a fresh snapshot).
+    pub(crate) respawn: bool,
+    /// A Runtime store this host does not hold that the loaded conversation
+    /// names. The caller must rebind its task manager onto it before the
+    /// conversation can run a turn; `None` when the load requires no rebind.
+    pub(crate) adopt_store: Option<crate::runtime_threads::RuntimeStoreBinding>,
 }
 
 pub(crate) fn apply_loaded_session_config_snapshot(
@@ -5061,7 +5118,7 @@ pub(crate) fn apply_loaded_session_config_snapshot(
     session: SavedSession,
     mut next_config: Config,
     force_engine_respawn: bool,
-) -> Result<bool, String> {
+) -> Result<LoadedSessionOutcome, String> {
     if force_engine_respawn {
         // File `/load` supplies a freshly loaded disk snapshot, but the live
         // Config also contains CLI and workspace/project overlays that are not
@@ -5077,7 +5134,8 @@ pub(crate) fn apply_loaded_session_config_snapshot(
     let goal = SessionManager::default_location()
         .and_then(|manager| manager.load_session_goal(&session.metadata.id))
         .map_err(|error| format!("saved session goal could not be loaded: {error}"))?;
-    apply_loaded_session_with_goal(app, &mut next_config, session, goal.as_ref())?;
+    let adopt_store =
+        apply_loaded_session_with_goal(app, &mut next_config, session, goal.as_ref())?;
     // A file load reads a fresh disk snapshot. Even when the route's enum and
     // exact identity are unchanged, endpoint, key, headers, TLS, or retry
     // settings may have changed. Rebuild from that same validated snapshot so
@@ -5093,7 +5151,90 @@ pub(crate) fn apply_loaded_session_config_snapshot(
     app.configured_models = config.custom_models.clone().unwrap_or_default();
     codewhale_runtime::config::initialize_cloud_facts(config);
     app.refresh_notification_settings(config);
-    Ok(respawn)
+    Ok(LoadedSessionOutcome {
+        respawn,
+        adopt_store,
+    })
+}
+
+/// Point this host's task manager at the Runtime store the loaded session
+/// names, releasing the one it held.
+///
+/// A session switch used to refuse this outright: `TaskManager` was built at
+/// launch and never replaced, so a target store with any history read as "work
+/// this switch would abandon". It would not have abandoned anything — the
+/// conversation it was leaving keeps its store, and the target keeps its own —
+/// but the process could not *become* the target's owner either. Rebuilding the
+/// manager is what makes the target usable rather than merely readable.
+///
+/// Ordering is load-bearing: `shutdown_and_wait` settles the turns this host
+/// was running and drops its engines, then `drop` releases the process-owner
+/// lock, and only then can `TaskManager::start` acquire the target's lock
+/// (`open_for_session` takes it before the store opens and holds it for the
+/// manager's lifetime). Callers must already have established that nothing in
+/// the current store still needs this process — see the checks in
+/// `apply_loaded_session_with_goal`.
+pub(crate) async fn adopt_runtime_store(
+    app: &mut App,
+    config: &Config,
+    binding: crate::runtime_threads::RuntimeStoreBinding,
+) -> Result<(), String> {
+    let Some(previous) = app.runtime_services.task_manager.take() else {
+        return Err(
+            "This session needs its own Runtime store, but this host has no task manager to rebind."
+                .to_string(),
+        );
+    };
+    let abandoned = previous.session_store_binding();
+    previous.shutdown_and_wait().await.map_err(|error| {
+        format!("Could not settle the Runtime work this session was running: {error}")
+    })?;
+    drop(previous);
+
+    let session_id = crate::tui::ui::event_loop::ensure_runtime_session_id(app);
+    let started = crate::task_manager::TaskManager::start(
+        crate::task_manager::TaskManagerConfig::from_runtime(
+            config,
+            app.workspace.clone(),
+            Some(app.model.clone()),
+            Some(app.max_subagents.clamp(1, 4)),
+        ),
+        config.clone(),
+        std::sync::Arc::clone(&app.plugin_registry),
+        &session_id,
+        Some(&binding),
+    )
+    .await;
+    let manager = match started {
+        Ok(manager) => manager,
+        Err(error) => {
+            // The new store was not adopted, so the host is left without one.
+            // Say so plainly instead of pretending the switch finished: the
+            // transcript is loaded, but no turn can run until a relaunch.
+            app.runtime_services.task_manager = None;
+            return Err(format!(
+                "The conversation was loaded, but its Runtime store could not be opened ({error}). \
+                 Run `codewhale resume` from your shell to work in it."
+            ));
+        }
+    };
+    app.runtime_services.task_manager = Some(manager);
+
+    // The store just released holds nothing this host still needs (the caller
+    // checked), so let the reconciler set it aside if no document binds it. It
+    // never unlinks: `retire_unbound_store` moves to `.set-aside/` and writes a
+    // manifest, and refuses a store any document still names.
+    if let Some(abandoned) = abandoned
+        && abandoned.data_dir != binding.data_dir
+        && let Ok(manager) = crate::session_manager::SessionManager::default_location()
+    {
+        crate::session_reconcile::retire_unbound_store_in_background(
+            manager,
+            abandoned.data_dir,
+            "conversation switched to another session's store",
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

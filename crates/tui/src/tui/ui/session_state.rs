@@ -1109,6 +1109,20 @@ pub(crate) async fn sync_runtime_workspace_state(
     task_manager.set_default_workspace(workspace).await;
 }
 
+/// [`sync_runtime_workspace_state`] for a caller that may have rebound its
+/// task manager since it captured a handle.
+///
+/// A session switch can adopt another Runtime store, which replaces
+/// `app.runtime_services.task_manager`. The handle captured before the switch
+/// then points at a manager whose store the host no longer owns, so updating
+/// it would leave the live manager on the previous workspace.
+pub(crate) async fn sync_runtime_workspace_state_from_app(app: &App, workspace: PathBuf) {
+    match app.runtime_services.task_manager.as_ref() {
+        Some(current) => current.set_default_workspace(workspace).await,
+        None => {}
+    }
+}
+
 pub(crate) async fn switch_workspace(
     app: &mut App,
     engine_handle: &mut EngineHandle,

@@ -25340,7 +25340,7 @@ fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
     )
     .expect("fresh disk config should atomically restore custom B");
 
-    assert!(respawn);
+    assert!(respawn.respawn);
     assert_eq!(app.provider_identity_for_persistence(), "custom-b");
     assert_eq!(app.model_selection_for_persistence(), "model-b");
     assert_eq!(*app.api_messages, session.messages);
@@ -25493,7 +25493,7 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     )
     .expect("same-key fresh config should load atomically");
 
-    assert!(respawn, "file loads must install the fresh engine config");
+    assert!(respawn.respawn, "file loads must install the fresh engine config");
     assert_eq!(app.provider_identity_for_persistence(), "custom-a");
     assert_eq!(
         stale_config.active_route_base_url(),
@@ -25560,7 +25560,7 @@ fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays()
     )
     .expect("fresh route plus effective policy should load");
 
-    assert!(respawn);
+    assert!(respawn.respawn);
     assert_eq!(
         effective_config.active_route_base_url(),
         "http://127.0.0.1:18199/v1"

@@ -1022,3 +1022,188 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
     tasks.shutdown_and_wait().await?;
     Ok(())
 }
+
+/// A store that holds only finished history is no longer a reason to refuse a
+/// switch.
+///
+/// The rule this replaces refused any target whose `threads/` directory held a
+/// record, so a conversation that had ever run under the Runtime could not be
+/// opened from inside a running session even though nothing in it was pending.
+/// The switch does not abandon the target — that store stays on disk for
+/// whichever process opens it next — so the only question worth asking is
+/// whether the store being *left* still needs this process.
+#[tokio::test]
+async fn switch_adopts_a_store_holding_finished_history() -> anyhow::Result<()> {
+    let _environment = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let _runtime = crate::test_support::EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+    let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+    let sessions = SessionManager::default_location()?;
+    let mut config = fixture_config();
+
+    // A populated target store: one thread record, which is what
+    // `first_durable_work_dir` reports as `HasDurableWork { dir: "threads" }`.
+    let target_store = root.path().join("sessions/populated/runtime");
+    {
+        let store = crate::runtime_threads::RuntimeThreadStore::open(target_store.clone())?;
+        let thread = fixture_thread("thr_finished", config.default_model(), root.path());
+        store.save_thread(&thread)?;
+    }
+    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+        "populated-target".into(),
+        &[text_message("user", "long conversation")],
+        "deepseek-v4-pro",
+        root.path(),
+        0,
+        None,
+        None,
+    );
+    saved.metadata.runtime_store = Some(crate::runtime_threads::RuntimeStoreBinding {
+        data_dir: target_store.clone(),
+        execution_scope: "0".repeat(64),
+    });
+    sessions.save_session(&saved)?;
+
+    let mut app = Box::new(create_test_app());
+    let tasks = TaskManager::start(
+        TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
+        config.clone(),
+        app.plugin_registry.clone(),
+        "switch-current",
+        None,
+    )
+    .await?;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    app.current_session_id = Some("switch-current".into());
+
+    // The current store is empty and nothing waits on this process, so the
+    // switch may proceed. The returned binding names the store to adopt.
+    //
+    // Boxed like every other phase here: the load future's state machine is
+    // hundreds of KiB and libtest gives a test thread a 2 MiB stack.
+    let expected_store = target_store.clone();
+    crate::test_support::boxed_phase(move || async move {
+        let adopted = apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(app.current_session_id.as_deref(), Some("populated-target"));
+        assert_eq!(
+            adopted.as_ref().map(|binding| &binding.data_dir),
+            Some(&expected_store),
+            "the caller must be told which store to adopt"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?;
+    assert!(target_store.is_dir(), "the target store is never discarded");
+    tasks.shutdown_and_wait().await?;
+    Ok(())
+}
+
+/// The store this host is leaving decides whether the switch is allowed.
+///
+/// A host cannot release a store that still holds durable work: the turns,
+/// queued tasks and agent mail in it belong to whatever process owns it, and
+/// this process is the only one that will ever finish them.
+#[tokio::test]
+async fn switch_refuses_while_the_current_store_holds_work() -> anyhow::Result<()> {
+    let _environment = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let _runtime = crate::test_support::EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+    let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+    let sessions = SessionManager::default_location()?;
+    let mut config = fixture_config();
+
+    let target_store = root.path().join("sessions/target/runtime");
+    {
+        let store = crate::runtime_threads::RuntimeThreadStore::open(target_store.clone())?;
+        let thread = fixture_thread("thr_target", config.default_model(), root.path());
+        store.save_thread(&thread)?;
+    }
+    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+        "refused-target".into(),
+        &[text_message("user", "elsewhere")],
+        "deepseek-v4-pro",
+        root.path(),
+        0,
+        None,
+        None,
+    );
+    saved.metadata.runtime_store = Some(crate::runtime_threads::RuntimeStoreBinding {
+        data_dir: target_store,
+        execution_scope: "0".repeat(64),
+    });
+    sessions.save_session(&saved)?;
+
+    let mut app = Box::new(create_test_app());
+    let tasks = TaskManager::start(
+        TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
+        config.clone(),
+        app.plugin_registry.clone(),
+        "busy-current",
+        None,
+    )
+    .await?;
+    // Give the current store a thread record: work this process would abandon.
+    {
+        let store = crate::runtime_threads::RuntimeThreadStore::open(
+            tasks
+                .session_store_binding()
+                .expect("current store")
+                .data_dir,
+        )?;
+        store.save_thread(&fixture_thread("thr_current", config.default_model(), root.path()))?;
+    }
+    app.runtime_services.task_manager = Some(tasks.clone());
+    app.current_session_id = Some("busy-current".into());
+    app.input = "keep my draft".into();
+
+    // Boxed for the same 2 MiB test-thread stack reason as the test above.
+    crate::test_support::boxed_phase(move || async move {
+        let error = apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
+            .expect_err("a store holding work must not be released");
+        assert!(
+            error.contains("still holds work"),
+            "the refusal must name the current store: {error}"
+        );
+        assert_eq!(app.current_session_id.as_deref(), Some("busy-current"));
+        assert_eq!(app.input, "keep my draft");
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?;
+    tasks.shutdown_and_wait().await?;
+    Ok(())
+}
+
+/// A minimal durable thread record: enough for `first_durable_work_dir` to see
+/// the `threads/` directory as non-empty, which is the whole condition under
+/// test. Field values are otherwise inert.
+fn fixture_thread(id: &str, model: String, workspace: &std::path::Path) -> crate::runtime_threads::ThreadRecord {
+    crate::runtime_threads::ThreadRecord {
+        schema_version: 2,
+        id: id.to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        model: model.to_string(),
+        model_provider: None,
+        model_provider_id: None,
+        reasoning_effort: None,
+        allowed_tools: None,
+        workspace: workspace.to_path_buf(),
+        mode: "agent".to_string(),
+        permission_posture: None,
+        allow_shell: false,
+        trust_mode: false,
+        auto_approve: false,
+        latest_turn_id: None,
+        latest_response_bookmark: None,
+        archived: false,
+        system_prompt: None,
+        task_id: None,
+        title: None,
+        last_read: None,
+        session_id: None,
+        saved_session_checkpoint: None,
+    }
+}
