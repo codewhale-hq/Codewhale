@@ -465,6 +465,18 @@ struct ForegroundTestGuard {
     armed: bool,
 }
 
+impl ForegroundTestGuard {
+    fn cancel(mut self) -> Result<(), ToolError> {
+        let mut manager = self
+            .manager
+            .lock()
+            .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+        cancel_cargo_job(&mut manager, &self.task_id);
+        self.armed = false;
+        Ok(())
+    }
+}
+
 impl Drop for ForegroundTestGuard {
     fn drop(&mut self) {
         if !self.armed {
@@ -515,17 +527,9 @@ async fn run_cargo_with_auto_background(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            tokio::task::spawn_blocking(move || {
-                let mut manager = guard
-                    .manager
-                    .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-                cancel_cargo_job(&mut manager, &guard.task_id);
-                guard.armed = false;
-                Ok::<_, ToolError>(())
-            })
-            .await
-            .map_err(|err| ToolError::execution_failed(err.to_string()))??;
+            tokio::task::spawn_blocking(move || guard.cancel())
+                .await
+                .map_err(|err| ToolError::execution_failed(err.to_string()))??;
             return Err(ToolError::cancelled("cargo test cancelled"));
         }
 
