@@ -98,7 +98,10 @@ known limitations and publication approval. These proofs are separate.
       smallest local check or running-product observation that proves the
       change. After implementation and product review, freeze the candidate
       commit and run final validation once, including
-      `npm test && npm run check:web` from the repository root. Hosted CI owns
+      `npm ci --ignore-scripts && npm --prefix web ci && npm --prefix crates/engine/extension-host ci --ignore-scripts && npm test && npm run check:web`
+      from the repository root (root `npm test` also installs
+      `crates/engine/extension-host` with `npm ci --ignore-scripts` when
+      missing or stale). Hosted CI owns
       exhaustive workspace and platform coverage at that final step. Rerun
       only checks invalidated by a fix. Record actual results and failures in
       commit messages.
