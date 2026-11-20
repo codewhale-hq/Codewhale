@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Tool surface fixes:** a ```` ```repl ```` block in an ordinary assistant reply is now shown as text and never executed (only a recursive `rlm` turn runs its fenced Python); the `lsp` tool accepts `include_warnings` for `diagnostics`/`read_lints`, lets `symbols` with a `query` omit `path` to search session language servers in a stable order with shared result bounds, and can run in parallel with other reads; `remember` reports why a proposal was rejected or could not be stored and adds `action: "list"` to look up current notes for a correction, without initializing an absent store, checking workspace freshness and applying the limit only to eligible notes; the `diagnostics` tool runs its git/toolchain probes off the async runtime; and resuming a crashed session preserves signed thinking and interrupted turn boundaries during tool-history repair.
-
 ## [0.10.3] - 2026-11-18
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
@@ -618,6 +614,10 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
   other saved credentials (Refs #6932).
 
 ### Fixed
+
+- **Tool surface fixes:** a ```` ```repl ```` block in an ordinary assistant reply is now shown as text and never executed (only a recursive `rlm` turn runs its fenced Python); the `lsp` tool accepts `include_warnings` for `diagnostics`/`read_lints`, lets `symbols` with a `query` omit `path` to search session language servers in a stable order with shared result bounds, and can run in parallel with other reads; `remember` reports why a proposal was rejected or could not be stored and adds `action: "list"` to look up current notes for a correction, without initializing an absent store, checking workspace freshness and applying the limit only to eligible notes; the `diagnostics` tool runs its git/toolchain probes off the async runtime; and resuming a crashed session preserves signed thinking and interrupted turn boundaries during tool-history repair.
+- Shell artifact writes stream large output. Background output remains available for another collection attempt if the artifact write fails.
+- Automation confirmation controls stay visible and usable in short terminal windows.
 
 - **Stop terminal scroll-away redraw flicker ("scrolling demon"):** scrolling up into transcript history now holds status animation ticks, the working clock glow, and Underwater ocean/completion animation still until you return to the live tail, preventing Terminal.app and other terminals without synchronized output from repainting at 8–12 fps while reading history during active multi-agent turns.
 - Delegated test runs stay in the foreground when the child cannot collect a background job. Managed Cargo test runs preserve argument boundaries on Windows, including spaces and ampersands in workspace paths.
