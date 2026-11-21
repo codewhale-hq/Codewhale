@@ -135,6 +135,12 @@ if [[ -z "${base}" ]]; then
   base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
 fi
 if [[ -n "${base}" ]]; then
+  step "commit behaviour statements (${base:0:12}..HEAD)" \
+    "add a 'Behaviour: <old> -> <new>' or 'No-behaviour-change: <why>' line to each fix/feat/perf/refactor commit" \
+    python3 scripts/check-behaviour-line.py "${base}" HEAD
+  step "feature docs drift (${base:0:12}..HEAD)" \
+    "update the touched feature row's summary and docs, or add 'No-behaviour-change:'" \
+    python3 scripts/check-docs-drift.py "${base}" HEAD
   step "feature release-note receipts (${base:0:12}..HEAD)" \
     "add each feat commit's #issue to CHANGELOG.md in this branch" \
     ./scripts/release/check-feature-release-notes.sh "${base}" HEAD

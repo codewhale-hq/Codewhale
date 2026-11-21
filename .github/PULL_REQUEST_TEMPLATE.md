@@ -25,3 +25,5 @@ For visible UI changes, add a screenshot or recording. -->
 - [ ] One focused change, started from current `main` (no need to rebase when `main` moves)
 - [ ] `cargo fmt --all` passes, and tests cover new or changed behavior
 - [ ] If this adds or changes a user-facing feature, I updated its docs and its row in `docs/features.toml` (`cargo test -p codewhale-tui --test feature_registry` checks it)
+- [ ] If this changes a documented behaviour, the commit body states it
+      (`Behaviour: <old> -> <new>` or `No-behaviour-change: <why>`)

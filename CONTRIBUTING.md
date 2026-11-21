@@ -500,7 +500,8 @@ them from the title and form answers.
 | `accessibility` | Screen readers, keyboard use, contrast, motion |
 | `contributor:external` | Opened by someone outside the maintainer team |
 | `lang:zh` | Written in Chinese |
-| `needs-triage`, `needs-info`, `agent-ready`, `agent-in-progress`, `needs-human`, `keep-open`, `pinned`, `stale` | Workflow state; other workflows read these names |
+| `needs-triage`, `needs-info`, `agent-in-progress`, `needs-human`, `keep-open`, `pinned`, `stale` | Workflow state; other workflows read these names |
+| `agent-ready` | Maintainer grant: the issue is ready for an autonomous agent. Absent means not startable; the Agent task form does not apply it |
 
 Release targeting uses milestones, not version labels.
 
@@ -521,8 +522,9 @@ prompts without a maintainer's agreement on the issue first.
 
 Maintainers write some issues with the
 [Agent task](.github/ISSUE_TEMPLATE/agent-task.yml) form so that an agent with
-no other context can finish them; those carry the `agent-ready` label and are
-open to anyone. Agents and maintainers follow
+no other context can finish them. The form does not apply `agent-ready`: a
+maintainer grants that label during triage, and its absence means an agent must
+not start the issue. Agents and maintainers follow
 [docs/AGENT_ETHOS.md](docs/AGENT_ETHOS.md).
 
 ## How maintainers ship

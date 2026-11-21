@@ -764,6 +764,8 @@ Classify the worker before taking action:
 - `needs-human`: missing authority, secret request, destructive operation,
   repeated restart exhaustion, ambiguous product decision, or conflicting
   evidence that the manager cannot resolve from typed artifacts.
+- `not startable`: the issue or task has no `agent-ready` grant from a
+  maintainer; do not pick it up, implement it, or dispatch a worker against it.
 
 Choose one typed action:
 
