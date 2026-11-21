@@ -21,6 +21,7 @@ jobs:
       bundles: ${{ steps.rc.outputs.bundles }}
       windows_setup: ${{ steps.rc.outputs.windows_setup }}
       windows_engine: ${{ steps.rc.outputs.windows_engine }}
+      windows_arm: ${{ steps.rc.outputs.windows_arm }}
     steps:
       - name: Verify exact successful candidate and select live artifacts
         id: rc
@@ -49,6 +50,41 @@ jobs:
           retain_artifact bundles codewhale-bundles
           retain_artifact windows_setup CodeWhaleSetup.exe
           retain_artifact windows_engine codewhale-windows-x64.exe
+          retain_artifact windows_arm codewhale-windows-arm64.exe
+
+  windows-arm64-startup:
+    needs: provenance
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - name: Verify and start the ARM64 Engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_ARM: ${{ needs.provenance.outputs.windows_arm }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'Arm64') { throw 'Expected an ARM64 process' }
+          $meta = $env:WINDOWS_ARM | ConvertFrom-Json
+          cmd.exe /d /c "gh api repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($meta.id)/zip > archive.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          if (('sha256:' + (Get-FileHash archive.zip).Hash.ToLowerInvariant()) -cne $meta.digest) { throw 'Artifact digest did not match GitHub' }
+          Expand-Archive archive.zip arm64
+          $engines = @(Get-ChildItem arm64 -Recurse -Filter codewhale-windows-arm64.exe -File)
+          if ($engines.Count -ne 1) { throw 'Expected one ARM64 binary' }
+          $exe = $engines[0].FullName
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $offset = [BitConverter]::ToInt32($bytes,0x3c)
+          if ([BitConverter]::ToUInt32($bytes,$offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes,$offset+4) -ne 0xAA64) { throw 'Unexpected PE machine or signature' }
+          $env:CODEWHALE_HOME = Join-Path $env:RUNNER_TEMP 'cw-arm64-proof'
+          $env:CODEWHALE_TELEMETRY = '0'
+          $env:CODEWHALE_DISABLE_MODELS_DEV_FETCH = '1'
+          $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -cne "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0,12)))") { throw "Version mismatch $version" }
+          $helpText = & $exe doctor --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $helpText -notmatch 'doctor') { throw 'Doctor CLI failed to start' }
+          [ordered]@{source=$env:ENGINE_SHA; run=$env:RC_RUN; version=$version; os=[Environment]::OSVersion.Version.ToString(); machine='ARM64'; binary_sha256=(Get-FileHash $exe).Hash.ToLowerInvariant(); doctorHelp=$true} | ConvertTo-Json
 
   windows-nsis:
     needs: provenance
