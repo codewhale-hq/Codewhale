@@ -1,6 +1,5 @@
 name: Agent task
 description: A self-contained task a headless Codewhale agent can finish end to end. Mostly for maintainers.
-labels: ["agent-ready"]
 body:
   - type: markdown
     attributes:
@@ -8,6 +7,7 @@ body:
         A headless agent runs this with `codewhale exec --auto` on a fresh clone of `main`.
         It has shell, file, and git tools, and **no context beyond this issue**. Name every
         path and command explicitly. Assign a milestone during triage; this template sets none.
+        A maintainer grants `agent-ready` during triage; this form does not apply it for you.
 
   - type: textarea
     id: goal

@@ -121,7 +121,7 @@ git config --global user.email "whalebro-agent@users.noreply.github.com"
 ```
 
 ```bash
-# 1. Pick an agent-ready issue
+# 1. Pick an issue a maintainer granted agent-ready
 gh issue list --repo codewhale-hq/CodeWhale --label agent-ready --state open --json number,title,url
 
 # 2. Claim it

@@ -24,7 +24,8 @@ if grep -nE '^(title|labels):.*v[0-9]+\.[0-9]+\.[0-9]+' "${template}"; then
   fail "agent-task defaults must not pin a release version"
 fi
 
-grep -qF 'labels: ["agent-ready"]' "${template}" \
-  || fail "agent-task template must opt into agent-ready without a version label"
+if grep -nE '^labels:.*agent-ready' "${template}"; then
+  fail "agent-task template must not self-apply agent-ready; a maintainer grants it during triage"
+fi
 
-echo "Agent-task metadata is release-neutral and milestone-safe."
+echo "Agent-task metadata is release-neutral, milestone-safe, and does not self-apply agent-ready."
