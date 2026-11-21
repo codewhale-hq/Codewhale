@@ -72,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
             observed=any('VIBE-LOCAL-FIXTURE' in str(m.get('content','')) for m in row.get('messages',[]) if m.get('role')=='tool')
             requested[-1]['readResultSeen']=observed
         if row.get('stream'):
-            data=''.join('data: '+json.dumps(v)+'\n\n' for v in [answer,packet({},finish)])+'data: [DONE]\n\n';mime='text/event-stream'
+            data=''.join('data: '+json.dumps(v)+'\n\n' for v in [answer,packet({},finish),{**packet({},None),'choices':[],'usage':{'prompt_tokens':10,'completion_tokens':4,'total_tokens':14}}])+'data: [DONE]\n\n';mime='text/event-stream'
         else:
             data=json.dumps({'id':'local-qwen-reply','object':'chat.completion','created':1,'model':row.get('model'),'choices':[{'index':0,'message':{'role':'assistant','content':marker},'finish_reason':'stop'}],'usage':{'prompt_tokens':5,'completion_tokens':3,'total_tokens':8}});mime='application/json'
         body=data.encode();self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
