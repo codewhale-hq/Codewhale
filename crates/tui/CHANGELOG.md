@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
 - Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session. Thanks to @deosiree (PR #7448).
+- Added LLMTR as an OpenAI-compatible provider with live model discovery. Thanks [@knowhycodata](https://github.com/knowhycodata) for [PR 7450](https://github.com/codewhale-hq/Codewhale/pull/7450).
 
 ## [0.10.3] - 2026-11-21
 
