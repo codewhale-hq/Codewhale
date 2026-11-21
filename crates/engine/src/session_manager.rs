@@ -3019,13 +3019,48 @@ impl SessionManager {
     }
 
     fn write_late_usage_ledger(path: &Path, ledger: &LateUsageLedger) -> io::Result<()> {
-        let bytes = serde_json::to_vec(ledger)
+        let mut bytes = serde_json::to_vec(ledger)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "late usage ledger exceeds its size bound",
-            ));
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap_or(usize::MAX);
+        if bytes.len() > limit {
+            let mut remaining_bytes = bytes.len();
+            let mut pruned = 0;
+            for record in ledger
+                .records
+                .iter()
+                .filter(|record| record.diagnostic_only)
+            {
+                let record_len = serde_json::to_vec(record)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                    .len();
+                pruned += 1;
+                let comma = usize::from(pruned < ledger.records.len());
+                remaining_bytes -= record_len + comma;
+                if remaining_bytes <= limit {
+                    break;
+                }
+            }
+            if remaining_bytes > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "late usage ledger exceeds its size bound",
+                ));
+            }
+            let mut compacted = ledger.clone();
+            let mut remaining = pruned;
+            compacted.records.retain(|record| {
+                if record.diagnostic_only && remaining > 0 {
+                    remaining -= 1;
+                    return false;
+                }
+                true
+            });
+            bytes = serde_json::to_vec(&compacted)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            tracing::warn!(
+                pruned,
+                "compacted late usage diagnostic receipts to fit the ledger bound"
+            );
         }
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
