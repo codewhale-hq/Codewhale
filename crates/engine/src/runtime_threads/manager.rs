@@ -4816,6 +4816,44 @@ impl RuntimeThreadManager {
         }
     }
 
+    /// Requests waiting on a decision from outside this process: tool
+    /// approvals, user-input prompts, and client-executed dynamic tools.
+    ///
+    /// These live only in memory (`pending_approvals` and its siblings), so no
+    /// restart recovers them and no store directory lists them. A host that
+    /// drops the threads they belong to leaves every waiter without an owner,
+    /// which is why they must be settled before the store is released.
+    pub fn has_unsettled_requests(&self) -> bool {
+        !self.pending_approvals.lock().is_empty()
+            || !self.pending_user_inputs.lock().is_empty()
+            || !self.pending_dynamic_tools.lock().is_empty()
+    }
+
+    /// Whether this host can let go of the store it currently holds.
+    ///
+    /// This is *not* [`RuntimeStoreBinding::adoption_refusal`]. That predicate
+    /// answers "may a host take this store over?", and a store any host ever
+    /// opened fails it: opening one writes `owner.json`, `state.json` and the
+    /// work directories, so even a store that has never run a turn reports
+    /// `HasDurableWork`. Asking it about the store being left would refuse
+    /// every switch out of a host that merely started.
+    ///
+    /// What makes a store undroppable is work still in flight *in this
+    /// process*: a loaded engine with an active turn, or a request waiting on a
+    /// decision nobody else can answer ([`Self::has_unsettled_requests`]).
+    /// Finished history is not work — it stays on disk for whichever process
+    /// opens the store next, exactly as it would after a clean exit.
+    pub async fn current_store_is_disposable(&self) -> Result<bool> {
+        if self.has_unsettled_requests() {
+            return Ok(false);
+        }
+        let active = self.active.lock().await;
+        Ok(active
+            .engines
+            .values()
+            .all(|state| state.active_turn.is_none()))
+    }
+
     pub async fn close_execution_admission(&self) {
         let _admission = self.config_admission.write().await;
         self.cancel_token.cancel();
