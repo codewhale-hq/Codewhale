@@ -37647,6 +37647,10 @@ fn reasoning_after_an_interposed_text_block_returns_to_a_thinking_card() {
 
     let mut app = create_test_app();
     let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    // One clock, one time base: `note_delta` schedules the next beat at
+    // `last_commit_at + interval`, so a second beat taken at a fresh
+    // `Instant::now()` lands before it is due and commits nothing.
+    let t0 = Instant::now();
 
     // 1. The first half of the sentence reaches its card the way a delta does:
     //    buffered, then taken by a display beat.
@@ -37654,9 +37658,8 @@ fn reasoning_after_an_interposed_text_block_returns_to_a_thinking_card() {
     app.streaming_state.start_thinking(0);
     let first_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
     app.streaming_state.push_content(0, "first half. ");
-    let now = Instant::now();
-    clock.note_delta(now);
-    let _ = commit_streaming_display_tick(&mut app, &mut clock, now + Duration::from_millis(50));
+    clock.note_delta(t0);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(50));
 
     // 2. The gateway opens a text block mid-reasoning: MessageStarted
     //    finalizes the live entry and starts a text block.
@@ -37672,9 +37675,8 @@ fn reasoning_after_an_interposed_text_block_returns_to_a_thinking_card() {
     );
     let second_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
     app.streaming_state.push_content(0, "second half.");
-    let now = Instant::now();
-    clock.note_delta(now);
-    let _ = commit_streaming_display_tick(&mut app, &mut clock, now + Duration::from_millis(50));
+    clock.note_delta(t0 + Duration::from_millis(60));
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(200));
 
     let first = match app
         .active_cell

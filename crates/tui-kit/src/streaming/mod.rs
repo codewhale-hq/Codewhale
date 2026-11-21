@@ -509,6 +509,48 @@ mod tests {
         assert_eq!(state.commit_text(0, usize::MAX), "tail");
     }
 
+    /// A second beat must be taken on one time base. `note_delta` schedules the
+    /// next beat at `last_commit_at + interval`, so a caller that re-reads the
+    /// wall clock between beats and ticks at `now + 50ms` can land before the
+    /// beat is due and commit nothing — the delta then sits in the buffer until
+    /// some later beat.
+    #[test]
+    fn a_second_beat_needs_one_time_base_not_a_fresh_wall_clock() {
+        let interval = Duration::from_millis(33);
+        let t0 = Instant::now();
+
+        let mut clock = StreamDisplayClock::new(interval);
+        clock.note_delta(t0);
+        assert!(clock.take_due(t0 + Duration::from_millis(50)));
+
+        // The wrong shape: schedule from a moment inside the interval, then tick
+        // before `last_commit + interval` has passed.
+        clock.note_delta(t0 + Duration::from_millis(55));
+        assert!(
+            !clock.take_due(t0 + Duration::from_millis(60)),
+            "a tick inside the interval must not commit"
+        );
+
+        // The right shape: one base, and a tick past `last_commit + interval`.
+        let mut clock = StreamDisplayClock::new(interval);
+        let mut state = StreamingState::new();
+        state.start_thinking(0);
+        state.push_content(0, "first half. ");
+        clock.note_delta(t0);
+        assert!(clock.take_due(t0 + Duration::from_millis(50)));
+        let first = state.commit_text(0, reveal_budget(interval, state.pending_len(0)));
+        assert_eq!(first, "first half. ");
+
+        state.push_content(0, "second half.");
+        clock.note_delta(t0 + Duration::from_millis(60));
+        assert!(
+            clock.take_due(t0 + Duration::from_millis(200)),
+            "a tick past the interval must be due"
+        );
+        let second = state.commit_text(0, reveal_budget(interval, state.pending_len(0)));
+        assert_eq!(second, "second half.");
+    }
+
     #[test]
     fn assistant_text_streams_before_newline() {
         let mut state = StreamingState::new();
