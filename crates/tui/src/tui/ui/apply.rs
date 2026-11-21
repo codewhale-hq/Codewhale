@@ -5185,7 +5185,23 @@ pub(crate) fn apply_loaded_session_config_snapshot(
 /// manager's lifetime). Callers must already have established that nothing in
 /// the current store still needs this process — see the checks in
 /// `apply_loaded_session_with_goal`.
-pub(crate) async fn adopt_runtime_store(
+/// Rebinding onto a store returns a boxed future on purpose.
+///
+/// It contains `TaskManager::start`, whose state machine is large enough on
+/// its own to matter to a caller's stack frame (the launch path already
+/// documents ~1.1 MiB for the task-manager futures). An `async fn` here would
+/// inline that machine into every caller's frame — including the session-load
+/// path, which libtest runs on a 2 MiB thread. Boxing pins the machine on the
+/// heap and leaves the caller holding a pointer.
+pub(crate) fn adopt_runtime_store<'a>(
+    app: &'a mut App,
+    config: &'a Config,
+    binding: crate::runtime_threads::RuntimeStoreBinding,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(adopt_runtime_store_inner(app, config, binding))
+}
+
+async fn adopt_runtime_store_inner(
     app: &mut App,
     config: &Config,
     binding: crate::runtime_threads::RuntimeStoreBinding,
@@ -5253,7 +5269,7 @@ pub(crate) async fn adopt_runtime_store(
         && abandoned.data_dir != binding.data_dir
         && let Ok(manager) = crate::session_manager::SessionManager::default_location()
     {
-        crate::session_reconcile::retire_unbound_store_in_background(
+        codewhale_engine::session_reconcile::retire_unbound_store_in_background(
             manager,
             abandoned.data_dir,
             "conversation switched to another session's store",

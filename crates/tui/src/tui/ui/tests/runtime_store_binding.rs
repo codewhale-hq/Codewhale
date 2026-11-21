@@ -19,6 +19,16 @@ fn fixture_config() -> Config {
 
 #[tokio::test]
 async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow::Result<()> {
+    // The body is built on the heap (`boxed_phase`) rather than inline: a
+    // switch can now adopt a Runtime store, which grew the load future past
+    // what an inline body holds on libtest's test-thread stack.
+    crate::test_support::boxed_phase(
+        runtime_store_binding_persists_on_exit_without_a_model_turn_body,
+    )
+    .await
+}
+
+async fn runtime_store_binding_persists_on_exit_without_a_model_turn_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -48,14 +58,19 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     apply_loaded_session_with_goal(&mut app, &mut config, original.clone(), None)
         .map_err(anyhow::Error::msg)?;
     let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
-    let tasks = TaskManager::start(
-        task_config.clone(),
-        config.clone(),
-        app.plugin_registry.clone(),
-        &original.metadata.id,
-        None,
-    )
-    .await?;
+    // Each `TaskManager::start` is a large state machine of its own (the launch
+    // path documents ~1.1 MiB for these). Boxed separately so the two do not
+    // both occupy this body's frame at once.
+    let tasks = {
+        let task_config = task_config.clone();
+        let config = config.clone();
+        let plugin_registry = app.plugin_registry.clone();
+        let session_id = original.metadata.id.clone();
+        crate::test_support::boxed_phase(move || async move {
+            TaskManager::start(task_config, config, plugin_registry, &session_id, None).await
+        })
+        .await?
+    };
     let binding = tasks
         .session_store_binding()
         .expect("attached Runtime store");
@@ -85,14 +100,22 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     drop(tasks);
     drop(explicit_store);
     // Ordinary resume now reopens the same authority without an env override.
-    let resumed = TaskManager::start(
-        task_config,
-        config,
-        Arc::new(codewhale_plugins::PluginRegistry::empty(root.path())),
-        &saved.metadata.id,
-        saved.metadata.runtime_store.as_ref(),
-    )
-    .await?;
+    let resumed = {
+        let saved_id = saved.metadata.id.clone();
+        let saved_binding = saved.metadata.runtime_store.clone();
+        let plugin_root = root.path().to_path_buf();
+        crate::test_support::boxed_phase(move || async move {
+            TaskManager::start(
+                task_config,
+                config,
+                Arc::new(codewhale_plugins::PluginRegistry::empty(&plugin_root)),
+                &saved_id,
+                saved_binding.as_ref(),
+            )
+            .await
+        })
+        .await?
+    };
     assert_eq!(resumed.execution_scope(), binding.execution_scope);
     resumed.shutdown_and_wait().await?;
     Ok(())
@@ -558,8 +581,22 @@ fn missing_runtime_store_recovers_without_reusing_authority_or_resurrecting_stal
     Ok(())
 }
 
-#[tokio::test]
-async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning()
+#[test]
+fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning()
+-> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(
+            picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning_body,
+        )
+    })
+}
+
+async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning_body()
 -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
@@ -885,8 +922,19 @@ fn adoptable_empty_store_refuses_a_scope_pinned_automation() -> anyhow::Result<(
 /// #6207 end to end: the picker adopts an existing-but-empty unheld store
 /// into the idle host and persists the repaired binding, the way the
 /// missing-store path already does.
-#[tokio::test]
-async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
+#[test]
+fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(picker_adopts_existing_empty_unheld_store_body)
+    })
+}
+
+async fn picker_adopts_existing_empty_unheld_store_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -963,8 +1011,25 @@ async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
 }
 
 /// #6144 P1a: an abandoned store another document still binds is kept.
-#[tokio::test]
-async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Result<()> {
+/// Drive on the default 2 MiB test stack, not the caller's.
+///
+/// `apply_loaded_session_with_goal` grew past what this test's former
+/// `#[tokio::test]` body could hold once a switch could adopt a store: the
+/// load call, the task manager it rebinds and the session snapshots all share
+/// one poll frame. `block_on_default_test_stack` pins the budget libtest
+/// actually gives a test thread, so this fails here rather than in CI's
+/// 16 MiB `RUST_MIN_STACK`.
+#[test]
+fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Result<()> {
+    // `boxed_phase` builds the body future on the heap, so its temporaries
+    // live in that future's own poll frame instead of being inlined into the
+    // thread's stack frame.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(picker_adoption_keeps_a_store_another_document_binds_body)
+    })
+}
+
+async fn picker_adoption_keeps_a_store_another_document_binds_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1039,8 +1104,19 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
 /// The switch does not abandon the target — that store stays on disk for
 /// whichever process opens it next — so the only question worth asking is
 /// whether the store being *left* still needs this process.
-#[tokio::test]
-async fn switch_adopts_a_store_holding_finished_history() -> anyhow::Result<()> {
+#[test]
+fn switch_adopts_a_store_holding_finished_history() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(switch_adopts_a_store_holding_finished_history_body)
+    })
+}
+
+async fn switch_adopts_a_store_holding_finished_history_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1127,8 +1203,19 @@ async fn switch_adopts_a_store_holding_finished_history() -> anyhow::Result<()> 
 /// can still move to another conversation. What genuinely blocks a release is
 /// work in flight in *this* process — an active turn, or a request waiting on a
 /// decision, which lives only in memory and no restart can recover.
-#[tokio::test]
-async fn switch_allows_leaving_a_store_with_finished_history() -> anyhow::Result<()> {
+#[test]
+fn switch_allows_leaving_a_store_with_finished_history() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(switch_allows_leaving_a_store_with_finished_history_body)
+    })
+}
+
+async fn switch_allows_leaving_a_store_with_finished_history_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1207,6 +1294,8 @@ fn fixture_thread(
         model_provider_id: None,
         reasoning_effort: None,
         allowed_tools: None,
+        disallowed_tools: Vec::new(),
+        add_dirs: Vec::new(),
         workspace: workspace.to_path_buf(),
         mode: "agent".to_string(),
         permission_posture: None,
@@ -1219,8 +1308,12 @@ fn fixture_thread(
         system_prompt: None,
         task_id: None,
         title: None,
+        parent_thread_id: None,
         last_read: None,
         session_id: None,
         saved_session_checkpoint: None,
+        executor: None,
+        environment: None,
+        agent_preset: None,
     }
 }
