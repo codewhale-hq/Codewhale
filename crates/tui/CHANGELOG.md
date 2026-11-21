@@ -7,20 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Native release bundles, the Windows installer, npm packages and published crates include the Codewhale license and both third-party notice documents.
-
-- Stopping an external agent while it waits for approval now records the turn as interrupted even when the agent replies that it finished. (CW-7965)
-
-- The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
-- Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session. Thanks to @deosiree (PR #7448).
-- Added LLMTR as an OpenAI-compatible provider with live model discovery. Thanks [@knowhycodata](https://github.com/knowhycodata) for [PR 7450](https://github.com/codewhale-hq/Codewhale/pull/7450).
-- External-agent sessions can discover 25 installed agent CLIs. Set `CODEWHALE_CUSTOM_ACP_AGENTS` to include your own ACP-compatible command in the same picker. (CW-7942)
-
 ## [0.10.3] - 2026-11-21
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
 
 ### Added
+
+- Added LLMTR as an OpenAI-compatible provider with live model discovery.
+- External-agent sessions can discover 25 installed agent CLIs. Set `CODEWHALE_CUSTOM_ACP_AGENTS` to include your own ACP-compatible command in the same picker. (CW-7942)
 
 - **Read-only deferred tools:** Auto-Review recognizes local inspection tools and task or automation reads without prompting for routine lookups. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7431)
 - **A quieter terminal launch:** a compact Desktop-inspired whale shares the composer accent. Recent sessions open on demand, and MCP sign-in details stay in the connection manager. (CW-8318)
@@ -354,7 +348,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
   picking a terminal view brings the whale back. Reduced motion keeps the still
   whale. Not yet published to codewhale.net.
 
-- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; the homepage leads with the live project and a new headline, a public roadmap and contributing guide put issues first for features, the shared project sections are translated into all 18 site locales, task guides no longer carry the retired mode instructions, and the missing-reply guide diagnoses a failing provider call without assuming the key is missing. These website changes still await deployment.
+- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references identify v0.10.2 as the latest published release; the homepage leads with the live project and a new headline, a public roadmap and contributing guide put issues first for features, the shared project sections are translated into all 18 site locales, task guides no longer carry the retired mode instructions, and the missing-reply guide diagnoses a failing provider call without assuming the key is missing. These website changes still await deployment.
 
 - **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
 
@@ -628,6 +622,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
   other saved credentials (Refs #6932).
 
 ### Fixed
+
+- Stopping an external agent while it waits for approval now records the turn as interrupted even when the agent replies that it finished. (CW-7965)
+- Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session.
 
 - Large session usage ledgers keep settled and unresolved usage and discard only the oldest routing diagnostics needed to stay within the storage limit. Thanks [@donglovejava](https://github.com/donglovejava) ([#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 
@@ -1302,6 +1299,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Maintenance
 
+- Native release bundles, the Windows installer, npm packages and published crates include the Codewhale license and both third-party notice documents.
+- The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
+
 - **Windows release harness:** the terminal-clipboard check strips Windows PowerShell's UTF-8 BOM before parsing cleanup receipts and still runs the bounded private-path cleanup fallback after its controller has exited; the vendored terminal kit lock follows Protocol 0.10.3.
 - **Windows release import floor:** the 10 ARM64 import pairs that the native export probe resolved on Windows 11 ARM64 are qualified, and 12 x64 pairs are recorded as documented API contracts until a native x64 export probe exists. The Windows 10 build 14393 floor, the guard and the x86 profile are unchanged; the next frozen candidate's import job is the real check.
 - MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
@@ -1338,10 +1338,12 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Contributors
 
+- **[@knowhycodata](https://github.com/knowhycodata)** — added the LLMTR gateway descriptor and provider documentation ([#7450](https://github.com/codewhale-hq/Codewhale/pull/7450)).
+
 - **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **[@NieZhuZhu](https://github.com/NieZhuZhu)** — hardened shell-command policy expansion: classified local read-only deferred tools as safe for Auto-Review ([#7431](https://github.com/codewhale-hq/CodeWhale/pull/7431)), scanned bounded AWK and sed programs for embedded shell commands ([#7430](https://github.com/codewhale-hq/CodeWhale/pull/7430)), kept each command's stdin source under group redirection and `numactl --strict` ([#7429](https://github.com/codewhale-hq/CodeWhale/pull/7429)), failed closed on dynamically resolved flag and verb names ([#7427](https://github.com/codewhale-hq/CodeWhale/pull/7427)), modeled additional tmux execution verbs within a shared work budget ([#7428](https://github.com/codewhale-hq/CodeWhale/pull/7428)), modeled the `oc`, `vagrant`, `op`, `opam` and `helm` launchers ([#7425](https://github.com/codewhale-hq/CodeWhale/pull/7425)), and propagated the dynamic flag-word bit through `nix` and launcher flags ([#7424](https://github.com/codewhale-hq/CodeWhale/pull/7424)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
-- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and individual chunk flushes, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7444](https://github.com/codewhale-hq/CodeWhale/pull/7444), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
+- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste, individual chunk flushes, and the Enter-key append path, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7444](https://github.com/codewhale-hq/CodeWhale/pull/7444), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
