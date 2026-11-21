@@ -133,7 +133,7 @@ try:
     assert info['agent']['version']=='3.1.4' and info['agent']['runnable']
     info['options']=ok('GET','/v1/agents/external/mistral-vibe/options?'+urllib.parse.urlencode({'cwd':str(root/'work')}))
     assert info['options']['agent']['protocol_version']==1
-    t=ok('POST','/v1/threads',{'workspace':str(root/'work'),'permission_posture':'ask','executor':{'kind':'acp','agent_id':'mistral-vibe'}})
+    t=ok('POST','/v1/threads',{'workspace':str(root/'work'),'permission_posture':'ask','executor':{'kind':'acp','agent_id':'mistral-vibe','config':{'mode':'ask'}}})
     thread='/v1/threads/'+t['id'];info['thread']=t['id']
     (root/'work/note.txt').write_text('VIBE-LOCAL-FIXTURE')
     info['promptSent']=True
