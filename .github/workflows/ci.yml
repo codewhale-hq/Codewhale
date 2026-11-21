@@ -313,6 +313,8 @@ jobs:
       - name: Check release helper contracts
         run: |
           bash .github/scripts/agent-task-metadata.test.sh
+          bash scripts/check-behaviour-line.test.sh
+          python3 scripts/check-docs-drift.test.py
           bash scripts/release/app-server-smoke.test.sh
           bash scripts/release/check-feature-release-notes.test.sh
           bash scripts/release/check-ohos-deps.test.sh
