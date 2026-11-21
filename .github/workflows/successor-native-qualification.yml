@@ -503,7 +503,7 @@ jobs:
           gh release download v0.10.2 --repo $env:GITHUB_REPOSITORY --pattern $filename --output $baselineZip
           if ($LASTEXITCODE -ne 0) { throw 'Baseline download failed' }
           Remove-Item Env:GH_TOKEN
-          $output = & ./.github/qualification/windows-archive.ps1 -BaselineArchive $baselineZip -BaselineArchiveDigest $env:BASELINE -CandidateArchive (Join-Path $work $filename) -CandidateArchiveDigest $digest -CandidateSource $env:ENGINE_SHA -CandidateExecutableDigest $exeDigest
+          $output = @(& ./.github/qualification/windows-archive.ps1 -BaselineArchive $baselineZip -BaselineArchiveDigest $env:BASELINE -CandidateArchive (Join-Path $work $filename) -CandidateArchiveDigest $digest -CandidateSource $env:ENGINE_SHA -CandidateExecutableDigest $exeDigest)
           $output | Write-Output
           $output[-1] | ConvertFrom-Json | ConvertTo-Json | Set-Content -Encoding utf8 windows-archive.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
