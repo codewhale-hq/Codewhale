@@ -1,0 +1,150 @@
+name: Verify frozen crate packages and corrected Linux recovery
+on:
+  push:
+    branches: [ci/cw-0103-frozen-crate-and-linux-proof]
+    paths: [.github/workflows/engine-independent-qualification.yml]
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+jobs:
+  frozen-crates:
+    runs-on: ubuntu-24.04
+    env:
+      ENGINE_SHA: 555322f9cbbd2c2fa197abe3263dc43f9e6f2532
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SHA }}
+          persist-credentials: false
+      - run: bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
+      - name: Verify the frozen crate tarballs without uploading
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$RUNNER_TEMP/fresh-cargo" CARGO_TARGET_DIR="$RUNNER_TEMP/fresh-target"
+          mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+          test "$(git rev-parse HEAD)" = "$ENGINE_SHA"
+          bash scripts/release/publish-crates.sh dry-run 2>&1 | tee "$RUNNER_TEMP/crate-verification.log"
+          python3 - <<'PYCODE'
+          import hashlib, json, os, tarfile, tomllib
+          from pathlib import Path
+          root=Path(os.environ['CARGO_TARGET_DIR'])/'package'/'tmp-registry'
+          rows=[]
+          for path in sorted(root.glob('*.crate')):
+              with tarfile.open(path) as archive:
+                  names=archive.getnames()
+                  prefix=path.stem+'/'
+                  assert all(n.startswith(prefix) for n in names)
+                  files=[n[len(prefix):] for n in names]
+                  excluded={'.git','.env','node_modules','target','.DS_Store'}
+                  assert not any(excluded.intersection(Path(n).parts) for n in files), path.name
+                  config=tomllib.loads(archive.extractfile(prefix+'Cargo.toml').read().decode())['package']
+                  assert config.get('license') or config.get('license-file'),path.name
+                  assert path.stat().st_size<=10*1024*1024
+                  with path.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+                  rows.append(dict(file=path.name,bytes=path.stat().st_size,sha256=digest,members=len(files),license=config.get('license',config.get('license-file'))))
+          assert len(rows)==46,len(rows)
+          Path(os.environ['RUNNER_TEMP'],'crate-inventory.json').write_text(json.dumps(dict(source=os.environ['ENGINE_SHA'],crates=rows),indent=2))
+          print('Verified compressed bytes, file lists and declared licenses for',len(rows),'crate archives')
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: frozen-crate-verification
+          path: |
+            ${{ runner.temp }}/crate-inventory.json
+            ${{ runner.temp }}/crate-verification.log
+  corrected-linux-recovery:
+    runs-on: ubuntu-24.04
+    env:
+      ENGINE_SHA: da9b69228ba863d00407568a04b2d5a369649532
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SHA }}
+          persist-credentials: false
+      - run: bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
+      - name: Build the corrected Engine and exercise partial rollback, undo, redo and reinstall
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ENGINE_SHA"
+          export CODEWHALE_BUILD_SHA="$ENGINE_SHA"
+          cargo build --locked --bin codewhale
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/baseline.tar.gz" https://github.com/codewhale-hq/Codewhale/releases/download/v0.10.2/codewhale-linux-x64.tar.gz
+          python3 - <<'PYCODE'
+          import hashlib, json, os, shutil, subprocess, tempfile
+          from pathlib import Path
+          scratch=Path(tempfile.mkdtemp(dir=os.environ['RUNNER_TEMP']))
+          out=Path(os.environ['RUNNER_TEMP'])/'proof'; out.mkdir(exist_ok=True)
+          old_archive=Path(os.environ['RUNNER_TEMP'])/'baseline.tar.gz'
+          pinned='ed666471d845549c922bb808c01e7d5553c3e97972d77ca411398002510f70d9'
+          def digest(p):
+              with p.open('rb') as f: return hashlib.file_digest(f,'sha256').hexdigest()
+          assert digest(old_archive)==pinned
+          binary=Path('target/debug/codewhale').resolve()
+          native={'source':os.environ['ENGINE_SHA'],'installed':str(binary),'alias':str(binary),'sha256':digest(binary)}
+          installer=Path('scripts/release/install.sh').resolve()
+          home=scratch/'home';home.mkdir(mode=0o700);state=home/'.codewhale';state.mkdir(mode=0o700)
+          env={'HOME':str(home),'CODEWHALE_HOME':str(state),'TMPDIR':str(scratch),'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','CODEWHALE_NO_UPDATE_CHECK':'1','CODEWHALE_TELEMETRY':'0','CODEWHALE_DISABLE_MODELS_DEV_FETCH':'1'}
+          def run(label,*argv):
+              result=subprocess.run(list(map(str,argv)),env=env,cwd=home,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+              (out/(label+'.log')).write_text(result.stdout)
+              assert result.returncode==0,(label,result.returncode,result.stdout[-2000:])
+              return result.stdout
+          run('extract','/usr/bin/tar','-xzf',old_archive,'-C',scratch)
+          older=scratch/'codewhale-linux-x64'
+          payload=scratch/'native-payload';payload.mkdir()
+          for k,name in [('installed','codewhale'),('alias','codew')]:
+           shutil.copy2(native[k],payload/name)
+          shutil.copy2(installer,payload/'install.sh')
+          bin=home/'.local/bin';bin.mkdir(mode=0o700,parents=True)
+          (bin/'unrelated').write_text('keep\n');(state/'sentinel').write_text('keep\n');(home/'.zshrc').write_text('keep\n')
+          def observe(label):
+           receipt=bin/'.codewhale-install.sha256'
+           hashes={n:digest(bin/n) for n in ['codewhale','codew']}
+           claims={entry.split()[1]:entry.split()[0] for entry in receipt.read_text().splitlines()} if receipt.is_file() else {}
+           return {'versions':{n:run(label+'-'+n,bin/n,'--version').strip() for n in hashes},'sha256':hashes,'receipt_exists':receipt.exists(),'receipt':claims,'matches':bool(claims) and claims==hashes}
+          def manifests():return list((state/'recovery').glob('*/manifest.tsv'))
+          def rows(p):return [dict(zip(['original','stored','sha256','size'],line.split('\t'))) for line in p.read_text().splitlines()]
+
+          run('install-baseline','/bin/bash',older/'install.sh','--no-modify-path')
+          (bin/'codew').unlink()
+          old_version=run('old-version',bin/'codewhale','--version').strip()
+          before_sha=digest(bin/'codewhale')
+          assert '(ff466b2ed0bf)' in old_version and not (bin/'.codewhale-install.sha256').exists()
+          run('install-native','/bin/bash',payload/'install.sh','--no-modify-path')
+          new=observe('upgraded')
+          assert new['matches'] and native['source'][:12] in new['versions']['codewhale']
+          original,=manifests()
+          assert [Path(r['original']).name for r in rows(original)]==['codewhale']
+          old_rows=rows(original)
+          later_receipt=(bin/'.codewhale-install.sha256').read_bytes()
+          run('partial-restore',payload/'codewhale','doctor','--restore',original.parent.name)
+          partial=observe('partial')
+          assert partial['versions']=={'codewhale':old_version,'codew':new['versions']['codew']}
+          assert partial['receipt']=={'codew':new['sha256']['codew']} and partial['sha256']['codewhale']==before_sha
+          undo,=[p for p in manifests() if rows(p)]
+          undo_rows=undo.read_text().splitlines()
+          assert {Path(x.split('\t')[0]).name for x in undo_rows}=={'codewhale','.codewhale-install.sha256'}
+          assert next(x for x in undo_rows if Path(x.split('\t')[0]).name=='codewhale').split('\t')[4]==before_sha
+          run('undo-partial',payload/'codewhale','doctor','--restore',undo.parent.name)
+          after_undo=observe('undo')
+          assert after_undo==new and (bin/'.codewhale-install.sha256').read_bytes()==later_receipt
+          reverse,=[p for p in manifests() if rows(p)]
+          run('redo-partial',payload/'codewhale','doctor','--restore',reverse.parent.name)
+          assert observe('partial-again')==partial
+          run('reinstall','/bin/bash',payload/'install.sh','--no-modify-path')
+          reinstalled=observe('reinstall')
+          assert reinstalled==new and (bin/'.codewhale-install.sha256').read_bytes()==later_receipt
+          assert all(p.read_text()=='keep\n' for p in (bin/'unrelated',state/'sentinel',home/'.zshrc'))
+          result={'source':native['source'],'candidate_sha256':native['sha256'],'archive_sha256':pinned,'installer_sha256':digest(installer),'scratch':str(scratch),'baseline':{'codewhale':old_version,'codew':None,'receipt':None},'upgraded':new,'initial_recovery':old_rows,'partial':partial,'undo_recovery':undo_rows,'undo':after_undo,'redo_equals_partial':True,'reinstall':reinstalled,'unrelated_preserved':True}
+          (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps({'partialClaims':list(partial['receipt']),'undo':after_undo['matches'],'reinstall':reinstalled['matches']}))
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: corrected-linux-archive-recovery
+          path: ${{ runner.temp }}/proof/
