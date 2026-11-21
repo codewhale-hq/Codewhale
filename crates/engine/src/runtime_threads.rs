@@ -1702,6 +1702,13 @@ pub struct RuntimeThreadStore {
     /// whether a read is running by probing it. A writer never holds it, so a
     /// running turn's write is never behind a store-wide read.
     item_index_seed: Arc<parking_lot::Mutex<()>>,
+    /// Whether this handle may write the store's caches. A live engine does; a
+    /// read-only open does not, because its whole contract is that reading a
+    /// thread never mutates a store another process owns.
+    persist_caches: bool,
+    /// Set when the index this process built differs from the cached one, so a
+    /// later [`Self::cache_item_index`] knows there is something to write.
+    item_index_differs_from_cache: Arc<std::sync::atomic::AtomicBool>,
     thread_progress: Arc<parking_lot::Mutex<HashMap<String, DateTime<Utc>>>>,
     /// Files read by whole-directory turn scans (`list_all_turns`). Shared
     /// across store clones so a `spawn_blocking` snapshot still counts against
@@ -1742,6 +1749,45 @@ struct ItemIndex {
     /// published. Only writes that race a read are recorded; see
     /// [`RuntimeThreadStore::note_item_in_index`].
     pending: Vec<(String, String)>,
+}
+
+/// The item index as it is kept between processes: item id to turn id.
+///
+/// The in-memory index above answers "which items does this turn own", and it
+/// is built by reading every item record because an item's filename carries
+/// only its own id. That read is the cost of the first thread a process opens
+/// (see [`RuntimeThreadStore::ensure_item_index`]), and it is paid again by
+/// every new process — a restarted engine, a `codewhale receipts` run — because
+/// until now the answer lived only in memory.
+///
+/// This file is that answer on disk. It is a cache and nothing more: an id
+/// names one turn for the life of the record, so an entry can be stale only by
+/// naming an item that is gone, and the directory listing — which costs a
+/// `readdir`, not a record read — is what decides which entries still count. A
+/// missing, unreadable or out-of-date file therefore costs one full read and
+/// nothing worse, exactly what every open used to cost.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedItemIndex {
+    schema_version: u32,
+    /// Item id -> the turn that owns it.
+    by_item: HashMap<String, String>,
+}
+
+/// Bumped only if the shape of [`PersistedItemIndex`] changes. A file carrying
+/// another version is ignored and rebuilt, so this is never a migration.
+const ITEM_INDEX_SCHEMA_VERSION: u32 = 1;
+
+/// The cached item index, beside the directories it describes. It is not inside
+/// `items/`: that directory is read as "one file is one item", and a cache in it
+/// would be read as an item.
+const ITEM_INDEX_CACHE_FILE: &str = "item-index.json";
+
+/// The one field a whole-directory read needs from an item record. Deserializing
+/// into this instead of [`TurnItemRecord`] skips every string in `detail` and
+/// `metadata`, which is most of a tool result's bytes.
+#[derive(Debug, Deserialize)]
+struct ItemTurnReference {
+    turn_id: String,
 }
 
 impl RuntimeThreadStore {
@@ -1791,6 +1837,8 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            persist_caches: true,
+            item_index_differs_from_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1849,6 +1897,8 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            persist_caches: false,
+            item_index_differs_from_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -3642,16 +3692,22 @@ impl RuntimeThreadStore {
             .collect())
     }
 
-    /// Read the items directory once, and never again for this store.
+    /// Learn which items each turn owns: one listing, plus a record read for
+    /// every item no earlier process has seen.
     ///
     /// An item's filename carries the item id and nothing else, so the only way
-    /// to learn which items a turn has is to read every item record. Both
-    /// callers used to do exactly that per request: [`Self::get_thread_detail`]
+    /// to learn which items a turn has is to open the item records. Both callers
+    /// used to do exactly that per request: [`Self::get_thread_detail`]
     /// (`GET /v1/threads/{id}`, one walk per thread opened) and the fork
     /// preparation whose items the transcript rebuild reads. On the store this
     /// was measured against — 61,441 items, 294MB, 140 threads — one walk costs
     /// ~1.4s warm and 6.7s cold, and it was the whole of a thread's open time; a
     /// median thread holds 272 items, so reading the ones it needs is ~7ms.
+    ///
+    /// The listing is cheap and decides membership; what an earlier process
+    /// learned is read from [`Self::cache_item_index`]'s file, so a store that
+    /// has been opened once costs the listing and nothing more. Measured on a
+    /// 55,572-item store: 3.9s with no cache, 93ms with one.
     ///
     /// The walk is not parallelizable either, which is why this reads once
     /// instead of reading harder: sixteen concurrent `cat` streams of the same
@@ -3677,8 +3733,11 @@ impl RuntimeThreadStore {
             return Ok(());
         }
 
-        let mut by_turn: HashMap<String, Vec<String>> = HashMap::new();
+        // The item ids the store holds now. This is a directory listing, not a
+        // read of its records: on the store this was measured against it is
+        // 27ms for 55,572 items against 4.8s to open every one of them.
         let items_dir = checked_existing_runtime_store_dir(&self.items_dir)?;
+        let mut item_ids: Vec<String> = Vec::new();
         for entry in fs::read_dir(&items_dir)
             .with_context(|| format!("Failed to read {}", items_dir.display()))?
         {
@@ -3687,26 +3746,197 @@ impl RuntimeThreadStore {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let item_id = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            #[cfg(any(test, feature = "test-support"))]
-            self.item_dir_files_read
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let item = self.load_item(&item_id)?;
-            by_turn.entry(item.turn_id).or_default().push(item.id);
+            item_ids.push(
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
         }
 
-        let mut index = self.item_index.write();
-        for (turn_id, item_id) in std::mem::take(&mut index.pending) {
-            let item_ids = by_turn.entry(turn_id).or_default();
-            if !item_ids.contains(&item_id) {
-                item_ids.push(item_id);
-            }
+        // What an earlier process already learned about these ids. Only the ids
+        // this listing does not account for are opened: a store that has been
+        // read once costs the listing above and nothing more, however many
+        // items it holds.
+        let known = self.load_persisted_item_index();
+
+        let mut by_turn: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_item: HashMap<String, String> = HashMap::with_capacity(item_ids.len());
+        for item_id in item_ids {
+            // An entry for an id that is no longer in the directory is simply
+            // not consulted: the listing decides membership, so deleting an
+            // item needs no invalidation here.
+            let turn_id = match known.get(&item_id) {
+                Some(turn_id) => turn_id.clone(),
+                None => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    self.item_dir_files_read
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.load_item_turn_id(&item_id)?
+                }
+            };
+            by_item.insert(item_id.clone(), turn_id.clone());
+            by_turn.entry(turn_id).or_default().push(item_id);
         }
-        index.by_turn = Some(by_turn);
+
+        let differs_from_cache = by_item != known;
+        {
+            let mut index = self.item_index.write();
+            for (turn_id, item_id) in std::mem::take(&mut index.pending) {
+                let item_ids = by_turn.entry(turn_id).or_default();
+                if !item_ids.contains(&item_id) {
+                    item_ids.push(item_id);
+                }
+            }
+            index.by_turn = Some(by_turn);
+        }
+        drop(_seed);
+        // Nothing is written here. Reading a thread must leave the store exactly
+        // as it found it — a `GET` that rewrote a file would violate that for
+        // every reader, and the tests that snapshot a store to prove a route is
+        // read-only would be right to fail. Caching is [`Self::cache_item_index`],
+        // called deliberately by the startup warm-up.
+        if differs_from_cache {
+            self.item_index_differs_from_cache
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
+    }
+
+    /// Build the item index and leave it on disk for the next process.
+    ///
+    /// The write belongs to a caller that has decided to pay for it — the
+    /// server's startup warm-up — and not to the reads it saves. A cache cannot
+    /// be wrong here, only absent: every id in the file is checked against the
+    /// directory listing before it is used, so a stale entry costs a record read
+    /// and nothing else.
+    pub fn cache_item_index(&self) -> Result<()> {
+        self.ensure_item_index()?;
+        if !self.persist_caches {
+            return Ok(());
+        }
+        if !self
+            .item_index_differs_from_cache
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            // The file already says exactly what this process learned.
+            return Ok(());
+        }
+        let by_item = {
+            let index = self.item_index.read();
+            index
+                .by_turn
+                .as_ref()
+                .map(|by_turn| {
+                    by_turn
+                        .iter()
+                        .flat_map(|(turn_id, item_ids)| {
+                            item_ids
+                                .iter()
+                                .map(move |item_id| (item_id.clone(), turn_id.clone()))
+                        })
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default()
+        };
+        match self.write_persisted_item_index(&by_item) {
+            // Cleared only once the file says it: a write that failed leaves
+            // the flag set, so a later call in this process can still try.
+            Ok(()) => self
+                .item_index_differs_from_cache
+                .store(false, std::sync::atomic::Ordering::Relaxed),
+            // A cache that cannot be written costs the next process the read it
+            // would have saved, which is the state every process was in before
+            // this file existed. It is not a reason to fail startup.
+            Err(error) => tracing::debug!(%error, "runtime item index could not be cached"),
+        }
+        Ok(())
+    }
+
+    /// Where the item index is cached, beside the directories it describes.
+    fn item_index_path(&self) -> Option<PathBuf> {
+        self.threads_dir
+            .parent()
+            .map(|root| root.join(ITEM_INDEX_CACHE_FILE))
+    }
+
+    /// The cached item->turn map, or an empty one to rebuild from.
+    ///
+    /// Every failure reads as "nothing known": a cache that cannot be trusted
+    /// must cost the full read, never a wrong answer, so a file from another
+    /// schema, a truncated file, or a file this process cannot read all take
+    /// the same branch.
+    fn load_persisted_item_index(&self) -> HashMap<String, String> {
+        let Some(path) = self.item_index_path() else {
+            return HashMap::new();
+        };
+        let raw = match read_store_file(&path) {
+            Ok(raw) => raw,
+            // Absent is the normal case for a store no process has warmed yet,
+            // and a file this process may not read is no different from absent.
+            Err(_) => return HashMap::new(),
+        };
+        match serde_json::from_str::<PersistedItemIndex>(&raw) {
+            Ok(cache) if cache.schema_version == ITEM_INDEX_SCHEMA_VERSION => cache.by_item,
+            _ => HashMap::new(),
+        }
+    }
+
+    /// Publish the cache for the next process.
+    ///
+    /// Deliberately not [`write_json_atomic`]: that one syncs the payload and
+    /// then the parent directory, which is what a durable record owes and what a
+    /// cache does not. Losing this file to a crash costs the next process one
+    /// full read — the state every process was in before it existed — so the
+    /// write is a plain rename over a temporary, atomic for readers and cheap
+    /// for the caller.
+    fn write_persisted_item_index(&self, by_item: &HashMap<String, String>) -> Result<()> {
+        let Some(path) = self.item_index_path() else {
+            return Ok(());
+        };
+        reject_symlinked_store_file(&path)?;
+        let payload = serde_json::to_vec(&PersistedItemIndex {
+            schema_version: ITEM_INDEX_SCHEMA_VERSION,
+            by_item: by_item.clone(),
+        })?;
+        // Named for this process so two of them cannot overwrite each other's
+        // temporary; the rename below is what publishes it either way.
+        let temporary = path.with_file_name(format!(
+            "{ITEM_INDEX_CACHE_FILE}.{}.tmp",
+            std::process::id()
+        ));
+        fs::write(&temporary, payload)
+            .with_context(|| format!("Failed to write {}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .with_context(|| format!("Failed to publish {}", path.display()))?;
+        Ok(())
+    }
+
+    /// The turn an item belongs to, without materializing the record.
+    ///
+    /// Only used where the whole directory is read to learn that one field —
+    /// see [`Self::ensure_item_index`]. An item's `detail` can hold a tool
+    /// result of hundreds of kilobytes, and deserializing into
+    /// [`TurnItemRecord`] allocates every one of them to answer a question
+    /// about an id.
+    fn load_item_turn_id(&self, item_id: &str) -> Result<String> {
+        let path = self.item_path(item_id)?;
+        let raw = read_store_file(&path).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Read,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        let reference: ItemTurnReference = serde_json::from_str(&raw).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Parse,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        Ok(reference.turn_id)
     }
 
     /// Keep the item index current across an item write.

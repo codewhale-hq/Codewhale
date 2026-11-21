@@ -23723,6 +23723,301 @@ fn a_warmed_store_opens_a_thread_without_reading_the_items_directory() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The index is a cache, and a cache is worth having only if it outlives the
+/// process that built it.
+///
+/// Every new process — a restarted engine, a `codewhale receipts` run — used to
+/// pay the whole items-directory read again, because the only copy of the answer
+/// was in memory. On a store with tens of thousands of items that read is the
+/// first thread's entire open time (27ms to list the directory against 4.8s to
+/// open every record, measured against 55,572 items).
+#[test]
+fn the_item_index_survives_the_process_that_built_it() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for index in 0..4 {
+            store
+                .save_item(&sample_item(
+                    &format!("trn_{index}"),
+                    &format!("itm_{index}"),
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        assert!(
+            !store.item_index_path().expect("index path").exists(),
+            "saving an item does not read the directory, so nothing is cached yet"
+        );
+        store.cache_item_index().expect("build and cache the index");
+        assert!(
+            store.item_index_path().expect("index path").exists(),
+            "the index is written for the next process"
+        );
+    }
+
+    // A new process over the same store: the listing finds every id already
+    // accounted for, so not one item record is opened.
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_2".to_string()])
+        .expect("read a thread's items");
+    assert_eq!(items["trn_2"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a cached store must not re-read the item records it already knows"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Only the items the listing does not account for are opened: an item written
+/// while no process was running is learned on its own, not by re-reading the
+/// store.
+#[test]
+fn the_cache_learns_only_the_items_written_while_it_was_closed() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_known",
+                "itm_known",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    {
+        // The store is written again without anyone reading its directory, the
+        // shape a running turn leaves behind.
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_late",
+                "itm_late",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_known".to_string(), "trn_late".to_string()])
+        .expect("read both threads");
+    assert_eq!(items["trn_known"].len(), 1);
+    assert_eq!(items["trn_late"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the item the cache had never seen is opened"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An entry outlives its item, and the listing is what decides membership: a
+/// deleted item is not reported, and the file is rewritten without it.
+#[test]
+fn the_cache_forgets_an_item_that_is_gone() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for id in ["itm_kept", "itm_removed"] {
+            store
+                .save_item(&sample_item(
+                    "trn_1",
+                    id,
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let removed_path = dir.join("items").join("itm_removed.json");
+    std::fs::remove_file(&removed_path).expect("remove item");
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        items["trn_1"]
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["itm_kept"],
+        "an item the directory no longer holds is not part of a turn"
+    );
+
+    // The read above learned that one entry is gone; caching replaces the file
+    // with what the directory actually holds.
+    store.cache_item_index().expect("refresh the cache");
+    let cached = store.load_persisted_item_index();
+    assert_eq!(cached.get("itm_removed"), None);
+    assert_eq!(cached.get("itm_kept").map(String::as_str), Some("trn_1"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A cache is never trusted over the directory: anything unreadable costs the
+/// full read and nothing else.
+#[test]
+fn a_damaged_cache_falls_back_to_reading_the_directory() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let cache_path = dir.join(ITEM_INDEX_CACHE_FILE);
+
+    // Truncated, foreign-schema and absent all have to answer the same way.
+    for damaged in [
+        "{ not json".to_string(),
+        serde_json::json!({ "schema_version": 99, "by_item": {} }).to_string(),
+    ] {
+        std::fs::write(&cache_path, damaged).expect("damage the cache");
+        let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+        store
+            .item_dir_files_read
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let items = store
+            .list_items_for_turns_map(&["trn_1".to_string()])
+            .expect("read the thread's items");
+        assert_eq!(items["trn_1"].len(), 1);
+        assert_eq!(
+            store
+                .item_dir_files_read
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "an unusable cache means the records are read"
+        );
+        // And caching replaces it, so the next process is spared the read.
+        store.cache_item_index().expect("replace the damaged cache");
+        assert_eq!(
+            store
+                .load_persisted_item_index()
+                .get("itm_1")
+                .map(String::as_str),
+            Some("trn_1")
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A read-only handle exists so that reading a thread never mutates a store
+/// another process owns, and a cache is a write.
+#[test]
+fn a_read_only_handle_never_writes_the_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open_read_only(dir.clone())
+        .expect("open store")
+        .expect("store exists");
+    store.cache_item_index().expect("build the index");
+    assert!(store.item_index.read().by_turn.is_some());
+    assert!(
+        !store.item_index_path().expect("index path").exists(),
+        "a read-only handle must not write to the store"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Reading a store never writes to it.
+///
+/// The cache is a file the store did not have before, and the routes that answer
+/// a client are reads: a `GET` that left one behind would break the promise those
+/// routes make, and the tests that snapshot a store to prove a route is
+/// read-only would be right to fail. So building the index writes nothing;
+/// [`RuntimeThreadStore::cache_item_index`] is the only writer, and only the
+/// startup warm-up calls it.
+#[test]
+fn reading_a_store_never_writes_the_index_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+    let snapshot = |label: &str| {
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("list store") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        assert!(
+            !files
+                .iter()
+                .any(|path| path.ends_with(ITEM_INDEX_CACHE_FILE)),
+            "{label}: no cache file yet"
+        );
+        files
+    };
+
+    let before = snapshot("before the read");
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        snapshot("after the read"),
+        before,
+        "a read must leave the store exactly as it found it"
+    );
+
+    // The deliberate caller is what puts it there.
+    store.cache_item_index().expect("cache the index");
+    assert!(
+        dir.join(ITEM_INDEX_CACHE_FILE).exists(),
+        "the warm-up's own call is what writes the cache"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The index is exact, not a snapshot: an item the store holds is returned
 /// whether or not the turn ever registered it, and whether it was written
 /// before or after the index was built.
