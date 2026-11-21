@@ -622,6 +622,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 ### Fixed
 
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
+- **Bounded terminal-multiplexer policy parsing:** tmux arguments and prompt templates are checked within a finite allowance. Expansion that runs out of allowance is reported as unresolved. (CW-8302)
 - **Sub-agent budget-stop receipts show clipped output:** the receipt gives the character count and points to the retained child transcript. It also keeps the workspace preservation receipt visible when the partial output is long. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7434](https://github.com/codewhale-hq/Codewhale/issues/7434). (CW-8317)
 - **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
 - **Permission controls during an approval:** Shift+Tab and Full Access in the approval’s additional choices open permission settings while leaving the current approval pending. (CW-8320)
