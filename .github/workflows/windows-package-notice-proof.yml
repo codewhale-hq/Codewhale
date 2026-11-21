@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: fdeebb1e6a13a0d370712085411820833ad4e5fd
+          ref: 6c211938e696c9084e709e5546bc6fb3406d27a3
           persist-credentials: false
       - name: Install pinned NSIS
         shell: pwsh
@@ -27,7 +27,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $source = git rev-parse HEAD
-          if ($source -ne 'fdeebb1e6a13a0d370712085411820833ad4e5fd') { throw 'source mismatch' }
+          if ($source -ne '6c211938e696c9084e709e5546bc6fb3406d27a3') { throw 'source mismatch' }
           $frozen = '555322f9cbbd2c2fa197abe3263dc43f9e6f2532'
           $inputDigest = '1e7340629d4061545fb873d4d69745a03eae2929147909216ce45723614e7ad0'
           $run = gh api repos/codewhale-hq/Codewhale/actions/runs/44876164458 | ConvertFrom-Json
@@ -62,8 +62,10 @@ jobs:
           }
           $version = & "$dest/bin/codewhale.exe" --version
           if ($LASTEXITCODE -ne 0 -or "$version" -notmatch '0\.10\.3.*555322f9cbbd') { throw "unexpected installed version: $version" }
-          $removed = Start-Process "$dest/Uninstall.exe" -ArgumentList @('/S',"_?=$dest") -Wait -PassThru
-          if ($removed.ExitCode -ne 0 -or (Test-Path "$dest/codewhale-notices") -or (Test-Path "$dest/bin/codewhale.exe")) { throw 'uninstall failed' }
+          $removed = Start-Process "$dest/Uninstall.exe" -ArgumentList '/S' -Wait -PassThru
+          $remaining = @(Get-ChildItem -Recurse -LiteralPath $dest -ErrorAction SilentlyContinue | ForEach-Object FullName)
+          Write-Host "uninstall exit $($removed.ExitCode), remaining paths $($remaining -join ', ')"
+          if ($removed.ExitCode -ne 0 -or (Test-Path "$dest/codewhale-notices") -or (Test-Path "$dest/bin/codewhale.exe")) { throw "uninstall exit $($removed.ExitCode), remaining $($remaining -join ', ')" }
           [ordered]@{source=$source; inputCommit=$frozen; inputRun=44876164458; inputSha256=$inputDigest; version="$version"; documents=$docs; installExit=0; uninstallExit=0; setupSha256=(Get-FileHash $setup).Hash} | ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP/windows-notices.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
