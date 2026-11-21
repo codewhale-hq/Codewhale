@@ -31,18 +31,18 @@ import type { LocalizedText } from "./content/vocabulary";
 /**
  * The README terminal image: the Result frame of the released-capture set
  * (lib/terminal-captures/released, cols100/05-task-result), a real session on
- * gemini-4-hydrogen, as the terminal window drew it. The site renders the
+ * deepseek-flash, as the terminal window drew it. The site renders the
  * same frames as live text; the README cannot run the site's renderer.
  */
 export const TERMINAL_SCREENSHOT = {
   frame: "cols100/05-task-result",
   src: "/codewhale-tui-latest.png",
-  width: 1858,
-  height: 1176,
+  width: 1856,
+  height: 1174,
   version: "0.10.3",
-  model: "gemini-4-hydrogen",
-  sourceCommit: "9d7e4362f4378c3f78436b76c0dfe795c128fa8d",
-  sha256: "2d58ef8db325685c9ef1880866bafac14ccb4572ddf025629ebac8d50f6f1c01",
+  model: "deepseek-flash",
+  sourceCommit: "b6011be36d7fe6efa209c8691d99c30d1cfa1c5a",
+  sha256: "78db4db2802d0be7188ac2f94eed2537390dff7c39ab31d986921b338f6f783b",
 } as const;
 
 /** Published-asset budgets; see the module contract for what tests inspect. */

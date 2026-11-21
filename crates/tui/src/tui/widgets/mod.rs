@@ -1687,6 +1687,18 @@ impl<'a> ApprovalWidget<'a> {
             ));
         }
 
+        if self.view.offers_permission_settings() {
+            let chord = crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+            )
+            .footer_chord;
+            items.push((
+                ApprovalOption::OpenPermissions,
+                chord,
+                format!("{}…", tr(locale, MessageId::ChipPermissionFullAccess)),
+            ));
+        }
+
         for (option, key_hint, label) in items {
             let is_selected = self.view.scope_selected == option;
             let row_style = if is_selected {
@@ -2212,6 +2224,22 @@ impl<'a> ApprovalWidget<'a> {
             controls_width.min(total_width)
         };
         let left_budget = total_width.saturating_sub(reserved_right);
+        let permission_hint = format!(
+            "  {} {}",
+            crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::PermissionCycle,
+            )
+            .footer_chord,
+            tr(locale, MessageId::ConfigSectionPermissions),
+        );
+        let show_permission_hint = self.view.offers_permission_settings()
+            && left_budget
+                >= left_used + verb.width() + 1 + subject.width().min(48) + permission_hint.width();
+        let left_budget = if show_permission_hint {
+            left_budget - permission_hint.width()
+        } else {
+            left_budget
+        };
 
         if left_used < left_budget && !verb.is_empty() {
             let verb_with_space = format!("{verb} ");
@@ -2234,6 +2262,13 @@ impl<'a> ApprovalWidget<'a> {
             left_spans.push(Span::styled(
                 subj_trunc,
                 Style::default().fg(palette::TEXT_PRIMARY),
+            ));
+        }
+
+        if show_permission_hint {
+            left_spans.push(Span::styled(
+                permission_hint,
+                Style::default().fg(palette::TEXT_HINT),
             ));
         }
 
@@ -3517,7 +3552,7 @@ pub(crate) fn empty_composer_visual_rows(
     1
 }
 
-fn composer_chat_color(app: &App) -> Option<Color> {
+pub(crate) fn composer_chat_color(app: &App) -> Option<Color> {
     let name = app.composer_color.as_deref()?;
     let (dark, light, ansi) = match name {
         "red" => ((0xF2, 0x5F, 0x5C), (0xC6, 0x28, 0x28), Color::Red),

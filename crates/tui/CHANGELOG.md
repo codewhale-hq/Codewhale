@@ -13,6 +13,9 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Added
 
+- **Read-only deferred tools:** Auto-Review recognizes local inspection tools and task or automation reads without prompting for routine lookups. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7431)
+- **A quieter terminal launch:** a compact Desktop-inspired whale shares the composer accent. Recent sessions open on demand, and MCP sign-in details stay in the connection manager. (CW-8318)
+
 - **Exact route inventory:** model lists separate metadata, observed roster evidence and readiness; optional session selections reject changed account or endpoint bindings, and the terminal shows the catalog status from that same route inventory, including on bundled fallback rows. A new Runtime thread can commit an exact selection before it becomes visible. Empty discovery no longer masquerades as a failed refresh. (CW-8311)
 
 - **DSH reviewed client module map:** CommonJS client activation uses the installer’s admitted import edges for relative modules, JSON, cycles and contained package exports. Undeclared requests fail closed, and prior compatibility receipts require review again. Installed Engine/App qualification remains pending (CW-8288, CW-8014, CW-8019).
@@ -618,7 +621,11 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 ### Fixed
 
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
+- **Sub-agent budget-stop receipts show clipped output:** the receipt gives the character count and points to the retained child transcript. It also keeps the workspace preservation receipt visible when the partial output is long. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7434](https://github.com/codewhale-hq/Codewhale/issues/7434). (CW-8317)
+- **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
+- **Permission controls during an approval:** Shift+Tab and Full Access in the approval’s additional choices open permission settings while leaving the current approval pending. (CW-8320)
 - **Tool-call identity:** generated IDs stay distinct from literal provider IDs, including when a provider sends the ID late in a stream. Thanks [@donglovejava](https://github.com/donglovejava) ([PR 7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
+- **PR review:** pass prompts direct the reviewer to inspect relevant callers with available read-only tools. Findings stay anchored to the commentable diff, and coverage follows the pass manifest. Thanks [@swf1996120](https://github.com/swf1996120) for the report ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **Headless resume:** `exec --resume` asks for explicit provider or model reselection when the saved endpoint or account binding changes. (CW-8311)
 - **Terminal translations:** Auto-Review fallback, provider badges, theme previews, and automation schedules use the selected language.
 - **AICraft setup:** the bundled descriptor lists the mainland and international API endpoints. Thanks [@BX166](https://github.com/BX166) ([PR 7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
@@ -663,6 +670,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **Compact sub-agent lifecycle responses and bounded `explore` children:** `agent` `start`, `peek`, `status` (`detail=true`), and `cancel` now pass through context compaction as compact structured JSON carrying the actual `role`, `usage`, `activity`, bounded recent events, and `transcript_handle` without self-report wrapping, raw `checkpoint.messages`, base64 thought signatures, or 500 KB event dumps, while post-completion snapshots preserve `transcript_handle`, worktree `workspace`, and `git_branch`; explicit parent `agent(action="cancel")` suppresses duplicate `<codewhale:runtime_event kind="subagent_completion">` user turns while asynchronous finishes and failures still deliver; `explore` children default to a 24-step ceiling (overridable when configured) and cap inherited reasoning effort at `medium` (preserving explicit `thinking` overrides and lower parent tiers); and child prompts strip `<mcp_server_instructions>` for any MCP server excluded from the child's admitted tool set.
 - **Read-only tools run in one parallel wave:** `read`, `read_media`, `Git` status/diff/log, read-only `bash`, `load_skill`, `retrieve_tool_result`, session/memory/archive lookups, `Web` search and fetch, read-only MCP tools and `tool_search` no longer fall back to a global exclusive lock, so a batch of reads runs together while writes, mutating shell, background starts and a second `tool_search` keep their barriers. `task_shell_wait` with `task_ids` claims only the listed tasks. `[tools] max_parallel_shell_exec` (default 4, maximum 32) bounds concurrent shell commands in one wave.
 - **Sub-agents no longer carry the whole skill index:** child system prompts stop embedding every installed skill name, description and shadow warning (often 10–15K tokens per spawn); a child finds skills through `load_skill` with a query, the same way the parent does.
+- **Skill context accounting:** `/context` and `doctor --context-json` report the available-skill catalog as a preview and exclude it from prompt token totals. Parent and child sessions discover skills on demand through `load_skill`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7432](https://github.com/codewhale-hq/Codewhale/issues/7432). (CW-8315)
 - **Smaller `agent(action="roster")`:** the cost-basis caveat is stated once at the top level instead of on every member and profile row, and with no Fleet selected the empty `models` list now says that any routable model is accepted for unpinned roles.
 - **One sub-agent name across `wait` and completion notices:** `agent(action="wait")` and the sub-agent done and failed notices now report the same display name the TUI shows, instead of the raw `agent_<id>` in one place and a generated whale name in the other.
 - **Auto-Review approval prompt:** when the reviewer times out or fails, the terminal names the failure beside the proposed action and explains it in the approval details.
@@ -1316,6 +1324,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Contributors
 
+- **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
 - **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).

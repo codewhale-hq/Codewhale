@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Perintah ini memasang rilis terbaru di macOS atau Linux, dan tidak memerlukan ak
 
 <sub>Terjemahan ini adalah draf mesin yang belum ditinjau oleh penutur asli.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan gemini-4-hydrogen. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py dengan argparse. Baris status menampilkan accept edits dan gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale di terminal setelah tugas nyata dengan deepseek-flash. Ia menjalankan python3 -m unittest -v test_ls.py, 2 tes lulus, dan melaporkan bahwa ia menambahkan opsi --json ke ls.py. Baris status menampilkan accept edits dan deepseek-flash.">
 
-<sub>Sesi nyata pada build pengembangan 0.10.3: gemini-4-hydrogen melalui API Google menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
+<sub>Sesi nyata pada build pengembangan 0.10.3: deepseek-flash melalui API DeepSeek menulis perubahannya, dan Anda mengizinkan tes dijalankan satu kali.</sub>
 
 </div>
 
