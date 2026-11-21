@@ -2357,24 +2357,51 @@ impl Expander {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
-                    if matches!(verb, "develop" | "shell") {
-                        for i in verb_idx + 1..tokens.len() {
-                            if tokens[i] == "--" && !dynamic[i] {
-                                break;
+                    if !matches!(verb, "develop" | "shell") {
+                        continue;
+                    }
+                    for at in verb_idx + 1..tokens.len() {
+                        if tokens[at] == "--" && !dynamic[at] {
+                            break;
+                        }
+                        let attached = if let Some(long) = tokens[at].strip_prefix("--") {
+                            match long.split_once('=') {
+                                Some(("command", value)) => Some(value),
+                                None if long == "command" => Some(""),
+                                _ => None,
                             }
-                            if matches!(tokens[i].as_str(), "-c" | "--command") {
-                                if dynamic[i] {
-                                    self.dynamic = true;
+                        } else if let Some(flags) = tokens[at].strip_prefix('-') {
+                            let mut found = None;
+                            for (off, ch) in flags.char_indices() {
+                                if ch == 'c' {
+                                    found = Some(&flags[off + 1..]);
+                                    break;
                                 }
-                                if i + 1 < tokens.len() {
-                                    self.record(&slice_line(line, i + 1), depth + 1);
+                                if matches!(ch, 'f' | 'I' | 'k' | 'u' | 'o' | 'j') {
+                                    break;
                                 }
-                                break;
                             }
-                            if dynamic[i] {
+                            found
+                        } else {
+                            None
+                        };
+                        let Some(attached) = attached else {
+                            if dynamic[at] {
                                 self.dynamic = true;
                             }
+                            continue;
+                        };
+                        self.dynamic |= dynamic[at];
+                        if attached.is_empty() {
+                            if at + 1 < tokens.len() {
+                                self.record(&slice_line(line, at + 1), depth + 1);
+                            }
+                        } else {
+                            self.code_payload(attached, dynamic[at], depth);
+                            let combined = build_prefixed_line(attached, at, line, at + 1);
+                            self.record(&combined, depth + 1);
                         }
+                        break;
                     }
                 }
             }
@@ -7138,6 +7165,52 @@ mod tests {
         assert_eq!(expansion.deny_commands().count(), 257);
         let nested = "x".to_string() + &" -- a".repeat(40);
         assert!(expand_for_platform(&nested, false).dynamic);
+    }
+
+    #[test]
+    fn flag_word_substitution_marks_expansion_dynamic() {
+        for command in [
+            "nix develop -c$(echo rm) x",
+            "nix develop -c$(echo rm)",
+            "nix develop --command=$(echo rm) x",
+            "nix develop --command$(echo =rm) x",
+            "nix shell -c$(echo rm) x",
+            "nix shell --command=$(echo rm) x",
+            "su -c$(echo rm) x",
+            "npx -c$(echo rm) x",
+            "npx -c$(echo rm)",
+            "nix-shell --run$(echo =rm) x",
+            "start-stop-daemon -S -x$(echo /bin/rm) -- x",
+            "start-stop-daemon -S --exec=$(echo /bin/rm) -- x",
+            "launchctl submit -p$(echo /bin/rm) -- x",
+            "cmd /c$(echo rm) x",
+            "pwsh -c$(echo rm) x",
+            "find . -exec$(echo rm) x \\;",
+            "sh -c$(echo rm) x",
+            "nu --commands$(echo =rm) x",
+            "docker run --entrypoint=$(echo /bin/rm) alpine x",
+            "docker run --entrypoint$(echo =/bin/rm) alpine x",
+        ] {
+            assert!(
+                expand_for_platform(command, false).dynamic,
+                "{command:?} should be dynamic"
+            );
+        }
+        for command in [
+            "nix develop -c echo hi",
+            "nix develop --command echo hi",
+            "nix develop --command=echo hi",
+            "nix shell -c echo hi",
+            "su -c 'echo hi'",
+            "npx -c 'echo hi'",
+            "start-stop-daemon -S -x /bin/echo -- hi",
+            "docker run --entrypoint /bin/echo alpine hi",
+        ] {
+            assert!(
+                !expand_for_platform(command, false).dynamic,
+                "{command:?} should stay static"
+            );
+        }
     }
 
     #[test]
