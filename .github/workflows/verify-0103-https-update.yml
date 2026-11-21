@@ -88,9 +88,9 @@ jobs:
           fixture "$bin/codewhale" update --check | tee check.log
           test ! -s requests.log
           fixture "$bin/codewhale" update 2>&1 | tee upgrade.log
-          rg -F 'SHA256 checksum verified' upgrade.log
-          rg -F 'codewhale-artifacts-sha256.txt' requests.log
-          rg -F "GET /codewhale-$TARGET " requests.log
+          grep -F 'SHA256 checksum verified' upgrade.log
+          grep -F 'codewhale-artifacts-sha256.txt' requests.log
+          grep -F "GET /codewhale-$TARGET " requests.log
           for cmd in codewhale codew; do
             cmp "$bin/$cmd" "mirror/codewhale-$TARGET"
             test "$(fixture "$bin/$cmd" --version)" = "codewhale 0.10.3 (${FROZEN:0:12})"
@@ -98,7 +98,7 @@ jobs:
           pin=0.10.2
           cp requests.log requests-before-downgrade.log
           fixture "$bin/codewhale" update 2>&1 | tee downgrade.log
-          rg -F 'No downgrade or download performed' downgrade.log
+          grep -F 'No downgrade or download performed' downgrade.log
           cmp requests-before-downgrade.log requests.log
           cmp "$bin/codew" "mirror/codewhale-$TARGET"
           cmp "$bin/codewhale" "mirror/codewhale-$TARGET"
