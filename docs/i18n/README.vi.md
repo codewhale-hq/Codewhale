@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Lệnh này cài bản phát hành mới nhất trên macOS hoặc Linux và kh�
 
 <sub>Bản dịch này là bản nháp do máy dịch và chưa được người bản ngữ xem lại.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale trong terminal sau một tác vụ thật với gemini-4-hydrogen. Nó đã chạy python3 -m unittest -v test_ls.py, 2 bài kiểm thử đạt, và cho biết đã thêm tùy chọn --json vào ls.py bằng argparse. Dòng trạng thái hiển thị accept edits và gemini-4-hydrogen.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale trong terminal sau một tác vụ thật với deepseek-flash. Nó đã chạy python3 -m unittest -v test_ls.py, 2 bài kiểm thử đạt, và cho biết đã thêm tùy chọn --json vào ls.py. Dòng trạng thái hiển thị accept edits và deepseek-flash.">
 
-<sub>Một phiên làm việc thật trên bản dựng phát triển của 0.10.3: gemini-4-hydrogen qua API của Google đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
+<sub>Một phiên làm việc thật trên bản dựng phát triển của 0.10.3: deepseek-flash qua API của DeepSeek đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
 
 </div>
 

@@ -564,7 +564,8 @@ End of diff.`;
 }
 function pass(input) {
   const manifest = row3(input.manifest), part = row3(input.pass), view = row3(input.view);
-  const task = list(manifest.skipped_files).length === 0 ? "Review only defects introduced in this pass. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run." : `Review only defects introduced in this pass. This is a partial review (pass ${integer2(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.`;
+  const scope = list(manifest.skipped_files).length === 0 ? "Review only defects introduced in this pass." : `Review only defects introduced in this pass. This is a partial review (pass ${integer2(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage.`;
+  const task = `${scope} Use supplementary source to check surrounding guards and declarations. If the prompt omits relevant caller bodies and read-only tools are offered, inspect those callers with the tools. Anchor findings to the commentable diff and scope coverage claims to the pass manifest. Binary changes are represented by metadata. No build or tests have been run.`;
   if (!isJson(input.context)) throw new Error("invalid Core review context");
   const prompt = {
     task,

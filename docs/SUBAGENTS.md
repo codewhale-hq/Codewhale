@@ -26,11 +26,14 @@ coordination, worker checkpoints and terminal delivery; it does not run another
 model/tool loop. Work uses the full explicit owner limit. At the limit the host
 preserves a partial-result receipt without an extra model reporting request.
 
-Transient provider failures use Core's dispatch and retry boundaries. An exhausted
-budget or interrupted request preserves the recorded checkpoint and a continuation
-handle. Each actually dispatched attempt carries its original session, route and
-source identity: provider usage is billed once, then projected to the worker
-ledger. A successful response without usage and an unknown request outcome retain
+Transient provider failures use Core's dispatch and retry boundaries. An interrupted
+worker can resume from a continuable checkpoint using `agent` follow-up. An
+exhausted budget ends the worker. The receipt labels clipped assistant text and
+reports how many characters it shows. Use addressed `agent` status with
+`detail: true` and `handle_read` on the returned `transcript_handle` to
+inspect the retained record. Each actually dispatched attempt carries its original
+session, route and source identity: provider usage is billed once, then projected
+to the worker ledger. A successful response without usage and an unknown request outcome retain
 distinct coverage gaps; neither is priced as zero. For work that must survive
 process restarts, sleep or remote execution, use Fleet or a Workflow-backed run.
 

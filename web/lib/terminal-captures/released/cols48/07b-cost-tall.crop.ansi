@@ -1,17 +1,25 @@
 [1m[38;5;103mNote[0m[48;5;234m [3m[38;5;109mSession Cost:[0m[48;5;234m                             [38;5;239m│
 [38;5;103m▏    [3m[38;5;109m─────────────────────────────[0m[48;5;234m             [38;5;239m│
-[38;5;103m▏    [3m[38;5;109mEstimated total: unknown[0m[48;5;234m                  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mEstimated total: $0.0005[0m[48;5;234m                  [38;5;239m│
+[38;5;103m▏    [39m                                          [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mBased on audited provider-reported usage[0m[48;5;234m  [38;5;239m│
+[38;5;103m▏    [3m[38;5;109mand published rates.[0m[48;5;234m                      [38;5;80m┃
 [38;5;103m▏    [39m                                          [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mNo turn has an authoritative price in the[0m[48;5;234m [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mselected currency.[0m[48;5;234m                        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mBreakdown (components sum to the total[0m[48;5;234m    [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mabove):[0m[48;5;234m                                   [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mParent turns: $0.0005[0m[48;5;234m                     [38;5;80m┃
 [38;5;103m▏    [39m                                          [38;5;80m┃
 [38;5;103m▏    [3m[38;5;109mThis is an estimate, not a bill: it is[0m[48;5;234m    [38;5;80m┃
 [38;5;103m▏    [3m[38;5;109mcomputed locally from provider-reported[0m[48;5;234m   [38;5;80m┃
 [38;5;103m▏    [3m[38;5;109mtoken usage and published rates, and can[0m[48;5;234m  [38;5;80m┃
 [38;5;103m▏    [3m[38;5;109mdiffer from your invoice.[0m[48;5;234m                 [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mCovered: 0 of 5 money-metered turn(s)[0m[48;5;234m     [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mCovered: 4 of 4 money-metered turn(s)[0m[48;5;234m     [38;5;80m┃
 [38;5;103m▏    [3m[38;5;109mpriced.[0m[48;5;234m                                   [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mExcluded: 5 money-metered turn(s) had no[0m[48;5;234m  [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mauthoritative price (token usage[0m[48;5;234m          [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mbreakdown unavailable); their spend is[0m[48;5;234m    [38;5;80m┃
-[38;5;103m▏    [3m[38;5;109mmissing from the total above.[0m[48;5;234m             [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mPricing sources used: provider_docs.[0m[48;5;234m      [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mAudited routes (redacted):[0m[48;5;234m                [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mprovider=deepseek identity=deepseek[0m[48;5;234m       [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mmodel=deepseek-flash[0m[48;5;234m                      [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109msurface=first-party-payg endpoint_[0m[48;5;234m        [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mfp=812b1f7c4a8b1af438d207c4d010794296f832[0m[48;5;234m [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109m96c29dcd10b8b6dd22f64c79db billing_[0m[48;5;234m       [38;5;80m┃
+[38;5;103m▏    [3m[38;5;109mmode=metered currency=usd+cny[0m[48;5;234m             [38;5;80m┃

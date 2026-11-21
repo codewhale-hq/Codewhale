@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <sub>本翻譯為機器草稿，尚未經母語者審校。</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 gemini-4-hydrogen 的真實任務結束後的 Codewhale 終端機畫面。它執行了 python3 -m unittest -v test_ls.py，2 個測試通過，並回報已用 argparse 為 ls.py 加上 --json 參數。狀態列顯示 accept edits 和 gemini-4-hydrogen。">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 deepseek-flash 的真實任務結束後的 Codewhale 終端機畫面。它執行了 python3 -m unittest -v test_ls.py，2 個測試通過，並回報已為 ls.py 加上 --json 參數。狀態列顯示 accept edits 和 deepseek-flash。">
 
-<sub>0.10.3 開發版本上的一次真實工作階段：gemini-4-hydrogen 透過 Google API 寫出了修改，測試執行由你允許了一次。</sub>
+<sub>0.10.3 開發版本上的一次真實工作階段：deepseek-flash 透過 DeepSeek API 寫出了修改，測試執行由你允許了一次。</sub>
 
 </div>
 

@@ -20,6 +20,7 @@ use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_sandbox::SandboxPolicy;
+use codewhale_tools::names::is_tool_search_tool;
 use serde_json::Value;
 
 use super::ops::UserInputProvenance;
@@ -1228,12 +1229,31 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
             | "git_commit_plan"
             | "git_review_scope"
             | "project"
+            | "project_map"
             | "diagnostics"
             | "load_skill"
-            | "tool_search"
             | "handle_read"
             | "retrieve_tool_result"
-    ) || name.starts_with("read_")
+            | "context_archive_get"
+            | "context_archive_search"
+            | "session_get"
+            | "session_search"
+            | "memory_get"
+            | "memory_search"
+            | "validate_data"
+            | "tui_help"
+            | "show_data"
+            | "present"
+            | "agents/list"
+            | "agents/wait"
+            | "task_list"
+            | "task_read"
+            | "pr_attempt_list"
+            | "pr_attempt_read"
+            | "automation_list"
+            | "automation_read"
+    ) || is_tool_search_tool(name)
+        || name.starts_with("read_")
         || name.starts_with("list_")
         || name.starts_with("get_")
     {
@@ -2066,13 +2086,143 @@ mod tests {
 
     #[test]
     fn tool_category_keeps_deferred_read_only_tools_safe() {
+        let policy = auto_review::AutoReviewPolicy::default();
+        let empty = serde_json::json!({});
+
         for name in [
             "load_skill",
             "tool_search",
+            "tool_search_tool_regex",
+            "tool_search_tool_bm25",
             "handle_read",
             "retrieve_tool_result",
+            "context_archive_get",
+            "context_archive_search",
+            "session_get",
+            "session_search",
+            "memory_get",
+            "memory_search",
+            "project_map",
+            "validate_data",
+            "tui_help",
+            "show_data",
+            "present",
+            "agents/list",
+            "agents/wait",
+            "task_list",
+            "task_read",
+            "pr_attempt_list",
+            "pr_attempt_read",
+            "automation_list",
+            "automation_read",
         ] {
             assert_eq!(get_tool_category(name), ToolCategory::Safe, "{name}");
+            let ctx = auto_review::AutoReviewContext::from_tool_call(
+                name,
+                &empty,
+                RunOrigin::Background,
+                ApprovalMode::Auto,
+                true,
+                None,
+            );
+            assert_eq!(
+                policy.evaluate(&ctx).action,
+                auto_review::AutoReviewAction::Allow,
+                "{name}"
+            );
+        }
+
+        for (family, action) in [
+            ("tasks", "list"),
+            ("tasks", "read"),
+            ("tasks", "pr_attempt_list"),
+            ("tasks", "pr_attempt_read"),
+            ("automation", "list"),
+            ("automation", "read"),
+        ] {
+            let params = serde_json::json!({ "action": action });
+            assert_eq!(
+                get_tool_category_for_call(family, &params),
+                ToolCategory::Safe,
+                "{family}.{action}"
+            );
+            let ctx = auto_review::AutoReviewContext::from_tool_call(
+                family,
+                &params,
+                RunOrigin::Background,
+                ApprovalMode::Auto,
+                true,
+                None,
+            );
+            assert_eq!(
+                policy.evaluate(&ctx).action,
+                auto_review::AutoReviewAction::Allow,
+                "{family}.{action}"
+            );
+        }
+
+        for name in [
+            "lsp",
+            "notify",
+            "git_merge_tree",
+            "image_ocr",
+            "image_analyze",
+            "pandoc_convert",
+            "finance",
+            "verify",
+            "review",
+            "github_issue_context",
+            "github_pr_context",
+            "github_report_read",
+            "pr_attempt_preflight",
+        ] {
+            assert_eq!(get_tool_category(name), ToolCategory::Unknown, "{name}");
+            let ctx = auto_review::AutoReviewContext::from_tool_call(
+                name,
+                &empty,
+                RunOrigin::Background,
+                ApprovalMode::Auto,
+                true,
+                None,
+            );
+            assert_eq!(
+                policy.evaluate(&ctx).action,
+                auto_review::AutoReviewAction::AskUser,
+                "{name}"
+            );
+        }
+
+        for (family, action) in [
+            ("Git", "fetch"),
+            ("Git", "merge_tree"),
+            ("tasks", "pr_attempt_preflight"),
+            ("tasks", "create"),
+            ("tasks", "gate_run"),
+            ("automation", "create"),
+            ("automation", "run"),
+            ("github", "issue_context"),
+            ("github", "pr_context"),
+            ("github", "report_read"),
+        ] {
+            let params = serde_json::json!({ "action": action });
+            assert_eq!(
+                get_tool_category_for_call(family, &params),
+                ToolCategory::Unknown,
+                "{family}.{action}"
+            );
+            let ctx = auto_review::AutoReviewContext::from_tool_call(
+                family,
+                &params,
+                RunOrigin::Background,
+                ApprovalMode::Auto,
+                true,
+                None,
+            );
+            assert_eq!(
+                policy.evaluate(&ctx).action,
+                auto_review::AutoReviewAction::AskUser,
+                "{family}.{action}"
+            );
         }
     }
 }

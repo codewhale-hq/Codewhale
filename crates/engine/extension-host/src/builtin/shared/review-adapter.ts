@@ -43,9 +43,10 @@ function source(input: Row): string {
 }
 function pass(input: Row): string {
   const manifest = row(input.manifest), part = row(input.pass), view = row(input.view)
-  const task = list(manifest.skipped_files).length === 0
-    ? 'Review only defects introduced in this pass. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.'
-    : `Review only defects introduced in this pass. This is a partial review (pass ${integer(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.`
+  const scope = list(manifest.skipped_files).length === 0
+    ? 'Review only defects introduced in this pass.'
+    : `Review only defects introduced in this pass. This is a partial review (pass ${integer(part.number)} of ${list(manifest.passes).length}): the gate did not read ${skipped(manifest.skipped_files)}. Do not claim full coverage.`
+  const task = `${scope} Use supplementary source to check surrounding guards and declarations. If the prompt omits relevant caller bodies and read-only tools are offered, inspect those callers with the tools. Anchor findings to the commentable diff and scope coverage claims to the pass manifest. Binary changes are represented by metadata. No build or tests have been run.`
   if (!isJson(input.context)) throw new Error('invalid Core review context')
   const prompt = {task, untrusted_repository_data: true, pull_request: {number: integer(input.number), title: text(view.title), description: text(view.body)}, manifest, pass: part, diff: text(input.diff), repository_context: input.context,
     context_limit: 'Context is bounded supplementary excerpts from the exact head. Null means no source context could fit. Missing files or omitted lines are not evidence of a defect.'}

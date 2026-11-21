@@ -299,7 +299,7 @@ impl BuiltinModule {
 pub static BUILTIN_MODULES: &[BuiltinModule] = &[
     BuiltinModule {
         id: "harness",
-        source_sha256: "4c76ee0c0eeac4fab05b55cfe3ea9520bd8261c2e16e4f31b63de25d93d20bd2",
+        source_sha256: "7e93989b2ff84394ab841e28577f6661ea2f01f1b30905ea6ce54857ef7f5e34",
         tools: &[],
         services: &[],
     },

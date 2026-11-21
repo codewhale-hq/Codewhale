@@ -15,8 +15,8 @@ export const MODELS_COPY = {
     zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面来自 0.10.3 开发版本上的真实会话。",
   },
   pickerTerminalLabel: {
-    en: "Codewhale in a terminal. The model picker, searched for hydrogen, lists gemini-4-hydrogen from OpenCode Zen, Google Gemini, OpenRouter and Eden AI, with Google Gemini selected.",
-    zh: "终端中的 Codewhale。在模型选择器中搜索 hydrogen，列出 OpenCode Zen、Google Gemini、OpenRouter 和 Eden AI 提供的 gemini-4-hydrogen，并选中了 Google Gemini。",
+    en: "Codewhale in a terminal. The model picker, searched for deepseek-flash, lists deepseek-flash from DeepSeek, Fireworks AI and OpenRouter, with DeepSeek selected.",
+    zh: "终端中的 Codewhale。在模型选择器中搜索 deepseek-flash，列出 DeepSeek、Fireworks AI 和 OpenRouter 提供的 deepseek-flash，并选中了 DeepSeek。",
   },
   pickerTerminalCaption: { en: "The terminal model picker.", zh: "终端中的模型选择器。" },
   pickerDesktopAlt: {

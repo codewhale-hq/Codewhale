@@ -86,18 +86,11 @@ pub fn handle_paste_burst_key(app: &mut App, key: &KeyEvent, now: Instant) -> bo
 
     match key.code {
         KeyCode::Enter => {
-            if in_command_context(app) {
-                // The burst buffer can hold the text the user is actually
-                // entering (fast-typed or raw paste). Command context must
-                // be judged on that text, not the composer alone, or Enter
-                // glues the lines into one multiline slash argument
-                // ("Invalid model 'qwen2.5:0.5b\n/status\n…'" — Y-7,
-                // 2026-08-31 QA). Flush what is held onto the composer line
-                // and let Enter take the ordinary submit path.
-                if let Some(pending) = app.paste_burst.flush_before_modified_input() {
-                    app.insert_str(&pending);
-                }
-                return false;
+            if app.paste_burst.is_active()
+                && in_command_context(app)
+                && let Some(pending) = app.paste_burst.flush_before_modified_input()
+            {
+                app.insert_str(&pending);
             }
             if app.paste_burst.append_newline_if_active(now) {
                 if let Some(chunk) = app.paste_burst.take_chunk_if_full() {
@@ -448,35 +441,34 @@ mod tests {
         }
     }
 
-    /// Y-7 regression (2026-08-31 QA, `tui-swarm-head`): a scripted driver
-    /// or fast typist enters `/model …` faster than the burst heuristic's
-    /// windows. The text sat in the burst buffer, `in_command_context`
-    /// judged the empty composer, and every Enter was absorbed as a pasted
-    /// newline — gluing `/model qwen2.5:0.5b`, `/status`, and the prompt
-    /// into one multiline argument ("Invalid model
-    /// 'qwen2.5:0.5b\n/status\n…'"). Enter must flush buffered command text
-    /// to the composer and reach the submit path.
     #[test]
-    fn enter_on_buffered_slash_command_flushes_and_submits() {
+    fn raw_paste_enter_bypasses_slash_completion_and_deliberate_enter_submits() {
         let mut app = test_app();
-        let t0 = Instant::now();
+        let start = Instant::now();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-        for (i, ch) in "/model qwen2.5:0.5b".chars().enumerate() {
-            assert!(handle_paste_burst_key(
-                &mut app,
-                &plain(ch),
-                t0 + Duration::from_millis(2 * i as u64)
-            ));
+        for (index, ch) in "/mo\nsecond line".chars().enumerate() {
+            let now = start + Duration::from_millis(2 * index as u64);
+            app.flush_paste_burst_if_due(now);
+            let key = if ch == '\n' { enter } else { plain(ch) };
+            assert!(handle_paste_burst_key(&mut app, &key, now));
         }
-        assert!(
-            !handle_paste_burst_key(
-                &mut app,
-                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                t0 + Duration::from_millis(60),
-            ),
-            "Enter on a buffered slash command is a submit, not a pasted newline"
+        app.flush_paste_burst_if_due(start + Duration::from_secs(1));
+        assert_eq!(app.input, "/mo\nsecond line");
+
+        let mut app = test_app();
+        for (index, ch) in "/new".chars().enumerate() {
+            let now = start + Duration::from_millis(50 * index as u64);
+            app.flush_paste_burst_if_due(now);
+            assert!(handle_paste_burst_key(&mut app, &plain(ch), now));
+        }
+        let now = start + Duration::from_millis(175);
+        app.flush_paste_burst_if_due(now);
+        assert!(!handle_paste_burst_key(&mut app, &enter, now));
+        assert_eq!(
+            app.handle_composer_enter(true, now).as_deref(),
+            Some("/new")
         );
-        assert_eq!(app.input, "/model qwen2.5:0.5b");
     }
 
     /// The same burst stream ending in a normal prompt must still absorb
