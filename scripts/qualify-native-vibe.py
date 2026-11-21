@@ -80,7 +80,7 @@ model=ThreadingHTTPServer(('127.0.0.1',0),Handler)
 threading.Thread(target=model.serve_forever,daemon=True).start()
 cfg=root/'home/.vibe';cfg.mkdir()
 endpoint=f'http://127.0.0.1:{model.server_port}/v1'
-(cfg/'config.toml').write_text(f'active_model="loopback"\nenable_telemetry=false\n[[providers]]\nname="local"\napi_base="{endpoint}"\napi_style="openai"\nbackend="generic"\n[[models]]\nname="vibe-qualification"\nalias="loopback"\nprovider="local"\n')
+(cfg/'config.toml').write_text(f'active_model="loopback"\ndefault_agent="ask"\nenable_telemetry=false\n[[providers]]\nname="local"\napi_base="{endpoint}"\napi_style="openai"\nbackend="generic"\n[[models]]\nname="vibe-qualification"\nalias="loopback"\nprovider="local"\n')
 def launch(log):
     proc=subprocess.Popen([bin,'app-server','--http','--host','127.0.0.1','--port',str(port),'--auth-token',token],cwd=root/'work',env=env,stdout=(out/log).open('w'),stderr=subprocess.STDOUT,start_new_session=os.name != 'nt')
     for _ in range(100):
@@ -142,15 +142,17 @@ try:
     for phase in ['READ','ALLOW','DENY']:
         assert turn(thread,phase)==first
         info.setdefault('completedPhases',[]).append(phase)
-    assert any(r.get('readResultSeen') for r in requested)
-    assert (root/'work/allow.txt').read_text()=='marker from approved Vibe write'
-    assert not (root/'work/deny.txt').exists()
-    assert any(a['phase']=='ALLOW' and a['decision']=='allow' for a in info.get('approvals',[]))
-    assert any(a['phase']=='DENY' and a['decision']=='deny' for a in info.get('approvals',[]))
+    info['readObserved']=any(r.get('readResultSeen') for r in requested)
+    info['approvedFileExact']=(root/'work/allow.txt').read_text()=='marker from approved Vibe write'
+    info['deniedFileExists']=(root/'work/deny.txt').exists()
     stop(proc);proc=launch('reopen.log')
     ok('POST',thread+'/resume',{})
     second=turn(thread,'SECOND')
-    assert first and first==second and {r['phase'] for r in requested}=={'FIRST','READ','ALLOW','DENY','SECOND'}
+    info['reopenedForeignSession']=second
+    assert first and first==second and {r['phase'] for r in requested}=={'FIRST','READ','ALLOW','DENY','SECOND'}, 'foreign session recovery'
+    assert info['readObserved'] and info['approvedFileExact'] and not info['deniedFileExists'], 'file outcome'
+    assert any(a['phase']=='ALLOW' and a['decision']=='allow' for a in info.get('approvals',[])), 'missing explicit allow'
+    assert any(a['phase']=='DENY' and a['decision']=='deny' for a in info.get('approvals',[])), 'missing explicit deny'
     info.update(passed=True,promptSent=True,upstream='isolated local Chat Completions fixture',foreignSession=first,foreignSessionRestored=first==second)
 except Exception as exc:
     info.update(passed=False,error=str(exc))
