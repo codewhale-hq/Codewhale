@@ -1,0 +1,104 @@
+name: Qualify frozen Windows ARM64 thread and process ownership
+
+on:
+  push:
+    branches: [ci/cw-0103-frozen-crate-and-linux-proof]
+    paths: [.github/workflows/engine-frozen-arm64-lifetime.yml, .github/workflows/proofs/frozen-windows-lifecycle.ps1]
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  ENGINE_SHA: 555322f9cbbd2c2fa197abe3263dc43f9e6f2532
+  RC_RUN: '44876164458'
+
+jobs:
+  provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      bundles: ${{ steps.rc.outputs.bundles }}
+      windows_setup: ${{ steps.rc.outputs.windows_setup }}
+      windows_engine: ${{ steps.rc.outputs.windows_engine }}
+      windows_arm: ${{ steps.rc.outputs.windows_arm }}
+    steps:
+      - name: Verify exact successful candidate and select live artifacts
+        id: rc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RC_RUN" =~ ^[1-9][0-9]*$ ]] || { echo 'Set RC_RUN to the exact candidate workflow run ID.' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_RUN" |
+            jq -e --arg sha "$ENGINE_SHA" '
+              .head_sha == $sha and .path == ".github/workflows/release-candidate.yml" and
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success"
+            '
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_RUN/artifacts?per_page=100")
+          retain_artifact() {
+            local output=$1 name=$2 selected
+            selected=$(jq -cer --arg name "$name" '
+              [.artifacts[] | select(.name == $name and .expired == false)] |
+              if length == 1 and (.[0].digest | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+              then .[0] | {id, digest}
+              else error("expected one live digest-verified artifact: " + $name)
+              end
+            ' <<< "$artifacts")
+            printf '%s=%s\n' "$output" "$selected" >> "$GITHUB_OUTPUT"
+          }
+          retain_artifact bundles codewhale-bundles
+          retain_artifact windows_setup CodeWhaleSetup.exe
+          retain_artifact windows_engine codewhale-windows-x64.exe
+          retain_artifact windows_arm codewhale-windows-arm64.exe
+
+  windows-arm64-startup:
+    needs: provenance
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Verify and start the ARM64 Engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_ARM: ${{ needs.provenance.outputs.windows_arm }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'Arm64') { throw 'Expected an ARM64 process' }
+          $meta = $env:WINDOWS_ARM | ConvertFrom-Json
+          cmd.exe /d /c "gh api repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($meta.id)/zip > archive.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          if (('sha256:' + (Get-FileHash archive.zip).Hash.ToLowerInvariant()) -cne $meta.digest) { throw 'Artifact digest did not match GitHub' }
+          Expand-Archive archive.zip arm64
+          $engines = @(Get-ChildItem arm64 -Recurse -Filter codewhale-windows-arm64.exe -File)
+          if ($engines.Count -ne 1) { throw 'Expected one ARM64 binary' }
+          $exe = $engines[0].FullName
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $offset = [BitConverter]::ToInt32($bytes,0x3c)
+          if ([BitConverter]::ToUInt32($bytes,$offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes,$offset+4) -ne 0xAA64) { throw 'Unexpected PE machine or signature' }
+          $env:CODEWHALE_HOME = Join-Path $env:RUNNER_TEMP 'cw-arm64-proof'
+          $env:CODEWHALE_TELEMETRY = '0'
+          $env:CODEWHALE_DISABLE_MODELS_DEV_FETCH = '1'
+          $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -cne "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0,12)))") { throw "Version mismatch $version" }
+          $helpText = & $exe doctor --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $helpText -notmatch 'doctor') { throw 'Doctor CLI failed to start' }
+          [ordered]@{source=$env:ENGINE_SHA; run=$env:RC_RUN; version=$version; os=[Environment]::OSVersion.Version.ToString(); machine='ARM64'; binary_sha256=(Get-FileHash $exe).Hash.ToLowerInvariant(); doctorHelp=$true} | ConvertTo-Json
+
+      - name: Exercise owned job cleanup, sibling survival and thread reopen
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem arm64 -Recurse -Filter codewhale-windows-arm64.exe -File).FullName
+          $digest = '2d77a450a3395bd86e374b2e5384acf55b8ef2c51fb1f04e5e8f1da6ad94fe03'
+          $receipt = & ./.github/workflows/proofs/frozen-windows-lifecycle.ps1 -Executable $exe -Source $env:ENGINE_SHA -Digest $digest
+          $receipt | Set-Content -Encoding utf8 arm64-lifecycle.json
+          $data = $receipt | ConvertFrom-Json
+          if (-not ($data.delete_cleanup -and $data.sibling_survived -and $data.owner_crash_cleanup -and $data.no_rerun -and $data.workspace_preserved)) { throw 'Missing runtime ownership evidence' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: frozen-windows-arm64-lifetime
+          path: arm64-lifecycle.json
