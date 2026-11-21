@@ -1,4 +1,4 @@
-name: Temporary Vibe ACP qualification
+name: Temporary CodeBuddy ACP qualification
 on:
   workflow_dispatch:
 permissions:
@@ -19,15 +19,15 @@ jobs:
       - name: Verify and extract exact release and external agent binaries
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/fetch-native-vibe-inputs.py
+        run: python scripts/fetch-temporary-codebuddy.py
       - name: Exercise the native Linux runtime in a loopback namespace
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" "$5" "$4/codewhale"' sh "$(id -un)" "$(command -v python)" "$PWD/scripts/qualify-native-vibe.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
+          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" "$5" "$4/codewhale"' sh "$(id -un)" "$(command -v python)" "$PWD/scripts/qualify-temporary-codebuddy.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: temporary-vibe-${{ runner.os }}
+          name: temporary-codebuddy-${{ runner.os }}
           path: ${{ runner.temp }}/native-acp-work/receipt.json
           if-no-files-found: warn
