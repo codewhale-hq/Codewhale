@@ -621,6 +621,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Fixed
 
+- Large session usage ledgers keep settled and unresolved usage and discard only the oldest routing diagnostics needed to stay within the storage limit. Thanks [@donglovejava](https://github.com/donglovejava) ([#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
+
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
 - **Sub-agent budget-stop receipts show clipped output:** the receipt gives the character count and points to the retained child transcript. It also keeps the workspace preservation receipt visible when the partial output is long. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7434](https://github.com/codewhale-hq/Codewhale/issues/7434). (CW-8317)
 - **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
@@ -1327,7 +1329,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 - **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
-- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
+- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).

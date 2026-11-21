@@ -45,7 +45,7 @@ changelog or release notes, and this contributor record.
 **Contributions**
 
 - **[BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
-- **[donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
+- **[donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 - **[gabsferreira](https://github.com/gabsferreira)** added Google organic search results through the SearchApi provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).

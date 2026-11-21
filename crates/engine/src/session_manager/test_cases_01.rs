@@ -1921,34 +1921,48 @@
             diagnostic_only: false,
         };
         let diagnostic = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("small"),
+            usage: None,
             diagnostic_only: true,
             ..spend.clone()
         };
-        let empty_bytes = serde_json::to_vec(&LateUsageLedger::default()).unwrap().len();
-        let diagnostic_bytes = serde_json::to_vec(&diagnostic).unwrap().len() + 1;
-        let real_count = 4usize;
-        let diagnostic_count =
-            (usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap() - empty_bytes)
-                / diagnostic_bytes
-                + 1;
-        let mut records: Vec<LateUsageRecord> =
-            (0..diagnostic_count).map(|_| diagnostic.clone()).collect();
-        for index in 0..real_count {
-            records.push(LateUsageRecord {
-                source_fingerprint: crate::cost_status::usage_source_fingerprint(&format!(
-                    "spend-{index}"
-                )),
-                ..spend.clone()
-            });
+        let mut decision = crate::cost_status::decision_receipt_fixture("oldest");
+        for index in 0..40 {
+            decision
+                .evidence
+                .probabilities_bp
+                .insert(format!("{index:0120}"), 100);
         }
-        let oversized = LateUsageLedger {
-            records,
+        assert!(decision.is_bounded());
+        let oldest = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("oldest"),
+            decision: Some(decision),
+            ..diagnostic.clone()
+        };
+        let unresolved = LateUsageRecord {
+            source_fingerprint: crate::cost_status::usage_source_fingerprint("unresolved"),
+            usage: None,
+            ..spend.clone()
+        };
+        let mut expected = LateUsageLedger {
+            records: vec![spend, unresolved],
             ..Default::default()
         };
-        assert!(
-            u64::try_from(serde_json::to_vec(&oversized).unwrap().len()).unwrap()
-                > MAX_LATE_USAGE_LEDGER_BYTES
-        );
+        let limit = usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap();
+        let record_bytes = serde_json::to_vec(&diagnostic).unwrap().len() + 1;
+        let room = limit - serde_json::to_vec(&expected).unwrap().len();
+        for index in 0..room / record_bytes {
+            expected.records.push(LateUsageRecord {
+                source_fingerprint: crate::cost_status::usage_source_fingerprint(&format!(
+                    "small-{index}"
+                )),
+                ..diagnostic.clone()
+            });
+        }
+        let mut oversized = expected.clone();
+        oversized.records.insert(1, oldest);
+        assert!(serde_json::to_vec(&expected).unwrap().len() <= limit);
+        assert!(serde_json::to_vec(&oversized).unwrap().len() > limit + 2 * record_bytes);
 
         let (path, _) = manager
             .ensure_late_usage_paths("compact-diagnostics")
@@ -1957,14 +1971,9 @@
 
         let loaded = manager.load_late_usage("compact-diagnostics").unwrap();
         assert_eq!(
-            loaded
-                .records
-                .iter()
-                .filter(|record| !record.diagnostic_only)
-                .count(),
-            real_count
+            serde_json::to_value(loaded).unwrap(),
+            serde_json::to_value(expected).unwrap()
         );
-        assert!(loaded.records.len() < oversized.records.len());
         assert!(fs::metadata(&path).unwrap().len() <= MAX_LATE_USAGE_LEDGER_BYTES);
     }
 
