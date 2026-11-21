@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stopping an external agent while it waits for approval now records the turn as interrupted even when the agent replies that it finished. (CW-7965)
 
 - The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
+- Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session. Thanks to @deosiree (PR #7448).
 
 ## [0.10.3] - 2026-11-21
 

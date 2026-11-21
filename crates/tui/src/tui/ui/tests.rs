@@ -19767,7 +19767,7 @@ fn a_failed_turn_reason_is_persisted_and_replayed_on_resume() {
 }
 
 #[test]
-fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
+fn apply_engine_error_shows_transmission_and_persists_typed_code() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manager =
         codewhale_engine::session_manager::SessionManager::new(tmp.path().join("sessions"))
@@ -19776,23 +19776,23 @@ fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
     app.api_messages_mut()
         .push(text_message("user", "run the check"));
     app.is_loading = true;
-    apply_engine_error_to_app(
-        &mut app,
-        codewhale_error_taxonomy::ErrorEnvelope::new(
-            codewhale_error_taxonomy::ErrorCategory::Network,
-            codewhale_error_taxonomy::ErrorSeverity::Error,
-            false,
-            "llm_network_error",
-            "SSE stream request did not receive response headers after 45s",
-        ),
+    let mut envelope = codewhale_error_taxonomy::ErrorEnvelope::new(
+        codewhale_error_taxonomy::ErrorCategory::Network,
+        codewhale_error_taxonomy::ErrorSeverity::Error,
+        false,
+        "llm_network_error",
+        "SSE stream request did not receive response headers after 45s",
     );
+    envelope.request_transmission =
+        Some(codewhale_error_taxonomy::RequestTransmission::OutcomeUnknown);
+    apply_engine_error_to_app(&mut app, envelope);
     assert!(matches!(
         app.history.last(),
         Some(HistoryCell::Error {
             message,
             code: Some(code),
             ..
-        }) if message == "SSE stream request did not receive response headers after 45s"
+        }) if message == "SSE stream request did not receive response headers after 45s [outcome_unknown]"
             && code == "llm_network_error"
     ));
 
@@ -19807,6 +19807,10 @@ fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
         snapshot.turn_outcomes[0].code.as_deref(),
         Some("llm_network_error")
     );
+    assert_eq!(
+        snapshot.turn_outcomes[0].error.as_str(),
+        "SSE stream request did not receive response headers after 45s [outcome_unknown]"
+    );
 
     manager.save_session(&snapshot).expect("save");
     let loaded = manager
@@ -19820,7 +19824,7 @@ fn apply_engine_error_persists_typed_code_into_turn_outcome_and_resume() {
             message,
             code: Some(code),
             ..
-        } if message == "SSE stream request did not receive response headers after 45s"
+        } if message == "SSE stream request did not receive response headers after 45s [outcome_unknown]"
             && code == "llm_network_error"
     )));
 }
