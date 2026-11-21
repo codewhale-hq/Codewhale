@@ -1,0 +1,72 @@
+name: Windows package notice qualification
+on:
+  push:
+    branches: [ci/cw-0103-windows-notice-proof]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: fdeebb1e6a13a0d370712085411820833ad4e5fd
+          persist-credentials: false
+      - name: Install pinned NSIS
+        shell: pwsh
+        run: ./scripts/installer/install-nsis.ps1
+      - name: Exercise existing ownership, upgrade, uninstall and PATH regression
+        shell: pwsh
+        run: ./scripts/installer/installer-path-regression.tests.ps1 -AllowUserPathMutation
+      - name: Install and remove the frozen Windows payload with the candidate installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = git rev-parse HEAD
+          if ($source -ne 'fdeebb1e6a13a0d370712085411820833ad4e5fd') { throw 'source mismatch' }
+          $frozen = '555322f9cbbd2c2fa197abe3263dc43f9e6f2532'
+          $inputDigest = '1e7340629d4061545fb873d4d69745a03eae2929147909216ce45723614e7ad0'
+          $run = gh api repos/codewhale-hq/Codewhale/actions/runs/44876164458 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $frozen -or $run.conclusion -ne 'success') { throw 'unexpected frozen input provenance' }
+          $src = Get-Location
+          $installer = Join-Path $src 'scripts/installer'
+          foreach ($binary in @('codewhale','codew')) {
+            $asset = "$binary-windows-x64.exe"
+            $stage = Join-Path $env:RUNNER_TEMP $binary
+            gh run download 44876164458 --repo codewhale-hq/Codewhale -n $asset -D $stage
+            if ($LASTEXITCODE -ne 0) { throw "download failed: $asset" }
+            $file = Join-Path $stage $asset
+            if ((Get-FileHash $file).Hash -ne $inputDigest) { throw "hash mismatch: $asset" }
+            Copy-Item $file (Join-Path $installer "$binary.exe")
+          }
+          Push-Location $installer
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" '/DVERSION=0.10.3' 'codewhale.nsi'
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS compile failed' }
+          Pop-Location
+          $dest = Join-Path $env:RUNNER_TEMP 'codewhale-notice-install'
+          $setup = Join-Path $installer 'CodeWhaleSetup.exe'
+          $installed = Start-Process $setup -ArgumentList @('/S',"/D=$dest") -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw 'install failed' }
+          $docs = @{}
+          foreach ($name in @('LICENSE','THIRD_PARTY_NOTICES.md','docs/THIRD_PARTY_NOTICES.md')) {
+            $bytes = (Get-FileHash (Join-Path "$dest/codewhale-notices" $name)).Hash
+            if ($bytes -ne (Get-FileHash (Join-Path $src $name)).Hash) { throw "notice mismatch: $name" }
+            $docs[$name] = $bytes
+          }
+          foreach ($binary in @('codewhale','codew')) {
+            if ((Get-FileHash "$dest/bin/$binary.exe").Hash -ne $inputDigest) { throw 'installed binary mismatch' }
+          }
+          $version = & "$dest/bin/codewhale.exe" --version
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch '0\.10\.3.*555322f9cbbd') { throw "unexpected installed version: $version" }
+          $removed = Start-Process "$dest/Uninstall.exe" -ArgumentList @('/S',"_?=$dest") -Wait -PassThru
+          if ($removed.ExitCode -ne 0 -or (Test-Path "$dest/codewhale-notices") -or (Test-Path "$dest/bin/codewhale.exe")) { throw 'uninstall failed' }
+          [ordered]@{source=$source; inputCommit=$frozen; inputRun=44876164458; inputSha256=$inputDigest; version="$version"; documents=$docs; installExit=0; uninstallExit=0; setupSha256=(Get-FileHash $setup).Hash} | ConvertTo-Json -Depth 4 | Set-Content "$env:RUNNER_TEMP/windows-notices.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-notices
+          path: ${{ runner.temp }}/windows-notices.json
+          if-no-files-found: error
