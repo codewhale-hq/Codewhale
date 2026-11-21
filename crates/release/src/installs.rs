@@ -1205,16 +1205,8 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
     let mut displaced = None;
     if !receipts.is_empty() {
         let mut batch = RecoveryBatch::open(home)?;
-        for receipt in receipts {
+        for receipt in &receipts {
             batch.move_in(&receipt.path)?;
-            if !receipt.retained.is_empty()
-                && !adopt_receipt(
-                    receipt.path.parent().context("receipt has no directory")?,
-                    &receipt.retained,
-                )?
-            {
-                bail!("command ownership receipt changed during restore");
-            }
         }
         displaced = Some(batch);
     }
@@ -1271,6 +1263,16 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
         let stamp = batch.stamp.clone();
         if !batch.finish().is_empty() {
             report.displaced = Some(stamp);
+        }
+    }
+    for receipt in receipts {
+        if !receipt.retained.is_empty()
+            && !adopt_receipt(
+                receipt.path.parent().context("receipt has no directory")?,
+                &receipt.retained,
+            )?
+        {
+            bail!("command ownership receipt changed during restore");
         }
     }
     rewrite_manifest(&folder.dir, &remaining)?;

@@ -170,41 +170,49 @@ fn partial_restore_keeps_other_claims_and_only_undoes_its_own_replacement() {
     use codewhale_release::installs::{
         RECEIPT_COMMANDS, RECEIPT_FILE, parse_command_receipt, sha256_hex,
     };
-    let home = tempfile::tempdir().unwrap();
-    let dir = home.path();
-    let prior = dir.join(RECEIPT_COMMANDS[0]);
-    let untouched = dir.join(RECEIPT_COMMANDS[1]);
-    let receipt = dir.join(RECEIPT_FILE);
-    let original_claims = [RECEIPT_COMMANDS[0], RECEIPT_COMMANDS[1]]
-        .map(|name| format!("{}  {name}\n", sha256_hex(b"new")))
-        .concat();
-    fs::write(&prior, b"old").unwrap();
-    let mut batch = RecoveryBatch::open(dir).unwrap();
-    let stamp = batch.stamp.clone();
-    batch.move_in(&prior).unwrap();
-    batch.finish();
-    fs::write(&prior, b"new").unwrap();
-    fs::write(&untouched, b"new").unwrap();
-    fs::write(&receipt, &original_claims).unwrap();
-    let (_, report) = restore(dir, Some(&stamp)).unwrap();
-    assert!(report.skipped.is_empty());
-    let retained = parse_command_receipt(&fs::read_to_string(&receipt).unwrap()).unwrap();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[RECEIPT_COMMANDS[1]], sha256_hex(b"new"));
-    assert_eq!(fs::read(&prior).unwrap(), b"old");
-    assert_eq!(fs::read(&untouched).unwrap(), b"new");
-    let undo = report.displaced.unwrap();
-    fs::write(&prior, b"my changes").unwrap();
-    assert!(restore(dir, Some(&undo)).is_err());
-    assert_eq!(fs::read(&prior).unwrap(), b"my changes");
-    assert_eq!(
-        retained,
-        parse_command_receipt(&fs::read_to_string(&receipt).unwrap()).unwrap()
-    );
-    fs::write(&prior, b"old").unwrap();
-    let (_, report) = restore(dir, Some(&undo)).unwrap();
-    assert!(report.skipped.is_empty());
-    assert_eq!(fs::read(&prior).unwrap(), b"new");
-    assert_eq!(fs::read(&untouched).unwrap(), b"new");
-    assert_eq!(fs::read_to_string(&receipt).unwrap(), original_claims);
+    for backup_missing_sibling in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path();
+        let prior = dir.join(RECEIPT_COMMANDS[0]);
+        let untouched = dir.join(RECEIPT_COMMANDS[1]);
+        let receipt = dir.join(RECEIPT_FILE);
+        let original_claims = [RECEIPT_COMMANDS[0], RECEIPT_COMMANDS[1]]
+            .map(|name| format!("{}  {name}\n", sha256_hex(b"new")))
+            .concat();
+        fs::write(&prior, b"old").unwrap();
+        let mut batch = RecoveryBatch::open(dir).unwrap();
+        let stamp = batch.stamp.clone();
+        if backup_missing_sibling {
+            fs::write(&untouched, b"new").unwrap();
+            batch.move_in(&untouched).unwrap();
+        }
+        batch.move_in(&prior).unwrap();
+        batch.finish();
+        fs::write(&prior, b"new").unwrap();
+        if !backup_missing_sibling {
+            fs::write(&untouched, b"new").unwrap();
+        }
+        fs::write(&receipt, &original_claims).unwrap();
+        let (_, report) = restore(dir, Some(&stamp)).unwrap();
+        assert!(report.skipped.is_empty());
+        let retained = parse_command_receipt(&fs::read_to_string(&receipt).unwrap()).unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[RECEIPT_COMMANDS[1]], sha256_hex(b"new"));
+        assert_eq!(fs::read(&prior).unwrap(), b"old");
+        assert_eq!(fs::read(&untouched).unwrap(), b"new");
+        let undo = report.displaced.unwrap();
+        fs::write(&prior, b"my changes").unwrap();
+        assert!(restore(dir, Some(&undo)).is_err());
+        assert_eq!(fs::read(&prior).unwrap(), b"my changes");
+        assert_eq!(
+            retained,
+            parse_command_receipt(&fs::read_to_string(&receipt).unwrap()).unwrap()
+        );
+        fs::write(&prior, b"old").unwrap();
+        let (_, report) = restore(dir, Some(&undo)).unwrap();
+        assert!(report.skipped.is_empty());
+        assert_eq!(fs::read(&prior).unwrap(), b"new");
+        assert_eq!(fs::read(&untouched).unwrap(), b"new");
+        assert_eq!(fs::read_to_string(&receipt).unwrap(), original_claims);
+    }
 }
