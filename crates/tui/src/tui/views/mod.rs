@@ -965,6 +965,7 @@ pub enum ViewEvent {
         title: String,
         content: String,
     },
+    OpenPermissionSettings,
     ApprovalDecision {
         tool_id: String,
         tool_name: String,
@@ -3323,6 +3324,20 @@ impl ConfigView {
             self.clear_hover();
             self.adjust_scroll(self.visible_rows_cached());
         }
+    }
+
+    pub(crate) fn open_permission_choices(app: &App) -> Self {
+        let mut view = Self::new_for_app(app);
+        if let Some(key) = ["approval_mode", "approval_policy"]
+            .into_iter()
+            .find(|key| view.rows.iter().any(|row| row.key == *key && row.editable))
+        {
+            view.focus_key(key);
+            view.start_edit();
+        } else {
+            view.focus_key("managed_approval_policy");
+        }
+        view
     }
 
     /// Snapshot the active search so live config updates can rebuild the
@@ -8647,6 +8662,23 @@ consent_version = 1
             codewhale_runtime::external_credentials::complete_side_effect_trap_counts(),
             (0, 0, 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn approval_permission_settings_open_on_the_current_session_choice() {
+        let _guard = ConfigSettingsEnvGuard::new("");
+        let app = create_test_app();
+        let previous = app.approval_mode;
+        let view = ConfigView::open_permission_choices(&app);
+        assert_eq!(view.editing_key(), Some("approval_mode"));
+        let edit = view.editing.as_ref().unwrap();
+        let choices = edit.choices.as_ref().unwrap();
+        assert!(
+            choices
+                .iter()
+                .any(|choice| canonical_config_choice("approval_mode", choice) == "full-access")
+        );
+        assert_eq!(app.approval_mode, previous);
     }
 
     #[test]

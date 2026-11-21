@@ -17208,7 +17208,7 @@ async fn supervise_subagent_task_body_with_runtime(
 /// The deterministic fallback makes no additional request. An earlier
 /// reporting attempt may have timed out, so do not claim it never happened.
 fn budget_partial_result(
-    result: SubAgentResult,
+    mut result: SubAgentResult,
     cause: &str,
     preservation_note: Option<&str>,
 ) -> SubAgentResult {
@@ -17218,7 +17218,18 @@ fn budget_partial_result(
         ),
         None => "Reporting allowance was unavailable or expired. This deterministic fallback makes no further model request.".to_string(),
     };
-    budget_partial_result_with_note(result, cause, &note)
+    let partial = result.result.take().filter(|text| !text.trim().is_empty());
+    let partial = match partial {
+        Some(text) => budget_handback::preview_partial_text(&text),
+        None => budget_handback::fallback_partial_text(
+            result
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.messages.as_slice())
+                .unwrap_or_default(),
+        ),
+    };
+    budget_partial_result_with_note(result, cause, &note, &partial)
 }
 
 /// Cancelling keeps the work (addendum F4, fleet-5). A Stop used to end a
@@ -17446,18 +17457,8 @@ fn budget_partial_result_with_note(
     mut result: SubAgentResult,
     cause: &str,
     handback_note: &str,
+    partial: &str,
 ) -> SubAgentResult {
-    let text = result.result.take().filter(|text| !text.trim().is_empty());
-    let partial = match text {
-        Some(text) => text.chars().take(4_000).collect::<String>(),
-        None => result.checkpoint.as_ref().map_or_else(
-            || {
-                "No assistant text was recorded; inspect the checkpoint for completed tool work."
-                    .to_string()
-            },
-            |checkpoint| budget_handback::fallback_partial_text(&checkpoint.messages),
-        ),
-    };
     let measured = result
         .usage
         .as_ref()

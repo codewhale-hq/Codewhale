@@ -3,18 +3,18 @@
   "binary": {
     "release_tag": null,
     "asset": null,
-    "version_line": "codewhale 0.10.3 (dev)",
+    "version_line": "codewhale 0.10.3 (b6011be36d7f)",
     "release_checksum_line": null,
-    "build": "local macOS build of Engine main 9d7e4362f4, installed as codewhale; not a published release"
+    "build": "local macOS release build of Engine main b6011be36d7f, not a published release"
   },
   "model": {
-    "provider": "Google Gemini (first-party API, free tier)",
-    "model": "gemini-4-hydrogen",
+    "provider": "DeepSeek (first-party API)",
+    "model": "deepseek-flash",
     "scripted": false,
     "note": "Every frame is real output from a live model call; no cell is edited."
   },
-  "recorded": "2026-11-18, one session in a real PTY under tmux 256-colour, throwaway HOME and git repo under /tmp, TERM=xterm-256color, default approval mode (accept edits), telemetry off",
-  "grab": "tmux capture-pane -p -e, colour kept; the .ansi files are the capture as written. One live session per frame state; the tmux window is resized between grabs and Codewhale redraws at each size. 00-launch is three fresh first launches, one per width. Crops are whole-row slices of their raw frame.",
+  "recorded": "2026-11-20, one session per width in a real PTY under tmux 256-colour, throwaway HOME and git repository, TERM=xterm-256color, default approval mode (accept edits), telemetry off. The API key was pasted into the in-product credential wizard; it is masked on screen and not part of any published frame.",
+  "grab": "tmux capture-pane -p -e, colour kept; the .ansi files are the capture as written. One live session per width; the tmux window is resized between heights for the tall receipt and cost views. 00-launch is three fresh first launches, one per width. Crops are whole-row slices of their raw frame.",
   "frames": [
     {
       "id": "cols100/00-launch",
@@ -34,12 +34,12 @@
       "file": "cols100/01-model-picker.ansi",
       "columns": 100,
       "rows": 30,
-      "shows": "Model picker searched for hydrogen: gemini-4-hydrogen from several providers, Google Gemini selected",
+      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
       "shows_model_name": true,
-      "model_connected": true,
+      "model_connected": false,
       "in_task_session": false
     },
     {
@@ -47,8 +47,8 @@
       "file": "cols100/02-task-prompt.ansi",
       "columns": 100,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to gemini-4-hydrogen",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -61,10 +61,10 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -74,10 +74,10 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -87,7 +87,7 @@
       "columns": 100,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": true,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -120,10 +120,7 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols100/06-receipt",
-      "crop_rows": {
-        "first": 12,
-        "last": 24
-      }
+      "crop_rows": {"first": 12, "last": 24}
     },
     {
       "id": "cols100/07-cost",
@@ -131,7 +128,7 @@
       "columns": 100,
       "rows": 30,
       "shows": "In-session /cost view, after /receipts",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -144,17 +141,14 @@
       "columns": 100,
       "rows": 15,
       "shows": "In-session /cost view, after /receipts",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": false,
       "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols100/07-cost",
-      "crop_rows": {
-        "first": 10,
-        "last": 24
-      }
+      "crop_rows": {"first": 10, "last": 24}
     },
     {
       "id": "cols56/00-launch",
@@ -174,12 +168,12 @@
       "file": "cols56/01-model-picker.ansi",
       "columns": 56,
       "rows": 30,
-      "shows": "Model picker searched for hydrogen: gemini-4-hydrogen from several providers, Google Gemini selected",
+      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
       "shows_model_name": true,
-      "model_connected": true,
+      "model_connected": false,
       "in_task_session": false
     },
     {
@@ -187,8 +181,8 @@
       "file": "cols56/02-task-prompt.ansi",
       "columns": 56,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to gemini-4-hydrogen",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -201,10 +195,10 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -214,10 +208,10 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -227,8 +221,8 @@
       "columns": 56,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
-      "shows_test_run": true,
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
       "model_connected": true,
@@ -273,10 +267,7 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols56/06b-receipt-tall",
-      "crop_rows": {
-        "first": 7,
-        "last": 37
-      }
+      "crop_rows": {"first": 8, "last": 38}
     },
     {
       "id": "cols56/07-cost",
@@ -284,7 +275,7 @@
       "columns": 56,
       "rows": 30,
       "shows": "In-session /cost view, after /receipts",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -295,19 +286,16 @@
       "id": "cols56/07-cost.crop",
       "file": "cols56/07-cost.crop.ansi",
       "columns": 56,
-      "rows": 17,
+      "rows": 23,
       "shows": "In-session /cost view, after /receipts",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols56/07-cost",
-      "crop_rows": {
-        "first": 2,
-        "last": 18
-      }
+      "crop_rows": {"first": 2, "last": 24}
     },
     {
       "id": "cols48/00-launch",
@@ -327,12 +315,12 @@
       "file": "cols48/01-model-picker.ansi",
       "columns": 48,
       "rows": 30,
-      "shows": "Model picker searched for hydrogen: gemini-4-hydrogen from several providers, Google Gemini selected",
+      "shows": "Model picker searched for deepseek-flash: deepseek-flash from several providers, DeepSeek selected",
       "caption_sentence": "Pick a model from any provider; one model is often offered by several.",
       "shows_test_run": false,
       "shows_ask_posture": false,
       "shows_model_name": true,
-      "model_connected": true,
+      "model_connected": false,
       "in_task_session": false
     },
     {
@@ -340,8 +328,8 @@
       "file": "cols48/02-task-prompt.ansi",
       "columns": 48,
       "rows": 30,
-      "shows": "Task frame 1: the prompt has been sent to gemini-4-hydrogen",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "shows": "Task frame 1: the prompt has been sent to deepseek-flash",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -354,10 +342,10 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 2: the reads and the applied edit to ls.py, reviewed with Page Up while the command waits",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -367,10 +355,10 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 3: the approval card before the test command runs",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": false,
-      "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_ask_posture": true,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true
     },
@@ -380,7 +368,7 @@
       "columns": 48,
       "rows": 30,
       "shows": "Task frame 4: the test output, the model's final answer and the footer",
-      "caption_sentence": "Codewhale on gemini-4-hydrogen edits a file in your repository, asks before it runs a command, and shows you the result.",
+      "caption_sentence": "Codewhale on deepseek-flash edits a file in your repository, asks before it runs a command, and shows you the result.",
       "shows_test_run": true,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -417,7 +405,7 @@
       "id": "cols48/06b-receipt-tall.crop",
       "file": "cols48/06b-receipt-tall.crop.ansi",
       "columns": 48,
-      "rows": 32,
+      "rows": 33,
       "shows": "In-session /receipts view at 60 rows, because 30 rows cut it",
       "caption_sentence": "After a task, the receipt shows which files changed, which commands ran and who approved each step, and it lists what it did not record.",
       "shows_test_run": false,
@@ -426,10 +414,7 @@
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols48/06b-receipt-tall",
-      "crop_rows": {
-        "first": 3,
-        "last": 34
-      }
+      "crop_rows": {"first": 2, "last": 34}
     },
     {
       "id": "cols48/07-cost",
@@ -437,7 +422,7 @@
       "columns": 48,
       "rows": 30,
       "shows": "In-session /cost view, after /receipts",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -450,7 +435,7 @@
       "columns": 48,
       "rows": 60,
       "shows": "In-session /cost view at 48 columns by 60 rows, because 48 by 30 cuts it",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": true,
       "shows_model_name": true,
@@ -461,19 +446,16 @@
       "id": "cols48/07b-cost-tall.crop",
       "file": "cols48/07b-cost-tall.crop.ansi",
       "columns": 48,
-      "rows": 17,
+      "rows": 25,
       "shows": "In-session /cost view at 48 columns by 60 rows, because 48 by 30 cuts it",
-      "caption_sentence": "When a price is not known, Codewhale says unknown instead of guessing.",
+      "caption_sentence": "Session cost is computed locally from audited provider usage and published rates: an estimate, not a bill.",
       "shows_test_run": false,
       "shows_ask_posture": false,
-      "shows_model_name": false,
+      "shows_model_name": true,
       "model_connected": true,
       "in_task_session": true,
       "crop_of": "cols48/07b-cost-tall",
-      "crop_rows": {
-        "first": 31,
-        "last": 47
-      }
+      "crop_rows": {"first": 30, "last": 54}
     }
   ]
 }

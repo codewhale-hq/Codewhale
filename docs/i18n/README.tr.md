@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:a3f7ac7d7dc2 -->
+<!-- source: README.md sha256:7162aa6f1feb -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Bu komut, macOS veya Linux'a en son sürümü kurar ve hesap gerektirmez. [Windo
 
 <sub>Bu çeviri makine taslağıdır ve henüz anadili konuşan biri tarafından gözden geçirilmedi.</sub>
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="gemini-4-hydrogen ile gerçek bir görevden sonra terminalde Codewhale. python3 -m unittest -v test_ls.py komutunu çalıştırdı, 2 test geçti ve argparse ile ls.py dosyasına --json seçeneğini eklediğini bildiriyor. Durum satırında accept edits ve gemini-4-hydrogen görünüyor.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="deepseek-flash ile gerçek bir görevden sonra terminalde Codewhale. python3 -m unittest -v test_ls.py komutunu çalıştırdı, 2 test geçti ve ls.py dosyasına --json seçeneğini eklediğini bildiriyor. Durum satırında accept edits ve deepseek-flash görünüyor.">
 
-<sub>0.10.3 geliştirme sürümünde gerçek bir oturum: gemini-4-hydrogen, Google API üzerinden değişikliği yazdı ve testlerin çalışmasına bir kez siz izin verdiniz.</sub>
+<sub>0.10.3 geliştirme sürümünde gerçek bir oturum: deepseek-flash, DeepSeek API üzerinden değişikliği yazdı ve testlerin çalışmasına bir kez siz izin verdiniz.</sub>
 
 </div>
 

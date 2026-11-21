@@ -1968,6 +1968,11 @@ pub(crate) async fn handle_view_events(
                     app.view_stack.refresh_extensions(snapshot);
                 }
             }
+            ViewEvent::OpenPermissionSettings => {
+                app.view_stack
+                    .push(ConfigView::open_permission_choices(app));
+                app.needs_redraw = true;
+            }
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
             }
