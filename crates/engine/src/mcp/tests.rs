@@ -10892,6 +10892,22 @@ async fn delegated_read_binds_the_approved_payload_to_one_live_operation() -> Re
     assert!(names.contains(&name.to_owned()), "{names:?}");
     assert!(!names.contains(&"mcp_books_delete".to_owned()));
     assert!(!names.contains(&"mcp_other_read".to_owned()));
+    let mut connected = shared.lock().await.to_api_tools();
+    assert!(connected.iter().any(|tool| tool.name == "mcp_books_delete"));
+    let refreshed = authority.connected_mcp_tools_for_model(&registry, connected.clone());
+    assert_eq!(
+        refreshed
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        [name]
+    );
+    connected.retain(|tool| tool.name != name);
+    assert!(
+        authority
+            .connected_mcp_tools_for_model(&registry, connected)
+            .is_empty()
+    );
     authority.validate(&registry, name, &allowed)?;
     assert!(
         authority
