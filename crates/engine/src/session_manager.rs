@@ -3019,14 +3019,58 @@ impl SessionManager {
     }
 
     fn write_late_usage_ledger(path: &Path, ledger: &LateUsageLedger) -> io::Result<()> {
-        let bytes = serde_json::to_vec(ledger)
+        let mut bytes = serde_json::to_vec(ledger)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "late usage ledger exceeds its size bound",
-            ));
+            // Diagnostic-only receipts (route decisions) are evidence, not spend.
+            // Drop the oldest ones until the ledger fits; spend-bearing records
+            // stay untouched so a replay cannot double-count a source.
+            let mut compacted = ledger.clone();
+            let mut pruned = 0usize;
+            while u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
+                let diagnostic = compacted
+                    .records
+                    .iter()
+                    .filter(|record| record.diagnostic_only)
+                    .count();
+                if diagnostic == 0 {
+                    break;
+                }
+                let overflow = bytes.len().saturating_sub(
+                    usize::try_from(MAX_LATE_USAGE_LEDGER_BYTES).unwrap_or(usize::MAX),
+                );
+                let average = (bytes.len() / compacted.records.len().max(1)).max(1);
+                let remove = (overflow / average).max(1).min(diagnostic);
+                let mut remaining = remove;
+                compacted.records.retain(|record| {
+                    if remaining > 0 && record.diagnostic_only {
+                        remaining -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                pruned += remove - remaining;
+                bytes = serde_json::to_vec(&compacted)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            }
+            if pruned > 0 {
+                tracing::warn!(
+                    pruned,
+                    "compacted late usage diagnostic receipts to fit the ledger bound"
+                );
+            }
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_LATE_USAGE_LEDGER_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "late usage ledger exceeds its size bound",
+                ));
+            }
         }
+        Self::write_late_usage_ledger_bytes(path, &bytes)
+    }
+
+    fn write_late_usage_ledger_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let parent = path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
         })?;
@@ -3034,7 +3078,7 @@ impl SessionManager {
             io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no basename")
         })?;
         codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
-            .replace(&bytes)?;
+            .replace(bytes)?;
         Self::sync_late_usage_ledger(path)
     }
 
