@@ -13,6 +13,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 ### Added
 
+- **Read-only deferred tools:** Auto-Review recognizes local inspection tools and task or automation reads without prompting for routine lookups. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu). (#7431)
 - **A quieter terminal launch:** a compact Desktop-inspired whale shares the composer accent. Recent sessions open on demand, and MCP sign-in details stay in the connection manager. (CW-8318)
 
 - **Exact route inventory:** model lists separate metadata, observed roster evidence and readiness; optional session selections reject changed account or endpoint bindings, and the terminal shows the catalog status from that same route inventory, including on bundled fallback rows. A new Runtime thread can commit an exact selection before it becomes visible. Empty discovery no longer masquerades as a failed refresh. (CW-8311)
