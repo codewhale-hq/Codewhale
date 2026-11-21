@@ -1,0 +1,436 @@
+name: Successor native package qualification
+
+on:
+  push:
+    branches: [ci/0103-successor-native-qualification]
+    paths: [.github/workflows/successor-native-qualification.yml]
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  ENGINE_SHA: bc58781ba10c7c6d192f92848b3f6b4cce4fd3a8
+  RC_RUN: '44908205009'
+
+jobs:
+  provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      bundles: ${{ steps.rc.outputs.bundles }}
+      windows_setup: ${{ steps.rc.outputs.windows_setup }}
+      windows_engine: ${{ steps.rc.outputs.windows_engine }}
+      windows_arm: ${{ steps.rc.outputs.windows_arm }}
+    steps:
+      - name: Verify exact successful candidate and select live artifacts
+        id: rc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RC_RUN" =~ ^[1-9][0-9]*$ ]] || { echo 'Set RC_RUN to the exact candidate workflow run ID.' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_RUN" |
+            jq -e --arg sha "$ENGINE_SHA" '
+              .head_sha == $sha and .path == ".github/workflows/release-candidate.yml" and
+              .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success"
+            '
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC_RUN/artifacts?per_page=100")
+          retain_artifact() {
+            local output=$1 name=$2 selected
+            selected=$(jq -cer --arg name "$name" '
+              [.artifacts[] | select(.name == $name and .expired == false)] |
+              if length == 1 and (.[0].digest | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+              then .[0] | {id, digest}
+              else error("expected one live digest-verified artifact: " + $name)
+              end
+            ' <<< "$artifacts")
+            printf '%s=%s\n' "$output" "$selected" >> "$GITHUB_OUTPUT"
+          }
+          retain_artifact bundles codewhale-bundles
+          retain_artifact windows_setup CodeWhaleSetup.exe
+          retain_artifact windows_engine codewhale-windows-x64.exe
+          retain_artifact windows_arm codewhale-windows-arm64.exe
+
+  windows-arm64-startup:
+    needs: provenance
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Verify and start the ARM64 Engine
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_ARM: ${{ needs.provenance.outputs.windows_arm }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'Arm64') { throw 'Expected an ARM64 process' }
+          $meta = $env:WINDOWS_ARM | ConvertFrom-Json
+          cmd.exe /d /c "gh api repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($meta.id)/zip > archive.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          if (('sha256:' + (Get-FileHash archive.zip).Hash.ToLowerInvariant()) -cne $meta.digest) { throw 'Artifact digest did not match GitHub' }
+          Expand-Archive archive.zip arm64
+          $engines = @(Get-ChildItem arm64 -Recurse -Filter codewhale-windows-arm64.exe -File)
+          if ($engines.Count -ne 1) { throw 'Expected one ARM64 binary' }
+          $exe = $engines[0].FullName
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $offset = [BitConverter]::ToInt32($bytes,0x3c)
+          if ([BitConverter]::ToUInt32($bytes,$offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes,$offset+4) -ne 0xAA64) { throw 'Unexpected PE machine or signature' }
+          $env:CODEWHALE_HOME = Join-Path $env:RUNNER_TEMP 'cw-arm64-proof'
+          $env:CODEWHALE_TELEMETRY = '0'
+          $env:CODEWHALE_DISABLE_MODELS_DEV_FETCH = '1'
+          $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -cne "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0,12)))") { throw "Version mismatch $version" }
+          $helpText = & $exe doctor --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $helpText -notmatch 'doctor') { throw 'Doctor CLI failed to start' }
+          [ordered]@{source=$env:ENGINE_SHA; run=$env:RC_RUN; version=$version; os=[Environment]::OSVersion.Version.ToString(); machine='ARM64'; binary_sha256=(Get-FileHash $exe).Hash.ToLowerInvariant(); doctorHelp=$true} | ConvertTo-Json | Tee-Object -FilePath arm64-startup.json
+
+      - name: Exercise owned job cleanup, sibling survival and thread reopen
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem arm64 -Recurse -Filter codewhale-windows-arm64.exe -File).FullName
+          $digest = (Get-Content arm64-startup.json | ConvertFrom-Json).binary_sha256
+          $receipt = & ./.github/qualification/windows-lifecycle.ps1 -Executable $exe -Source $env:ENGINE_SHA -Digest $digest
+          $receipt | Set-Content -Encoding utf8 arm64-lifecycle.json
+          $data = $receipt | ConvertFrom-Json
+          if (-not ($data.delete_cleanup -and $data.sibling_survived -and $data.owner_crash_cleanup -and $data.no_rerun -and $data.workspace_preserved)) { throw 'Missing runtime ownership evidence' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-arm64-lifetime
+          path: |
+            arm64-lifecycle.json
+            arm64-startup.json
+
+  windows-nsis:
+    needs: provenance
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      BASELINE_SETUP_SHA256: b94d4a9f9d464ef8640b37dba664d7b574da6161b5d1ecf2fa6b551f24e9930a
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SHA }}
+          path: product
+          persist-credentials: false
+          sparse-checkout: |
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            docs/THIRD_PARTY_NOTICES.md
+          sparse-checkout-cone-mode: false
+      - name: Download and verify Windows installer and executable artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_SETUP: ${{ needs.provenance.outputs.windows_setup }}
+          WINDOWS_ENGINE: ${{ needs.provenance.outputs.windows_engine }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Expand-VerifiedArtifact([string]$Metadata, [string]$Output) {
+            $artifact = $Metadata | ConvertFrom-Json
+            $zip = "$Output.zip"
+            cmd.exe /d /c "gh api repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($artifact.id)/zip > $zip"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download $Output" }
+            $actual = 'sha256:' + (Get-FileHash -LiteralPath $zip).Hash.ToLowerInvariant()
+            if ($actual -cne $artifact.digest) { throw "$Output artifact digest mismatch" }
+            Expand-Archive -LiteralPath $zip -DestinationPath $Output
+          }
+          Expand-VerifiedArtifact $env:WINDOWS_SETUP 'candidate-setup'
+          Expand-VerifiedArtifact $env:WINDOWS_ENGINE 'candidate-engine'
+      - name: Install published baseline, upgrade and remove exact candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ARCH -cne 'X64' -or ![Environment]::Is64BitOperatingSystem) { throw 'Expected a native Windows x64 runner' }
+          $root = Join-Path $env:RUNNER_TEMP ('engine-installer-' + [Guid]::NewGuid().ToString('N'))
+          $install = Join-Path $root 'install'
+          $bin = Join-Path $install 'bin'
+          $env:CODEWHALE_HOME = Join-Path $root 'state'
+          $env:CODEWHALE_TELEMETRY = '0'
+          $env:CODEWHALE_NO_UPDATE_CHECK = '1'
+          $baseline = Join-Path $root 'baseline.exe'
+          New-Item -ItemType Directory -Path $root,$env:CODEWHALE_HOME | Out-Null
+          gh release download v0.10.2 --repo $env:GITHUB_REPOSITORY --pattern CodeWhaleSetup.exe --output $baseline
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $baseline).Hash.ToLowerInvariant() -cne $env:BASELINE_SETUP_SHA256) { throw 'Baseline setup digest mismatch' }
+          Remove-Item Env:GH_TOKEN
+          $setup = (Resolve-Path -LiteralPath 'candidate-setup/CodeWhaleSetup.exe').Path
+          $engineDigest = (Get-FileHash -LiteralPath 'candidate-engine/codewhale-windows-x64.exe').Hash.ToLowerInvariant()
+          $setupDigest = (Get-FileHash -LiteralPath $setup).Hash.ToLowerInvariant()
+          $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeWhale'
+          $product = 'HKCU:\Software\CodeWhale'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'CodeWhale/CodeWhale.lnk'
+          if ((Test-Path $registry) -or (Test-Path $product) -or (Test-Path $shortcut)) { throw 'Expected a clean disposable runner profile' }
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          function Read-Path {
+            $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          }
+          $initialPath = Read-Path
+          $hadPath = $key.GetValueNames() -contains 'Path'
+          $pathKind = if ($hadPath) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+          $expectedAfterLegacyRemoval = if ($initialPath.EndsWith(';')) { $initialPath.Substring(0, $initialPath.Length - 1) } else { $initialPath }
+          function Install([string]$package) {
+            $process = Start-Process -PassThru -Wait -FilePath $package -ArgumentList @('/S', "/D=$install")
+            if ($process.ExitCode -ne 0) { throw "Installer exit $($process.ExitCode)" }
+          }
+          function Check-Version([string]$expected) {
+            foreach ($name in @('codewhale.exe','codew.exe')) {
+              $binary = Join-Path $bin $name
+              $version = & $binary --version
+              if ($LASTEXITCODE -ne 0 -or $version -cne $expected) { throw "$name reported $version; expected $expected" }
+            }
+          }
+          Install $baseline
+          Check-Version 'codewhale 0.10.2 (ff466b2ed0bf)'
+          $rollback = Join-Path $root 'rollback-fixture'
+          $rollbackBin = Join-Path $rollback 'bin'
+          $rollbackHome = Join-Path $rollback 'state'
+          $previous = Join-Path $rollbackHome 'updates/previous'
+          New-Item -ItemType Directory -Path $rollbackBin,$previous -Force | Out-Null
+          $previousBinary = Join-Path $previous 'codewhale.exe'
+          Copy-Item -LiteralPath (Join-Path $bin 'codewhale.exe') -Destination $previousBinary
+          @{ version = '0.10.2'; sha256 = (Get-FileHash -LiteralPath $previousBinary).Hash.ToLowerInvariant() } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $previous 'previous.json') -Encoding utf8
+          'preserved rollback state' | Set-Content -LiteralPath (Join-Path $rollbackHome 'state.txt')
+          $legacyInstalledPath = Read-Path
+          $expectedLegacyPath = if ($initialPath.Length -eq 0 -or $initialPath.EndsWith(';')) { "$initialPath$bin" } else { "$initialPath;$bin" }
+          if ($legacyInstalledPath -cne $expectedLegacyPath) { throw 'Published baseline PATH did not match its legacy append contract' }
+          'unrelated' | Set-Content (Join-Path $bin 'unrelated.txt')
+          'saved state' | Set-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')
+          Install $setup
+          Check-Version "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0, 12)))"
+          foreach ($name in @('codewhale.exe','codew.exe')) {
+            if ((Get-FileHash -LiteralPath (Join-Path $bin $name)).Hash.ToLowerInvariant() -cne $engineDigest) { throw "$name digest mismatch" }
+            Copy-Item -LiteralPath (Join-Path $bin $name) -Destination $rollbackBin
+          }
+          foreach ($file in @('LICENSE','THIRD_PARTY_NOTICES.md','docs/THIRD_PARTY_NOTICES.md')) {
+            if ((Get-FileHash (Join-Path $install "codewhale-notices/$file")).Hash -cne (Get-FileHash (Join-Path 'product' $file)).Hash) { throw "Installed notice mismatch $file" }
+          }
+          function Rollback-FileSnapshot {
+            Get-ChildItem -LiteralPath $rollback -File -Recurse -Force | Sort-Object FullName | ForEach-Object {
+              "$($_.FullName) $((Get-FileHash -LiteralPath $_.FullName).Hash)"
+            }
+          }
+          $beforeRollback = Rollback-FileSnapshot
+          $packageHome = $env:CODEWHALE_HOME
+          $nativeErrors = $PSNativeCommandUseErrorActionPreference
+          try {
+            $env:CODEWHALE_HOME = $rollbackHome
+            $PSNativeCommandUseErrorActionPreference = $false
+            $refusal = & (Join-Path $rollbackBin 'codewhale.exe') update --rollback 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -or $refusal -cnotmatch 'Rollback to v0\.10\.2 is disabled because its compatibility with migrated workspace state cannot be verified') {
+              throw "Expected 0.10.2 downgrade refusal: $refusal"
+            }
+            Write-Output $refusal
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $nativeErrors
+            $env:CODEWHALE_HOME = $packageHome
+          }
+          if (($beforeRollback -join "`n") -cne ((Rollback-FileSnapshot) -join "`n")) { throw 'Downgrade refusal changed fixture files' }
+          if ((Get-ItemProperty -LiteralPath $registry).DisplayVersion -cne '0.10.3') { throw 'Upgrade registration version mismatch' }
+          if (@((Read-Path) -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw 'Expected one installed PATH entry' }
+          if ((Read-Path) -cne $legacyInstalledPath) { throw 'Upgrade changed existing PATH bytes' }
+          if (!(Test-Path $shortcut) -or !(Test-Path (Join-Path $bin 'codewhale.bat'))) { throw 'Missing launcher or Start Menu shortcut' }
+          $uninstaller = Join-Path $install 'Uninstall.exe'
+          $uninstallerHash = (Get-FileHash -LiteralPath $uninstaller).Hash.ToLowerInvariant()
+          $removed = Start-Process -PassThru -Wait -FilePath $uninstaller -ArgumentList '/S'
+          if ($removed.ExitCode -ne 0) { throw "Uninstaller exit $($removed.ExitCode)" }
+          foreach ($file in @($uninstaller,$shortcut,(Join-Path $bin 'codewhale.exe'),(Join-Path $bin 'codew.exe'),(Join-Path $bin 'codewhale.bat'),$registry,$product)) {
+            if (Test-Path -LiteralPath $file) { throw "Uninstall retained owned item $file" }
+          }
+          if ((Read-Path) -cne $expectedAfterLegacyRemoval) { throw 'Upgrade removal changed PATH beyond the legacy append' }
+          if ((Get-Content (Join-Path $bin 'unrelated.txt')) -cne 'unrelated' -or (Get-Content (Join-Path $env:CODEWHALE_HOME 'state.txt')) -cne 'saved state') { throw 'Uninstall changed unrelated files or state' }
+          try {
+            $install = Join-Path $root 'fresh-install'
+            $bin = Join-Path $install 'bin'
+            $seed = '%USERPROFILE%\bin;C:\CodeWhaleProofFixture\unrelated;;'
+            $key.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Install $setup
+            Check-Version "codewhale 0.10.3 ($($env:ENGINE_SHA.Substring(0, 12)))"
+            if ((Read-Path) -cne "$seed$bin;" ) { throw 'Current installer changed the existing trailing PATH separators' }
+            $freshRemoved = Start-Process -PassThru -Wait -FilePath (Join-Path $install 'Uninstall.exe') -ArgumentList '/S'
+            if ($freshRemoved.ExitCode -ne 0 -or (Read-Path) -cne $seed) { throw 'Fresh uninstall did not restore exact PATH bytes' }
+            if ($key.GetValueKind('Path') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw 'Fresh uninstall changed the registry value type' }
+          } finally {
+            if ($hadPath) { $key.SetValue('Path', $initialPath, $pathKind) } else { $key.DeleteValue('Path', $false) }
+            $key.Close()
+          }
+          [ordered]@{ source=$env:ENGINE_SHA; rc_run=$env:RC_RUN; windows_build=[Environment]::OSVersion.Version.Build; architecture=$env:RUNNER_ARCH; baseline_setup_sha256=$env:BASELINE_SETUP_SHA256; setup_sha256=$setupDigest; codewhale_sha256=$engineDigest; generated_uninstaller_sha256=$uninstallerHash; baseline_install=$true; upgrade=$true; uninstall=$true; legacy_trailing_separator_consumed=$initialPath.EndsWith(';'); fresh_exact_path_round_trip=$true; state_preserved=$true; copied_nsis_executable_downgrade_refused=$true; rollback_fixture_files_preserved=$true; installed_three_notice_hashes_match=$true } | ConvertTo-Json | Tee-Object -FilePath windows-installer-proof.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-installer-proof
+          path: windows-installer-proof.json
+          if-no-files-found: error
+
+  linux-archive:
+    needs: provenance
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+            machine: x86_64
+            architecture: X64
+            baseline: ed666471d845549c922bb808c01e7d5553c3e97972d77ca411398002510f70d9
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            machine: aarch64
+            architecture: ARM64
+            baseline: d737fc57e2e0abb106c5a84fb33733316541857601a6237449c207bb06993387
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      BASELINE_ARCHIVE_SHA256: ${{ matrix.baseline }}
+      TARGET: ${{ matrix.target }}
+      MACHINE: ${{ matrix.machine }}
+      ARCHITECTURE: ${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SHA }}
+          path: product
+          persist-credentials: false
+          sparse-checkout: |
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            docs/THIRD_PARTY_NOTICES.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          path: harness
+          persist-credentials: false
+          sparse-checkout: .github/qualification
+      - name: Verify packages and check install, upgrade, recovery and removal on native Linux
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_BUNDLES: ${{ needs.provenance.outputs.bundles }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -s)" == Linux && "$(uname -m)" == "$MACHINE" && "$RUNNER_ARCH" == "$ARCHITECTURE" ]]
+          root=$(mktemp -d "$RUNNER_TEMP/codewhale-native-XXXXXXXX")
+          archive=codewhale-${TARGET}.tar.gz
+          bundle_id=$(jq -er '.id' <<< "$RC_BUNDLES")
+          bundle_digest=$(jq -er '.digest | sub("^sha256:"; "")' <<< "$RC_BUNDLES")
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$bundle_id/zip" > "$root/bundles.zip"
+          printf '%s  %s\n' "$bundle_digest" "$root/bundles.zip" | sha256sum -c -
+          mkdir "$root/baseline" "$root/candidate"
+          gh release download v0.10.2 --repo "$GITHUB_REPOSITORY" --pattern "$archive" --dir "$root/baseline"
+          printf '%s  %s\n' "$BASELINE_ARCHIVE_SHA256" "$root/baseline/$archive" | sha256sum -c -
+          unzip -q "$root/bundles.zip" "$archive" codewhale-bundles-sha256.txt -d "$root/candidate"
+          archive_digest=$(awk -v asset="$archive" '$2 == asset { print $1 }' "$root/candidate/codewhale-bundles-sha256.txt")
+          [[ "$archive_digest" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s  %s\n' "$archive_digest" "$root/candidate/$archive" | sha256sum -c -
+          tar -xzf "$root/baseline/$archive" -C "$root/baseline"
+          tar -xzf "$root/candidate/$archive" -C "$root/candidate"
+          baseline="$root/baseline/codewhale-${TARGET}"
+          candidate="$root/candidate/codewhale-${TARGET}"
+          for notice in LICENSE THIRD_PARTY_NOTICES.md docs/THIRD_PARTY_NOTICES.md; do
+            cmp "product/$notice" "$candidate/codewhale-notices/$notice"
+          done
+          python3 harness/.github/qualification/partial-restore.py "$candidate" "$baseline" "$root/baseline/$archive"
+          home="$root/home"
+          state="$root/state"
+          bin="$home/.local/bin"
+          mkdir -m 700 "$home" "$state"
+          fixture() {
+            env -i HOME="$home" CODEWHALE_HOME="$state" PATH="$bin:/usr/bin:/bin" \
+              CODEWHALE_TELEMETRY=0 CODEWHALE_DISABLE_MODELS_DEV_FETCH=1 CODEWHALE_NO_UPDATE_CHECK=1 "$@"
+          }
+          check_version() {
+            local payload=$1 version=$2 executable
+            for executable in codewhale codew; do
+              test "$(fixture "$bin/$executable" --version)" = "$version"
+              cmp "$payload/$executable" "$bin/$executable"
+            done
+          }
+          check_removal() {
+            fixture "$bin/codewhale" uninstall
+            check_version "$candidate" "$version"
+            test -f "$bin/.codewhale-install.sha256"
+            fixture "$bin/codewhale" uninstall --yes
+            for owned in codewhale codew .codewhale-install.sha256; do
+              test ! -e "$bin/$owned"
+            done
+            test "$(cat "$bin/unrelated.txt")" = unrelated
+            test "$(cat "$state/state.txt")" = preserved
+            test "$(cat "$home/.bashrc")" = '# preserved profile'
+          }
+          version="codewhale 0.10.3 (${ENGINE_SHA:0:12})"
+          printf '# preserved profile\n' > "$home/.bashrc"
+          fixture bash "$baseline/install.sh" --no-modify-path
+          check_version "$baseline" 'codewhale 0.10.2 (ff466b2ed0bf)'
+          printf 'unrelated\n' > "$bin/unrelated.txt"
+          printf 'preserved\n' > "$state/state.txt"
+          fixture bash "$candidate/install.sh" --no-modify-path
+          check_version "$candidate" "$version"
+          (
+            cd "$bin"
+            sha256sum -c .codewhale-install.sha256
+          )
+          check_removal
+          fixture bash "$candidate/install.sh" --no-modify-path
+          check_version "$candidate" "$version"
+          check_removal
+          home="$root/restore-home"
+          state="$root/restore-state"
+          bin="$home/.local/bin"
+          mkdir -m 700 "$home" "$state"
+          fixture bash "$baseline/install.sh" --no-modify-path
+          check_version "$baseline" 'codewhale 0.10.2 (ff466b2ed0bf)'
+          if [[ -f "$bin/.codewhale-install.sha256" ]]; then
+            cp "$bin/.codewhale-install.sha256" "$root/original-receipt"
+          fi
+          printf 'unrelated\n' > "$bin/unrelated.txt"
+          printf 'preserved\n' > "$state/state.txt"
+          fixture bash "$candidate/install.sh" --no-modify-path
+          check_version "$candidate" "$version"
+          manifests=("$state"/recovery/*/manifest.tsv)
+          [[ ${#manifests[@]} -eq 1 && -f "${manifests[0]}" ]]
+          recovery_dir=$(dirname "${manifests[0]}")
+          fixture "$bin/codewhale" doctor --restore "$(basename "$recovery_dir")"
+          check_version "$baseline" 'codewhale 0.10.2 (ff466b2ed0bf)'
+          test ! -e "${manifests[0]}"
+          manifests=("$state"/recovery/*/manifest.tsv)
+          [[ ${#manifests[@]} -eq 1 && -f "${manifests[0]}" ]]
+          for executable in codewhale codew; do
+            displaced=$(awk -F '\t' -v target="$bin/$executable" '$1 == target { print $2 }' "${manifests[0]}")
+            cmp "$candidate/$executable" "$displaced"
+          done
+          test "$(cat "$bin/unrelated.txt")" = unrelated
+          test "$(cat "$state/state.txt")" = preserved
+          restore_receipt_matches=false
+          if [[ -f "$bin/.codewhale-install.sha256" ]] && (cd "$bin" && sha256sum --status -c .codewhale-install.sha256); then
+            restore_receipt_matches=true
+          fi
+          original_ownership_restored=false
+          if [[ ! -e "$root/original-receipt" && ! -e "$bin/.codewhale-install.sha256" ]]; then
+            original_ownership_restored=true
+          elif [[ -f "$root/original-receipt" && "$restore_receipt_matches" == true ]] && cmp -s "$root/original-receipt" "$bin/.codewhale-install.sha256"; then
+            original_ownership_restored=true
+          fi
+          jq -n --arg source "$ENGINE_SHA" --arg rc_run "$RC_RUN" --arg archive_sha256 "$archive_digest" \
+            --arg baseline_archive_sha256 "$BASELINE_ARCHIVE_SHA256" \
+            --arg codewhale_sha256 "$(sha256sum "$candidate/codewhale" | awk '{ print $1 }')" \
+            --arg codew_sha256 "$(sha256sum "$candidate/codew" | awk '{ print $1 }')" \
+            --arg build "$(uname -sr)" --arg architecture "$(uname -m)" \
+            --argjson restore_receipt_matches "$restore_receipt_matches" --argjson original_ownership_restored "$original_ownership_restored" \
+            '{source:$source, rc_run:$rc_run, archive_sha256:$archive_sha256, build:$build, architecture:$architecture,
+              baseline_archive_sha256:$baseline_archive_sha256, codewhale_sha256:$codewhale_sha256, codew_sha256:$codew_sha256,
+              baseline_install:true, upgrade:true, fresh_install:true, uninstall_preview:true, uninstall:true, state_preserved:true,
+              three_notice_hashes_match:true, archive_binary_restore:true, displaced_candidate_preserved:true, restore_receipt_matches:$restore_receipt_matches, original_ownership_restored:$original_ownership_restored}' |
+            tee linux-archive-proof.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.target }}-archive-proof
+          path: |
+            linux-archive-proof.json
+            partial-restore.json
+          if-no-files-found: error
+      - name: Check restored installation ownership
+        run: jq -e '.original_ownership_restored == true' linux-archive-proof.json
