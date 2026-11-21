@@ -1,18 +1,14 @@
 name: Successor native external agent controls
 on:
   push:
-    branches: [ci/0103-successor-native-agents]
+    branches: [ci/0103-successor-agents-linux, ci/0103-successor-agents-windows]
     paths: [.github/workflows/successor-native-agents.yml, .github/qualification/native-agents/**]
 permissions:
   contents: read
   actions: read
 jobs:
   opencode:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ endsWith(github.ref_name, '-linux') && 'ubuntu-24.04' || 'windows-2025' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -46,11 +42,7 @@ jobs:
             ${{ runner.temp }}/official-input.json
           if-no-files-found: error
   qwen:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ endsWith(github.ref_name, '-linux') && 'ubuntu-24.04' || 'windows-2025' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -84,11 +76,8 @@ jobs:
             ${{ runner.temp }}/official-input.json
           if-no-files-found: error
   vibe:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    if: endsWith(github.ref_name, '-linux')
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -112,11 +101,8 @@ jobs:
             ${{ runner.temp }}/official-input.json
           if-no-files-found: error
   codebuddy:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    if: endsWith(github.ref_name, '-linux')
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
