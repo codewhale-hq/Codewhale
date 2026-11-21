@@ -1699,7 +1699,7 @@ fn validate_env_allowlist(allowlist: &BTreeSet<String>) -> FleetHostResult<()> {
     Ok(())
 }
 
-fn is_safe_env_key(key: &str) -> bool {
+pub(super) fn is_safe_env_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     ![
         "SECRET",

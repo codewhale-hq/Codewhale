@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -14,8 +15,9 @@ const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const SILENT_HANDSHAKE: &str = "It did not answer the Agent Client Protocol handshake.";
 
 use codewhale_engine::fleet::agents::{
-    AGENTS, AgentQuota, ExecutorUnavailable, ExternalAgent, QuotaGate, QuotaSource, QuotaUnknown,
-    below_minimum, cli_version, foreign_command, local_signin_quota, not_installed, resolve,
+    AGENTS, AgentQuota, CustomExternalAgent, ExecutorUnavailable, ExternalAgent, QuotaGate,
+    QuotaSource, QuotaUnknown, below_minimum, cli_version_with_env, custom_agents, foreign_command,
+    local_signin_quota, not_installed, resolve, resolve_custom_binary,
 };
 use codewhale_runtime::process_tree::ProcessTree;
 use codewhale_runtime::settings::{AgentSettings, Settings};
@@ -36,8 +38,9 @@ fn clean(text: &str) -> String {
         .to_string()
 }
 
-async fn acp_initialize(path: &Path, args: &[&str]) -> Handshake {
+async fn acp_initialize(path: &Path, args: &[&str], env: &BTreeMap<String, String>) -> Handshake {
     let mut command = foreign_command(path, args);
+    command.envs(env);
     #[cfg(unix)]
     command.process_group(0);
     let Ok(mut child) = command.spawn() else {
@@ -152,6 +155,83 @@ fn clean_kind(kind: &str) -> &'static str {
     }
 }
 
+async fn describe_custom(agent: CustomExternalAgent) -> Value {
+    let Some(path) = resolve_custom_binary(&agent.binary).await else {
+        return json!({
+            "id": agent.id,
+            "name": agent.name,
+            "state": "not_installed",
+            "version": null,
+            "acp": null,
+            "auth_methods": [],
+            "website": agent.website,
+            "min_version": null,
+            "upgrade": null,
+            "login": null,
+            "adapter": null,
+            "adapter_installed": false,
+            "needs_update": false,
+            "runnable": false,
+            "depth": null,
+            "auth_status": "unknown",
+            "custom": true,
+            "reason_code": ExecutorUnavailable::NOT_INSTALLED,
+            "reason": format!("{} (`{}`) is not installed.", agent.name, agent.binary),
+        });
+    };
+    let arg_refs: Vec<&str> = agent.args.iter().map(String::as_str).collect();
+    let (version, handshake) = tokio::join!(
+        cli_version_with_env(&path, &agent.env),
+        acp_initialize(&path, &arg_refs, &agent.env),
+    );
+    let (initialized, refusal) = match handshake {
+        Handshake::Answered(result) => (Some(result), None),
+        Handshake::Refused(reason) => (None, Some(reason)),
+        Handshake::Silent => (None, None),
+    };
+    let acp = if initialized.is_some() {
+        "native"
+    } else {
+        "unreachable"
+    };
+    let reported = initialized
+        .as_ref()
+        .and_then(|result| result.pointer("/agentInfo/version"))
+        .and_then(Value::as_str)
+        .map(clean);
+    let version = version.or(reported);
+    let runnable = acp == "native";
+    let (reason_code, reason) = if runnable {
+        (None, None)
+    } else {
+        (
+            Some(ExecutorUnavailable::NO_ACP),
+            Some(refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string())),
+        )
+    };
+    json!({
+        "id": agent.id,
+        "name": agent.name,
+        "state": "installed",
+        "needs_update": false,
+        "min_version": null,
+        "upgrade": null,
+        "login": null,
+        "adapter": null,
+        "version": version,
+        "acp": acp,
+        "auth_methods": initialized.as_ref().map(auth_methods).unwrap_or_default(),
+        "website": agent.website,
+        "adapter_installed": false,
+        "runnable": runnable,
+        "depth": if runnable { "driven" } else { "observed" },
+        "auth_status": "unknown",
+        "custom": true,
+        "reason_code": reason_code,
+        "reason": reason,
+    })
+}
+
 async fn describe(agent: &'static ExternalAgent) -> Value {
     let Some(path) = resolve(agent.binary).await else {
         return json!({
@@ -175,11 +255,12 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
             "reason": not_installed(agent).message,
         });
     };
+    let env = agent.process_env();
     let (version, handshake, adapter_installed) = tokio::join!(
-        cli_version(&path),
+        cli_version_with_env(&path, &env),
         async {
             match agent.acp_args {
-                Some(args) => acp_initialize(&path, args).await,
+                Some(args) => acp_initialize(&path, args, &env).await,
                 None => Handshake::Silent,
             }
         },
@@ -256,20 +337,32 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
 }
 
 pub(super) async fn list_external_agents() -> Json<Value> {
+    let customs = custom_agents();
+    let custom_ids: Vec<String> = customs.iter().map(|c| c.id.clone()).collect();
     let mut tasks = JoinSet::new();
     for agent in AGENTS {
         tasks.spawn(describe(agent));
     }
-    let mut found = Vec::with_capacity(AGENTS.len());
+    for custom in customs {
+        tasks.spawn(describe_custom(custom));
+    }
+    let mut found = Vec::with_capacity(AGENTS.len() + custom_ids.len());
     while let Some(result) = tasks.join_next().await {
         if let Ok(entry) = result {
             found.push(entry);
         }
     }
     found.sort_by_key(|entry| {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
         AGENTS
             .iter()
-            .position(|agent| entry.get("id").and_then(Value::as_str) == Some(agent.id))
+            .position(|agent| agent.id == id)
+            .or_else(|| {
+                custom_ids
+                    .iter()
+                    .position(|cid| cid == id)
+                    .map(|idx| AGENTS.len() + idx)
+            })
             .unwrap_or(usize::MAX)
     });
     Json(json!({ "agents": found }))
@@ -358,6 +451,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discovery_passes_registered_env_to_version_and_initialize() {
+        let root = tempfile::tempdir().unwrap();
+        let path = script(
+            root.path(),
+            "agent",
+            r#"
+            test "$AUGMENT_DISABLE_AUTO_UPDATE" = 1 || exit 3
+            test "$DROID_DISABLE_AUTO_UPDATE" = true || exit 4
+            test "$FACTORY_DROID_AUTO_UPDATE_ENABLED" = false || exit 5
+            if [ "$1" = --version ]; then echo "agent 1.2.3"; exit; fi
+            test "$1" = acp || exit 6
+            echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+        "#,
+        );
+        let mut env = codewhale_engine::fleet::agents::find("auggie")
+            .unwrap()
+            .process_env();
+        env.extend(
+            codewhale_engine::fleet::agents::find("factory-droid")
+                .unwrap()
+                .process_env(),
+        );
+        let row = describe_custom(CustomExternalAgent {
+            id: "local".into(),
+            name: "Local".into(),
+            binary: path.display().to_string(),
+            args: vec!["acp".into()],
+            website: String::new(),
+            env,
+        })
+        .await;
+        assert_eq!(row["version"], "1.2.3");
+        assert_eq!(row["runnable"], true);
+    }
+
+    #[tokio::test]
     async fn handshake_keeps_answered_unsupported_and_silent_agents_distinct() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("agent dir ünï");
@@ -370,7 +499,8 @@ mod tests {
                 r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"version":"2.0.0"},"authMethods":[{"id":"login","name":"Log in","type":"terminal"}]}}"#,
             ),
         );
-        let Handshake::Answered(result) = acp_initialize(&native, &["acp"]).await else {
+        let Handshake::Answered(result) = acp_initialize(&native, &["acp"], &BTreeMap::new()).await
+        else {
             panic!("a v1 answer must count as native ACP");
         };
         assert_eq!(auth_methods(&result)[0]["type"], "terminal");
@@ -391,7 +521,7 @@ mod tests {
         ];
         for (index, (reply, expected)) in cases.into_iter().enumerate() {
             let agent = script(&dir, &format!("refusing {index}"), &answer(reply));
-            match acp_initialize(&agent, &[]).await {
+            match acp_initialize(&agent, &[], &BTreeMap::new()).await {
                 Handshake::Refused(reason) => assert_eq!(reason, expected),
                 other => panic!("{reply}: {other:?}"),
             }
@@ -409,7 +539,7 @@ mod tests {
         );
         let started = Instant::now();
         assert!(matches!(
-            acp_initialize(&silent, &[]).await,
+            acp_initialize(&silent, &[], &BTreeMap::new()).await,
             Handshake::Silent
         ));
         assert!(started.elapsed() < PROBE_TIMEOUT + PROBE_REAP_TIMEOUT + Duration::from_secs(2));
