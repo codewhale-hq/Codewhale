@@ -146,6 +146,27 @@ known limitations and publication approval. These proofs are separate.
 
 ## 4. Exact-SHA full CI and release candidate
 
+### Regression pass before freezing
+
+- [ ] Run the review pass per slice, not as one release-wide diff: a local
+      `--base` run is capped by `--max-chars`, and `--max-passes` is refused
+      outside `--pr`.
+      ```bash
+      last_release="$(git describe --tags --abbrev=0)"
+      codewhale review --base "${last_release}" --path crates/skills --write-receipt
+      codewhale review --base "${last_release}" --path crates/engine --write-receipt
+      codewhale review --check-receipt --receipt-path <receipt>
+      ```
+      One receipt per crate or path. The pass answers one question: *which
+      documented behaviours did this slice change, and which of those changes
+      are unstated?*
+- [ ] A receipt with non-empty `unresolved_risk` blocks the candidate until a
+      maintainer reads the findings and records the decision on the issue.
+      `--check-receipt` is the provider-free gate; `--write-receipt` costs a
+      model call and stays a maintainer action, not a bot.
+- [ ] Per-path receipts do not prove that separately reviewed changes work
+      together; the full-suite run below remains the integration gate.
+
 - [ ] Dispatch full CI and the build-only release candidate against frozen
       `main` with the same independent SHA guard:
       ```bash

@@ -404,6 +404,11 @@ changes work together. With `--base`, the reviewer also reads the
 the author's stated intent; the receipt fingerprints the diff, not those
 messages.
 
+`docs/RELEASE_CHECKLIST.md` uses one receipt per crate or path as the
+regression pass before a release candidate: run `--write-receipt` per slice,
+then `--check-receipt`; a receipt with unresolved risk blocks the candidate
+until a maintainer reads the findings.
+
 ## Builder Rules
 
 The builder is deterministic and conservative:
