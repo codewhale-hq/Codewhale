@@ -206,6 +206,10 @@ pub(crate) fn apply_engine_error_to_app(
 ) {
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
+    let history_message = envelope.request_transmission.map_or_else(
+        || message.clone(),
+        |transmission| format!("{message} [{transmission}]"),
+    );
     let severity = envelope.severity;
     let turn_was_in_progress =
         app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"));
@@ -254,8 +258,9 @@ pub(crate) fn apply_engine_error_to_app(
         }
     }
 
+    let turn_error_notice = history_message.clone();
     app.add_message(HistoryCell::Error {
-        message: message.clone(),
+        message: history_message,
         severity,
         code: crate::tui::history::normalize_error_code(&envelope.code),
     });
@@ -264,7 +269,7 @@ pub(crate) fn apply_engine_error_to_app(
         app.dispatch_started_at = None;
     }
     app.turn_error_posted = true;
-    app.turn_error_notice = Some(message.clone());
+    app.turn_error_notice = Some(turn_error_notice);
     if credential_rejected_before_output {
         // #6566: the provider refused the key before any model output, so the
         // engine takes the question back out of the session. Give it back to
