@@ -1839,10 +1839,10 @@ impl RuntimeThreadManager {
             });
         let (status, error) = match (&outcome, projection.failure.take()) {
             (_, Some(failure)) => (RuntimeTurnStatus::Failed, Some(failure)),
-            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
-            (Ok(reason), None) if reason == "cancelled" || interrupted => {
+            (Ok(reason), None) if interrupted || reason == "cancelled" => {
                 (RuntimeTurnStatus::Interrupted, None)
             }
+            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
             (Ok(reason), None) => (
                 RuntimeTurnStatus::Failed,
                 Some(format!(
