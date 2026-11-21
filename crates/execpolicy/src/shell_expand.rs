@@ -2503,6 +2503,70 @@ impl Expander {
             "tmux" => {
                 self.record_tmux(line, head, dynamic, depth, &mut truncated);
             }
+            "vagrant" => {
+                for verb_idx in launcher_verb_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &VAGRANT_GLOBAL_SPEC,
+                    &mut truncated,
+                ) {
+                    let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                        continue;
+                    };
+                    if !matches!(verb, "ssh" | "winrm") {
+                        continue;
+                    }
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        verb_idx,
+                        dynamic,
+                        Some('c'),
+                        &["command"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                    if verb == "ssh"
+                        && let Some(dash_dash) = (verb_idx + 1..tokens.len()).find(|&i| {
+                            tokens[i] == "--"
+                                && line.quoted[i] == WordQuote::Unquoted
+                                && !dynamic[i]
+                        })
+                        && !ssh_skips_remote_command(
+                            &tokens[dash_dash + 1..],
+                            &dynamic[dash_dash + 1..],
+                        )
+                    {
+                        let extra_spec = Wrapper {
+                            operands: 0,
+                            ..SSH_SPEC
+                        };
+                        for landing in resolve_wrapper_targets(
+                            tokens,
+                            dynamic,
+                            &line.quoted,
+                            dash_dash + 1,
+                            &extra_spec,
+                            &mut truncated,
+                        ) {
+                            if landing < tokens.len() {
+                                let rest = &tokens[landing..];
+                                let rest_dynamic = dynamic[landing..].iter().any(|d| *d);
+                                self.code_payload(&rest.join(" "), rest_dynamic, depth);
+                                if rest.len() > 1 {
+                                    self.record(&slice_line(line, landing), depth + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "helm" => {
+                self.record_helm(line, head, depth, &mut truncated);
+            }
             _ => {
                 if name == "launchctl" {
                     for verb_idx in launcher_verb_targets(
@@ -2515,6 +2579,41 @@ impl Expander {
                     ) {
                         if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
+                        }
+                    }
+                } else if name == "op" {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &OP_GLOBAL_SPEC,
+                        &mut truncated,
+                    ) {
+                        if tokens.get(verb_idx).map(String::as_str) == Some("plugin") {
+                            for sub_idx in launcher_verb_targets(
+                                tokens,
+                                dynamic,
+                                &line.quoted,
+                                verb_idx + 1,
+                                &OP_GLOBAL_SPEC,
+                                &mut truncated,
+                            ) {
+                                if tokens.get(sub_idx).map(String::as_str) == Some("run") {
+                                    for landing in resolve_wrapper_targets(
+                                        tokens,
+                                        dynamic,
+                                        &line.quoted,
+                                        sub_idx + 1,
+                                        &OP_RUN_SPEC,
+                                        &mut truncated,
+                                    ) {
+                                        if landing < tokens.len() {
+                                            self.record(&slice_line(line, landing), depth + 1);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3182,6 +3281,106 @@ impl Expander {
         {
             let combined = build_prefixed_line(&prog, prog_idx, line, args_start);
             self.record(&combined, depth + 1);
+        }
+    }
+
+    fn record_helm(&mut self, line: &Line, head: usize, depth: usize, truncated: &mut bool) {
+        let tokens = &line.words;
+        let opt_end = (head + 1..tokens.len())
+            .find(|&i| {
+                tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+            })
+            .unwrap_or(tokens.len());
+        let mut renderers: Vec<(String, usize)> = Vec::new();
+        let mut renderer_args: Vec<(String, usize)> = Vec::new();
+        for i in head + 1..opt_end {
+            let token = tokens[i].as_str();
+            if line.dynamic[i]
+                && line.quoted[i] != WordQuote::InlineScalar
+                && (token.is_empty() || token.starts_with('-'))
+            {
+                self.dynamic = true;
+            }
+            if let Some(val) = token.strip_prefix("--post-renderer=") {
+                renderers.push((val.to_string(), i));
+            } else if token == "--post-renderer"
+                && let Some(val) = tokens.get(i + 1).filter(|_| i + 1 < opt_end)
+            {
+                renderers.push((val.clone(), i + 1));
+            } else if let Some(val) = token.strip_prefix("--post-renderer-args=") {
+                renderer_args.push((val.to_string(), i));
+            } else if token == "--post-renderer-args"
+                && let Some(val) = tokens.get(i + 1).filter(|_| i + 1 < opt_end)
+            {
+                renderer_args.push((val.clone(), i + 1));
+            }
+        }
+        let is_odd = |s: &str| {
+            !s.chars()
+                .enumerate()
+                .all(|(idx, c)| is_plain_word_char(c, idx == 0))
+        };
+        let normalize_quote = |quote: WordQuote| match quote {
+            WordQuote::InlineScalar => WordQuote::Quoted,
+            quote => quote,
+        };
+        for (renderer, renderer_idx) in renderers {
+            if line.dynamic[renderer_idx] {
+                self.dynamic = true;
+            }
+            if renderer.is_empty() {
+                continue;
+            }
+            let mut words = Vec::with_capacity(1 + renderer_args.len());
+            let mut dynamic = Vec::with_capacity(1 + renderer_args.len());
+            let mut odd = Vec::with_capacity(1 + renderer_args.len());
+            let mut quoted = Vec::with_capacity(1 + renderer_args.len());
+            words.push(renderer.clone());
+            dynamic.push(line.dynamic[renderer_idx]);
+            odd.push(is_odd(&renderer));
+            quoted.push(normalize_quote(line.quoted[renderer_idx]));
+            for (arg, arg_idx) in &renderer_args {
+                words.push(arg.clone());
+                dynamic.push(line.dynamic[*arg_idx]);
+                odd.push(is_odd(arg));
+                quoted.push(normalize_quote(line.quoted[*arg_idx]));
+            }
+            self.record(
+                &Line {
+                    words,
+                    dynamic,
+                    odd,
+                    quoted,
+                    heredoc: false,
+                    stdin_piped: line.stdin_piped || line.heredoc,
+                },
+                depth + 1,
+            );
+        }
+        for verb_idx in launcher_verb_targets(
+            tokens,
+            &line.dynamic,
+            &line.quoted,
+            head + 1,
+            &HELM_GLOBAL_SPEC,
+            truncated,
+        ) {
+            if tokens.get(verb_idx).map(String::as_str) == Some("plugin") {
+                for sub_idx in launcher_verb_targets(
+                    tokens,
+                    &line.dynamic,
+                    &line.quoted,
+                    verb_idx + 1,
+                    &HELM_GLOBAL_SPEC,
+                    truncated,
+                ) {
+                    if tokens.get(sub_idx).is_some_and(|sub| {
+                        matches!(sub.as_str(), "install" | "update" | "uninstall" | "remove")
+                    }) {
+                        self.dynamic = true;
+                    }
+                }
+            }
         }
     }
 
@@ -4850,6 +5049,232 @@ const SCREEN_SPEC: Wrapper = Wrapper {
     operands: 0,
 };
 
+const OC_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "oc",
+    short_values: "nsv",
+    short_switches: "h",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "cache-dir",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "config",
+        "context",
+        "kubeconfig",
+        "log-flush-frequency",
+        "loglevel",
+        "namespace",
+        "password",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "tls-server-name",
+        "token",
+        "user",
+        "username",
+        "v",
+        "vmodule",
+    ],
+    long_switches: &[
+        "disable-compression",
+        "help",
+        "insecure-skip-tls-verify",
+        "match-server-version",
+        "warnings-as-errors",
+    ],
+    operands: 0,
+};
+
+const OC_EXEC_SPEC: Wrapper = Wrapper {
+    name: "oc-exec",
+    short_values: "cfnosv",
+    short_switches: "itTqh",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "as-user",
+        "cache-dir",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "config",
+        "container",
+        "context",
+        "env",
+        "filename",
+        "image",
+        "image-stream",
+        "kubeconfig",
+        "log-flush-frequency",
+        "loglevel",
+        "namespace",
+        "node-name",
+        "output",
+        "overrides",
+        "password",
+        "pod-running-timeout",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "shell",
+        "tls-server-name",
+        "to-namespace",
+        "token",
+        "user",
+        "username",
+        "v",
+        "vmodule",
+    ],
+    long_switches: &[
+        "as-root",
+        "command",
+        "disable-compression",
+        "help",
+        "insecure-skip-tls-verify",
+        "keep-annotations",
+        "keep-init-containers",
+        "keep-labels",
+        "keep-liveness",
+        "keep-readiness",
+        "match-server-version",
+        "no-tty",
+        "one-container",
+        "preserve-pod",
+        "quiet",
+        "rm",
+        "stdin",
+        "tty",
+        "warnings-as-errors",
+    ],
+    operands: 1,
+};
+
+const VAGRANT_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "vagrant",
+    short_values: "",
+    short_switches: "vh",
+    long_values: &[],
+    long_switches: &[
+        "version",
+        "help",
+        "color",
+        "no-color",
+        "machine-readable",
+        "debug",
+        "timestamp",
+        "debug-timestamp",
+        "no-tty",
+    ],
+    operands: 0,
+};
+
+const OP_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "op",
+    short_values: "f",
+    short_switches: "hv",
+    long_values: &["account", "config", "encoding", "format", "session"],
+    long_switches: &[
+        "cache",
+        "debug",
+        "help",
+        "iso-timestamps",
+        "no-color",
+        "omit-empty",
+        "raw",
+        "version",
+    ],
+    operands: 0,
+};
+
+const OP_RUN_SPEC: Wrapper = Wrapper {
+    name: "op-run",
+    short_values: "f",
+    short_switches: "hv",
+    long_values: &[
+        "env-file", "account", "config", "encoding", "format", "session",
+    ],
+    long_switches: &[
+        "no-masking",
+        "cache",
+        "debug",
+        "help",
+        "iso-timestamps",
+        "no-color",
+        "omit-empty",
+        "raw",
+        "version",
+    ],
+    operands: 0,
+};
+
+const OPAM_SPEC: Wrapper = Wrapper {
+    name: "opam",
+    short_values: "j",
+    short_switches: "hqvyw",
+    long_values: &[
+        "cli",
+        "color",
+        "confirm-level",
+        "debug-level",
+        "git-version",
+        "jobs",
+        "root",
+        "switch",
+    ],
+    long_switches: &[
+        "best-effort",
+        "check-path",
+        "debug",
+        "help",
+        "inplace-path",
+        "no",
+        "no-switch",
+        "quiet",
+        "revert-env",
+        "safe",
+        "set-root",
+        "set-switch",
+        "strict",
+        "update-env",
+        "verbose",
+        "version",
+        "working-dir",
+        "yes",
+    ],
+    operands: 0,
+};
+
+const HELM_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "helm",
+    short_values: "n",
+    short_switches: "h",
+    long_values: &[
+        "burst-limit",
+        "kube-apiserver",
+        "kube-as-group",
+        "kube-as-user",
+        "kube-ca-file",
+        "kube-context",
+        "kube-token",
+        "kubeconfig",
+        "namespace",
+        "qps",
+        "registry-config",
+        "repository-cache",
+        "repository-config",
+    ],
+    long_switches: &["debug", "help", "kube-insecure-skip-tls-verify"],
+    operands: 0,
+};
+
 static VERB_LAUNCHERS: &[VerbLauncher] = &[
     VerbLauncher {
         program: "uv",
@@ -4926,6 +5351,27 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
         verbs: &["asuser", "bsexec"],
         global: &EMPTY_WRAPPER_SPEC,
         subcmd: &ONE_OPERAND_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "oc",
+        verbs: &["rsh", "exec", "debug", "run"],
+        global: &OC_GLOBAL_SPEC,
+        subcmd: &OC_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "op",
+        verbs: &["run"],
+        global: &OP_GLOBAL_SPEC,
+        subcmd: &OP_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "opam",
+        verbs: &["exec"],
+        global: &OPAM_SPEC,
+        subcmd: &OPAM_SPEC,
         shell_string: false,
     },
 ];
@@ -6044,7 +6490,7 @@ fn step_wrapper_option(
     if !options_done && token == "--" && !dynamic[index] {
         return WrapperStep::Advance {
             steps: [Some(index + 1), None],
-            operands,
+            operands: if spec.name == "oc-exec" { 0 } else { operands },
             options_done: true,
         };
     }
@@ -6058,8 +6504,9 @@ fn step_wrapper_option(
             if spec.name == "ld.so" && matches!(name, "list" | "verify") {
                 return WrapperStep::Stop;
             }
-            if spec.name == "runcon"
-                && matches!(name, "compute" | "user" | "role" | "type" | "range")
+            if (spec.name == "runcon"
+                && matches!(name, "compute" | "user" | "role" | "type" | "range"))
+                || (spec.name == "oc-exec" && name == "filename")
             {
                 next_operands = 0;
             }
@@ -6098,7 +6545,9 @@ fn step_wrapper_option(
         if spec.name == "command" && flags.contains(['v', 'V']) {
             return WrapperStep::Stop;
         }
-        if spec.name == "runcon" && flags.contains(['c', 'u', 'r', 't', 'l']) {
+        if (spec.name == "runcon" && flags.contains(['c', 'u', 'r', 't', 'l']))
+            || (spec.name == "oc-exec" && flags.contains('f'))
+        {
             next_operands = 0;
         }
         if let Some(payloads) = payloads
@@ -6622,6 +7071,12 @@ mod tests {
             "bundle --version",
             "perf --version",
             "tmux -V",
+            "oc --version",
+            "vagrant --version",
+            "op --version",
+            "opam --version",
+            "helm --version",
+            "helm plugin --help",
             "cd /tmp && node --version && npm --version && ls node_modules/@deepseek-ai/",
         ] {
             let expansion = expand_for_platform(command, false);
@@ -6630,6 +7085,35 @@ mod tests {
         assert!(contains("npm --silent exec --call 'rm -rf /'", "rm -rf /"));
         assert!(contains("nix --offline develop -c rm -rf /", "rm -rf /"));
         assert!(contains("docker -D run alpine rm -rf /", "rm -rf /"));
+        assert!(contains("oc rsh pod rm -rf /", "rm -rf /"));
+        assert!(contains("oc '' -n prod exec pod -- rm -rf /", "rm -rf /"));
+        assert!(contains(
+            "oc debug node/n -- chroot /host rm -rf /",
+            "rm -rf /"
+        ));
+        assert!(contains("vagrant '' ssh -c 'rm -rf /'", "rm -rf /"));
+        assert!(contains("vagrant ssh -- -t 'ls; rm -rf /'", "rm -rf /"));
+        assert!(contains("op run --env-file .env -- rm -rf /", "rm -rf /"));
+        assert!(contains(
+            "opam exec --switch default -- rm -rf /",
+            "rm -rf /"
+        ));
+        assert!(contains("helm template . --post-renderer rm", "rm"));
+        assert!(contains(
+            "helm template . --set --post-renderer --post-renderer rm",
+            "rm"
+        ));
+        assert!(contains(
+            "helm template . --post-renderer sh --post-renderer-args -c --post-renderer-args 'rm -rf /'",
+            "rm -rf /"
+        ));
+        assert!(expand_for_platform("helm template . --post-renderer \"$PR\"", false).dynamic);
+        assert!(expand_for_platform("helm plugin install ./evil", false).dynamic);
+        assert!(!expand_for_platform("helm plugin list", false).dynamic);
+        assert!(!expand_for_platform("oc get pods", false).dynamic);
+        assert!(!expand_for_platform("vagrant status", false).dynamic);
+        assert!(!expand_for_platform("op item list", false).dynamic);
+        assert!(!expand_for_platform("opam list", false).dynamic);
     }
 
     #[test]
