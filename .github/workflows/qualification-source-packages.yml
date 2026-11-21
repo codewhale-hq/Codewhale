@@ -1,0 +1,83 @@
+name: Qualify exact-source packages and macOS binary
+on:
+  push:
+    branches: [ci/cw-0103-postfreeze-package-proof]
+    paths: [.github/workflows/qualification-source-packages.yml]
+permissions:
+  contents: read
+env:
+  ENGINE_SOURCE: 6c211938e696c9084e709e5546bc6fb3406d27a3
+  CARGO_INCREMENTAL: '0'
+jobs:
+  candidate-crates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SOURCE }}
+          persist-credentials: false
+      - run: bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
+      - name: Verify Cargo archives and record their notice hashes
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ENGINE_SOURCE"
+          export CARGO_HOME="$RUNNER_TEMP/cargo" CARGO_TARGET_DIR="$RUNNER_TEMP/target"
+          mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$RUNNER_TEMP/results"
+          bash scripts/release/publish-crates.sh dry-run 2>&1 | tee "$RUNNER_TEMP/results/crate-verification.log"
+          python3 - <<'PY'
+          import hashlib,json,os,tarfile
+          from pathlib import Path
+          result=Path(os.environ['RUNNER_TEMP'])/'results'
+          names=['LICENSE','THIRD_PARTY_NOTICES.md','docs/THIRD_PARTY_NOTICES.md']
+          documents={n:hashlib.sha256(Path(n).read_bytes()).hexdigest() for n in names}
+          rows=[]
+          for archive in sorted((Path(os.environ['CARGO_TARGET_DIR'])/'package').glob('*.crate')):
+              with tarfile.open(archive) as tar:
+                  vcs=json.load(tar.extractfile(archive.stem+'/.cargo_vcs_info.json'))
+                  assert vcs['git']['sha1']==os.environ['ENGINE_SOURCE']
+                  assert all(hashlib.sha256(tar.extractfile(archive.stem+'/codewhale-notices/'+n).read()).hexdigest()==digest for n,digest in documents.items())
+              rows.append({'name':archive.name,'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()})
+          assert len(rows)==46 and max(row['bytes'] for row in rows)<10*1024**2
+          (result/'archive-inventory.json').write_text(json.dumps({'source':os.environ['ENGINE_SOURCE'],'canonicalNotices':documents,'archives':rows},indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: qualified-crate-inventory
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: error
+  candidate-mac:
+    runs-on: macos-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SOURCE }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.100.0
+          targets: aarch64-apple-darwin
+      - name: Build and verify the native Apple Silicon CLI
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ENGINE_SOURCE"
+          test "$(uname -m)" = arm64
+          export CODEWHALE_BUILD_SHA="$ENGINE_SOURCE"
+          cargo build --profile dist --locked --target aarch64-apple-darwin -p codewhale-cli --bin codewhale
+          mkdir -p "$RUNNER_TEMP/results"
+          cp target/aarch64-apple-darwin/dist/codewhale "$RUNNER_TEMP/results/codewhale"
+          cd "$RUNNER_TEMP/results"
+          ./codewhale --version | tee version.txt
+          grep -F "${ENGINE_SOURCE:0:12}" version.txt
+          ./codewhale doctor --help >/dev/null
+          shasum -a 256 codewhale >SHA256
+          printf '%s\n' "$ENGINE_SOURCE" >source.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qualified-mac-cli
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: error
