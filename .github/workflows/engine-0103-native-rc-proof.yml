@@ -315,6 +315,9 @@ jobs:
           mkdir -m 700 "$home" "$state"
           fixture bash "$baseline/install.sh" --no-modify-path
           check_version "$baseline" 'codewhale 0.10.2 (ff466b2ed0bf)'
+          if [[ -f "$bin/.codewhale-install.sha256" ]]; then
+            cp "$bin/.codewhale-install.sha256" "$root/original-receipt"
+          fi
           printf 'unrelated\n' > "$bin/unrelated.txt"
           printf 'preserved\n' > "$state/state.txt"
           fixture bash "$candidate/install.sh" --no-modify-path
@@ -334,22 +337,30 @@ jobs:
           test "$(cat "$bin/unrelated.txt")" = unrelated
           test "$(cat "$state/state.txt")" = preserved
           restore_receipt_matches=false
-          if (cd "$bin" && sha256sum --status -c .codewhale-install.sha256); then
+          if [[ -f "$bin/.codewhale-install.sha256" ]] && (cd "$bin" && sha256sum --status -c .codewhale-install.sha256); then
             restore_receipt_matches=true
+          fi
+          original_ownership_restored=false
+          if [[ ! -e "$root/original-receipt" && ! -e "$bin/.codewhale-install.sha256" ]]; then
+            original_ownership_restored=true
+          elif [[ -f "$root/original-receipt" && "$restore_receipt_matches" == true ]] && cmp -s "$root/original-receipt" "$bin/.codewhale-install.sha256"; then
+            original_ownership_restored=true
           fi
           jq -n --arg source "$ENGINE_SHA" --arg rc_run "$RC_RUN" --arg archive_sha256 "$archive_digest" \
             --arg baseline_archive_sha256 "$BASELINE_ARCHIVE_SHA256" \
             --arg codewhale_sha256 "$(sha256sum "$candidate/codewhale" | awk '{ print $1 }')" \
             --arg codew_sha256 "$(sha256sum "$candidate/codew" | awk '{ print $1 }')" \
             --arg build "$(uname -sr)" --arg architecture "$(uname -m)" \
-            --argjson restore_receipt_matches "$restore_receipt_matches" \
+            --argjson restore_receipt_matches "$restore_receipt_matches" --argjson original_ownership_restored "$original_ownership_restored" \
             '{source:$source, rc_run:$rc_run, archive_sha256:$archive_sha256, build:$build, architecture:$architecture,
               baseline_archive_sha256:$baseline_archive_sha256, codewhale_sha256:$codewhale_sha256, codew_sha256:$codew_sha256,
               baseline_install:true, upgrade:true, fresh_install:true, uninstall_preview:true, uninstall:true, state_preserved:true,
-              archive_binary_restore:true, displaced_candidate_preserved:true, restore_receipt_matches:$restore_receipt_matches}' |
+              archive_binary_restore:true, displaced_candidate_preserved:true, restore_receipt_matches:$restore_receipt_matches, original_ownership_restored:$original_ownership_restored}' |
             tee linux-x64-archive-proof.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-x64-archive-proof
           path: linux-x64-archive-proof.json
           if-no-files-found: error
+      - name: Check restored installation ownership
+        run: jq -e '.original_ownership_restored == true' linux-x64-archive-proof.json
