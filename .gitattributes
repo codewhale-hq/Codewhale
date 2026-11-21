@@ -94,3 +94,8 @@ web/public/brand/fonts/OFL.txt text eol=lf whitespace=-blank-at-eol
 crates/app-server-protocol/schema/** text eol=lf
 crates/app-server-protocol/METHODS.md text eol=lf
 npm/runtime-sdk/generated/** text eol=lf
+
+/LICENSE text eol=lf
+/THIRD_PARTY_NOTICES.md text eol=lf
+/docs/THIRD_PARTY_NOTICES.md text eol=lf
+**/codewhale-notices/** text eol=lf

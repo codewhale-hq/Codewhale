@@ -212,6 +212,8 @@ test("bundle helper emits reproducible timestamped tar and zip archives from pat
       "bundle checksum manifest should be reproducible",
     );
 
+    const noticeFiles = ["LICENSE", "THIRD_PARTY_NOTICES.md", "docs/THIRD_PARTY_NOTICES.md"];
+    const noticeEntries = (stem) => ["", "docs/", ...noticeFiles].map((entry) => stem + "/codewhale-notices/" + entry);
     const linuxEntries = execFileSync(
       "tar",
       ["-tzf", path.join(output, "codewhale-linux-x64.tar.gz")],
@@ -219,10 +221,11 @@ test("bundle helper emits reproducible timestamped tar and zip archives from pat
     ).trim().split("\n").sort();
     assert.deepEqual(linuxEntries, [
       "codewhale-linux-x64/",
+      ...noticeEntries("codewhale-linux-x64"),
       "codewhale-linux-x64/codew",
       "codewhale-linux-x64/codewhale",
       "codewhale-linux-x64/install.sh",
-    ]);
+    ].sort());
     const extracted = path.join(tempRoot, "tar extracted");
     fs.mkdirSync(extracted);
     execFileSync(
@@ -238,6 +241,9 @@ test("bundle helper emits reproducible timestamped tar and zip archives from pat
         Number(sourceDateEpoch),
         `${entry} should retain the source commit timestamp`,
       );
+    }
+    for (const file of noticeFiles) {
+      assert.deepEqual(fs.readFileSync(path.join(extracted, "codewhale-linux-x64/codewhale-notices", file)), fs.readFileSync(path.join(repoRoot, file)));
     }
     const expectedLauncher = toCrlf(
       fs.readFileSync(path.join(repoRoot, "scripts/installer/codewhale.bat"), "utf8"),
@@ -255,33 +261,37 @@ test("bundle helper emits reproducible timestamped tar and zip archives from pat
 
     assert.deepEqual(zipListing("codewhale-windows-x64.zip"), [
       "codewhale-windows-x64/",
+      ...noticeEntries("codewhale-windows-x64"),
       "codewhale-windows-x64/codew.exe",
       "codewhale-windows-x64/codewhale.bat",
       "codewhale-windows-x64/codewhale.exe",
       "codewhale-windows-x64/install.bat",
       "codewhale-windows-x64/install.ps1",
-    ]);
+    ].sort());
     assert.deepEqual(zipListing("codewhale-windows-arm64.zip"), [
       "codewhale-windows-arm64/",
+      ...noticeEntries("codewhale-windows-arm64"),
       "codewhale-windows-arm64/codew.exe",
       "codewhale-windows-arm64/codewhale.bat",
       "codewhale-windows-arm64/codewhale.exe",
       "codewhale-windows-arm64/install.bat",
       "codewhale-windows-arm64/install.ps1",
-    ]);
+    ].sort());
     const portableEntries = zipListing("codewhale-windows-arm64-portable.zip");
     assert.deepEqual(portableEntries, [
       "codewhale-windows-arm64-portable/",
+      ...noticeEntries("codewhale-windows-arm64-portable"),
       "codewhale-windows-arm64-portable/codew.exe",
       "codewhale-windows-arm64-portable/codewhale.bat",
       "codewhale-windows-arm64-portable/codewhale.exe",
-    ]);
+    ].sort());
     assert.deepEqual(zipListing("codewhale-windows-x64-portable.zip"), [
       "codewhale-windows-x64-portable/",
+      ...noticeEntries("codewhale-windows-x64-portable"),
       "codewhale-windows-x64-portable/codew.exe",
       "codewhale-windows-x64-portable/codewhale.bat",
       "codewhale-windows-x64-portable/codewhale.exe",
-    ]);
+    ].sort());
 
     for (const [archive, prefix, includeInstall] of [
       ["codewhale-windows-x64.zip", "codewhale-windows-x64", true],
@@ -289,6 +299,9 @@ test("bundle helper emits reproducible timestamped tar and zip archives from pat
       ["codewhale-windows-x64-portable.zip", "codewhale-windows-x64-portable", false],
       ["codewhale-windows-arm64-portable.zip", "codewhale-windows-arm64-portable", false],
     ]) {
+      for (const file of noticeFiles) {
+        assert.deepEqual(zipFile(archive, prefix + "/codewhale-notices/" + file), fs.readFileSync(path.join(repoRoot, file)));
+      }
       const launcher = zipFile(archive, `${prefix}/codewhale.bat`);
       assert.deepEqual(
         launcher,
@@ -391,5 +404,23 @@ test("verification rejects modified and unexpected assets", async () => {
     );
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
+  }
+});
+
+test("both npm packages ship the canonical release notices", () => {
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), "codewhale-npm-notices-"));
+  try {
+    for (const packageName of ["codewhale", "runtime-sdk"]) {
+      const result = execFileSync("npm", ["pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", destination], {
+        cwd: path.join(repoRoot, "npm", packageName), encoding: "utf8",
+      });
+      const archive = path.join(destination, JSON.parse(result)[0].filename);
+      for (const document of ["LICENSE", "THIRD_PARTY_NOTICES.md", "docs/THIRD_PARTY_NOTICES.md"]) {
+        const actual = execFileSync("tar", ["-xOzf", archive, "package/codewhale-notices/" + document]);
+        assert.deepEqual(actual, fs.readFileSync(path.join(repoRoot, document)));
+      }
+    }
+  } finally {
+    fs.rmSync(destination, { recursive: true, force: true });
   }
 });

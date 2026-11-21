@@ -52,6 +52,7 @@
   },
   "preferGlobal": true,
   "files": [
+    "codewhale-notices",
     "bin/*.js",
     "scripts/*.js",
     "test/*.js",

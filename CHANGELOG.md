@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Native release bundles, the Windows installer, npm packages and published crates include the Codewhale license and both third-party notice documents.
+
 - Stopping an external agent while it waits for approval now records the turn as interrupted even when the agent replies that it finished. (CW-7965)
 
 - The Simplified Chinese telemetry guide now explains which files each process keeps, how much disk space they use and when old files are removed. (CW-7987)
