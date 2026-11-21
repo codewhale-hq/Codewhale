@@ -24,6 +24,8 @@
 
 pub mod rate_limit;
 
+pub use codewhale_error_taxonomy::RequestTransmission;
+
 use anyhow::Result;
 use codewhale_command_contract::metrics::format_duration;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
@@ -372,14 +374,6 @@ impl QuotaExhaustionError {
         self.message = format!("{}\n{guidance}", self.message);
         self
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RequestTransmission {
-    NotDispatched,
-    Rejected,
-    OutcomeUnknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

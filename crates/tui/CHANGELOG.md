@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Provider errors in the terminal history now show whether a request was never sent, was rejected, or ended with an unknown outcome. The same detail is available after reopening the session. Thanks to @deosiree (PR #7448).
 - Added LLMTR as an OpenAI-compatible provider with live model discovery. Thanks [@knowhycodata](https://github.com/knowhycodata) for [PR 7450](https://github.com/codewhale-hq/Codewhale/pull/7450).
 
 ## [0.10.3] - 2026-11-21
@@ -621,6 +622,8 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
   other saved credentials (Refs #6932).
 
 ### Fixed
+
+- Large session usage ledgers keep settled and unresolved usage and discard only the oldest routing diagnostics needed to stay within the storage limit. Thanks [@donglovejava](https://github.com/donglovejava) ([#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
 - **Bounded terminal-multiplexer policy parsing:** tmux arguments and prompt templates are checked within a finite allowance. Expansion that runs out of allowance is reported as unresolved. (CW-8302)
@@ -1332,7 +1335,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
 - **[@NieZhuZhu](https://github.com/NieZhuZhu)** — hardened shell-command policy expansion: classified local read-only deferred tools as safe for Auto-Review ([#7431](https://github.com/codewhale-hq/CodeWhale/pull/7431)), scanned bounded AWK and sed programs for embedded shell commands ([#7430](https://github.com/codewhale-hq/CodeWhale/pull/7430)), kept each command's stdin source under group redirection and `numactl --strict` ([#7429](https://github.com/codewhale-hq/CodeWhale/pull/7429)), failed closed on dynamically resolved flag and verb names ([#7427](https://github.com/codewhale-hq/CodeWhale/pull/7427)), modeled additional tmux execution verbs within a shared work budget ([#7428](https://github.com/codewhale-hq/CodeWhale/pull/7428)), modeled the `oc`, `vagrant`, `op`, `opam` and `helm` launchers ([#7425](https://github.com/codewhale-hq/CodeWhale/pull/7425)), and propagated the dynamic flag-word bit through `nix` and launcher flags ([#7424](https://github.com/codewhale-hq/CodeWhale/pull/7424)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
-- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
+- **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste, fixed fallback tool-call IDs in streaming chat completions, and preserved usage records when compacting diagnostic receipts ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423), [#7449](https://github.com/codewhale-hq/CodeWhale/pull/7449)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
