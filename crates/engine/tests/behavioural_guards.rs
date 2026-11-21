@@ -38,11 +38,11 @@ fn agent_task_form_does_not_self_apply_agent_ready() {
         template.contains("name: Agent task"),
         "the Agent task form moved or was deleted; update this guard deliberately (#7433)"
     );
-    for line in template.lines() {
-        assert!(
-            !(line.trim_start().starts_with("labels:") && line.contains("agent-ready")),
-            "the Agent task form self-applies agent-ready again (#7433): {line}"
-        );
+    if let Some(line) = template
+        .lines()
+        .find(|line| line.trim_start().starts_with("labels:") && line.contains("agent-ready"))
+    {
+        panic!("the Agent task form self-applies agent-ready again (#7433): {line}");
     }
 }
 
