@@ -1,12 +1,12 @@
-name: Qualify exact-source packages and macOS binary
+name: Qualify successor source, npm, web and crate archives
 on:
   push:
-    branches: [ci/cw-0103-postfreeze-package-proof]
+    branches: [ci/0103-successor-source-proof]
     paths: [.github/workflows/qualification-source-packages.yml]
 permissions:
   contents: read
 env:
-  ENGINE_SOURCE: 6c211938e696c9084e709e5546bc6fb3406d27a3
+  ENGINE_SOURCE: bc58781ba10c7c6d192f92848b3f6b4cce4fd3a8
   CARGO_INCREMENTAL: '0'
 jobs:
   candidate-crates:
@@ -53,3 +53,44 @@ jobs:
           name: qualified-crate-inventory
           path: ${{ runner.temp }}/results/
           if-no-files-found: error
+
+  source-prep:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SOURCE }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+      - name: Validate dated release inputs and generate the release body
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$ENGINE_SOURCE"
+          mkdir -p "$RUNNER_TEMP/release-prep"
+          ./scripts/release/prepare-release.sh 0.10.3
+          ./scripts/release/check-versions.sh --require-dated-release
+          ./scripts/release/check-ohos-deps.sh
+          python3 scripts/check-contributor-credit.py
+          ./scripts/sync-changelog.sh --check
+          ./scripts/release/generate-release-body.sh v0.10.3 > "$RUNNER_TEMP/release-prep/body.md"
+          git diff --exit-code
+      - name: Run workspace, extension-host and website checks
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm --prefix web ci
+          npm --prefix crates/engine/extension-host ci --ignore-scripts
+          npm test
+          npm run check:web
+          git diff --exit-code
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: successor-source-prep
+          path: ${{ runner.temp }}/release-prep/
+          if-no-files-found: warn
