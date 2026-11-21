@@ -825,9 +825,13 @@ mod tests {
         assert_eq!(bracketed.cursor_position, character_count);
     }
 
-    /// Drive a raw (non-bracketed) paste one key event per character and
-    /// commit each chunk through `App::flush_paste_burst_if_due`, the entry
-    /// the event loop uses.
+    /// Drive a raw (non-bracketed) paste one key event per character.
+    ///
+    /// Intermediate chunks are committed by `handle_paste_burst_key` itself
+    /// (`insert_str` right after each `take_chunk_if_full`); this helper only
+    /// commits the tail, through `App::take_paste_burst_flush_if_enabled` — the
+    /// same non-test entry `event_loop.rs` calls, so the fixture cannot pass
+    /// against a test-only stub.
     ///
     /// `input == payload` alone cannot prove chunking: a buffer that never
     /// flushes still ends up correct once the tail lands, so deleting a
@@ -835,8 +839,12 @@ mod tests {
     /// fails in exactly that case — the composer is still nearly empty
     /// because everything is sitting in the burst buffer.
     ///
-    /// It names no cap, only that *some* chunking happened before 60%, which
-    /// holds for any cap smaller than that fraction of the payload.
+    /// The probe names no cap, but it is not cap-independent: it needs
+    /// `floor(0.6·P / cap) · cap ≥ P/3`, i.e. roughly `cap < 4P/15 ≈ 0.27·P`.
+    /// For these fixtures that is ~72 KiB against the 64 KiB cap, so there is
+    /// margin — but raising `PASTE_BURST_MAX_BYTES` past that fraction of a
+    /// fixture would fail this test on a healthy build. Widen the payload
+    /// along with the cap.
     ///
     /// # What this cannot see
     ///
@@ -847,8 +855,12 @@ mod tests {
     /// the same buffer one keystroke later either way. Deleting it leaves the
     /// text complete — verified by injecting that deletion, which leaves all
     /// three oversized-paste tests green. It bounds peak memory, not
-    /// correctness, so no content-equality assertion can observe it.
+    /// correctness, so no content-equality assertion can observe it. (A length
+    /// checkpoint right after a pasted newline could observe it; that is a
+    /// coverage choice, not an impossibility.)
     fn feed_raw_paste(app: &mut App, payload: &str) {
+        use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
+
         let probe_at = payload.chars().count() * 3 / 5;
         let mut now = Instant::now();
         for (index, ch) in payload.chars().enumerate() {
@@ -872,12 +884,12 @@ mod tests {
                 );
             }
         }
-        let flush_at =
-            now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
-        assert!(
-            app.flush_paste_burst_if_due(flush_at),
-            "the tail of the paste must reach the composer"
-        );
+        let flush_at = now + PasteBurst::recommended_active_flush_delay();
+        let FlushResult::TextContinuation(tail) = app.take_paste_burst_flush_if_enabled(flush_at)
+        else {
+            panic!("an oversized raw paste must flush its final continuation, not a first `Paste`");
+        };
+        app.insert_str(&tail);
     }
 
     /// #7403, ASCII append path only: every character here takes
