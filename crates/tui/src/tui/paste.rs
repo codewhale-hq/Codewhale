@@ -849,15 +849,18 @@ mod tests {
     /// # What this cannot see
     ///
     /// The third `take_chunk_if_full()` call, the one after
-    /// `append_newline_if_active` in the `KeyCode::Enter` arm, is not covered
-    /// and does not need to be: it fires only when a pasted newline pushes the
-    /// buffer past the cap, and the next plain character's check would flush
-    /// the same buffer one keystroke later either way. Deleting it leaves the
-    /// text complete — verified by injecting that deletion, which leaves all
-    /// three oversized-paste tests green. It bounds peak memory, not
-    /// correctness, so no content-equality assertion can observe it. (A length
-    /// checkpoint right after a pasted newline could observe it; that is a
-    /// coverage choice, not an impossibility.)
+    /// `append_newline_if_active` in the `KeyCode::Enter` arm, is out of reach
+    /// here: this loop sends no newline, and the 60% probe would fail on a run
+    /// that deliberately parks the buffer just under the cap. That site has its
+    /// own fixture — `pasted_newline_crossing_the_chunk_cap_flushes_immediately`
+    /// — which fills to `CAP - 1` bytes and then sends one newline, so the
+    /// composer length directly reports whether the Enter arm flushed.
+    ///
+    /// An earlier revision of this comment argued the site needed no test at
+    /// all because deleting it "leaves the text complete". That was half right
+    /// and dangerous: the *text* survives, but the flush moves from the Enter
+    /// to the next plain character, and an assertion placed between the two
+    /// sees it. What was untestable was content equality, not the behaviour.
     fn feed_raw_paste(app: &mut App, payload: &str) {
         use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
 
@@ -969,6 +972,68 @@ mod tests {
 
         assert_eq!(app.input, payload);
         assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, Enter append path: the third `take_chunk_if_full`, the one right
+    /// after `append_newline_if_active`.
+    ///
+    /// The other fixtures cannot reach it. They carry no newline, and their
+    /// 60% probe would fail on a run that deliberately keeps the composer
+    /// empty — so this test fills the burst buffer to just under the cap and
+    /// then sends exactly one newline.
+    ///
+    /// That newline is the only thing that can flush the buffer at this point:
+    /// no plain character follows, so neither the ASCII nor the non-ASCII
+    /// check gets a turn. The composer length is therefore a direct readout of
+    /// whether the Enter arm flushed. Delete that `take_chunk_if_full` and the
+    /// buffer sits at the cap while the composer stays empty, and the
+    /// assertion below fails.
+    ///
+    /// This is why the tail flush in `feed_raw_paste` is not the only place
+    /// chunking can be observed — an earlier revision of these docs claimed
+    /// no content assertion could see this site, which was wrong.
+    #[test]
+    fn pasted_newline_crossing_the_chunk_cap_flushes_immediately() {
+        // Mirrors `PASTE_BURST_MAX_BYTES`, which is private to `codewhale-tui-kit`.
+        const CAP: usize = 64 * 1024;
+
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        // Fill to CAP - 1 bytes. The plain-character checks fire at `>= CAP`,
+        // so nothing flushes yet and the composer must stay empty.
+        let mut now = Instant::now();
+        while app.paste_burst.held_text().len() < CAP - 1 {
+            now += Duration::from_micros(100);
+            assert!(handle_paste_burst_key(&mut app, &plain('x'), now));
+            assert!(
+                app.input.is_empty(),
+                "the buffer must not cross the cap while filling; it holds {} bytes",
+                app.paste_burst.held_text().len()
+            );
+        }
+        let buffered = app.paste_burst.held_text().len();
+        assert_eq!(
+            buffered,
+            CAP - 1,
+            "fill loop must stop one byte under the cap"
+        );
+
+        now += Duration::from_micros(100);
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            now
+        ));
+
+        assert_eq!(
+            app.input.len(),
+            CAP,
+            "a pasted newline that crosses the cap must flush the buffer at once instead \
+             of waiting for the next plain character"
+        );
     }
 
     #[test]
