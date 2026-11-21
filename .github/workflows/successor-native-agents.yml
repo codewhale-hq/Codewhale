@@ -1,0 +1,141 @@
+name: Successor native external agent controls
+on:
+  push:
+    branches: [ci/0103-successor-native-agents]
+    paths: [.github/workflows/successor-native-agents.yml, .github/qualification/native-agents/**]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  opencode:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and extract exact release and external agent binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/qualification/native-agents/fetch-native-acp-inputs.py
+      - name: Exercise the native Linux runtime in a loopback namespace
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" --engine "$4/codewhale" --agent "$4/opencode" --out "$5" --sha bc58781ba10c7c6d192f92848b3f6b4cce4fd3a8' sh "$(id -un)" "$(command -v python)" "$PWD/.github/qualification/native-agents/qualify-native-opencode.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
+      - name: Exercise the native Windows runtime with outbound filtering
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP native-acp-bin
+          $paths = @("$bin/codewhale.exe", "$bin/opencode.exe", (Get-Command python).Source)
+          foreach ($exe in $paths) {
+            New-NetFirewallRule -DisplayName "Native ACP qualification $exe" -Direction Outbound -Action Block -Program ([IO.Path]::GetFullPath($exe)) -RemoteAddress @('0.0.0.1-126.255.255.255','128.0.0.0-255.255.255.254','::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffe') -ErrorAction Stop | Out-Null
+          }
+          python .github/qualification/native-agents/qualify-native-opencode.py --engine "$bin/codewhale.exe" --agent "$bin/opencode.exe" --out "$env:RUNNER_TEMP/native-acp-work" --sha bc58781ba10c7c6d192f92848b3f6b4cce4fd3a8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-acp-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/native-acp-work/receipt.json
+            ${{ runner.temp }}/official-input.json
+          if-no-files-found: error
+  qwen:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and extract exact release and external agent binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/qualification/native-agents/fetch-native-qwen-inputs.py
+      - name: Exercise the native Linux runtime in a loopback namespace
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" "$5" "$4/codewhale"' sh "$(id -un)" "$(command -v python)" "$PWD/.github/qualification/native-agents/qualify-native-qwen.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
+      - name: Exercise the native Windows runtime with outbound filtering
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP native-acp-bin
+          $paths = @("$bin/codewhale.exe", (Get-Command node).Source, "$env:SystemRoot/System32/cmd.exe", (Get-Command python).Source)
+          foreach ($exe in $paths) {
+            New-NetFirewallRule -DisplayName "Native ACP qualification $exe" -Direction Outbound -Action Block -Program ([IO.Path]::GetFullPath($exe)) -RemoteAddress @('0.0.0.1-126.255.255.255','128.0.0.0-255.255.255.254','::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffe') -ErrorAction Stop | Out-Null
+          }
+          python .github/qualification/native-agents/qualify-native-qwen.py "$env:RUNNER_TEMP/native-acp-work" "$bin/codewhale.exe"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: native-qwen-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/native-acp-work/receipt.json
+            ${{ runner.temp }}/official-input.json
+          if-no-files-found: error
+  vibe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and extract exact release and external agent binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/qualification/native-agents/fetch-native-vibe-inputs.py
+      - name: Exercise the native Linux runtime in a loopback namespace
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" "$5" "$4/codewhale"' sh "$(id -un)" "$(command -v python)" "$PWD/.github/qualification/native-agents/qualify-native-vibe.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: temporary-vibe-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/native-acp-work/receipt.json
+            ${{ runner.temp }}/official-input.json
+          if-no-files-found: error
+  codebuddy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and extract exact release and external agent binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/qualification/native-agents/fetch-temporary-codebuddy.py
+      - name: Exercise the native Linux runtime in a loopback namespace
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo unshare --net sh -c 'ip link set lo up && exec runuser -u "$1" -- "$2" "$3" "$5" "$4/codewhale"' sh "$(id -un)" "$(command -v python)" "$PWD/.github/qualification/native-agents/qualify-temporary-codebuddy.py" "$RUNNER_TEMP/native-acp-bin" "$RUNNER_TEMP/native-acp-work"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: temporary-codebuddy-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/native-acp-work/receipt.json
+            ${{ runner.temp }}/official-input.json
+          if-no-files-found: error
