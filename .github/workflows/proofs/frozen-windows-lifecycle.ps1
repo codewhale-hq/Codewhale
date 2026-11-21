@@ -53,7 +53,7 @@ function Start-Server($Label) {
 }
 
 function Start-OwnedJob($Thread, $Marker) {
-    $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File worker.ps1 $Marker"
+    $command = "pwsh.exe -NoProfile -File worker.ps1 $Marker"
     $reply = Invoke-Api Post "/v1/threads/$Thread/jobs" @{command=$command}
     $markerPath = Join-Path $workspace $Marker
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -70,6 +70,8 @@ function Start-OwnedJob($Thread, $Marker) {
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
+    $detail = Invoke-Api Get "/v1/threads/$Thread/jobs/$($reply.job.id)"
+    Write-Host ("Job output on timeout: " + $detail.stdout_tail + " " + $detail.stderr_tail)
     throw "Did not observe owned job process for $Marker. Logs in $root"
 }
 
