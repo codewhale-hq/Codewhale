@@ -872,6 +872,18 @@ impl ChildAuthority {
             .collect()
     }
 
+    pub(crate) fn connected_mcp_tools_for_model(
+        &self,
+        registry: &ToolRegistry,
+        connected: Vec<Tool>,
+    ) -> Vec<Tool> {
+        let connected: HashSet<_> = connected.into_iter().map(|tool| tool.name).collect();
+        self.tools_for_model(registry, &self.agent_type)
+            .into_iter()
+            .filter(|tool| connected.contains(&tool.name))
+            .collect()
+    }
+
     pub fn tools_for_model(&self, registry: &ToolRegistry, agent_type: &FleetRole) -> Vec<Tool> {
         // Filter the full registry in deny-first order. These catalog filters
         // reduce accidental exposure, but are never the authority boundary:

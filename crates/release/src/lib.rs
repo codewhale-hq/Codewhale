@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 
@@ -21,6 +22,44 @@ pub use launch::{LaunchOutcome, VersionChange, record_launch};
 /// Mirror directories must contain this file alongside platform binaries so
 /// that download integrity can be verified.
 pub const CHECKSUM_MANIFEST_ASSET: &str = "codewhale-artifacts-sha256.txt";
+
+pub fn parse_checksum_manifest(text: &str) -> Result<HashMap<String, String>> {
+    let mut checksums = HashMap::new();
+
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.len() < 66 {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        let (hash, rest) = trimmed
+            .get(..64)
+            .zip(trimmed.get(64..))
+            .with_context(|| format!("invalid SHA256 manifest line {}: {trimmed}", index + 1))?;
+        if !hash.chars().all(|ch| ch.is_ascii_hexdigit())
+            || rest.is_empty()
+            || !rest.chars().next().is_some_and(char::is_whitespace)
+        {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        let mut asset_name = rest.trim_start();
+        if let Some(stripped) = asset_name.strip_prefix('*') {
+            asset_name = stripped;
+        }
+        if asset_name.is_empty() {
+            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
+        }
+
+        checksums.insert(asset_name.to_string(), hash.to_ascii_lowercase());
+    }
+
+    Ok(checksums)
+}
 
 /// GitHub API URL for the single latest stable release.
 pub const LATEST_RELEASE_URL: &str =

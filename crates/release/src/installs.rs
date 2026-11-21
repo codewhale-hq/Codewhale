@@ -17,7 +17,7 @@
 //! whose bytes differ from the running one reports "version unknown" because
 //! it is never run. Recovery expiry deletes only what a recovery manifest lists.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -794,6 +794,10 @@ impl RecoveryBatch {
     }
 
     pub fn move_in(&mut self, path: &Path) -> Result<RecoveryMove> {
+        self.move_in_replaced(path, None)
+    }
+
+    fn move_in_replaced(&mut self, path: &Path, replacement: Option<&str>) -> Result<RecoveryMove> {
         let original = path.to_string_lossy();
         if original.contains(['\t', '\n', '\r']) {
             bail!(
@@ -842,7 +846,10 @@ impl RecoveryBatch {
                 format!("failed to move {} to {}", path.display(), to.display())
             })?;
         }
-        let line = format!("{original}\t{}\t{digest}\t{bytes}\n", to.display());
+        let suffix = replacement
+            .map(|digest| format!("\t{digest}"))
+            .unwrap_or_default();
+        let line = format!("{original}\t{}\t{digest}\t{bytes}{suffix}\n", to.display());
         let mut manifest = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -889,6 +896,7 @@ pub struct RecoveryRecord {
     pub stored: PathBuf,
     pub sha256: Option<String>,
     pub bytes: u64,
+    pub replacement_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -957,6 +965,7 @@ fn read_manifest(dir: &Path) -> Vec<RecoveryRecord> {
                 stored,
                 sha256,
                 bytes,
+                replacement_sha256: fields.next().map(str::to_string),
             })
         })
         .collect()
@@ -980,6 +989,144 @@ pub struct RestoreReport {
     pub displaced: Option<String>,
 }
 
+pub fn parse_command_receipt(text: &str) -> Result<HashMap<String, String>> {
+    let hashes = crate::parse_checksum_manifest(text)?;
+    if hashes.is_empty()
+        || hashes.len() != text.lines().count()
+        || hashes
+            .keys()
+            .any(|name| !RECEIPT_COMMANDS.contains(&name.as_str()))
+    {
+        bail!("invalid command ownership receipt");
+    }
+    Ok(hashes)
+}
+
+fn verified_recovery_file(
+    folder: &RecoveryFolder,
+    record: &RecoveryRecord,
+) -> Result<fs::Metadata> {
+    if !stored_inside_recovery(folder, &record.stored) {
+        bail!("manifest entry points outside the recovery folder");
+    }
+    let meta = fs::symlink_metadata(&record.stored).context("no longer in the recovery folder")?;
+    if meta.is_symlink() {
+        bail!("stored entry is a symlink");
+    }
+    if record.sha256.is_some() && !meta.is_file() {
+        bail!("stored entry is no longer a regular file");
+    }
+    if meta.is_file() {
+        match &record.sha256 {
+            Some(expected) => {
+                if &file_sha256(&record.stored)? != expected {
+                    bail!("its bytes changed in the recovery folder");
+                }
+            }
+            None if record.bytes != meta.len() => {
+                bail!("its size changed in the recovery folder");
+            }
+            None => {}
+        }
+    }
+    Ok(meta)
+}
+
+struct DisplacedReceipt {
+    path: PathBuf,
+    retained: Vec<(String, String)>,
+}
+
+fn command_receipt_to_displace(
+    directory: &Path,
+    records: &BTreeMap<&Path, &RecoveryRecord>,
+    owner: Option<u64>,
+) -> Result<Option<DisplacedReceipt>> {
+    let receipt = directory.join(RECEIPT_FILE);
+    let meta = match fs::symlink_metadata(&receipt) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let dir_meta = fs::symlink_metadata(directory)?;
+    if !dir_meta.is_dir()
+        || !owned_by(&dir_meta, owner)
+        || !directory_is_private(directory)
+        || !meta.is_file()
+        || !owned_by(&meta, owner)
+    {
+        bail!("preserved untrusted command receipt {}", receipt.display());
+    }
+    let claims = parse_command_receipt(&read_small(&receipt, 512)?)?;
+    let mut changes_owned_bytes = false;
+    let mut retained = Vec::new();
+    for name in RECEIPT_COMMANDS {
+        let command = directory.join(name);
+        if let Some(record) = records.get(command.as_path())
+            && record.replacement_sha256.is_none()
+            && !claims.contains_key(*name)
+            && fs::symlink_metadata(&command).is_ok()
+        {
+            bail!("preserved unclaimed command {}", command.display());
+        }
+    }
+    for (name, expected) in claims {
+        let path = directory.join(&name);
+        match fs::symlink_metadata(&path) {
+            Ok(current)
+                if current.is_file()
+                    && owned_by(&current, owner)
+                    && file_sha256(&path)? == expected => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && records.contains_key(path.as_path()) => {}
+            _ => bail!("preserved modified command {}", path.display()),
+        }
+        if let Some(record) = records.get(path.as_path()) {
+            let changes = match &record.sha256 {
+                Some(digest) => digest != &expected,
+                None => file_sha256(&record.stored)? != expected,
+            };
+            if changes {
+                changes_owned_bytes = true;
+                continue;
+            }
+        }
+        retained.push((name, expected));
+    }
+    let saved = records.contains_key(receipt.as_path());
+    if saved {
+        retained.clear();
+    }
+    Ok((changes_owned_bytes || saved).then_some(DisplacedReceipt {
+        path: receipt,
+        retained,
+    }))
+}
+
+fn validate_saved_command_receipt(
+    record: &RecoveryRecord,
+    pending: &BTreeMap<&Path, &RecoveryRecord>,
+) -> Result<()> {
+    let directory = record
+        .original
+        .parent()
+        .context("command receipt has no directory")?;
+    for (name, expected) in parse_command_receipt(&read_small(&record.stored, 512)?)? {
+        let command = directory.join(name);
+        let bytes = pending
+            .get(command.as_path())
+            .map_or(command.as_path(), |entry| entry.stored.as_path());
+        if !fs::symlink_metadata(bytes)?.is_file() || file_sha256(bytes)? != expected {
+            bail!(
+                "preserved recovery receipt: {} has different bytes",
+                command.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreReport)> {
     let folders = recovery_folders(home);
     let folder = match stamp {
@@ -1000,32 +1147,85 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
     };
     let mut report = RestoreReport::default();
     let mut remaining = Vec::new();
-    let mut displaced: Option<RecoveryBatch> = None;
-    for record in &folder.records {
-        let outcome = (|| -> Result<()> {
-            if !stored_inside_recovery(&folder, &record.stored) {
-                bail!("manifest entry points outside the recovery folder");
+    let records: BTreeMap<_, _> = folder
+        .records
+        .iter()
+        .map(|record| (record.original.as_path(), record))
+        .collect();
+    let directories: BTreeSet<_> = records
+        .keys()
+        .filter_map(|path| {
+            path.parent().filter(|_| {
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|name| name == RECEIPT_FILE || RECEIPT_COMMANDS.contains(&name))
+            })
+        })
+        .collect();
+    for record in records.values() {
+        if let Some(expected) = &record.replacement_sha256 {
+            let current = match fs::symlink_metadata(&record.original) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !current.is_file()
+                || !owned_by(&current, owner_id(home))
+                || file_sha256(&record.original)? != *expected
+            {
+                bail!("preserved modified command {}", record.original.display());
             }
-            let meta =
-                fs::symlink_metadata(&record.stored).context("no longer in the recovery folder")?;
-            if meta.is_symlink() {
-                bail!("stored entry is a symlink");
-            }
-            if record.sha256.is_some() && !meta.is_file() {
-                bail!("stored entry is no longer a regular file");
-            }
-            if meta.is_file() {
-                match &record.sha256 {
-                    Some(expected) => {
-                        if &file_sha256(&record.stored)? != expected {
-                            bail!("its bytes changed in the recovery folder");
-                        }
-                    }
-                    None if record.bytes != meta.len() => {
-                        bail!("its size changed in the recovery folder");
-                    }
-                    None => {}
+        }
+    }
+    let mut receipts = Vec::new();
+    for dir in directories {
+        let receipt = dir.join(RECEIPT_FILE);
+        let displace = command_receipt_to_displace(dir, &records, owner_id(home))?;
+        let saved = records.get(receipt.as_path());
+        if saved.is_some() || displace.is_some() {
+            for name in RECEIPT_COMMANDS {
+                if let Some(command) = records.get(dir.join(name).as_path())
+                    && !verified_recovery_file(&folder, command)?.is_file()
+                {
+                    bail!(
+                        "saved command {} is not a regular file",
+                        command.stored.display()
+                    );
                 }
+            }
+        }
+        if let Some(saved) = saved {
+            verified_recovery_file(&folder, saved)?;
+            validate_saved_command_receipt(saved, &records)?;
+        }
+        if let Some(receipt) = displace {
+            receipts.push(receipt);
+        }
+    }
+    let mut displaced = None;
+    if !receipts.is_empty() {
+        let mut batch = RecoveryBatch::open(home)?;
+        for receipt in &receipts {
+            batch.move_in(&receipt.path)?;
+        }
+        displaced = Some(batch);
+    }
+    let mut ordered: Vec<_> = folder.records.iter().collect();
+    ordered.sort_by_key(|record| {
+        record
+            .original
+            .file_name()
+            .is_some_and(|name| name == RECEIPT_FILE)
+    });
+    for record in ordered {
+        let outcome = (|| -> Result<()> {
+            let meta = verified_recovery_file(&folder, record)?;
+            if record
+                .original
+                .file_name()
+                .is_some_and(|name| name == RECEIPT_FILE)
+            {
+                validate_saved_command_receipt(record, &BTreeMap::new())?;
             }
             if let Ok(current) = fs::symlink_metadata(&record.original) {
                 if !current.is_file() || !meta.is_file() {
@@ -1035,7 +1235,14 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
                     displaced = Some(RecoveryBatch::open(home)?);
                 }
                 let batch = displaced.as_mut().expect("batch was just opened");
-                batch.move_in(&record.original)?;
+                let replacement = record
+                    .original
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| RECEIPT_COMMANDS.contains(name))
+                    .map(|_| file_sha256(&record.stored))
+                    .transpose()?;
+                batch.move_in_replaced(&record.original, replacement.as_deref())?;
             }
             fs::rename(&record.stored, &record.original).context("move back failed")?;
             Ok(())
@@ -1058,6 +1265,16 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
             report.displaced = Some(stamp);
         }
     }
+    for receipt in receipts {
+        if !receipt.retained.is_empty()
+            && !adopt_receipt(
+                receipt.path.parent().context("receipt has no directory")?,
+                &receipt.retained,
+            )?
+        {
+            bail!("command ownership receipt changed during restore");
+        }
+    }
     rewrite_manifest(&folder.dir, &remaining)?;
     if remaining.is_empty() {
         let _ = fs::remove_file(folder.dir.join(RECOVERY_MANIFEST));
@@ -1071,11 +1288,16 @@ fn rewrite_manifest(dir: &Path, records: &[RecoveryRecord]) -> Result<()> {
         .iter()
         .map(|record| {
             format!(
-                "{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}{}\n",
                 record.original.display(),
                 record.stored.display(),
                 record.sha256.as_deref().unwrap_or("-"),
-                record.bytes
+                record.bytes,
+                record
+                    .replacement_sha256
+                    .as_ref()
+                    .map(|digest| format!("\t{digest}"))
+                    .unwrap_or_default()
             )
         })
         .collect();
