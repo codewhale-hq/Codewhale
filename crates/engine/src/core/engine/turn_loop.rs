@@ -1079,12 +1079,12 @@ impl Engine {
         policy: &ToolSurfacePolicy,
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         if !self.config.features.enabled(Feature::Mcp) {
-            return;
+            return false;
         }
         let Some(pool) = self.mcp_pool.as_ref() else {
-            return;
+            return false;
         };
         let (universe, mut refreshed) = {
             let pool = pool.lock().await;
@@ -1094,13 +1094,14 @@ impl Engine {
         // A config/authority change during handshake can remove a server;
         // `replace_runtime_mcp_tools` owns every MCP name already in the
         // catalog, so its previous names leave this turn's catalog too.
-        refreshed.retain(|tool| {
-            policy.passes_allow_list(&tool.name)
-                && !policy.denies_tool(&tool.name)
-                && (self.child_host.is_none() || policy.registry.contains(&tool.name))
-        });
+        if let Some(child) = &self.child_host {
+            refreshed = child
+                .authority
+                .connected_mcp_tools_for_model(&policy.registry, refreshed);
+        }
+        refreshed.retain(|tool| policy.allows_tool(&tool.name));
         let always_load = self.effective_tools_always_load();
-        if replace_runtime_mcp_tools(
+        let changed = replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
@@ -1109,9 +1110,11 @@ impl Engine {
             &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
-        ) {
+        );
+        if changed {
             self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
         }
+        changed
     }
 
     /// A gated MCP-focused search is explicit discovery of already configured
@@ -5719,25 +5722,14 @@ impl Engine {
                         .and_then(|metadata| metadata.get("mcp_catalog_changed"))
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if mcp_catalog_changed && let Some(pool) = self.mcp_pool.as_ref().cloned() {
-                        let (universe, refreshed) = {
-                            let pool = pool.lock().await;
-                            let refreshed = pool.to_api_tools();
-                            (pool.model_tool_names(&refreshed), refreshed)
-                        };
-                        let surface_budget = self
-                            .turn_tool_surface_budget
-                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
-                        let always_load = self.effective_tools_always_load();
-                        tool_surface_changed |= replace_runtime_mcp_tools(
-                            tool_catalog,
-                            active_tool_names,
-                            &universe,
-                            refreshed,
-                            self.current_mode,
-                            &always_load,
-                            surface_budget,
-                        );
+                    if mcp_catalog_changed {
+                        tool_surface_changed |= self
+                            .refresh_current_mcp_catalog(
+                                tool_policy,
+                                tool_catalog,
+                                active_tool_names,
+                            )
+                            .await;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
                     // re-pin the header under a declared `change:tool_surface`
