@@ -45,6 +45,7 @@ export const RELEASE_CONTRIBUTORS: string[] = [
   "@ruanchaves",
   "@BX166",
   "@donglovejava",
+  "@knowhycodata",
 ];
 
 /**
