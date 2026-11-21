@@ -25493,7 +25493,10 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     )
     .expect("same-key fresh config should load atomically");
 
-    assert!(respawn.respawn, "file loads must install the fresh engine config");
+    assert!(
+        respawn.respawn,
+        "file loads must install the fresh engine config"
+    );
     assert_eq!(app.provider_identity_for_persistence(), "custom-a");
     assert_eq!(
         stale_config.active_route_base_url(),

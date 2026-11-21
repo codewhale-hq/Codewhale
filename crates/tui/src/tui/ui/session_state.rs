@@ -1117,9 +1117,8 @@ pub(crate) async fn sync_runtime_workspace_state(
 /// then points at a manager whose store the host no longer owns, so updating
 /// it would leave the live manager on the previous workspace.
 pub(crate) async fn sync_runtime_workspace_state_from_app(app: &App, workspace: PathBuf) {
-    match app.runtime_services.task_manager.as_ref() {
-        Some(current) => current.set_default_workspace(workspace).await,
-        None => {}
+    if let Some(current) = app.runtime_services.task_manager.as_ref() {
+        current.set_default_workspace(workspace).await;
     }
 }
 

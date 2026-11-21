@@ -2329,10 +2329,11 @@ impl TaskManager {
 
     /// Whether the store this host holds can be released for a session switch.
     /// `None` when no Runtime is attached (nothing to release).
-    pub(crate) fn current_store_is_disposable(&self) -> Option<anyhow::Result<bool>> {
-        self.runtime_threads
-            .as_ref()
-            .map(|runtime| runtime.current_store_is_disposable())
+    pub(crate) async fn current_store_is_disposable(&self) -> Option<anyhow::Result<bool>> {
+        match self.runtime_threads.as_ref() {
+            Some(runtime) => Some(runtime.current_store_is_disposable().await),
+            None => None,
+        }
     }
 
     pub async fn set_default_workspace(&self, workspace: PathBuf) {

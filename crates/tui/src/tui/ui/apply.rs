@@ -4720,17 +4720,20 @@ pub(crate) fn apply_loaded_session_with_goal(
         && let Some(tasks) = app.runtime_services.task_manager.as_ref()
         && tasks.session_store_binding().as_ref() != Some(binding)
     {
-        let refusal = if binding
+        // A missing store is repaired into this host's own store; that is the
+        // opposite direction from adopting the target, and the two must not
+        // both run.
+        let target_is_missing = binding
             .is_missing_session_store()
-            .map_err(|error| error.to_string())?
-        {
+            .map_err(|error| error.to_string())?;
+        let refusal = if target_is_missing {
             None
         } else {
             binding
                 .adoption_refusal()
                 .map_err(|error| error.to_string())?
         };
-        if refusal.is_none() {
+        if target_is_missing {
             recovered_binding = tasks.session_store_binding();
         }
         if let Some(codewhale_engine::runtime_threads::StoreAdoptionRefusal::HeldByLiveProcess) =
@@ -4761,22 +4764,37 @@ pub(crate) fn apply_loaded_session_with_goal(
         // unusable from here: another process holds its lock, the path is not
         // a confined store directory, or an automation is pinned to its
         // execution scope.
-        let adoptable = refusal.is_none();
-        if let Some(refusal) = refusal
-            && matches!(
+        // A store whose recorded scope no longer matches its own owner file is
+        // not adoptable: the binding is stale, and adopting it would claim an
+        // authority the store does not carry. That is the case the recovery
+        // path below exists for — repair the document onto this host's store
+        // instead (#6144, #6207).
+        let binding_is_stale = !target_is_missing && binding.validate_existing_store().is_err();
+        if binding_is_stale {
+            recovered_binding = tasks.session_store_binding();
+        }
+        // Everything short of a hard refusal is adoptable. `HasDurableWork` is
+        // deliberately in this set: the target keeps its history on disk for
+        // whichever process opens it next, so adopting it abandons nothing.
+        // The refusals that remain are the ones that make the target unusable
+        // from here: another process holds its lock, the path is not a
+        // confined store directory, or an automation is pinned to its scope.
+        let hard_refusal = refusal.as_ref().filter(|refusal| {
+            matches!(
                 refusal,
                 crate::runtime_threads::StoreAdoptionRefusal::Unconfined
                     | crate::runtime_threads::StoreAdoptionRefusal::NotADirectory
                     | crate::runtime_threads::StoreAdoptionRefusal::ScopePinnedAutomation
             )
-        {
+        });
+        if let Some(refusal) = hard_refusal {
             return Err(format!(
                 "This session's saved Runtime store cannot be opened from here ({refusal}): \
                  run `codewhale resume {}` from your shell.",
                 session.metadata.id
             ));
         }
-        adopt_target_store = adoptable;
+        adopt_target_store = !target_is_missing && !binding_is_stale;
     }
     if app.session_transition_blocked() {
         return Err(
@@ -4787,22 +4805,15 @@ pub(crate) fn apply_loaded_session_with_goal(
         // Releasing the store this host holds is only safe when nothing in it
         // still waits on this process. Approvals and user-input prompts live
         // in memory, so a restart could not recover them either — dropping
-        // them here would strand every waiter.
+        // them here would strand every waiter. The async half of this check
+        // (loaded engines with an active turn) needs the Runtime's `active`
+        // lock, so the caller performs it before calling its adopt path.
         if tasks.has_unsettled_requests() {
             return Err(
                 "This session's Runtime store has tool approvals or user input still waiting. \
                  Answer them, or stop that work, before switching sessions."
                     .to_string(),
             );
-        }
-        if let Some(disposable) = tasks.current_store_is_disposable()
-            && !disposable.map_err(|error| error.to_string())?
-        {
-            return Err(format!(
-                "The Runtime store this session is running on still holds work. \
-                 Finish or stop it before switching to session {}.",
-                session.metadata.id
-            ));
         }
     }
 
@@ -5179,6 +5190,20 @@ pub(crate) async fn adopt_runtime_store(
     config: &Config,
     binding: crate::runtime_threads::RuntimeStoreBinding,
 ) -> Result<(), String> {
+    // Nothing in the store being left may still need this process. The
+    // synchronous half (approvals, user input, dynamic tools) was checked by
+    // the loader; this half needs the Runtime's `active` lock, which is why it
+    // lives here rather than there.
+    if let Some(tasks) = app.runtime_services.task_manager.as_ref()
+        && let Some(disposable) = tasks.current_store_is_disposable().await
+        && !disposable.map_err(|error| error.to_string())?
+    {
+        return Err(
+            "The Runtime store this session is running on still has work in flight. \
+             Finish or stop it before switching sessions."
+                .to_string(),
+        );
+    }
     let Some(previous) = app.runtime_services.task_manager.take() else {
         return Err(
             "This session needs its own Runtime store, but this host has no task manager to rebind."
