@@ -7,8 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Shell groups preserve command-owned input:** policy evaluation keeps each command's explicit stdin source when a redirection supplies default input to its enclosing group. (CW-8303)
-## [0.10.3] - 2026-11-18
+## [0.10.3] - 2026-11-21
 
 Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features] plugin_creator`) and unmodified DeepSeek Harness (`@deepseek-ai/dsh-*`) plugin compatibility, an upgraded Auto-Review guardian with workspace boundaries, soft rules, sub-agent return review, and one-use retry approvals, and a single `Shift+Tab` permission dial defaulting to Accept Edits (`Ask → Accept Edits → Plan → Auto-Review → Full Access`). It moves the ACP server and external-agent sessions (including Qwen Code and GitHub Copilot CLI) onto the official Agent Client Protocol SDK, publishes native signed HarmonyOS ARM64 release assets, adds a verified signed model-and-provider registry channel alongside unified model-ID resolution and managed `/v1/models` pricing, updates design tokens to `5.4.0` with a docked single-line approval strip, folded turn activity, live working-row light sweeps and 13 hex-lattice dot-whale forms, adds `claude-org` billing auth, `show_data` transcript charts, `codewhale sessions migrate`, DeepSeek Chatbot web search and speech tools, receipted self-updates and `codewhale uninstall`, and lands reliability, CJK/Unicode, Windows, and sandbox security fixes.
 
@@ -623,6 +622,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 
 - **Shell policy:** statically available AWK and sed programs are scanned for shell commands. AWK analysis that exceeds its scan budget is treated as unresolved. (CW-8300)
 - **Bounded terminal-multiplexer policy parsing:** tmux arguments and prompt templates are checked within a finite allowance. Expansion that runs out of allowance is reported as unresolved. (CW-8302)
+- **Shell groups preserve command-owned input:** policy evaluation keeps each command's explicit stdin source when a redirection supplies default input to its enclosing group. (CW-8303)
 - **Sub-agent budget-stop receipts show clipped output:** the receipt gives the character count and points to the retained child transcript. It also keeps the workspace preservation receipt visible when the partial output is long. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for [issue 7434](https://github.com/codewhale-hq/Codewhale/issues/7434). (CW-8317)
 - **TUI command input:** while the terminal’s raw-paste fallback detects a possible paste, Enter inserts a newline before slash completion can change the draft. This also applies to fast typing that matches the paste cadence. After the brief paste window passes, Enter can submit the command. (CW-8301)
 - **Permission controls during an approval:** Shift+Tab and Full Access in the approval’s additional choices open permission settings while leaving the current approval pending. (CW-8320)
@@ -1328,6 +1328,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 ### Contributors
 
 - **[@swf1996120](https://github.com/swf1996120)** — reported that the PR review prompt discouraged checking callers with the available source tools ([issue 7435](https://github.com/codewhale-hq/Codewhale/issues/7435)).
+- **[@NieZhuZhu](https://github.com/NieZhuZhu)** — hardened shell-command policy expansion: classified local read-only deferred tools as safe for Auto-Review ([#7431](https://github.com/codewhale-hq/CodeWhale/pull/7431)), scanned bounded AWK and sed programs for embedded shell commands ([#7430](https://github.com/codewhale-hq/CodeWhale/pull/7430)), kept each command's stdin source under group redirection and `numactl --strict` ([#7429](https://github.com/codewhale-hq/CodeWhale/pull/7429)), failed closed on dynamically resolved flag and verb names ([#7427](https://github.com/codewhale-hq/CodeWhale/pull/7427)), modeled additional tmux execution verbs within a shared work budget ([#7428](https://github.com/codewhale-hq/CodeWhale/pull/7428)), modeled the `oc`, `vagrant`, `op`, `opam` and `helm` launchers ([#7425](https://github.com/codewhale-hq/CodeWhale/pull/7425)), and propagated the dynamic flag-word bit through `nix` and launcher flags ([#7424](https://github.com/codewhale-hq/CodeWhale/pull/7424)).
 - **[@BX166](https://github.com/BX166)** — clarified the AICraft provider setup for mainland China and international users ([#7421](https://github.com/codewhale-hq/CodeWhale/pull/7421)).
 - **[@donglovejava](https://github.com/donglovejava)** — covered large raw and bracketed terminal paste and fixed fallback tool-call IDs in streaming chat completions ([#7422](https://github.com/codewhale-hq/CodeWhale/pull/7422), [#7423](https://github.com/codewhale-hq/CodeWhale/pull/7423)).
 - **[@gabsferreira](https://github.com/gabsferreira)** added the SearchApi web search provider ([#7410](https://github.com/codewhale-hq/Codewhale/pull/7410)).
