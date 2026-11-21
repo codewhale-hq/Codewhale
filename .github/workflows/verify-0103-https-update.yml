@@ -1,0 +1,110 @@
+name: Verify Engine 0.10.3 HTTPS update
+
+on:
+  push:
+    branches: [ci/cw-0103-native-updater]
+    paths: [.github/workflows/verify-0103-https-update.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-updater:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: linux-x64, machine: x86_64, previous: ed666471d845549c922bb808c01e7d5553c3e97972d77ca411398002510f70d9}
+          - {runner: ubuntu-24.04-arm, target: linux-arm64, machine: aarch64, previous: d737fc57e2e0abb106c5a84fb33733316541857601a6237449c207bb06993387}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      RC: '44876164458'
+      FROZEN: 555322f9cbbd2c2fa197abe3263dc43f9e6f2532
+      TARGET: ${{ matrix.target }}
+      BASELINE_ARCHIVE: ${{ matrix.previous }}
+      MACHINE: ${{ matrix.machine }}
+    steps:
+      - name: Verify the published baseline and exact build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          test "$(uname -m)" = "$MACHINE"
+          mkdir -p mirror baseline
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC" |
+            jq -e --arg sha "$FROZEN" '.head_sha==$sha and .event=="workflow_dispatch" and .path==".github/workflows/release-candidate.yml"'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RC/artifacts?per_page=100" |
+            jq -e --arg name "codewhale-$TARGET" '[.artifacts[] | select(.name==$name and (.expired|not))] | if length==1 then .[0] else error("missing artifact") end' > artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$(jq -r .id artifact.json)/zip" > payload.zip
+          echo "$(jq -er '.digest|select(test("^sha256:[0-9a-f]{64}$"))|ltrimstr("sha256:")' artifact.json)  payload.zip" | sha256sum -c -
+          test "$(unzip -Z -1 payload.zip)" = "codewhale-$TARGET"
+          unzip -q payload.zip -d mirror
+          cd mirror
+          ln "codewhale-$TARGET" "codew-$TARGET"
+          sha256sum "codewhale-$TARGET" "codew-$TARGET" > codewhale-artifacts-sha256.txt
+          cd "$RUNNER_TEMP/baseline"
+          gh release download v0.10.2 -R "$GITHUB_REPOSITORY" --pattern "codewhale-$TARGET.tar.gz"
+          echo "$BASELINE_ARCHIVE  codewhale-$TARGET.tar.gz" | sha256sum -c -
+          tar xzf "codewhale-$TARGET.tar.gz"
+
+      - name: Upgrade both commands over loopback HTTPS and verify downgrade refusal
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -m 700 test-home test-state
+          openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' -keyout tls.key -out tls.crt 2>/dev/null
+          sudo install -m 644 tls.crt /usr/local/share/ca-certificates/codewhale-fixture.crt
+          sudo update-ca-certificates
+          python3 -u - <<'PY' > "$RUNNER_TEMP/requests.log" 2>&1 &
+          import functools, http.server, pathlib, ssl
+          server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(http.server.SimpleHTTPRequestHandler, directory='mirror'))
+          tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          tls.load_cert_chain('tls.crt','tls.key')
+          server.socket = tls.wrap_socket(server.socket, server_side=True)
+          pathlib.Path('mirror-port').write_text(str(server.server_port))
+          server.serve_forever()
+          PY
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in {1..50}; do [[ -s mirror-port ]] && break; sleep 0.1; done
+          bin="$PWD/test-home/.local/bin"
+          fixture() {
+            env -i HOME="$PWD/test-home" CODEWHALE_HOME="$PWD/test-state" PATH="$bin:/usr/bin:/bin" \
+              CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 CODEWHALE_DISABLE_MODELS_DEV_FETCH=1 \
+              HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 NO_PROXY=localhost,127.0.0.1 \
+              CODEWHALE_RELEASE_BASE_URL="https://localhost:$(cat mirror-port)" CODEWHALE_VERSION="$pin" "$@"
+          }
+          pin=0.10.3
+          fixture bash "$PWD/baseline/codewhale-$TARGET/install.sh" --no-modify-path
+          test "$(fixture "$bin/codewhale" --version)" = 'codewhale 0.10.2 (ff466b2ed0bf)'
+          echo sentinel > test-state/preserved
+          fixture "$bin/codewhale" update --check | tee check.log
+          test ! -s requests.log
+          fixture "$bin/codewhale" update 2>&1 | tee upgrade.log
+          rg -F 'SHA256 checksum verified' upgrade.log
+          rg -F 'codewhale-artifacts-sha256.txt' requests.log
+          rg -F "GET /codewhale-$TARGET " requests.log
+          for cmd in codewhale codew; do
+            cmp "$bin/$cmd" "mirror/codewhale-$TARGET"
+            test "$(fixture "$bin/$cmd" --version)" = "codewhale 0.10.3 (${FROZEN:0:12})"
+          done
+          pin=0.10.2
+          cp requests.log requests-before-downgrade.log
+          fixture "$bin/codewhale" update 2>&1 | tee downgrade.log
+          rg -F 'No downgrade or download performed' downgrade.log
+          cmp requests-before-downgrade.log requests.log
+          cmp "$bin/codew" "mirror/codewhale-$TARGET"
+          cmp "$bin/codewhale" "mirror/codewhale-$TARGET"
+          test "$(cat test-state/preserved)" = sentinel
+          cat requests.log
+          jq -n --arg source "$FROZEN" --arg rc "$RC" --arg arch "$MACHINE" --arg target "$TARGET" --arg baseline "$BASELINE_ARCHIVE" --arg binary "$(sha256sum "mirror/codewhale-$TARGET" | cut -d ' ' -f1)" \
+            '{source:$source,rc:$rc,arch:$arch,target:$target,baseline_archive_sha256:$baseline,sha256:$binary,https_checked:true,upgrade:true,aliases_verified:2,downgrade_refused:true,older_version_requests:0,state_preserved:true}' > "$GITHUB_WORKSPACE/update-proof.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: https-updater-${{ matrix.target }}
+          path: update-proof.json
+          if-no-files-found: error
