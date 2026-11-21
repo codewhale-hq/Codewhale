@@ -377,8 +377,7 @@ fn runtime_store_binding_survives_launch_snapshot_and_resume() -> anyhow::Result
                     false,
                 )
                 .await
-                .err()
-                .expect("a foreign execution scope must refuse");
+                .expect_err("a foreign execution scope must refuse");
                 // The refusal must name the route that actually works. "Resume
                 // it in a new Codewhale process" was true but unactionable:
                 // starting a new process and then picking the session from
