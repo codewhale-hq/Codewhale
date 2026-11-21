@@ -78,3 +78,89 @@ fn restore_refuses_hashed_record_swapped_for_symlink_or_directory() {
         let _ = fs::remove_dir_all(home.path().join("recovery"));
     }
 }
+
+#[test]
+fn command_restore_preserves_ownership_and_undo() {
+    use codewhale_release::installs::{RECEIPT_COMMANDS, RECEIPT_FILE, sha256_hex};
+    for (prior_receipt, same_bytes) in [(false, false), (true, false), (false, true)] {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path();
+        let old = b"previous command";
+        let new = if same_bytes {
+            old.as_slice()
+        } else {
+            b"new command"
+        };
+        let receipt = dir.join(RECEIPT_FILE);
+        let claims = |bytes: &[u8]| {
+            RECEIPT_COMMANDS
+                .iter()
+                .map(|name| format!("{}  {name}\n", sha256_hex(bytes)))
+                .collect::<String>()
+        };
+        let mut batch = RecoveryBatch::open(dir).unwrap();
+        let original = batch.stamp.clone();
+        if prior_receipt {
+            fs::write(&receipt, claims(old)).unwrap();
+            batch.move_in(&receipt).unwrap();
+        }
+        for name in RECEIPT_COMMANDS {
+            let command = dir.join(name);
+            fs::write(&command, old).unwrap();
+            batch.move_in(&command).unwrap();
+            fs::write(&command, new).unwrap();
+        }
+        batch.finish();
+        fs::write(&receipt, claims(new)).unwrap();
+        let unrelated = dir.join("unrelated");
+        fs::write(&unrelated, b"keep me").unwrap();
+        let edited = dir.join(RECEIPT_COMMANDS[1]);
+        fs::write(&edited, b"my replacement").unwrap();
+        assert!(restore(dir, Some(&original)).is_err());
+        assert_eq!(fs::read(&edited).unwrap(), b"my replacement");
+        assert_eq!(fs::read_to_string(&receipt).unwrap(), claims(new));
+        assert_eq!(recovery_folders(dir).len(), 1);
+        fs::write(edited, new).unwrap();
+        fs::write(&receipt, b"personal note").unwrap();
+        assert!(restore(dir, Some(&original)).is_err());
+        assert_eq!(fs::read(&receipt).unwrap(), b"personal note");
+        fs::write(&receipt, claims(new)).unwrap();
+        let backup = recovery_folders(dir)[0]
+            .records
+            .iter()
+            .find(|entry| entry.original == dir.join(RECEIPT_COMMANDS[0]))
+            .unwrap()
+            .stored
+            .clone();
+        fs::write(&backup, b"changed backup").unwrap();
+        if !same_bytes || prior_receipt {
+            assert!(restore(dir, Some(&original)).is_err());
+            assert_eq!(fs::read_to_string(&receipt).unwrap(), claims(new));
+            assert_eq!(recovery_folders(dir).len(), 1);
+        }
+        fs::write(backup, old).unwrap();
+        let (_, report) = restore(dir, Some(&original)).unwrap();
+        assert!(report.skipped.is_empty());
+        for name in RECEIPT_COMMANDS {
+            assert_eq!(fs::read(dir.join(name)).unwrap(), old);
+        }
+        assert_eq!(receipt.exists(), prior_receipt || same_bytes);
+        if receipt.exists() {
+            assert_eq!(fs::read_to_string(&receipt).unwrap(), claims(old));
+        }
+        let undo = report.displaced.unwrap();
+        let folders = recovery_folders(dir);
+        let saved = folders.iter().find(|f| f.stamp == undo).unwrap();
+        assert_eq!(
+            saved.records.iter().any(|r| r.original == receipt),
+            !same_bytes
+        );
+        let (_, undone) = restore(dir, Some(&undo)).unwrap();
+        assert!(undone.skipped.is_empty());
+        for name in RECEIPT_COMMANDS {
+            assert_eq!(fs::read(dir.join(name)).unwrap(), new);
+        }
+        assert_eq!(fs::read_to_string(&receipt).unwrap(), claims(new));
+        assert_eq!(fs::read(unrelated).unwrap(), b"keep me");
+    }
+}
