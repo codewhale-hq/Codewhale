@@ -1375,12 +1375,19 @@ const KEYWORD_CONTINUES: &[&str] = &[
     "done", "fi", "esac", "!", "coproc", "time",
 ];
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum WordQuote {
+    #[default]
+    Unquoted,
+    Quoted,
+    InlineScalar,
+}
 /// The word being read, with what the parser learned about it.
 #[derive(Default)]
 struct WordBuf {
     text: String,
     started: bool,
-    quoted: bool,
+    quoted: WordQuote,
     redirect_operand: bool,
     /// The word's final text depends on an expansion the parser does not run.
     dynamic: bool,
@@ -1414,7 +1421,7 @@ impl WordBuf {
                     .last()
                     .is_none_or(|last| KEYWORD_CONTINUES.contains(&last.as_str()));
                 let mut closed = false;
-                if command_position && !self.quoted {
+                if command_position && self.quoted == WordQuote::Unquoted {
                     match self.text.as_str() {
                         "{" | "while" | "until" | "for" | "if" | "case" | "select" => {
                             groups.push(Group {
@@ -1445,7 +1452,7 @@ impl WordBuf {
             }
             self.started = false;
         }
-        self.quoted = false;
+        self.quoted = WordQuote::Unquoted;
         self.dynamic = false;
         self.brace = false;
         self.bracket = false;
@@ -1460,7 +1467,7 @@ struct Line {
     words: Vec<String>,
     dynamic: Vec<bool>,
     odd: Vec<bool>,
-    quoted: Vec<bool>,
+    quoted: Vec<WordQuote>,
     heredoc: bool,
     stdin_piped: bool,
 }
@@ -1591,7 +1598,7 @@ impl Expander {
                             after_pipe = false;
                             word.text.push(chars[i + 1]);
                             word.started = true;
-                            word.quoted = true;
+                            word.quoted = WordQuote::Quoted;
                         }
                         i += 2;
                     } else {
@@ -1602,7 +1609,7 @@ impl Expander {
                 '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '\'' {
                         word.text.push(chars[i]);
@@ -1614,8 +1621,18 @@ impl Expander {
                 // Double quotes suppress word splitting but NOT substitution.
                 '"' => {
                     after_pipe = false;
+                    let mut inline_scalar = word.quoted == WordQuote::Unquoted
+                        && !word.dynamic
+                        && word
+                            .text
+                            .strip_prefix("--")
+                            .and_then(|prefix| prefix.strip_suffix('='))
+                            .is_some_and(|name| {
+                                !name.is_empty()
+                                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                            });
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     i += 1;
                     while i < n && chars[i] != '"' {
                         match chars[i] {
@@ -1628,6 +1645,7 @@ impl Expander {
                                 i += 2;
                             }
                             '`' => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_backtick(&chars, i);
                                 uncertain |= !certain;
@@ -1635,6 +1653,7 @@ impl Expander {
                                 i = next;
                             }
                             '$' if i + 1 < n && matches!(chars[i + 1], '(' | '{') => {
+                                inline_scalar = false;
                                 word.dynamic = true;
                                 let (inner, next, certain) = read_substitution(&chars, i + 1);
                                 uncertain |= !certain;
@@ -1643,6 +1662,8 @@ impl Expander {
                             }
                             ch => {
                                 if ch == '$' && starts_parameter(chars.get(i + 1)) {
+                                    inline_scalar &=
+                                        chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_';
                                     word.dynamic = true;
                                 }
                                 word.text.push(ch);
@@ -1651,12 +1672,24 @@ impl Expander {
                         }
                     }
                     uncertain |= i >= n;
+                    if inline_scalar
+                        && word.dynamic
+                        && i < n
+                        && chars.get(i + 1).is_none_or(|ch| {
+                            matches!(
+                                ch,
+                                ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>'
+                            )
+                        })
+                    {
+                        word.quoted = WordQuote::InlineScalar;
+                    }
                     i = (i + 1).min(n);
                 }
                 '$' if i + 1 < n && chars[i + 1] == '\'' => {
                     after_pipe = false;
                     word.started = true;
-                    word.quoted = true;
+                    word.quoted = WordQuote::Quoted;
                     word.dynamic = true;
                     i += 2;
                     while i < n && chars[i] != '\'' {
@@ -1882,16 +1915,23 @@ impl Expander {
                             {
                                 let shell_stdin = redirects_stdin
                                     && commands[cmd_start..].iter().any(|line| {
-                                        command_heads(&line.words).heads.iter().any(|&head| {
-                                            let name = command_name(&line.words[head]);
-                                            SHELL_NAMES.contains(&name.as_str())
-                                                || matches!(
-                                                    name.as_str(),
-                                                    "source" | "." | "at" | "batch"
-                                                )
-                                                || (name == "ssh"
-                                                    && ssh_reads_stdin(&line.words, head))
-                                        })
+                                        command_heads(&line.words, &line.dynamic).heads.iter().any(
+                                            |&head| {
+                                                let name = command_name(&line.words[head]);
+                                                SHELL_NAMES.contains(&name.as_str())
+                                                    || matches!(
+                                                        name.as_str(),
+                                                        "source" | "." | "at" | "batch"
+                                                    )
+                                                    || (name == "ssh"
+                                                        && ssh_reads_stdin(
+                                                            &line.words,
+                                                            &line.dynamic,
+                                                            &line.quoted,
+                                                            head,
+                                                        ))
+                                            },
+                                        )
                                     });
                                 let mut body = String::new();
                                 // A body that runs to the end of the input may be
@@ -2016,11 +2056,11 @@ impl Expander {
         }
         self.emit(tokens);
 
-        let heads = command_heads(tokens);
+        let heads = command_heads(tokens, &line.dynamic);
         self.dynamic |= heads.truncated;
-        for payload in &heads.split_payloads {
+        for (payload, payload_dynamic) in &heads.split_payloads {
             // `env -S 'cmd args'` splits its value into a command line.
-            self.expand(payload, depth + 1);
+            self.code_payload(payload, *payload_dynamic, depth);
         }
         let mut dynamic = line.dynamic.clone();
         mark_replacement_operands(tokens, &heads.heads, &mut dynamic);
@@ -2106,8 +2146,18 @@ impl Expander {
                 }
                 // These hand the value of `-c` / `--command` to a shell.
                 "su" | "runuser" | "flock" | "script" => {
+                    let flag_end = if name == "su" {
+                        tokens.len()
+                    } else {
+                        heads
+                            .heads
+                            .iter()
+                            .copied()
+                            .find(|&inner| inner > head)
+                            .unwrap_or(tokens.len())
+                    };
                     for (payload, payload_dynamic) in
-                        command_option_payloads(tokens, head, &dynamic)
+                        command_option_payloads(tokens, head, &dynamic, flag_end)
                     {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
@@ -2171,9 +2221,11 @@ impl Expander {
                         matches!(tokens[at].to_ascii_lowercase().as_str(), "/c" | "/k" | "/r")
                     }) {
                         let payload = tokens[at + 1..].join(" ");
-                        let payload_dynamic = dynamic[at + 1..].iter().any(|dynamic| *dynamic)
+                        let payload_dynamic = dynamic[head + 1..].iter().any(|dynamic| *dynamic)
                             || payload.contains(['%', '!', '^']);
                         self.code_payload(&payload, payload_dynamic, depth);
+                    } else if dynamic[head + 1..].iter().any(|dynamic| *dynamic) {
+                        self.dynamic = true;
                     }
                 }
                 "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
@@ -2210,7 +2262,8 @@ impl Expander {
             }
         }
         for at in 0..tokens.len() {
-            if tokens[at] == "--" && !line.quoted[at] && at + 1 < tokens.len() {
+            if tokens[at] == "--" && line.quoted[at] == WordQuote::Unquoted && at + 1 < tokens.len()
+            {
                 self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
             }
         }
@@ -2286,33 +2339,61 @@ impl Expander {
         let mut truncated = false;
         match name {
             "nix" => {
-                for verb_idx in
-                    launcher_verb_targets(tokens, head + 1, &NIX_GLOBAL_SPEC, &mut truncated)
-                {
+                for verb_idx in launcher_verb_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &NIX_GLOBAL_SPEC,
+                    &mut truncated,
+                ) {
                     let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                         continue;
                     };
-                    if matches!(verb, "develop" | "shell")
-                        && let Some(at) = (verb_idx + 1..tokens.len())
-                            .take_while(|&i| tokens[i] != "--")
-                            .find(|&i| matches!(tokens[i].as_str(), "-c" | "--command"))
-                        && at + 1 < tokens.len()
-                    {
-                        self.record(&slice_line(line, at + 1), depth + 1);
+                    if matches!(verb, "develop" | "shell") {
+                        for i in verb_idx + 1..tokens.len() {
+                            if tokens[i] == "--" && !dynamic[i] {
+                                break;
+                            }
+                            if matches!(tokens[i].as_str(), "-c" | "--command") {
+                                if dynamic[i] {
+                                    self.dynamic = true;
+                                }
+                                if i + 1 < tokens.len() {
+                                    self.record(&slice_line(line, i + 1), depth + 1);
+                                }
+                                break;
+                            }
+                            if dynamic[i] {
+                                self.dynamic = true;
+                            }
+                        }
                     }
                 }
             }
             "nix-shell" => {
-                for (payload, payload_dynamic) in
-                    option_payloads(tokens, head, dynamic, None, &["run", "command"], true)
-                {
+                for (payload, payload_dynamic) in option_payloads(
+                    tokens,
+                    head,
+                    dynamic,
+                    None,
+                    &["run", "command"],
+                    true,
+                    tokens.len(),
+                ) {
                     self.code_payload(&payload, payload_dynamic, depth);
                 }
             }
             "npx" => {
-                for (payload, payload_dynamic) in
-                    option_payloads(tokens, head, dynamic, Some('c'), &["call"], true)
-                {
+                for (payload, payload_dynamic) in option_payloads(
+                    tokens,
+                    head,
+                    dynamic,
+                    Some('c'),
+                    &["call"],
+                    true,
+                    tokens.len(),
+                ) {
                     self.code_payload(&payload, payload_dynamic, depth);
                 }
             }
@@ -2320,15 +2401,26 @@ impl Expander {
                 if let Some(sub) = tokens.get(head + 1)
                     && matches!(sub.as_str(), "exec" | "x")
                 {
-                    for (payload, payload_dynamic) in
-                        option_payloads(tokens, head + 1, dynamic, Some('c'), &["call"], true)
-                    {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head + 1,
+                        dynamic,
+                        Some('c'),
+                        &["call"],
+                        true,
+                        tokens.len(),
+                    ) {
                         self.code_payload(&payload, payload_dynamic, depth);
                     }
                 } else {
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
-                    {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &EMPTY_WRAPPER_SPEC,
+                        &mut truncated,
+                    ) {
                         if tokens
                             .get(verb_idx)
                             .is_some_and(|verb| matches!(verb.as_str(), "exec" | "x"))
@@ -2340,6 +2432,7 @@ impl Expander {
                                 Some('c'),
                                 &["call"],
                                 true,
+                                tokens.len(),
                             ) {
                                 self.code_payload(&payload, payload_dynamic, depth);
                             }
@@ -2348,10 +2441,17 @@ impl Expander {
                 }
             }
             "ssh" => {
-                if ssh_skips_remote_command(&tokens[head + 1..]) {
+                if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+                let landings = resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SSH_SPEC,
+                    &mut truncated,
+                );
                 let mut remote_command = false;
                 let prev_stdin = self.inherited_stdin;
                 self.inherited_stdin |= line.stdin_piped || line.heredoc;
@@ -2374,12 +2474,17 @@ impl Expander {
                 }
             }
             "screen" => {
-                if screen_attaches_only(&tokens[head + 1..]) {
+                if screen_attaches_only(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
-                for landing in
-                    resolve_wrapper_targets(tokens, head + 1, &SCREEN_SPEC, &mut truncated)
-                {
+                for landing in resolve_wrapper_targets(
+                    tokens,
+                    dynamic,
+                    &line.quoted,
+                    head + 1,
+                    &SCREEN_SPEC,
+                    &mut truncated,
+                ) {
                     if landing < tokens.len() {
                         self.record(&slice_line(line, landing), depth + 1);
                     }
@@ -2390,9 +2495,14 @@ impl Expander {
             }
             _ => {
                 if name == "launchctl" {
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, &EMPTY_WRAPPER_SPEC, &mut truncated)
-                    {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        &EMPTY_WRAPPER_SPEC,
+                        &mut truncated,
+                    ) {
                         if tokens.get(verb_idx).map(String::as_str) == Some("submit") {
                             self.record_exec_flag_command(line, verb_idx, &['p'], &[], depth);
                         }
@@ -2402,9 +2512,14 @@ impl Expander {
                     if launcher.program != name {
                         continue;
                     }
-                    for verb_idx in
-                        launcher_verb_targets(tokens, head + 1, launcher.global, &mut truncated)
-                    {
+                    for verb_idx in launcher_verb_targets(
+                        tokens,
+                        dynamic,
+                        &line.quoted,
+                        head + 1,
+                        launcher.global,
+                        &mut truncated,
+                    ) {
                         let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
                             continue;
                         };
@@ -2417,10 +2532,7 @@ impl Expander {
                                 return Vec::new();
                             }
                             let end = end.min(tokens.len()).max(verb_idx + 1);
-                            let mut found =
-                                find_entrypoints(&tokens[verb_idx + 1..end], verb_idx + 1);
-                            found.retain(|(value, _)| !value.is_empty());
-                            found
+                            find_entrypoints(&tokens[verb_idx + 1..end], dynamic, verb_idx + 1)
                         };
                         if is_container_run {
                             let image_spec = Wrapper {
@@ -2429,6 +2541,8 @@ impl Expander {
                             };
                             for image in resolve_wrapper_targets(
                                 tokens,
+                                dynamic,
+                                &line.quoted,
                                 verb_idx + 1,
                                 &image_spec,
                                 &mut truncated,
@@ -2437,21 +2551,32 @@ impl Expander {
                                     continue;
                                 }
                                 for (ep_val, ep_idx) in entrypoints_before(image) {
-                                    let combined =
-                                        build_prefixed_line(&ep_val, ep_idx, line, image + 1);
-                                    self.record(&combined, depth + 1);
+                                    if ep_val.is_empty() {
+                                        self.dynamic |= dynamic[ep_idx];
+                                    } else {
+                                        let combined =
+                                            build_prefixed_line(&ep_val, ep_idx, line, image + 1);
+                                        self.record(&combined, depth + 1);
+                                    }
                                 }
                             }
                         }
                         for landing in resolve_wrapper_targets(
                             tokens,
+                            dynamic,
+                            &line.quoted,
                             verb_idx + 1,
                             launcher.subcmd,
                             &mut truncated,
                         ) {
                             for (ep_val, ep_idx) in entrypoints_before(landing) {
-                                let combined = build_prefixed_line(&ep_val, ep_idx, line, landing);
-                                self.record(&combined, depth + 1);
+                                if ep_val.is_empty() {
+                                    self.dynamic |= dynamic[ep_idx];
+                                } else {
+                                    let combined =
+                                        build_prefixed_line(&ep_val, ep_idx, line, landing);
+                                    self.record(&combined, depth + 1);
+                                }
                             }
                             if landing < tokens.len() {
                                 if launcher.shell_string {
@@ -2475,23 +2600,22 @@ impl Expander {
 
     fn record_start_stop_daemon(&mut self, line: &Line, head: usize, depth: usize) {
         let tokens = &line.words;
-        let stop = tokens[head + 1..]
-            .iter()
-            .take_while(|t| t.as_str() != "--")
-            .any(|t| {
-                matches!(t.as_str(), "--stop" | "--status" | "--help" | "--version")
-                    || (t.starts_with('-')
-                        && !t.starts_with("--")
-                        && t[1..].contains(['K', 'T', 'H', 'V']))
-            });
-        let explicit_start = tokens[head + 1..]
-            .iter()
-            .take_while(|t| t.as_str() != "--")
-            .any(|t| {
-                t == "--start"
-                    || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('S'))
-            });
-        if stop && !explicit_start {
+        let opt_end = (head + 1..tokens.len())
+            .find(|&i| {
+                tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+            })
+            .unwrap_or(tokens.len());
+        let has_dynamic = line.dynamic[head + 1..opt_end].iter().any(|&d| d);
+        let stop = tokens[head + 1..opt_end].iter().any(|t| {
+            matches!(t.as_str(), "--stop" | "--status" | "--help" | "--version")
+                || (t.starts_with('-')
+                    && !t.starts_with("--")
+                    && t[1..].contains(['K', 'T', 'H', 'V']))
+        });
+        let explicit_start = tokens[head + 1..opt_end].iter().any(|t| {
+            t == "--start" || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains('S'))
+        });
+        if stop && !explicit_start && !has_dynamic {
             return;
         }
         self.record_exec_flag_command(line, head, &['x', 'a'], &["exec", "startas"], depth);
@@ -2506,39 +2630,55 @@ impl Expander {
         depth: usize,
     ) {
         let tokens = &line.words;
-        let dash_dash = (head + 1..tokens.len()).find(|&i| tokens[i] == "--" && !line.quoted[i]);
+        let dash_dash = (head + 1..tokens.len()).find(|&i| {
+            tokens[i] == "--" && line.quoted[i] == WordQuote::Unquoted && !line.dynamic[i]
+        });
         let opt_end = dash_dash.unwrap_or(tokens.len());
         let args_start = dash_dash.map_or(tokens.len(), |i| i + 1);
         let mut found: Option<(String, usize)> = None;
         let mut i = head + 1;
         while i < opt_end {
             let token = tokens[i].as_str();
+            let mut matched = false;
             if let Some(long) = token.strip_prefix("--") {
                 let (name, inline) = match long.split_once('=') {
                     Some((k, v)) => (k, Some(v)),
                     None => (long, None),
                 };
                 if long_flags.contains(&name) {
+                    matched = true;
                     if let Some(val) = inline {
                         found = Some((val.to_string(), i));
+                        self.dynamic |= line.dynamic[i];
                     } else if i + 1 < opt_end {
                         found = Some((tokens[i + 1].clone(), i + 1));
+                        self.dynamic |= line.dynamic[i] || line.dynamic[i + 1];
                         i += 1;
+                    } else {
+                        self.dynamic |= line.dynamic[i];
                     }
                 }
             } else if let Some(flags) = token.strip_prefix('-') {
                 for (at, ch) in flags.char_indices() {
                     if short_flags.contains(&ch) {
+                        matched = true;
                         let rest = &flags[at + ch.len_utf8()..];
                         if !rest.is_empty() {
                             found = Some((rest.to_string(), i));
+                            self.dynamic |= line.dynamic[i];
                         } else if i + 1 < opt_end {
                             found = Some((tokens[i + 1].clone(), i + 1));
+                            self.dynamic |= line.dynamic[i] || line.dynamic[i + 1];
                             i += 1;
+                        } else {
+                            self.dynamic |= line.dynamic[i];
                         }
                         break;
                     }
                 }
+            }
+            if !matched && line.dynamic[i] {
+                self.dynamic = true;
             }
             i += 1;
         }
@@ -2584,6 +2724,9 @@ impl Expander {
                 }
                 continue;
             };
+            if dynamic[at] {
+                self.dynamic = true;
+            }
             let option = option.to_ascii_lowercase();
             if option.is_empty() {
                 continue;
@@ -2614,6 +2757,9 @@ impl Expander {
         let tokens = &line.words;
         let mut index = head + 1;
         while index < tokens.len() {
+            if line.dynamic[index] && (tokens[index].is_empty() || tokens[index].starts_with('-')) {
+                self.dynamic = true;
+            }
             if matches!(
                 tokens[index].as_str(),
                 "-exec" | "-execdir" | "-ok" | "-okdir"
@@ -4254,7 +4400,10 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     let mut words = vec![prefix.to_string()];
     let mut dynamic = vec![line.dynamic[prefix_idx]];
     let mut odd = vec![prefix_odd];
-    let mut quoted = vec![line.quoted[prefix_idx]];
+    let mut quoted = vec![match line.quoted[prefix_idx] {
+        WordQuote::InlineScalar => WordQuote::Quoted,
+        quote => quote,
+    }];
     if rest_start < line.words.len() {
         words.extend_from_slice(&line.words[rest_start..]);
         dynamic.extend_from_slice(&line.dynamic[rest_start..]);
@@ -4271,12 +4420,12 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
-fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
+fn find_entrypoints(tokens: &[String], dynamic: &[bool], base: usize) -> Vec<(String, usize)> {
     let mut found = Vec::new();
     let mut i = 0usize;
     while i < tokens.len() {
         let token = tokens[i].as_str();
-        if token == "--" {
+        if token == "--" && !dynamic[base + i] {
             break;
         }
         if token == "--entrypoint"
@@ -4292,18 +4441,22 @@ fn find_entrypoints(tokens: &[String], base: usize) -> Vec<(String, usize)> {
     found
 }
 
-fn ssh_reads_stdin(tokens: &[String], head: usize) -> bool {
-    if ssh_skips_remote_command(&tokens[head + 1..]) {
+fn ssh_reads_stdin(tokens: &[String], dynamic: &[bool], quoted: &[WordQuote], head: usize) -> bool {
+    if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
         return false;
     }
     let mut truncated = false;
-    let landings = resolve_wrapper_targets(tokens, head + 1, &SSH_SPEC, &mut truncated);
+    let landings =
+        resolve_wrapper_targets(tokens, dynamic, quoted, head + 1, &SSH_SPEC, &mut truncated);
     truncated || landings.is_empty() || landings.contains(&tokens.len())
 }
 
-fn ssh_skips_remote_command(args: &[String]) -> bool {
+fn ssh_skips_remote_command(args: &[String], dynamic: &[bool]) -> bool {
     let mut i = 0usize;
     while i < args.len() {
+        if dynamic[i] {
+            return false;
+        }
         let token = args[i].as_str();
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             return false;
@@ -4324,12 +4477,15 @@ fn ssh_skips_remote_command(args: &[String]) -> bool {
     false
 }
 
-fn screen_attaches_only(args: &[String]) -> bool {
+fn screen_attaches_only(args: &[String], dynamic: &[bool]) -> bool {
     let mut has_m = false;
     let mut attach = false;
     let mut i = 0usize;
     while i < args.len() {
         let token = args[i].as_str();
+        if dynamic[i] && (token.is_empty() || token.starts_with('-')) {
+            return false;
+        }
         if token == "--" || !token.starts_with('-') || token.len() == 1 {
             break;
         }
@@ -4372,6 +4528,7 @@ fn command_option_payloads(
     tokens: &[String],
     head: usize,
     dynamic: &[bool],
+    flag_end: usize,
 ) -> Vec<(String, bool)> {
     option_payloads(
         tokens,
@@ -4380,6 +4537,7 @@ fn command_option_payloads(
         Some('c'),
         &["command", "session-command"],
         false,
+        flag_end,
     )
 }
 
@@ -4390,23 +4548,26 @@ fn option_payloads(
     short_flag: Option<char>,
     long_names: &[&str],
     stop_at_double_dash: bool,
+    flag_end: usize,
 ) -> Vec<(String, bool)> {
     let mut payloads = Vec::new();
     for (at, token) in tokens.iter().enumerate().skip(head + 1) {
-        if stop_at_double_dash && token == "--" {
+        if stop_at_double_dash && token == "--" && !dynamic[at] {
             break;
         }
-        let next = || {
-            tokens
-                .get(at + 1)
-                .map(|value| (value.clone(), dynamic[at + 1]))
+        let next = || match tokens.get(at + 1) {
+            Some(value) => Some((value.clone(), dynamic[at] || dynamic[at + 1])),
+            None if dynamic[at] => Some((String::new(), true)),
+            None => None,
         };
+        let mut matched = false;
         if let Some(long) = token.strip_prefix("--") {
             let (name, inline) = match long.split_once('=') {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
             if long_names.contains(&name) {
+                matched = true;
                 payloads.extend(match inline {
                     Some(value) => Some((value.to_string(), dynamic[at])),
                     None => next(),
@@ -4416,12 +4577,16 @@ fn option_payloads(
             && let Some(flags) = token.strip_prefix('-')
             && let Some(offset) = flags.find(short)
         {
+            matched = true;
             let value = &flags[offset + 1..];
             payloads.extend(if value.is_empty() {
                 next()
             } else {
                 Some((value.to_string(), dynamic[at]))
             });
+        }
+        if !matched && dynamic[at] && at < flag_end {
+            payloads.push((String::new(), true));
         }
     }
     payloads
@@ -4600,7 +4765,7 @@ fn redirection_len(chars: &[char]) -> usize {
 }
 
 fn consume_redirect_descriptor(word: &mut WordBuf) -> bool {
-    if !word.quoted && !word.dynamic && is_redirect_descriptor(&word.text) {
+    if word.quoted == WordQuote::Unquoted && !word.dynamic && is_redirect_descriptor(&word.text) {
         let is_stdin = word.text.bytes().all(|b| b == b'0');
         word.text.clear();
         word.started = false;
@@ -5110,14 +5275,15 @@ enum WrapperStep {
 
 fn step_wrapper_option(
     tokens: &[String],
+    dynamic: &[bool],
     index: usize,
     spec: &Wrapper,
     operands: u8,
     options_done: bool,
-    payloads: Option<&mut Vec<String>>,
+    payloads: Option<&mut Vec<(String, bool)>>,
 ) -> WrapperStep {
     let token = tokens[index].as_str();
-    if !options_done && token == "--" {
+    if !options_done && token == "--" && !dynamic[index] {
         return WrapperStep::Advance {
             steps: [Some(index + 1), None],
             operands,
@@ -5144,8 +5310,14 @@ fn step_wrapper_option(
                 && name == "split-string"
             {
                 match inline {
-                    Some(value) => payloads.push(value.to_string()),
-                    None => payloads.extend(tokens.get(index + 1).cloned()),
+                    Some(value) => payloads.push((value.to_string(), dynamic[index])),
+                    None => match tokens.get(index + 1) {
+                        Some(value) => {
+                            payloads.push((value.clone(), dynamic[index] || dynamic[index + 1]));
+                        }
+                        None if dynamic[index] => payloads.push((String::new(), true)),
+                        None => {}
+                    },
                 }
             }
             let extra = long_option_extra_values(spec.name, name);
@@ -5177,9 +5349,15 @@ fn step_wrapper_option(
         {
             let value = &flags[at + 1..];
             if value.is_empty() {
-                payloads.extend(tokens.get(index + 1).cloned());
+                match tokens.get(index + 1) {
+                    Some(next) => {
+                        payloads.push((next.clone(), dynamic[index] || dynamic[index + 1]));
+                    }
+                    None if dynamic[index] => payloads.push((String::new(), true)),
+                    None => {}
+                }
             } else {
-                payloads.push(value.to_string());
+                payloads.push((value.to_string(), dynamic[index]));
             }
         }
         let mut step = Some(1);
@@ -5215,18 +5393,38 @@ fn step_wrapper_option(
     WrapperStep::Landing
 }
 
+fn is_known_quoted_inline_value(
+    token: &str,
+    quoted: WordQuote,
+    spec: &Wrapper,
+    options_done: bool,
+) -> bool {
+    if options_done || quoted != WordQuote::InlineScalar {
+        return false;
+    }
+    let Some(long) = token.strip_prefix("--") else {
+        return false;
+    };
+    let Some((name, _)) = long.split_once('=') else {
+        return false;
+    };
+    name != "entrypoint" && spec.long_values.contains(&name)
+}
+
 fn launcher_verb_targets(
     tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
 ) -> Vec<usize> {
-    let mut targets = resolve_wrapper_targets(tokens, start, spec, truncated);
+    let mut targets = resolve_wrapper_targets(tokens, dynamic, quoted, start, spec, truncated);
     let mut index = 0;
     while index < targets.len() {
         let at = targets[index];
         if tokens.get(at).is_some_and(String::is_empty) {
-            for next in resolve_wrapper_targets(tokens, at + 1, spec, truncated) {
+            for next in resolve_wrapper_targets(tokens, dynamic, quoted, at + 1, spec, truncated) {
                 if !targets.contains(&next) {
                     targets.push(next);
                 }
@@ -5240,6 +5438,8 @@ fn launcher_verb_targets(
 
 fn resolve_wrapper_targets(
     tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
     start: usize,
     spec: &Wrapper,
     truncated: &mut bool,
@@ -5261,7 +5461,17 @@ fn resolve_wrapper_targets(
             }
             continue;
         }
-        match step_wrapper_option(tokens, index, spec, operands, options_done, None) {
+        if dynamic[index]
+            && !is_known_quoted_inline_value(
+                tokens[index].as_str(),
+                quoted[index],
+                spec,
+                options_done,
+            )
+        {
+            *truncated = true;
+        }
+        match step_wrapper_option(tokens, dynamic, index, spec, operands, options_done, None) {
             WrapperStep::Advance {
                 steps,
                 operands,
@@ -5295,7 +5505,7 @@ struct Heads {
     /// Every index that may be a command word, ascending.
     heads: Vec<usize>,
     /// `env -S` values, which are command lines.
-    split_payloads: Vec<String>,
+    split_payloads: Vec<(String, bool)>,
     /// The walk ran out of states before every reading was explored.
     truncated: bool,
 }
@@ -5309,7 +5519,7 @@ struct Heads {
 /// take a value, a bare number after a wrapper) both readings are kept,
 /// because an extra candidate only makes deny matching stricter while a
 /// missing one is a bypass.
-fn command_heads(tokens: &[String]) -> Heads {
+fn command_heads(tokens: &[String], dynamic: &[bool]) -> Heads {
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
     enum State {
         /// At a command word position.
@@ -5364,6 +5574,7 @@ fn command_heads(tokens: &[String]) -> Heads {
                 let spec = &WRAPPERS[wrapper];
                 match step_wrapper_option(
                     tokens,
+                    dynamic,
                     index,
                     spec,
                     operands,
@@ -5375,6 +5586,9 @@ fn command_heads(tokens: &[String]) -> Heads {
                         operands,
                         options_done,
                     } => {
+                        if dynamic[index] {
+                            truncated = true;
+                        }
                         for next_idx in steps.into_iter().flatten() {
                             stack.push((
                                 next_idx,
@@ -5386,7 +5600,11 @@ fn command_heads(tokens: &[String]) -> Heads {
                             ));
                         }
                     }
-                    WrapperStep::Stop => {}
+                    WrapperStep::Stop => {
+                        if dynamic[index] {
+                            truncated = true;
+                        }
+                    }
                     WrapperStep::Landing => {
                         if is_scalar_operand(token) {
                             stack.push((
@@ -5474,6 +5692,9 @@ fn shell_input(shell: &str, tokens: &[String], dynamic: &[bool]) -> ShellInput {
     let mut index = 1usize;
     while index < tokens.len() {
         let token = tokens[index].as_str();
+        if !options_done && command.is_empty() && script.is_none() && dynamic[index] {
+            return ShellInput::Inline(String::new(), true);
+        }
         if !options_done && token == "--" {
             options_done = true;
         } else if !options_done && token == "-" {
@@ -5583,6 +5804,26 @@ mod tests {
             commands.map(|command| (command.stdin_piped, command.heredoc)),
             [(true, false), (true, false), (false, true)]
         );
+    }
+
+    #[test]
+    fn launcher_inline_option_requires_value_local_quote_evidence() {
+        let proven = expand_for_platform(r#"docker run --env="$SETTING" alpine ls"#, false);
+        assert!(!proven.dynamic);
+        assert!(proven.commands.iter().any(|command| command == "ls"));
+
+        let words = ["--env=VALUE", "alpine", "ls"].map(str::to_string);
+        let mut unresolved = false;
+        let targets = resolve_wrapper_targets(
+            &words,
+            &[true, false, false],
+            &[WordQuote::Quoted, WordQuote::Unquoted, WordQuote::Unquoted],
+            0,
+            &DOCKER_RUN_SPEC,
+            &mut unresolved,
+        );
+        assert_eq!(targets, [2]);
+        assert!(unresolved);
     }
 
     fn expand(command: &str) -> Vec<String> {
