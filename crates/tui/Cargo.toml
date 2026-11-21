@@ -164,7 +164,7 @@ shlex = "2.0.1"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 htmd = "0.5.4"
-parking_lot = "0.12"
+parking_lot = "0.13"
 tar = "0.4"
 flate2 = "1.1"
 sha2.workspace = true
