@@ -55,8 +55,12 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP"
           mkdir -m 700 test-home test-state
-          openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' -keyout tls.key -out tls.crt 2>/dev/null
-          sudo install -m 644 tls.crt /usr/local/share/ca-certificates/codewhale-fixture.crt
+          openssl req -new -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=Codewhale ephemeral updater test CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign' -keyout ca.key -out ca.crt 2>/dev/null
+          openssl req -new -newkey rsa:2048 -nodes -subj /CN=localhost -keyout tls.key -out request.csr 2>/dev/null
+          printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' 'extendedKeyUsage=serverAuth' 'subjectAltName=DNS:localhost,IP:127.0.0.1' > leaf.ext
+          openssl x509 -req -in request.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -extfile leaf.ext -out tls.crt
+          openssl verify -purpose sslserver -verify_hostname localhost -CAfile ca.crt tls.crt
+          sudo install -m 644 ca.crt /usr/local/share/ca-certificates/codewhale-fixture.crt
           sudo update-ca-certificates
           python3 -u - <<'PY' > "$RUNNER_TEMP/requests.log" 2>&1 &
           import functools, http.server, pathlib, ssl
