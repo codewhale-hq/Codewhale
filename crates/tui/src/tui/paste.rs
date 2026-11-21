@@ -825,6 +825,140 @@ mod tests {
         assert_eq!(bracketed.cursor_position, character_count);
     }
 
+    /// Drive a raw (non-bracketed) paste one key event per character and
+    /// commit each chunk through `App::flush_paste_burst_if_due`, the entry
+    /// the event loop uses.
+    ///
+    /// `input == payload` alone cannot prove chunking: a buffer that never
+    /// flushes still ends up correct once the tail lands, so deleting a
+    /// `take_chunk_if_full()` check would pass unnoticed. The probe at 60%
+    /// fails in exactly that case — the composer is still nearly empty
+    /// because everything is sitting in the burst buffer.
+    ///
+    /// It names no cap, only that *some* chunking happened before 60%, which
+    /// holds for any cap smaller than that fraction of the payload.
+    ///
+    /// # What this cannot see
+    ///
+    /// The third `take_chunk_if_full()` call, the one after
+    /// `append_newline_if_active` in the `KeyCode::Enter` arm, is not covered
+    /// and does not need to be: it fires only when a pasted newline pushes the
+    /// buffer past the cap, and the next plain character's check would flush
+    /// the same buffer one keystroke later either way. Deleting it leaves the
+    /// text complete — verified by injecting that deletion, which leaves all
+    /// three oversized-paste tests green. It bounds peak memory, not
+    /// correctness, so no content-equality assertion can observe it.
+    fn feed_raw_paste(app: &mut App, payload: &str) {
+        let probe_at = payload.chars().count() * 3 / 5;
+        let mut now = Instant::now();
+        for (index, ch) in payload.chars().enumerate() {
+            now += Duration::from_micros(100);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(app, &key, now),
+                "raw paste character {ch:?} must be handled by paste-burst detection"
+            );
+            if index + 1 == probe_at {
+                assert!(
+                    app.input.len() * 3 >= payload.len(),
+                    "60% into a multi-chunk paste the composer holds {} of {} bytes: the \
+                     burst buffer is accumulating the paste instead of flushing chunks",
+                    app.input.len(),
+                    payload.len()
+                );
+            }
+        }
+        let flush_at =
+            now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay();
+        assert!(
+            app.flush_paste_burst_if_due(flush_at),
+            "the tail of the paste must reach the composer"
+        );
+    }
+
+    /// #7403, ASCII append path only: every character here takes
+    /// `KeyCode::Char` → `on_plain_char` → `handle_paste_burst_decision`, and
+    /// nothing else.
+    ///
+    /// The mixed-script fixture above cannot stand in for this. Each CJK or
+    /// emoji character re-enters the separate `!c.is_ascii()` branch in
+    /// `handle_paste_burst_key`, whose own `take_chunk_if_full()` call flushes
+    /// the buffer and hides a missing check on the ASCII side — delete only
+    /// the ASCII-path check and that test stays green. This payload has no
+    /// non-ASCII byte and, deliberately, no newline either: an Enter reaches
+    /// `append_newline_if_active`, whose chunk check would stand in again.
+    ///
+    /// # What this one is for
+    ///
+    /// One failure mode, precisely: the ASCII-path chunk check going away.
+    /// Delete it and the buffer accumulates the whole paste, so the 60% probe
+    /// finds the composer empty (0 of 273 000 bytes) and fails.
+    ///
+    /// It is the *wrong* fixture for #7403's original drop rule, and that is
+    /// arithmetic rather than an oversight: every byte here is one UTF-8 byte
+    /// wide, so the buffer fills to exactly the cap every cycle and a
+    /// `len + ch.len_utf8() <= cap` guard always admits the character. Injecting
+    /// that rule leaves this test green (0 bytes lost); the CJK fixture below,
+    /// whose characters are 3–4 bytes wide, loses its tail and fails.
+    #[test]
+    fn ascii_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "cw-7403-ascii-paste-chunking".repeat(9_750);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, non-ASCII append path only: a CJK-only burst stays in the
+    /// `!c.is_ascii()` branch for its whole length, so this is the only
+    /// fixture that exercises that branch's `take_chunk_if_full()` call in
+    /// isolation. A mixed payload keeps ASCII nearby and that check would
+    /// flush on the next ASCII character, masking the gap. Again no newline,
+    /// for the same reason as the ASCII case.
+    ///
+    /// # What this one is for
+    ///
+    /// Two failure modes: the non-ASCII-path chunk check going away (the 60%
+    /// probe then finds 3 of 342 000 bytes), and #7403's original drop rule
+    /// coming back. The second works here and not in the ASCII fixture because
+    /// these characters are 3–4 bytes wide: the buffer no longer fills to
+    /// exactly the cap, the guard rejects the character that would cross it,
+    /// and the paste loses its tail.
+    #[test]
+    fn cjk_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "漢字テスト🐳".repeat(18_000);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
     #[test]
     fn launch_composer_preserves_newlines_during_active_paste_burst() {
         let mut app = test_app();
