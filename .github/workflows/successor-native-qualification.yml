@@ -434,3 +434,80 @@ jobs:
           if-no-files-found: error
       - name: Check restored installation ownership
         run: jq -e '.original_ownership_restored == true' linux-archive-proof.json
+
+  windows-archive:
+    needs: provenance
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-x64
+            machine: X64
+            baseline: 21b27337a24d2f555ca3b4a1c5c47f5808a4939a363be14076655c4521ab272c
+          - runner: windows-11-arm
+            target: windows-arm64
+            machine: ARM64
+            baseline: 5c771d7b8fa9ed417a188f09c92e76a230714fc4d6f282beaec97b886b62c292
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/qualification
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ env.ENGINE_SHA }}
+          path: product
+          persist-credentials: false
+          sparse-checkout: |
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            docs/THIRD_PARTY_NOTICES.md
+          sparse-checkout-cone-mode: false
+      - name: Check native archive install, upgrade, removal and unrelated data
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ needs.provenance.outputs.bundles }}
+          RAW: ${{ matrix.machine == 'X64' && needs.provenance.outputs.windows_engine || needs.provenance.outputs.windows_arm }}
+          TARGET: ${{ matrix.target }}
+          MACHINE: ${{ matrix.machine }}
+          BASELINE: ${{ matrix.baseline }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ARCH -cne $env:MACHINE) { throw 'Native architecture mismatch' }
+          function Download([string]$data, [string]$zip) {
+            $meta = $data | ConvertFrom-Json
+            cmd.exe /d /c "gh api repos/$env:GITHUB_REPOSITORY/actions/artifacts/$($meta.id)/zip > $zip"
+            if ($LASTEXITCODE -ne 0 -or ('sha256:' + (Get-FileHash $zip).Hash.ToLowerInvariant()) -cne $meta.digest) { throw "Artifact download failed $zip" }
+          }
+          Download $env:BUNDLE 'bundles.zip'
+          Download $env:RAW 'raw.zip'
+          $work = Join-Path $env:RUNNER_TEMP 'archive-check'
+          New-Item $work -ItemType Directory | Out-Null
+          Expand-Archive raw.zip (Join-Path $work 'raw')
+          $exeDigest = (Get-FileHash (Join-Path $work "raw/codewhale-$env:TARGET.exe")).Hash.ToLowerInvariant()
+          $filename = "codewhale-$env:TARGET.zip"
+          $bundle = [IO.Compression.ZipFile]::OpenRead((Resolve-Path bundles.zip))
+          try {
+            foreach ($member in @($filename, 'codewhale-bundles-sha256.txt')) {
+              [IO.Compression.ZipFileExtensions]::ExtractToFile($bundle.GetEntry($member), (Join-Path $work $member))
+            }
+          } finally { $bundle.Dispose() }
+          $record = @(Get-Content (Join-Path $work 'codewhale-bundles-sha256.txt') | Where-Object { ($_ -split '\s+')[1] -ceq $filename })
+          if ($record.Count -ne 1) { throw 'No unique candidate checksum' }
+          $digest = ($record[0] -split '\s+')[0]
+          $baselineZip = Join-Path $work 'baseline.zip'
+          gh release download v0.10.2 --repo $env:GITHUB_REPOSITORY --pattern $filename --output $baselineZip
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline download failed' }
+          Remove-Item Env:GH_TOKEN
+          $output = & ./.github/qualification/windows-archive.ps1 -BaselineArchive $baselineZip -BaselineArchiveDigest $env:BASELINE -CandidateArchive (Join-Path $work $filename) -CandidateArchiveDigest $digest -CandidateSource $env:ENGINE_SHA -CandidateExecutableDigest $exeDigest
+          $output | Write-Output
+          $output[-1] | ConvertFrom-Json | ConvertTo-Json | Set-Content -Encoding utf8 windows-archive.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ matrix.target }}-archive-proof
+          path: windows-archive.json
+          if-no-files-found: error
