@@ -42,6 +42,8 @@ changelog or release notes, and this contributor record.
 <details open>
 <summary><strong>v0.10.3 — plugins, Auto-Review, ACP and reliability</strong></summary>
 
+- **[knowhycodata](https://github.com/knowhycodata)** — added the LLMTR gateway descriptor and provider documentation ([#7450](https://github.com/codewhale-hq/Codewhale/pull/7450)).
+
 **Contributions**
 
 - **[NieZhuZhu](https://github.com/NieZhuZhu)** — hardened shell-command policy expansion: classified local read-only deferred tools as safe for Auto-Review ([#7431](https://github.com/codewhale-hq/CodeWhale/pull/7431)), scanned bounded AWK and sed programs for embedded shell commands ([#7430](https://github.com/codewhale-hq/CodeWhale/pull/7430)), kept each command's stdin source under group redirection and `numactl --strict` ([#7429](https://github.com/codewhale-hq/CodeWhale/pull/7429)), failed closed on dynamically resolved flag and verb names ([#7427](https://github.com/codewhale-hq/CodeWhale/pull/7427)), modeled additional tmux execution verbs within a shared work budget ([#7428](https://github.com/codewhale-hq/CodeWhale/pull/7428)), modeled the `oc`, `vagrant`, `op`, `opam` and `helm` launchers ([#7425](https://github.com/codewhale-hq/CodeWhale/pull/7425)), and propagated the dynamic flag-word bit through `nix` and launcher flags ([#7424](https://github.com/codewhale-hq/CodeWhale/pull/7424)).

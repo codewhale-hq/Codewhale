@@ -3554,9 +3554,9 @@
       "api_key_env": "LLMTR_API_KEY",
       "default_model": "minimax/minimax-m3.1-flash",
       "discovery": "models_endpoint",
-      "docs_url": "https://llmtr.com",
+      "docs_url": "https://llmtr.com/docs/",
       "credential_url": "https://llmtr.com/dashboard/keys",
-      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models). Model ids are namespaced vendor/model ids such as minimax/minimax-m3.1-flash; ids under llmtr/ are hosted in Turkey and other vendor/model ids route to their vendors. Live /v1/models is the model authority. Store LLMTR_API_KEY, not a raw key.",
+      "guidance": "Browse GET /v1/models for current vendor/model IDs. Use LLMTR_API_KEY for Chat Completions. Check the model’s published residency before sending data that must stay in Turkey.",
       "models": {
         "ids": "catalog",
         "accept": [],
