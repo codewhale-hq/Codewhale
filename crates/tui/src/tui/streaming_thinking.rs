@@ -64,9 +64,34 @@ pub(super) fn render_owed_revision(app: &mut App, now: Instant) -> bool {
 /// entry index. If no thinking entry is currently streaming, push a fresh one.
 /// P2.3: thinking shares the active cell with subsequent tool calls so the
 /// pair render as one logical "Working…" block.
+///
+/// A card that has had a sibling appended after it is no longer the live tail.
+/// A gateway that keeps sending `thinking_delta` after a tool block would
+/// otherwise grow that card, putting new reasoning above the tool card the
+/// reader already saw (#7454). Such a card is finalized and a new one opens
+/// below the sibling instead.
 pub(super) fn ensure_active_entry(app: &mut App) -> usize {
     if let Some(idx) = app.streaming_thinking_active_entry {
-        return idx;
+        if card_is_the_live_tail(app, idx) {
+            return idx;
+        }
+        // Translation shows a placeholder on the card and fills it only when
+        // `ThinkingComplete` names that card, which it now cannot: the pointer
+        // is about to move to the new card. Hand the settled card the original
+        // text so it stops re-framing a placeholder nothing will replace.
+        if app.translation_enabled {
+            let original = app.reasoning_buffer.clone();
+            if !original.is_empty() {
+                if let Some(active) = app.active_cell.as_mut()
+                    && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                {
+                    *content = original;
+                }
+                app.bump_active_cell_revision();
+                stash_reasoning_buffer_into_last_reasoning(app);
+            }
+        }
+        finalize_current(app);
     }
     if app.active_cell.is_none() {
         app.active_cell = Some(ActiveCell::new());
@@ -78,8 +103,29 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
         duration_secs: None,
     });
     app.streaming_thinking_active_entry = Some(entry_idx);
+    // A card that opens after a tool still needs a start time, or its duration
+    // reads as unknown. `start_block` sets one before calling here, so this only
+    // fills the gap a resumed card would otherwise leave.
+    if app.thinking_started_at.is_none() {
+        app.thinking_started_at = Some(Instant::now());
+    }
     app.bump_active_cell_revision();
     entry_idx
+}
+
+/// Whether `index` still names a thinking card with nothing appended after it.
+///
+/// Anything else means the card is settled: a tool or notice was appended below
+/// it, or it is gone. Growing it would draw new reasoning above a card the
+/// reader already saw (#7454).
+fn card_is_the_live_tail(app: &App, index: usize) -> bool {
+    app.active_cell.as_ref().is_some_and(|active| {
+        active.entry_count() == index + 1
+            && matches!(
+                active.entries().get(index),
+                Some(HistoryCell::Thinking { .. })
+            )
+    })
 }
 
 /// Append text to a streaming Thinking entry inside `active_cell`. The text is
@@ -597,6 +643,115 @@ mod tests {
             thinking_content(&app, entry),
             "",
             "prose must not be appended to the reasoning card"
+        );
+    }
+
+    /// #7454: a tool card appended after a live reasoning card makes that card
+    /// settled. More reasoning must open a new card below the tool, not grow
+    /// the card that now sits above it.
+    #[test]
+    fn issue_7454_reasoning_after_a_tool_opens_a_card_below_it() {
+        let mut app = test_app();
+
+        let first = ensure_active_entry(&mut app);
+        assert_eq!(first, 0);
+        append(&mut app, first, "plan the command");
+
+        // A tool lands in the same active cell, after the reasoning card.
+        let active = app.active_cell.as_mut().expect("active cell");
+        let tool = active.push_tool(
+            "t1",
+            HistoryCell::System {
+                content: "running".to_string(),
+            },
+        );
+        assert_eq!(tool, 1);
+
+        // The next delta must not grow the card above the tool.
+        let second = ensure_active_entry(&mut app);
+        assert_eq!(second, 2, "a fresh card opens below the tool");
+        assert_ne!(second, first, "the settled card must not be reused");
+
+        append(&mut app, second, "read the output");
+        assert_eq!(thinking_content(&app, first), "plan the command");
+        assert_eq!(thinking_content(&app, second), "read the output");
+    }
+
+    /// The guard must not churn when nothing was appended: a plain reasoning
+    /// stream keeps one card.
+    #[test]
+    fn issue_7454_a_stream_with_no_sibling_keeps_one_card() {
+        let mut app = test_app();
+
+        let first = ensure_active_entry(&mut app);
+        append(&mut app, first, "a");
+        assert_eq!(ensure_active_entry(&mut app), first);
+        append(&mut app, first, "b");
+        assert_eq!(ensure_active_entry(&mut app), first);
+        assert_eq!(thinking_content(&app, first), "ab");
+    }
+
+    /// A card whose entry is gone must not be reused either: the pointer would
+    /// name an index that no longer exists.
+    #[test]
+    fn issue_7454_a_stale_pointer_opens_a_new_card() {
+        let mut app = test_app();
+
+        let first = ensure_active_entry(&mut app);
+        append(&mut app, first, "gone");
+        app.flush_active_cell();
+        // `flush_active_cell` clears the pointer; pin the defensive path by
+        // restoring a stale one.
+        app.active_cell = Some(ActiveCell::new());
+        app.streaming_thinking_active_entry = Some(first);
+
+        let fresh = ensure_active_entry(&mut app);
+        assert_eq!(
+            app.active_cell
+                .as_ref()
+                .map_or(0, |active| active.entry_count()),
+            1,
+            "a stale pointer must open exactly one card, not reuse the dead index"
+        );
+        assert_eq!(thinking_content(&app, fresh), "");
+    }
+
+    /// #7454, translation: the settled card cannot be the translation target any
+    /// more, so it must show its own text instead of re-framing a placeholder
+    /// nothing will ever replace.
+    #[test]
+    fn issue_7454_a_split_card_shows_its_text_instead_of_a_placeholder() {
+        let mut app = test_app();
+        app.translation_enabled = true;
+
+        let first = ensure_active_entry(&mut app);
+        set_placeholder(&mut app, first);
+        app.reasoning_buffer.push_str("first段");
+
+        let active = app.active_cell.as_mut().expect("active cell");
+        let _ = active.push_tool(
+            "t1",
+            HistoryCell::System {
+                content: "running".to_string(),
+            },
+        );
+
+        let second = ensure_active_entry(&mut app);
+        assert_ne!(second, first, "the split must open a new card");
+        assert_eq!(
+            thinking_content(&app, first),
+            "first段",
+            "the settled card keeps its original text, not a spinning placeholder"
+        );
+        assert!(
+            app.reasoning_buffer.is_empty(),
+            "the settled card's text moves to last_reasoning"
+        );
+        assert_eq!(app.last_reasoning.as_deref(), Some("first段"));
+        assert_eq!(
+            thinking_content(&app, second),
+            "",
+            "the new card starts empty so its own translation lands there"
         );
     }
 }

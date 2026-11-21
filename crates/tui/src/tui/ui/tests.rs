@@ -37637,3 +37637,62 @@ async fn approval_prompt_docks_one_row_and_emits_settled_receipt() {
     assert!(!rendered_line.contains('\u{202e}'), "{rendered_line:?}");
     assert!(rendered_line.contains("RLO"), "{rendered_line:?}");
 }
+
+/// #7454: a display beat that lands between a tool append and the next delta
+/// must not grow the card above the tool. `commit_streaming_display_tick` reads
+/// the entry through `ensure_active_entry`, so the live-tail test applies there
+/// too.
+#[test]
+fn a_beat_after_a_tool_appends_opens_a_card_below_it() {
+    use crate::tui::ui::frame::commit_streaming_display_tick;
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
+
+    let mut app = create_test_app();
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    let t0 = Instant::now();
+
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let first = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    crate::tui::streaming_thinking::append(&mut app, first, "plan");
+
+    // A tool lands in the active cell, below the reasoning card.
+    let active = app.active_cell.as_mut().expect("active cell");
+    let tool = active.push_tool(
+        "t1",
+        HistoryCell::System {
+            content: "running".to_string(),
+        },
+    );
+
+    // Reasoning arrives and a beat commits it before any new delta rewrites
+    // the pointer.
+    app.streaming_state.push_content(0, "after the tool");
+    clock.note_delta(t0);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(50));
+
+    let entries = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .to_vec();
+    let first_content = match &entries[first] {
+        HistoryCell::Thinking { content, .. } => content.clone(),
+        other => panic!("expected the settled card at {first}: {other:?}"),
+    };
+    assert_eq!(
+        first_content, "plan",
+        "the card above the tool must not grow"
+    );
+    assert!(
+        entries.len() > tool + 1,
+        "the beat must open a card below the tool, got {} entries",
+        entries.len()
+    );
+    let new_content = match &entries[tool + 1] {
+        HistoryCell::Thinking { content, .. } => content.clone(),
+        other => panic!("expected a reasoning card below the tool: {other:?}"),
+    };
+    assert_eq!(new_content, "after the tool");
+}

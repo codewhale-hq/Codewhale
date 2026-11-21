@@ -1556,9 +1556,12 @@ pub(crate) fn commit_streaming_display_tick(
         // body, splitting one sentence across the thinking card and the
         // answer that follows it.
         if app.streaming_state.block_is_thinking(0) {
-            let entry_idx = app
-                .streaming_thinking_active_entry
-                .unwrap_or_else(|| streaming_thinking::ensure_active_entry(app));
+            // #7454: resolve through `ensure_active_entry` every time. Reading the
+            // pointer directly bypassed its live-tail test, so a beat that landed
+            // between a tool append and the next delta still grew the card above
+            // the tool. `ensure_active_entry` returns the stored card when it is
+            // still the tail and opens a new one below the tool otherwise.
+            let entry_idx = streaming_thinking::ensure_active_entry(app);
             if app.translation_enabled {
                 streaming_thinking::set_placeholder(app, entry_idx);
             } else {
