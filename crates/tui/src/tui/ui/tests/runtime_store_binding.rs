@@ -366,13 +366,19 @@ fn runtime_store_binding_survives_launch_snapshot_and_resume() -> anyhow::Result
                 other_app.runtime_services.task_manager = Some(foreign.clone());
                 other_app.input = "preserve pending input".into();
                 let old_id = other_app.current_session_id.clone();
-                let error = apply_loaded_session_with_goal(
+                // The refusal lives on the switch entry point now, not on the
+                // load function behind it: adoption is the switch's job.
+                let next_config = resumed_config.clone();
+                let error = apply_loaded_session_config_snapshot(
                     &mut other_app,
                     resumed_config,
                     loaded.clone(),
-                    None,
+                    next_config,
+                    false,
                 )
-                .unwrap_err();
+                .await
+                .err()
+                .expect("a foreign execution scope must refuse");
                 // The refusal must name the route that actually works. "Resume
                 // it in a new Codewhale process" was true but unactionable:
                 // starting a new process and then picking the session from
@@ -1151,71 +1157,79 @@ async fn switch_adopts_a_store_holding_finished_history_body() -> anyhow::Result
     sessions.save_session(&saved)?;
 
     let mut app = Box::new(create_test_app());
-    let tasks = TaskManager::start(
-        TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
-        config.clone(),
-        app.plugin_registry.clone(),
-        "switch-current",
-        None,
-    )
+    // Boxed: `TaskManager::start` is a large state machine and would otherwise
+    // share this body's frame with the load-and-adopt call below.
+    let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
+    let start_config = config.clone();
+    let plugin_registry = app.plugin_registry.clone();
+    let tasks = crate::test_support::boxed_phase(move || async move {
+        TaskManager::start(
+            task_config,
+            start_config,
+            plugin_registry,
+            "switch-current",
+            None,
+        )
+        .await
+    })
     .await?;
     app.runtime_services.task_manager = Some(tasks.clone());
     app.current_session_id = Some("switch-current".into());
 
-    // The current store is empty and nothing waits on this process, so the
-    // switch may proceed. The returned binding names the store to adopt.
-    //
-    // Boxed like every other phase here: the load future's state machine is
-    // hundreds of KiB and libtest gives a test thread a 2 MiB stack.
+    // Drive the real entry point, not the load function behind it: adoption is
+    // what the switch does, so the assertion belongs on the host's owner.
     let expected_store = target_store.clone();
-    crate::test_support::boxed_phase(move || async move {
-        let adopted = apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
-            .map_err(anyhow::Error::msg)?;
-        assert_eq!(app.current_session_id.as_deref(), Some("populated-target"));
-        // Compare canonical paths: the adopted binding is the store's own
-        // canonical root, while the fixture path may be the /var symlink.
-        let adopted_dir = adopted.as_ref().map(|binding| {
-            binding
-                .data_dir
-                .canonicalize()
-                .unwrap_or_else(|_| binding.data_dir.clone())
-        });
-        let expected_dir = expected_store
-            .canonicalize()
-            .unwrap_or_else(|_| expected_store.clone());
-        assert_eq!(
-            adopted_dir,
-            Some(expected_dir),
-            "the caller must be told which store to adopt"
-        );
-        Ok::<_, anyhow::Error>(())
-    })
-    .await?;
+    let next_config = config.clone();
+    apply_loaded_session_config_snapshot(&mut app, &mut config, saved, next_config, false)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(app.current_session_id.as_deref(), Some("populated-target"));
+    // The host must now own the target store. Compare canonical paths: the
+    // adopted binding is the store's own canonical root, while the fixture
+    // path may be the /var symlink.
+    let held = app
+        .runtime_services
+        .task_manager
+        .as_ref()
+        .expect("host keeps a manager")
+        .session_store_binding()
+        .expect("host holds a store");
+    let held_dir = held
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| held.data_dir.clone());
+    let expected_dir = expected_store
+        .canonicalize()
+        .unwrap_or_else(|_| expected_store.clone());
+    assert_eq!(held_dir, expected_dir, "the host adopted the target store");
     assert!(target_store.is_dir(), "the target store is never discarded");
-    tasks.shutdown_and_wait().await?;
+    if let Some(tasks) = app.runtime_services.task_manager.clone() {
+        tasks.shutdown_and_wait().await?;
+    }
     Ok(())
 }
 
-/// Finished history in the store being left does not block a switch.
+/// A refused switch leaves the live session, its workspace and its manager
+/// exactly as they were.
 ///
-/// This is the behaviour the change is about: the store keeps its turns on
-/// disk for whichever process opens it next, so a host with a populated store
-/// can still move to another conversation. What genuinely blocks a release is
-/// work in flight in *this* process — an active turn, or a request waiting on a
-/// decision, which lives only in memory and no restart can recover.
+/// This is the case the review named: adoption used to run *after* the load had
+/// already replaced the session id and metadata, and it took the manager out of
+/// the App before trying to open the target. A refusal could therefore strand a
+/// host with no manager while the UI showed the new conversation. Adoption is
+/// now preflight, so a refusal costs nothing.
 #[test]
-fn switch_allows_leaving_a_store_with_finished_history() -> anyhow::Result<()> {
+fn refused_switch_keeps_the_live_session_and_its_manager() -> anyhow::Result<()> {
     // Run on the default 2 MiB test stack with the body boxed: a switch can
     // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
     // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
     // keeps those temporaries in the future's own poll frame, and
     // `block_on_default_test_stack` pins the budget libtest really gives.
     crate::test_support::block_on_default_test_stack(|| {
-        crate::test_support::boxed_phase(switch_allows_leaving_a_store_with_finished_history_body)
+        crate::test_support::boxed_phase(refused_switch_keeps_the_live_session_and_its_manager_body)
     })
 }
 
-async fn switch_allows_leaving_a_store_with_finished_history_body() -> anyhow::Result<()> {
+async fn refused_switch_keeps_the_live_session_and_its_manager_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1248,30 +1262,65 @@ async fn switch_allows_leaving_a_store_with_finished_history_body() -> anyhow::R
     sessions.save_session(&saved)?;
 
     let mut app = Box::new(create_test_app());
-    let tasks = TaskManager::start(
-        TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
-        config.clone(),
-        app.plugin_registry.clone(),
-        "waiting-current",
-        None,
-    )
+    // Boxed: `TaskManager::start` is a large state machine, and it would share
+    // this body's frame with the load call below.
+    let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
+    let start_config = config.clone();
+    let plugin_registry = app.plugin_registry.clone();
+    let tasks = crate::test_support::boxed_phase(move || async move {
+        TaskManager::start(
+            task_config,
+            start_config,
+            plugin_registry,
+            "waiting-current",
+            None,
+        )
+        .await
+    })
     .await?;
     app.runtime_services.task_manager = Some(tasks.clone());
     app.current_session_id = Some("waiting-current".into());
     app.input = "keep my draft".into();
 
-    // History in the store being left is not a reason to refuse: the switch
-    // adopts the target and the old store keeps its turns on disk.
-    crate::test_support::boxed_phase(move || async move {
-        let adopted = apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
-            .map_err(anyhow::Error::msg)?;
-        assert!(
-            adopted.is_some(),
-            "finished history must not block the switch"
-        );
-        Ok::<_, anyhow::Error>(())
+    // Refuse the switch the way a live turn does: `session_transition_blocked`
+    // is consulted before anything is released, so the failure must cost
+    // nothing. A request waiting on this process is the other refusal
+    // (`switch_refuses_while_requests_are_waiting`'s predecessor did not exist;
+    // the in-memory half is covered by `has_unsettled_requests`).
+    app.runtime_turn_status = Some("in_progress".to_string());
+    let current = tasks.session_store_binding().expect("host holds a store");
+    let next_config = config.clone();
+    let (app, error) = crate::test_support::boxed_phase(move || async move {
+        let result =
+            apply_loaded_session_config_snapshot(&mut app, &mut config, saved, next_config, false)
+                .await;
+        (app, result)
     })
-    .await?;
+    .await;
+    let error = error.expect_err("a store with an active turn must not be released");
+    assert!(
+        error.contains("runtime work is active"),
+        "the refusal must name the active work: {error}"
+    );
+    // Nothing about the live session moved.
+    assert_eq!(app.current_session_id.as_deref(), Some("waiting-current"));
+    assert_eq!(app.input, "keep my draft");
+    let held = app
+        .runtime_services
+        .task_manager
+        .as_ref()
+        .expect("the manager must survive a refused switch")
+        .session_store_binding()
+        .expect("host holds a store");
+    let held_dir = held
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| held.data_dir.clone());
+    let expected_dir = current
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| current.data_dir.clone());
+    assert_eq!(held_dir, expected_dir, "the host kept its own store");
     tasks.shutdown_and_wait().await?;
     Ok(())
 }

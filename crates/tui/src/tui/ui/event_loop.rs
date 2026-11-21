@@ -1498,7 +1498,17 @@ pub async fn run_tui(
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
-    if let Err(error) = task_manager.shutdown_and_wait().await {
+    // Settle the store this host actually owns at exit. A session switch may
+    // have adopted another store, and shutting down the launch-time handle
+    // would leave the adopted one undrained — its queued work never settled
+    // and its process-owner lock released only by the process ending.
+    if let Some(current_tasks) = app
+        .runtime_services
+        .task_manager
+        .clone()
+        .or_else(|| Some(task_manager.clone()))
+        && let Err(error) = current_tasks.shutdown_and_wait().await
+    {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
     }
 
@@ -2614,7 +2624,13 @@ pub(crate) async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            match refresh_active_task_panel(app, &task_manager).await {
+            // Read the manager the App currently owns: a session switch can
+            // adopt another Runtime store, and the launch-time handle would
+            // then describe a store this host no longer holds.
+            let Some(current_tasks) = app.runtime_services.task_manager.clone() else {
+                continue;
+            };
+            match refresh_active_task_panel(app, &current_tasks).await {
                 LiveRefresh::Changed => app.needs_redraw = true,
                 LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
                 LiveRefresh::Unchanged => {}
@@ -2728,11 +2744,14 @@ pub(crate) async fn run_event_loop(
         // potentially long engine batch so composer/modal input stays live.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
         if let Some(change) = app.poll_external_catalog_changes(mcp_engine_busy(app)) {
+            let Some(current_tasks) = app.runtime_services.task_manager.clone() else {
+                continue;
+            };
             apply_external_catalog_change(
                 terminal,
                 app,
                 &mut engine_handle,
-                &task_manager,
+                &current_tasks,
                 config,
                 change,
             )

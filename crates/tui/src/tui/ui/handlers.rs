@@ -2289,13 +2289,20 @@ pub(crate) async fn handle_view_events(
                         // Keep the saved-store confinement check a pure
                         // comparison on this runtime (#6522).
                         codewhale_engine::runtime_threads::prepare_canonical_sessions_root().await;
+                        // Adoption happens inside the load call, as
+                        // preflight. A refusal or a failed open lands in the
+                        // `Err` arm below with the previous session still
+                        // installed and its manager still running, so this
+                        // path must not report success on the way out.
                         let outcome = match apply_loaded_session_config_snapshot(
                             app,
                             config,
                             session,
                             next_config,
                             false,
-                        ) {
+                        )
+                        .await
+                        {
                             Ok(outcome) => {
                                 // Only now does this window give up the
                                 // session it had open; a failed restore
@@ -2311,15 +2318,6 @@ pub(crate) async fn handle_view_events(
                                 continue;
                             }
                         };
-                        // The loaded conversation names a store this host does
-                        // not hold. Rebind before any turn can run on it; a
-                        // failure is reported and the conversation stays
-                        // loaded but idle rather than silently writing nowhere.
-                        if let Some(binding) = outcome.adopt_store.clone()
-                            && let Err(err) = adopt_runtime_store(app, config, binding).await
-                        {
-                            app.status_message = Some(err);
-                        }
                         let respawn = outcome.respawn;
                         sync_runtime_workspace_state_from_app(app, app.workspace.clone()).await;
                         // #6150 audit: these sends may await a full op channel,

@@ -25138,8 +25138,8 @@ fn contended_work_restore_leaves_current_session_wholly_unchanged() {
     assert_eq!(app.current_session_id.as_deref(), Some("current-session"));
 }
 
-#[test]
-fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged() {
+#[tokio::test]
+async fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged() {
     let mut app = create_test_app();
     app.api_messages_mut()
         .push(text_message("user", "keep the current conversation"));
@@ -25169,6 +25169,7 @@ fn missing_named_custom_provider_resume_leaves_current_session_wholly_unchanged(
         Config::default(),
         true,
     )
+    .await
     .expect_err("removed custom provider must fail closed");
 
     assert!(err.contains("[providers.lm-studio]"), "{err}");
@@ -25310,8 +25311,8 @@ fn same_workspace_named_custom_switch_requires_engine_respawn() {
     ));
 }
 
-#[test]
-fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
+#[tokio::test]
+async fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
     let workspace = PathBuf::from("/tmp/atomic-file-load");
     let mut stale_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25338,6 +25339,7 @@ fn file_load_uses_one_fresh_config_snapshot_for_custom_route_and_app_state() {
         fresh_config,
         true,
     )
+    .await
     .expect("fresh disk config should atomically restore custom B");
 
     assert!(respawn.respawn);
@@ -25455,8 +25457,8 @@ fn session_load_rejects_empty_custom_id_when_root_and_table_coexist() {
     assert_eq!(config.active_route_base_url(), "http://127.0.0.1:18182/v1");
 }
 
-#[test]
-fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
+#[tokio::test]
+async fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     let workspace = PathBuf::from("/tmp/atomic-file-load-same-custom");
     let mut stale_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25491,6 +25493,7 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
         fresh_config,
         true,
     )
+    .await
     .expect("same-key fresh config should load atomically");
 
     assert!(
@@ -25516,8 +25519,8 @@ fn file_load_respawns_engine_when_same_custom_identity_changes_endpoint() {
     );
 }
 
-#[test]
-fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays() {
+#[tokio::test]
+async fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays() {
     let workspace = PathBuf::from("/tmp/atomic-file-load-policy");
     let mut effective_config =
         named_custom_session_config("custom-a", "http://127.0.0.1:18181/v1", "model-a");
@@ -25561,6 +25564,7 @@ fn file_load_route_refresh_preserves_effective_permission_and_feature_overlays()
         raw_disk_config,
         true,
     )
+    .await
     .expect("fresh route plus effective policy should load");
 
     assert!(respawn.respawn);
