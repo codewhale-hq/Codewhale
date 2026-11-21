@@ -75,6 +75,22 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
         if card_is_the_live_tail(app, idx) {
             return idx;
         }
+        // Translation shows a placeholder on the card and fills it only when
+        // `ThinkingComplete` names that card, which it now cannot: the pointer
+        // is about to move to the new card. Hand the settled card the original
+        // text so it stops re-framing a placeholder nothing will replace.
+        if app.translation_enabled {
+            let original = app.reasoning_buffer.clone();
+            if !original.is_empty() {
+                if let Some(active) = app.active_cell.as_mut()
+                    && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                {
+                    *content = original;
+                }
+                app.bump_active_cell_revision();
+                stash_reasoning_buffer_into_last_reasoning(app);
+            }
+        }
         finalize_current(app);
     }
     if app.active_cell.is_none() {
@@ -690,7 +706,52 @@ mod tests {
         app.streaming_thinking_active_entry = Some(first);
 
         let fresh = ensure_active_entry(&mut app);
-        assert_eq!(fresh, 0, "a stale index must not be handed back");
+        assert_eq!(
+            app.active_cell
+                .as_ref()
+                .map_or(0, |active| active.entry_count()),
+            1,
+            "a stale pointer must open exactly one card, not reuse the dead index"
+        );
         assert_eq!(thinking_content(&app, fresh), "");
+    }
+
+    /// #7454, translation: the settled card cannot be the translation target any
+    /// more, so it must show its own text instead of re-framing a placeholder
+    /// nothing will ever replace.
+    #[test]
+    fn issue_7454_a_split_card_shows_its_text_instead_of_a_placeholder() {
+        let mut app = test_app();
+        app.translation_enabled = true;
+
+        let first = ensure_active_entry(&mut app);
+        set_placeholder(&mut app, first);
+        app.reasoning_buffer.push_str("first段");
+
+        let active = app.active_cell.as_mut().expect("active cell");
+        let _ = active.push_tool(
+            "t1",
+            HistoryCell::System {
+                content: "running".to_string(),
+            },
+        );
+
+        let second = ensure_active_entry(&mut app);
+        assert_ne!(second, first, "the split must open a new card");
+        assert_eq!(
+            thinking_content(&app, first),
+            "first段",
+            "the settled card keeps its original text, not a spinning placeholder"
+        );
+        assert!(
+            app.reasoning_buffer.is_empty(),
+            "the settled card's text moves to last_reasoning"
+        );
+        assert_eq!(app.last_reasoning.as_deref(), Some("first段"));
+        assert_eq!(
+            thinking_content(&app, second),
+            "",
+            "the new card starts empty so its own translation lands there"
+        );
     }
 }
