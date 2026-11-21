@@ -30,6 +30,14 @@ pub enum ErrorSeverity {
     Critical,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestTransmission {
+    NotDispatched,
+    Rejected,
+    OutcomeUnknown,
+}
+
 /// Error code for a provider credential rejection (401-class) that arrived
 /// before any model output, after the engine took the turn's question back
 /// out of the session (#6566). Hosts that see it return the text to the
@@ -44,6 +52,8 @@ pub struct ErrorEnvelope {
     pub recoverable: bool,
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_transmission: Option<RequestTransmission>,
 }
 
 impl fmt::Display for ErrorCategory {
@@ -77,6 +87,17 @@ impl fmt::Display for ErrorSeverity {
     }
 }
 
+impl fmt::Display for RequestTransmission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::NotDispatched => "not_dispatched",
+            Self::Rejected => "rejected",
+            Self::OutcomeUnknown => "outcome_unknown",
+        };
+        f.write_str(label)
+    }
+}
+
 impl fmt::Display for ErrorEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}: {}", self.severity, self.code, self.message)
@@ -100,6 +121,7 @@ impl ErrorEnvelope {
             recoverable,
             code: code.into(),
             message: message.into(),
+            request_transmission: None,
         }
     }
 
@@ -887,6 +909,19 @@ mod tests {
         assert_eq!(
             format!("{env}"),
             "[warning] net_transient: DNS resolution failed"
+        );
+    }
+
+    #[test]
+    fn request_transmission_display_uses_snake_case() {
+        assert_eq!(
+            RequestTransmission::NotDispatched.to_string(),
+            "not_dispatched"
+        );
+        assert_eq!(RequestTransmission::Rejected.to_string(), "rejected");
+        assert_eq!(
+            RequestTransmission::OutcomeUnknown.to_string(),
+            "outcome_unknown"
         );
     }
 
