@@ -29914,7 +29914,19 @@ async fn anthropic_browser_connect_follows_control_plane_availability() -> Resul
     let control = wiremock::MockServer::start().await;
     let _env = claude_org_test_env(&tmp, &control.uri())?;
     seed_claude_org_session(&control.uri())?;
-    mount_claude_org_status(&control, unlinked(), None).await;
+    let (release_probe, probe_released) = std::sync::mpsc::channel::<()>();
+    let probe_released = std::sync::Mutex::new(probe_released);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/api/claude-billing"))
+        .respond_with(move |_: &wiremock::Request| {
+            let _ = probe_released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            wiremock::ResponseTemplate::new(200).set_body_json(unlinked())
+        })
+        .mount(&control)
+        .await;
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "provider = \"deepseek\"\n")?;
     let live_config = Arc::new(parking_lot::RwLock::new(Config::default()));
@@ -29941,6 +29953,7 @@ async fn anthropic_browser_connect_follows_control_plane_availability() -> Resul
     };
 
     assert!(!anthropic_offers_connect().await?);
+    drop(release_probe);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !anthropic_offers_connect().await? {
         anyhow::ensure!(

@@ -1874,26 +1874,42 @@ mod tests {
         }
     }
 
+    fn open_when_pty_available(open: impl Fn() -> Result<SharedSession, String>) -> SharedSession {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match open() {
+                Err(error)
+                    if error.starts_with("failed to open PTY") && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                opened => return opened.unwrap(),
+            }
+        }
+    }
+
     fn fresh(name: &str) -> SharedSession {
-        let session = get_or_create(
-            OWNER,
-            name,
-            std::path::Path::new("/tmp"),
-            codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-            &test_shell_manager(),
-        )
-        .unwrap();
+        let session = open_when_pty_available(|| {
+            get_or_create(
+                OWNER,
+                name,
+                std::path::Path::new("/tmp"),
+                codewhale_sandbox::SandboxPolicy::DangerFullAccess,
+                &test_shell_manager(),
+            )
+        });
         let mut session_guard = session.lock().unwrap();
         let _ = session_guard.child.kill();
         drop(session_guard);
-        let replacement = create_session(
-            OWNER,
-            name,
-            std::path::Path::new("/tmp"),
-            codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-            &test_shell_manager(),
-        )
-        .unwrap();
+        let replacement = open_when_pty_available(|| {
+            create_session(
+                OWNER,
+                name,
+                std::path::Path::new("/tmp"),
+                codewhale_sandbox::SandboxPolicy::DangerFullAccess,
+                &test_shell_manager(),
+            )
+        });
         replace_registered(session_key(OWNER, name, Path::new("/tmp")), &replacement).unwrap();
         replacement
     }

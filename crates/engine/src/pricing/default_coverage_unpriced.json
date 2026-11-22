@@ -1,6 +1,13 @@
 [
   {
     "reason": "unknown_billing_basis",
+    "review": "LLMTR publishes per-token catalog rates at https://llmtr.com/v1/models. This offline route has no captured pay mode or LLMTR quote. The matching MiniMax model ID does not establish this gateway's billing basis.",
+    "routes": [
+      ["llmtr", "minimax/minimax-m3.1-flash", "https://llmtr.com/v1", "chat_completions", "unknown"]
+    ]
+  },
+  {
+    "reason": "unknown_billing_basis",
     "review": "Tencent TokenHub is a named compatible descriptor using hy4 at the international endpoint (https://www.tencentcloud.com/document/product/1300/80695, verified 2026-11-05). Its documented authenticated /v1/models response establishes availability, not per-account rates. No direct pricing row or billing product has been reviewed and frozen; OpenRouter's separate tencent/hy4 prices do not apply to this endpoint.",
     "routes": [
       ["tencent", "hy4", "https://tokenhub-intl.tencentcloudmaas.com/v1", "chat_completions", "unknown"],

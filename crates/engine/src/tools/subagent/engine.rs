@@ -872,6 +872,18 @@ impl ChildAuthority {
             .collect()
     }
 
+    pub(crate) fn connected_mcp_tools_for_model(
+        &self,
+        registry: &ToolRegistry,
+        connected: Vec<Tool>,
+    ) -> Vec<Tool> {
+        let connected: HashSet<_> = connected.into_iter().map(|tool| tool.name).collect();
+        self.tools_for_model(registry, &self.agent_type)
+            .into_iter()
+            .filter(|tool| connected.contains(&tool.name))
+            .collect()
+    }
+
     pub fn tools_for_model(&self, registry: &ToolRegistry, agent_type: &FleetRole) -> Vec<Tool> {
         // Filter the full registry in deny-first order. These catalog filters
         // reduce accidental exposure, but are never the authority boundary:
@@ -1827,15 +1839,12 @@ pub(super) async fn run_child_agent(
         // No tool/model is admitted. Preserve the same full seed and the
         // existing Park-vs-Cancel projection, including a step-zero checkpoint.
         seed.push(initial);
-        job.project(&seed, 0).await?;
-        let checkpoint = runtime
-            .manager
-            .read()
-            .await
-            .get_result(&agent_id)
-            .ok()
-            .and_then(|result| result.checkpoint);
         let mut artifact = job.artifact.lock().await;
+        if let Some(writer) = artifact.as_mut() {
+            writer.sync_messages(&seed, false)?;
+        }
+        let checkpoint =
+            build_subagent_checkpoint(&agent_id, "Core child Session checkpoint", &seed, 0, true);
         return Ok(cancelled_subagent_result(
             &runtime,
             &agent_id,
@@ -1844,7 +1853,7 @@ pub(super) async fn run_child_agent(
             &seed,
             0,
             max_steps,
-            checkpoint.as_ref(),
+            Some(&checkpoint),
             job.parking.as_ref(),
             &mut artifact,
             started_at,
@@ -1862,6 +1871,8 @@ pub(super) async fn run_child_agent(
         max_steps: codewhale_runtime::turn_budget::resolve_max_model_steps(Some(max_steps)),
         compaction: runtime.compaction.clone(),
         subagent_api_timeout: runtime.step_api_timeout,
+        stream_retry_limits: api.stream_retry_limits(),
+        stream_open_timeout: api.stream_open_timeout(),
         auto_review_policy: runtime.auto_review_policy.as_ref().clone(),
         tools_always_load: allowed_tools.iter().flatten().cloned().collect(),
         reasoning_only_max_reprompts: api.reasoning_only_max_reprompts(),

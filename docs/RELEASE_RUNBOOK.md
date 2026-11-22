@@ -123,6 +123,8 @@ some smoke coverage. A successful pointer job is not a Linux test receipt.
 The final manual full-CI dispatch forces the real Linux, macOS and Windows
 gates; keep its exact-SHA evidence rather than substituting an older CNB run.
 
+After changing `LICENSE`, `THIRD_PARTY_NOTICES.md` or `docs/THIRD_PARTY_NOTICES.md`, run `scripts/release/sync-package-notices.sh` and commit the refreshed package files. Cargo and npm archive checks compare their contents with these sources.
+
 `publish-crates.sh` requires Cargo 1.90 or newer for multi-package verification;
 this release-tool requirement is separate from the workspace's Rust 1.89 MSRV.
 Use a release toolchain meeting that requirement.

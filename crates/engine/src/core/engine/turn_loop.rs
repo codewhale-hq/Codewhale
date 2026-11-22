@@ -51,6 +51,7 @@ struct TurnLoopProgress {
     empty_stop_retries: u32,
     reasoning_only_nudge: Option<String>,
     stream_retry_budget: StreamRetryBudget,
+    stream_open_timeout_retry_budget: StreamRetryBudget,
     image_omission_notified: bool,
     child_request_retries: crate::tools::subagent::engine::ChildRequestRetries,
 }
@@ -1079,12 +1080,12 @@ impl Engine {
         policy: &ToolSurfacePolicy,
         catalog: &mut Vec<Tool>,
         active: &mut std::collections::HashSet<String>,
-    ) {
+    ) -> bool {
         if !self.config.features.enabled(Feature::Mcp) {
-            return;
+            return false;
         }
         let Some(pool) = self.mcp_pool.as_ref() else {
-            return;
+            return false;
         };
         let (universe, mut refreshed) = {
             let pool = pool.lock().await;
@@ -1094,13 +1095,14 @@ impl Engine {
         // A config/authority change during handshake can remove a server;
         // `replace_runtime_mcp_tools` owns every MCP name already in the
         // catalog, so its previous names leave this turn's catalog too.
-        refreshed.retain(|tool| {
-            policy.passes_allow_list(&tool.name)
-                && !policy.denies_tool(&tool.name)
-                && (self.child_host.is_none() || policy.registry.contains(&tool.name))
-        });
+        if let Some(child) = &self.child_host {
+            refreshed = child
+                .authority
+                .connected_mcp_tools_for_model(&policy.registry, refreshed);
+        }
+        refreshed.retain(|tool| policy.allows_tool(&tool.name));
         let always_load = self.effective_tools_always_load();
-        if replace_runtime_mcp_tools(
+        let changed = replace_runtime_mcp_tools(
             catalog,
             active,
             &universe,
@@ -1109,9 +1111,11 @@ impl Engine {
             &always_load,
             self.turn_tool_surface_budget
                 .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard),
-        ) {
+        );
+        if changed {
             self.session.pending_prefix_change_reason = Some("mcp-session-boot".to_string());
         }
+        changed
     }
 
     /// A gated MCP-focused search is explicit discovery of already configured
@@ -1984,13 +1988,16 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-open retry budget: only a typed transient connection
-        // failure proven to precede dispatch can spend it. An opened stream
+        // Outer stream-open retry budgets: a typed transient connection
+        // failure proven to precede dispatch spends the first, a typed
+        // response-header timeout spends the second. An opened stream
         // never reissues its request automatically.
-        // `StreamRetryBudget` enforces that bound in mechanism —
+        // `StreamRetryBudget` enforces each bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
             StreamRetryBudget::with_limit(self.config.stream_retry_limits.max_resumes);
+        let stream_open_timeout_retry_budget =
+            StreamRetryBudget::with_limit(self.config.stream_retry_limits.open_retries);
         // The user hears about images the route cannot see once per turn,
         // not once per step and not for images replayed from history.
         let image_omission_notified = false;
@@ -2014,6 +2021,7 @@ impl Engine {
             empty_stop_retries,
             reasoning_only_nudge,
             stream_retry_budget,
+            stream_open_timeout_retry_budget,
             image_omission_notified,
             child_request_retries: Default::default(),
         };
@@ -5719,25 +5727,14 @@ impl Engine {
                         .and_then(|metadata| metadata.get("mcp_catalog_changed"))
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if mcp_catalog_changed && let Some(pool) = self.mcp_pool.as_ref().cloned() {
-                        let (universe, refreshed) = {
-                            let pool = pool.lock().await;
-                            let refreshed = pool.to_api_tools();
-                            (pool.model_tool_names(&refreshed), refreshed)
-                        };
-                        let surface_budget = self
-                            .turn_tool_surface_budget
-                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
-                        let always_load = self.effective_tools_always_load();
-                        tool_surface_changed |= replace_runtime_mcp_tools(
-                            tool_catalog,
-                            active_tool_names,
-                            &universe,
-                            refreshed,
-                            self.current_mode,
-                            &always_load,
-                            surface_budget,
-                        );
+                    if mcp_catalog_changed {
+                        tool_surface_changed |= self
+                            .refresh_current_mcp_catalog(
+                                tool_policy,
+                                tool_catalog,
+                                active_tool_names,
+                            )
+                            .await;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
                     // re-pin the header under a declared `change:tool_surface`
@@ -7244,6 +7241,11 @@ fn awaiting_model_bound(config: &EngineConfig) -> Duration {
         config.stream_chunk_timeout,
     )
     .saturating_add(super::turn_heartbeat::STALL_BOUND_GRACE)
+}
+
+fn first_stream_event_timeout(config: &EngineConfig) -> Duration {
+    crate::client::stream_first_byte_timeout(config.stream_chunk_timeout)
+        .min(stream_chunk_timeout_budget(config).1)
 }
 
 /// Whether a per-tool pre-execution snapshot should be taken before running

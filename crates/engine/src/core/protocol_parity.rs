@@ -1699,6 +1699,7 @@ mod tests {
                     recoverable: true,
                     code: "E429".into(),
                     message: "slow down".into(),
+                    request_transmission: None,
                 },
                 recoverable: true,
             },

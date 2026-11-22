@@ -35,6 +35,14 @@ class PublishPreflightTests(unittest.TestCase):
         (self.root / "Cargo.toml").write_text(
             '[workspace]\nmembers = ["base", "app"]\nresolver = "2"\n'
         )
+        for document in ("LICENSE", "THIRD_PARTY_NOTICES.md", "docs/THIRD_PARTY_NOTICES.md"):
+            source = self.root / document
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(document)
+            for name in ("base", "app"):
+                target = self.root / name / "codewhale-notices" / document
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
         for name in ("base", "app"):
             crate = self.root / name
             (crate / "src").mkdir(parents=True)
@@ -140,6 +148,18 @@ class PublishPreflightTests(unittest.TestCase):
             ["bash", str(self.scripts / "publish-crates.sh"), "dry-run"], success=True
         )
         self.assertFalse(self.uploads.exists())
+
+    def test_changed_and_missing_notices_refuse_upload(self):
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('exclude = ["src/payload.txt"]\n', ""))
+        (self.root / "app/codewhale-notices/THIRD_PARTY_NOTICES.md").write_text("out of date")
+        (self.root / "base/codewhale-notices/docs/THIRD_PARTY_NOTICES.md").unlink()
+        output = self.run_command(
+            ["bash", str(self.scripts / "publish-crates.sh"), "publish"], success=False
+        )
+        self.assertFalse(self.uploads.exists())
+        self.assertIn("packaged THIRD_PARTY_NOTICES.md differs", output)
+        self.assertIn("missing docs/THIRD_PARTY_NOTICES.md", output)
 
     def test_oversized_tarball_is_refused_before_any_upload(self):
         # crates.io refused codewhale-tui's 11.93 MiB tarball with HTTP 413 in

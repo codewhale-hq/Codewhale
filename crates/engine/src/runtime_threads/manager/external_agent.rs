@@ -737,7 +737,7 @@ impl RuntimeThreadManager {
             .clone()
             .ok_or_else(|| anyhow!("thread {} has no external executor", thread.id))?;
         executor.validate()?;
-        let agent = crate::fleet::agents::find(&executor.agent_id)
+        let (default_name, login) = crate::fleet::agents::agent_meta(&executor.agent_id)
             .ok_or_else(|| anyhow!("No external agent is named `{}`.", executor.agent_id))?;
         let launch = crate::fleet::agents::launch(&executor.agent_id).await?;
         let log_root = self
@@ -751,7 +751,6 @@ impl RuntimeThreadManager {
         let workspace = thread.workspace.clone();
         let add_dirs = thread.add_dirs.clone();
         let starting = executor.clone();
-        let login = agent.login;
         let abandoned = self.cancel_token.child_token();
         let _abandon = abandoned.clone().drop_guard();
         let (started, _loading) = tokio::task::spawn_blocking(move || {
@@ -771,7 +770,7 @@ impl RuntimeThreadManager {
         let session = Arc::new(session);
         let store = self.store.clone();
         let persisted_thread = thread.id.clone();
-        let agent_name = label(Some(&Value::String(identity.name.clone())), agent.name);
+        let agent_name = label(Some(&Value::String(identity.name.clone())), &default_name);
         let agent_version = label(Some(&Value::String(identity.version.clone())), "0");
         let started_payload = json!({
             "agent_id": executor.agent_id,
@@ -816,7 +815,7 @@ impl RuntimeThreadManager {
 
     pub async fn external_agent_options(&self, agent_id: &str, cwd: &Path) -> Result<AgentOptions> {
         self.ensure_accepting_execution()?;
-        let agent = crate::fleet::agents::find(agent_id).ok_or_else(|| {
+        let (_, login) = crate::fleet::agents::agent_meta(agent_id).ok_or_else(|| {
             crate::fleet::agents::ExecutorUnavailable::new(
                 crate::fleet::agents::ExecutorUnavailable::UNKNOWN_AGENT,
                 format!("No external agent is named `{agent_id}`."),
@@ -832,7 +831,7 @@ impl RuntimeThreadManager {
             "cwd {} is not a directory",
             workspace.display()
         );
-        let launch = crate::fleet::agents::launch(agent.id).await?;
+        let launch = crate::fleet::agents::launch(agent_id).await?;
         let log_root = self
             .session_store_binding()
             .data_dir
@@ -847,7 +846,6 @@ impl RuntimeThreadManager {
             () = abandoned.cancelled() => bail!("Runtime is shutting down; execution admission is closed"),
         };
         self.ensure_accepting_execution()?;
-        let login = agent.login;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             probe_options_blocking(log_root, workspace, launch, login, abandoned)
@@ -1839,10 +1837,10 @@ impl RuntimeThreadManager {
             });
         let (status, error) = match (&outcome, projection.failure.take()) {
             (_, Some(failure)) => (RuntimeTurnStatus::Failed, Some(failure)),
-            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
-            (Ok(reason), None) if reason == "cancelled" || interrupted => {
+            (Ok(reason), None) if interrupted || reason == "cancelled" => {
                 (RuntimeTurnStatus::Interrupted, None)
             }
+            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
             (Ok(reason), None) => (
                 RuntimeTurnStatus::Failed,
                 Some(format!(

@@ -2940,6 +2940,10 @@ pub(crate) async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
+                        // A gateway can open a text block inside a
+                        // thinking stream; a live reasoning tail must reach
+                        // its card before this block is relabeled text.
+                        streaming_thinking::resync_block_kind(app, false);
                         // First delta of a fresh stream has no streaming
                         // cell yet; flush active so the tool group settles
                         // before the assistant prose appears below it.
@@ -3084,6 +3088,10 @@ pub(crate) async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
+                        // The kind comes from the start event alone, so a
+                        // gateway that opened a text block mid-reasoning
+                        // leaves block 0 marked text (#7123).
+                        streaming_thinking::resync_block_kind(app, true);
                         // #7454: split before recording the delta. The split
                         // writes the settled card's text from `reasoning_buffer`,
                         // so a delta recorded first would be attributed to the

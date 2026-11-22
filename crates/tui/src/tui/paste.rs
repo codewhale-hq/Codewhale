@@ -825,6 +825,217 @@ mod tests {
         assert_eq!(bracketed.cursor_position, character_count);
     }
 
+    /// Drive a raw (non-bracketed) paste one key event per character.
+    ///
+    /// Intermediate chunks are committed by `handle_paste_burst_key` itself
+    /// (`insert_str` right after each `take_chunk_if_full`); this helper only
+    /// commits the tail, through `App::take_paste_burst_flush_if_enabled` — the
+    /// same non-test entry `event_loop.rs` calls, so the fixture cannot pass
+    /// against a test-only stub.
+    ///
+    /// `input == payload` alone cannot prove chunking: a buffer that never
+    /// flushes still ends up correct once the tail lands, so deleting a
+    /// `take_chunk_if_full()` check would pass unnoticed. The probe at 60%
+    /// fails in exactly that case — the composer is still nearly empty
+    /// because everything is sitting in the burst buffer.
+    ///
+    /// The probe names no cap, but it is not cap-independent: it needs
+    /// `floor(0.6·P / cap) · cap ≥ P/3`, i.e. roughly `cap < 4P/15 ≈ 0.27·P`.
+    /// For these fixtures that is ~72 KiB against the 64 KiB cap, so there is
+    /// margin — but raising `PASTE_BURST_MAX_BYTES` past that fraction of a
+    /// fixture would fail this test on a healthy build. Widen the payload
+    /// along with the cap.
+    ///
+    /// # What this cannot see
+    ///
+    /// The third `take_chunk_if_full()` call, the one after
+    /// `append_newline_if_active` in the `KeyCode::Enter` arm, is out of reach
+    /// here: this loop sends no newline, and the 60% probe would fail on a run
+    /// that deliberately parks the buffer just under the cap. That site has its
+    /// own fixture — `pasted_newline_crossing_the_chunk_cap_flushes_immediately`
+    /// — which fills to `CAP - 1` bytes and then sends one newline, so the
+    /// composer length directly reports whether the Enter arm flushed.
+    ///
+    /// An earlier revision of this comment argued the site needed no test at
+    /// all because deleting it "leaves the text complete". That was half right
+    /// and dangerous: the *text* survives, but the flush moves from the Enter
+    /// to the next plain character, and an assertion placed between the two
+    /// sees it. What was untestable was content equality, not the behaviour.
+    fn feed_raw_paste(app: &mut App, payload: &str) {
+        use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
+
+        let probe_at = payload.chars().count() * 3 / 5;
+        let mut now = Instant::now();
+        for (index, ch) in payload.chars().enumerate() {
+            now += Duration::from_micros(100);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(app, &key, now),
+                "raw paste character {ch:?} must be handled by paste-burst detection"
+            );
+            if index + 1 == probe_at {
+                assert!(
+                    app.input.len() * 3 >= payload.len(),
+                    "60% into a multi-chunk paste the composer holds {} of {} bytes: the \
+                     burst buffer is accumulating the paste instead of flushing chunks",
+                    app.input.len(),
+                    payload.len()
+                );
+            }
+        }
+        let flush_at = now + PasteBurst::recommended_active_flush_delay();
+        let FlushResult::TextContinuation(tail) = app.take_paste_burst_flush_if_enabled(flush_at)
+        else {
+            panic!("an oversized raw paste must flush its final continuation, not a first `Paste`");
+        };
+        app.insert_str(&tail);
+    }
+
+    /// #7403, ASCII append path only: every character here takes
+    /// `KeyCode::Char` → `on_plain_char` → `handle_paste_burst_decision`, and
+    /// nothing else.
+    ///
+    /// The mixed-script fixture above cannot stand in for this. Each CJK or
+    /// emoji character re-enters the separate `!c.is_ascii()` branch in
+    /// `handle_paste_burst_key`, whose own `take_chunk_if_full()` call flushes
+    /// the buffer and hides a missing check on the ASCII side — delete only
+    /// the ASCII-path check and that test stays green. This payload has no
+    /// non-ASCII byte and, deliberately, no newline either: an Enter reaches
+    /// `append_newline_if_active`, whose chunk check would stand in again.
+    ///
+    /// # What this one is for
+    ///
+    /// One failure mode, precisely: the ASCII-path chunk check going away.
+    /// Delete it and the buffer accumulates the whole paste, so the 60% probe
+    /// finds the composer empty (0 of 273 000 bytes) and fails.
+    ///
+    /// It is the *wrong* fixture for #7403's original drop rule, and that is
+    /// arithmetic rather than an oversight: every byte here is one UTF-8 byte
+    /// wide, so the buffer fills to exactly the cap every cycle and a
+    /// `len + ch.len_utf8() <= cap` guard always admits the character. Injecting
+    /// that rule leaves this test green (0 bytes lost); the CJK fixture below,
+    /// whose characters are 3–4 bytes wide, loses its tail and fails.
+    #[test]
+    fn ascii_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "cw-7403-ascii-paste-chunking".repeat(9_750);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, non-ASCII append path only: a CJK-only burst stays in the
+    /// `!c.is_ascii()` branch for its whole length, so this is the only
+    /// fixture that exercises that branch's `take_chunk_if_full()` call in
+    /// isolation. A mixed payload keeps ASCII nearby and that check would
+    /// flush on the next ASCII character, masking the gap. Again no newline,
+    /// for the same reason as the ASCII case.
+    ///
+    /// # What this one is for
+    ///
+    /// Two failure modes: the non-ASCII-path chunk check going away (the 60%
+    /// probe then finds 3 of 342 000 bytes), and #7403's original drop rule
+    /// coming back. The second works here and not in the ASCII fixture because
+    /// these characters are 3–4 bytes wide: the buffer no longer fills to
+    /// exactly the cap, the guard rejects the character that would cross it,
+    /// and the paste loses its tail.
+    #[test]
+    fn cjk_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "漢字テスト🐳".repeat(18_000);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, Enter append path: the third `take_chunk_if_full`, the one right
+    /// after `append_newline_if_active`.
+    ///
+    /// The other fixtures cannot reach it. They carry no newline, and their
+    /// 60% probe would fail on a run that deliberately keeps the composer
+    /// empty — so this test fills the burst buffer to just under the cap and
+    /// then sends exactly one newline.
+    ///
+    /// That newline is the only thing that can flush the buffer at this point:
+    /// no plain character follows, so neither the ASCII nor the non-ASCII
+    /// check gets a turn. The composer length is therefore a direct readout of
+    /// whether the Enter arm flushed. Delete that `take_chunk_if_full` and the
+    /// buffer sits at the cap while the composer stays empty, and the
+    /// assertion below fails.
+    ///
+    /// This is why the tail flush in `feed_raw_paste` is not the only place
+    /// chunking can be observed — an earlier revision of these docs claimed
+    /// no content assertion could see this site, which was wrong.
+    #[test]
+    fn pasted_newline_crossing_the_chunk_cap_flushes_immediately() {
+        // Mirrors `PASTE_BURST_MAX_BYTES`, which is private to `codewhale-tui-kit`.
+        const CAP: usize = 64 * 1024;
+
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        // Fill to CAP - 1 bytes. The plain-character checks fire at `>= CAP`,
+        // so nothing flushes yet and the composer must stay empty.
+        let mut now = Instant::now();
+        while app.paste_burst.held_text().len() < CAP - 1 {
+            now += Duration::from_micros(100);
+            assert!(handle_paste_burst_key(&mut app, &plain('x'), now));
+            assert!(
+                app.input.is_empty(),
+                "the buffer must not cross the cap while filling; it holds {} bytes",
+                app.paste_burst.held_text().len()
+            );
+        }
+        let buffered = app.paste_burst.held_text().len();
+        assert_eq!(
+            buffered,
+            CAP - 1,
+            "fill loop must stop one byte under the cap"
+        );
+
+        now += Duration::from_micros(100);
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            now
+        ));
+
+        assert_eq!(
+            app.input.len(),
+            CAP,
+            "a pasted newline that crosses the cap must flush the buffer at once instead \
+             of waiting for the next plain character"
+        );
+    }
+
     #[test]
     fn launch_composer_preserves_newlines_during_active_paste_burst() {
         let mut app = test_app();

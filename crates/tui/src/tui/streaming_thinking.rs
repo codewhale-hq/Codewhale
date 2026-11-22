@@ -298,6 +298,69 @@ fn flush_pending_text_tail(app: &mut App) {
     crate::tui::ui::frame::accrue_streaming_token_estimate(app, &remaining);
 }
 
+/// Re-establish the block kind the arriving delta actually carries.
+///
+/// A block's kind is set by its start event alone, so a gateway that opens a
+/// text block inside a thinking stream leaves block 0 marked text. The
+/// reasoning that follows would then be committed into the prose body, and one
+/// sentence would be split across the thinking card and the answer that
+/// follows it — the #7123 split with the opposite ordering. The pending tail
+/// goes to the cell its old kind owned first, then the block takes the new
+/// kind.
+///
+/// A flip closes the reasoning card and starts a fresh one on the way back, so
+/// a gateway that flips twice renders one passage as two cards, the second
+/// without a duration stamp. That is the honest reading of a stream that
+/// really did interleave, not a display defect.
+///
+/// Returns whether the kind changed.
+pub(super) fn resync_block_kind(app: &mut App, is_thinking: bool) -> bool {
+    if app.streaming_state.block_is_thinking(0) == is_thinking {
+        return false;
+    }
+    if is_thinking {
+        flush_pending_text_tail(app);
+    } else if !app.translation_enabled && app.streaming_thinking_active_entry.is_some() {
+        // The prose that interrupted the reasoning closes its card. Leaving
+        // the entry streaming would keep the spinner turning and stamp a
+        // duration that grows until the next finalize; stashing the buffer
+        // matches what `MessageStarted` does, so replay still has the text.
+        //
+        // Skipped under translation so this branch does not clear the entry or
+        // the buffer before `ThinkingComplete` reads them. It cannot make the
+        // card fill in: `MessageDelta` calls `flush_active_cell` immediately
+        // after the resync, which takes the entry regardless. What the guard
+        // buys is that the reasoning text stays in `reasoning_buffer` for
+        // replay, and that fixing the index is left to `ThinkingComplete`.
+        finalize_current(app);
+        stash_reasoning_buffer_into_last_reasoning(app);
+    } else {
+        drain_thinking_tail_into_entry(app);
+    }
+    app.streaming_state.set_block_kind(0, is_thinking);
+    true
+}
+
+/// Deliver a live reasoning block's uncommitted tail into its own card.
+///
+/// The mirror of `flush_pending_text_tail`. Only reached when the entry was
+/// already finalized, so there is usually nothing buffered; when there is, the
+/// bytes also live in `reasoning_buffer` and `set_block_kind` discards this
+/// copy on the next line.
+fn drain_thinking_tail_into_entry(app: &mut App) {
+    if app.translation_enabled
+        || !app.streaming_state.block_is_thinking(0)
+        || app.streaming_state.pending_len(0) == 0
+    {
+        return;
+    }
+    let entry_idx = ensure_active_entry(app);
+    let tail = app.streaming_state.finalize_block_text(0);
+    if !tail.is_empty() {
+        append(app, entry_idx, &tail);
+    }
+}
+
 /// Finalize the currently-streaming thinking entry: drain the pending
 /// state buffer, compute elapsed duration, stop the spinner.
 pub(super) fn finalize_current(app: &mut App) -> bool {

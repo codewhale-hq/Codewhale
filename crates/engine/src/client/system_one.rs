@@ -547,6 +547,7 @@ pub fn router_failure_from_error(error: &anyhow::Error) -> AutoRouterFailure {
                 AutoRouterFailure::Http { status }
             }),
         LlmError::NetworkError(_)
+        | LlmError::HeaderTimeout { .. }
         | LlmError::ConnectError { .. }
         | LlmError::Timeout(_)
         | LlmError::ParseError(_) => AutoRouterFailure::Transport,

@@ -27,9 +27,10 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
     });
     let timeout_ms = llm.and_then(|error| match error {
         LlmError::Timeout(duration) if !duration.is_zero() => Some(duration.as_millis()),
+        LlmError::HeaderTimeout { waited, .. } => Some(waited.as_millis()),
         _ => None,
     });
-    let envelope = match error.downcast::<LlmError>() {
+    let mut envelope = match error.downcast::<LlmError>() {
         Ok(llm) => {
             let mut envelope = ErrorEnvelope::from(llm);
             envelope.message = display_message;
@@ -40,6 +41,7 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
             ErrorEnvelope::classify(display_message, false)
         }
     };
+    envelope.request_transmission = Some(transmission);
     tracing::warn!(
         code = %envelope.code,
         category = %envelope.category,
@@ -90,6 +92,13 @@ impl From<LlmError> for ErrorEnvelope {
                 false,
                 "llm_network_error",
                 message,
+            ),
+            LlmError::HeaderTimeout { .. } => Self::new(
+                ErrorCategory::Network,
+                ErrorSeverity::Error,
+                false,
+                "llm_network_error",
+                value.header_timeout_message(),
             ),
             LlmError::ConnectError {
                 message, transient, ..
@@ -203,6 +212,45 @@ fn envelope_for_other_llm_error(message: String) -> ErrorEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_error_envelope_carries_request_transmission() {
+        let envelope = envelope_for_llm_error(
+            LlmError::Timeout(std::time::Duration::from_secs(1)).into(),
+            "Request timed out".into(),
+        );
+
+        assert_eq!(
+            envelope.request_transmission,
+            Some(RequestTransmission::OutcomeUnknown)
+        );
+    }
+
+    #[test]
+    fn request_transmission_is_optional_and_uses_snake_case_on_the_wire() {
+        let legacy: ErrorEnvelope = serde_json::from_value(serde_json::json!({
+            "category": "network",
+            "severity": "error",
+            "recoverable": false,
+            "code": "llm_network_error",
+            "message": "connection reset"
+        }))
+        .expect("legacy envelope");
+        assert_eq!(legacy.request_transmission, None);
+        assert!(
+            serde_json::to_value(&legacy)
+                .expect("serialize legacy envelope")
+                .get("request_transmission")
+                .is_none()
+        );
+
+        let mut current = legacy;
+        current.request_transmission = Some(RequestTransmission::OutcomeUnknown);
+        assert_eq!(
+            serde_json::to_value(current).expect("serialize current envelope")["request_transmission"],
+            "outcome_unknown"
+        );
+    }
 
     #[test]
     fn provider_failures_reach_info_filtered_logs_without_raw_error_text() {

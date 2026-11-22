@@ -83,19 +83,21 @@ impl Engine {
         // instant (connection setup included), and time-to-first-token is
         // the gap to the first content-bearing stream event.
         let request_dispatched_at = Instant::now();
-        self.turn_heartbeat.enter(
+        let awaiting_detail = format!(
+            "{} / {}",
+            self.api_provider_identity
+                .as_ref()
+                .map_or("unavailable", |identity| {
+                    identity
+                        .compatibility()
+                        .map_or(identity.key.as_str(), |row| row.label)
+                }),
+            stream_request.model
+        );
+        self.turn_heartbeat.enter_declared(
             super::turn_heartbeat::TurnPhase::AwaitingModel,
-            Some(format!(
-                "{} / {}",
-                self.api_provider_identity
-                    .as_ref()
-                    .map_or("unavailable", |identity| {
-                        identity
-                            .compatibility()
-                            .map_or(identity.key.as_str(), |row| row.label)
-                    }),
-                stream_request.model
-            )),
+            Some(awaiting_detail.clone()),
+            Some(self.config.stream_open_timeout),
             Some(awaiting_model_bound(&self.config)),
         );
         let mut rlm_dispatch = None;
@@ -253,6 +255,21 @@ impl Engine {
         };
         let stream = match stream_result {
             Ok(s) => {
+                self.turn_heartbeat.enter_declared(
+                    super::turn_heartbeat::TurnPhase::AwaitingModel,
+                    Some(awaiting_detail),
+                    Some(first_stream_event_timeout(&self.config)),
+                    Some(awaiting_model_bound(&self.config)),
+                );
+                let open_timeout_retries = progress.stream_open_timeout_retry_budget.spent();
+                if open_timeout_retries > 0 {
+                    progress.stream_open_timeout_retry_budget.reset();
+                    let _ = self
+                        .send_retry_status(format!(
+                            "Retry recovery: stream-open-timeout recovered after {open_timeout_retries} retries"
+                        ))
+                        .await;
+                }
                 if let Some(job) = child_job.as_ref() {
                     job.provider_responded();
                 }
@@ -266,7 +283,7 @@ impl Engine {
                 turn.unanswered_user_message = None;
                 s
             }
-            Err(e) => {
+            Err(mut e) => {
                 let _ = self
                     .settle_provider_request_receipt(&mut request_receipt, None, "open_failed")
                     .await;
@@ -338,6 +355,43 @@ impl Engine {
                         .await
                 {
                     return result;
+                }
+                if let Some(waited) = crate::client::stream_open_header_timeout(&e) {
+                    let waited = waited.as_secs();
+                    if self.rlm_host.is_none()
+                        && !self.cancel_token.is_cancelled()
+                        && child_job
+                            .as_ref()
+                            .is_none_or(|job| !job.authority.runtime.cancel_token.is_cancelled())
+                        && let Some(attempt) = progress.stream_open_timeout_retry_budget.authorize()
+                    {
+                        turn.stop_diagnostics.stream_resumes =
+                            turn.stop_diagnostics.stream_resumes.saturating_add(1);
+                        let limit = progress.stream_open_timeout_retry_budget.limit();
+                        let _ = self
+                            .send_retry_status(format!(
+                                "Retry attempt: stream-open-timeout {attempt}/{limit}; provider sent no response headers in {waited}s; sending the request again"
+                            ))
+                            .await;
+                        codewhale_runtime::logging::warn(format!(
+                            "No response headers after {waited}s (retry {attempt}/{limit}); sending the request again"
+                        ));
+                        return PhaseResult::Retry;
+                    }
+                    let retried = progress.stream_open_timeout_retry_budget.spent();
+                    if retried > 0 {
+                        if let Some(LlmError::HeaderTimeout {
+                            retried: marked, ..
+                        }) = e.downcast_mut::<LlmError>()
+                        {
+                            *marked = retried;
+                        }
+                        let _ = self
+                            .send_retry_status(format!(
+                                "Retry exhaustion: stream-open-timeout stopped after {retried} retries; provider sent no response headers in {waited}s"
+                            ))
+                            .await;
+                    }
                 }
                 if let Some(recovery) = self.recover_child_request(progress, &e).await {
                     return recovery;

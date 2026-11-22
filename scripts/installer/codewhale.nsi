@@ -70,7 +70,28 @@ BrandingText "${PRODUCT_NAME} Installer"
 ;--------------------------------
 ; Installer Sections
 ;--------------------------------
+!macro ReadInstallOwner
+  StrCpy $1 ""
+  ClearErrors
+  FileOpen $0 "$INSTDIR\.codewhale-install" r
+  ${IfNot} ${Errors}
+    FileRead $0 $1
+    FileClose $0
+  ${EndIf}
+!macroend
+
 Section "Install" SecInstall
+  ${If} ${FileExists} "$INSTDIR\codewhale-notices"
+    !insertmacro ReadInstallOwner
+    ReadRegStr $0 HKCU "Software\${PRODUCT_NAME}" "NoticesDir"
+    ${If} $0 != "$INSTDIR\codewhale-notices"
+    ${OrIf} $1 != "CodeWhale"
+      IfSilent +2
+        MessageBox MB_ICONSTOP|MB_OK "The release notices destination already exists. Choose another installation directory."
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+  ${EndIf}
   SetOutPath "$INSTDIR"
   ClearErrors
   FileOpen $0 "$INSTDIR\.codewhale-install" w
@@ -86,6 +107,17 @@ Section "Install" SecInstall
     Abort
   ${EndIf}
   File "update-user-path.ps1"
+  ClearErrors
+  WriteRegStr HKCU "Software\${PRODUCT_NAME}" "NoticesDir" "$INSTDIR\codewhale-notices"
+  ${If} ${Errors}
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+  SetOutPath "$INSTDIR\codewhale-notices"
+  File "..\..\LICENSE"
+  File "..\..\THIRD_PARTY_NOTICES.md"
+  SetOutPath "$INSTDIR\codewhale-notices\docs"
+  File "..\..\docs\THIRD_PARTY_NOTICES.md"
 
   SetOutPath "$INSTDIR\bin"
 
@@ -186,6 +218,27 @@ Section "Uninstall"
   !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale.exe"
   !insertmacro RemoveOwnedFile "$INSTDIR\bin\codew.exe"
   !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale.bat"
+  ReadRegStr $0 HKCU "Software\${PRODUCT_NAME}" "NoticesDir"
+  ${If} $0 == "$INSTDIR\codewhale-notices"
+    ${If} ${FileExists} "$INSTDIR\codewhale-notices\LICENSE"
+      !insertmacro RemoveOwnedFile "$INSTDIR\codewhale-notices\LICENSE"
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\codewhale-notices\THIRD_PARTY_NOTICES.md"
+      !insertmacro RemoveOwnedFile "$INSTDIR\codewhale-notices\THIRD_PARTY_NOTICES.md"
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\codewhale-notices\docs\THIRD_PARTY_NOTICES.md"
+      !insertmacro RemoveOwnedFile "$INSTDIR\codewhale-notices\docs\THIRD_PARTY_NOTICES.md"
+    ${EndIf}
+    !insertmacro RemoveOwnedDir "$INSTDIR\codewhale-notices\docs"
+    !insertmacro RemoveOwnedDir "$INSTDIR\codewhale-notices"
+    ${If} $R9 == 0
+      ClearErrors
+      DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "NoticesDir"
+      ${If} ${Errors}
+        IntOp $R9 $R9 + 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
   Delete "$INSTDIR\bin\.codewhale-install.sha256"
   Delete "$INSTDIR\bin\codewhale.old-*"
   Delete "$INSTDIR\bin\codew.old-*"
@@ -256,16 +309,9 @@ Section "Uninstall"
 SectionEnd
 
 Function un.RequireOwnership
-  ClearErrors
-  FileOpen $0 "$INSTDIR\.codewhale-install" r
-  ${If} ${Errors}
-    Goto un_ownership_failed
-  ${EndIf}
-  FileRead $0 $1
-  FileClose $0
+  !insertmacro ReadInstallOwner
   StrCmp $1 "CodeWhale" un_ownership_ok
 
-  un_ownership_failed:
     DetailPrint "Refusing to uninstall: $INSTDIR is not a CodeWhale-owned install root."
     IfSilent +2
       MessageBox MB_ICONSTOP|MB_OK "CodeWhale could not verify that $INSTDIR is its installation. No files were removed."

@@ -4099,6 +4099,7 @@ pub struct SubAgentManager {
     /// Taken when the task settles.
     rerouted_requests: HashMap<String, ReroutedRequest>,
     member_starts: HashMap<(String, String), (String, String)>,
+    terminal_notify: Arc<tokio::sync::Notify>,
 }
 
 /// One child request waiting on a person (approvals C2). The store is the
@@ -4674,6 +4675,7 @@ impl SubAgentManager {
             refused_routes: HashMap::new(),
             rerouted_requests: HashMap::new(),
             member_starts: HashMap::new(),
+            terminal_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -11960,6 +11962,7 @@ impl SubAgentManager {
         if let Some((event_tx, session_id)) = refresh_target {
             let _ = event_tx.try_send(self.agent_list_event(&session_id));
         }
+        self.terminal_notify.notify_waiters();
         Ok(true)
     }
 
@@ -12446,15 +12449,19 @@ pub async fn settle_requested_child(
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     let mut latest = snapshot;
     loop {
-        let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
             return latest;
         };
-        latest = manager.get_result(&latest.agent_id).unwrap_or(latest);
-        drop(manager);
+        latest = guard.get_result(&latest.agent_id).unwrap_or(latest);
         if latest.status != SubAgentStatus::Running || tokio::time::Instant::now() >= deadline {
             return latest;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -12465,19 +12472,22 @@ pub async fn settle_requested_children_for_session(
 ) {
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     loop {
-        let live = {
-            let Ok(manager) = tokio::time::timeout_at(deadline, manager.read()).await else {
-                return;
-            };
-            parent.map_or_else(
-                || manager.live_count_for_session(session),
-                |parent| manager.live_count_for_parent(session, parent),
-            )
+        let Ok(guard) = tokio::time::timeout_at(deadline, manager.read()).await else {
+            return;
         };
+        let live = parent.map_or_else(
+            || guard.live_count_for_session(session),
+            |parent| guard.live_count_for_parent(session, parent),
+        );
         if live == 0 || tokio::time::Instant::now() >= deadline {
             return;
         }
-        tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL).await;
+        let notify = Arc::clone(&guard.terminal_notify);
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(guard);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -22787,6 +22797,7 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
         Some(LlmError::NetworkError(_))
+        | Some(LlmError::HeaderTimeout { .. })
         | Some(LlmError::ConnectError { .. })
         | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {

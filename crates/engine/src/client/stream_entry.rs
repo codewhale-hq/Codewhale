@@ -305,13 +305,14 @@ fn is_protocol_or_tls_failure(detail: &str) -> bool {
             .any(|needle| lower.contains(needle))
 }
 
-/// Added to a response-header timeout (#6889). A provider prefilling a large
-/// or high-thinking request or loading a cold model can hold headers back
-/// longer than this wait, and transport advice alone makes that read as a
-/// broken connection.
-const COLD_MODEL_HINT: &str = "The provider may still be prefilling a large or high-thinking \
-     request or loading a cold model: wait a moment and send the message again, or allow a \
-     longer wait with `codewhale config set stream.open_timeout_secs 300` (up to 600).";
+#[must_use]
+pub fn stream_open_header_timeout(err: &anyhow::Error) -> Option<Duration> {
+    err.chain()
+        .find_map(|cause| match cause.downcast_ref::<LlmError>() {
+            Some(LlmError::HeaderTimeout { waited, .. }) => Some(*waited),
+            _ => None,
+        })
+}
 
 pub async fn open_sse_response<F, Fut>(
     open_req: &StreamOpenRequest,
@@ -334,10 +335,11 @@ where
             }
         }
         Err(_) => {
-            return Err(anyhow::Error::new(LlmError::NetworkError(format!(
-                "SSE stream request did not receive response headers after {}s; request outcome unknown. {COLD_MODEL_HINT}",
-                open_req.open_timeout.as_secs()
-            ))));
+            return Err(anyhow::Error::new(LlmError::HeaderTimeout {
+                waited: open_req.open_timeout,
+                http1: false,
+                retried: 0,
+            }));
         }
     }
     let h1_req = open_req.clone().with_h1_only();
@@ -347,10 +349,11 @@ where
     {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(err)) => Err(h1_fallback_error(err)),
-        Err(_) => Err(anyhow::Error::new(LlmError::NetworkError(format!(
-            "SSE stream request did not receive response headers after {}s on HTTP/1.1; request outcome unknown. {COLD_MODEL_HINT}",
-            h1_req.open_timeout.as_secs()
-        )))),
+        Err(_) => Err(anyhow::Error::new(LlmError::HeaderTimeout {
+            waited: h1_req.open_timeout,
+            http1: true,
+            retried: 0,
+        })),
     }
 }
 
@@ -578,7 +581,12 @@ force_http1 = {pinned}
             .expect("header stall must be a typed LlmError");
         assert!(
             !classified.is_retryable(),
-            "header stall must not be replayable: {classified:?}"
+            "the HTTP retry loop must not replay a header stall: {classified:?}"
+        );
+        assert_eq!(
+            stream_open_header_timeout(&err.context("adapter context")),
+            Some(Duration::from_millis(100)),
+            "the turn loop recognizes the header timeout by type"
         );
         assert!(text.contains("outcome unknown"), "{text}");
         assert!(

@@ -3545,6 +3545,25 @@
         "aliases": {},
         "wire_slugs": {}
       }
+    },
+    {
+      "id": "llmtr",
+      "label": "LLMTR",
+      "wire": "openai-compatible",
+      "base_url": "https://llmtr.com/v1",
+      "api_key_env": "LLMTR_API_KEY",
+      "default_model": "minimax/minimax-m3.1-flash",
+      "discovery": "models_endpoint",
+      "docs_url": "https://llmtr.com/docs/",
+      "credential_url": "https://llmtr.com/dashboard/keys",
+      "guidance": "Browse GET /v1/models for current vendor/model IDs. Use LLMTR_API_KEY for Chat Completions. Check the model’s published residency before sending data that must stay in Turkey.",
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
     }
   ],
   "constant_refs": {

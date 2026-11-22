@@ -631,6 +631,7 @@ jobs:
           set -euo pipefail
           paths=(
             web/data/latest-published-release.json
+            web/data/release-baseline.json
             docs/public-surface-facts.json
             docs/cloud-facts/stable.json
             web/lib/facts.generated.ts

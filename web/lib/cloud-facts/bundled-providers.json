@@ -1138,6 +1138,22 @@
       },
       "wire_policy": "chat_completions"
     },
+    "llmtr": {
+      "api_key_env": "LLMTR_API_KEY",
+      "auth": {
+        "env_vars": [
+          "LLMTR_API_KEY"
+        ],
+        "secret_slot": "llmtr"
+      },
+      "base_url": "https://llmtr.com/v1",
+      "credential_url": "https://llmtr.com/dashboard/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://llmtr.com/docs/",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "longcat": {
       "aliases": [
         "long-cat",
