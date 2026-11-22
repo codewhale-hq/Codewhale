@@ -5412,7 +5412,10 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
     // The variant, never the payload. Every `LlmError` variant carries the raw
     // provider HTTP body verbatim, and a 400 from a content filter routinely
     // echoes the prompt.
-    if matches!(err, LlmError::NetworkError(_) | LlmError::Timeout(_)) {
+    if matches!(
+        err,
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } | LlmError::Timeout(_)
+    ) {
         codewhale_telemetry::session_counters()
             .bump_error(codewhale_telemetry::ErrorCounter::NetworkError);
     }
@@ -5426,7 +5429,7 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
             ("rate_limited", human)
         }
         LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
-        LlmError::NetworkError(_) => (
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } => (
             "network_error",
             "network error; request outcome unknown".to_string(),
         ),
@@ -7414,9 +7417,8 @@ pub fn stream_first_response_bound(open: Duration, idle: Duration) -> Duration {
         .saturating_add(stream_entry::first_byte_timeout(idle))
 }
 
-#[cfg(test)]
 pub use stream_entry::first_byte_timeout as stream_first_byte_timeout;
-pub use stream_entry::is_stream_open_transport_failure;
+pub use stream_entry::{is_stream_open_transport_failure, stream_open_header_timeout};
 pub mod wire;
 
 // Retain the crate-visible accounting helpers at the existing client seam.

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
+
 ### Fixed
 
+- **A model request that gets no response is retried once:** when a provider sends no response headers within `stream.open_timeout_secs` (180 seconds by default), Codewhale sends the request again instead of ending the turn, and the transcript says so (`Retry attempt: stream-open-timeout 1/1; provider sent no response headers in 180s; sending the request again`). If the retry also times out, the turn fails with the same error, which now says a retry was already attempted. `stream.open_retries` sets the count (default `1`, `0` turns it off, at most `3`). The provider may have processed and billed the first request, so its usage stays recorded as unknown. Agents a session starts follow the configured `[stream]` retry counts too. In the turn log, `bound_secs` for "waiting for the model's first response" is now the timeout that request is under, and the watchdog ceiling is logged separately as `stall_after_secs`. (CW-8323)
 - **Narrow terminals keep the working clock:** at 80 and 60 columns the status row under the composer keeps `working 3s` / `using tool 12s` while a turn runs. The `Shift+Tab to change` hint, then `Esc to interrupt`, stand down first, and a connector notice shortens (`MCP · 1 failed · /mcp`) instead of taking the clock's place. (CW-8264)
 - The Resume confirmation no longer draws its border over the composer on a 60x20 terminal, and the Plugins panel footer always keeps `Esc close`, dropping the per-row hints first at 80 columns.
 

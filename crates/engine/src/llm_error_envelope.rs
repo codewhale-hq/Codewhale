@@ -27,6 +27,7 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
     });
     let timeout_ms = llm.and_then(|error| match error {
         LlmError::Timeout(duration) if !duration.is_zero() => Some(duration.as_millis()),
+        LlmError::HeaderTimeout { waited, .. } => Some(waited.as_millis()),
         _ => None,
     });
     let mut envelope = match error.downcast::<LlmError>() {
@@ -91,6 +92,13 @@ impl From<LlmError> for ErrorEnvelope {
                 false,
                 "llm_network_error",
                 message,
+            ),
+            LlmError::HeaderTimeout { .. } => Self::new(
+                ErrorCategory::Network,
+                ErrorSeverity::Error,
+                false,
+                "llm_network_error",
+                value.header_timeout_message(),
             ),
             LlmError::ConnectError {
                 message, transient, ..

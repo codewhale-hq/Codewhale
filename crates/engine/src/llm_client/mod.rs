@@ -426,6 +426,12 @@ pub enum LlmError {
     /// Network connectivity error
     NetworkError(String),
 
+    HeaderTimeout {
+        waited: Duration,
+        http1: bool,
+        retried: u32,
+    },
+
     ConnectError {
         message: String,
         transient: bool,
@@ -511,6 +517,9 @@ impl std::fmt::Display for LlmError {
                 write!(f, "Server error ({status}): {message}")
             }
             LlmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            LlmError::HeaderTimeout { .. } => {
+                write!(f, "Network error: {}", self.header_timeout_message())
+            }
             LlmError::ConnectError { message, .. } => {
                 write!(f, "Connection failed before request dispatch: {message}")
             }
@@ -538,7 +547,38 @@ impl std::fmt::Display for LlmError {
 
 impl std::error::Error for LlmError {}
 
+/// Added to a response-header timeout (#6889). A provider prefilling a large
+/// or high-thinking request or loading a cold model can hold headers back
+/// longer than this wait, and transport advice alone makes that read as a
+/// broken connection.
+const COLD_MODEL_HINT: &str = "The provider may still be prefilling a large or high-thinking \
+     request or loading a cold model: wait a moment and send the message again, or allow a \
+     longer wait with `codewhale config set stream.open_timeout_secs 300` (up to 600).";
+
 impl LlmError {
+    pub(crate) fn header_timeout_message(&self) -> String {
+        let Self::HeaderTimeout {
+            waited,
+            http1,
+            retried,
+        } = self
+        else {
+            return String::new();
+        };
+        let protocol = if *http1 { " on HTTP/1.1" } else { "" };
+        let retried = match retried {
+            0 => String::new(),
+            1 => " It was already retried once automatically and timed out again.".to_string(),
+            count => format!(
+                " It was already retried {count} times automatically and timed out each time."
+            ),
+        };
+        format!(
+            "SSE stream request did not receive response headers after {}s{protocol}; request outcome unknown.{retried} {COLD_MODEL_HINT}",
+            waited.as_secs()
+        )
+    }
+
     fn for_recovery_budget(self, remaining: Duration) -> Self {
         if let Self::RateLimited {
             message,
@@ -1914,7 +1954,9 @@ pub fn retry_reason_summary(error: &LlmError) -> String {
     match error {
         LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => "rate limited".into(),
         LlmError::ServerError { status, .. } => format!("upstream {status}"),
-        LlmError::NetworkError(_) => "network error; request outcome unknown".into(),
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } => {
+            "network error; request outcome unknown".into()
+        }
         LlmError::ConnectError { .. } => "connection failed before dispatch".into(),
         LlmError::Timeout(_) => "timeout".into(),
         _ => "non-retryable provider failure".into(),

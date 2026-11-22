@@ -51,6 +51,7 @@ struct TurnLoopProgress {
     empty_stop_retries: u32,
     reasoning_only_nudge: Option<String>,
     stream_retry_budget: StreamRetryBudget,
+    stream_open_timeout_retry_budget: StreamRetryBudget,
     image_omission_notified: bool,
     child_request_retries: crate::tools::subagent::engine::ChildRequestRetries,
 }
@@ -1987,13 +1988,16 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-open retry budget: only a typed transient connection
-        // failure proven to precede dispatch can spend it. An opened stream
+        // Outer stream-open retry budgets: a typed transient connection
+        // failure proven to precede dispatch spends the first, a typed
+        // response-header timeout spends the second. An opened stream
         // never reissues its request automatically.
-        // `StreamRetryBudget` enforces that bound in mechanism —
+        // `StreamRetryBudget` enforces each bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
             StreamRetryBudget::with_limit(self.config.stream_retry_limits.max_resumes);
+        let stream_open_timeout_retry_budget =
+            StreamRetryBudget::with_limit(self.config.stream_retry_limits.open_retries);
         // The user hears about images the route cannot see once per turn,
         // not once per step and not for images replayed from history.
         let image_omission_notified = false;
@@ -2017,6 +2021,7 @@ impl Engine {
             empty_stop_retries,
             reasoning_only_nudge,
             stream_retry_budget,
+            stream_open_timeout_retry_budget,
             image_omission_notified,
             child_request_retries: Default::default(),
         };
@@ -7236,6 +7241,11 @@ fn awaiting_model_bound(config: &EngineConfig) -> Duration {
         config.stream_chunk_timeout,
     )
     .saturating_add(super::turn_heartbeat::STALL_BOUND_GRACE)
+}
+
+fn first_stream_event_timeout(config: &EngineConfig) -> Duration {
+    crate::client::stream_first_byte_timeout(config.stream_chunk_timeout)
+        .min(stream_chunk_timeout_budget(config).1)
 }
 
 /// Whether a per-tool pre-execution snapshot should be taken before running

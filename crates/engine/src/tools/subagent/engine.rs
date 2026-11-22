@@ -1874,6 +1874,8 @@ pub(super) async fn run_child_agent(
         max_steps: codewhale_runtime::turn_budget::resolve_max_model_steps(Some(max_steps)),
         compaction: runtime.compaction.clone(),
         subagent_api_timeout: runtime.step_api_timeout,
+        stream_retry_limits: api.stream_retry_limits(),
+        stream_open_timeout: api.stream_open_timeout(),
         auto_review_policy: runtime.auto_review_policy.as_ref().clone(),
         tools_always_load: allowed_tools.iter().flatten().cloned().collect(),
         reasoning_only_max_reprompts: api.reasoning_only_max_reprompts(),

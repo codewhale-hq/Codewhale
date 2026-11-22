@@ -22787,6 +22787,7 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
         Some(LlmError::NetworkError(_))
+        | Some(LlmError::HeaderTimeout { .. })
         | Some(LlmError::ConnectError { .. })
         | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {

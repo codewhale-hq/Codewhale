@@ -518,12 +518,13 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// Proven pre-dispatch open retries from `[stream].max_resumes` and
+    /// response-header-timeout retries from `[stream].open_retries`.
     /// The parsed max_transparent_retries/max_errors values are inactive
     /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
-    /// `[tui].stream_open_timeout_secs`, then
+    /// `[stream].open_timeout_secs`, then
     /// `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`; only the awaiting-model
     /// heartbeat bound reads it here — the client owns the real timeout.
     pub stream_open_timeout: Duration,

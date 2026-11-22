@@ -8,6 +8,13 @@
 //! overdue bounded phase into a log line, a stall record under `crashes/`, and
 //! a status event naming the phase.
 //!
+//! While a request waits on the provider, the logged `bound_secs` is the
+//! timeout that request is under (the response-header wait, then the wait for
+//! the first stream event), and `stall_after_secs` is when this watchdog steps
+//! in. The watchdog allows more than one header wait because the client may
+//! send the request again inside one open (HTTP/1.1 fallback, HTTP retries);
+//! it does not track those sends individually.
+//!
 //! Phases that are owned by their own bound elsewhere — a tool batch (per-tool
 //! timeouts plus the UI tool-hang watchdog), a compaction pass, a human
 //! approval — are declared *parked* (`bound = None`) and never reported here.
@@ -87,6 +94,7 @@ struct HeartbeatState {
     phase: TurnPhase,
     detail: Option<String>,
     bound: Option<Duration>,
+    declared: Option<Duration>,
     last_progress: Instant,
     turn_id: Option<String>,
     provider_request: Option<String>,
@@ -131,6 +139,7 @@ impl Default for TurnHeartbeat {
                 phase: TurnPhase::Idle,
                 detail: None,
                 bound: None,
+                declared: None,
                 last_progress: Instant::now(),
                 turn_id: None,
                 provider_request: None,
@@ -174,12 +183,24 @@ impl TurnHeartbeat {
     /// Enter `phase`. `bound = None` declares a parked wait that this watchdog
     /// never reports.
     pub fn enter(&self, phase: TurnPhase, detail: Option<String>, bound: Option<Duration>) {
+        self.enter_declared(phase, detail, bound, bound);
+    }
+
+    pub fn enter_declared(
+        &self,
+        phase: TurnPhase,
+        detail: Option<String>,
+        declared: Option<Duration>,
+        bound: Option<Duration>,
+    ) {
         let changed = self.with_state(|state| {
             let changed =
-                (state.phase != phase || state.detail != detail).then(|| state.turn_id.clone());
+                (state.phase != phase || state.detail != detail || state.declared != declared)
+                    .then(|| state.turn_id.clone());
             state.phase = phase;
             state.detail = detail.clone();
             state.bound = bound;
+            state.declared = declared;
             state.last_progress = Instant::now();
             state.progress_seq = state.progress_seq.wrapping_add(1);
             state.stall = None;
@@ -191,7 +212,8 @@ impl TurnHeartbeat {
                 turn_id = turn_id.as_deref().unwrap_or(""),
                 phase = phase.label(),
                 detail = detail.as_deref().unwrap_or(""),
-                bound_secs = bound.map_or(0, |bound| bound.as_secs()),
+                bound_secs = declared.map_or(0, |bound| bound.as_secs()),
+                stall_after_secs = bound.map_or(0, |bound| bound.as_secs()),
                 "turn phase"
             );
         }

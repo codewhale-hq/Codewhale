@@ -10955,6 +10955,7 @@ fn stream_settings_are_typed_nested_and_fail_without_mutation() {
     for (key, value) in [
         ("stream.max_resumes", "-1"),
         ("stream.max_resumes", "4294967296"),
+        ("stream.open_retries", "4294967296"),
         ("stream.force_http1", "flase"),
         ("stream.tcp_keepalive_secs", "1.5"),
         ("stream.open_timout_secs", "45"),

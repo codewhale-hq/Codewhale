@@ -1416,6 +1416,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def("stream_chunk_timeout_secs", SettingKind::Int, "900", None),
     // Canonical transport keys. Runtime resolution stays in TUI Config.
     def("stream.open_timeout_secs", SettingKind::Int, "180", None),
+    def("stream.open_retries", SettingKind::Int, "1", None),
     def("stream.chunk_timeout_secs", SettingKind::Int, "900", None),
     def("stream.max_resumes", SettingKind::Int, "3", None),
     def(
