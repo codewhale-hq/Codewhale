@@ -1,5 +1,5 @@
 {
-  "tag": "v0.10.2",
+  "tag": "v0.10.3",
   "slugs": [
     "first-time",
     "install",
@@ -26,6 +26,7 @@
     "memory",
     "read-media",
     "github-action",
+    "cloud-dispatch",
     "troubleshooting",
     "contribution",
     "runtime-reference",
@@ -35,7 +36,5 @@
     "constitution",
     "tools"
   ],
-  "omitted": [
-    "cloud-dispatch"
-  ]
+  "omitted": []
 }
