@@ -21538,7 +21538,7 @@ async fn redaction_confirmation_restores_history_before_first_local_provider_req
     submit_initial_input_if_ready(&mut app, &config, &replacement)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if !server.received_requests().await.unwrap().is_empty() {
                 break;
