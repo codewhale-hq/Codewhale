@@ -75,6 +75,24 @@ pub(super) fn ensure_active_entry(app: &mut App) -> usize {
         if card_is_the_live_tail(app, idx) {
             return idx;
         }
+        // Translation shows a placeholder on the card and fills it only when
+        // `ThinkingComplete` names that card, which it now cannot: the pointer
+        // is about to move to the new card. Hand the settled card the text it
+        // already received so it stops re-framing a placeholder nothing will
+        // replace. `ThinkingDelta` splits before it records a delta, so the
+        // buffer holds only this card's text here.
+        if app.translation_enabled {
+            let original = app.reasoning_buffer.clone();
+            if !original.is_empty() {
+                if let Some(active) = app.active_cell.as_mut()
+                    && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
+                {
+                    *content = original;
+                }
+                app.bump_active_cell_revision();
+                stash_reasoning_buffer_into_last_reasoning(app);
+            }
+        }
         finalize_current(app);
     }
     if app.active_cell.is_none() {
@@ -690,7 +708,103 @@ mod tests {
         app.streaming_thinking_active_entry = Some(first);
 
         let fresh = ensure_active_entry(&mut app);
-        assert_eq!(fresh, 0, "a stale index must not be handed back");
+        assert_eq!(
+            app.active_cell
+                .as_ref()
+                .map_or(0, |active| active.entry_count()),
+            1,
+            "a stale pointer must open exactly one card, not reuse the dead index"
+        );
         assert_eq!(thinking_content(&app, fresh), "");
+    }
+
+    /// The bytes a beat has not revealed yet were all received before the
+    /// sibling, so the split must land them in the card above it. Only the
+    /// delta that triggers the split belongs to the new card.
+    #[test]
+    fn issue_7454_unrevealed_bytes_stay_in_the_card_above_the_tool() {
+        let mut app = test_app();
+
+        let first = ensure_active_entry(&mut app);
+        app.streaming_state.reset();
+        app.streaming_state.start_thinking(0);
+        app.streaming_state.push_content(0, "above the tool");
+
+        let active = app.active_cell.as_mut().expect("active cell");
+        let _ = active.push_tool(
+            "t1",
+            HistoryCell::System {
+                content: "running".to_string(),
+            },
+        );
+
+        // The handler's order: split, and the split drains what was pending.
+        let second = ensure_active_entry(&mut app);
+        assert_ne!(second, first);
+        assert_eq!(
+            thinking_content(&app, first),
+            "above the tool",
+            "bytes received before the sibling stay above it"
+        );
+        assert_eq!(
+            thinking_content(&app, second),
+            "",
+            "the new card starts with nothing"
+        );
+        assert_eq!(
+            app.streaming_state.pending_len(0),
+            0,
+            "the split leaves no pending bytes behind"
+        );
+    }
+
+    /// #7454, translation: the settled card cannot be the translation target any
+    /// more, so it must show its own text instead of re-framing a placeholder
+    /// nothing will ever replace. The delta that triggers the split belongs to
+    /// the new card: `ThinkingDelta` splits before it records the text.
+    #[test]
+    fn issue_7454_a_split_card_shows_its_text_instead_of_a_placeholder() {
+        let mut app = test_app();
+        app.translation_enabled = true;
+
+        let first = ensure_active_entry(&mut app);
+        set_placeholder(&mut app, first);
+
+        // Delta 1, in handler order: split (a no-op here), then record.
+        app.reasoning_buffer.push_str("first段");
+        app.streaming_state.push_content(0, "first段");
+
+        let active = app.active_cell.as_mut().expect("active cell");
+        let _ = active.push_tool(
+            "t1",
+            HistoryCell::System {
+                content: "running".to_string(),
+            },
+        );
+
+        // Delta 2, in handler order: split first, then record.
+        let second = ensure_active_entry(&mut app);
+        app.reasoning_buffer.push_str("second段");
+
+        assert_ne!(second, first, "the split must open a new card");
+        assert_eq!(
+            thinking_content(&app, first),
+            "first段",
+            "the settled card keeps its own text, not a spinning placeholder"
+        );
+        assert_eq!(
+            app.last_reasoning.as_deref(),
+            Some("first段"),
+            "the settled card's text moves to last_reasoning"
+        );
+        assert_eq!(
+            app.reasoning_buffer, "second段",
+            "the delta that triggered the split belongs to the new card"
+        );
+        assert_eq!(
+            thinking_content(&app, second),
+            "",
+            "the new card starts empty so its own translation lands there"
+        );
     }
 }
