@@ -37637,3 +37637,237 @@ async fn approval_prompt_docks_one_row_and_emits_settled_receipt() {
     assert!(!rendered_line.contains('\u{202e}'), "{rendered_line:?}");
     assert!(rendered_line.contains("RLO"), "{rendered_line:?}");
 }
+
+/// A gateway can open a text block inside a thinking stream. The reasoning
+/// that arrives afterwards must return to a thinking card, not continue
+/// inside the prose body (#7123, opposite ordering).
+#[test]
+fn reasoning_after_an_interposed_text_block_returns_to_a_thinking_card() {
+    use crate::tui::ui::frame::{
+        append_streaming_text, commit_streaming_display_tick,
+        ensure_streaming_assistant_history_cell,
+    };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
+
+    let mut app = create_test_app();
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    // One clock, one time base: `note_delta` schedules the next beat at
+    // `last_commit_at + interval`, so a second beat taken at a fresh
+    // `Instant::now()` lands before it is due and commits nothing.
+    let t0 = Instant::now();
+
+    // 1. The first half of the sentence reaches its card the way a delta does:
+    //    buffered, then taken by a display beat.
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let first_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.streaming_state.push_content(0, "first half. ");
+    clock.note_delta(t0);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(50));
+
+    // 2. The gateway opens a text block mid-reasoning: MessageStarted
+    //    finalizes the live entry and starts a text block.
+    crate::tui::streaming_thinking::finalize_current(&mut app);
+    app.streaming_state.reset();
+    app.streaming_state.start_text(0);
+
+    // 3. The rest of the reasoning arrives. Without the resync it would be
+    //    committed into the prose body, because block 0 is marked text.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, true),
+        "the block kind must be taken back"
+    );
+    let second_entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.streaming_state.push_content(0, "second half.");
+    clock.note_delta(t0 + Duration::from_millis(60));
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, t0 + Duration::from_millis(200));
+
+    let first = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(first_entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {first_entry}: {other:?}"),
+    };
+    let second = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(second_entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {second_entry}: {other:?}"),
+    };
+    assert_eq!(first, "first half. ", "the first half keeps its card");
+    assert_eq!(
+        second, "second half.",
+        "reasoning after an interposed text block must stay in a thinking cell"
+    );
+
+    // 4. Commit the active cell to history and verify the split did not happen
+    //    there: a real assistant cell exists, and it holds no reasoning.
+    app.flush_active_cell();
+    let message_index = ensure_streaming_assistant_history_cell(&mut app);
+    append_streaming_text(&mut app, message_index, "answer");
+    assert!(
+        app.history.iter().any(|cell| {
+            matches!(cell, HistoryCell::Assistant { content, .. } if content.contains("answer"))
+        }),
+        "the assistant cell must hold the answer"
+    );
+    let prose_has_reasoning = app.history.iter().any(|cell| {
+        matches!(cell, HistoryCell::Assistant { content, .. } if content.contains("second half."))
+    });
+    assert!(
+        !prose_has_reasoning,
+        "the assistant cell must not absorb reasoning text"
+    );
+}
+
+/// A kind change inside one live block closes the reasoning card: the spinner
+/// must not keep turning, and the reasoning must survive for replay.
+#[test]
+fn a_relabel_to_text_finishes_the_reasoning_card() {
+    let mut app = create_test_app();
+
+    // `ThinkingDelta` records the text in `reasoning_buffer` and then buffers
+    // it for display; both are needed for `last_reasoning` to be populated.
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning");
+    app.streaming_state.push_content(0, "reasoning");
+
+    // Prose arrives with no MessageStarted between: a gateway switching kinds
+    // inside one block.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, false),
+        "the block kind must be taken back"
+    );
+
+    assert_eq!(
+        app.streaming_thinking_active_entry, None,
+        "the reasoning entry must be finalized"
+    );
+    let streaming = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(entry))
+    {
+        Some(HistoryCell::Thinking {
+            streaming, content, ..
+        }) => {
+            assert_eq!(
+                content, "reasoning",
+                "the pending tail reaches the card once"
+            );
+            *streaming
+        }
+        other => panic!("expected a thinking entry at {entry}: {other:?}"),
+    };
+    assert!(!streaming, "the card must not keep its spinner");
+    assert_eq!(
+        app.last_reasoning.as_deref(),
+        Some("reasoning"),
+        "the reasoning text must survive for replay"
+    );
+    assert!(
+        app.reasoning_buffer.is_empty(),
+        "the stash clears the buffer"
+    );
+}
+
+/// The same flip under translation leaves the card's entry and buffer alone.
+///
+/// This is the helper's contract, not a fix for translation: on the real path
+/// `MessageDelta` calls `flush_active_cell` right after the resync, which takes
+/// the entry anyway. A relabel must not clear it *earlier* than that.
+#[test]
+fn a_relabel_to_text_keeps_the_card_alive_under_translation() {
+    let mut app = create_test_app();
+    app.translation_enabled = true;
+
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning");
+    app.streaming_state.push_content(0, "reasoning");
+
+    assert!(crate::tui::streaming_thinking::resync_block_kind(
+        &mut app, false
+    ));
+
+    assert_eq!(
+        app.streaming_thinking_active_entry,
+        Some(entry),
+        "the entry must stay live so ThinkingComplete can translate it"
+    );
+    assert_eq!(
+        app.reasoning_buffer, "reasoning",
+        "the buffer must survive for the translation pass"
+    );
+}
+
+/// The mirror case: a thinking block opens mid-prose, then more prose arrives.
+#[test]
+fn prose_after_an_interposed_thinking_block_returns_to_the_assistant_cell() {
+    use crate::tui::ui::frame::{
+        append_streaming_text, commit_streaming_display_tick,
+        ensure_streaming_assistant_history_cell,
+    };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
+
+    let mut app = create_test_app();
+
+    app.streaming_state.reset();
+    app.streaming_state.start_text(0);
+    app.streaming_state.push_content(0, "answer start. ");
+    let message_index = ensure_streaming_assistant_history_cell(&mut app);
+    let first = app.streaming_state.commit_text(0, usize::MAX);
+    append_streaming_text(&mut app, message_index, &first);
+
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.reasoning_buffer.push_str("reasoning tail. ");
+    app.streaming_state.push_content(0, "reasoning tail. ");
+
+    // Prose arrives with no MessageStarted between. The relabel must first hand
+    // the buffered reasoning to its own card, then route the prose to the
+    // assistant cell.
+    assert!(
+        crate::tui::streaming_thinking::resync_block_kind(&mut app, false),
+        "the block kind must be taken back"
+    );
+    app.streaming_state.push_content(0, "answer tail.");
+
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    let now = Instant::now();
+    clock.note_delta(now);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, now + Duration::from_millis(50));
+
+    let prose = match app.history.get(message_index) {
+        Some(HistoryCell::Assistant { content, .. }) => content.clone(),
+        other => panic!("expected the assistant cell at {message_index}: {other:?}"),
+    };
+    assert!(
+        prose.contains("answer tail."),
+        "prose after an interposed thinking block must stay in the assistant cell: {prose:?}"
+    );
+    assert!(
+        !prose.contains("reasoning tail."),
+        "the assistant cell must not absorb the reasoning tail: {prose:?}"
+    );
+    let card = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {entry}: {other:?}"),
+    };
+    assert_eq!(
+        card, "reasoning tail. ",
+        "the buffered reasoning must reach its own card before the relabel"
+    );
+}

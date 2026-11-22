@@ -15,10 +15,12 @@
 //! What replaced it is not that policy: it takes a measured slice per beat
 //! instead of deciding between two gears.
 //!
-//! Buffering never changes what the model emitted. `accumulated_text` and
-//! `accumulated_thinking` always track the full raw stream, so anything
-//! building API messages or retrying sees the whole receipt regardless of how
-//! much of it is currently visible.
+//! Buffering never changes what the model emitted: a delta reaches a cell only
+//! when a commit beat takes it, but the bytes are never dropped. The
+//! `accumulated_text` / `accumulated_thinking` counters on [`StreamingState`]
+//! are diagnostic only — nothing in the product reads them — and
+//! [`StreamingState::reset`] clears them at a block boundary, so they describe
+//! the current block rather than the whole response.
 //!
 //! # Known limitations
 //!
@@ -329,9 +331,13 @@ pub struct StreamingState {
     blocks: Vec<Option<BlockState>>,
     /// Whether any stream is currently active
     pub is_active: bool,
-    /// Accumulated text for display
+    /// Per-kind byte totals for the current block. Diagnostic only: replay
+    /// reads `App::last_reasoning` and `current_streaming_text`, not these, and
+    /// `reset` clears them at every block boundary. A relabel leaves the bytes
+    /// already collected under the old kind, so after one they no longer match
+    /// the block's current kind.
     pub accumulated_text: String,
-    /// Accumulated thinking for display
+    /// See [`StreamingState::accumulated_text`].
     pub accumulated_thinking: String,
 }
 
@@ -366,9 +372,10 @@ impl StreamingState {
 
     /// Push content to a block.
     ///
-    /// `accumulated_text` / `accumulated_thinking` always track the full raw
-    /// stream so callers building API messages or doing retries see exactly
-    /// what the model emitted, regardless of UI pacing.
+    /// The bytes land in the display buffer and in the block's own accumulated
+    /// counter, which follows the routed kind. The counters are diagnostic —
+    /// replay reads `App::last_reasoning` and `current_streaming_text` — and
+    /// [`StreamingState::reset`] clears them at every block boundary.
     pub fn push_content(&mut self, index: usize, content: &str) {
         if let Some(Some(block)) = self.blocks.get_mut(index) {
             if block.is_thinking {
@@ -387,6 +394,27 @@ impl StreamingState {
         match self.blocks.get_mut(index) {
             Some(Some(block)) => block.buffer.take_up_to(budget),
             _ => String::new(),
+        }
+    }
+
+    /// Re-label the block at `index` without disturbing anything else.
+    ///
+    /// A block's kind is normally decided by its start event, but a gateway
+    /// can open a text block inside a thinking stream (or the reverse) and
+    /// keep sending deltas of the first kind. `reset` clears every block and
+    /// both accumulated counters; a relabel touches one block's routed kind and
+    /// replaces its pending buffer. The caller must deliver that pending tail
+    /// to the cell the old kind owned first: it is discarded here.
+    pub fn set_block_kind(&mut self, index: usize, is_thinking: bool) {
+        self.ensure_capacity(index);
+        match self.blocks.get_mut(index) {
+            Some(Some(block)) => {
+                block.is_thinking = is_thinking;
+                block.is_streaming = true;
+                block.buffer = StreamBuffer::new();
+                self.is_active = true;
+            }
+            _ => self.start_block(index, is_thinking),
         }
     }
 
@@ -455,6 +483,73 @@ impl StreamingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_block_kind_reroutes_the_next_delta() {
+        let mut state = StreamingState::new();
+        state.start_text(0);
+        state.push_content(0, "prose ");
+        assert!(!state.block_is_thinking(0));
+
+        // The caller delivers the pending tail to the cell the old kind owned
+        // before relabeling; the relabel installs a fresh buffer and routes the
+        // next delta to the other kind.
+        assert_eq!(state.finalize_block_text(0), "prose ");
+        state.set_block_kind(0, true);
+        assert!(state.block_is_thinking(0));
+
+        state.push_content(0, "reasoning");
+        assert_eq!(state.commit_text(0, usize::MAX), "reasoning");
+
+        // And back again: prose after an interposed thinking block.
+        assert_eq!(state.finalize_block_text(0), "");
+        state.set_block_kind(0, false);
+        assert!(!state.block_is_thinking(0));
+        state.push_content(0, "tail");
+        assert_eq!(state.commit_text(0, usize::MAX), "tail");
+    }
+
+    /// A second beat must be taken on one time base. `note_delta` schedules the
+    /// next beat at `last_commit_at + interval`, so a caller that re-reads the
+    /// wall clock between beats and ticks at `now + 50ms` can land before the
+    /// beat is due and commit nothing — the delta then sits in the buffer until
+    /// some later beat.
+    #[test]
+    fn a_second_beat_needs_one_time_base_not_a_fresh_wall_clock() {
+        let interval = Duration::from_millis(33);
+        let t0 = Instant::now();
+
+        let mut clock = StreamDisplayClock::new(interval);
+        clock.note_delta(t0);
+        assert!(clock.take_due(t0 + Duration::from_millis(50)));
+
+        // The wrong shape: schedule from a moment inside the interval, then tick
+        // before `last_commit + interval` has passed.
+        clock.note_delta(t0 + Duration::from_millis(55));
+        assert!(
+            !clock.take_due(t0 + Duration::from_millis(60)),
+            "a tick inside the interval must not commit"
+        );
+
+        // The right shape: one base, and a tick past `last_commit + interval`.
+        let mut clock = StreamDisplayClock::new(interval);
+        let mut state = StreamingState::new();
+        state.start_thinking(0);
+        state.push_content(0, "first half. ");
+        clock.note_delta(t0);
+        assert!(clock.take_due(t0 + Duration::from_millis(50)));
+        let first = state.commit_text(0, reveal_budget(interval, state.pending_len(0)));
+        assert_eq!(first, "first half. ");
+
+        state.push_content(0, "second half.");
+        clock.note_delta(t0 + Duration::from_millis(60));
+        assert!(
+            clock.take_due(t0 + Duration::from_millis(200)),
+            "a tick past the interval must be due"
+        );
+        let second = state.commit_text(0, reveal_budget(interval, state.pending_len(0)));
+        assert_eq!(second, "second half.");
+    }
 
     #[test]
     fn assistant_text_streams_before_newline() {
