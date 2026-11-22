@@ -3088,16 +3088,19 @@ pub(crate) async fn run_event_loop(
                         if sanitized.is_empty() {
                             continue;
                         }
-                        app.reasoning_buffer.push_str(&sanitized);
-                        if app.reasoning_header.is_none() {
-                            app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
-                        }
-
                         // The kind comes from the start event alone, so a
                         // gateway that opened a text block mid-reasoning
                         // leaves block 0 marked text (#7123).
                         streaming_thinking::resync_block_kind(app, true);
+                        // #7454: split before recording the delta. The split
+                        // writes the settled card's text from `reasoning_buffer`,
+                        // so a delta recorded first would be attributed to the
+                        // card above the tool and the new card would start empty.
                         streaming_thinking::ensure_active_entry(app);
+                        app.reasoning_buffer.push_str(&sanitized);
+                        if app.reasoning_header.is_none() {
+                            app.reasoning_header = extract_reasoning_header(&app.reasoning_buffer);
+                        }
                         app.streaming_state.push_content(0, &sanitized);
                         stream_display_clock.note_delta(Instant::now());
                         received_engine_event = redraw_requested_before_event;
