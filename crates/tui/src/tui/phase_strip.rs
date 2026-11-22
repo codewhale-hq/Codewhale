@@ -1146,10 +1146,18 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     // The right slot: the live status toast if one is owed, else the compact
     // MCP or plugin boot chip, else the remote-control state when it is on.
     // Clause-shed against half the row — the posture facts own the other
-    // half.
+    // half — and, while a turn runs, against what the turn clock leaves.
     let notice_budget = (usize::from(width) / 2)
         .max(8)
         .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
+    let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);
+    let beside_clock = turn_clock.as_ref().map(|(clock, _)| {
+        usize::from(width).saturating_sub(permission_chip.0.width() + clock.width() + 8)
+    });
+    let beside_hint = beside_clock.zip(hint.as_ref()).map(|(budget, (hint, _))| {
+        notice_budget.min(budget.saturating_sub(hint.width() + ITEM_SEPARATOR_WIDTH))
+    });
+    let notice_budget = beside_clock.map_or(notice_budget, |budget| notice_budget.min(budget));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
         .map(|(text, fallbacks, ink, urgent)| {
             (
@@ -1180,7 +1188,15 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
                 .map(|chip| (chip.text, Vec::new(), boot_activity_ink(chip.level), false))
         })
         .and_then(|(text, fallbacks, ink, urgent)| {
-            fit_notice_candidates(&text, &fallbacks, notice_budget, urgent)
+            beside_hint
+                .and_then(|budget| {
+                    std::iter::once(&text)
+                        .chain(&fallbacks)
+                        .map(|candidate| candidate.trim())
+                        .find(|candidate| !candidate.is_empty() && candidate.width() <= budget)
+                        .map(str::to_string)
+                })
+                .or_else(|| fit_notice_candidates(&text, &fallbacks, notice_budget, urgent))
                 .map(|fitted| (fitted, ink))
         })
         .or_else(|| {
@@ -1196,7 +1212,6 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             }
         });
 
-    let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);
     let (counts, count_actions) = live_counts(app, tier);
     TidelineFooterFacts {
         permission_chip,

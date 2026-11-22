@@ -286,8 +286,8 @@
         "sha256": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
       },
       "src/components/posture.rs": {
-        "reason": "Update metric and hover styling",
-        "sha256": "dd5f4bcf0c40739f72ffa540bc5acf62a6cc2d6bd905395d0ec44dac725fd51c"
+        "reason": "Update metric and hover styling; turn clock sheds after hints and counts and is never covered by the right notice",
+        "sha256": "5f93ae93ad2cc32103a99d3c23bf01c239d218e75efb8eec5b6a8916c967f3ab"
       },
       "src/components/native_chrome.rs": {
         "reason": "u64 total",

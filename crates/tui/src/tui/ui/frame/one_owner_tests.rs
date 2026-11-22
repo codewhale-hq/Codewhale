@@ -173,12 +173,12 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
             ("permission chip", format!("● {permission}")),
             ("model", model),
             ("cost", super::session_cost_label(&app)),
-            ("agent count", "2 agents".to_string()),
             ("ttft", "ttft 400ms".to_string()),
         ];
         facts.push(("context reading", format!("context {pct}%")));
         facts.push(("output rate", "40 avg tok/s".to_string()));
         if width >= 120 {
+            facts.push(("agent count", "2 agents".to_string()));
             facts.push((
                 "help hint",
                 crate::tui::shell_key_routing::info_help_hint(app.ui_locale),
@@ -225,30 +225,25 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
         );
         // The bar carries the working clock (#5914) — how long the current
         // turn has been doing what it is doing, and how long the session has
-        // worked. Both halves shed before the hint and the counts, so a
-        // narrow row keeps the affordances and drops the stopwatch. When
-        // both would paint, the session half needs ~125 columns here (the
-        // running hint also names the agent arrows, `← for agents · ↓ to
-        // manage`) and the turn half ~200; each paints in exactly one row wherever it
-        // paints. The metrics line carries no repository, branch or provider.
+        // worked. The turn half is the last live fact to shed (CW-8264), so
+        // it paints at every width here; against this fixture's pinned scope
+        // notice the counts need 120 columns beside it. The session half
+        // sheds first and needs ~175 with the running hint, which also names
+        // the agent arrows (`← for agents · ↓ to manage`). Each paints in
+        // exactly one row wherever it paints. The metrics line carries no
+        // repository, branch or provider.
         // First turn: the turn half names the phase and stays; the session
         // reading is the identical duration, so it is suppressed rather than
-        // stated twice (#6041). With no session half to paint, the turn
-        // clock sheds at the session rung (#6084) rather than first — but
-        // against this fixture's pinned scope notice, turn+counts+hint is
-        // still just over a 120-column budget, so the hint wins here and
-        // the turn half needs ~160. The shed-order contract itself lives
-        // in tideline_tests.
+        // stated twice (#6041). The shed-order contract itself lives in
+        // tideline_tests.
         let turn_needle = "agents underway 1m 15s";
-        if width >= 160 {
-            assert!(rows[posture].contains(turn_needle), "{}", rows[posture]);
-            assert_eq!(
-                count_rows_containing(&rows, turn_needle),
-                1,
-                "{width}x{height}: {turn_needle:?} paints in exactly one row:\n{}",
-                rows.join("\n")
-            );
-        }
+        assert!(rows[posture].contains(turn_needle), "{}", rows[posture]);
+        assert_eq!(
+            count_rows_containing(&rows, turn_needle),
+            1,
+            "{width}x{height}: {turn_needle:?} paints in exactly one row:\n{}",
+            rows.join("\n")
+        );
         assert!(
             !rows[posture].contains("worked 1m 15s"),
             "{width}x{height}: the duplicate session reading must not be stated: {}",
@@ -259,7 +254,7 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
         let mut worked = working_app();
         worked.cumulative_turn_duration = Duration::from_secs(60);
         let rows = draw(&mut worked, width, height);
-        if width >= 160 {
+        if width >= 200 {
             let worked_needle = "worked 2m 15s";
             assert!(rows[posture].contains(worked_needle), "{}", rows[posture]);
             assert_eq!(
@@ -269,11 +264,7 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
                 rows.join("\n")
             );
         }
-        // With both clock halves and the running arrow hints, the turn half
-        // needs more than 160 columns.
-        if width >= 200 {
-            assert!(rows[posture].contains(turn_needle), "{}", rows[posture]);
-        }
+        assert!(rows[posture].contains(turn_needle), "{}", rows[posture]);
         assert!(!rows[metrics].contains('⑂'), "{}", rows[metrics]);
         // No dead key hints anywhere in the frame.
         for row in &rows {
@@ -363,7 +354,7 @@ fn context_cap_warns_once_in_the_posture_bar() {
 fn double_tap_window_shows_the_send_now_hint() {
     let mut app = working_app();
     app.arm_double_tap_window();
-    let rows = draw(&mut app, 120, 32);
+    let rows = draw(&mut app, 160, 32);
     let composer = app.viewport.last_composer_area.unwrap().bottom() as usize;
     assert!(
         rows[composer].contains("Enter again to send now · Ctrl+Enter steers"),

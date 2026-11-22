@@ -2123,6 +2123,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     };
     let cursor_pos = composer_plan.cursor.map(|pos| (pos.x, pos.y));
     app.viewport.last_composer_area = Some(body_chunks[composer_slot]);
+    app.view_stack
+        .set_composer_top(Some(body_chunks[composer_slot].y));
     app.viewport.last_composer_content = Some(composer_plan.geometry.inner);
     app.viewport.last_composer_scroll_offset = composer_plan.scroll_offset;
     app.viewport.last_composer_top_padding = composer_plan.top_padding;

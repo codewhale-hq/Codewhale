@@ -19,16 +19,16 @@ use crate::{Paint, Role, Theme, TuiInk, glyphs, text};
 const ITEM_JOIN: &str = "   ";
 const COUNT_JOIN: &str = ", ";
 const HELP_GAP: usize = 2;
-const SHED_TURN_CLOCK: u8 = 1;
-const SHED_SESSION_CLOCK: u8 = 2;
-const SHED_PERMISSION_KEY: u8 = 3;
-const SHED_HINT: u8 = 4;
-const SHED_COUNTS: u8 = 5;
+const SHED_SESSION_CLOCK: u8 = 1;
+const SHED_PERMISSION_KEY: u8 = 2;
+const SHED_HINT: u8 = 3;
+const SHED_COUNTS: u8 = 4;
+const SHED_TURN_CLOCK: u8 = 5;
 const SHED_CAP_WARNING: u8 = 6;
 const SHED_MODE_KEY: u8 = 7;
 const SHED_MODE: u8 = 8;
 const MAX_SHED: u8 = SHED_MODE;
-const COMPACT_SHED: u8 = SHED_COUNTS;
+const COMPACT_SHED: u8 = SHED_TURN_CLOCK;
 
 /// One caller-authored posture word and its semantic ink.
 #[derive(Clone, Debug)]
@@ -58,8 +58,9 @@ impl<'a> PostureFact<'a> {
 /// Codewhale's one-row posture bar, immediately below the composer.
 ///
 /// Permission is the floor. Optional clocks, keys, hints and counts shed
-/// before mode; the right notice never covers permission. At 80% context,
-/// the native `surface soon — /compact` warning replaces the ordinary hint.
+/// before mode, the live turn clock last of them; the right notice never
+/// covers permission or the turn clock. At 80% context, the native
+/// `surface soon — /compact` warning replaces the ordinary hint.
 #[derive(Clone, Debug)]
 pub struct PostureBar<'a> {
     pub permission: PostureFact<'a>,
@@ -220,14 +221,7 @@ impl<'a> PostureBar<'a> {
                 turn_clock: false,
             });
         }
-        // Preserve the native turn-only clock rung: removing the session
-        // half must not make the remaining clock shed a rung too early.
-        let turn_shed = if self.session_clock.is_none() {
-            SHED_SESSION_CLOCK
-        } else {
-            SHED_TURN_CLOCK
-        };
-        if let Some(clock) = self.turn_clock.as_ref().filter(|_| shed < turn_shed) {
+        if let Some(clock) = self.turn_clock.as_ref().filter(|_| shed < SHED_TURN_CLOCK) {
             let mut item = PostureItem::fact(clock, ascii);
             item.turn_clock = true;
             items.push(item);
@@ -284,7 +278,14 @@ impl<'a> PostureBar<'a> {
         let area = area.inner(Margin::new(1, 0));
         let ascii = theme.ascii();
         let width = usize::from(area.width);
-        let floor = left_width(&self.items(MAX_SHED, ascii));
+        let floor = left_width(&self.items(MAX_SHED, ascii))
+            + self
+                .turn_clock
+                .as_ref()
+                .filter(|_| !self.compact)
+                .map_or(0, |clock| {
+                    text::width(ITEM_JOIN) + text::width(&project(&clock.text, ascii))
+                });
         let right = self.right.as_ref().map(|fact| {
             (
                 clip_native(&project(&fact.text, ascii), width.saturating_sub(floor + 1)),
