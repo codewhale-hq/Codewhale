@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
+
 ### Fixed
 
 - **Narrow terminals keep the working clock:** at 80 and 60 columns the status row under the composer keeps `working 3s` / `using tool 12s` while a turn runs. The `Shift+Tab to change` hint, then `Esc to interrupt`, stand down first, and a connector notice shortens (`MCP · 1 failed · /mcp`) instead of taking the clock's place. (CW-8264)
