@@ -3069,8 +3069,13 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 from the runtime resolver, including environment fallbacks and clamps; this does
 not persist defaults. Set or unset individual fields with, for example,
 `codewhale config set stream.open_timeout_secs 120` and
-`codewhale config unset stream.open_timeout_secs`. Per-run
-`--set stream.open_timeout_secs=120` uses the same validation.
+`codewhale config unset stream.open_timeout_secs`. Read-only `codewhale config`
+inspection commands (`config get`, `config dump`, `config list`) also accept
+`--set stream.open_timeout_secs=120` using the same validation; runtime
+commands (`codewhale`, `exec`, `doctor`) only accept runtime `--set` keys
+(`provider`, `model`, `default_text_model`, `verbosity`, `approval_policy`,
+`sandbox_mode`, `telemetry`), so single-run stream overrides on a turn use
+`CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, `--profile`, or `codewhale config set`.
 
 | `[stream]` key | Default | Accepted behavior | Legacy `[tui]` fallback |
 | --- | --- | --- | --- |

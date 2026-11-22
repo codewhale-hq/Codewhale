@@ -1422,7 +1422,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
   HTTP 429 使用独立的 `[retry.rate_limit]` 策略：`max_attempts = 20`（含首次尝试）、`recovery_budget_secs = 600`、`initial_delay_secs = 5`、`max_delay_secs = 60`。上述旧退避参数和 `jitter` / `respect_retry_after` 开关不覆盖限流策略；429 始终遵守服务器最小等待时间并使用 equal jitter。`max_retries = 0` 不关闭 429 恢复；只关闭 429 自动重试请设 `retry.rate_limit.max_attempts = 1`，关闭本 HTTP 重试循环请设 `retry.enabled = false`；流打开操作内部仍可能执行已有的安全发出前 HTTP/1.1 回退。实际提供方暂停和自动等待仍最多一小时。参数校验范围及边界见 [HTTP rate-limit retries](../rate-limit-retries.md)。
 
-  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能触发重发。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。唯一的例外是响应头超时：流式请求在 `stream.open_timeout_secs` 内没有收到响应头时，回合会重新发送该请求 `stream.open_retries` 次（默认一次），并在对话记录中显示一行 `Retry attempt: stream-open-timeout`。提供方可能已经处理并计费了第一次请求，因此它的用量保持未知。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
+  `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能切换 HTTP/1.1。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。唯一的例外是响应头超时：流式请求在 `stream.open_timeout_secs` 内没有收到响应头时，回合会重新发送该请求 `stream.open_retries` 次（默认一次），并在对话记录中显示一行 `Retry attempt: stream-open-timeout`。提供方可能已经处理并计费了第一次请求，因此它的用量保持未知。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
 
 - `[notifications]`：通知的投递、注意力、类别和声音共用同一套策略。`quiet = true`、`method = "off"`、`condition = "never"` 以及被禁用的类别，会同时抑制横幅和 Codewhale 所选的声音。
 - `notifications.method`：`auto`（默认）、`osc9`、`kitty`、`ghostty`、`bel`、`off`。
@@ -1478,8 +1478,13 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 `codewhale config dump` 和 `codewhale config get stream` 显示运行时解析后的有效值，
 包括环境变量回退及范围限制；查看不会把默认值写入文件。例如：
 `codewhale config set stream.open_timeout_secs 120`、
-`codewhale config unset stream.open_timeout_secs`。单次运行的
-`--set stream.open_timeout_secs=120` 使用同一验证器。
+`codewhale config unset stream.open_timeout_secs`。只读的 `codewhale config`
+查看命令（`config get`、`config dump`、`config list`）也接受
+`--set stream.open_timeout_secs=120` 并使用同一验证器；运行时命令（`codewhale`、
+`exec`、`doctor`）只接受运行时 `--set` 键（`provider`、`model`、
+`default_text_model`、`verbosity`、`approval_policy`、`sandbox_mode`、
+`telemetry`），因此单次运行的流超时覆盖请使用
+`CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`、`--profile` 或 `codewhale config set`。
 
 | `[stream]` 键 | 默认值 | 有效行为 | 旧 `[tui]` 回退键 |
 | --- | --- | --- | --- |
