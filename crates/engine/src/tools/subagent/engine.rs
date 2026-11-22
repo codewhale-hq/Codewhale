@@ -1839,15 +1839,12 @@ pub(super) async fn run_child_agent(
         // No tool/model is admitted. Preserve the same full seed and the
         // existing Park-vs-Cancel projection, including a step-zero checkpoint.
         seed.push(initial);
-        job.project(&seed, 0).await?;
-        let checkpoint = runtime
-            .manager
-            .read()
-            .await
-            .get_result(&agent_id)
-            .ok()
-            .and_then(|result| result.checkpoint);
         let mut artifact = job.artifact.lock().await;
+        if let Some(writer) = artifact.as_mut() {
+            writer.sync_messages(&seed, false)?;
+        }
+        let checkpoint =
+            build_subagent_checkpoint(&agent_id, "Core child Session checkpoint", &seed, 0, true);
         return Ok(cancelled_subagent_result(
             &runtime,
             &agent_id,
@@ -1856,7 +1853,7 @@ pub(super) async fn run_child_agent(
             &seed,
             0,
             max_steps,
-            checkpoint.as_ref(),
+            Some(&checkpoint),
             job.parking.as_ref(),
             &mut artifact,
             started_at,
