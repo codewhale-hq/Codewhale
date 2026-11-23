@@ -310,8 +310,8 @@ pub enum InstallError {
 /// 3. Stream the tarball into a tempfile (capped at `max_size`).
 /// 4. Validate the archive (path-traversal, size, no symlinks in the selected
 ///    skill subtree, SKILL.md present with required frontmatter fields) into a
-///    sibling `<name>.tmp/` directory.
-/// 5. Atomic-rename `<name>.tmp/` → `<name>/`.
+///    fresh hidden sibling staging directory.
+/// 5. Atomic-rename the staging directory → `<name>/`.
 /// 6. Write `.installed-from` and return [`InstalledSkill`].
 ///
 /// `update = false` rejects an existing destination. Pass `update = true`
@@ -368,7 +368,12 @@ pub async fn install_with_registry(
     // no-op changes without redoing the extract.
     let checksum = sha256_hex(&bytes);
 
-    let staged = stage_tarball(&bytes, skills_dir, max_size)?;
+    let staged = {
+        let skills_dir = skills_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || stage_tarball(&bytes, &skills_dir, max_size))
+            .await
+            .context("skill staging task failed")??
+    };
 
     // Move the staged dir into its final location. If `update` is set and the
     // destination exists, replace it; otherwise reject.
@@ -839,7 +844,13 @@ async fn sync_one_skill(
 
         let final_path: PathBuf = if is_tarball {
             // Extract into a temp staging dir, then rename atomically.
-            let staged = match stage_tarball(&bytes, cache_dir, max_size) {
+            let staging = {
+                let (bytes, cache_dir) = (bytes.clone(), cache_dir.to_path_buf());
+                tokio::task::spawn_blocking(move || stage_tarball(&bytes, &cache_dir, max_size))
+                    .await
+                    .unwrap_or_else(|err| Err(anyhow::anyhow!("skill staging task failed: {err}")))
+            };
+            let staged = match staging {
                 Ok(s) => s,
                 Err(err) => {
                     return SkillSyncOutcome::Failed {
@@ -886,7 +897,12 @@ async fn sync_one_skill(
             url: url.clone(),
         };
         let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-        let _ = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await;
+        if let Err(err) = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await {
+            return SkillSyncOutcome::Failed {
+                name: name.to_string(),
+                reason: format!("failed to write cache metadata: {err:#}"),
+            };
+        }
 
         return SkillSyncOutcome::Downloaded {
             name: name.to_string(),
@@ -1010,7 +1026,11 @@ fn write_installed_from_marker_v2(
             serde_json::Value::String(nonce.to_string()),
         );
     }
-    fs::write(skill_dir.join(INSTALLED_FROM_MARKER), body.to_string()).with_context(|| {
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(INSTALLED_FROM_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             INSTALLED_FROM_MARKER,
@@ -1026,7 +1046,11 @@ pub fn write_trust_v2(skill_dir: &Path, content_digest: &str) -> Result<()> {
         "schema_version": 2,
         "content_digest": content_digest,
     });
-    fs::write(skill_dir.join(TRUSTED_MARKER), body.to_string()).with_context(|| {
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(TRUSTED_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             TRUSTED_MARKER,
@@ -1264,7 +1288,7 @@ struct StagedSkill {
     staged_path: PathBuf,
 }
 
-/// Validate a tarball and extract it into `<skills_dir>/<name>.tmp/`.
+/// Validate a tarball and extract it into a fresh hidden staging dir under `skills_dir`.
 fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<StagedSkill> {
     fs::create_dir_all(skills_dir)
         .with_context(|| format!("failed to create skills directory {}", skills_dir.display()))?;
@@ -1276,20 +1300,11 @@ fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<Stage
 
     let scan = scan_tarball(bytes, max_size)?;
 
-    // Prepare staged directory. Use a `.tmp` suffix so a crashed install
-    // never collides with a real name; remove any leftover from a prior
-    // failed attempt.
-    let staged_path = skills_dir.join(format!("{}.tmp", scan.skill_name));
-    if staged_path.exists() {
-        fs::remove_dir_all(&staged_path).with_context(|| {
-            format!(
-                "failed to clean stale staging dir {}",
-                staged_path.display()
-            )
-        })?;
-    }
-    fs::create_dir_all(&staged_path)
-        .with_context(|| format!("failed to create staging dir {}", staged_path.display()))?;
+    let staged_path = tempfile::Builder::new()
+        .prefix(&format!(".{}.staging-", scan.skill_name))
+        .tempdir_in(skills_dir)
+        .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?
+        .keep();
 
     // Second pass — extract.
     let result = extract_into(&scan, bytes, &staged_path, max_size);
@@ -1960,6 +1975,27 @@ mod tests {
             digest
         );
         fs::rename(&staged.staged_path, skills.join("demo")).unwrap();
+    }
+
+    #[test]
+    fn concurrent_stages_of_one_skill_use_distinct_hidden_dirs() {
+        let bytes = skill_tarball(&[(
+            "repo/SKILL.md",
+            b"---\nname: demo\ndescription: test\n---\nbody",
+            0o644,
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("demo.tmp")).unwrap();
+        fs::write(tmp.path().join("demo.tmp/keep"), b"other").unwrap();
+        let first = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        let second = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_ne!(first.staged_path, second.staged_path);
+        for staged in [&first, &second] {
+            assert!(staged.staged_path.join("SKILL.md").is_file());
+            let name = staged.staged_path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(".demo.staging-"), "{name}");
+        }
+        assert!(tmp.path().join("demo.tmp/keep").is_file());
     }
 
     #[cfg(unix)]

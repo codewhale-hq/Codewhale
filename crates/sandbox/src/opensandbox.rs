@@ -110,7 +110,7 @@ impl SandboxBackend for OpenSandboxBackend {
 
         let parsed: SandboxRunResponse = serde_json::from_slice(&body).map_err(|error| {
             anyhow::anyhow!(
-                "Failed to parse OpenSandbox response at line {}, column {}",
+                "Failed to parse OpenSandbox response at line {}, column {}: {error}",
                 error.line(),
                 error.column()
             )

@@ -269,7 +269,8 @@ async fn install_plugin(
                 ctx.network,
                 &name_conflict,
                 expected,
-            )?
+            )
+            .await?
         }
     };
     Ok(match outcome {

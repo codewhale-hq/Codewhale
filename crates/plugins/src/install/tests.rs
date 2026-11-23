@@ -1155,6 +1155,45 @@ fn remote_bundle_bytes(name: &str, extra: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_update_with_unchanged_archive_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let archive = tarball(&[
+        (
+            "repo-main/plugin.toml",
+            b"schema_version = 1\n[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        ),
+        ("repo-main/data.txt", b"v1"),
+    ]);
+    let url = serve_bodies(vec![archive.clone(), archive.clone(), archive]);
+    let outcome = install(
+        PluginInstallSource::parse(&url).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &loopback_policy(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+    fs::write(plugins.join("demo/data.txt"), b"tampered").unwrap();
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read(plugins.join("demo/data.txt")).unwrap(), b"v1");
+    assert!(matches!(
+        update("demo", &plugins, DEFAULT_MAX_SIZE_BYTES, &loopback_policy())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn marketplace_archive_selects_only_requested_bundle_and_updates_same_source() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins = tmp.path().join("plugins");
@@ -3479,6 +3518,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         "0000000000000000000000000000000000000000000000000000000000000000",
     )
+    .await
     .unwrap_err();
     assert!(mismatch.downcast_ref::<PluginContentMismatch>().is_some());
     assert!(!plugins.join("remote-preview").exists());
@@ -3491,6 +3531,7 @@ async fn prepare_remote_install_leaves_plugins_dir_empty_and_checks_exact_hash()
         &no_conflict(),
         &prepared.content_hash,
     )
+    .await
     .unwrap();
     assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
     assert!(plugins.join("remote-preview").is_dir());
