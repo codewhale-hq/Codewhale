@@ -1394,6 +1394,7 @@ Codewhale v0.10.3 brings a unified Plugins surface with Creator mode (`[features
 - **[@vshulcz](https://github.com/vshulcz)** — documented a hybrid Claude bundle that installs declaratively with `/plugin install` and keeps its lifecycle hooks in `config.toml` ([#7346](https://github.com/codewhale-hq/Codewhale/pull/7346)).
 - **[@deosiree](https://github.com/deosiree)** — bounded the terminal's wait for the session snapshot at turn end so a newly started turn no longer freezes the UI, and exposed request transmission in terminal provider errors ([#7360](https://github.com/codewhale-hq/Codewhale/pull/7360), [#7448](https://github.com/codewhale-hq/CodeWhale/pull/7448)).
 - **[@ruanchaves](https://github.com/ruanchaves)** — kept MCP tools whose optional parameters carry a Pydantic `default: null` in Moonshot (Kimi) requests instead of dropping them ([#7364](https://github.com/codewhale-hq/Codewhale/pull/7364)).
+- **[@b84330808](https://github.com/b84330808)** — reported that secret redaction runs on every model request and is slow on ordinary text, with a benchmark that led to the faster redaction pre-scan ([#7347](https://github.com/codewhale-hq/Codewhale/issues/7347)).
 
 ## [0.10.2] - 2026-10-22
 
