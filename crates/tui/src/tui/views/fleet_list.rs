@@ -126,6 +126,14 @@ impl FleetListView {
         }
     }
 
+    pub(crate) fn reload(&mut self, app: &App, config: &Config) {
+        let row = self.row;
+        let back_to_fleet_roster = self.back_to_fleet_roster;
+        *self = Self::new(app, config);
+        self.row = row.min(self.entries.len().saturating_sub(1));
+        self.back_to_fleet_roster = back_to_fleet_roster;
+    }
+
     /// Mark this list as pushed on top of the Fleet roster (#5954), so the
     /// footer says `back` rather than `close`.
     #[must_use]
@@ -1147,5 +1155,33 @@ provider = "deepseek"
                 "row {row}: {hitboxes:?}"
             );
         }
+    }
+
+    #[test]
+    fn reload_picks_up_a_saved_coordinator_change() {
+        unsafe { std::env::set_var("CODEWHALE_HOME", sealed_home()) };
+        let ws = tempfile::TempDir::new().unwrap();
+        save_in(ws.path(), FleetScope::Workspace, "Reload Probe");
+        let app = app_in(ws.path().to_path_buf());
+        let mut view = FleetListView::new(&app, &Config::default());
+        let summary = |view: &FleetListView| {
+            let idx = view
+                .entries
+                .iter()
+                .position(|e| e.name == "Reload Probe")
+                .unwrap();
+            view.summaries[idx].clone()
+        };
+        assert!(summary(&view).contains("deepseek-v4-flash"));
+
+        let mut fleet = sample_fleet("Reload Probe");
+        fleet.operator.as_mut().unwrap().model = "deepseek-v4-pro".to_string();
+        let _ = save_fleet(&fleet, FleetScope::Workspace, ws.path()).expect("save");
+        view.reload(&app, &Config::default());
+        assert!(
+            summary(&view).contains("deepseek-v4-pro"),
+            "{}",
+            summary(&view)
+        );
     }
 }

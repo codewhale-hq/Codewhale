@@ -34,6 +34,22 @@ pub(crate) fn sync_fleet_roster(app: &mut App, config: &Config, engine_handle: &
 /// deleting a team has to update the view the user pops back to — otherwise
 /// it keeps painting the pre-change team. Cursor and detail scroll survive,
 /// because losing them is the disruption the back path exists to avoid.
+fn refresh_parked_fleet_list(app: &mut App, config: &Config) {
+    if app.view_stack.top_kind() != Some(ModalKind::FleetList) {
+        return;
+    }
+    let Some(mut view) = app.view_stack.pop() else {
+        return;
+    };
+    if let Some(list) = view
+        .as_any_mut()
+        .downcast_mut::<crate::tui::views::fleet_list::FleetListView>()
+    {
+        list.reload(app, config);
+    }
+    app.view_stack.push_boxed(view);
+}
+
 pub(crate) fn refresh_parked_fleet_roster(app: &mut App, config: &Config) {
     if app.view_stack.top_kind() != Some(ModalKind::FleetRoster) {
         return;
@@ -2755,6 +2771,7 @@ pub(crate) async fn handle_view_events(
             ViewEvent::FleetStoreChanged { message } => {
                 app.status_message = Some(message);
                 sync_fleet_roster(app, config, engine_handle);
+                refresh_parked_fleet_list(app, config);
                 refresh_parked_fleet_roster(app, config);
             }
             // #5954: the roster emits (rather than emit-and-closes) these, so
