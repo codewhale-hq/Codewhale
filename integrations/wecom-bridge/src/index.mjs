@@ -1,5 +1,5 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -150,13 +150,17 @@ async function handleMediaMessage(frame, body, identity) {
     await mkdir(dir, { recursive: true });
     const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
     const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
-    const target = path.join(dir, name);
-    const staged = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.part`;
-    await writeFile(staged, buffer);
-    await rename(staged, target);
+    let target = path.join(dir, name);
+    try {
+      await writeFile(target, buffer, { flag: "wx" });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      target = path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`);
+      await writeFile(target, buffer, { flag: "wx" });
+    }
     await replyText(
       frame,
-      `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
+      `Saved ${path.basename(target)} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
         `Send follow-up instructions in chat to use it.`
     );
   } catch (error) {
