@@ -111,14 +111,52 @@ const suiteCallers = {};
 for (const job of ["test-ubuntu", "test-macos", "test-windows"]) {
   const block = jobBlock(ci, job);
   const os = block.match(/^      os: (\S+)$/m)[1];
-  const shards = Number(block.match(/^      shards: (\d+)$/m)[1]);
-  const list = JSON.parse(block.match(/^      shard_list: '(.+)'$/m)[1]);
-  assert.deepEqual(list, Array.from({ length: shards }, (_, i) => i + 1), `${job} shard_list must be 1..shards`);
+  const withValue = (key, selfHosted) => {
+    const raw = block.match(new RegExp(`^      ${key}: (.+)$`, "m"))[1];
+    const expression = raw.match(/^\$\{\{ (.+) \}\}$/)?.[1];
+    const context = { needs: { changes: { outputs: { macos_self_hosted: String(selfHosted) } } } };
+    return expression ? vm.runInNewContext(expression, context) : raw.replace(/^'(.*)'$/, "$1");
+  };
+  for (const selfHosted of [false, true]) {
+    const shards = Number(withValue("shards", selfHosted));
+    const list = JSON.parse(withValue("shard_list", selfHosted));
+    assert.deepEqual(list, Array.from({ length: shards }, (_, i) => i + 1), `${job} shard_list must be 1..shards`);
+    if (!selfHosted) suiteCallers[os] = shards;
+  }
   assert.match(block, /uses: \.\/\.github\/workflows\/ci-test-suite\.yml/);
   assert.equal(jobIf(ci, job), jobIf(ci, "test-ubuntu"), `${job} must share the suite condition`);
-  suiteCallers[os] = shards;
+  if (job !== "test-macos") assert.doesNotMatch(block, /self_hosted/, `${job} must stay on hosted runners`);
 }
 assert.deepEqual(Object.keys(suiteCallers).sort(), ["macos-latest", "ubuntu-latest", "windows-latest"]);
+assert.match(jobBlock(ci, "test-macos"), /^      self_hosted: \$\{\{ needs\.changes\.outputs\.macos_self_hosted == 'true' \}\}$/m);
+
+const macosRunnerStep = namedStep(ci, "Choose the macOS suite runner").match(/        run: \|\n([\s\S]*)/)[1].replace(/^ {10}/gm, "");
+for (const [event, repo, requested, variable, expected] of [
+  ["pull_request", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["pull_request", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["schedule", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["pull_request_target", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["workflow_dispatch", "someone/Codewhale", "self-hosted", "true", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "", "", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "default", "false", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "default", "true", "true"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "hosted", "true", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "self-hosted", "false", "true"],
+]) {
+  const out = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cw-macos-runner-")), "out");
+  execFileSync("bash", ["-c", macosRunnerStep], {
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, EVENT_NAME: event, THIS_REPO: repo, REQUESTED: requested, SWITCH: variable },
+  });
+  assert.equal(fs.readFileSync(out, "utf8"), `self_hosted=${expected}\n`, `${event} ${repo} ${requested}/${variable}`);
+}
+for (const [file, source] of fs.readdirSync(path.join(repoRoot, ".github/workflows")).map((f) => [f, read(`.github/workflows/${f}`)])) {
+  for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
+    if (!/self-hosted|codewhale-mac/.test(value)) continue;
+    assert.equal(file, "ci-test-suite.yml", `${file}: only the CI suite may name the self-hosted runner`);
+    assert.match(value, /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /, "the self-hosted label must be gated by the self_hosted input");
+  }
+}
 
 const jobNames = (source) => [...source.matchAll(/^  [A-Za-z0-9_-]+:\n    name: (.+)$/gm)].map((m) => m[1]);
 assert.deepEqual(
