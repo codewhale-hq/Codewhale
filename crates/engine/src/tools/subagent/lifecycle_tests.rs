@@ -1459,3 +1459,44 @@ async fn lifecycle_explore_caps_reasoning_and_strips_ungranted_mcp_server_instru
             .any(crate::runtime_handoff::is_mcp_server_instructions_message)
     );
 }
+
+#[test]
+fn aborted_durable_launch_surfaces_and_logs_reconcile_failure() {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let work = crate::work_graph::new_shared_work_runtime(
+        crate::tools::todo::new_shared_todo_list(),
+        crate::tools::plan::new_shared_plan_state(),
+    );
+    let lifecycle = SubAgentWorkLifecycle {
+        work,
+        session_id: "session-a".to_string(),
+        external: "worker:agent-abort".to_string(),
+    };
+    let mut output = tempfile::tempfile().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_writer(std::sync::Mutex::new(output.try_clone().unwrap()))
+        .finish();
+    let error = tracing::subscriber::with_default(subscriber, || {
+        fail_aborted_durable_launch("agent-abort", Some(&lifecycle), anyhow!("disk full"))
+    });
+    let message = error.to_string();
+    assert!(message.contains("disk full"), "{message}");
+    assert!(
+        message.contains("additionally failed to settle lifecycle owner")
+            && message.contains("lifecycle observation arrived before graph registration"),
+        "{message}"
+    );
+    output.seek(SeekFrom::Start(0)).unwrap();
+    let mut logs = String::new();
+    output.read_to_string(&mut logs).unwrap();
+    assert!(
+        logs.contains("WARN")
+            && logs.contains("failed to mark aborted write-capable launch as Failed")
+            && logs.contains("lifecycle observation arrived before graph registration"),
+        "{logs}"
+    );
+}
