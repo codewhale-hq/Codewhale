@@ -64,10 +64,30 @@ impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
         let contents = match &path {
-            Some(path) => codewhale_engine::mcp::read_bounded_mcp_config_file(
-                path,
-                codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES,
-            )?,
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => {
+                    let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+                    let (contents, len) =
+                        codewhale_engine::prompts::read_prompt_text_bounded(file, cap)
+                            .with_context(|| {
+                                format!("Failed to read MCP server config: {}", path.display())
+                            })?;
+                    if len > cap {
+                        anyhow::bail!(
+                            "MCP server config {} exceeds the {} MiB limit",
+                            path.display(),
+                            cap / (1024 * 1024)
+                        );
+                    }
+                    Some(contents)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read MCP server config: {}", path.display())
+                    });
+                }
+            },
             None => None,
         };
         if let (Some(path), Some(contents)) = (path, contents) {
