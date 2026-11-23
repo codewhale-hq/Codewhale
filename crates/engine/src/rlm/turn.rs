@@ -666,11 +666,32 @@ mod tests {
         let _home = crate::test_support::SealedHome::new();
         use codewhale_dependencies::ExternalTool as _;
         assert!(codewhale_dependencies::Python::resolve().is_some());
+        let warm = MockLlmClient::new(Vec::new());
+        warm.push_message_response(text_response("FINAL('warm')"));
+        let (warm_tx, _warm_rx) = mpsc::channel(32);
+        let started = std::time::Instant::now();
+        let warmed = run_fixture(
+            Arc::new(warm),
+            "root-model".to_string(),
+            "long context".to_string(),
+            None,
+            "child-model".to_string(),
+            warm_tx,
+            0,
+        )
+        .await;
+        assert_eq!(
+            warmed.termination,
+            RlmTermination::Final,
+            "{:?}",
+            warmed.error
+        );
+        let budget = Duration::from_secs(5) + started.elapsed() * 2;
         for pending_model in [true, false] {
             let partial = if pending_model {
                 "```repl\nprint(len(content))\n```"
             } else {
-                "```repl\nimport time\ntime.sleep(60)\nFINAL('too late')\n```"
+                "```repl\nimport time\ntime.sleep(600)\nFINAL('too late')\n```"
             };
             let mock = MockLlmClient::new(Vec::new());
             mock.push_message_response(text_response(partial));
@@ -678,7 +699,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(32);
             let usage = RlmUsageAccumulator::new();
             // Admission reads configuration and constructs the captured route.
-            // It is fixture setup, before this invocation's five-second budget.
+            // It is fixture setup, before this invocation's budget.
             let caller =
                 crate::core::engine::tests::rlm_host::caller_for(client.clone(), "root-model");
 
@@ -688,13 +709,13 @@ mod tests {
                 prompt_policy: crate::core::engine::rlm_host::RlmPromptPolicy::Session,
                 max_tokens: None,
                 task_instructions: None,
-                deadline: Some(tokio::time::Instant::now() + Duration::from_secs(5)),
+                deadline: Some(tokio::time::Instant::now() + budget),
                 gate: Some(crate::tools::codemode::NestedCallGate::admitting_for_test()),
                 events: Some(tx),
                 usage: usage.clone(),
             });
             tokio::pin!(call);
-            let result = tokio::time::timeout(Duration::from_secs(15), async {
+            let result = tokio::time::timeout(budget + Duration::from_secs(10), async {
                 if pending_model {
                     tokio::select! {
                         biased;
