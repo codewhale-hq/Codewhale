@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn registry_rows_are_unique_with_verified_commands() {
-        assert_eq!(AGENTS.len(), 25);
+        assert_eq!(AGENTS.len(), 24);
         let mut ids: Vec<&str> = AGENTS.iter().map(|agent| agent.id).collect();
         ids.sort_unstable();
         ids.dedup();
