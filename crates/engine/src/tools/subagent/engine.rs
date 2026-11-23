@@ -2775,7 +2775,8 @@ mod owner_origin_tests {
         assert!(
             logs.contains("WARN")
                 && logs.contains("auxiliary review usage projection failed")
-                && logs.contains("usage worker is unavailable"),
+                && logs.contains("owner=missing-worker")
+                && logs.contains("error="),
             "{logs}"
         );
     }

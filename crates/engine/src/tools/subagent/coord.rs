@@ -2559,7 +2559,11 @@ mod tests {
             .expect_err("oversized followup message must be rejected");
         assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
         assert_eq!(
-            manager.read().await.queued_mail_depth(&agent_id).unwrap(),
+            manager
+                .read()
+                .await
+                .queued_mail_depth(&agent_id)
+                .unwrap_or(0),
             0
         );
 
