@@ -663,6 +663,15 @@ impl FileKeyringStore {
             }
         }
         let body = serde_json::to_string_pretty(blob)?;
+        if body.len() as u64 > MAX_SECRETS_FILE_BYTES {
+            return Err(SecretsError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "secrets file {} would exceed {MAX_SECRETS_FILE_BYTES} bytes",
+                    self.path.display()
+                ),
+            )));
+        }
         write_private_file(&self.path, body.as_bytes())?;
         #[cfg(unix)]
         {
@@ -780,9 +789,7 @@ fn atomic_write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsErro
     file_lock::require_private_mode(tmp.as_file(), path, file_lock::StoreFile::Content)?;
     tmp.persist(path).map_err(|e| SecretsError::Io(e.error))?;
     #[cfg(unix)]
-    fs::File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .map_err(SecretsError::Io)?;
+    let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
     Ok(())
 }
 
@@ -1357,6 +1364,17 @@ mod tests {
             .unwrap();
         let err = store.get("key").unwrap_err();
         assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn file_store_refuses_a_save_that_would_exceed_the_read_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FileKeyringStore::new(tmp.path().join("secrets.json"));
+        store.set("key", "value").unwrap();
+        let huge = "x".repeat(MAX_SECRETS_FILE_BYTES as usize);
+        assert!(store.set("big", &huge).is_err());
+        assert_eq!(store.get("key").unwrap().as_deref(), Some("value"));
+        store.delete("key").unwrap();
     }
 
     #[test]
