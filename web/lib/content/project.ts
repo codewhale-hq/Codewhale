@@ -81,21 +81,15 @@ export const RELEASE_STATE_LABEL: Record<ReleaseState, LocalizedText> = {
 
 export const PROJECT_RELEASES: { name: string; state: ReleaseState; body: LocalizedText; href: string }[] = [
   {
-    name: "0.10.3",
-    state: "progress",
-    body: projectText("thisReleaseFixesProblemsReportedAgainst0"),
-    href: `${MILESTONE}/73`,
-  },
-  {
     name: "0.10.4",
-    state: "planned",
-    body: projectText("thisReleaseImprovesReliabilityThroughProcessCleanup"),
+    state: "progress",
+    body: projectText("thisHotfixReleaseFixesPasteUpdatesAndWhale"),
     href: `${MILESTONE}/75`,
   },
   {
     name: "0.10.5",
     state: "planned",
-    body: projectText("thisReleaseImprovesUsabilityWithRunningCommand"),
+    body: projectText("thisReleaseSimplifiesTheWholeProduct"),
     href: `${MILESTONE}/76`,
   },
   {

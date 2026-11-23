@@ -76,6 +76,11 @@ known limitations and publication approval. These proofs are separate.
       every `unreleased` row "In source, not yet released" even after the tag
       is published; the tagged baseline does not override it.
       `prepare-release.sh` lists the rows still unstamped.
+- [ ] Drop X.Y.Z from the milestone lists: `PROJECT_RELEASES` in
+      `web/lib/content/project.ts` (the `/contribute` page) and the Releases
+      table in `docs/ROADMAP.md`. Mark the next release in progress. The tag
+      redeploys the website from `main`, so a release left there is published
+      as unfinished.
 
 ## 2. Version pins are in sync
 
