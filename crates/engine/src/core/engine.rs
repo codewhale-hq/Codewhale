@@ -1042,6 +1042,7 @@ pub fn project_history_for_restore(
 
 pub struct Engine {
     rlm_host: Option<rlm_host::RlmHostState>,
+    whale_id: Option<String>,
     host_profile: EngineHostProfile,
     owner_surface_attached: bool,
     turn_run_origin: RunOrigin,
@@ -2800,6 +2801,7 @@ impl Engine {
         };
         let engine = Engine {
             rlm_host,
+            whale_id: None,
             config,
             api_config: api_config.clone(),
             instruction_settings,
@@ -11021,7 +11023,7 @@ impl Engine {
         {
             return Ok(None);
         }
-        crate::whale_soul::capture().await
+        crate::whale_soul::capture_for(self.whale_id.as_deref()).await
     }
 
     fn capture_project_instructions_for(
@@ -11034,7 +11036,7 @@ impl Engine {
             &self.instruction_settings,
         );
         if let Some(voice) = &context.whale_soul {
-            raw.instruction_segments.push(voice.segment());
+            raw.instruction_segments.extend(voice.segments());
             raw.rebuild_joined_instructions();
         }
         raw
@@ -11789,6 +11791,7 @@ pub fn spawn_engine_with_authoritative_route_config(
         api_config,
         host_profile,
         false,
+        None,
         authoritative_route_config,
         model_client,
         subagent_manager,
@@ -11802,6 +11805,7 @@ pub(crate) fn spawn_runtime_engine_with_owner_surface(
     api_config: &Config,
     host_profile: EngineHostProfile,
     owner_surface_attached: bool,
+    whale_id: Option<String>,
     authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
     model_client: Option<SharedModelClient>,
     subagent_manager: Option<SharedSubAgentManager>,
@@ -11812,6 +11816,7 @@ pub(crate) fn spawn_runtime_engine_with_owner_surface(
         api_config,
         host_profile,
         owner_surface_attached,
+        whale_id,
         authoritative_route_config,
         model_client,
         subagent_manager,
@@ -11825,14 +11830,12 @@ fn spawn_engine_with_authoritative_route_config_inner(
     api_config: &Config,
     host_profile: EngineHostProfile,
     owner_surface_attached: bool,
+    whale_id: Option<String>,
     authoritative_route_config: Arc<parking_lot::RwLock<Config>>,
     model_client: Option<SharedModelClient>,
     subagent_manager: Option<SharedSubAgentManager>,
     execution_admission: CancellationToken,
 ) -> (EngineHandle, tokio::task::JoinHandle<()>) {
-    // `model_client` replaces only the model I/O boundary (see
-    // `Engine::new_with_model_client`); hosts pass `None` for the provider
-    // client the route resolves.
     if host_profile.is_acp() {
         config.max_steps = config.max_steps.clamp(1, 50);
         config.goal_max_steps = None;
@@ -11851,6 +11854,7 @@ fn spawn_engine_with_authoritative_route_config_inner(
         engine.codewhale_client_error = None;
         handle.client_preflight_required = false;
     }
+    engine.whale_id = whale_id;
     engine.host_profile = host_profile;
     engine.owner_surface_attached = owner_surface_attached;
     handle.set_host_profile(host_profile);

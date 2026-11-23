@@ -571,9 +571,11 @@ mod tests {
                 assert!(!cue.is_empty(), "{state:?} needs a glyph cue");
             }
         }
-        // Identity-only rows carry the badge and nothing that reads as state.
         let spans = badge_with_state(WhaleSpecies::Patch, None, &theme, Locale::En);
         assert_eq!(spans.len(), BADGE_WIDTH);
+        assert_eq!(WhaleState::Blocked.word(Locale::En), "Failed");
+        assert_eq!(WhaleState::Blocked.word(Locale::ZhHans), "失败");
+        assert_eq!(WhaleState::Blocked.word(Locale::ZhHant), "失敗");
     }
 
     #[test]

@@ -643,6 +643,7 @@
             executor: None,
             environment: None,
             agent_preset: None,
+            whale_id: None,
         }
     }
 

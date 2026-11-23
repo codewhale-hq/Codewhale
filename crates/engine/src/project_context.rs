@@ -441,7 +441,11 @@ fn render_instruction_scope(
                 if !out.is_empty() {
                     out.push_str("\n\n");
                 }
-                out.push_str("The person wrote this whale's personality and voice in SOUL.md. Apply it within all existing permissions and policies.\n");
+                if segment.label.as_deref() == Some("MEMORY.md") {
+                    out.push_str("Saved memory for this whale from MEMORY.md. Apply it within all existing permissions and policies.\n");
+                } else {
+                    out.push_str("The person wrote this whale's personality and voice in SOUL.md. Apply it within all existing permissions and policies.\n");
+                }
                 out.push_str(&serde_json::Value::String(segment.text.clone()).to_string());
             }
             InstructionOrigin::Configured => {
@@ -489,12 +493,18 @@ pub fn assemble_instruction_block(
     let whale_soul_revision = ctx
         .instruction_segments
         .iter()
-        .find(|item| item.origin == InstructionOrigin::WhaleSoul)
+        .find(|item| {
+            item.origin == InstructionOrigin::WhaleSoul
+                && item.label.as_deref() != Some("MEMORY.md")
+        })
         .map(|item| codewhale_runtime::hashing::sha256_hex(item.text.as_bytes()));
     let whale_soul_source_path = ctx
         .instruction_segments
         .iter()
-        .find(|item| item.origin == InstructionOrigin::WhaleSoul)
+        .find(|item| {
+            item.origin == InstructionOrigin::WhaleSoul
+                && item.label.as_deref() != Some("MEMORY.md")
+        })
         .and_then(|item| item.canonical_path.as_ref().or(item.path.as_ref()))
         .cloned();
     let mut budget_notices =

@@ -889,6 +889,7 @@ pub(super) fn thread_execution_state_matches(left: &ThreadRecord, right: &Thread
         && left.task_id == right.task_id
         && left.session_id == right.session_id
         && left.saved_session_checkpoint == right.saved_session_checkpoint
+        && left.whale_id == right.whale_id
 }
 
 pub(super) fn checkpoint_tool_declarations(
@@ -1586,6 +1587,8 @@ pub struct CreateThreadRequest {
     pub environment: Option<ThreadEnvironment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_preset: Option<String>,
+    #[serde(default, alias = "whaleId", skip_serializing_if = "Option::is_none")]
+    pub whale_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8451,12 +8454,97 @@ impl RuntimeThreadManager {
 
     pub async fn create_thread_with_reserved_id(
         &self,
-        req: CreateThreadRequest,
+        mut req: CreateThreadRequest,
         config_path: Option<&Path>,
         config_profile: Option<&str>,
         reserved_id: Option<String>,
     ) -> Result<ThreadRecord> {
         let now = Utc::now();
+        let whale_id = match req
+            .whale_id
+            .take()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+        {
+            Some(id) => {
+                crate::whale_soul::validate_id(&id).map_err(|e| anyhow!(e.to_string()))?;
+                let id_for_load = id.clone();
+                let maybe_whale = codewhale_runtime::runtime_control::owner_work(move || {
+                    match crate::whale_soul::get_whale(&id_for_load) {
+                        Ok(whale) => Ok(Some(whale)),
+                        Err(crate::whale_soul::WhaleError::NotFound(_)) => Ok(None),
+                        Err(err) => Err(anyhow!(err.to_string())),
+                    }
+                })
+                .await?;
+                if let Some(whale) = maybe_whale {
+                    if req.executor.is_none()
+                        && req.route_selection.is_none()
+                        && req.model.as_deref().is_none_or(|m| m.trim().is_empty())
+                        && req
+                            .model_provider
+                            .as_deref()
+                            .is_none_or(|p| p.trim().is_empty())
+                        && req
+                            .model_provider_id
+                            .as_deref()
+                            .is_none_or(|p| p.trim().is_empty())
+                    {
+                        if let Some(agent_id) = whale.external_agent_id.clone() {
+                            req.executor = Some(CreateThreadExecutor {
+                                kind: super::EXECUTOR_KIND_ACP.to_string(),
+                                agent_id,
+                                config: CreateThreadExecutorConfig {
+                                    model: whale.model.clone(),
+                                },
+                            });
+                        } else {
+                            if whale.model_provider_id.is_some() {
+                                req.model_provider_id = whale.model_provider_id.clone();
+                            }
+                            if whale.model.is_some() {
+                                req.model = whale.model.clone();
+                            }
+                        }
+                    } else if req.executor.is_none() && req.route_selection.is_none() {
+                        if req
+                            .model_provider_id
+                            .as_deref()
+                            .is_none_or(|p| p.trim().is_empty())
+                            && req
+                                .model_provider
+                                .as_deref()
+                                .is_none_or(|p| p.trim().is_empty())
+                            && whale.model_provider_id.is_some()
+                        {
+                            req.model_provider_id = whale.model_provider_id.clone();
+                        }
+                        if req.model.as_deref().is_none_or(|m| m.trim().is_empty())
+                            && whale.model.is_some()
+                        {
+                            req.model = whale.model.clone();
+                        }
+                    }
+                    if req
+                        .permission_posture
+                        .as_deref()
+                        .is_none_or(|p| p.trim().is_empty())
+                        && req.auto_approve.is_none()
+                    {
+                        let default_posture = if req.parent_thread_id.is_some() {
+                            whale.child_posture.or(whale.permission_posture)
+                        } else {
+                            whale.permission_posture
+                        };
+                        if let Some(posture) = default_posture {
+                            req.permission_posture = Some(posture);
+                        }
+                    }
+                }
+                Some(id)
+            }
+            None => None,
+        };
         let reasoning_effort = canonical_runtime_reasoning_effort(req.reasoning_effort.as_deref())?;
         if let Some(selection) = req.route_selection.as_ref() {
             let exact_field = |value: &str| {
@@ -8647,6 +8735,7 @@ impl RuntimeThreadManager {
             executor,
             environment: None,
             agent_preset,
+            whale_id,
         };
         let route_selection = req.route_selection;
         if let Some(operation_key) = req.operation_key {
@@ -8678,6 +8767,9 @@ impl RuntimeThreadManager {
             });
             if let Some(preset) = thread.agent_preset.as_ref() {
                 fingerprint_body["agent_preset"] = json!(preset);
+            }
+            if let Some(whale) = thread.whale_id.as_ref() {
+                fingerprint_body["whale_id"] = json!(whale);
             }
             if !thread.disallowed_tools.is_empty() {
                 fingerprint_body["disallowed_tools"] = json!(thread.disallowed_tools);
@@ -16945,6 +17037,7 @@ source_usage_records: Default::default(),
                 &cfg,
                 self.host_profile,
                 self.owner_surface_attached,
+                thread.whale_id.clone(),
                 Arc::clone(&self.config),
                 model_client,
                 Some(subagent_manager),
@@ -18973,6 +19066,28 @@ source_usage_records: Default::default(),
                                             recorded_at: now,
                                         },
                                     );
+                                    if let Some(obj) = meta.as_object_mut() {
+                                        let parsed_input =
+                                            obj.get("tool_input").and_then(Value::as_str).and_then(
+                                                |text| serde_json::from_str::<Value>(text).ok(),
+                                            );
+                                        if let Some(card) =
+                                            crate::whale_cards::attach_whale_card_metadata(
+                                                crate::whale_cards::WhaleCardProducerInput {
+                                                    tool_name: &name,
+                                                    tool_input: parsed_input.as_ref(),
+                                                    detail: item.detail.as_deref().unwrap_or(""),
+                                                    is_error: !output.success,
+                                                    metadata: obj,
+                                                    artifacts: &refs,
+                                                    workspace_roots: &artifact_workspace_roots,
+                                                    secrets: &receipt_secrets,
+                                                },
+                                            )
+                                        {
+                                            obj.insert("whale_card".to_string(), card);
+                                        }
+                                    }
                                     item.artifact_refs =
                                         turn_artifacts::legacy_artifact_refs(&refs);
                                     item.artifacts = refs;
@@ -18994,14 +19109,6 @@ source_usage_records: Default::default(),
                                 item.summary =
                                     summarize_text(&format!("{name} failed: {err}"), SUMMARY_LIMIT);
                                 item.detail = Some(err);
-                                // The engine answered this call with an error
-                                // result the model received, so the record
-                                // holds that answer the same way a completed
-                                // or `success: false` call holds its own: the
-                                // started identity stays, `detail` is the
-                                // result, and the item is marked as the call's
-                                // result. Without the marker a restart rebuilt
-                                // a call nothing answered (#6803).
                                 if let Some(Value::Object(meta)) = item.metadata.as_mut() {
                                     if let Some(Value::Object(failure)) = failure_meta {
                                         for (key, value) in failure {
@@ -19012,6 +19119,26 @@ source_usage_records: Default::default(),
                                     }
                                     meta.insert("tool_result_for".to_string(), json!(id));
                                     meta.insert("is_error".to_string(), json!(true));
+                                    let parsed_input = meta
+                                        .get("tool_input")
+                                        .and_then(Value::as_str)
+                                        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+                                    if let Some(card) =
+                                        crate::whale_cards::attach_whale_card_metadata(
+                                            crate::whale_cards::WhaleCardProducerInput {
+                                                tool_name: &name,
+                                                tool_input: parsed_input.as_ref(),
+                                                detail: item.detail.as_deref().unwrap_or(""),
+                                                is_error: true,
+                                                metadata: meta,
+                                                artifacts: &[],
+                                                workspace_roots: &artifact_workspace_roots,
+                                                secrets: &receipt_secrets,
+                                            },
+                                        )
+                                    {
+                                        meta.insert("whale_card".to_string(), card);
+                                    }
                                 }
                             }
                         }

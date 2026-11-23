@@ -2924,6 +2924,7 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         executor: None,
         environment: None,
         agent_preset: None,
+        whale_id: None,
         disallowed_tools: Vec::new(),
     }
 }
@@ -20264,6 +20265,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         executor: None,
         environment: None,
         agent_preset: None,
+        whale_id: None,
         disallowed_tools: Vec::new(),
     };
     manager.store.save_thread(&thread)?;
@@ -22146,6 +22148,7 @@ async fn report_store_failure_names_the_item_file_without_terminalizing() -> Res
 mod conversation_modes;
 mod external_agent;
 mod task_ownership;
+mod whale_runtime;
 
 mod runtime_image_inputs {
     use super::*;

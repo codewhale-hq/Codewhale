@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
+- **Local specialist whales and structured Whale cards in the Engine:** the Runtime API now serves `/v1/whales`, `/v1/whales/{id}` and `/v1/whales/{id}/recycle` over `~/.codewhale/whales/<id>/{whale.toml,SOUL.md,MEMORY.md}` with `If-Match` revision checks, binds threads created with `whale_id` to that whale's `SOUL.md`, `MEMORY.md` and model/posture defaults, and records `metadata.whale_card` on markdown report writes, failed repository maintenance commands and connector 401/OAuth failures; TUI whale failure status now reads `Failed` instead of `Blocked`. (CW-8276, CW-8277)
 
 ## [0.10.4] - 2026-11-23
 
