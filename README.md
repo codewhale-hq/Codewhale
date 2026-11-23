@@ -139,17 +139,6 @@ The terminal app, `exec`, `web` and the Runtime API share one engine
 [VS Code extension](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode)
 connects to it from the sidebar ([source](https://github.com/HengQuWorld/CodeWhale-VSCode)).
 
-<p align="center">
-  <a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">
-    <img src="web/public/codewhale-x-orcarouter.webp" alt="Codewhale × OrcaRouter: +30% DeepSeek V4.1 Flash usage" width="560">
-  </a>
-</p>
-
-<a href="https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67" rel="sponsored">Codewhale × OrcaRouter</a>
-gives 30% extra DeepSeek V4.1 Flash credit on each OrcaRouter top-up until
-November 21, 2026. This link is part of a referral campaign; Codewhale may
-earn a referral reward on top-ups made through it.
-
 ## How it stays safe
 
 Two switches say how much Codewhale may do on its own. `Tab`, when the input
