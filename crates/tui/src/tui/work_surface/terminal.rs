@@ -11,7 +11,6 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{Frame, layout::Rect, prelude::Widget, style::Style, text::Line, widgets::Paragraph};
-use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(all(unix, not(target_env = "ohos")))]
 use super::model::RailPanel;
@@ -725,7 +724,10 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                     _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
                 };
-                let mut graphemes = job.command.graphemes(true);
+                let mut graphemes = unicode_segmentation::UnicodeSegmentation::graphemes(
+                    job.command.as_str(),
+                    true,
+                );
                 let command: String = graphemes.by_ref().take(32).collect();
                 let ellipsis = if graphemes.next().is_some() {
                     "…"
