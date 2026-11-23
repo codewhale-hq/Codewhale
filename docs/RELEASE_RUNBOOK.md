@@ -458,9 +458,11 @@ and fails branch-only release sources before assets are published.
    checkout, and the remote `vX.Y.Z` tag still agree. The authoritative crate
    dependency order lives in `scripts/release/crates.sh`; do not maintain a
    second handwritten order in this runbook. The helper waits for each new
-   version to appear on crates.io before moving to dependents and safely skips
-   versions that are already public on a rerun. The block runs it from a new,
-   empty `CARGO_HOME` and build directory of its own, as the package preflight
+   version to appear in the crates.io sparse index before moving to dependents
+   and safely skips versions the index already serves on a rerun. On HTTP 429
+   it sleeps until the time crates.io names (ten minutes if none) and retries,
+   up to ten times per crate; any other upload failure stops the run. The
+   block runs it from a new, empty `CARGO_HOME` and build directory of its own, as the package preflight
    above describes; the dry run's state makes it refuse otherwise. The braces
    make the shell read the whole block before `read` runs, so a pasted or
    piped block never takes its own next line as the token, and the prompt

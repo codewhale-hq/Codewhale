@@ -183,6 +183,14 @@ known limitations and publication approval. These proofs are separate.
       disclose an explicitly accepted limitation as such.
 - [ ] A `ci/*` release-candidate run counts only when its SHA equals the tag SHA.
 - [ ] The `ci.yml` npm wrapper smoke on Windows runs with sccache off.
+- [ ] A real Windows Terminal check on the candidate build is recorded with who
+      ran it: Ctrl+V pastes text once each into the composer and the `/provider`
+      API key field, Ctrl+V pastes an image as one attachment, and Chinese
+      input works.
+- [ ] `codewhale update` upgrades the previous release installed in the
+      installer's default directory.
+- [ ] Count the release crate names new to crates.io (the sparse index answers
+      404); each one beyond the first five costs about ten minutes of rate limit.
 - [ ] The telemetry publication gate holds: the served ingest accepts the tagged
       build's schema before publication.
 - [ ] Every security fix scheduled for this release has landed with two
@@ -268,9 +276,10 @@ authority.
       [runbook's step 5 block](RELEASE_RUNBOOK.md#rust-crates-release), which
       runs `./scripts/release/publish-crates.sh publish` from a new, empty
       `CARGO_HOME` and build directory with the token in `CARGO_REGISTRY_TOKEN`. It
-      verifies every package, skips already-published versions and waits for
-      each new dependency to appear. npm normally uses Trusted Publishing;
-      manual recovery keeps the same clean-source and public-asset guards.
+      verifies every package, skips already-published versions, waits out the
+      new-crate rate limit and waits for each new dependency to appear. npm
+      normally uses Trusted Publishing; manual recovery keeps the same
+      clean-source and public-asset guards.
 
 ## 7. Verify public results
 
@@ -298,6 +307,12 @@ authority.
       ```
       ./scripts/release/check-published.sh X.Y.Z
       ```
+- [ ] Record every registry's verified result in the release packet: npm,
+      crates.io, GHCR, CNB and Homebrew, including any still missing.
+- [ ] Dispatch `web.yml` on `main` (`gh workflow run web.yml --ref main`) and
+      confirm the live site names the released version; it deploys only on dispatch.
+- [ ] Re-record the site's terminal captures (`web/lib/terminal-captures/released`)
+      from the published binary; the live provider key step is Hunter's.
 - [ ] Published install/upgrade smoke has its own receipt; candidate installs
       do not prove public delivery. Deployment/customer acceptance remain
       separate gates where required.

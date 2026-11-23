@@ -24,7 +24,6 @@ if [[ ! "${cargo_version}" =~ ^cargo[[:space:]]+([0-9]+)\.([0-9]+)\. ]] ||
 fi
 
 packages=("${release_crates[@]}")
-crates_user_agent="CodeWhale release publish check (https://github.com/codewhale-hq/CodeWhale)"
 
 workspace_version=""
 build_dir=""
@@ -145,37 +144,74 @@ if [[ "${mode}" == "dry-run" ]]; then
   exit 0
 fi
 
-crate_version_exists() {
-  local crate_name="$1"
-  local crate_version="$2"
-  curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
-}
-
 wait_for_crate_version() {
   local crate_name="$1"
   local crate_version="$2"
   local attempts=30
 
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-    if crate_version_exists "${crate_name}" "${crate_version}"; then
+    if crate_index_has "${crate_name}" "${crate_version}"; then
       return 0
     fi
-    echo "Waiting for ${crate_name} ${crate_version} to appear on crates.io (${attempt}/${attempts})..."
+    echo "Waiting for ${crate_name} ${crate_version} to appear in the crates.io index (${attempt}/${attempts})..."
     sleep 10
   done
 
-  echo "Timed out waiting for ${crate_name} ${crate_version} to appear on crates.io" >&2
+  echo "Timed out waiting for ${crate_name} ${crate_version} to appear in the crates.io index" >&2
+  return 1
+}
+
+utc_clock() {
+  python3 -c 'import sys, time; print(time.strftime("%H:%M:%S", time.gmtime(int(sys.argv[1]))))' "$1"
+}
+
+rate_limit_attempts=10
+rate_limit_margin=30
+rate_limit_fallback=600
+
+publish_crate() {
+  local crate_name="$1"
+  local crate_version="$2"
+  local log now wake attempt
+  log="$(mktemp)"
+
+  for ((attempt = 1; attempt <= rate_limit_attempts; attempt += 1)); do
+    if cargo publish --locked --registry crates-io -p "${crate_name}" 2>&1 | tee "${log}"; then
+      rm -f "${log}"
+      return 0
+    fi
+    if grep -q "already exists" "${log}"; then
+      rm -f "${log}"
+      echo "${crate_name} ${crate_version} was already uploaded."
+      return 0
+    fi
+    if ! grep -qE "429|Too Many Requests" "${log}"; then
+      rm -f "${log}"
+      echo "Publishing ${crate_name} ${crate_version} failed; stopping." >&2
+      return 1
+    fi
+    now="$(date -u +%s)"
+    wake="$(crates_io_retry_after <"${log}")" || wake=$((now + rate_limit_fallback))
+    wake=$((wake + rate_limit_margin))
+    if ((wake < now + rate_limit_margin)); then
+      wake=$((now + rate_limit_margin))
+    fi
+    echo "Rate limited publishing ${crate_name} ${crate_version}; waiting until $(utc_clock "${wake}") UTC (attempt ${attempt}/${rate_limit_attempts})."
+    sleep $((wake - now))
+  done
+
+  rm -f "${log}"
+  echo "Publishing ${crate_name} ${crate_version} is still rate limited after ${rate_limit_attempts} attempts; stopping." >&2
   return 1
 }
 
 for package in "${packages[@]}"; do
-  echo "::group::${mode} ${package}"
   package_version="$(crate_version "${package}")"
-  if crate_version_exists "${package}" "${package_version}"; then
+  if crate_index_has "${package}" "${package_version}"; then
     echo "Skipping ${package} ${package_version}; already published."
-  else
-    cargo publish --locked --registry crates-io -p "${package}"
-    wait_for_crate_version "${package}" "${package_version}"
+    continue
   fi
-  echo "::endgroup::"
+  publish_crate "${package}" "${package_version}"
+  wait_for_crate_version "${package}" "${package_version}"
+  echo "Published ${package} ${package_version}."
 done
