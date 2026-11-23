@@ -626,7 +626,9 @@ fn run(
                     events.clear();
                 }
                 Err(error) => {
-                    tracing::debug!(%error, seq, "pet producer post failed; events retained");
+                    tracing::debug!(%error, seq, "pet producer post failed; restarting lease");
+                    producer_seq = None;
+                    events.clear();
                 }
             }
             last_produce = Instant::now();
