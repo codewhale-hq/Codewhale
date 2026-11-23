@@ -162,11 +162,9 @@ pub(crate) fn load_workflow_commands_from_dir(dir: &Path) -> Vec<(String, String
         if name.is_empty() {
             continue;
         }
-        let Some(source) = read_command_file(&path) else {
-            continue;
-        };
-        let description =
-            workflow_headline(&source).unwrap_or_else(|| format!("Run the saved workflow {name}"));
+        let description = read_command_file(&path)
+            .and_then(|source| workflow_headline(&source))
+            .unwrap_or_else(|| format!("Run the saved workflow {name}"));
         let content = synthesize_workflow_command(&name, &description, &path);
         commands.push((name, content, path));
     }
