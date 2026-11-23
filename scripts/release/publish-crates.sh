@@ -129,7 +129,7 @@ for package in "${packages[@]}"; do
 done
 
 echo "Verifying all ${#packages[@]} release package tarballs before any upload..."
-cargo publish "${package_args[@]}"
+env -u CARGO_REGISTRY_TOKEN cargo publish "${package_args[@]}"
 
 # crates.io refuses an upload over 10 MiB compressed with HTTP 413, and only
 # when the upload happens: v0.10.1 uploaded 26 crates before codewhale-tui was

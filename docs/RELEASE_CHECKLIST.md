@@ -256,7 +256,8 @@ authority.
 - [ ] The Release workflow succeeds: it repeats parity/build gates, verifies
       the draft asset inventory before GitHub publication, then runs dependent
       npm, GHCR, CNB and Homebrew publication. It requires an exact-SHA green
-      RC receipt and does not publish Cargo crates.
+      RC receipt. Its `crates` job waits for Hunter's `release` environment
+      approval before it publishes Cargo crates.
 - [ ] The public GitHub Release assets are proven to match the tag commit
       before publishing Cargo or npm:
       ```
@@ -272,14 +273,18 @@ authority.
       switch release lanes or force-fetch a conflicting tag. If `main` advanced,
       coordinate with Hunter for a new candidate or separately authorized
       recovery plan.
-- [ ] Publish Cargo manually within the approved scope with the
-      [runbook's step 5 block](RELEASE_RUNBOOK.md#rust-crates-release), which
-      runs `./scripts/release/publish-crates.sh publish` from a new, empty
-      `CARGO_HOME` and build directory with the token in `CARGO_REGISTRY_TOKEN`. It
-      verifies every package, skips already-published versions, waits out the
-      new-crate rate limit and waits for each new dependency to appear. npm
-      normally uses Trusted Publishing; manual recovery keeps the same
-      clean-source and public-asset guards.
+- [ ] Approve the `release` environment for the Release run's `crates` job
+      (**Review deployments**), within the approved scope. It runs after the
+      GitHub Release and npm jobs, verifies every package, skips
+      already-published versions, waits out crates.io rate limits and ends with
+      `check-published.sh`. If it fails or times out, re-run the failed job; it
+      resumes. If the `release` environment has no `CARGO_REGISTRY_TOKEN`
+      secret, the job fails naming it. Fallback: publish by hand with the
+      [runbook's step 5 block](RELEASE_RUNBOOK.md#rust-crates-release), never
+      while the job runs for the same tag. npm normally uses Trusted
+      Publishing; crates.io trusted publishing is the intended replacement for
+      the stored token (see the runbook) and is not set up. Manual recovery
+      keeps the same clean-source and public-asset guards.
 
 ## 7. Verify public results
 
@@ -299,7 +304,7 @@ authority.
       compatibility; the shell installer uses codewhale-native names as documented
       in `docs/REBRAND.md#homebrew`.
 - [ ] Every release crate has the new version on crates.io (`codewhale-ratatui`
-      has its own version); there is no automated Cargo publish job. Partial publication is incomplete.
+      has its own version); the `crates` job's final step checks this. Partial publication is incomplete.
 - [ ] `ghcr.io/codewhale-hq/codewhale:vX.Y.Z` and `:latest` are updated.
 - [ ] The CNB release tag and approved downstream results are verified
       separately; a successful GitHub Release does not prove them.

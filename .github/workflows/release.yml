@@ -528,6 +528,64 @@ jobs:
             npm publish --access public
           fi
 
+  crates:
+    timeout-minutes: 360
+    needs: [npm, release, resolve]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.npm.result == 'success' && needs.resolve.outputs.prerelease != 'true' && github.repository == 'codewhale-hq/Codewhale' && github.ref == format('refs/tags/{0}', needs.resolve.outputs.tag) }}
+    runs-on: ubuntu-24.04
+    environment: release
+    concurrency:
+      group: crates-io-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RUSTFLAGS: ''
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      # No rust-cache or sccache: a shared cache must not feed builds in the job that holds the registry token.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-07-18
+        with:
+          toolchain: 1.100.0
+      - name: Install Linux system dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Require the clean release tag checkout before crates.io publish
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: ./scripts/release/require-release-tag-checkout.sh "${VERSION}"
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo "::error::Secret CARGO_REGISTRY_TOKEN is not set in the 'release' environment. Store a crates.io publish token there and re-run this job, or publish with the manual fallback in docs/RELEASE_RUNBOOK.md (Rust Crates Release, step 5)." >&2
+            exit 1
+          fi
+          root="${RUNNER_TEMP}/crates-publish"
+          mkdir "${root}"
+          CARGO_HOME="${root}/cargo-home" CARGO_TARGET_DIR="${root}/target" \
+            ./scripts/release/publish-crates.sh publish
+      - name: Verify crates.io and npm serve the release
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: ./scripts/release/check-published.sh "${VERSION}"
+
   homebrew:
     timeout-minutes: 20
     needs: [release, resolve]

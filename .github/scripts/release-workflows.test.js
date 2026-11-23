@@ -787,7 +787,7 @@ assert.match(releaseDockerSmoke, /linux\/arm64/);
 assert.match(releaseDockerSmoke, /--entrypoint codewhale/);
 assert.match(releaseDockerSmoke, /--entrypoint codew/);
 
-const npmJob = release.match(/\n  npm:\n([\s\S]*?)\n  homebrew:\n/);
+const npmJob = release.match(/\n  npm:\n([\s\S]*?)\n  crates:\n/);
 assert.ok(npmJob, "public release must retain a dedicated npm publication job");
 assert.match(npmJob[1], /^    needs: \[release, resolve\]$/m);
 assert.match(npmJob[1], /needs\.release\.result == 'success'/);
@@ -814,6 +814,52 @@ assert.ok(
     release.indexOf("Publish npm wrapper with trusted publishing"),
   "npm publication must follow the public exact-asset gate",
 );
+
+const cratesJob = jobBlock(release, "crates");
+assert.match(cratesJob, /^    environment: release$/m, "crates.io publication must wait for the protected release environment");
+assert.match(cratesJob, /^    needs: \[npm, release, resolve\]$/m);
+assert.match(cratesJob, /^    permissions:\n      contents: read\n    env:/m, "crates.io publication needs only contents: read");
+assert.doesNotMatch(cratesJob, /id-token|contents: write|actions: write/);
+assert.equal(jobTimeout(release, "crates"), 360);
+assert.match(cratesJob, /^    concurrency:\n      group: crates-io-\$\{\{ needs\.resolve\.outputs\.tag \}\}\n      cancel-in-progress: false$/m);
+assert.match(cratesJob, /persist-credentials: false/);
+assert.doesNotMatch(cratesJob, /uses: (?:Swatinem\/rust-cache|mozilla-actions\/sccache-action)|RUSTC_WRAPPER/, "the token-holding job must not restore shared build caches");
+assert.doesNotMatch(cratesJob, /set -x/);
+const cratesGuard = jobIf(release, "crates").replace(/^\$\{\{\s*(.*?)\s*\}\}$/, "$1");
+const cratesRuns = ({ repo = "codewhale-hq/Codewhale", ref = "refs/tags/v1.2.3", prerelease = "false", release: rel = "success", npm = "success" } = {}) =>
+  evaluate(cratesGuard, {
+    cancelled: () => false,
+    format: (template, ...args) => template.replace(/\{(\d+)\}/g, (_, i) => args[Number(i)]),
+    github: { repository: repo, ref },
+    needs: { release: { result: rel }, npm: { result: npm }, resolve: { outputs: { tag: "v1.2.3", prerelease } } },
+  });
+assert.equal(cratesRuns(), true, "crates.io publication must run for a stable release of this repository");
+assert.equal(cratesRuns({ repo: "someone/Codewhale" }), false, "a fork must never reach the crates.io job");
+assert.equal(cratesRuns({ ref: "refs/heads/main" }), false, "a dispatch from a branch must never reach the crates.io job");
+assert.equal(cratesRuns({ ref: "refs/tags/v9.9.9" }), false, "the ref must be the resolved release tag");
+assert.equal(cratesRuns({ prerelease: "true" }), false, "prereleases publish no crates");
+assert.equal(cratesRuns({ npm: "failure" }), false, "crates.io publication follows npm");
+assert.equal(cratesRuns({ release: "failure" }), false, "crates.io publication follows the GitHub Release");
+assert.equal(
+  (release.match(/secrets\.CARGO_REGISTRY_TOKEN/g) || []).length,
+  1,
+  "the crates.io token must be referenced exactly once",
+);
+const cratesPublish = namedStep(release, "Publish crates to crates.io");
+assert.match(cratesPublish, /^        env:\n          CARGO_REGISTRY_TOKEN: \$\{\{ secrets\.CARGO_REGISTRY_TOKEN \}\}$/m, "the token reaches only the publish step's environment");
+assert.doesNotMatch(cratesPublish.split("run: |")[1], /\$\{\{/, "the publish script must not interpolate expressions into its command line");
+assert.match(cratesPublish, /if \[\[ -z "\$\{CARGO_REGISTRY_TOKEN:-\}" \]\]; then\n\s+echo "::error::Secret CARGO_REGISTRY_TOKEN is not set in the 'release' environment/);
+assert.match(cratesPublish, /CARGO_HOME="\$\{root\}\/cargo-home" CARGO_TARGET_DIR="\$\{root\}\/target" \\\n\s+\.\/scripts\/release\/publish-crates\.sh publish/);
+const cratesOrder = [
+  "Require the clean release tag checkout before crates.io publish",
+  "Publish crates to crates.io",
+  "Verify crates.io and npm serve the release",
+].map((name) => release.indexOf(`      - name: ${name}\n`));
+assert.ok(cratesOrder.every((at, i) => at > 0 && (i === 0 || at > cratesOrder[i - 1])), "crates job: tag gate, publish, then registry check");
+assert.match(namedStep(release, "Require the clean release tag checkout before crates.io publish"), /require-release-tag-checkout\.sh "\$\{VERSION\}"/);
+assert.match(namedStep(release, "Verify crates.io and npm serve the release"), /check-published\.sh "\$\{VERSION\}"/);
+assert.doesNotMatch(namedStep(release, "Verify crates.io and npm serve the release"), /secrets\./);
+assert.match(read("scripts/release/publish-crates.sh"), /env -u CARGO_REGISTRY_TOKEN cargo publish "\$\{package_args\[@\]\}"/, "the pre-upload verification build must not see the token");
 
 assert.match(releaseDockerfile, /^FROM debian:bookworm-slim$/m);
 assert.match(releaseDockerfile, /ca-certificates/);

@@ -329,8 +329,9 @@ authorization. The stop line remains explicit Hunter approval: do not create
 the `vX.Y.Z` tag, dispatch `release.yml`, or run any registry publication step
 until that approval is given for the exact version/SHA and intended destinations.
 Tag creation can immediately start GitHub, npm, GHCR, CNB and Homebrew
-publication; include those destinations in the approval. Cargo publication and
-any deployment/downstream launch also require their applicable authorization.
+publication; include those destinations in the approval. Cargo publication
+waits for Hunter to approve the `release` environment for the `crates` job; any
+deployment/downstream launch also requires its applicable authorization.
 
 The Android target is cross-built and included in the checksum/bundle gates,
 but GitHub's Linux runner cannot execute the Android binary as a real Termux
@@ -390,10 +391,36 @@ handoff. Keep backups as recovery artifacts, not alternate development lanes.
 
 ## Rust Crates Release
 
-Crate publishing to crates.io is **manual** — there is no automated
-`crates-publish` GitHub workflow. Operators run the helpers in
-`scripts/release/` from a developer workstation, passing a crates.io publish
-token to the publish command as `CARGO_REGISTRY_TOKEN` (step 5).
+The `crates` job in `.github/workflows/release.yml` publishes to crates.io once
+Hunter approves it. It uses the protected `release` environment (Hunter is the
+required reviewer), which holds the crates.io publish token as the environment
+secret `CARGO_REGISTRY_TOKEN`; the job cannot read the secret until the
+deployment is approved. It runs only for a stable `vX.Y.Z` tag of
+`codewhale-hq/Codewhale`, after the GitHub Release and npm jobs succeed, so a
+crates.io failure or a long rate-limit wait never holds or half-publishes
+either of them. Users who install from crates.io see the previous version until
+the job finishes; npm and the GitHub Release are the canonical channels.
+
+The job checks out the tag commit, runs `require-release-tag-checkout.sh`, then
+runs `publish-crates.sh publish` from a fresh `CARGO_HOME` and build directory
+under `$RUNNER_TEMP` with the token in that one step's environment, and finally
+runs `check-published.sh X.Y.Z`. Verifying all 46 tarballs is a cold build of
+over an hour on a hosted runner, so the job allows 360 minutes, the hosted
+maximum. A missing secret fails the publish step before any build, naming the
+secret and the environment. Runs for the same tag never overlap. A timeout or
+failure after some uploads is recovered by **Re-run failed jobs** (and
+approving again): the script skips every version the crates.io index already
+serves and uploads the rest. Prereleases publish no crates.
+
+Running the helpers from a developer workstation (step 5) remains the
+documented fallback for when the job cannot run or the secret is not stored.
+
+Trusted publishing is the intended replacement for the stored token: crates.io
+would then mint a short-lived token from the job's GitHub OIDC identity. It
+needs each of the 46 release crates configured on crates.io with a trusted
+publisher for `codewhale-hq/Codewhale`, workflow `release.yml` and environment
+`release`, plus `id-token: write` on the `crates` job and a token-exchange step.
+It is not implemented.
 
 Release preparation lands directly on canonical `main` in verified slices;
 contributor PRs retain their normal review/merge process. The source must be on
@@ -436,8 +463,17 @@ and fails branch-only release sources before assets are published.
    ./scripts/release/verify-release-assets.sh X.Y.Z
    ```
 
-5. Publish approved Rust crates from the same clean canonical checkout on
-   `main`, with `HEAD` still matching the immutable remote release tag:
+5. When the Release run shows the `crates` job waiting for the `release`
+   environment, Hunter approves it (**Review deployments** on the run). The
+   job publishes and ends with `check-published.sh`; then verify with
+   `./scripts/release/check-published.sh X.Y.Z` from any checkout. If the job
+   reports the secret missing, store `CARGO_REGISTRY_TOKEN` in the `release`
+   environment and re-run the failed job, or use the fallback below.
+
+   **Manual fallback.** Publish approved Rust crates from the same clean
+   canonical checkout on `main`, with `HEAD` still matching the immutable
+   remote release tag. Do not run it while the `crates` job is running for the
+   same tag:
 
    ```bash
    ./scripts/release/require-release-tag-checkout.sh X.Y.Z && {
@@ -476,7 +512,10 @@ and fails branch-only release sources before assets are published.
    branches, create another checkout, force-fetch a conflicting tag or bypass
    the guard.
 
-The publish helper is idempotent for reruns: already-published crate versions are skipped.
+The publish helper is idempotent for reruns, in the job and by hand:
+already-published crate versions are skipped. In both paths it verifies the
+tarballs with `CARGO_REGISTRY_TOKEN` removed from Cargo's environment; each
+real upload still builds that crate with the token present.
 
 ## GitHub Release Assets
 
