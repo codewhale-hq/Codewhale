@@ -153,8 +153,11 @@ for (const [event, repo, requested, variable, expected] of [
 for (const [file, source] of fs.readdirSync(path.join(repoRoot, ".github/workflows")).map((f) => [f, read(`.github/workflows/${f}`)])) {
   for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
     if (!/self-hosted|codewhale-mac/.test(value)) continue;
-    assert.equal(file, "ci-test-suite.yml", `${file}: only the CI suite may name the self-hosted runner`);
-    assert.match(value, /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /, "the self-hosted label must be gated by the self_hosted input");
+    assert.ok(["ci-test-suite.yml", "release-artifacts.yml"].includes(file), `${file}: only the CI suite and the release build may name the self-hosted runner`);
+    const gate = file === "ci-test-suite.yml"
+      ? /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /
+      : /^\$\{\{ startsWith\(matrix\.os, 'macos-'\) && needs\.pin\.outputs\.macos_self_hosted == 'true' && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /;
+    assert.match(value, gate, `${file}: the self-hosted label must be gated by its trusted-run decision`);
   }
 }
 
