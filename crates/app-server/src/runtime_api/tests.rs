@@ -18897,7 +18897,15 @@ async fn list_skills_and_set_skill_enabled_offload_discovery_from_async_worker()
     };
     let state = state_rx.await?;
 
-    let config_write = state.config.write();
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder_state = state.clone();
+    let holder = std::thread::spawn(move || {
+        let _config_write = holder_state.config.write();
+        let _ = locked_tx.send(());
+        let _ = release_rx.recv();
+    });
+    locked_rx.await?;
     let list_task = tokio::spawn(super::list_skills(State(state.clone())));
     let enable_task = tokio::spawn(super::set_skill_enabled(
         State(state.clone()),
@@ -18907,12 +18915,21 @@ async fn list_skills_and_set_skill_enabled_offload_discovery_from_async_worker()
     tokio::task::yield_now().await;
     assert!(!list_task.is_finished());
     assert!(!enable_task.is_finished());
-    drop(config_write);
+    drop(release_tx);
+    holder
+        .join()
+        .map_err(|_| anyhow::anyhow!("config write holder panicked"))?;
 
     let list_resp = list_task
         .await?
         .map_err(|err| anyhow::anyhow!(err.message))?;
-    assert!(!list_resp.0.directories.is_empty());
+    assert!(
+        list_resp
+            .0
+            .skills
+            .iter()
+            .all(|row| row.name != "no-such-skill")
+    );
     let err = enable_task.await?.unwrap_err();
     assert_eq!(err.status, StatusCode::NOT_FOUND);
     Ok(())
