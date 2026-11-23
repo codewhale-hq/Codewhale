@@ -238,15 +238,6 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 | `Enter` / `Tab`                | Run / complete the highlighted command             |
 | `Esc`                          | Dismiss palette                                     |
 
-## Provider and model pickers
-
-| Chord | Action |
-|---|---|
-| `F7` | View the OrcaRouter partner offer in `/provider` or `/model`, keeping the current selection |
-
-Click the OrcaRouter recommendation for the same offer. Its pager includes the
-redemption URL and referral disclosure. On Apple keyboards, hold Fn if needed.
-
 ## Session Picker (`Ctrl-R` or `/sessions`)
 
 | Chord                | Action                                              |

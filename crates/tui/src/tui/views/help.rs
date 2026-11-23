@@ -609,6 +609,11 @@ fn build_entries(
     }
 
     for binding in KEYBINDINGS {
+        if matches!(binding.description_id, MessageId::OrcaRouterOfferAction)
+            && !crate::tui::orca_offer::available(locale)
+        {
+            continue;
+        }
         // macOS renders Alt chords with the Option glyph (`⌥V`), never
         // `Alt`/`Cmd` (TUI-DOG-002 acceptance).
         let chord = match (multiline_mode, binding.description_id) {
