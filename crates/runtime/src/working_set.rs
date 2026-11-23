@@ -1197,7 +1197,12 @@ impl WorkingSet {
                 ));
                 continue;
             }
-            let body = match std::fs::read_to_string(&abs) {
+            let read_cap = self.config.max_resident_file_bytes.min(
+                self.config
+                    .max_total_resident_bytes
+                    .saturating_sub(total_bytes),
+            ) as u64;
+            let body = match read_resident_prefix(&abs, read_cap) {
                 Ok(text) => text,
                 Err(_) => {
                     if !header_pushed {
@@ -1672,6 +1677,24 @@ fn list_top_level_dirs(workspace: &Path, limit: usize) -> (Vec<String>, usize) {
 }
 
 const IGNORED_ROOT_DIRS: &[&str] = &["target", "node_modules", "dist", "build", ".git"];
+
+fn read_resident_prefix(path: &Path, cap: u64) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(cap.saturating_add(4))
+        .read_to_end(&mut bytes)?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            Ok(String::from_utf8(bytes).expect("valid prefix"))
+        }
+        Err(error) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+    }
+}
 
 #[cfg(test)]
 mod tests {

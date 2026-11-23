@@ -2568,7 +2568,8 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("Failed to write settings to {}", path.display()))?;
-    Ok(())
+    codewhale_config::persistence::sync_parent_dir(path)
+        .with_context(|| format!("Failed to sync settings directory for {}", path.display()))
 }
 
 /// Last-resort delivery for `settings.toml`: rewrite it without a rename.

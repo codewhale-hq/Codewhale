@@ -73,7 +73,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut attempt: u32 = 0;
     loop {
         match tmp.persist(path) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                sync_parent_dir(path)
+                    .with_context(|| format!("failed to sync directory of {}", path.display()))?;
+                return Ok(());
+            }
             Err(error) if attempt + 1 < PERSIST_ATTEMPTS && rename_is_retryable(&error.error) => {
                 attempt += 1;
                 tmp = error.file;
@@ -102,6 +106,23 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+}
+
+/// Flush the directory entry a replacing rename created, so a crash after a
+/// reported save cannot bring back the previous file. Windows has no
+/// directory handle to sync; its replace call is already durable.
+pub fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Last-resort delivery: rewrite the existing file without a rename.

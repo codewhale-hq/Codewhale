@@ -63,9 +63,14 @@ struct McpServerSettings {
 impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
-        if let Some(path) = path.filter(|p| p.exists()) {
-            let contents = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read MCP server config: {}", path.display()))?;
+        let contents = match &path {
+            Some(path) => codewhale_engine::mcp::read_bounded_mcp_config_file(
+                path,
+                codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES,
+            )?,
+            None => None,
+        };
+        if let (Some(path), Some(contents)) = (path, contents) {
             Self::from_toml(&contents)
                 .with_context(|| format!("Failed to parse MCP server config: {}", path.display()))
         } else {
