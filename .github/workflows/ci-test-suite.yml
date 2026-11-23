@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           state="${RUNNER_WORKSPACE}/ci-state"
-          job_tmp="$(mktemp -d "${TMPDIR:-/tmp}/j.XXXXXX")"
+          job_tmp="$(mktemp -d /tmp/cwci.XXXXXX)"
           mkdir -p "${state}/home" "${state}/target"
           {
             echo "HOME=${state}/home"
@@ -305,7 +305,7 @@ jobs:
         run: |
           set -euo pipefail
           state="${RUNNER_WORKSPACE}/ci-state"
-          job_tmp="$(mktemp -d "${TMPDIR:-/tmp}/j.XXXXXX")"
+          job_tmp="$(mktemp -d /tmp/cwci.XXXXXX)"
           mkdir -p "${state}/home"
           {
             echo "HOME=${state}/home"
