@@ -1302,8 +1302,28 @@ fn rewrite_manifest(dir: &Path, records: &[RecoveryRecord]) -> Result<()> {
         })
         .collect();
     let tmp = dir.join(format!("{RECOVERY_MANIFEST}.tmp"));
-    fs::write(&tmp, text).context("failed to write the recovery manifest")?;
-    fs::rename(&tmp, dir.join(RECOVERY_MANIFEST)).context("failed to replace the recovery manifest")
+    write_synced(&tmp, text.as_bytes()).context("failed to write the recovery manifest")?;
+    fs::rename(&tmp, dir.join(RECOVERY_MANIFEST))
+        .context("failed to replace the recovery manifest")?;
+    sync_dir(dir).context("failed to flush the recovery manifest")
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 pub fn prune_expired(home: &Path) -> Vec<(String, u64)> {
@@ -1322,8 +1342,13 @@ pub fn prune_expired(home: &Path) -> Vec<(String, u64)> {
                 complete = false;
                 continue;
             }
-            let Ok(meta) = fs::symlink_metadata(&record.stored) else {
-                continue;
+            let meta = match fs::symlink_metadata(&record.stored) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    complete = false;
+                    continue;
+                }
             };
             let removed = if meta.is_dir() {
                 fs::remove_dir_all(&record.stored)
@@ -1400,7 +1425,7 @@ pub fn adopt_receipt(directory: &Path, entries: &[(String, String)]) -> Result<b
 pub fn write_file_atomically(dir: &Path, name: &str, bytes: &[u8], executable: bool) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    fs::write(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
+    write_synced(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
     #[cfg(unix)]
     if executable {
         use std::os::unix::fs::PermissionsExt;
@@ -1409,7 +1434,8 @@ pub fn write_file_atomically(dir: &Path, name: &str, bytes: &[u8], executable: b
     #[cfg(not(unix))]
     let _ = executable;
     fs::rename(&tmp, dir.join(name))
-        .with_context(|| format!("failed to write {}", dir.join(name).display()))
+        .with_context(|| format!("failed to write {}", dir.join(name).display()))?;
+    sync_dir(dir).with_context(|| format!("failed to flush {}", dir.display()))
 }
 
 #[cfg(unix)]
