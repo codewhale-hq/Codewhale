@@ -1374,8 +1374,10 @@ mod tests {
     #[test]
     fn empty_filter_lists_all_entries() {
         let view = HelpView::new();
-        // Total = registered slash commands + catalogued keybindings.
-        let expected = commands::command_infos().len() + KEYBINDINGS.len();
+        // Total = registered slash commands + catalogued keybindings, less
+        // the partner-offer key once its campaign has ended.
+        let ended_offer = usize::from(!crate::tui::orca_offer::available(Locale::En));
+        let expected = commands::command_infos().len() + KEYBINDINGS.len() - ended_offer;
         assert_eq!(view.filtered.len(), expected);
         assert_eq!(view.entries.len(), expected);
     }
