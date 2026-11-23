@@ -73,6 +73,7 @@ against the vendor's own docs before trusting any value here:
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 | LLMTR | `https://llmtr.com/v1` | `minimax/minimax-m3.1-flash`; namespaced `vendor/model` ids, from the live catalog | `LLMTR_API_KEY` |
 | WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`, `deepseek-v4-flash`, `gemini-4-neon` | `WORLDROUTER_API_KEY` |
+| AtmoRouter | `https://atmorouter.dev/v1` | `zai/glm-5.3`, `zai/glm-5.3-flash`; namespaced `vendor/model` ids, from the live catalog | `ATMOROUTER_API_KEY` |
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
 Tinker in `/provider` or configure the named route below. Its documented
@@ -170,6 +171,14 @@ Kimi and GLM models behind one key. Model ids are unprefixed, such as
 <https://www.worldrouter.ai/models>. The authority is
 `GET https://inference-api.worldrouter.ai/v1/models` with your key.
 Docs: <https://www.worldrouter.ai/docs/quickstart>.
+
+AtmoRouter is an OpenAI-compatible gateway at `https://atmorouter.dev/v1`.
+Model ids are namespaced `vendor/model` values such as `zai/glm-5.3` or
+`zai/glm-5.3-flash`, and the catalog with prices is at
+<https://atmorouter.dev/models>. The authority is
+`GET https://atmorouter.dev/v1/models` with your key. Create a key at
+<https://atmorouter.dev/dashboard/keys> and set `ATMOROUTER_API_KEY`.
+Docs: <https://atmorouter.dev/docs/quickstart>.
 
 Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
 `tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.

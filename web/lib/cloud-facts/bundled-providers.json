@@ -652,6 +652,25 @@
       },
       "wire_policy": "chat_completions"
     },
+    "atmorouter": {
+      "aliases": [
+        "atmo-router"
+      ],
+      "api_key_env": "ATMOROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ATMOROUTER_API_KEY"
+        ],
+        "secret_slot": "atmorouter"
+      },
+      "base_url": "https://atmorouter.dev/v1",
+      "credential_url": "https://atmorouter.dev/dashboard/keys",
+      "discovery": "models_endpoint",
+      "docs_url": "https://atmorouter.dev/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "baseten": {
       "aliases": [
         "base-ten",
