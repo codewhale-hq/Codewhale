@@ -72,7 +72,7 @@ impl McpServerSettings {
                             .with_context(|| {
                                 format!("Failed to read MCP server config: {}", path.display())
                             })?;
-                    if len > cap {
+                    if len.max(contents.len()) > cap {
                         anyhow::bail!(
                             "MCP server config {} exceeds the {} MiB limit",
                             path.display(),
