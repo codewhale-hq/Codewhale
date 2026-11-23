@@ -1,6 +1,6 @@
 {
  "generated_by": "scripts/contributor-wall.py refresh",
- "github_contributor_list": 225,
+ "github_contributor_list": 229,
  "people": [
   {
    "login": "0gl20shk0sbt36",
@@ -429,7 +429,9 @@
    "credited_for": [
     "changelog credit",
     "co-author",
-    "contributor record"
+    "commit",
+    "contributor record",
+    "merged pull request"
    ]
   },
   {
@@ -1549,6 +1551,15 @@
    ]
   },
   {
+   "login": "knowhycodata",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
    "login": "knqiufan",
    "credited_for": [
     "changelog credit",
@@ -2140,6 +2151,15 @@
   },
   {
    "login": "New2Niu",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
+   ]
+  },
+  {
+   "login": "NieZhuZhu",
    "credited_for": [
     "changelog credit",
     "commit",
@@ -2746,6 +2766,13 @@
    ]
   },
   {
+   "login": "swf1996120",
+   "credited_for": [
+    "changelog credit",
+    "contributor record"
+   ]
+  },
+  {
    "login": "sximelon",
    "credited_for": [
     "changelog credit",
@@ -2797,6 +2824,15 @@
    "credited_for": [
     "changelog credit",
     "contributor record"
+   ]
+  },
+  {
+   "login": "thejesh23",
+   "credited_for": [
+    "changelog credit",
+    "commit",
+    "contributor record",
+    "merged pull request"
    ]
   },
   {
