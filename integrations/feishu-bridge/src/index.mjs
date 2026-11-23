@@ -16,6 +16,7 @@ import {
   parseTextContent,
   preservedChatStateFields,
   splitMessage,
+  FEISHU_MAX_TEXT_CHARS,
   stripGroupPrefix
 } from "./lib.mjs";
 import {
@@ -29,7 +30,8 @@ import {
   settleLegacyOwners,
   THREAD_NOT_OWNED_MESSAGE,
   ThreadOwnershipError,
-  ThreadStore as CoreThreadStore
+  ThreadStore as CoreThreadStore,
+  splitAtCodePoint
 } from "../../bridge-core/src/lib.mjs";
 
 class ThreadStore extends CoreThreadStore {
@@ -58,7 +60,7 @@ const config = {
   allowGroups: parseBool(process.env.FEISHU_ALLOW_GROUPS, false),
   requirePrefixInGroup: parseBool(process.env.FEISHU_REQUIRE_PREFIX_IN_GROUP, true),
   groupPrefix: process.env.FEISHU_GROUP_PREFIX || "/ds",
-  maxReplyChars: Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500),
+  maxReplyChars: Math.min(Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500), FEISHU_MAX_TEXT_CHARS),
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || process.env.DEEPSEEK_TURN_TIMEOUT_MS || 900000)
 };
 
@@ -95,7 +97,7 @@ const dispatcher = new Lark.EventDispatcher({}).register({
   }
 });
 
-console.log("Starting DeepSeek Feishu bridge");
+console.log("Starting CodeWhale Feishu bridge");
 console.log(`Runtime: ${config.runtimeUrl}`);
 console.log(`Workspace: ${config.workspace}`);
 if (!config.allowlist.length && !config.allowUnlisted) {
@@ -292,6 +294,7 @@ async function runPrompt(chatId, prompt, identity) {
   await threadStore.patchChat(chatId, {
     activeTurnId: turnId || null,
     lastSeq: sinceSeq,
+    responseText: "",
     updatedAt: new Date().toISOString()
   });
   await sendText(chatId, `Started turn ${turnId || "(unknown)"}`);
@@ -322,6 +325,7 @@ async function reattachActiveTurns(onlyThreadIds = null) {
       await threadStore.patchChat(chatId, {
         activeTurnId: null,
         lastSeq: Number(detail.latest_seq || state.lastSeq || 0),
+        responseText: "",
         updatedAt: new Date().toISOString()
       });
       await sendText(chatId, `Bridge restarted. No active turn remains for ${state.threadId}.`);
@@ -347,7 +351,7 @@ async function reattachActiveTurns(onlyThreadIds = null) {
 async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
-  let responseText = "";
+  let responseText = (await threadStore.getChat(chatId))?.responseText || "";
   let latestSeq = sinceSeq;
   let sentProgressAt = Date.now();
 
@@ -367,16 +371,19 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
     for await (const record of readThreadEvents(response, threadId)) {
       if (record.event === "stream.end") return false;
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq });
 
-      if (!turnId || record.turn_id !== turnId) continue;
+      if (!turnId || record.turn_id !== turnId) {
+        await threadStore.patchChat(chatId, { lastSeq: latestSeq });
+        continue;
+      }
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
         const now = Date.now();
         if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          await sendText(chatId, responseText.slice(0, config.maxReplyChars));
-          responseText = responseText.slice(config.maxReplyChars);
+          const [head, rest] = splitAtCodePoint(responseText, config.maxReplyChars);
+          await sendText(chatId, head);
+          responseText = rest;
           sentProgressAt = now;
         }
       }
@@ -418,6 +425,8 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq) {
           return true;
         }
       }
+
+      await threadStore.patchChat(chatId, { lastSeq: latestSeq, responseText });
     }
   } catch (error) {
     if (error.name === "AbortError") {

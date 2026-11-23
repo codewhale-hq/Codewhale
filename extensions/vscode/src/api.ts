@@ -335,7 +335,15 @@ export function openEventStream(
       }
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => {
-        for (const event of parser.push(chunk)) {
+        let events: RuntimeEvent[];
+        try {
+          events = parser.push(chunk);
+        } catch (error: unknown) {
+          request.destroy();
+          stream.onError(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        for (const event of events) {
           stream.onEvent(event);
         }
       });
@@ -424,6 +432,8 @@ function ensureOk(response: RequestResult, label: string): void {
   }
 }
 
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
 async function requestJson(
   url: string,
   config: ApiConfig,
@@ -443,13 +453,23 @@ async function requestJson(
           },
         },
         (response) => {
-          let raw = "";
-          response.setEncoding("utf8");
-          response.on("data", (chunk: string) => {
-            raw += chunk;
+          const tooLarge = () => request.destroy(new Error("Runtime response exceeds the 8 MiB limit."));
+          if (Number(response.headers["content-length"]) > MAX_RESPONSE_BYTES) {
+            tooLarge();
+            return;
+          }
+          const chunks: Buffer[] = [];
+          let size = 0;
+          response.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > MAX_RESPONSE_BYTES) {
+              tooLarge();
+              return;
+            }
+            chunks.push(chunk);
           });
           response.on("end", () => {
-            resolve({ statusCode: response.statusCode ?? 0, body: parseJson(raw) });
+            resolve({ statusCode: response.statusCode ?? 0, body: parseJson(Buffer.concat(chunks).toString("utf8")) });
           });
         },
       );

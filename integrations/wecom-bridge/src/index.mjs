@@ -1,5 +1,5 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -41,13 +41,6 @@ import {
 
 /** Map of chatId -> latest pending approval info for natural-language approval. */
 const pendingApprovals = new Map();
-// Clean up stale approvals every 2 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [chatId, approval] of pendingApprovals) {
-    if (now - approval.timestamp > 300_000) pendingApprovals.delete(chatId);
-  }
-}, 120_000);
 
 const config = {
   botId: requiredEnv("WECOM_BOT_ID"),
@@ -69,6 +62,13 @@ const config = {
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || 900000),
   approvalTimeoutMs: Number(process.env.CODEWHALE_APPROVAL_TIMEOUT_MS || 300000)
 };
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [chatId, approval] of pendingApprovals) {
+    if (now - approval.timestamp > config.approvalTimeoutMs) pendingApprovals.delete(chatId);
+  }
+}, Math.min(120_000, config.approvalTimeoutMs));
 
 const { runtimeJson, authHeaders } = createRuntimeClient(config);
 
@@ -143,11 +143,11 @@ async function handleMediaMessage(frame, body, identity) {
   try {
     const { buffer, filename } = await client.downloadFile(content.url, content.aeskey);
     const dir = mediaStorageDir();
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
     const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
     const target = path.join(dir, name);
-    writeFileSync(target, buffer);
+    await writeFile(target, buffer);
     await replyText(
       frame,
       `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
@@ -395,6 +395,14 @@ async function runPrompt(chatId, prompt, frame) {
   }
 }
 
+async function finishStream(streamer, frame, text) {
+  try {
+    await streamer.update(text, true);
+  } catch {
+    await replyText(frame, text);
+  }
+}
+
 async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
@@ -424,7 +432,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
-        await streamer.update(responseText, false);
+        await streamer.update(responseText, false).catch(() => {});
       }
 
       if (record.event === "approval.required") {
@@ -461,7 +469,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         const status = turn.status || "completed";
         const errorText = turn.error ? `\n${turn.error}` : "";
         const fallback = status === "completed" ? "Turn completed." : `Turn ${status}.${errorText}`;
-        await streamer.update(responseText.trim() || fallback, true);
+        await finishStream(streamer, frame, responseText.trim() || fallback);
         return true;
       }
 
@@ -470,7 +478,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         const status = turn.status || record.payload?.status;
         if (["failed", "canceled", "interrupted"].includes(status)) {
           const errorText = turn.error || record.payload?.error;
-          await streamer.update(`Turn ${status}.${errorText ? `\n${errorText}` : ""}`, true);
+          await finishStream(streamer, frame, `Turn ${status}.${errorText ? `\n${errorText}` : ""}`);
           return true;
         }
       }

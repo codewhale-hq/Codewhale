@@ -78,14 +78,13 @@ jobs:
         id: checks
         if: steps.change.outputs.open == 'true'
         run: |
-          set +e
+          status=0
           {
-            python3 scripts/catalog_models_dev.py seed render --check
-            python3 scripts/catalog_models_dev.py seed age --max-days 30
-            python3 -m unittest scripts/catalog_models_dev_test.py
-            (cd web && node scripts/check-facts.mjs)
+            python3 scripts/catalog_models_dev.py seed render --check || status=1
+            python3 scripts/catalog_models_dev.py seed age --max-days 30 || status=1
+            python3 -m unittest scripts/catalog_models_dev_test.py || status=1
+            (cd web && node scripts/check-facts.mjs) || status=1
           } > "$RUNNER_TEMP/checks.txt" 2>&1
-          status=$?
           if [ "$status" -eq 0 ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
           tail -n 40 "$RUNNER_TEMP/checks.txt"
       - name: Push the branch and open or update the pull request
