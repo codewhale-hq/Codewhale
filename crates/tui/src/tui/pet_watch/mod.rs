@@ -146,15 +146,19 @@ impl PetWatch {
         if self.detached {
             return;
         }
-        if self.dots.is_none() {
-            self.dots = Some(dots::Dots::start());
-        }
         if self.worker.is_none() && !self.failed {
             match Worker::start(self.session.clone()) {
                 Ok(worker) => self.worker = Some(worker),
                 Err(_) => self.failed = true,
             }
         }
+    }
+    fn start_dots(&mut self) {
+        #[cfg(test)]
+        if self.detached {
+            return;
+        }
+        self.dots = Some(dots::Dots::start());
     }
     pub fn export(&mut self) -> bool {
         if self.worker.is_none() || self.exporting {
@@ -199,11 +203,7 @@ impl PetWatch {
             self.active_turn_id = Some(turn_id.clone());
         }
         if let Some(text) = metadata(event, self.active_turn_id.as_deref()) {
-            if let Some(dots) = self
-                .dots
-                .as_ref()
-                .filter(|_| self.enabled || self.worker.is_some())
-            {
+            if let Some(dots) = &self.dots {
                 dots.observe(text.clone());
             }
             self.send(Command::Observe(text));
@@ -528,6 +528,7 @@ pub fn tick(app: &mut App, now: Instant) {
         ShellPhase::from_app(app),
         ShellPhase::Waiting | ShellPhase::Approval
     );
+    let keep_dots = app.pet_watch.enabled || app.view_stack.contains_kind(ModalKind::PetHabitat);
     if visible && app.pet_watch.avatars.refresh(&app.workspace, now) {
         app.needs_redraw = true;
     }
@@ -573,13 +574,20 @@ pub fn tick(app: &mut App, now: Instant) {
             app.needs_redraw = true;
         }
     }
+    let own = full::presentation(
+        state.raster.as_ref(),
+        app.current_session_id.as_deref(),
+        now,
+    )
+    .is_some_and(|r| r.scene.materials.is_some());
+    let want = visible && state.avatars.current() == "whale" && !own && state.dots_area.is_some();
+    if !keep_dots {
+        state.dots = None;
+        state.dots_frame = None;
+    } else if want && state.dots.is_none() {
+        state.start_dots();
+    }
     if let Some(dots) = &state.dots {
-        let own = full::presentation(
-            state.raster.as_ref(),
-            app.current_session_id.as_deref(),
-            now,
-        )
-        .is_some_and(|r| r.scene.materials.is_some());
         let body = state
             .raster
             .as_ref()
@@ -587,12 +595,7 @@ pub fn tick(app: &mut App, now: Instant) {
                 BodyStyle::Smooth => "smooth",
                 BodyStyle::Pixel => "pixel",
             });
-        dots.set_view(
-            visible && state.avatars.current() == "whale" && !own && state.dots_area.is_some(),
-            motion,
-            waiting,
-            body,
-        );
+        dots.set_view(want, motion, waiting, body);
         if dots.failed() {
             state.dots_frame = None;
         } else if let Some(frame) = dots.take() {

@@ -9,12 +9,13 @@
 use rquickjs::{Context, Function, Runtime};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    mpsc::{self, RecvTimeoutError, Sender},
 };
 use std::time::{Duration, Instant};
 
 const POINTS: usize = 980;
+const PENDING: usize = 4096;
 const ANCHOR: &str = "global.PetNative=load('pet-native').PetNative;";
 const EXPORTS: &str = "global.PetDotField=load('dot-field');global.PetEngineTelemetry=load('pet-engine').PetEngineTelemetry;";
 const PRELUDE: &str = r#"(function(){
@@ -30,6 +31,7 @@ for(let i=0;i<980;i++){const p=f.points[i],m=f.materials[i],k=2+i*6;o[k]=p[0];o[
 return o;};
 globalThis.localReset=reset;
 globalThis.localForget=()=>{s.still='';};
+globalThis.localFresh=(t)=>s.engine.lastObservedAt!==undefined&&t-s.engine.lastObservedAt<=12500;
 globalThis.localObserve=(json,t)=>{
 const ev=JSON.parse(json);if(!Array.isArray(ev))throw Error('Invalid pet batch.');
 const n=s.engine.clone();
@@ -144,7 +146,7 @@ impl Projector {
     }
 
     pub(super) fn observe(&self, json: &str, t: f64) -> bool {
-        self.arm(Duration::from_secs(2))
+        self.arm(Duration::from_secs(5))
             && self.context.with(|ctx| {
                 let result = ctx
                     .globals()
@@ -201,6 +203,20 @@ impl Projector {
         }
     }
 
+    fn fresh(&self, t: f64) -> bool {
+        self.arm(Duration::from_secs(1))
+            && self.context.with(|ctx| {
+                let result = ctx
+                    .globals()
+                    .get::<_, Function>("localFresh")
+                    .and_then(|f| f.call::<_, bool>((t,)));
+                if result.is_err() {
+                    let _ = ctx.catch();
+                }
+                result.unwrap_or(true)
+            })
+    }
+
     fn forget(&self) {
         if self.arm(Duration::from_secs(1)) {
             self.context.with(|ctx| {
@@ -231,7 +247,8 @@ enum Msg {
 }
 
 pub(super) struct Dots {
-    tx: SyncSender<Msg>,
+    tx: Sender<Msg>,
+    pending: Arc<AtomicUsize>,
     gap: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     view: Arc<Mutex<View>>,
@@ -240,6 +257,7 @@ pub(super) struct Dots {
 }
 
 struct Shared {
+    pending: Arc<AtomicUsize>,
     gap: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     view: Arc<Mutex<View>>,
@@ -252,9 +270,10 @@ impl Dots {
     }
 
     fn start_from(source: Option<String>) -> Self {
-        let (tx, rx) = mpsc::sync_channel(256);
+        let (tx, rx) = mpsc::channel();
         let dots = Self {
             tx,
+            pending: Arc::new(AtomicUsize::new(0)),
             gap: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             view: Arc::new(Mutex::new(View {
@@ -267,6 +286,7 @@ impl Dots {
             failed: Arc::new(AtomicBool::new(false)),
         };
         let shared = Shared {
+            pending: Arc::clone(&dots.pending),
             gap: Arc::clone(&dots.gap),
             generation: Arc::clone(&dots.generation),
             view: Arc::clone(&dots.view),
@@ -275,6 +295,7 @@ impl Dots {
         let failed = Arc::clone(&dots.failed);
         let spawned = std::thread::Builder::new()
             .name("pet-dots".into())
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let projector = source.and_then(Projector::from_source).ok_or(())?;
@@ -290,14 +311,13 @@ impl Dots {
         dots
     }
 
-    fn send(&self, msg: Msg) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(msg) {
-            self.gap.store(true, Ordering::Release);
-        }
-    }
-
     pub(super) fn observe(&self, json: String) {
-        self.send(Msg::Observe(json));
+        if self.pending.fetch_add(1, Ordering::AcqRel) >= PENDING {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            self.gap.store(true, Ordering::Release);
+        } else if self.tx.send(Msg::Observe(json)).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 
     pub(super) fn reset(&self) {
@@ -305,7 +325,7 @@ impl Dots {
         if let Ok(mut latest) = self.latest.lock() {
             *latest = None;
         }
-        self.send(Msg::Reset(generation));
+        let _ = self.tx.send(Msg::Reset(generation));
     }
 
     pub(super) fn set_view(
@@ -316,17 +336,22 @@ impl Dots {
         body: Option<&'static str>,
     ) {
         let woke = self.view.lock().is_ok_and(|mut view| {
-            let woke = visible && !view.visible;
-            *view = View {
+            let next = View {
                 visible,
                 motion,
                 waiting,
                 body: body.unwrap_or(view.body),
             };
+            let woke = visible
+                && (!view.visible
+                    || view.motion != next.motion
+                    || view.waiting != next.waiting
+                    || view.body != next.body);
+            *view = next;
             woke
         });
         if woke {
-            let _ = self.tx.try_send(Msg::Wake);
+            let _ = self.tx.send(Msg::Wake);
         }
     }
 
@@ -352,9 +377,10 @@ fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Resu
     let mut batch: Vec<String> = Vec::new();
     let mut reset = false;
     let mut force = true;
+    let mut settled = false;
     loop {
         let visible = shared.view.lock().map_err(|_| ())?.visible;
-        let first = if !visible && batch.is_empty() && !reset && !force {
+        let first = if (!visible || settled) && batch.is_empty() && !reset && !force {
             rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
         } else {
             rx.recv_timeout(due.saturating_duration_since(Instant::now()))
@@ -366,7 +392,10 @@ fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Resu
         };
         while let Some(msg) = next.take() {
             match msg {
-                Msg::Observe(json) => batch.push(json),
+                Msg::Observe(json) => {
+                    shared.pending.fetch_sub(1, Ordering::AcqRel);
+                    batch.push(json);
+                }
                 Msg::Reset(generation) => {
                     batch.clear();
                     reset = true;
@@ -418,11 +447,12 @@ fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Resu
                 }
             }
         };
+        settled = view.visible && !view.motion && !projector.fresh(t);
         due = Instant::now()
-            + Duration::from_millis(if view.visible && view.motion && busy {
-                66
-            } else {
-                250
+            + Duration::from_millis(match (view.visible, view.motion) {
+                (true, true) if busy => 66,
+                (true, false) => 500,
+                _ => 250,
             });
     }
 }

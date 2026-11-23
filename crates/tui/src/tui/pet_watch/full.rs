@@ -373,16 +373,16 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
             now,
         )
         .is_some_and(|r| r.scene.materials.is_some());
+    let painted_local = app.pet_watch.dots_frame.is_some()
+        && app.pet_watch.avatars.current() == "whale"
+        && !prepared
+        && app.pet_watch.dots_area.is_some();
     let local = app
         .pet_watch
         .dots_frame
         .as_ref()
-        .filter(|_| {
-            app.pet_watch.avatars.current() == "whale"
-                && !prepared
-                && app.pet_watch.dots_area.is_some()
-        })
-        .map(|f| Duration::from_millis(if motion.animates() && f.busy { 66 } else { 250 }));
+        .filter(|_| painted_local && motion.animates())
+        .map(|f| Duration::from_millis(if f.busy { 66 } else { 250 }));
     let state = &mut app.pet_watch;
     state.full.update(
         app.current_session_id.as_deref(),
@@ -396,16 +396,19 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
         state.full_next = None;
         app.needs_redraw = true;
     }
+    let stage = state.full.next_frame_in(&agents, &theme).map(|s| {
+        if painted_local {
+            s.max(Duration::from_millis(200))
+        } else {
+            s
+        }
+    });
     if prepared {
         state.full_next = None;
-    } else if let Some(interval) = local {
+    } else if let Some(interval) = [local, stage].into_iter().flatten().min() {
         if state.full_next.is_none_or(|deadline| now >= deadline) {
             state.full_next = now.checked_add(interval);
-        }
-    } else if let Some(interval) = state.full.next_frame_in(&agents, &theme) {
-        if state.full_next.is_none_or(|deadline| now >= deadline) {
-            state.full_next = now.checked_add(interval);
-            app.needs_redraw = true;
+            app.needs_redraw |= stage.is_some();
         }
     } else {
         state.full_next = None;
@@ -908,6 +911,7 @@ mod tests {
         }
         assert!(dots.failed());
         let mut app = app();
+        app.pet_watch.enabled = true;
         app.pet_watch.dots = Some(dots);
         app.pet_watch.dots_frame = Some(super::super::dots::Frame {
             points: vec![[0.0, 0.0]; 980],
@@ -918,6 +922,12 @@ mod tests {
         super::super::tick(&mut app, Instant::now());
         assert!(app.pet_watch.dots_frame.is_none());
         assert!(paint(&mut app, 100, 32).contains(" needs "));
+        app.pet_watch.enabled = false;
+        super::super::tick(&mut app, Instant::now());
+        assert!(
+            app.pet_watch.dots.is_none(),
+            "pet off with no habitat drops the thread"
+        );
     }
     #[test]
     fn roster_scope_and_missing_vs_zero_receipts_come_from_the_existing_owner_guard() {
