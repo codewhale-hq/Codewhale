@@ -1715,9 +1715,23 @@ async fn apply_command_result_inner(
                             "session file is {len} bytes, over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
                         ));
                     }
-                    let raw = tokio::fs::read_to_string(&path)
-                        .await
-                        .map_err(|err| err.to_string())?;
+                    let mut raw = String::new();
+                    tokio::io::AsyncReadExt::read_to_string(
+                        &mut tokio::io::AsyncReadExt::take(
+                            tokio::fs::File::open(&path)
+                                .await
+                                .map_err(|err| err.to_string())?,
+                            MAX_LOAD_SESSION_BYTES + 1,
+                        ),
+                        &mut raw,
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                    if raw.len() as u64 > MAX_LOAD_SESSION_BYTES {
+                        return Err(format!(
+                            "session file is over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+                        ));
+                    }
                     serde_json::from_str::<SavedSession>(&raw).map_err(|err| err.to_string())
                 };
                 let parsed: SavedSession = match read.await {
