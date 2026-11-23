@@ -353,20 +353,48 @@ fn read_ring_tail(path: &Path) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-/// Replace `path` atomically through a sibling temp file in the same directory.
-fn rewrite(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
+fn persist_atomic_with_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_file: impl FnOnce(&File) -> std::io::Result<()>,
+    sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed to stage a rewrite of {}", path.display()))?;
-    tmp.write_all(bytes)
-        .with_context(|| format!("failed to write a rewrite of {}", path.display()))?;
-    tmp.flush()
-        .with_context(|| format!("failed to flush a rewrite of {}", path.display()))?;
+        .with_context(|| format!("failed to stage {}", path.display()))?;
     secure(tmp.as_file())?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    sync_file(tmp.as_file()).with_context(|| format!("failed to sync {}", path.display()))?;
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to persist {}", path.display()))?;
+    sync_dir(dir).with_context(|| format!("failed to sync directory {}", dir.display()))?;
     Ok(())
+}
+
+fn persist_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    persist_atomic_with_sync(path, bytes, File::sync_all, sync_directory)
+}
+
+/// Replace `path` atomically through a sibling temp file in the same directory.
+fn rewrite(path: &Path, bytes: &[u8]) -> Result<()> {
+    persist_atomic(path, bytes)
 }
 
 /// Open (creating if needed) the sibling lock file.
@@ -571,18 +599,8 @@ fn write_tombstone(root: &Path) -> Result<()> {
     if tombstone_generation(root).ok().flatten().is_some() {
         return Ok(());
     }
-    let mut tmp = tempfile::NamedTempFile::new_in(root)
-        .with_context(|| format!("failed to stage {}", tombstone.display()))?;
-    secure(tmp.as_file())?;
-    tmp.write_all(uuid::Uuid::new_v4().to_string().as_bytes())
-        .with_context(|| format!("failed to write {}", tombstone.display()))?;
-    tmp.as_file()
-        .sync_data()
-        .with_context(|| format!("failed to sync {}", tombstone.display()))?;
-    tmp.persist(&tombstone)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to install {}", tombstone.display()))?;
-    Ok(())
+    let generation = uuid::Uuid::new_v4().to_string();
+    persist_atomic(&tombstone, generation.as_bytes())
 }
 
 /// Clear the tombstone, deleting every spool when there was one, and truncate
@@ -624,4 +642,93 @@ pub(crate) fn arm(
         }
         truncate(&buffer_path(root))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persist_atomic_syncs_file_before_rename_and_parent_dir_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("buffer.jsonl");
+        fs::write(&target, b"old\n").unwrap();
+
+        let events = std::cell::RefCell::new(Vec::new());
+        persist_atomic_with_sync(
+            &target,
+            b"new\n",
+            |file| {
+                assert_eq!(fs::read(&target).unwrap(), b"old\n");
+                file.sync_all()?;
+                events.borrow_mut().push("file_sync");
+                Ok(())
+            },
+            |parent| {
+                assert_eq!(parent, dir.path());
+                assert_eq!(fs::read(&target).unwrap(), b"new\n");
+                sync_directory(parent)?;
+                events.borrow_mut().push("dir_sync");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(events.into_inner(), vec!["file_sync", "dir_sync"]);
+    }
+
+    #[test]
+    fn persist_atomic_preserves_existing_file_on_file_sync_error_and_reports_dir_sync_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("buffer.jsonl");
+        fs::write(&target, b"original\n").unwrap();
+
+        let err = persist_atomic_with_sync(
+            &target,
+            b"replacement\n",
+            |_| Err(std::io::Error::other("injected file sync failure")),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to sync"));
+        assert_eq!(fs::read(&target).unwrap(), b"original\n");
+
+        let err = persist_atomic_with_sync(&target, b"replacement\n", File::sync_all, |_| {
+            Err(std::io::Error::other("injected dir sync failure"))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to sync directory"));
+    }
+
+    #[test]
+    fn rewrite_and_write_tombstone_persist_durably_with_restricted_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ensure_dir(root).unwrap();
+
+        let buf = buffer_path(root);
+        rewrite(&buf, b"{\"ok\":true}\n").unwrap();
+        assert_eq!(fs::read(&buf).unwrap(), b"{\"ok\":true}\n");
+
+        write_tombstone(root).unwrap();
+        let generation = tombstone_generation(root)
+            .unwrap()
+            .expect("tombstone present");
+        assert!(!generation.0.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&buf).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(tombstone_path(root))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
 }
