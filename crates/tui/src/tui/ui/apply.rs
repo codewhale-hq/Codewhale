@@ -1704,11 +1704,23 @@ async fn apply_command_result_inner(
                 // Session files can be large; this is the UI action path, so
                 // the read must not park a Tokio worker (blocking-call
                 // convention, #6149).
-                let parsed: SavedSession = match tokio::fs::read_to_string(&path)
-                    .await
-                    .map_err(|err| err.to_string())
-                    .and_then(|raw| serde_json::from_str(&raw).map_err(|err| err.to_string()))
-                {
+                const MAX_LOAD_SESSION_BYTES: u64 = 256 * 1024 * 1024;
+                let read = async {
+                    let len = tokio::fs::metadata(&path)
+                        .await
+                        .map_err(|err| err.to_string())?
+                        .len();
+                    if len > MAX_LOAD_SESSION_BYTES {
+                        return Err(format!(
+                            "session file is {len} bytes, over the {MAX_LOAD_SESSION_BYTES}-byte load limit"
+                        ));
+                    }
+                    let raw = tokio::fs::read_to_string(&path)
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    serde_json::from_str::<SavedSession>(&raw).map_err(|err| err.to_string())
+                };
+                let parsed: SavedSession = match read.await {
                     Ok(session) => session,
                     Err(err) => {
                         crate::tui::ui::session_state::surface_session_load_failure(

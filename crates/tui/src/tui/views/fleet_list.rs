@@ -57,6 +57,7 @@ pub struct FleetListView {
     entries: Vec<FleetEntry>,
     /// The active selection snapshot (workspace then personal).
     selected: Option<SelectedFleet>,
+    summaries: Vec<String>,
     /// Legacy profile count (how many per-role files exist), for the banner.
     legacy_profile_count: usize,
     /// Whether a v2 Fleet named "Default" already exists (so migration is
@@ -89,14 +90,28 @@ impl FleetListView {
     #[must_use]
     pub fn new(app: &App, config: &Config) -> Self {
         let workspace = app.workspace.clone();
-        let entries = list_fleets(&workspace);
-        let selected = selected_fleet(&workspace);
-        let legacy_profile_count = legacy_profile_file_count(&workspace);
+        let scan_root = workspace.clone();
+        let (entries, summaries, selected, legacy_profile_count) =
+            crate::commands::contract::run_owner_blocking(move || {
+                let entries = list_fleets(&scan_root);
+                let summaries: Vec<String> = entries.iter().map(entry_summary).collect();
+                Ok((
+                    entries,
+                    summaries,
+                    selected_fleet(&scan_root),
+                    legacy_profile_file_count(&scan_root),
+                ))
+            })
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "fleet directory scan failed");
+                (Vec::new(), Vec::new(), None, 0)
+            });
         let default_fleet_exists = entries
             .iter()
             .any(|e| e.name.eq_ignore_ascii_case("default") && !e.legacy);
         Self {
             entries,
+            summaries,
             selected,
             legacy_profile_count,
             default_fleet_exists,
@@ -539,7 +554,7 @@ impl FleetListView {
             } else {
                 lines.push(Line::from(spans));
                 // Second line: source + operator summary (compact).
-                let summary = self.entry_summary(entry);
+                let summary = self.summaries.get(idx).map_or("", String::as_str);
                 lines.push(Line::from(Span::styled(
                     format!("    {summary}"),
                     Style::default().fg(palette::TEXT_DIM),
@@ -568,35 +583,6 @@ impl FleetListView {
         let text = ratatui::text::Text::from(lines);
         Paragraph::new(text).render(area, buf);
     }
-
-    fn entry_summary(&self, entry: &FleetEntry) -> String {
-        if entry.legacy {
-            return "legacy format — open for details".to_string();
-        }
-        // Read the file to summarize operator + members. Parsing errors are
-        // already shown on the row. Paths stay out of the primary row — they
-        // belong in receipts after an explicit write/select/delete.
-        let Ok(text) = std::fs::read_to_string(&entry.path) else {
-            return "unreadable".to_string();
-        };
-        match codewhale_engine::fleet::store::FleetFile::parse(&text) {
-            Ok(fleet) => {
-                let coordinator = match &fleet.operator {
-                    Some(op) => format!("{}/{}", op.provider, op.model),
-                    None => "uses the session's model".to_string(),
-                };
-                format!(
-                    "Coordinator: {coordinator} · members: {}",
-                    fleet
-                        .members
-                        .iter()
-                        .filter(|member| !member.shortlist)
-                        .count()
-                )
-            }
-            Err(err) => format!("unreadable: {err}"),
-        }
-    }
 }
 
 fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
@@ -612,6 +598,35 @@ fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
 }
 
 /// How many legacy per-role profile files exist across both scopes.
+fn entry_summary(entry: &FleetEntry) -> String {
+    if entry.legacy {
+        return "legacy format — open for details".to_string();
+    }
+    // Read the file to summarize operator + members. Parsing errors are
+    // already shown on the row. Paths stay out of the primary row — they
+    // belong in receipts after an explicit write/select/delete.
+    let Ok(text) = std::fs::read_to_string(&entry.path) else {
+        return "unreadable".to_string();
+    };
+    match codewhale_engine::fleet::store::FleetFile::parse(&text) {
+        Ok(fleet) => {
+            let coordinator = match &fleet.operator {
+                Some(op) => format!("{}/{}", op.provider, op.model),
+                None => "uses the session's model".to_string(),
+            };
+            format!(
+                "Coordinator: {coordinator} · members: {}",
+                fleet
+                    .members
+                    .iter()
+                    .filter(|member| !member.shortlist)
+                    .count()
+            )
+        }
+        Err(err) => format!("unreadable: {err}"),
+    }
+}
+
 fn legacy_profile_file_count(workspace: &std::path::Path) -> usize {
     let mut count = 0;
     if let Ok(dir) = codewhale_engine::fleet::profile::personal_agent_profile_dir()

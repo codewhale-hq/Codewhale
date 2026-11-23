@@ -202,7 +202,9 @@ pub(super) async fn resolve_stale_parent_request(
                 "session_id": app.current_session_id,
             }),
         );
-        let _ = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+        if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
+            tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+        }
         return true;
     }
     if !(app.suppress_stream_events_until_turn_complete || !app.is_loading) {
@@ -219,7 +221,9 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+            if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
+                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+            }
             true
         }
         Event::ElevationRequired {
@@ -232,9 +236,12 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle
+            if let Err(error) = engine_handle
                 .deny_tool_call_unavailable(tool_id.clone())
-                .await;
+                .await
+            {
+                tracing::warn!(%error, tool_id = %tool_id, "stale-request resolution op rejected");
+            }
             true
         }
         Event::UserInputRequired { id, .. }
@@ -247,7 +254,9 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle.cancel_user_input(id.clone()).await;
+            if let Err(error) = engine_handle.cancel_user_input(id.clone()).await {
+                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+            }
             true
         }
         _ => false,

@@ -1446,7 +1446,17 @@ pub(crate) async fn handle_skill_mutation_requested(
 
     let workspace = app.workspace.clone();
     let home = codewhale_paths::user_home();
-    let cfg = codewhale_plugins::providers::load_config(None, None).unwrap_or_default();
+    let cfg = match codewhale_plugins::providers::load_config(None, None) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::warn!(error = %err, "skills config unavailable; refusing skill mutation");
+            let status = format!("Skill mutation refused: config could not be loaded ({err:#})");
+            app.set_sticky_status(status.clone(), StatusToastLevel::Error, None);
+            refresh_skills_manager_if_open(app, Some(status), focus.as_ref());
+            app.needs_redraw = true;
+            return;
+        }
+    };
     let network = cfg
         .network
         .clone()
@@ -3023,16 +3033,36 @@ pub(crate) async fn handle_view_events(
                 preset,
                 state,
                 message,
-            } => match apply_setup_runtime_preset(app, config, preset, state) {
-                Ok(summary) => {
-                    sync_mode_update(app, engine_handle).await;
-                    app.status_message = Some(format!("{message} {summary}"));
+            } => {
+                let applied = match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if handle.runtime_flavor()
+                            == tokio::runtime::RuntimeFlavor::MultiThread =>
+                    {
+                        tokio::task::block_in_place(|| {
+                            apply_setup_runtime_preset(app, config, preset, state)
+                        })
+                    }
+                    _ => apply_setup_runtime_preset(app, config, preset, state),
+                };
+                match applied {
+                    Ok(summary) => {
+                        sync_mode_update(app, engine_handle).await;
+                        app.push_status_toast(
+                            format!("{message} {summary}"),
+                            StatusToastLevel::Success,
+                            None,
+                        );
+                    }
+                    Err(err) => {
+                        app.set_sticky_status(
+                            format!("Runtime preset could not be applied: {err:#}"),
+                            StatusToastLevel::Error,
+                            None,
+                        );
+                    }
                 }
-                Err(err) => {
-                    app.status_message =
-                        Some(format!("Runtime preset could not be applied: {err:#}"));
-                }
-            },
+            }
             ViewEvent::SetupOpenProviderRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
                     let runtime_status = query_provider_runtime_status(engine_handle).await;
