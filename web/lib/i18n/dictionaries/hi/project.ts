@@ -27,7 +27,6 @@ export const project = {
   inProgress: "काम जारी है",
   planned: "योजना में है",
   later: "बाद में",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "यह हॉटफ़िक्स रिलीज़ Windows पर Ctrl+V पेस्ट, अपडेट की पहचान और हर टर्मिनल में डॉट व्हेल को ठीक करती है, और DeepSeek Harness प्लगइन में सीमित सुधार करती है।",
   thisReleaseSimplifiesTheWholeProduct: "यह रिलीज़ पूरे उत्पाद को सरल बनाती है: हर बदलाव ऐसा एक रास्ता हटाता है जो किसी दूसरे रास्ते जैसा ही काम करता है।",
   thisReleaseReworksTheArchitectureWithSmaller: "इस रिलीज़ में छोटे crate, प्रदाता प्रोफ़ाइल और एक कमांड अनुबंध के साथ संरचना बदलने की योजना है।",
   thisReleaseBringsTheDesktopAppTo: "इस रिलीज़ में सभी प्लेटफ़ॉर्म पर डेस्कटॉप ऐप, बदली जा सकने वाली स्मृति और अनुमति से कौशल सीखना जोड़ने की योजना है।",

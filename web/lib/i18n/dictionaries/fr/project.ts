@@ -27,7 +27,6 @@ export const project = {
   inProgress: "En cours",
   planned: "Prévu",
   later: "Plus tard",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Cette version corrective répare le collage Ctrl+V sous Windows, la détection des mises à jour et la baleine en points dans tous les terminaux, et apporte une correction limitée aux plugins DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Cette version simplifie l'ensemble du produit : chaque changement supprime un chemin qui fait le même travail qu'un autre.",
   thisReleaseReworksTheArchitectureWithSmaller: "Cette version réorganise l’architecture avec des crates plus petites, des profils de fournisseurs et un contrat de commandes unique.",
   thisReleaseBringsTheDesktopAppTo: "Cette version apporte l’application de bureau à toutes les plateformes et ajoute une mémoire interchangeable et un apprentissage de compétences soumis à approbation.",

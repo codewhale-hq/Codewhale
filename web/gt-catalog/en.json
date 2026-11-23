@@ -28,7 +28,6 @@
     "inProgress": "In progress",
     "planned": "Planned",
     "later": "Later",
-    "thisHotfixReleaseFixesPasteUpdatesAndWhale": "This hotfix release fixes Ctrl+V paste on Windows, update detection and the dot whale in every terminal, and makes a limited DeepSeek Harness plugin fix.",
     "thisReleaseSimplifiesTheWholeProduct": "This release simplifies the whole product: each change removes a path that does the same job as another.",
     "thisReleaseReworksTheArchitectureWithSmaller": "This release reworks the architecture with smaller crates, provider profiles and one command contract.",
     "thisReleaseBringsTheDesktopAppTo": "This release brings the desktop app to every platform and adds pluggable memory and approved skill learning.",

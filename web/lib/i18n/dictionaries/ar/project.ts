@@ -27,7 +27,6 @@ export const project = {
   inProgress: "قيد العمل",
   planned: "مخطط له",
   later: "لاحقًا",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "يصلح هذا الإصدار العاجل اللصق بـ Ctrl+V على Windows واكتشاف التحديثات وحوت النقاط في كل طرفية، ويقدّم إصلاحًا محدودًا لإضافات DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "يبسّط هذا الإصدار المنتج بأكمله: كل تغيير يزيل مسارًا يؤدي العمل نفسه الذي يؤديه مسار آخر.",
   thisReleaseReworksTheArchitectureWithSmaller: "يُخطط لهذا الإصدار إعادة تنظيم البنية بحزم برمجية أصغر وملفات تعريف للمزودين وعقد أوامر موحد.",
   thisReleaseBringsTheDesktopAppTo: "يُخطط لهذا الإصدار إتاحة تطبيق سطح المكتب لكل المنصات وإضافة ذاكرة قابلة للاستبدال وتعلّم مهارات بموافقة المستخدم.",

@@ -27,7 +27,6 @@ export const project = {
   inProgress: "Devam ediyor",
   planned: "Planlandı",
   later: "Daha sonra",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Bu düzeltme sürümü Windows'ta Ctrl+V ile yapıştırmayı, güncelleme algılamayı ve her terminaldeki noktalı balinayı düzeltir; DeepSeek Harness eklentileri için de sınırlı bir düzeltme getirir.",
   thisReleaseSimplifiesTheWholeProduct: "Bu sürüm ürünün tamamını sadeleştirir: her değişiklik, başka bir yolla aynı işi yapan bir yolu kaldırır.",
   thisReleaseReworksTheArchitectureWithSmaller: "Bu sürüm, daha küçük crate’ler, sağlayıcı profilleri ve tek bir komut sözleşmesiyle mimariyi yeniden düzenler.",
   thisReleaseBringsTheDesktopAppTo: "Bu sürüm, masaüstü uygulamasını tüm platformlara getirir ve değiştirilebilir bellek ile onaylı beceri öğrenimini ekler.",

@@ -27,7 +27,6 @@ export const project = {
   inProgress: "En curs",
   planned: "Planificat",
   later: "Més endavant",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Aquesta versió correctiva arregla l'enganxament amb Ctrl+V a Windows, la detecció d'actualitzacions i la balena de punts a tots els terminals, i inclou una correcció limitada dels connectors de DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Aquesta versió simplifica tot el producte: cada canvi elimina un camí que fa la mateixa feina que un altre.",
   thisReleaseReworksTheArchitectureWithSmaller: "Aquesta versió reorganitza l’arquitectura amb crates més petits, perfils de proveïdors i un únic contracte d’ordres.",
   thisReleaseBringsTheDesktopAppTo: "Aquesta versió porta l’aplicació d’escriptori a totes les plataformes i afegeix memòria intercanviable i aprenentatge d’habilitats amb aprovació.",

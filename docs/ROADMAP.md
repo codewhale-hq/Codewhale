@@ -126,8 +126,7 @@ holds the next one while it is being built.
 
 | Milestone | What it is for |
 | --- | --- |
-| [0.10.4](https://github.com/codewhale-hq/CodeWhale/milestone/75) | This hotfix release fixes Ctrl+V paste on Windows, update detection and the dot whale in every terminal, and makes a limited DeepSeek Harness plugin fix; [DSH compatibility](DSH_COMPATIBILITY.md) lists which plugins activate. 0.10.3 is released; the [changelog](../CHANGELOG.md) lists what it shipped and its known limits. |
-| [0.10.5](https://github.com/codewhale-hq/CodeWhale/milestone/76) | This release simplifies the whole product: each change removes a path that does the same job as another. |
+| [0.10.5](https://github.com/codewhale-hq/CodeWhale/milestone/76) | This release is in progress. It simplifies the whole product: each change removes a path that does the same job as another. Released versions, 0.10.4 and 0.10.3 among them, are in the [changelog](../CHANGELOG.md); [DSH compatibility](DSH_COMPATIBILITY.md) lists which DeepSeek Harness plugins activate. |
 | [0.11](https://github.com/codewhale-hq/CodeWhale/milestone/72) | This release reworks the architecture with smaller crates, provider profiles, one command contract and cache-stable context folding. |
 | [1.0](https://github.com/codewhale-hq/CodeWhale/milestone/66) | This longer-term release brings the desktop app to every platform and adds pluggable memory and approved skill learning. |
 | [Backlog](https://github.com/codewhale-hq/CodeWhale/milestone/69) | These are ideas we kept without a release, and nothing here blocks one. |

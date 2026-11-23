@@ -27,7 +27,6 @@ export const project = {
   inProgress: "進行中",
   planned: "計画済み",
   later: "今後",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "このホットフィックス版では、Windows での Ctrl+V 貼り付け、更新の検出、すべてのターミナルでのドットのクジラを修正し、DeepSeek Harness プラグインを限定的に修正します。",
   thisReleaseSimplifiesTheWholeProduct: "この版では製品全体を簡素化します。各変更は、別の経路と同じ役割を担う経路を一つ取り除きます。",
   thisReleaseReworksTheArchitectureWithSmaller: "このリリースはcrateの小型化、プロバイダープロファイル、統一したコマンド契約によって構造を見直す計画です。",
   thisReleaseBringsTheDesktopAppTo: "このリリースはデスクトップアプリを各プラットフォームに届け、差し替え可能な記憶と承認によるスキル学習を加える計画です。",

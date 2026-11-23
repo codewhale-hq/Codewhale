@@ -27,7 +27,6 @@ export const project = {
   inProgress: "진행 중",
   planned: "계획됨",
   later: "추후",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "이 핫픽스 버전은 Windows의 Ctrl+V 붙여넣기, 업데이트 감지, 모든 터미널의 점 고래를 고치고 DeepSeek Harness 플러그인을 제한적으로 수정합니다.",
   thisReleaseSimplifiesTheWholeProduct: "이 버전은 제품 전체를 단순하게 만듭니다. 각 변경은 다른 경로와 같은 일을 하는 경로 하나를 없앱니다.",
   thisReleaseReworksTheArchitectureWithSmaller: "이 릴리스는 더 작은 crate, 공급자 프로필과 하나의 명령 계약으로 구조를 개편할 계획입니다.",
   thisReleaseBringsTheDesktopAppTo: "이 릴리스는 모든 플랫폼에 데스크톱 앱을 제공하고 교체 가능한 기억과 승인된 기술 학습을 추가할 계획입니다.",

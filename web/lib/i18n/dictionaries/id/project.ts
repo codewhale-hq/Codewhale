@@ -27,7 +27,6 @@ export const project = {
   inProgress: "Sedang dikerjakan",
   planned: "Direncanakan",
   later: "Nanti",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Rilis perbaikan cepat ini memperbaiki tempel Ctrl+V di Windows, deteksi pembaruan, dan paus titik di setiap terminal, serta membawa perbaikan terbatas untuk plugin DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Rilis ini menyederhanakan seluruh produk: setiap perubahan menghapus satu jalur yang melakukan pekerjaan yang sama dengan jalur lain.",
   thisReleaseReworksTheArchitectureWithSmaller: "Rilis ini direncanakan menata ulang arsitektur dengan crate lebih kecil, profil penyedia, dan satu kontrak perintah.",
   thisReleaseBringsTheDesktopAppTo: "Rilis ini direncanakan menghadirkan aplikasi desktop di semua platform serta menambahkan memori yang dapat diganti dan pembelajaran keterampilan yang disetujui.",

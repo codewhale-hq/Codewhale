@@ -27,7 +27,6 @@ export const project = {
   inProgress: "In Arbeit",
   planned: "Geplant",
   later: "Später",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Diese Hotfix-Version behebt das Einfügen mit Strg+V unter Windows, die Update-Erkennung und den Punktwal in jedem Terminal und enthält eine begrenzte Korrektur für Plugins für DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Diese Version vereinfacht das gesamte Produkt: Jede Änderung entfernt einen Weg, der dieselbe Aufgabe wie ein anderer erledigt.",
   thisReleaseReworksTheArchitectureWithSmaller: "Diese Version überarbeitet die Architektur mit kleineren Crates, Anbieterprofilen und einem einheitlichen Befehlsvertrag.",
   thisReleaseBringsTheDesktopAppTo: "Diese Version bringt die Desktop-App auf alle Plattformen und ergänzt austauschbaren Speicher sowie das genehmigte Erlernen von Skills.",

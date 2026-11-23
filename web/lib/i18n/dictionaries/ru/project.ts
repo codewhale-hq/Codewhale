@@ -27,7 +27,6 @@ export const project = {
   inProgress: "В работе",
   planned: "Запланировано",
   later: "Позже",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Этот исправляющий выпуск чинит вставку Ctrl+V в Windows, обнаружение обновлений и точечного кита во всех терминалах, а также частично исправляет плагины DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Этот выпуск упрощает весь продукт: каждое изменение убирает путь, который делает ту же работу, что и другой.",
   thisReleaseReworksTheArchitectureWithSmaller: "В этом выпуске планируется переработать архитектуру: уменьшить crate, добавить профили провайдеров и единый контракт команд.",
   thisReleaseBringsTheDesktopAppTo: "В этом выпуске планируется выпустить приложение для компьютера на всех платформах, добавить сменную память и обучение навыкам с одобрения пользователя.",

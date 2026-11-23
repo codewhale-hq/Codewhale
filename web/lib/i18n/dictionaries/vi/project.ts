@@ -27,7 +27,6 @@ export const project = {
   inProgress: "Đang thực hiện",
   planned: "Đã lên kế hoạch",
   later: "Sau này",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "Bản sửa lỗi nóng này sửa thao tác dán Ctrl+V trên Windows, việc phát hiện bản cập nhật và chú cá voi chấm trong mọi terminal, đồng thời sửa một phần plugin DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "Bản phát hành này đơn giản hóa toàn bộ sản phẩm: mỗi thay đổi loại bỏ một đường xử lý làm cùng việc với một đường khác.",
   thisReleaseReworksTheArchitectureWithSmaller: "Bản phát hành này dự kiến tổ chức lại kiến trúc với các crate nhỏ hơn, hồ sơ nhà cung cấp và một hợp đồng lệnh thống nhất.",
   thisReleaseBringsTheDesktopAppTo: "Bản phát hành này dự kiến đưa ứng dụng máy tính lên mọi nền tảng, thêm bộ nhớ có thể thay thế và việc học kỹ năng có phê duyệt.",

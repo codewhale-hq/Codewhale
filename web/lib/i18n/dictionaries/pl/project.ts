@@ -27,7 +27,6 @@ export const project = {
   inProgress: "W toku",
   planned: "Zaplanowane",
   later: "Później",
-  thisHotfixReleaseFixesPasteUpdatesAndWhale: "To wydanie poprawkowe naprawia wklejanie Ctrl+V w Windows, wykrywanie aktualizacji i kropkowego wieloryba w każdym terminalu oraz wprowadza ograniczoną poprawkę wtyczek DeepSeek Harness.",
   thisReleaseSimplifiesTheWholeProduct: "To wydanie upraszcza cały produkt: każda zmiana usuwa ścieżkę, która wykonuje tę samą pracę co inna.",
   thisReleaseReworksTheArchitectureWithSmaller: "Ta wersja przebudowuje architekturę, wprowadzając mniejsze pakiety crate, profile dostawców i jeden kontrakt poleceń.",
   thisReleaseBringsTheDesktopAppTo: "Ta wersja udostępnia aplikację komputerową na wszystkich platformach oraz dodaje wymienną pamięć i zatwierdzane uczenie się umiejętności.",
