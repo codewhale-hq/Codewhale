@@ -426,26 +426,30 @@ pub async fn install_with_registry(
     // Write the marker last so a partial install never leaves a stale
     // .installed-from on disk. Prefer v2 with package content digest.
     let spec = source_spec_string(&source);
-    let content_digest = match crate::package_digest::compute_package_digest(&final_path) {
-        Ok(digest) => digest,
-        Err(err) => {
-            let _ = tokio::fs::remove_dir_all(&final_path).await;
-            if let Some(backup) = backup_path.take() {
-                let _ = tokio::fs::rename(&backup, &final_path).await;
-            }
-            return Err(anyhow::anyhow!(
-                "installed package failed content digest validation: {err}"
-            ));
-        }
+    let finalized = {
+        let final_path = final_path.clone();
+        let source_url = source_url.clone();
+        let checksum = checksum.clone();
+        let skill_name = staged.skill_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let content_digest = crate::package_digest::compute_package_digest(&final_path)
+                .map_err(|err| {
+                    anyhow::anyhow!("installed package failed content digest validation: {err}")
+                })?;
+            write_installed_from_v2(
+                &final_path,
+                &spec,
+                Some(&source_url),
+                &checksum,
+                &content_digest,
+                &skill_name,
+            )
+        })
+        .await
+        .context("skill finalize task failed")
+        .and_then(|result| result)
     };
-    if let Err(err) = write_installed_from_v2(
-        &final_path,
-        &spec,
-        Some(&source_url),
-        &checksum,
-        &content_digest,
-        &staged.skill_name,
-    ) {
+    if let Err(err) = finalized {
         let _ = tokio::fs::remove_dir_all(&final_path).await;
         if let Some(backup) = backup_path.take() {
             let _ = tokio::fs::rename(&backup, &final_path).await;
@@ -1301,7 +1305,7 @@ fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<Stage
     let scan = scan_tarball(bytes, max_size)?;
 
     let staged_path = tempfile::Builder::new()
-        .prefix(&format!(".{}.staging-", scan.skill_name))
+        .prefix(".staging-")
         .tempdir_in(skills_dir)
         .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?
         .keep();
@@ -1993,9 +1997,20 @@ mod tests {
         for staged in [&first, &second] {
             assert!(staged.staged_path.join("SKILL.md").is_file());
             let name = staged.staged_path.file_name().unwrap().to_string_lossy();
-            assert!(name.starts_with(".demo.staging-"), "{name}");
+            assert!(name.starts_with(".staging-"), "{name}");
         }
         assert!(tmp.path().join("demo.tmp/keep").is_file());
+    }
+
+    #[test]
+    fn stage_accepts_a_skill_name_near_the_component_limit() {
+        let name = "a".repeat(250);
+        let skill_md = format!("---\nname: {name}\ndescription: test\n---\nbody");
+        let bytes = skill_tarball(&[("repo/SKILL.md", skill_md.as_bytes(), 0o644)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_eq!(staged.skill_name, name);
+        assert!(staged.staged_path.join("SKILL.md").is_file());
     }
 
     #[cfg(unix)]

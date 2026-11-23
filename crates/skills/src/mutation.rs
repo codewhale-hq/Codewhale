@@ -1546,7 +1546,7 @@ fn place_package(req: &PlaceRequest<'_>) -> Result<String> {
     validate_owned_target_chain(anchor, skills_dir, true)?;
 
     let staging_dir = tempfile::Builder::new()
-        .prefix(&format!(".{segment}.staging-"))
+        .prefix(".staging-")
         .tempdir_in(skills_dir)
         .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?;
     let staging = staging_dir.path().to_path_buf();
