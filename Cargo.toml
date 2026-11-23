@@ -130,6 +130,9 @@ rusty_alloc-api = "1.1.6"
 [profile.dev]
 debug = "line-tables-only"
 
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = true
