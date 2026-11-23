@@ -2260,22 +2260,32 @@ pub fn record_runtime_usage(
     }
 }
 
-pub async fn record_runtime_usage_async(
+pub async fn try_record_runtime_usage_async(
     scope: CostScopeToken,
     origin: Option<&NativeUsageOrigin>,
     record: &RuntimeUsageRecord,
-) {
+) -> anyhow::Result<()> {
     let origin = origin.cloned();
     let record = record.clone();
     #[cfg(any(test, feature = "test-support"))]
     let test_origin = test_cost_scope_id();
-    let _ = codewhale_runtime::runtime_control::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _binding = bind_test_cost_scope(test_origin);
         record_runtime_usage(scope, origin.as_ref(), &record);
         Ok(())
     })
-    .await;
+    .await
+}
+
+pub async fn record_runtime_usage_async(
+    scope: CostScopeToken,
+    origin: Option<&NativeUsageOrigin>,
+    record: &RuntimeUsageRecord,
+) {
+    if let Err(error) = try_record_runtime_usage_async(scope, origin, record).await {
+        tracing::warn!(%error, "runtime usage settlement failed");
+    }
 }
 
 pub fn report_missing_runtime_usage(
