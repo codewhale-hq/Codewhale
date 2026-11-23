@@ -633,20 +633,23 @@ impl RuntimeEventJournal {
         if indexed != previous {
             return Err(CLASSIC_LEASE_SCOPE_ERROR.to_string());
         }
-        if let Some(lease) = &lease {
-            self.write_active_index(Some(lease))?;
-        }
         *self.classic_lease.lock() = lease.clone();
         if let Err(error) = self.persist(pending) {
-            *self.classic_lease.lock() = previous.clone();
-            let _ = self.write_active_index(previous.as_ref());
+            *self.classic_lease.lock() = previous;
             return Err(error);
         }
-        if lease.is_none()
-            && let Err(error) = self.write_active_index(None)
-        {
+        if let Err(error) = self.write_active_index(lease.as_ref()) {
             *self.classic_lease.lock() = previous.clone();
-            let _ = self.write_active_index(previous.as_ref());
+            if let Err(rollback) = self.write_active_index(previous.as_ref()) {
+                tracing::error!(
+                    %rollback,
+                    %error,
+                    "active-index rollback failed; durable lease state may be inconsistent"
+                );
+                return Err(format!(
+                    "{error} Active-index rollback also failed: {rollback}"
+                ));
+            }
             return Err(error);
         }
         Ok(())
@@ -8805,6 +8808,85 @@ mod tests {
         .unwrap();
         assert!(journal.classic_lease().is_none());
         assert!(journal.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn classic_lease_persist_failure_does_not_advance_active_index_and_surfaces_rollback_failure() {
+        let (mut controller, _worker_rx, _event_tx, journal_root) = wired_controller();
+        controller.status = Status::Connected;
+        let journal_path = controller.journal.as_ref().unwrap().path.clone();
+        let active_index_path = controller
+            .journal
+            .as_ref()
+            .unwrap()
+            .active_index_path
+            .clone();
+        inject_journal_persist_failures(&journal_path, 1);
+        inject_journal_persist_failures(&active_index_path, 1);
+
+        let err = controller
+            .begin_classic_lease(ClassicRunLease {
+                run_id: "run_fixture".to_string(),
+                turn_id: Some("turn_fixture".to_string()),
+                lease_id: String::new(),
+                seq_floor: 0,
+            })
+            .unwrap_err();
+        assert_eq!(err, JOURNAL_SETUP_ERROR);
+        assert_eq!(controller.status, Status::Failed);
+        assert!(!controller.has_durable_classic_lease());
+        assert!(
+            !take_journal_persist_failure(&journal_path),
+            "journal persist must fail before active_index is touched"
+        );
+        assert!(
+            take_journal_persist_failure(&active_index_path),
+            "active_index write must not be attempted after persist fails"
+        );
+        assert!(
+            controller
+                .journal
+                .as_ref()
+                .unwrap()
+                .read_active_index()
+                .unwrap()
+                .is_none()
+        );
+        drop(controller);
+
+        let reopened = RuntimeEventJournal::open(
+            journal_root.path(),
+            "target_wired_fixture",
+            "session_wired_fixture",
+        )
+        .unwrap();
+        assert!(reopened.classic_lease().is_none());
+    }
+
+    #[test]
+    fn classic_lease_active_index_rollback_failure_is_surfaced_in_status_detail() {
+        let (mut controller, _worker_rx, _event_tx, _journal_root) = wired_controller();
+        controller.status = Status::Connected;
+        controller
+            .activate_prompt("run_fixture", "turn_fixture")
+            .unwrap();
+        let active_index_path = controller
+            .journal
+            .as_ref()
+            .unwrap()
+            .active_index_path
+            .clone();
+        inject_journal_persist_failures(&active_index_path, 2);
+
+        let err = controller.finish_classic_lease().unwrap_err();
+        assert_eq!(controller.status, Status::Failed);
+        assert_eq!(controller.status_detail, err);
+        assert!(
+            controller.status_detail.contains("rollback"),
+            "status_detail must surface rollback failure: {}",
+            controller.status_detail
+        );
+        assert!(controller.has_durable_classic_lease());
     }
 
     #[test]

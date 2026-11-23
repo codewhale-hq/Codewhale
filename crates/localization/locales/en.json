@@ -2150,6 +2150,7 @@
   "PermissionsPostureAuto": "Auto-Review: never opens a prompt. A deterministic policy allows proven-safe calls and hard-blocks publish-like or destructive background work; calls it cannot prove safe go to a one-shot model guardian that allows or denies with a stated reason (high or critical risk never auto-runs; a failed review denies, fail closed). Holds that require a person are denied, not hidden. Each such decision is written to the transcript as a note and to the audit log.",
   "PermissionsPostureBypass": "Full Access: ordinary tool calls run without prompts. Non-bypassable registered holds auto-approve. Repository-law and managed-policy holds fail closed as hard blocks instead of prompting.",
   "PermissionsPostureNever": "never: only tools considered safe/read-only run; everything else is blocked without a prompt.",
+  "AcpFullAccessHint": "Start the server with `codewhale serve --acp --full-access` (alias `--yolo`), or set `yolo = true` in config.toml. Full Access also turns off Codewhale's own sandbox unless sandbox_mode tightens it; Plan stays read-only.",
   "PermissionsReceiptsNote": "Decisions made without a prompt (Auto-Review guardian verdicts, blocks, and holds) appear as transcript notes and in the audit log at {audit_path}. Full Access is chosen deliberately with Shift+Tab or /config, never by a rule.",
   "AgentFocusOpened": "Talking to {agent} now — Esc returns to the main thread.",
   "AgentFocusClosed": "Back to the main thread.",

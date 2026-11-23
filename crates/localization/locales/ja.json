@@ -2150,6 +2150,7 @@
   "PermissionsPostureAuto": "Auto-Review: プロンプトは開きません。決定論的ポリシーが安全と証明された呼び出しを許可し、公開系や破壊的なバックグラウンド作業をハードブロックします。安全と証明できない呼び出しは一回限りのモデルガーディアンに送られ、理由付きで許可または拒否されます（高・重大リスクは自動実行されません。審査失敗はフェイルクローズで拒否）。人の判断が必要な保留は隠されず拒否されます。各判断はトランスクリプトのノートと監査ログに記録されます。",
   "PermissionsPostureBypass": "Full Access: 通常の tool 呼び出しはプロンプトなしで実行されます。回避不能な安全・リポジトリ法・管理ポリシーの保留は、プロンプトの代わりにハードブロックとしてフェイルクローズします。",
   "PermissionsPostureNever": "never: 安全・読み取り専用とみなされる tool のみ実行され、それ以外はプロンプトなしでブロックされます。",
+  "AcpFullAccessHint": "`codewhale serve --acp --full-access`（別名 `--yolo`）でサーバーを起動するか、config.toml に `yolo = true` を設定してください。sandbox_mode で厳しくしない限り、フルアクセスでは Codewhale 独自のサンドボックスも無効になります。Plan は読み取り専用のままです。",
   "PermissionsReceiptsNote": "プロンプトなしで下された判断（Auto-Review ガーディアンの裁定、ブロック、保留）はトランスクリプトのノートと {audit_path} の監査ログに表示されます。Full Access は Shift+Tab または /config で意図的に選ぶものであり、ルールで選ばれることはありません。",
   "AgentFocusOpened": "{agent} にフォーカスしました。以後のメッセージはこのワーカーに届きます。Esc でメイン会話に戻ります。",
   "AgentFocusClosed": "メイン会話に戻りました。",
