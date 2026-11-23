@@ -5652,12 +5652,8 @@ pub(crate) async fn run_event_loop(
         // Read once here so the animation tick and the frame limiter below
         // agree on the same tier for this frame.
         let cadence_tier = transcript_cadence_tier(app, has_running_agents);
-        let underwater_life_motion = !underwater_surface_obscured
-            && crate::tui::underwater::ambient_life_motion_enabled(app)
-            && app.viewport.last_transcript_area.is_some_and(|area| {
-                area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
-                    && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
-            });
+        let underwater_life_motion =
+            underwater_life_motion_requested(app, underwater_surface_obscured, ambient_settled);
         let underwater_life_only = underwater_life_motion
             && !(status_motion
                 || underwater_ambient_motion

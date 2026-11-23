@@ -943,6 +943,7 @@ impl App {
             ambient_clock_ms: 0,
             ambient_clock_sampled_at: None,
             ambient_idle_since: None,
+            ambient_life_held_ms: None,
             ocean_completion_started_at: None,
             ocean_turn_history_start: 0,
             ocean_receipt_settle_start: None,
