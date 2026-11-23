@@ -66,6 +66,16 @@ known limitations and publication approval. These proofs are separate.
 - [ ] Run `scripts/release/check-feature-release-notes.sh vPREV HEAD`. Every
       issue-linked `feat` commit must leave a receipt in `CHANGELOG.md` or the
       archive; the Version drift CI gate runs the same check with full history.
+- [ ] Stamp `docs/features.toml`: every row with `since = "unreleased"` whose
+      feature is in this release's binary or tagged tree gets
+      `since = "X.Y.Z"`, decided row by row against the code and this
+      CHANGELOG entry. Leave `unreleased` only for rows the release does not
+      ship (for example website-only or Desktop-only surfaces). Then run
+      `node web/scripts/derive-facts.mjs` and
+      `cargo test -p codewhale-tui --test feature_registry`. The website labels
+      every `unreleased` row "In source, not yet released" even after the tag
+      is published; the tagged baseline does not override it.
+      `prepare-release.sh` lists the rows still unstamped.
 
 ## 2. Version pins are in sync
 

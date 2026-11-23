@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "1237f01ff7f6fa9fa3e11de8bf628b4ad8fd07c4cf04ca173e2ca7aee8eccb5e"
+    "sha256": "feba1b6f8871d7a7769aaa57d67497816a7786bc72319980f32a98ae1406a86f"
   },
   "features": [
     {
@@ -13,7 +13,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/GUIDE.md",
       "registryLine": 40
@@ -26,7 +26,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/INSTALL.md",
       "registryLine": 50
@@ -39,7 +39,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/INSTALL.md#clean-up-old-copies",
       "registryLine": 60
@@ -52,7 +52,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/INSTALL.md#automatic-updates",
       "registryLine": 70
@@ -65,7 +65,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CLOUD_DISPATCH.md",
       "registryLine": 80
@@ -159,7 +159,7 @@
         "tui": "partial",
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/MCP.md",
       "registryLine": 154
@@ -242,7 +242,7 @@
         "web": "none",
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": "plugin_creator",
       "docs": "docs/MODES.md",
       "registryLine": 219
@@ -464,7 +464,7 @@
         "tui": "preview",
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only",
       "registryLine": 386
@@ -545,7 +545,7 @@
       "surfaces": {
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
       "registryLine": 441
@@ -627,7 +627,7 @@
         "tui": "preview",
         "api": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": null,
       "registryLine": 497
@@ -641,7 +641,7 @@
         "tui": "preview",
         "api": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": null,
       "registryLine": 506
@@ -680,7 +680,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/READ_MEDIA.md#pasted-image-storage",
       "registryLine": 533
@@ -693,7 +693,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/GUIDE.md#how-do-i-continue-previous-work",
       "registryLine": 543
@@ -842,7 +842,7 @@
       "surfaces": {
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
       "registryLine": 644
@@ -1119,7 +1119,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.3.31",
       "flag": null,
       "docs": "docs/GUIDE.md#exporting-a-conversation",
       "registryLine": 835
@@ -1147,7 +1147,7 @@
         "web": "stable",
         "api": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/LOCAL_MODEL_REASONING.md",
       "registryLine": 853
@@ -1299,7 +1299,7 @@
         "tui": "preview",
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#local-whale-voice",
       "registryLine": 959
@@ -1352,7 +1352,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
       "registryLine": 998
@@ -1365,7 +1365,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.1",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
       "registryLine": 1008
@@ -1378,7 +1378,7 @@
       "surfaces": {
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.8.53",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
       "registryLine": 1018
@@ -1391,7 +1391,7 @@
       "surfaces": {
         "api": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
       "registryLine": 1028
@@ -1404,7 +1404,7 @@
       "surfaces": {
         "tui": "preview"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": null,
       "registryLine": 1038
@@ -1417,7 +1417,7 @@
       "surfaces": {
         "tui": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
       "registryLine": 1047
@@ -1430,7 +1430,7 @@
       "surfaces": {
         "tui": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
       "registryLine": 1057
@@ -1444,7 +1444,7 @@
         "tui": "partial",
         "api": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started",
       "registryLine": 1067
@@ -1472,7 +1472,7 @@
       "surfaces": {
         "tui": "stable"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
       "registryLine": 1086
@@ -1485,7 +1485,7 @@
       "surfaces": {
         "api": "partial"
       },
-      "since": "unreleased",
+      "since": "0.10.3",
       "flag": null,
       "docs": "docs/NATIVE_RUNTIME.md",
       "registryLine": 1096
