@@ -563,6 +563,9 @@ jobs:
             sleep 15
           done
           sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Ubuntu build headroom
+        shell: bash
+        run: bash scripts/prepare-ubuntu-build-headroom.sh
       - name: Require the clean release tag checkout before crates.io publish
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
