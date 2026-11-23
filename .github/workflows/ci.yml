@@ -322,6 +322,7 @@ jobs:
           bash scripts/release/prepare-release.test.sh
           bash scripts/release/prune-actions-caches.test.sh
           bash scripts/release/require-rc-receipt.test.sh
+          bash scripts/release/require-full-ci-receipt.test.sh
           bash scripts/release/require-release-tag-checkout.test.sh
           bash scripts/release/validate-crate-publish-order.test.sh
           python3 scripts/release/contributor-wall.test.py

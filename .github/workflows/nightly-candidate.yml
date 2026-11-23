@@ -1,0 +1,89 @@
+name: Nightly release candidate
+
+# Starts release-candidate.yml for the current main commit once a day, so a
+# release called the next day already has its candidate receipt. It only
+# dispatches: it publishes nothing and holds no release secret, and the
+# candidate it starts runs with nightly=true (unsigned manifest).
+#
+# It dispatches only when main's tip has no release-candidate run yet, no
+# candidate is already queued or building, and the tip has a green full CI
+# run (scripts/release/require-full-ci-receipt.sh). Otherwise it records why
+# in the run summary and waits for the next night.
+#
+# Schedules run only from the default branch, and GitHub disables them after
+# 60 days without repository activity.
+on:
+  schedule:
+    - cron: '47 14 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report the decision without dispatching release-candidate.yml
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-candidate
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch nightly candidate
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          sparse-checkout: scripts/release
+          persist-credentials: false
+      - name: Decide whether main needs a candidate
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [[ "${#sha}" -ne 40 || "${sha}" =~ [^0-9a-f] ]]; then
+            echo "::error::Could not resolve main to a commit SHA, got '${sha}'." >&2
+            exit 1
+          fi
+          candidates="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-candidate.yml/runs?head_sha=${sha}&per_page=100" \
+            --jq "[.workflow_runs[] | select(.head_sha == \"${sha}\")] | length")"
+          building="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release-candidate.yml/runs?per_page=50" \
+            --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
+          if [[ "${candidates}" != "0" ]]; then
+            decision=skip
+            reason="main (${sha}) already has a release-candidate run; main has not moved since."
+          elif [[ "${building}" != "0" ]]; then
+            decision=skip
+            reason="a release candidate is already queued or building; not stacking another."
+          elif receipt="$(bash scripts/release/require-full-ci-receipt.sh "${GITHUB_REPOSITORY}" "${sha}" 2>&1)"; then
+            decision=dispatch
+            reason="${receipt}"
+          else
+            decision=skip
+            reason="main (${sha}) has no green full CI run (red, still running, or only scoped); no candidate tonight. ${receipt//$'\n'/ }"
+            echo "::warning::${reason}"
+          fi
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "decision=${decision}" >> "${GITHUB_OUTPUT}"
+          if [[ "${DRY_RUN}" == "true" ]]; then reason="${reason} (dry run: nothing dispatched)"; fi
+          echo "${decision}: ${reason}" | tee -a "${GITHUB_STEP_SUMMARY}"
+      - name: Dispatch release-candidate.yml for main
+        if: steps.decide.outputs.decision == 'dispatch' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.decide.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-candidate.yml --repo "${GITHUB_REPOSITORY}" --ref main \
+            -f expected_sha="${SHA}" -f nightly=true
+          echo "Dispatched release-candidate.yml (nightly) for ${SHA}." | tee -a "${GITHUB_STEP_SUMMARY}"

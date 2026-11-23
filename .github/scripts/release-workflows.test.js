@@ -1240,6 +1240,55 @@ for (const [file, source] of workflowSources) {
 }
 assert.ok(pinnedRunsOn > 50, "runs-on pin contract must scan every workflow");
 
+const nightlyCandidate = read(".github/workflows/nightly-candidate.yml");
+const fullCiReceipt = read("scripts/release/require-full-ci-receipt.sh");
+assert.match(nightlyCandidate, /^  schedule:\n    - cron: '\d+ \d+ \* \* \*'\n  workflow_dispatch:\n/m);
+assert.match(nightlyCandidate, /^concurrency:\n  group: nightly-candidate\n  cancel-in-progress: false\n/m);
+assert.deepEqual(jobsWithoutTimeout(nightlyCandidate), [], "nightly-candidate.yml: every job must set timeout-minutes");
+assert.doesNotMatch(nightlyCandidate, /secrets\./, "the nightly dispatcher must hold no secret");
+for (const forbidden of [/contents:\s*write/, /packages:\s*write/, /\bgh release\b/, /\bnpm publish\b/, /\bcargo publish\b/, /\bgit push\b/, /\bgit tag\b/, /release\.yml/]) {
+  assert.doesNotMatch(nightlyCandidate, forbidden, "the nightly dispatcher must not publish or start a release");
+}
+const nightlyDecide = namedStep(nightlyCandidate, "Decide whether main needs a candidate");
+assert.match(nightlyDecide, /commits\/main/, "the nightly builds main's tip");
+assert.match(nightlyDecide, /release-candidate\.yml\/runs\?head_sha=\$\{sha\}/, "skip a SHA that already has a candidate");
+assert.match(nightlyDecide, /select\(\.status != "completed"\)/, "never stack a candidate on one still building");
+assert.match(nightlyDecide, /require-full-ci-receipt\.sh "\$\{GITHUB_REPOSITORY\}" "\$\{sha\}"/, "build only a main with green full CI");
+const nightlyDispatch = namedStep(nightlyCandidate, "Dispatch release-candidate.yml for main");
+assert.match(nightlyDispatch, /if: steps\.decide\.outputs\.decision == 'dispatch' && !inputs\.dry_run/);
+assert.match(
+  nightlyDispatch,
+  /gh workflow run release-candidate\.yml --repo "\$\{GITHUB_REPOSITORY\}" --ref main \\\n\s+-f expected_sha="\$\{SHA\}" -f nightly=true/,
+  "the nightly must dispatch (not call) the candidate so release.yml finds a workflow_dispatch receipt",
+);
+assert.match(
+  candidate,
+  /CODEWHALE_RELEASE_SIGNING_KEY: \$\{\{ !inputs\.nightly && secrets\.CODEWHALE_RELEASE_SIGNING_KEY \|\| '' \}\}/,
+  "a nightly candidate must never receive the release signing key",
+);
+assert.match(
+  namedStep(candidate, "Check version and OHOS release contracts"),
+  /if \[\[ "\$\{NIGHTLY\}" == "true" \]\]; then\n\s+\.\/scripts\/release\/check-versions\.sh\n\s+else\n\s+\.\/scripts\/release\/check-versions\.sh --require-dated-release\n/,
+  "only the nightly may build an undated main; every other candidate keeps the dated-release gate",
+);
+for (const job of ["Change detection", "Lint", "Shared-process tests"]) {
+  assert.match(ci, new RegExp(`^    name: ${job.replace(/[()]/g, "\\$&")}\\n`, "m"), `ci.yml must still name the "${job}" job`);
+  assert.ok(fullCiReceipt.includes(`"${job}"`), `require-full-ci-receipt.sh must check "${job}"`);
+}
+assert.match(ci, /^    name: Scoped test \(/m, "ci.yml must still name the Scoped test job");
+assert.match(ciSuite, /^    name: Suite check\n/m, "ci-test-suite.yml must still name the Suite check job");
+for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
+  assert.match(ci, new RegExp(`^    name: Sharded tests \\(${os}\\)\\n`, "m"), `ci.yml must still run Sharded tests (${os})`);
+  assert.ok(
+    fullCiReceipt.includes(`"Sharded tests (${os}) / Suite check"`),
+    `require-full-ci-receipt.sh must require the ${os} Suite check`,
+  );
+}
+assert.ok(
+  ci.includes("bash scripts/release/require-full-ci-receipt.test.sh\n"),
+  "ci.yml must run the full-CI receipt tests",
+);
+
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );

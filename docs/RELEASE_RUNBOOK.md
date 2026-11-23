@@ -309,6 +309,17 @@ an unsigned ELF. It then installs
 the packed npm wrapper against those assembled local assets and exercises its
 delegated entrypoints. The resulting `codewhale-release-assets` bundle is a
 short-lived GitHub Actions artifact only.
+
+`nightly-candidate.yml` dispatches this workflow with `nightly=true` for the
+tip of `main` once a day at 14:47 UTC, when that tip has a green full `ci.yml`
+run (`scripts/release/require-full-ci-receipt.sh`), no release-candidate run
+yet, and no candidate already building; otherwise it records why and waits for
+the next night. A nightly run accepts an undated CHANGELOG and never receives
+the signing key, so its manifest is unsigned; the build is otherwise the same.
+Its green run is the receipt `release.yml` accepts when the tag points at that
+exact SHA, and `release.yml` still reruns the dated-release check, rebuilds and
+signs. Its artifacts expire after 7 days. Run it by hand with
+`gh workflow run nightly-candidate.yml -f dry_run=true` to see the decision.
 Retain required asset/evidence copies before artifact expiry; record cross-build,
 install and real-device/provider results separately in the existing packet.
 

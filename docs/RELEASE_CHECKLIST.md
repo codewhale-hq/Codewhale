@@ -146,6 +146,9 @@ known limitations and publication approval. These proofs are separate.
 
 ## 4. Exact-SHA full CI and release candidate
 
+- [ ] If the frozen SHA already has a green `Nightly release candidate` run
+      of `release-candidate.yml`, that run is its RC receipt; do not dispatch
+      another.
 - [ ] Dispatch full CI and the build-only release candidate against frozen
       `main` with the same independent SHA guard:
       ```bash
