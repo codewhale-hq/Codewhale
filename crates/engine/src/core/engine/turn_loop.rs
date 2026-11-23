@@ -9229,7 +9229,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test]
     async fn provider_request_receipt_records_accounting_error_when_owner_work_fails() {
         let tmp = tempdir().unwrap();
         let _home = crate::test_support::SealedHome::at(tmp.path());
@@ -9268,32 +9268,11 @@ mod tests {
             ..Usage::default()
         };
 
-        let mut release_txs = Vec::with_capacity(4);
-        let mut holders = Vec::with_capacity(4);
-        for _ in 0..4 {
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-            release_txs.push(release_tx);
-            holders.push(tokio::spawn(async move {
-                let _ = codewhale_runtime::runtime_control::owner_work(move || {
-                    let _ = ready_tx.send(());
-                    let _ = release_rx.recv();
-                    anyhow::Ok(())
-                })
-                .await;
-            }));
-            ready_rx.await.expect("owner_work slot acquired");
-        }
-
-        tokio::time::pause();
-        let result = engine
-            .settle_provider_request_receipt(&mut pending, Some(&usage), "completed")
-            .await;
-        tokio::time::resume();
-        drop(release_txs);
-        for holder in holders {
-            let _ = holder.await;
-        }
+        let result = crate::cost_status::with_test_runtime_usage_error(
+            "blocking work is queued behind busy runtime owner",
+            engine.settle_provider_request_receipt(&mut pending, Some(&usage), "completed"),
+        )
+        .await;
 
         let err = result.expect_err("failed usage settlement must return Err");
         assert!(
