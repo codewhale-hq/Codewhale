@@ -1305,6 +1305,135 @@ assert.ok(landingFullRun > landingReceipt, "without that receipt the landing gat
 assert.equal((landingDispatch.match(/exit 0/g) || []).length, 1, "the only early exit is the receipt branch");
 assert.match(landingDispatch, /set -euo pipefail\n/);
 
+assert.deepEqual(jobsWithoutTimeout(mainLanding), [], "main-landing.yml: every job must set timeout-minutes");
+assert.doesNotMatch(
+  mainLanding,
+  /secrets\.|CLOUDFLARE_|npm run deploy|cf deploy/,
+  "the landing gate must never hold Cloudflare credentials or deploy",
+);
+const landingWeb = jobBlock(mainLanding, "web");
+assert.match(landingWeb, /^    needs: web_changes$/m);
+assert.equal(
+  evaluate(jobIf(mainLanding, "web"), { needs: { web_changes: { outputs: { web: "true" } } } }),
+  true,
+  "landing web gates must run when a website input changed",
+);
+assert.equal(
+  evaluate(jobIf(mainLanding, "web"), { needs: { web_changes: { outputs: { web: "false" } } } }),
+  false,
+  "landing web gates must skip unrelated commits",
+);
+assert.match(landingWeb, /^      run:\n        working-directory: web$/m);
+assert.match(landingWeb, /fetch-depth: 0/);
+assert.match(landingWeb, /cache-dependency-path: web\/package-lock\.json/);
+for (const [label, source] of [
+  ["main-landing.yml", landingWeb],
+  ["web.yml", jobBlock(read(".github/workflows/web.yml"), "lint")],
+]) {
+  const order = ["npm ci", "npm test", "npm run check"].map((cmd) => source.indexOf(`run: ${cmd}\n`));
+  assert.ok(
+    order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])),
+    `${label} must run npm ci, npm test, and npm run check in order`,
+  );
+}
+for (const match of [...jobBlock(mainLanding, "web_changes").matchAll(/uses:\s+([^@\s]+)@([^#\s]+)/g), ...landingWeb.matchAll(/uses:\s+([^@\s]+)@([^#\s]+)/g)]) {
+  assert.match(match[2], /^[0-9a-f]{40}$/, `main-landing.yml ${match[1]} must pin a full commit SHA`);
+}
+const landingWebDetect = namedStep(jobBlock(mainLanding, "web_changes"), "Detect website input changes");
+assert.match(landingWebDetect, /EVENT_NAME.*==.*"workflow_dispatch"/);
+const landingWebCase = landingWebDetect.match(/\n( +)case "\$\{path\}" in\n[\s\S]*?\n\1esac\n/)?.[0];
+assert.ok(landingWebCase, "main-landing.yml must declare the website input path case block");
+function classifyLandingWeb(paths) {
+  const script = `while IFS= read -r path; do web=false\n${landingWebCase}\nprintf '%s\\t%s\\n' "$web" "$path"; done`;
+  const out = execFileSync("bash", ["-c", script], { input: `${paths.join("\n")}\n`, encoding: "utf8" });
+  return new Map(out.trim().split("\n").map((line) => line.split("\t").reverse()));
+}
+const docsMapSources = [...read("web/lib/docs-map.ts").matchAll(/repoSource:\s*(\[[^\]]+\]|"[^"]+")/g)].flatMap(
+  (m) => [...m[1].matchAll(/"([^"#]+)(?:#[^"]*)?"/g)].map((hit) => hit[1]),
+);
+const featureDocSources = [...read("docs/features.toml").matchAll(/^\s*docs\s*=\s*"([^"#]+)(?:#[^"]*)?"/gm)].map(
+  (m) => m[1],
+);
+const publicSurfaceMatrix = JSON.parse(read("docs/public-surface-facts.json"));
+const matrixSources = [];
+(function collectSources(value) {
+  if (Array.isArray(value)) value.forEach(collectSources);
+  else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      if (k === "sources" || k === "creditSources") matrixSources.push(...v);
+      else collectSources(v);
+    }
+  }
+})(publicSurfaceMatrix);
+const mustTriggerWebGates = [
+  ...new Set([
+    "web/package.json",
+    "web/app/[locale]/page.tsx",
+    "web/data/latest-published-release.json",
+    "web/scripts/derive-facts.mjs",
+    "docs/features.toml",
+    "docs/contributors.json",
+    "docs/public-surface-facts.json",
+    "docs/cloud-facts/stable.json",
+    "docs/cloud-facts/fixtures/envelope-stable-v7.json",
+    "docs/i18n/README.zh-CN.md",
+    "docs/zh_hans/INSTALL.md",
+    "docs/zh_hans/GUIDE.md",
+    "docs/zh_hans/MODES.md",
+    "docs/RUNTIME_ROUTES.md",
+    "docs/releases/v0.9.2-media-plan.md",
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "npm/codewhale/package.json",
+    "npm/codewhale/README.md",
+    "npm/codewhale/scripts/artifacts.js",
+    "crates/config/assets/provider_descriptors.json",
+    "crates/config/assets/models_dev.bundled.json",
+    "crates/config/src/cloud_facts/keys.rs",
+    "crates/config/src/app_mode.rs",
+    "crates/sandbox/src/lib.rs",
+    "crates/engine/src/tools/registry.rs",
+    "crates/engine/src/core/engine/tool_catalog.rs",
+    "crates/app-server/src/runtime_api.rs",
+    "crates/app-server/src/runtime_web/target.mjs",
+    "crates/palette/src/rgb.rs",
+    "crates/cli/Cargo.toml",
+    "crates/execpolicy/src/approval_mode.rs",
+    "crates/runtime/src/config.rs",
+    "crates/runtime/src/config/subagent_limits.rs",
+    "crates/tui/src/tui/app.rs",
+    "crates/tui/src/tui/app/init.rs",
+    "scripts/export-design-tokens.py",
+    "vendor/codewhale-design/tokens.json",
+    "telemetry-ingest/src/schema.ts",
+    ".github/workflows/web.yml",
+    ".github/workflows/main-landing.yml",
+    ...docsMapSources,
+    ...featureDocSources,
+    ...matrixSources,
+  ]),
+];
+const webVerdicts = classifyLandingWeb(mustTriggerWebGates);
+for (const target of mustTriggerWebGates) {
+  assert.equal(webVerdicts.get(target), "true", `${target} feeds the website or its tests and must trigger landing web gates`);
+}
+const nonWebPaths = [
+  "crates/core/src/lib.rs",
+  "crates/engine/src/core/engine/turn_loop.rs",
+  "crates/tui/src/main.rs",
+  "scripts/preflight.sh",
+  ".github/workflows/ci.yml",
+  "packaging/aur/PKGBUILD.in",
+];
+const nonWebVerdicts = classifyLandingWeb(nonWebPaths);
+for (const target of nonWebPaths) {
+  assert.equal(nonWebVerdicts.get(target), "false", `${target} is unrelated to the website and must skip landing web gates`);
+}
+console.log(`Landing web gate path filter OK: ${mustTriggerWebGates.length} web inputs trigger, ${nonWebPaths.length} unrelated paths skip.`);
+
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );
