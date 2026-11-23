@@ -5725,3 +5725,77 @@ async fn all_fifteen_project_hook_events_use_the_pinned_runner_and_reject_change
     assert!(!matches!(manager.status(), HostStatus::Ready { .. }));
     manager.shutdown().await;
 }
+
+#[tokio::test]
+async fn sync_creator_within_cancels_and_aborts_reconcile_on_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        root: Some(temp.path().join("home")),
+        ..Default::default()
+    }));
+    let attachment = manager.attach(Arc::new(PluginRegistry::empty(temp.path())));
+    assert!(attachment.set_creator_demand(true));
+
+    let hold = manager.shared.sync_lock.lock().await;
+    let settled = attachment
+        .sync_creator_within(Duration::from_millis(20))
+        .await;
+    assert!(!settled);
+    drop(hold);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(manager.tier_spawn_attempts(HostTier::Builtin), 0);
+    assert_eq!(manager.owner_state("host:creator"), None);
+    assert!(manager.shared.sync_lock.try_lock().is_ok());
+    assert!(
+        manager
+            .diagnostics()
+            .iter()
+            .any(|line| line.contains("timed out") && line.contains("cancelled"))
+    );
+}
+
+#[test]
+fn materialize_file_syncs_staged_file_and_parent_directory_around_rename() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("bundle");
+    let first = super::materialize_file(&dir, "asset.mjs", b"export const v = 1;\n").unwrap();
+    assert_eq!(std::fs::read(&first).unwrap(), b"export const v = 1;\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+    }
+    let replaced = super::materialize_file(&dir, "asset.mjs", b"export const v = 2;\n").unwrap();
+    assert_eq!(replaced, first);
+    assert_eq!(std::fs::read(&replaced).unwrap(), b"export const v = 2;\n");
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["asset.mjs".to_string()]);
+
+    let source = include_str!("mod.rs");
+    let start = source
+        .find("fn materialize_file(")
+        .expect("materialize_file definition");
+    let body = &source[start..];
+    let end = body
+        .find("\n/// Options fixed for the life of one manager.")
+        .expect("materialize_file end");
+    let fn_body = &body[..end];
+    let rename_pos = fn_body
+        .find("std::fs::rename(")
+        .expect("rename in materialize_file");
+    assert!(
+        fn_body[..rename_pos].contains("file.sync_all()?"),
+        "materialize_file must sync the staged file before rename"
+    );
+    assert!(
+        fn_body[rename_pos..].contains("parent.sync_all()"),
+        "materialize_file must sync the parent directory after rename"
+    );
+}
