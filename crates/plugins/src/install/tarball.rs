@@ -3,7 +3,10 @@
 //! Pass one ([`scan_tarball_for_bundle`]) writes nothing: it rejects traversal and
 //! absolute paths, enforces the uncompressed size cap from the headers, and
 //! locates the single bundle root — the directory holding the bundle's
-//! manifest (`plugin.json`, `kimi.plugin.json`, or the legacy `plugin.toml`). Pass two
+//! manifest (`plugin.json`, `kimi.plugin.json`, the legacy `plugin.toml`, or a
+//! DeepSeek Harness `package.json`). A Harness `package.json` below a native
+//! manifest's directory is a file of that bundle, not a second root; nested
+//! native manifests still count as separate roots. Pass two
 //! ([`extract_into`]) extracts only entries under that root, so a mono-repo's
 //! symlinks elsewhere in the archive are never materialized.
 
@@ -178,7 +181,14 @@ fn scan_bundle_entries(
     };
 
     let roots = filter_roots(&manifest_paths);
-    let dsh_roots = filter_roots(&dsh_manifest_paths);
+    let dsh_roots: BTreeSet<String> = filter_roots(&dsh_manifest_paths)
+        .into_iter()
+        .filter(|dsh_root| {
+            !roots
+                .iter()
+                .any(|root| dsh_root != root && Path::new(dsh_root).starts_with(root))
+        })
+        .collect();
     let all_roots: BTreeSet<String> = roots.union(&dsh_roots).cloned().collect();
     if all_roots.len() != 1 {
         return Err(PluginInstallError::PluginTomlRoots(all_roots.len()).into());

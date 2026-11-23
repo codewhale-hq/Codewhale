@@ -3013,6 +3013,55 @@ fn tarball_with_dsh_package_and_plugin_json_merges_and_enforces_rules() {
 }
 
 #[test]
+fn native_root_with_nested_dsh_integration_installs_as_one_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_json = serde_json::to_vec(&serde_json::json!({
+        "$schema": "https://agent-plugins.org/schemas/plugin.json",
+        "name": "computer-use",
+        "version": "0.16.3"
+    }))
+    .unwrap();
+    let root_package = br#"{"name":"codewhale-cu-plugin","version":"0.16.3","private":true}"#;
+    let dsh_package = serde_json::to_vec(&serde_json::json!({
+        "name": "@codewhale/computer-use-dsh",
+        "version": "0.6.0",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+    }))
+    .unwrap();
+    let patch = minimal_dsh_patch_with_skill().as_bytes();
+
+    let archive = tarball(&[
+        ("computer-use/plugin.json", &plugin_json),
+        ("computer-use/package.json", root_package),
+        ("computer-use/integrations/dsh/package.json", &dsh_package),
+        ("computer-use/integrations/dsh/cordis.patch.yml", patch),
+    ]);
+    let staged = stage_tarball(&archive, tmp.path(), DEFAULT_MAX_SIZE_BYTES, None).unwrap();
+    assert_eq!(staged.name, "computer-use");
+    assert!(!staged.staged_path.join("CONVERSION.json").exists());
+    assert!(
+        staged
+            .staged_path
+            .join("integrations/dsh/package.json")
+            .is_file()
+    );
+
+    let siblings = tarball(&[
+        ("repo/native/plugin.json", &plugin_json),
+        ("repo/harness/package.json", &dsh_package),
+        ("repo/harness/cordis.patch.yml", patch),
+    ]);
+    let err = scan_tarball(&siblings, DEFAULT_MAX_SIZE_BYTES).unwrap_err();
+    assert!(
+        matches!(
+            err.downcast_ref::<PluginInstallError>(),
+            Some(PluginInstallError::PluginTomlRoots(2))
+        ),
+        "got: {err:#}"
+    );
+}
+
+#[test]
 fn tarball_with_dsh_package_and_other_manifest_spelling_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dsh_pkg = serde_json::to_vec(&serde_json::json!({

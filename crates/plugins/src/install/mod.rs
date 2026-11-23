@@ -382,7 +382,7 @@ pub enum PluginInstallError {
     #[error("archive entry name is longer than {limit} bytes")]
     EntryNameTooLong { limit: usize },
     #[error(
-        "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, or plugin.toml); found {0} (install a single plugin bundle, not a mono-repo)"
+        "archive must contain exactly one plugin bundle root (a directory holding plugin.json, kimi.plugin.json, plugin.toml, or a DeepSeek Harness package.json); found {0} (install a single plugin bundle, not a mono-repo)"
     )]
     PluginTomlRoots(usize),
     #[error("symlinks and hard links are not allowed in plugin bundles")]
