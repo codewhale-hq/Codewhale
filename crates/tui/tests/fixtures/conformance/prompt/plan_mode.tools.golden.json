@@ -196,7 +196,8 @@
           "type": "array"
         },
         "max_results": {
-          "description": "Max matches (or files in files_only/count) to return (default: 100).",
+          "description": "Max matches (or files in files_only/count) to return (default: 100, max: 1000).",
+          "maximum": 1000,
           "type": "integer"
         },
         "mode": {
