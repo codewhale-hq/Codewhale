@@ -57,8 +57,9 @@ export const settingsAdapter: DshAdapter = {
     class SettingsService extends Service {
       constructor(ctx: any) { super(ctx, 'settings') }
 
-      async describe(): Promise<SettingsDescriptor[]> {
-        return [descriptor(await host.broker(this.ctx, 'settings', 'describe', {}))]
+      describe(): Promise<SettingsDescriptor[]> {
+        host.brokerTicket(this.ctx, 'settings')
+        return host.broker(this.ctx, 'settings', 'describe', {}).then((row) => [descriptor(row)])
       }
 
       async update(ns: unknown, patch: unknown, expectedRevision?: unknown): Promise<SettingsWrite> {

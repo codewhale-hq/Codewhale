@@ -16411,6 +16411,36 @@ var init_resolve_hooks = __esm({
   }
 });
 
+// src/dsh/missing-services.ts
+function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
+  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
+  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
+  const parts = [];
+  if (absent.length > 0) {
+    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
+    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
+    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
+  }
+  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
+  return parts.join("; ");
+}
+var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
+var init_missing_services = __esm({
+  "src/dsh/missing-services.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    init_compatibility();
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    UNPROVIDED_REASONS = [
+      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
+      [(name) => name === "agentPresets", "the DSH 0.2.2 agent-preset registry is not adopted"],
+      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
+    ];
+    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
+  }
+});
+
 // src/shims/prompt.ts
 function normalizePromptSection(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -17784,8 +17814,9 @@ var init_settings = __esm({
           constructor(ctx) {
             super(ctx, "settings");
           }
-          async describe() {
-            return [descriptor(await host2.broker(this.ctx, "settings", "describe", {}))];
+          describe() {
+            host2.brokerTicket(this.ctx, "settings");
+            return host2.broker(this.ctx, "settings", "describe", {}).then((row) => [descriptor(row)]);
           }
           async update(ns, patch, expectedRevision) {
             return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
@@ -19137,7 +19168,8 @@ function pendingFibers(fiber) {
     seen.add(current2);
     if (current2.state === 0) {
       const names = Object.keys(current2.inject ?? {});
-      out.push(`${current2.name ?? "plugin"} (${names.join(", ")})`);
+      const unresolved = names.filter((name) => current2.ctx?.get?.(name) === void 0);
+      out.push(`${current2.name ?? "plugin"} waits on ${describeMissingServices(unresolved.length > 0 ? unresolved : names)}`);
     }
   };
   visit(fiber);
@@ -19148,7 +19180,7 @@ function pendingFibers(fiber) {
   }
   return out;
 }
-var OWNER, REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, CREATOR_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
+var OWNER, CORDIS_SERVICES, CREATOR_SERVICES, ACTIVATE_DEADLINE_MS, DISPOSE_DEADLINE_MS, ownerStorage, HostRoot;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
@@ -19160,6 +19192,7 @@ var init_root = __esm({
     init_rpc();
     init_dsh_message_compat();
     init_resolve_hooks();
+    init_missing_services();
     init_compatibility();
     init_dsh_tools_compat();
     init_json();
@@ -19176,8 +19209,6 @@ var init_root = __esm({
     init_tier();
     init_commands();
     OWNER = /* @__PURE__ */ Symbol.for("codewhale.extension-host.owner");
-    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
     CREATOR_SERVICES = /* @__PURE__ */ new Set(["pluginManager", "sandboxPolicy", "approval"]);
     ACTIVATE_DEADLINE_MS = 5e3;
@@ -19452,13 +19483,17 @@ var init_root = __esm({
             return invocation && invocation.active && !invocation.signal.aborted && owner !== void 0 && invocation.owner === owner && owner.state === "active" && !owner.disposing ? invocation : void 0;
           },
           log: (level, message, owner) => host2.log(level, message, owner),
+          brokerTicket: (ctx, service) => {
+            const invocation = adapterHost.liveInvocation(ctx);
+            const ticket = invocation?.brokerTickets.get(service);
+            if (invocation === void 0 || ticket === void 0) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`);
+            return { invocation, ticket };
+          },
           broker: async (ctx, service, method, input, signal) => {
             if (signal !== void 0 && !(signal instanceof AbortSignal)) {
               throw new RpcError(ErrorCode.InvalidParams, "signal must be an AbortSignal");
             }
-            const invocation = adapterHost.liveInvocation(ctx);
-            const ticket = invocation?.brokerTickets.get(service);
-            if (invocation === void 0 || ticket === void 0) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`);
+            const { invocation, ticket } = adapterHost.brokerTicket(ctx, service);
             const combined = signal === void 0 ? invocation.signal : AbortSignal.any([invocation.signal, signal]);
             return rpc2.request("dsh/broker", { owner: invocation.owner.ref, ticket, service, method, input }, combined);
           }
@@ -19619,10 +19654,7 @@ var init_root = __esm({
           const creatorAllowed = this.tier === "builtin" && owner.ref.plugin_id === "host:creator";
           const creatorRestricted = this.tier === "builtin" && !creatorAllowed;
           const missing = Object.keys(Inject.resolve(plugin.inject)).filter((name) => (!PROVIDED_SERVICES.has(name) || creatorRestricted && CREATOR_SERVICES.has(name)) && !(creatorAllowed && CREATOR_SERVICES.has(name)));
-          if (missing.length > 0) {
-            const owned = missing.filter((name) => REFUSED_SERVICES.has(name));
-            throw new Error(`requires ${missing.map((name) => `\`${name}\``).join(", ")}, not provided by the Codewhale extension host in this phase` + (owned.length > 0 ? `; ${owned.map((name) => `\`${name}\``).join(", ")} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
-          }
+          if (missing.length > 0) throw new Error(`requires ${describeMissingServices(missing, { scoped: false })}`);
           const ownerCtx = this.root.extend({ [OWNER]: owner });
           const fiber = ownerStorage.run(owner, () => ownerCtx.plugin(plugin, params.config ?? {}));
           owner.fibers.push(fiber);
@@ -20695,6 +20727,12 @@ function validateInventory(group) {
     if (entry.subtree) validateInventory(entry.subtree.root);
   }
 }
+function describeCause(error) {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+function fiberStateName(state) {
+  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state);
+}
 async function mountReviewedComposition(ctx, baseUrl, spec) {
   const review = reviewComposition(spec);
   function groups(rows) {
@@ -20805,6 +20843,7 @@ var init_composition = __esm({
     init_skill_filesystem();
     init_shell_hooks();
     init_resolve_hooks();
+    init_missing_services();
     init_persona();
     init_agent_presets();
     init_cot_translation();
@@ -20846,7 +20885,24 @@ var init_composition = __esm({
       /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
       commit() {
       }
+      importFailures = /* @__PURE__ */ new Map();
+      importFailure(name) {
+        return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : void 0;
+      }
       import(name) {
+        this.importFailures.delete(name);
+        const record4 = (error) => {
+          this.importFailures.set(name, error);
+          throw error;
+        };
+        try {
+          const imported = this.importRow(name);
+          return imported instanceof Promise ? imported.catch(record4) : imported;
+        } catch (error) {
+          return record4(error);
+        }
+      }
+      importRow(name) {
         if (name === PERSONA) return reviewedPersonaModule;
         if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition);
         if (name === "cordis:group" || name === "@deepseek-ai/cordis-plugin-group") return ReviewedGroup;
@@ -20916,10 +20972,15 @@ var init_composition = __esm({
         validateInventory(this.tree.root);
         for (const entry of this.tree.entries()) {
           if (entry.disabled) continue;
-          if (!entry.fiber || entry.fiber.uid === null) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} failed activation`);
+          const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`;
+          if (!entry.fiber || entry.fiber.uid === null) {
+            const failure = this.tree.importFailure(entry.options.name);
+            throw new Error(failure !== void 0 ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}` : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : "no fiber"}); see the logged error above`, failure !== void 0 ? { cause: failure.error } : void 0);
+          }
           await entry.fiber.await();
           const missing = Object.keys(entry.fiber.inject).filter((name) => entry.fiber.ctx.get(name) === void 0);
-          if (missing.length || entry.fiber.state !== FiberState.ACTIVE) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} is not active`);
+          if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`);
+          if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`);
         }
         const leaked = leakedServices(this.ctx, this.ctx.fiber);
         if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(", ")}`);
