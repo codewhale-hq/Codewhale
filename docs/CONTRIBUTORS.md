@@ -40,7 +40,7 @@ changelog or release notes, and this contributor record.
 ## Contributors by time
 
 <details open>
-<summary><strong>Unreleased — landed after v0.10.3</strong></summary>
+<summary><strong>v0.10.4 — Windows paste, self-update and plugin install fixes</strong></summary>
 
 **Contributions**
 
@@ -52,7 +52,7 @@ changelog or release notes, and this contributor record.
 
 </details>
 
-<details open>
+<details>
 <summary><strong>v0.10.3 — plugins, Auto-Review, ACP and reliability</strong></summary>
 
 **Contributions**

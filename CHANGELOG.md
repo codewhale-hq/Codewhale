@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-23
+
+Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.
+
 ### Added
 
 - Added WorldRouter, an OpenAI-compatible gateway, as a bundled provider (`WORLDROUTER_API_KEY`, base URL `https://inference-api.worldrouter.ai/v1`). Thanks [@Opgeek-1](https://github.com/Opgeek-1). (#7488)
 
-### Security
+### Changed
 
-- Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
+- **Minified imports count at DSH import review:** imports written without spaces (`import{x}from"zod"`, `import"pkg"`) are now found when the importer looks for npm dependencies to fetch. A minified package that imported offline before may now ask for npm network approval; without it the plugin would have failed when it loaded. (CW-8369)
 
 ### Fixed
 
@@ -41,9 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The README describes the permission dial that shipped in 0.10.3:** it said `Tab` switched between Plan, Work and Operate and that Ask, the default, applied edits without asking, with the dial described as "coming in 0.10.3". It now describes the `Shift+Tab` dial, Accept Edits as the default, Ask asking before every edit and command, and links the current modes guide; the Simplified Chinese README matches.
 - **The roadmap lists only unreleased milestones:** the website's `/contribute` milestones and `docs/ROADMAP.md` no longer show released versions (0.10.3 was still marked in progress) and show 0.10.5, the release that simplifies the whole product, as the one in progress. The release checklist now has a step to drop the shipped release from both lists before tagging.
 
-### Changed
+### Security
 
-- **Minified imports count at DSH import review:** imports written without spaces (`import{x}from"zod"`, `import"pkg"`) are now found when the importer looks for npm dependencies to fetch. A minified package that imported offline before may now ask for npm network approval; without it the plugin would have failed when it loaded. (CW-8369)
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
+
+### Contributors
+
+- **[@thejesh23](https://github.com/thejesh23)** — first contribution: stopped one permanently refused Telegram reply from wedging the bridge's poll loop, with a mock Bot API repro that counted 27,520 redeliveries in 15 seconds ([#7479](https://github.com/codewhale-hq/Codewhale/pull/7479)), and kept code fences balanced when the bridges split a long reply by UTF-8 bytes for WeCom ([#7480](https://github.com/codewhale-hq/Codewhale/pull/7480)).
+- **[@NieZhuZhu](https://github.com/NieZhuZhu)** — fixed eight audit findings: JSON error detail in `/import-claude`, a timeout on hung notification sound players, durable and size-bounded telemetry files, server-keyed telemetry ingest rate limiting, and release-doc gates that fail closed without the published tag ([#7482](https://github.com/codewhale-hq/Codewhale/pull/7482), [issue 7476](https://github.com/codewhale-hq/Codewhale/issues/7476)).
+- **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — kept streamed reasoning in the thinking card when a gateway opens a text block mid-stream ([#7452](https://github.com/codewhale-hq/Codewhale/pull/7452)) and opened a fresh thinking card below tools when reasoning resumes ([#7455](https://github.com/codewhale-hq/Codewhale/pull/7455)).
+- **[@Opgeek-1](https://github.com/Opgeek-1)** — first contribution: added WorldRouter as a bundled OpenAI-compatible provider descriptor with its docs, pricing coverage and model-resolution rows ([#7488](https://github.com/codewhale-hq/Codewhale/pull/7488)).
+- **[@diegovskytl](https://github.com/diegovskytl)** — reported Ctrl+V pasting text twice in Windows Terminal ([#7485](https://github.com/codewhale-hq/Codewhale/issues/7485)).
 
 ## [0.10.3] - 2026-11-21
 
@@ -14230,7 +14242,8 @@ overflow report and `/theme` picker edge-wrapping patch in #1814.
 
 Older releases (v0.8.39 and earlier) are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
 
-[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.0...v0.10.1

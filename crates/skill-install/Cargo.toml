@@ -15,9 +15,9 @@ test-support = ["codewhale-net/test-support"]
 
 [dependencies]
 anyhow.workspace = true
-codewhale-net = { path = "../net", version = "0.10.3" }
-codewhale-paths = { path = "../paths", version = "0.10.3" }
-codewhale-util = { path = "../util", version = "0.10.3" }
+codewhale-net = { path = "../net", version = "0.10.4" }
+codewhale-paths = { path = "../paths", version = "0.10.4" }
+codewhale-util = { path = "../util", version = "0.10.4" }
 flate2 = "1.1"
 futures-util = "0.3.31"
 reqwest = { workspace = true, features = ["stream"] }
@@ -31,5 +31,5 @@ tokio.workspace = true
 yaml-rust2.workspace = true
 
 [dev-dependencies]
-codewhale-net = { path = "../net", version = "0.10.3", features = ["test-support"] }
+codewhale-net = { path = "../net", version = "0.10.4", features = ["test-support"] }
 tempfile.workspace = true
