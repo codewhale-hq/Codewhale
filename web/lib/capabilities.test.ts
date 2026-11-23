@@ -211,13 +211,24 @@ describe("counts are the counts at the published release tag", () => {
   });
 
   it("leave main-only models out of the models page", async () => {
-    const tagged = new Set(RELEASE_BASELINE!.models.map((model) => model.id));
-    const mainOnly = FACTS.models.filter((model) => !tagged.has(model.id));
     const props = { params: Promise.resolve({ locale: "en" }), searchParams: Promise.resolve({}) } as never;
-    const models = renderToStaticMarkup((await ModelsPage(props)) as never);
-    for (const model of mainOnly) expect(models, model.id).not.toContain(`>${model.id}<`);
-    expect(models).toContain(`Show all ${view.counts!.providerRoutes} provider routes`);
-    expect(models).not.toMatch(/Show all \d+ providers/);
+    const render = async () => renderToStaticMarkup((await ModelsPage(props)) as never);
+    const tagged = RELEASE_BASELINE!.models;
+    const saved = [...tagged];
+    const full = await render();
+    const onMain = new Set(FACTS.models.map((model) => model.id));
+    const index = tagged.findIndex((model) => onMain.has(model.id) && model.id !== FACTS.defaultModel && full.includes(`>${model.id}<`));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const { id } = tagged[index];
+    try {
+      tagged.splice(index, 1);
+      const models = await render();
+      expect(models).not.toContain(`>${id}<`);
+      expect(models).toContain(`Show all ${view.counts!.providerRoutes} provider routes`);
+      expect(models).not.toMatch(/Show all \d+ providers/);
+    } finally {
+      tagged.splice(0, tagged.length, ...saved);
+    }
   });
 
   it("print provider routes in llms.txt at the tag", () => {

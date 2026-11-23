@@ -27,6 +27,21 @@ const beforeTheDial: CapabilityContext = {
   },
 };
 
+const atTheDial: CapabilityContext = {
+  release: published.release,
+  baseline: {
+    ...baseline,
+    features: [
+      ...baseline.features.filter((row) => !DIAL_ROWS.includes(row.id)),
+      ...FEATURE_CATALOGUE.features
+        .filter((row) => DIAL_ROWS.includes(row.id))
+        .map((row) => ({ id: row.id, name: row.name, summary: row.summary, status: row.status, since: row.since })),
+    ],
+  },
+};
+
+const presentUnreleased = FEATURE_CATALOGUE.features.map((row) => (row.id === "present-handoff" ? { ...row, since: "unreleased" } : row));
+
 const raisedFeatures = FEATURE_CATALOGUE.features.map((row) => (row.since === "unreleased" ? { ...row, since: "99.0.0" } : row));
 
 const raised: CapabilityContext = {
@@ -81,8 +96,8 @@ describe("docs describe the published release first", () => {
     expect(bodyText(modes, beforeTheDial)).toMatch(/Plan → Work → Operate/);
     expect(bodyText(modes, beforeTheDial)).toMatch(/Ask → Auto-Review → Full Access/);
 
-    expect(sourceText(modes, published)).toBe("");
-    expect(bodyText(modes, published)).toMatch(/Accept Edits/);
+    expect(sourceText(modes, atTheDial)).toBe("");
+    expect(bodyText(modes, atTheDial)).toMatch(/Accept Edits/);
 
     expect(sourceText(modes, raised, raisedFeatures)).toBe("");
     expect(bodyText(modes, raised, raisedFeatures)).toMatch(/Ask → Accept Edits → Plan → Auto-Review → Full Access/);
@@ -94,7 +109,7 @@ describe("docs describe the published release first", () => {
   });
 
   it("lists source-only tools in the labelled set and moves them into the list when released", () => {
-    const current = toolRowsFor(published);
+    const current = toolRowsFor(published, presentUnreleased);
     expect(current.body.map((row) => row.name)).not.toContain("present");
     expect(current.source.map((row) => row.name)).toEqual(expect.arrayContaining(["present", "grep_files"]));
     const next = toolRowsFor(raised, raisedFeatures);
