@@ -287,14 +287,14 @@ impl SetupTransaction {
                 }
             };
 
-            match atomic_write(&write.path, &write.bytes) {
-                Ok(()) => snapshots.push(Snapshot {
-                    path: write.path.clone(),
-                    original,
-                }),
+            let result = atomic_write(&write.path, &write.bytes);
+            snapshots.push(Snapshot {
+                path: write.path.clone(),
+                original,
+            });
+            match result {
+                Ok(()) => {}
                 Err(err) => {
-                    // This write did not land (atomic_write is all-or-nothing),
-                    // so roll back only the writes that came before it.
                     rollback(&snapshots);
                     return Err(err).with_context(|| {
                         format!(
