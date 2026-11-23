@@ -280,33 +280,15 @@ fn materialize_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
     if !matches(&path) {
         std::fs::create_dir_all(dir)
             .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-        let staging = dir.join(format!(".{file_name}.{}", uuid::Uuid::new_v4().simple()));
-        let published = (|| -> std::io::Result<()> {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&staging)?;
-            file.write_all(bytes)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o400));
-            }
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&staging, &path)
-        })();
-        if let Err(error) = published {
-            let _ = std::fs::remove_file(&staging);
-            if !matches(&path) {
-                return Err(format!("cannot publish {}: {error}", path.display()));
-            }
-        } else {
-            #[cfg(unix)]
-            std::fs::File::open(dir)
-                .and_then(|parent| parent.sync_all())
-                .map_err(|error| format!("cannot sync {}: {error}", dir.display()))?;
+        if let Err(error) = codewhale_util::utils::write_atomic(&path, bytes)
+            && !matches(&path)
+        {
+            return Err(format!("cannot publish {}: {error}", path.display()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400));
         }
     }
     // Re-check what will actually be used.
@@ -4821,11 +4803,12 @@ impl HostAttachment {
         tokio::select! {
             result = &mut task => result.is_ok(),
             () = tokio::time::sleep(limit) => {
+                // Signal cooperative cancellation so reconcile stops at its next safe point
+                // without aborting an in-flight host handshake that may legitimately take
+                // longer than the first-sync wait (up to HANDSHAKE_DEADLINE).
                 cancel.cancel();
-                task.abort();
-                let _ = task.await;
                 self.manager.shared.diagnostic(format!(
-                    "extension host sync timed out after {}ms and was cancelled",
+                    "extension host sync timed out after {}ms and signalled cancellation",
                     limit.as_millis()
                 ));
                 false

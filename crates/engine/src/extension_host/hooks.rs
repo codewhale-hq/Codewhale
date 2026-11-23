@@ -228,10 +228,11 @@ fn serialized_exceeds(value: &Value, limit: usize) -> bool {
     serde_json::to_writer(LimitWriter { written: 0, limit }, value).is_err()
 }
 
-fn exceeds_text_limit(text: &str) -> bool {
-    text.chars()
-        .nth(crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS)
-        .is_some()
+fn sanitize_verdict_text(text: &str) -> String {
+    let mut stripped =
+        String::with_capacity(text.len().min(crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS));
+    codewhale_sanitize::sanitize::strip_ansi_into(text, &mut stripped);
+    crate::hooks::sanitize_hook_text(&stripped, crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS)
 }
 
 fn validate_raw_verdict(value: &Value) -> Result<(), String> {
@@ -244,22 +245,7 @@ fn validate_raw_verdict(value: &Value) -> Result<(), String> {
                 return Err("extension hook returned a malformed verdict".to_string());
             }
         }
-        Some("deny" | "ask") => {
-            if let Some(reason) = obj.get("reason").and_then(Value::as_str)
-                && exceeds_text_limit(reason)
-            {
-                return Err("extension hook verdict text exceeded the limit".to_string());
-            }
-            if obj.len() != 2 {
-                return Err("extension hook returned a malformed verdict".to_string());
-            }
-        }
-        Some("annotate") => {
-            if let Some(text) = obj.get("text").and_then(Value::as_str)
-                && exceeds_text_limit(text)
-            {
-                return Err("extension hook verdict text exceeded the limit".to_string());
-            }
+        Some("deny" | "ask" | "annotate") => {
             if obj.len() != 2 {
                 return Err("extension hook returned a malformed verdict".to_string());
             }
@@ -288,23 +274,29 @@ fn decode_verdict(value: Value) -> Result<(HookVerdictWire, String), String> {
 }
 
 fn verdict_stdout(verdict: &HookVerdictWire) -> Result<String, String> {
-    match verdict {
-        HookVerdictWire::Deny { reason } | HookVerdictWire::Ask { reason }
-            if exceeds_text_limit(reason) =>
-        {
-            return Err("extension hook verdict text exceeded the limit".to_string());
-        }
-        HookVerdictWire::Annotate { text } if exceeds_text_limit(text) => {
-            return Err("extension hook verdict text exceeded the limit".to_string());
-        }
-        _ => {}
-    }
     let value = match verdict {
         HookVerdictWire::Abstain => json!({}),
-        HookVerdictWire::Deny { reason } => json!({"decision":"deny", "reason":reason}),
-        HookVerdictWire::Ask { reason } => json!({"decision":"ask", "reason":reason}),
-        HookVerdictWire::Annotate { text } => json!({"additionalContext":text}),
-        HookVerdictWire::Revise { input } => json!({"updatedInput":Value::Object(input.clone())}),
+        HookVerdictWire::Deny { reason } => {
+            let reason = sanitize_verdict_text(reason);
+            json!({"decision":"deny", "reason":reason})
+        }
+        HookVerdictWire::Ask { reason } => {
+            let reason = sanitize_verdict_text(reason);
+            json!({"decision":"ask", "reason":reason})
+        }
+        HookVerdictWire::Annotate { text } => {
+            let text = sanitize_verdict_text(text);
+            json!({"additionalContext":text})
+        }
+        HookVerdictWire::Revise { input } => {
+            if serialized_exceeds(
+                &Value::Object(input.clone()),
+                crate::hooks::HOOK_UPDATED_INPUT_MAX_BYTES,
+            ) {
+                return Err("extension hook input revision exceeded the limit".to_string());
+            }
+            json!({"updatedInput":Value::Object(input.clone())})
+        }
     };
     let stdout = serde_json::to_string(&value)
         .map_err(|_| "extension hook verdict is not JSON".to_string())?;
@@ -447,20 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn oversized_verdict_fields_are_rejected_before_deserialization() {
-        let too_long = "r".repeat(crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS + 1);
-        for payload in [
-            json!({ "kind": "deny", "reason": too_long, "extra": 1 }),
-            json!({ "kind": "ask", "reason": too_long, "extra": 1 }),
-            json!({ "kind": "annotate", "text": too_long, "extra": 1 }),
-        ] {
-            let err = decode_verdict(payload).unwrap_err();
-            assert!(
-                err.contains("exceeded the limit"),
-                "expected pre-deserialize size guard, got: {err}"
-            );
-        }
-
+    fn oversized_revise_rejected_before_deserialization_and_overlong_text_truncated_after_ansi_strip()
+     {
         let oversized_revise = json!({
             "kind": "revise",
             "input": { "blob": "x".repeat(crate::hooks::HOOK_UPDATED_INPUT_MAX_BYTES + 1) },
@@ -472,18 +452,64 @@ mod tests {
             "expected pre-deserialize revise size guard, got: {err}"
         );
 
-        assert!(
-            verdict_stdout(&HookVerdictWire::Deny {
-                reason: too_long.clone(),
-            })
-            .unwrap_err()
-            .contains("exceeded the limit")
+        let too_long = "r".repeat(crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS + 500);
+        let (_, deny_stdout) =
+            decode_verdict(json!({ "kind": "deny", "reason": too_long })).unwrap();
+        let parsed_deny = crate::hooks::parse_tool_call_before_stdout(&deny_stdout);
+        assert_eq!(
+            parsed_deny.decision,
+            Some(crate::hooks::ToolCallDecision::Deny)
         );
         assert!(
-            verdict_stdout(&HookVerdictWire::Annotate { text: too_long })
-                .unwrap_err()
-                .contains("exceeded the limit")
+            parsed_deny
+                .reason
+                .as_deref()
+                .unwrap()
+                .ends_with("…[truncated]")
         );
+        assert!(deny_stdout.len() <= crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS + 96);
+
+        let (_, ask_stdout) = decode_verdict(json!({ "kind": "ask", "reason": too_long })).unwrap();
+        let parsed_ask = crate::hooks::parse_tool_call_before_stdout(&ask_stdout);
+        assert_eq!(
+            parsed_ask.decision,
+            Some(crate::hooks::ToolCallDecision::Ask)
+        );
+        assert!(
+            parsed_ask
+                .reason
+                .as_deref()
+                .unwrap()
+                .ends_with("…[truncated]")
+        );
+
+        let (_, annotate_stdout) =
+            decode_verdict(json!({ "kind": "annotate", "text": too_long })).unwrap();
+        let parsed_annotate = crate::hooks::parse_tool_call_before_stdout(&annotate_stdout);
+        assert!(
+            parsed_annotate
+                .additional_context
+                .as_deref()
+                .unwrap()
+                .ends_with("…[truncated]")
+        );
+        assert!(annotate_stdout.len() <= crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS + 96);
+
+        // ANSI escape sequences are stripped before counting against HOOK_TEXT_FIELD_MAX_CHARS.
+        let ansi_at_limit = format!(
+            "\u{1b}[31m{}\u{1b}[0m",
+            "a".repeat(crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS)
+        );
+        let (_, ansi_stdout) =
+            decode_verdict(json!({ "kind": "annotate", "text": ansi_at_limit })).unwrap();
+        let parsed_ansi = crate::hooks::parse_tool_call_before_stdout(&ansi_stdout);
+        let context = parsed_ansi.additional_context.unwrap();
+        assert_eq!(
+            context.chars().count(),
+            crate::hooks::HOOK_TEXT_FIELD_MAX_CHARS
+        );
+        assert!(!context.contains('\u{1b}'));
+        assert!(!context.ends_with("…[truncated]"));
     }
 
     #[test]

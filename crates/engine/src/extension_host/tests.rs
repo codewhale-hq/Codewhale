@@ -5727,7 +5727,7 @@ async fn all_fifteen_project_hook_events_use_the_pinned_runner_and_reject_change
 }
 
 #[tokio::test]
-async fn sync_creator_within_cancels_and_aborts_reconcile_on_timeout() {
+async fn sync_creator_within_signals_cancellation_at_safe_point_on_timeout() {
     let temp = tempfile::tempdir().unwrap();
     let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
         root: Some(temp.path().join("home")),
@@ -5751,12 +5751,12 @@ async fn sync_creator_within_cancels_and_aborts_reconcile_on_timeout() {
         manager
             .diagnostics()
             .iter()
-            .any(|line| line.contains("timed out") && line.contains("cancelled"))
+            .any(|line| line.contains("timed out") && line.contains("cancellation"))
     );
 }
 
 #[test]
-fn materialize_file_syncs_staged_file_and_parent_directory_around_rename() {
+fn materialize_file_atomically_replaces_read_only_bundle_without_leaking_temp_files() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("bundle");
     let first = super::materialize_file(&dir, "asset.mjs", b"export const v = 1;\n").unwrap();
@@ -5777,25 +5777,4 @@ fn materialize_file_syncs_staged_file_and_parent_directory_around_rename() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(entries, vec!["asset.mjs".to_string()]);
-
-    let source = include_str!("mod.rs");
-    let start = source
-        .find("fn materialize_file(")
-        .expect("materialize_file definition");
-    let body = &source[start..];
-    let end = body
-        .find("\n/// Options fixed for the life of one manager.")
-        .expect("materialize_file end");
-    let fn_body = &body[..end];
-    let rename_pos = fn_body
-        .find("std::fs::rename(")
-        .expect("rename in materialize_file");
-    assert!(
-        fn_body[..rename_pos].contains("file.sync_all()?"),
-        "materialize_file must sync the staged file before rename"
-    );
-    assert!(
-        fn_body[rename_pos..].contains("parent.sync_all()"),
-        "materialize_file must sync the parent directory after rename"
-    );
 }
