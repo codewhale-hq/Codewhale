@@ -68,6 +68,14 @@ fn needs(
             tr(locale, MessageId::PetNeedsUnicode),
             tr(locale, MessageId::PetWords),
         )),
+        "whale"
+            if !live
+                && watch.dots_frame.is_none()
+                && watch.dots.as_ref().is_some_and(|dots| !dots.failed())
+                && local(PetStyle::Color).is_ok() =>
+        {
+            None
+        }
         "whale" if !live => {
             let requirement = if watch.unavailable || watch.failed {
                 Some("codewhale pet serve")
@@ -369,7 +377,11 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
         .pet_watch
         .dots_frame
         .as_ref()
-        .filter(|_| app.pet_watch.avatars.current() == "whale" && !prepared)
+        .filter(|_| {
+            app.pet_watch.avatars.current() == "whale"
+                && !prepared
+                && app.pet_watch.dots_area.is_some()
+        })
         .map(|f| Duration::from_millis(if motion.animates() && f.busy { 66 } else { 250 }));
     let state = &mut app.pet_watch;
     state.full.update(
@@ -602,6 +614,7 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
     } else {
         &[]
     };
+    let has_output = !lines.is_empty();
     let mut hints = tr(app.ui_locale, MessageId::PetModeMessageHint).replace(
         "{back}",
         shell_key_routing::binding(Id::PetBack).footer_chord,
@@ -722,6 +735,21 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
         motion,
     );
     frame.render_stateful_widget(view, area, &mut app.pet_watch.full);
+    let painted = area.intersection(frame.area());
+    let pet = PetModeAreas::new(
+        painted,
+        inspect && !agents.is_empty(),
+        has_output,
+        app.pet_watch.full.focus_agents,
+    )
+    .pet;
+    let art = WhalePet::art_area(pet);
+    app.pet_watch.dots_area = (!painted.is_empty()
+        && (inspect || app.view_stack.is_empty())
+        && !theme.ascii()
+        && art.width >= 16
+        && art.height >= 8)
+        .then_some(pet);
     if let Ok(mut copy_area) = app.pet_watch.copy_area.lock() {
         *copy_area = copy_hint.as_ref().and_then(|hint| {
             let width = codewhale_ratatui::text::width(hint);
@@ -830,9 +858,9 @@ mod tests {
     #[test]
     fn a_terminal_that_is_not_the_companion_source_draws_its_own_dot_whale() {
         let projector = super::super::dots::Projector::new().expect("committed bundle loads");
-        assert!(projector.observe(r#"{"event":"turn_started","turn_id":"t"}"#, 0.0));
         assert!(projector.observe(
-            r#"{"event":"operation_activity_started","span_id":"s","activity_kind":"editing"}"#,
+            r#"[{"event":"turn_started","turn_id":"t"},
+                {"event":"operation_activity_started","span_id":"s","activity_kind":"editing"}]"#,
             0.0
         ));
         let frame = projector
@@ -866,6 +894,30 @@ mod tests {
                 .chars()
                 .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
         );
+    }
+    #[test]
+    fn a_local_whale_that_cannot_start_falls_back_to_the_previous_whale_and_notice() {
+        let mut starting = app();
+        starting.pet_watch.dots = Some(super::super::dots::Dots::start());
+        assert!(!paint(&mut starting, 100, 32).contains(" needs "));
+
+        let dots = super::super::dots::failing_for_test();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !dots.failed() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dots.failed());
+        let mut app = app();
+        app.pet_watch.dots = Some(dots);
+        app.pet_watch.dots_frame = Some(super::super::dots::Frame {
+            points: vec![[0.0, 0.0]; 980],
+            materials: vec![[100.0, 150.0, 200.0, 0.9]; 980],
+            hollow: false,
+            busy: false,
+        });
+        super::super::tick(&mut app, Instant::now());
+        assert!(app.pet_watch.dots_frame.is_none());
+        assert!(paint(&mut app, 100, 32).contains(" needs "));
     }
     #[test]
     fn roster_scope_and_missing_vs_zero_receipts_come_from_the_existing_owner_guard() {

@@ -40,7 +40,7 @@ Pet 模式把你正在使用的终端变成一个一眼可读的状态视图。�
 
 | 视图 | 显示内容 | 条件不满足时 |
 | --- | --- | --- |
-| `whale` | 根据本终端自己的会话绘制的点阵鲸鱼；本会话是伴生进程的来源时，使用伴生进程的画面。 | 只有本地点阵鲸鱼无法启动时，才显示 `cove`（或 `braille`）；标题下一行会说明伴生进程需要什么（`codewhale pet serve` 或 `/pet source`）。 |
+| `whale` | 根据本终端自己的会话绘制的点阵鲸鱼；本会话是伴生进程的来源时，使用伴生进程的画面。 | 本地点阵鲸鱼启动期间会短暂显示 `cove`（或 `braille`）。如果无法启动，则继续显示 `cove`，标题下一行会说明伴生进程需要什么（`codewhale pet serve` 或 `/pet source`）。 |
 | `cove` | 本地半块字符鲸鱼，不带半透明的海湾背景。 | 需要颜色：在 `NO_COLOR`、16 色终端或背景未知时显示 `braille`。`COLORTERM=truecolor` 启用真彩色；`CODEWHALE_APPEARANCE=dark` 或 `light` 明确选择背景。 |
 | `braille` | 本地彩色盲文点阵鲸鱼。 | 在 `CODEWHALE_ASCII_SAFE` 下或图案区域小于 16x8 个单元格时，只显示状态文字。 |
 | `pixels` | 伴生进程鲸鱼的 kitty 图形图像。 | 需要 kitty 图形、同步输出、已知的单元格像素尺寸，且 `CODEWHALE_PET_GRAPHICS` 不能为 `braille`；否则显示 `particles`。Terminal.app 不支持 kitty 图形。 |

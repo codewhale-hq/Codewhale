@@ -9,7 +9,7 @@
 use rquickjs::{Context, Function, Runtime};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
 };
 use std::time::{Duration, Instant};
@@ -29,7 +29,12 @@ const o=new Array(2+980*6);o[0]=hollow?1:0;o[1]=busy?1:0;
 for(let i=0;i<980;i++){const p=f.points[i],m=f.materials[i],k=2+i*6;o[k]=p[0];o[k+1]=p[1];o[k+2]=m[0];o[k+3]=m[1];o[k+4]=m[2];o[k+5]=m[3];}
 return o;};
 globalThis.localReset=reset;
-globalThis.localObserve=(json,t)=>{const n=s.engine.clone();n.observe(JSON.parse(json),t);s.engine=n;};
+globalThis.localForget=()=>{s.still='';};
+globalThis.localObserve=(json,t)=>{
+const ev=JSON.parse(json);if(!Array.isArray(ev))throw Error('Invalid pet batch.');
+const n=s.engine.clone();
+try{for(const e of ev)n.observe(e,t);s.engine=n;return;}catch(_){}
+for(const e of ev){const m=s.engine.clone();try{m.observe(e,t);s.engine=m;}catch(_){}}};
 globalThis.localFrame=(t,still,waiting,body)=>{
 s.engine.confirmWaiting(t,waiting);
 const a=s.engine.activity(t),o={bodyStyle:body},hollow=!(a.observed&&a.freshness==='fresh');
@@ -51,10 +56,13 @@ s.last=f;
 return flat(f,hollow,busy);};
 })();"#;
 
-fn bundle() -> Option<String> {
-    let source = include_str!("pet-native.js");
+fn inject(source: &str) -> Option<String> {
     (source.matches(ANCHOR).count() == 1)
         .then(|| source.replacen(ANCHOR, &format!("{ANCHOR}{EXPORTS}"), 1))
+}
+
+fn bundle() -> Option<String> {
+    inject(include_str!("pet-native.js"))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,8 +108,12 @@ pub(super) struct Projector {
 }
 
 impl Projector {
+    #[cfg(test)]
     pub(super) fn new() -> Option<Self> {
-        let source = bundle()?;
+        Self::from_source(bundle()?)
+    }
+
+    fn from_source(source: String) -> Option<Self> {
         let runtime = Runtime::new().ok()?;
         runtime.set_memory_limit(64 * 1024 * 1024);
         runtime.set_max_stack_size(2 * 1024 * 1024);
@@ -132,7 +144,7 @@ impl Projector {
     }
 
     pub(super) fn observe(&self, json: &str, t: f64) -> bool {
-        self.arm(Duration::from_secs(1))
+        self.arm(Duration::from_secs(2))
             && self.context.with(|ctx| {
                 let result = ctx
                     .globals()
@@ -179,8 +191,28 @@ impl Projector {
             }
             result.map_err(|_| ())
         })?;
-        flat.map(|flat| Frame::from_flat(&flat).ok_or(()))
-            .transpose()
+        match flat.map(|flat| Frame::from_flat(&flat)) {
+            None => Ok(None),
+            Some(Some(frame)) => Ok(Some(frame)),
+            Some(None) => {
+                self.forget();
+                Err(())
+            }
+        }
+    }
+
+    fn forget(&self) {
+        if self.arm(Duration::from_secs(1)) {
+            self.context.with(|ctx| {
+                let result = ctx
+                    .globals()
+                    .get::<_, Function>("localForget")
+                    .and_then(|f| f.call::<_, ()>(()));
+                if result.is_err() {
+                    let _ = ctx.catch();
+                }
+            });
+        }
     }
 }
 
@@ -194,24 +226,37 @@ struct View {
 
 enum Msg {
     Observe(String),
-    Reset,
+    Reset(u64),
     Wake,
 }
 
 pub(super) struct Dots {
     tx: SyncSender<Msg>,
     gap: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
     view: Arc<Mutex<View>>,
-    latest: Arc<Mutex<Option<Frame>>>,
+    latest: Arc<Mutex<Option<(u64, Frame)>>>,
     failed: Arc<AtomicBool>,
+}
+
+struct Shared {
+    gap: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+    view: Arc<Mutex<View>>,
+    latest: Arc<Mutex<Option<(u64, Frame)>>>,
 }
 
 impl Dots {
     pub(super) fn start() -> Self {
+        Self::start_from(bundle())
+    }
+
+    fn start_from(source: Option<String>) -> Self {
         let (tx, rx) = mpsc::sync_channel(256);
         let dots = Self {
             tx,
             gap: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
             view: Arc::new(Mutex::new(View {
                 visible: false,
                 motion: false,
@@ -221,16 +266,21 @@ impl Dots {
             latest: Arc::new(Mutex::new(None)),
             failed: Arc::new(AtomicBool::new(false)),
         };
-        let (gap, view, latest, failed) = (
-            Arc::clone(&dots.gap),
-            Arc::clone(&dots.view),
-            Arc::clone(&dots.latest),
-            Arc::clone(&dots.failed),
-        );
+        let shared = Shared {
+            gap: Arc::clone(&dots.gap),
+            generation: Arc::clone(&dots.generation),
+            view: Arc::clone(&dots.view),
+            latest: Arc::clone(&dots.latest),
+        };
+        let failed = Arc::clone(&dots.failed);
         let spawned = std::thread::Builder::new()
             .name("pet-dots".into())
             .spawn(move || {
-                if run(&rx, &gap, &view, &latest).is_err() {
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let projector = source.and_then(Projector::from_source).ok_or(())?;
+                    run(&projector, &rx, &shared)
+                }));
+                if !matches!(ran, Ok(Ok(()))) {
                     failed.store(true, Ordering::Release);
                 }
             });
@@ -251,10 +301,11 @@ impl Dots {
     }
 
     pub(super) fn reset(&self) {
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         if let Ok(mut latest) = self.latest.lock() {
             *latest = None;
         }
-        self.send(Msg::Reset);
+        self.send(Msg::Reset(generation));
     }
 
     pub(super) fn set_view(
@@ -280,7 +331,12 @@ impl Dots {
     }
 
     pub(super) fn take(&self) -> Option<Frame> {
-        self.latest.lock().ok().and_then(|mut latest| latest.take())
+        let current = self.generation.load(Ordering::Acquire);
+        self.latest
+            .lock()
+            .ok()
+            .and_then(|mut latest| latest.take())
+            .and_then(|(generation, frame)| (generation == current).then_some(frame))
     }
 
     pub(super) fn failed(&self) -> bool {
@@ -288,72 +344,92 @@ impl Dots {
     }
 }
 
-fn run(
-    rx: &mpsc::Receiver<Msg>,
-    gap: &AtomicBool,
-    view: &Mutex<View>,
-    latest: &Mutex<Option<Frame>>,
-) -> Result<(), ()> {
-    let projector = Projector::new().ok_or(())?;
+fn run(projector: &Projector, rx: &mpsc::Receiver<Msg>, shared: &Shared) -> Result<(), ()> {
     let origin = Instant::now();
-    let mut wait: Option<Duration> = None;
+    let mut due = origin;
     let mut errors = 0u8;
+    let mut applied = 0u64;
+    let mut batch: Vec<String> = Vec::new();
+    let mut reset = false;
+    let mut force = true;
     loop {
-        let first = match wait {
-            Some(wait) => rx.recv_timeout(wait),
-            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        let visible = shared.view.lock().map_err(|_| ())?.visible;
+        let first = if !visible && batch.is_empty() && !reset && !force {
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(due.saturating_duration_since(Instant::now()))
         };
         let mut next = match first {
             Ok(msg) => Some(msg),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         };
-        let t = origin.elapsed().as_secs_f64() * 1000.0;
-        if gap.swap(false, Ordering::AcqRel) {
-            projector.reset();
-        }
         while let Some(msg) = next.take() {
             match msg {
-                Msg::Observe(json) => {
-                    projector.observe(&json, t);
+                Msg::Observe(json) => batch.push(json),
+                Msg::Reset(generation) => {
+                    batch.clear();
+                    reset = true;
+                    force = true;
+                    applied = generation;
                 }
-                Msg::Reset => {
-                    projector.reset();
-                }
-                Msg::Wake => {}
+                Msg::Wake => force = true,
             }
             next = rx.try_recv().ok();
         }
-        let view = *view.lock().map_err(|_| ())?;
-        if !view.visible {
-            wait = None;
+        if shared.gap.swap(false, Ordering::AcqRel) {
+            batch.clear();
+            reset = true;
+            applied = shared.generation.load(Ordering::Acquire);
+        }
+        if !force && Instant::now() < due {
             continue;
         }
-        let busy = match projector.frame(t, !view.motion, view.waiting, view.body) {
-            Ok(Some(frame)) => {
-                errors = 0;
-                let busy = frame.busy;
-                *latest.lock().map_err(|_| ())? = Some(frame);
-                busy
-            }
-            Ok(None) => {
-                errors = 0;
-                false
-            }
-            Err(()) => {
-                errors += 1;
-                if errors >= 3 {
-                    return Err(());
+        force = false;
+        let t = origin.elapsed().as_secs_f64() * 1000.0;
+        if std::mem::take(&mut reset) {
+            projector.reset();
+        }
+        if !batch.is_empty() {
+            projector.observe(&format!("[{}]", batch.join(",")), t);
+            batch.clear();
+        }
+        let view = *shared.view.lock().map_err(|_| ())?;
+        let busy = if !view.visible {
+            false
+        } else {
+            match projector.frame(t, !view.motion, view.waiting, view.body) {
+                Ok(Some(frame)) => {
+                    errors = 0;
+                    let busy = frame.busy;
+                    *shared.latest.lock().map_err(|_| ())? = Some((applied, frame));
+                    busy
                 }
-                false
+                Ok(None) => {
+                    errors = 0;
+                    false
+                }
+                Err(()) => {
+                    errors += 1;
+                    if errors >= 3 {
+                        return Err(());
+                    }
+                    false
+                }
             }
         };
-        wait = Some(Duration::from_millis(if view.motion && busy {
-            66
-        } else {
-            250
-        }));
+        due = Instant::now()
+            + Duration::from_millis(if view.visible && view.motion && busy {
+                66
+            } else {
+                250
+            });
     }
+}
+
+#[cfg(test)]
+pub(super) fn failing_for_test() -> Dots {
+    Dots::start_from(Some(include_str!("pet-native.js").to_owned()))
 }
 
 #[cfg(test)]
@@ -365,5 +441,8 @@ mod tests {
             1
         );
         assert!(super::bundle().is_some_and(|source| source.contains(super::EXPORTS)));
+        let without = include_str!("pet-native.js").replace(super::ANCHOR, "");
+        assert!(super::inject(&without).is_none());
+        assert!(super::Projector::from_source(include_str!("pet-native.js").to_owned()).is_none());
     }
 }

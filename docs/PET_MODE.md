@@ -76,7 +76,7 @@ one.
 
 | View | What it draws | When its requirement is missing |
 | --- | --- | --- |
-| `whale` | The dot whale, drawn from this terminal's own session. It uses the companion's frame when this session is the companion's source. | Shows `cove` (or `braille`) only if the local dot whale cannot start; the line under the title then names what the companion needs (`codewhale pet serve` or `/pet source`). |
+| `whale` | The dot whale, drawn from this terminal's own session. It uses the companion's frame when this session is the companion's source. | Shows `cove` (or `braille`) for a moment while the local dot whale starts. If it cannot start, it keeps showing `cove` and the line under the title names what the companion needs (`codewhale pet serve` or `/pet source`). |
 | `cove` | The local half-block whale, without the translucent cove scenery. | Needs colour: `braille` is shown under `NO_COLOR`, a 16-colour terminal, or an unknown background. `COLORTERM=truecolor` enables true colour; `CODEWHALE_APPEARANCE=dark` or `light` selects a known background. |
 | `braille` | The local whale in coloured Braille dots. | Shows only the state words under `CODEWHALE_ASCII_SAFE` or when the art area is smaller than 16x8 cells. |
 | `pixels` | The companion's whale as a kitty-graphics image. | Needs kitty graphics, synchronized output, a known cell size in pixels, and `CODEWHALE_PET_GRAPHICS` not set to `braille`; otherwise shows `particles`. Terminal.app has no kitty graphics. |

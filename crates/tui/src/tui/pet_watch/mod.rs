@@ -68,6 +68,7 @@ pub struct PetWatch {
     raster: Option<Presentation>,
     dots: Option<dots::Dots>,
     dots_frame: Option<dots::Frame>,
+    dots_area: Option<Rect>,
     controls: Arc<Mutex<Vec<Control>>>,
     desired: Option<Rect>,
     painted: Option<Rect>,
@@ -198,7 +199,11 @@ impl PetWatch {
             self.active_turn_id = Some(turn_id.clone());
         }
         if let Some(text) = metadata(event, self.active_turn_id.as_deref()) {
-            if let Some(dots) = &self.dots {
+            if let Some(dots) = self
+                .dots
+                .as_ref()
+                .filter(|_| self.enabled || self.worker.is_some())
+            {
                 dots.observe(text.clone());
             }
             self.send(Command::Observe(text));
@@ -466,6 +471,8 @@ pub fn set_enabled(app: &mut App, enabled: bool) {
     } else {
         let session = app.pet_watch.session.clone();
         app.pet_watch.reset(session);
+        app.pet_watch.dots = None;
+        app.pet_watch.dots_frame = None;
     }
     app.needs_redraw = true;
 }
@@ -581,7 +588,7 @@ pub fn tick(app: &mut App, now: Instant) {
                 BodyStyle::Pixel => "pixel",
             });
         dots.set_view(
-            visible && state.avatars.current() == "whale" && !own,
+            visible && state.avatars.current() == "whale" && !own && state.dots_area.is_some(),
             motion,
             waiting,
             body,
