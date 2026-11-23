@@ -2515,8 +2515,8 @@ OpenAI Codex。没有此路由的 Engine 返回 `404`。
 Client Protocol 时通过 stdin 发送一次 `initialize`。`acp` 为 `native` 表示握手
 成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应，或回应了其他协议版本、不是 JSON-RPC 2.0，或返回了错误；`reason` 会说明属于哪种情况。
 `auth_methods` 来自握手结果；`type: "terminal"` 表示只能在该 agent 自己的终端里
-登录。探测超时为 8 秒（`--version` 为 5 秒），不会收到任何 Codewhale 或服务商
-凭据，也不会保存任何内容。`runnable` 为 `true` 表示版本符合要求，且原生握手成功或所需适配器已经安装；
+登录。发现过程最多同时探测 4 个智能体，握手超时为 60 秒（`--version` 为 20 秒），不会收到任何 Codewhale 或服务商
+凭据，也不会保存任何内容；如果 `--version` 超时且握手未提供版本号，`version` 为 `null` 且 `reason` 会说明版本读取超时，不会误报为 `no_acp`。`runnable` 为 `true` 表示版本符合要求，且原生握手成功或所需适配器已经安装；
 它不代表智能体已经登录。该路由只做报告，不创建会话。
 
 ### `DELETE /v1/providers/{id}/key` —— 清除 Codewhale 拥有的凭据

@@ -3626,9 +3626,12 @@ itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
 process, and `unreachable` when the handshake did not answer, or answered with another protocol version, without JSON-RPC 2.0, or with an error; `reason` says which. `auth_methods`
 comes from the handshake; `type: "terminal"` means the agent can only be signed
-in by running it in a terminal. The probes time out after 8 s (5 s for
-`--version`), receive no Codewhale or provider credentials, and leave nothing
-stored. `runnable` is `true` when a thread can run on the agent now: the CLI is
+in by running it in a terminal. Discovery bounds concurrent probes to 4 at a
+time; the probes time out after 60 s (20 s for `--version`), receive no
+Codewhale or provider credentials, and leave nothing stored. If `--version`
+times out and the handshake does not report `agentInfo.version`, `version` is
+`null` and `reason` notes that `--version` timed out without marking the agent
+`no_acp`. `runnable` is `true` when a thread can run on the agent now: the CLI is
 not below `min_version` and either answered the handshake or has its ACP adapter
 (`adapter`) installed, which `adapter_installed` reports. See "Sessions on other
 agents" for starting one.

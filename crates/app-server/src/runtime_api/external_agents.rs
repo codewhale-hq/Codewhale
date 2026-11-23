@@ -1,23 +1,30 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::Json;
 use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+const PROBE_TIMEOUT: Duration = SETUP_TIMEOUT;
+const MAX_CONCURRENT_DISCOVERY_PROBES: usize = 4;
+static DISCOVERY_PROBES: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_DISCOVERY_PROBES)));
 const MAX_PROBE_LINE_BYTES: usize = 256 * 1024;
 const MAX_TEXT_CHARS: usize = 80;
 const MAX_AUTH_METHODS: usize = 8;
 const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const SILENT_HANDSHAKE: &str = "It did not answer the Agent Client Protocol handshake.";
+const VERSION_TIMEOUT_REASON: &str = "Its version could not be read because `--version` timed out.";
 
 use codewhale_engine::fleet::agents::{
     AGENTS, AgentQuota, CustomExternalAgent, ExecutorUnavailable, ExternalAgent, QuotaGate,
-    QuotaSource, QuotaUnknown, below_minimum, cli_version_with_env, custom_agents, foreign_command,
-    local_signin_quota, not_installed, resolve, resolve_custom_binary,
+    QuotaSource, QuotaUnknown, SETUP_TIMEOUT, VersionProbe, below_minimum,
+    cli_version_probe_with_env, custom_agents, foreign_command, local_signin_quota, not_installed,
+    resolve, resolve_custom_binary,
 };
 use codewhale_runtime::process_tree::ProcessTree;
 use codewhale_runtime::settings::{AgentSettings, Settings};
@@ -39,6 +46,15 @@ fn clean(text: &str) -> String {
 }
 
 async fn acp_initialize(path: &Path, args: &[&str], env: &BTreeMap<String, String>) -> Handshake {
+    acp_initialize_with_timeout(path, args, env, PROBE_TIMEOUT).await
+}
+
+async fn acp_initialize_with_timeout(
+    path: &Path,
+    args: &[&str],
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> Handshake {
     let mut command = foreign_command(path, args);
     command.envs(env);
     #[cfg(unix)]
@@ -72,7 +88,7 @@ async fn acp_initialize(path: &Path, args: &[&str], env: &BTreeMap<String, Strin
     let mut line = request.to_string();
     line.push('\n');
     let mut lines = crate::stdio::BoundedLines::new(BufReader::new(stdout));
-    let handshake = tokio::time::timeout(PROBE_TIMEOUT, async {
+    let handshake = tokio::time::timeout(timeout, async {
         if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
             return Handshake::Silent;
         }
@@ -155,6 +171,95 @@ fn clean_kind(kind: &str) -> &'static str {
     }
 }
 
+struct DiscoveryOutcome {
+    acp: &'static str,
+    version: Option<String>,
+    needs_update: bool,
+    runnable: bool,
+    reason_code: Option<&'static str>,
+    reason: Option<String>,
+}
+
+fn unpack_version(probe: VersionProbe, initialized: Option<&Value>) -> (Option<String>, bool) {
+    let (cli_version, timed_out) = match probe {
+        VersionProbe::Known(version) => (Some(version), false),
+        VersionProbe::TimedOut => (None, true),
+        VersionProbe::Unknown => (None, false),
+    };
+    let reported = initialized
+        .and_then(|result| result.pointer("/agentInfo/version"))
+        .and_then(Value::as_str)
+        .map(clean)
+        .filter(|version| !version.is_empty());
+    let version = cli_version.or(reported);
+    let version_timed_out = version.is_none() && timed_out;
+    (version, version_timed_out)
+}
+
+fn append_version_timeout(message: String, version_timed_out: bool) -> String {
+    if version_timed_out {
+        format!("{message} {VERSION_TIMEOUT_REASON}")
+    } else {
+        message
+    }
+}
+
+fn classify_installed(
+    version_probe: VersionProbe,
+    initialized: Option<&Value>,
+    refusal: Option<String>,
+    has_acp_args: bool,
+    min_version: Option<&str>,
+    adapter: Option<&str>,
+    adapter_installed: bool,
+) -> DiscoveryOutcome {
+    let acp = match (initialized, has_acp_args) {
+        (Some(_), _) => "native",
+        (None, true) => "unreachable",
+        (None, false) => "adapter",
+    };
+    let (version, version_timed_out) = unpack_version(version_probe, initialized);
+    let needs_update = below_minimum(version.as_deref(), min_version);
+    let runnable = !needs_update && (acp == "native" || (acp == "adapter" && adapter_installed));
+    let (reason_code, reason) = if needs_update {
+        (
+            Some(ExecutorUnavailable::BELOW_MIN_VERSION),
+            Some(format!(
+                "Version {} is installed; Codewhale needs {} or newer to drive it.",
+                version.as_deref().unwrap_or("unknown"),
+                min_version.unwrap_or("a newer one")
+            )),
+        )
+    } else if acp == "unreachable" {
+        let message = refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string());
+        (
+            Some(ExecutorUnavailable::NO_ACP),
+            Some(append_version_timeout(message, version_timed_out)),
+        )
+    } else if acp == "adapter" && !adapter_installed {
+        let adapter = adapter.unwrap_or("its ACP adapter");
+        let message = format!(
+            "It runs through the ACP adapter {adapter}, which is not installed. Install it with `npm i -g {adapter}`."
+        );
+        (
+            Some(ExecutorUnavailable::ADAPTER_MISSING),
+            Some(append_version_timeout(message, version_timed_out)),
+        )
+    } else if version_timed_out {
+        (None, Some(VERSION_TIMEOUT_REASON.to_string()))
+    } else {
+        (None, None)
+    };
+    DiscoveryOutcome {
+        acp,
+        version,
+        needs_update,
+        runnable,
+        reason_code,
+        reason,
+    }
+}
+
 async fn describe_custom(agent: CustomExternalAgent) -> Value {
     let Some(path) = resolve_custom_binary(&agent.binary).await else {
         return json!({
@@ -179,9 +284,10 @@ async fn describe_custom(agent: CustomExternalAgent) -> Value {
             "reason": format!("{} (`{}`) is not installed.", agent.name, agent.binary),
         });
     };
+    let _permit = Arc::clone(&DISCOVERY_PROBES).acquire_owned().await.ok();
     let arg_refs: Vec<&str> = agent.args.iter().map(String::as_str).collect();
-    let (version, handshake) = tokio::join!(
-        cli_version_with_env(&path, &agent.env),
+    let (version_probe, handshake) = tokio::join!(
+        cli_version_probe_with_env(&path, &agent.env),
         acp_initialize(&path, &arg_refs, &agent.env),
     );
     let (initialized, refusal) = match handshake {
@@ -189,46 +295,35 @@ async fn describe_custom(agent: CustomExternalAgent) -> Value {
         Handshake::Refused(reason) => (None, Some(reason)),
         Handshake::Silent => (None, None),
     };
-    let acp = if initialized.is_some() {
-        "native"
-    } else {
-        "unreachable"
-    };
-    let reported = initialized
-        .as_ref()
-        .and_then(|result| result.pointer("/agentInfo/version"))
-        .and_then(Value::as_str)
-        .map(clean);
-    let version = version.or(reported);
-    let runnable = acp == "native";
-    let (reason_code, reason) = if runnable {
-        (None, None)
-    } else {
-        (
-            Some(ExecutorUnavailable::NO_ACP),
-            Some(refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string())),
-        )
-    };
+    let outcome = classify_installed(
+        version_probe,
+        initialized.as_ref(),
+        refusal,
+        true,
+        None,
+        None,
+        false,
+    );
     json!({
         "id": agent.id,
         "name": agent.name,
         "state": "installed",
-        "needs_update": false,
+        "needs_update": outcome.needs_update,
         "min_version": null,
         "upgrade": null,
         "login": null,
         "adapter": null,
-        "version": version,
-        "acp": acp,
+        "version": outcome.version,
+        "acp": outcome.acp,
         "auth_methods": initialized.as_ref().map(auth_methods).unwrap_or_default(),
         "website": agent.website,
         "adapter_installed": false,
-        "runnable": runnable,
-        "depth": if runnable { "driven" } else { "observed" },
+        "runnable": outcome.runnable,
+        "depth": if outcome.runnable { "driven" } else { "observed" },
         "auth_status": "unknown",
         "custom": true,
-        "reason_code": reason_code,
-        "reason": reason,
+        "reason_code": outcome.reason_code,
+        "reason": outcome.reason,
     })
 }
 
@@ -255,9 +350,10 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
             "reason": not_installed(agent).message,
         });
     };
+    let _permit = Arc::clone(&DISCOVERY_PROBES).acquire_owned().await.ok();
     let env = agent.process_env();
-    let (version, handshake, adapter_installed) = tokio::join!(
-        cli_version_with_env(&path, &env),
+    let (version_probe, handshake, adapter_installed) = tokio::join!(
+        cli_version_probe_with_env(&path, &env),
         async {
             match agent.acp_args {
                 Some(args) => acp_initialize(&path, args, &env).await,
@@ -276,63 +372,34 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
         Handshake::Refused(reason) => (None, Some(reason)),
         Handshake::Silent => (None, None),
     };
-    let acp = match (&initialized, agent.acp_args) {
-        (Some(_), _) => "native",
-        (None, Some(_)) => "unreachable",
-        (None, None) => "adapter",
-    };
-    let reported = initialized
-        .as_ref()
-        .and_then(|result| result.pointer("/agentInfo/version"))
-        .and_then(Value::as_str)
-        .map(clean);
-    let version = version.or(reported);
-    let needs_update = below_minimum(version.as_deref(), agent.min_version);
-    let runnable = !needs_update && (acp == "native" || (acp == "adapter" && adapter_installed));
-    let (reason_code, reason) = if needs_update {
-        (
-            Some(ExecutorUnavailable::BELOW_MIN_VERSION),
-            Some(format!(
-                "Version {} is installed; Codewhale needs {} or newer to drive it.",
-                version.as_deref().unwrap_or("unknown"),
-                agent.min_version.unwrap_or("a newer one")
-            )),
-        )
-    } else if acp == "unreachable" {
-        (
-            Some(ExecutorUnavailable::NO_ACP),
-            Some(refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string())),
-        )
-    } else if acp == "adapter" && !adapter_installed {
-        let adapter = agent.adapter.unwrap_or("its ACP adapter");
-        (
-            Some(ExecutorUnavailable::ADAPTER_MISSING),
-            Some(format!(
-                "It runs through the ACP adapter {adapter}, which is not installed. Install it with `npm i -g {adapter}`."
-            )),
-        )
-    } else {
-        (None, None)
-    };
+    let outcome = classify_installed(
+        version_probe,
+        initialized.as_ref(),
+        refusal,
+        agent.acp_args.is_some(),
+        agent.min_version,
+        agent.adapter,
+        adapter_installed,
+    );
     json!({
         "id": agent.id,
         "name": agent.name,
         "state": "installed",
-        "needs_update": needs_update,
+        "needs_update": outcome.needs_update,
         "min_version": agent.min_version,
         "upgrade": agent.upgrade,
         "login": agent.login,
         "adapter": agent.adapter,
-        "version": version,
-        "acp": acp,
+        "version": outcome.version,
+        "acp": outcome.acp,
         "auth_methods": initialized.as_ref().map(auth_methods).unwrap_or_default(),
         "website": agent.website,
         "adapter_installed": adapter_installed,
-        "runnable": runnable,
-        "depth": if runnable { "driven" } else { "observed" },
+        "runnable": outcome.runnable,
+        "depth": if outcome.runnable { "driven" } else { "observed" },
         "auth_status": "unknown",
-        "reason_code": reason_code,
-        "reason": reason,
+        "reason_code": outcome.reason_code,
+        "reason": outcome.reason,
     })
 }
 
@@ -537,17 +604,81 @@ mod tests {
             "silent",
             &format!("sleep 300 & echo $! > '{}'; sleep 300", pid_file.display()),
         );
+        let timeout = Duration::from_secs(2);
         let started = Instant::now();
         assert!(matches!(
-            acp_initialize(&silent, &[], &BTreeMap::new()).await,
+            acp_initialize_with_timeout(&silent, &[], &BTreeMap::new(), timeout).await,
             Handshake::Silent
         ));
-        assert!(started.elapsed() < PROBE_TIMEOUT + PROBE_REAP_TIMEOUT + Duration::from_secs(2));
+        assert!(started.elapsed() < timeout + PROBE_REAP_TIMEOUT + Duration::from_secs(2));
         let grandchild =
             codewhale_runtime::process_tree::read_pid_file(&pid_file, Duration::from_secs(5));
         assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
             grandchild,
             Duration::from_secs(5)
         ));
+    }
+
+    #[test]
+    fn version_timeout_is_distinct_from_no_acp_and_known_versions_check_minimum() {
+        assert_eq!(PROBE_TIMEOUT, SETUP_TIMEOUT);
+        assert_eq!(MAX_CONCURRENT_DISCOVERY_PROBES, 4);
+
+        let answered_no_version = json!({"protocolVersion": 1});
+        let timed_out = classify_installed(
+            VersionProbe::TimedOut,
+            Some(&answered_no_version),
+            None,
+            true,
+            Some("1.0.0"),
+            None,
+            false,
+        );
+        assert_eq!(timed_out.version, None);
+        assert!(timed_out.runnable);
+        assert!(!timed_out.needs_update);
+        assert_eq!(timed_out.reason_code, None);
+        assert_eq!(timed_out.reason.as_deref(), Some(VERSION_TIMEOUT_REASON));
+
+        let answered_old = json!({"protocolVersion": 1, "agentInfo": {"version": "0.209.1"}});
+        let old_from_handshake = classify_installed(
+            VersionProbe::TimedOut,
+            Some(&answered_old),
+            None,
+            true,
+            Some("0.249.0"),
+            None,
+            false,
+        );
+        assert_eq!(old_from_handshake.version.as_deref(), Some("0.209.1"));
+        assert!(old_from_handshake.needs_update);
+        assert!(!old_from_handshake.runnable);
+        assert_eq!(
+            old_from_handshake.reason_code,
+            Some(ExecutorUnavailable::BELOW_MIN_VERSION)
+        );
+
+        let both_timed_out = classify_installed(
+            VersionProbe::TimedOut,
+            None,
+            None,
+            true,
+            Some("0.249.0"),
+            None,
+            false,
+        );
+        assert_eq!(both_timed_out.version, None);
+        assert!(!both_timed_out.runnable);
+        assert_eq!(
+            both_timed_out.reason_code,
+            Some(ExecutorUnavailable::NO_ACP)
+        );
+        assert!(
+            both_timed_out
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains(SILENT_HANDSHAKE)
+                    && reason.contains(VERSION_TIMEOUT_REASON))
+        );
     }
 }

@@ -5,13 +5,12 @@ use crate::fleet::acp::{
     AcpCanceller, AcpClient, AcpError, AcpHandler, AgentIdentity, AgentOptions, AgentTokenUsage,
     PermissionAnswer, PromptReply, SessionOffer, refusal,
 };
-use crate::fleet::agents::ExternalAgentLaunch;
+use crate::fleet::agents::{ExternalAgentLaunch, SETUP_TIMEOUT};
 use crate::fleet::host::{
     FleetHostAdapter, FleetWorkerCommand, FleetWorkerStartRequest, FleetWorkerTransport,
     LocalProcessFleetHostAdapter,
 };
 
-const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const CANCEL_GRACE: Duration = Duration::from_secs(10);
 const APPROVAL_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);

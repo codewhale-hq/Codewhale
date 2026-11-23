@@ -49,7 +49,6 @@ async fn agent_quota_reads_nothing_until_flag_and_consent_and_never_echoes_a_tok
     for (dir, file) in [
         (".claude", ".credentials.json"),
         (".codex", "auth.json"),
-        (".gemini", "oauth_creds.json"),
         (".kimi", "credentials.json"),
         (".grok", "auth.json"),
     ] {

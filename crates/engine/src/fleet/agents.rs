@@ -9,7 +9,8 @@ use tokio::process::Command;
 pub const FIXTURE_AGENT_ENV: &str = "CODEWHALE_ACP_FIXTURE_AGENT";
 pub const FIXTURE_AGENT_ID: &str = "fixture";
 pub const CUSTOM_AGENTS_ENV: &str = "CODEWHALE_CUSTOM_ACP_AGENTS";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+pub const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
+const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_VERSION_CHARS: usize = 80;
 const MAX_VERSION_BYTES: usize = 8192;
 const MAX_VERSION_STDERR_BYTES: usize = 64 * 1024;
@@ -135,19 +136,6 @@ pub const AGENTS: &[ExternalAgent] = &[
         min_version: Some("1.5.0"),
         upgrade: Some("agy update"),
         login: Some("agy acp --login"),
-        adapter: None,
-        adapter_binary: None,
-        adapter_cli_env: None,
-    },
-    ExternalAgent {
-        id: "gemini",
-        name: "Gemini CLI",
-        binary: "gemini",
-        acp_args: Some(&["--acp"]),
-        website: "https://geminicli.com",
-        min_version: Some("0.65.0"),
-        upgrade: Some("npm i -g @google/gemini-cli@latest"),
-        login: Some("gemini"),
         adapter: None,
         adapter_binary: None,
         adapter_cli_env: None,
@@ -683,27 +671,57 @@ pub fn version_token(text: &str) -> Option<String> {
         })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionProbe {
+    Known(String),
+    TimedOut,
+    Unknown,
+}
+
+async fn probe_cli_version_with_timeout(
+    path: &Path,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> VersionProbe {
+    let mut command = foreign_command(path, &["--version"]);
+    command.envs(env);
+    let Ok(run) = codewhale_runtime::process_tree::contained_output_with_input_bounded(
+        &mut command,
+        Vec::new(),
+        MAX_VERSION_BYTES,
+        MAX_VERSION_STDERR_BYTES,
+        tokio::time::sleep(timeout),
+    )
+    .await
+    else {
+        return VersionProbe::Unknown;
+    };
+    if run.stopped {
+        return VersionProbe::TimedOut;
+    }
+    let text = String::from_utf8_lossy(&run.output.stdout);
+    match version_token(text.lines().next().unwrap_or_default()) {
+        Some(version) => VersionProbe::Known(version),
+        None => VersionProbe::Unknown,
+    }
+}
+
+pub async fn cli_version_probe_with_env(
+    path: &Path,
+    env: &BTreeMap<String, String>,
+) -> VersionProbe {
+    probe_cli_version_with_timeout(path, env, VERSION_TIMEOUT).await
+}
+
 pub async fn cli_version(path: &Path) -> Option<String> {
     cli_version_with_env(path, &BTreeMap::new()).await
 }
 
 pub async fn cli_version_with_env(path: &Path, env: &BTreeMap<String, String>) -> Option<String> {
-    let mut command = foreign_command(path, &["--version"]);
-    command.envs(env);
-    let run = codewhale_runtime::process_tree::contained_output_with_input_bounded(
-        &mut command,
-        Vec::new(),
-        MAX_VERSION_BYTES,
-        MAX_VERSION_STDERR_BYTES,
-        tokio::time::sleep(VERSION_TIMEOUT),
-    )
-    .await
-    .ok()?;
-    if run.stopped {
-        return None;
+    match cli_version_probe_with_env(path, env).await {
+        VersionProbe::Known(version) => Some(version),
+        VersionProbe::TimedOut | VersionProbe::Unknown => None,
     }
-    let text = String::from_utf8_lossy(&run.output.stdout);
-    version_token(text.lines().next().unwrap_or_default())
 }
 
 fn version_core(text: &str) -> Option<(u64, u64, u64)> {
@@ -1106,9 +1124,13 @@ mod tests {
             "hung",
             &format!("sleep 300 & echo $! > '{}'; sleep 300", pid_file.display()),
         );
+        let timeout = Duration::from_secs(2);
         let started = std::time::Instant::now();
-        assert_eq!(cli_version(&hung).await, None);
-        assert!(started.elapsed() < VERSION_TIMEOUT + Duration::from_secs(4));
+        assert_eq!(
+            probe_cli_version_with_timeout(&hung, &BTreeMap::new(), timeout).await,
+            VersionProbe::TimedOut
+        );
+        assert!(started.elapsed() < timeout + Duration::from_secs(4));
         let grandchild =
             codewhale_runtime::process_tree::read_pid_file(&pid_file, Duration::from_secs(5));
         assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
@@ -1138,7 +1160,8 @@ mod tests {
 
     #[test]
     fn registry_rows_are_unique_with_verified_commands() {
-        assert_eq!(AGENTS.len(), 25);
+        assert_eq!(AGENTS.len(), 24);
+        assert!(find("gemini").is_none());
         let mut ids: Vec<&str> = AGENTS.iter().map(|agent| agent.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -1161,7 +1184,6 @@ mod tests {
             "codex",
             "dsh",
             "antigravity",
-            "gemini",
             "cursor",
             "cline",
             "devin",

@@ -22,8 +22,7 @@ Codewhale instead, see [Codewhale as an ACP agent](RUNTIME_API.md#acp-stdio-adap
    Codex or Muse Code, also install the corresponding ACP adapter and put it
    on `PATH`. Codewhale does not download either executable.
 
-For Google personal accounts, use Antigravity CLI. The Gemini CLI entry can
-discover an existing installation with supported access. [Google account migration](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+For Google personal accounts, use Antigravity CLI. [Google account migration](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
 
 | Agent | Install the adapter |
 | --- | --- |
