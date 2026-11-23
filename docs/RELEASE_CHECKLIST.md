@@ -171,6 +171,16 @@ known limitations and publication approval. These proofs are separate.
       gh workflow run ci.yml --ref main -f expected_sha="${candidate_sha}"
       gh workflow run release-candidate.yml --ref main -f expected_sha="${candidate_sha}"
       ```
+- [ ] The two macOS shipping builds run on the self-hosted `codewhale-mac`
+      runner only for a `v*` tag push or a dispatch in this repository, and
+      only with `-f macos_runner=self-hosted` (release candidate) or the
+      `CW_SELF_HOSTED_MAC` repository variable set to `true`; anything else,
+      including every pull request, builds on hosted `macos-latest`. There each
+      build installs a fresh rustup, toolchain and Cargo home under the job's
+      temp directory, starts from an empty `target/`, skips rust-cache, holds
+      the machine build lock and builds with six Cargo jobs. Set the variable
+      to `false` (or dispatch with `macos_runner=hosted`) to build on hosted
+      Macs again.
 - [ ] Both runs resolve to that SHA and all required jobs execute and succeed.
       A green workflow badge alone is insufficient: confirm that the required
       jobs ran for the exact candidate SHA. `main-landing.yml` dispatches full
