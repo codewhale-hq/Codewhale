@@ -528,3 +528,29 @@ fn notices_drain_exactly_once() {
     assert!(ours[0].contains("[providers.deepseek]"), "{ours:?}");
     assert!(!take_notices().iter().any(|notice| notice.contains(marker)));
 }
+
+#[test]
+fn apply_to_document_omits_move_receipt_when_destination_parent_is_not_a_table() {
+    let body = "api_key = \"sk-root\"\nproviders = \"legacy\"\n";
+    let mut doc = document(body);
+    let receipt = apply_to_document(&mut doc, None);
+    assert!(!receipt.changes_file(), "{receipt:?}");
+    assert!(receipt.is_empty(), "{receipt:?}");
+    assert_eq!(doc.to_string(), body);
+    assert!(!preview_document(&doc, None).changes_file());
+}
+
+#[test]
+fn migrate_legacy_root_config_errors_and_writes_no_backup_on_non_table_providers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("config.toml");
+    let body = "[profiles.work]\napi_key = \"sk-work\"\nproviders = \"legacy\"\n";
+    std::fs::write(&path, body).expect("write config");
+
+    let err = crate::migrate_legacy_root_config(&path, None)
+        .expect_err("non-table providers parent must fail migration");
+    assert!(format!("{err:#}").contains("providers"), "{err:#}");
+    assert_eq!(std::fs::read_to_string(&path).expect("read config"), body);
+    let backup = path.with_file_name("config.toml.pre-migrate.bak");
+    assert!(!backup.exists(), "failed migration must not write a backup");
+}

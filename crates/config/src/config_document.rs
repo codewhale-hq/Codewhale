@@ -229,7 +229,7 @@ pub fn migrate_legacy_root_config(
                 crate::quote_os_path(path)
             )
         })?;
-        let receipt = crate::legacy_root::apply_to_document(&mut document, prefer);
+        let receipt = crate::legacy_root::try_apply_to_document(&mut document, prefer)?;
         if !receipt.changes_file() {
             return Ok((receipt, None));
         }

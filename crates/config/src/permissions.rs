@@ -440,6 +440,14 @@ pub(crate) fn permission_rule_inline_table(rule: &ToolAskRule) -> toml_edit::Inl
 }
 
 pub(crate) fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
+    write_permissions_atomic_with_dir_sync(path, body, crate::persistence::sync_parent_dir)
+}
+
+fn write_permissions_atomic_with_dir_sync(
+    path: &Path,
+    body: &[u8],
+    sync_dir: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let parent = path.parent().with_context(|| {
         format!(
             "permissions path has no parent directory: {}",
@@ -482,5 +490,35 @@ pub(crate) fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to replace permissions at {}", path.display()))?;
+    let sync_target = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    sync_dir(sync_target)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_permissions_atomic_syncs_parent_directory_and_propagates_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("permissions.toml");
+        let mut synced = None;
+        write_permissions_atomic_with_dir_sync(&path, b"rules = []\n", |dir| {
+            synced = Some(dir.to_path_buf());
+            Ok(())
+        })
+        .expect("write should succeed when parent sync succeeds");
+        assert_eq!(synced.as_deref(), Some(tmp.path()));
+
+        let err = write_permissions_atomic_with_dir_sync(&path, b"rules = []\n", |_| {
+            anyhow::bail!("injected directory sync failure")
+        })
+        .expect_err("failed directory sync must not report success");
+        assert!(err.to_string().contains("injected directory sync failure"));
+    }
 }

@@ -4,7 +4,7 @@ use crate::provider_toml::CONFIG_FILE_NAME;
 use crate::state_dirs::{codewhale_home, codewhale_home_is_explicit, legacy_deepseek_home};
 use anyhow::Context as _;
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn default_config_path() -> Result<PathBuf> {
     // Prefer ~/.codewhale/config.toml when it exists (fresh install or
@@ -46,29 +46,64 @@ pub fn migrate_config_if_needed() -> Result<Option<ConfigMigration>> {
         return Ok(None);
     }
     let primary = codewhale_home()?.join(CONFIG_FILE_NAME);
-    // `exists()` follows links, so a dangling link would read as "absent" and
-    // the copy below would create whatever it points at. A link at the primary
-    // name is refused instead, dangling or not.
-    reject_path_symlink(&primary)?;
+    let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
+    migrate_config_between(&legacy, &primary, || {})
+}
+
+fn migrate_config_between(
+    legacy: &Path,
+    primary: &Path,
+    before_publish: impl FnOnce(),
+) -> Result<Option<ConfigMigration>> {
+    reject_path_symlink(primary)?;
     if primary.exists() {
         return Ok(None);
     }
-    let legacy = legacy_deepseek_home()?.join(CONFIG_FILE_NAME);
     if !legacy.exists() {
         return Ok(None);
     }
-    // Copy the config to the new home, owner-only, through a temporary file
-    // renamed into place (the primary name is replaced, never written through).
-    let contents = std::fs::read(&legacy).context("failed to read legacy deepseek config")?;
-    persistence::atomic_write(&primary, &contents)
-        .context("failed to migrate config from deepseek to codewhale home")?;
+    let contents = std::fs::read(legacy).context("failed to read legacy deepseek config")?;
+    before_publish();
+    if !persistence::atomic_write_if_absent(primary, &contents)
+        .context("failed to migrate config from deepseek to codewhale home")?
+    {
+        return Ok(None);
+    }
     tracing::info!(
         "Migrated config from {} to {}",
         legacy.display(),
         primary.display()
     );
     Ok(Some(ConfigMigration {
-        legacy_path: legacy,
-        primary_path: primary,
+        legacy_path: legacy.to_path_buf(),
+        primary_path: primary.to_path_buf(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_config_does_not_overwrite_primary_created_after_exists_check() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy = tmp.path().join("legacy").join(CONFIG_FILE_NAME);
+        let primary = tmp.path().join("primary").join(CONFIG_FILE_NAME);
+        std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy dir");
+        std::fs::write(&legacy, b"provider = \"deepseek\"\n").expect("legacy config");
+
+        let created_concurrently = "provider = \"openai\"\n";
+        let outcome = migrate_config_between(&legacy, &primary, || {
+            std::fs::create_dir_all(primary.parent().expect("primary parent"))
+                .expect("primary dir");
+            std::fs::write(&primary, created_concurrently).expect("concurrent primary write");
+        })
+        .expect("migration check");
+
+        assert!(outcome.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&primary).expect("primary config"),
+            created_concurrently
+        );
+    }
 }
