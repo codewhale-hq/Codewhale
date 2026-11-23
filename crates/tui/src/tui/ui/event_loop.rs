@@ -7189,10 +7189,6 @@ pub(crate) async fn run_event_loop(
                 app.backtrack.reset();
             }
 
-            // Global keybindings — voice first (⌥V) so it doesn't insert a char.
-            if handle_voice_key(app, &key) {
-                continue;
-            }
             if handle_reasoning_effort_key(app, &key) {
                 if let Err(err) = persist_pending_work_checkpoint(app).await {
                     app.status_message = Some(format!(
