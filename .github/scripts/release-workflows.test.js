@@ -1434,6 +1434,112 @@ for (const target of nonWebPaths) {
 }
 console.log(`Landing web gate path filter OK: ${mustTriggerWebGates.length} web inputs trigger, ${nonWebPaths.length} unrelated paths skip.`);
 
+const webWorkflow = read(".github/workflows/web.yml");
+const webTriggerBlock = webWorkflow.slice(
+  webWorkflow.indexOf("on:\n"),
+  webWorkflow.indexOf("\n\npermissions:"),
+);
+assert.match(webTriggerBlock, /^on:\n  workflow_dispatch:(?:\n    .*)*$/, "web.yml must stay workflow_dispatch-only");
+assert.doesNotMatch(jobBlock(webWorkflow, "lint"), /^    if:/m, "web.yml lint job must run unconditionally on dispatch");
+const webDeployBlock = jobBlock(webWorkflow, "deploy");
+assert.match(webDeployBlock, /^    needs: lint$/m);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "workflow_dispatch", ref: "refs/heads/main" },
+  }),
+  true,
+);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "push", ref: "refs/heads/main" },
+  }),
+  false,
+);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "workflow_dispatch", ref: "refs/heads/release" },
+  }),
+  false,
+);
+assert.match(webDeployBlock, /^    concurrency:\n      group: deploy-codewhale-web\n      cancel-in-progress: false$/m);
+assert.match(webDeployBlock, /ref: \$\{\{ github\.sha \}\}\n\s+fetch-depth: 0/);
+assert.ok(webDeployBlock.indexOf("actions/checkout@") < webDeployBlock.indexOf("Verify expected commit"));
+assert.ok(webDeployBlock.indexOf("Verify expected commit") < webDeployBlock.indexOf("actions/setup-node@"));
+assert.match(webDeployBlock, /run: npm run check:deploy-env\n/);
+assert.match(webDeployBlock, /run: npm run deploy\n/);
+assert.doesNotMatch(webDeployBlock, /npm run build/);
+assert.match(webDeployBlock, /run: npm run check:deployed-facts -- --expected-revision "\$GITHUB_SHA"/);
+const webRefreshStep = namedStep(webDeployBlock, "Refresh published release facts");
+assert.match(webRefreshStep, /CLOUDFLARE_API_TOKEN: ''/);
+assert.match(webRefreshStep, /node scripts\/sync-latest-release\.mjs/);
+assert.ok(
+  webDeployBlock.indexOf("Refresh published release facts") < webDeployBlock.indexOf("run: npm run deploy\n"),
+  "web.yml deploy must sync the published release record before building the OpenNext bundle",
+);
+
+const releaseWebDeploy = jobBlock(release, "web_deploy");
+assert.match(releaseWebDeploy, /^    needs: \[npm, release, resolve\]$/m);
+assert.equal(jobTimeout(release, "web_deploy"), 45);
+assert.match(
+  releaseWebDeploy,
+  /^    permissions:\n      actions: write\n      contents: read\n    steps:/m,
+  "release web_deploy needs only actions: write and contents: read",
+);
+assert.doesNotMatch(
+  releaseWebDeploy,
+  /secrets\.|CLOUDFLARE_|contents:\s*write|packages:\s*write|id-token:\s*write|set -x/,
+  "release web_deploy must hold no Cloudflare or release secrets and no extra write scopes",
+);
+assert.match(
+  releaseWebDeploy,
+  /^    concurrency:\n      group: release-web-deploy-\$\{\{ needs\.resolve\.outputs\.tag \}\}\n      cancel-in-progress: false$/m,
+);
+const webDeployGuard = jobIf(release, "web_deploy").replace(/^\$\{\{\s*(.*?)\s*\}\}$/, "$1");
+const webDeployRuns = ({
+  repo = "codewhale-hq/Codewhale",
+  ref = "refs/tags/v1.2.3",
+  prerelease = "false",
+  release: rel = "success",
+  npm = "success",
+  isCancelled = false,
+} = {}) =>
+  evaluate(webDeployGuard, {
+    cancelled: () => isCancelled,
+    format: (template, ...args) => template.replace(/\{(\d+)\}/g, (_, i) => args[Number(i)]),
+    github: { repository: repo, ref },
+    needs: { release: { result: rel }, npm: { result: npm }, resolve: { outputs: { tag: "v1.2.3", prerelease } } },
+  });
+assert.equal(webDeployRuns(), true, "release website deploy must run for a stable release of this repository");
+assert.equal(webDeployRuns({ repo: "someone/Codewhale" }), false, "a fork must never trigger the website deploy");
+assert.equal(webDeployRuns({ prerelease: "true" }), false, "a prerelease must never trigger the website deploy");
+assert.equal(webDeployRuns({ ref: "refs/heads/main" }), false, "a branch ref must never trigger the website deploy");
+assert.equal(webDeployRuns({ ref: "refs/tags/v9.9.9" }), false, "a mismatched tag ref must never trigger the website deploy");
+assert.equal(webDeployRuns({ release: "failure" }), false, "website deploy requires a successful GitHub Release job");
+assert.equal(webDeployRuns({ npm: "failure" }), false, "website deploy requires a successful npm job");
+assert.equal(webDeployRuns({ isCancelled: true }), false, "cancelled runs must not trigger the website deploy");
+
+const webDispatchStep = namedStep(releaseWebDeploy, "Dispatch web.yml on main and wait for deploy");
+const webLiveVerifyStep = namedStep(releaseWebDeploy, "Verify live site names the released version");
+assert.ok(
+  releaseWebDeploy.indexOf("      - name: Dispatch web.yml on main and wait for deploy\n") <
+    releaseWebDeploy.indexOf("      - name: Verify live site names the released version\n"),
+  "live site check must follow the web.yml deploy wait",
+);
+assert.doesNotMatch(webDispatchStep.split("run: |")[1], /\$\{\{/, "dispatch script must pass workflow values via env");
+assert.match(webDispatchStep, /gh workflow run web\.yml --repo "\$\{GITHUB_REPOSITORY\}" --ref main -f expected_sha="\$\{main_sha\}"/);
+assert.match(webDispatchStep, /compare\/\$\{RELEASE_SHA\}\.\.\.\$\{main_sha\}/);
+assert.match(
+  webDispatchStep,
+  /\.name == "Lint & Type Check" and \.conclusion == "success"[\s\S]*\.name == "Deploy to Cloudflare" and \.conclusion == "success"/,
+);
+assert.doesNotMatch(webLiveVerifyStep.split("run: |")[1], /\$\{\{/, "live version check must pass VERSION via env");
+assert.match(webLiveVerifyStep, /VERSION: \$\{\{ needs\.resolve\.outputs\.version \}\}/);
+assert.match(webLiveVerifyStep, /expected="Version \$\{VERSION\} is released"/);
+assert.match(webLiveVerifyStep, /https:\/\/codewhale\.net\/en/);
+assert.match(webLiveVerifyStep, /grep -Fq "\$\{expected\}"/);
+assert.match(webLiveVerifyStep, /for attempt in \$\(seq 1 24\); do/);
+assert.match(webLiveVerifyStep, /exit 1\s*$/);
+
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );

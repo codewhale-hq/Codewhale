@@ -218,10 +218,10 @@ known limitations and publication approval. These proofs are separate.
 ## 5. Publication approval
 
 - [ ] Hunter explicitly approves the exact version/SHA and publication targets:
-      tag, GitHub Release, npm, GHCR, CNB release tag and legacy Homebrew
-      automation, plus Cargo or other downstream publication where intended.
-      Source readiness and build-only CI/RC do not authorize a tag, registry
-      write, deployment or public launch.
+      tag, GitHub Release, npm, website (`codewhale.net`), GHCR, CNB release
+      tag and legacy Homebrew automation, plus Cargo or other downstream
+      publication where intended. Source readiness and build-only CI/RC do not
+      authorize a tag, registry write, deployment or public launch.
 
 ## 5a. Prerelease checkpoints (`X.Y.Z-prerelease`)
 
@@ -245,8 +245,9 @@ authority.
       same RC receipt gates the tag, and §5 approval still applies.
 - [ ] Tag `vX.Y.Z-prerelease` from that `main` SHA as in §6. The Release
       workflow publishes a GitHub prerelease and the npm `next` tag, and skips
-      GHCR, CNB, GitCode, Homebrew, the web release record and Cargo. It does
-      not publish crates: publish crates only for the stable `X.Y.Z`.
+      GHCR, CNB, GitCode, Homebrew, the web release record, the website deploy
+      and Cargo. It does not publish crates: publish crates only for the stable
+      `X.Y.Z`.
 - [ ] Verify `npm view codewhale@X.Y.Z-prerelease version codewhaleBinaryVersion`
       and `npm view codewhale dist-tags.next`; `latest` must still name the last
       stable release.
@@ -329,8 +330,11 @@ authority.
       ```
 - [ ] Record every registry's verified result in the release packet: npm,
       crates.io, GHCR, CNB and Homebrew, including any still missing.
-- [ ] Dispatch `web.yml` on `main` (`gh workflow run web.yml --ref main`) and
-      confirm the live site names the released version; it deploys only on dispatch.
+- [ ] Confirm `release.yml`'s `Deploy website` (`web_deploy`) job succeeded and
+      `https://codewhale.net/en` names the released version (`curl -fsSL https://codewhale.net/en | grep -F "Version X.Y.Z is released"`).
+      Manual fallback if `web_deploy` did not run or needs recovery after a fix
+      on `main`: `gh workflow run web.yml --repo codewhale-hq/Codewhale --ref main -f expected_sha="$(git rev-parse origin/main)"`,
+      then re-verify `https://codewhale.net/en`.
 - [ ] Re-record the site's terminal captures (`web/lib/terminal-captures/released`)
       from the published binary; the live provider key step is Hunter's.
 - [ ] Published install/upgrade smoke has its own receipt; candidate installs

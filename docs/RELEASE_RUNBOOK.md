@@ -672,6 +672,39 @@ If the workflow failed for the release tag, use the exact-tag rerun or
 `workflow_dispatch --ref vX.Y.Z` recovery documented in
 [docs/CNB_MIRROR.md](CNB_MIRROR.md#manual-fallback).
 
+## Website Deployment
+
+For a stable (`X.Y.Z`, non-prerelease) tag of `codewhale-hq/Codewhale`,
+`.github/workflows/release.yml`'s `web_deploy` job deploys `codewhale.net`
+automatically once both the `release` (GitHub Release) and `npm` jobs succeed.
+The job holds only `actions: write` and `contents: read` (no Cloudflare
+credentials): it resolves `main`'s current 40-character SHA, confirms `main`
+contains the tagged release commit, dispatches `.github/workflows/web.yml` on
+`main` with `-f expected_sha=<main_sha>`, waits for both `Lint & Type Check` and
+`Deploy to Cloudflare` to succeed, and then polls `https://codewhale.net/en` for
+up to 120 seconds until the page prints `Version X.Y.Z is released`.
+
+`web.yml` keeps its existing `workflow_dispatch`-on-`main` contract,
+`deploy-codewhale-web` concurrency serialization, `check:deploy-env` credential
+preflight, and post-deploy `check:deployed-facts` exact-SHA check. Before
+building the OpenNext bundle, `deploy` refreshes the published-release facts
+from GitHub's latest release (`sync-latest-release.mjs`, `derive-facts.mjs`,
+`derive-release-docs.mjs`) so `codewhale.net` serves `Version X.Y.Z is released`
+immediately without waiting for `sync-release-record`'s pull request to merge.
+Prereleases skip `web_deploy`.
+
+### Manual fallback
+
+If `web_deploy` fails or a post-release website fix lands on `main`, dispatch
+`web.yml` manually on `main` with `expected_sha` and verify the live page:
+
+```bash
+git fetch origin main
+gh workflow run web.yml --repo codewhale-hq/Codewhale --ref main \
+  -f expected_sha="$(git rev-parse origin/main)"
+curl -fsSL https://codewhale.net/en | grep -F "Version X.Y.Z is released"
+```
+
 ## Recovery and Rollback
 
 ### Re-tagging an UNPUBLISHED release (pulled before npm/crates)
@@ -776,6 +809,11 @@ for that version — bump to the next patch instead.
     `gh workflow run sync-cnb.yml --ref vX.Y.Z`; never omit the tag ref
   - follow the proof steps in
     [docs/CNB_MIRROR.md](CNB_MIRROR.md#manual-fallback)
+- Website deploy (`web_deploy`) failed after release:
+  - inspect the dispatched `web.yml` run URL logged by `web_deploy`
+  - rerun the failed `web_deploy` job once the underlying issue is resolved, or
+    dispatch `gh workflow run web.yml --repo codewhale-hq/Codewhale --ref main -f expected_sha="$(git rev-parse origin/main)"`
+  - confirm `https://codewhale.net/en` prints `Version X.Y.Z is released`
 - Workflow runner failure or hung release job:
   - every release-lane job carries an explicit `timeout-minutes` to contain
     unattended runs, but timeouts are containment rather than immediate recovery
