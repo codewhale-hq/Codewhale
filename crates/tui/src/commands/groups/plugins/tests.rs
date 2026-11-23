@@ -1765,7 +1765,7 @@ fn headless_update_reports_current_or_new_version_and_network_approval() {
     .to_string();
     assert!(
         err.contains(
-            "Network approval required for example.com; use /network allow example.com, then retry"
+            "Network approval required for example.com; run `/network allow example.com` in the terminal UI, or add \"example.com\" to `allow` under [network] in config.toml, then retry"
         ),
         "{err}"
     );

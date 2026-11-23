@@ -43,8 +43,9 @@ is the source. Translations live in [`id/`](id) and [`zh_hans/`](zh_hans).
 - [LSP: PHP and custom language servers](LSP_PHP_CUSTOM.md)
 - [Runtime API and integration contract](RUNTIME_API.md)
 - [GitHub App setup](GITHUB_APP.md)
-- [DeepSeek Harness integration](INTEGRATIONS_DSH.md) and
-  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md)
+- [DeepSeek Harness integration](INTEGRATIONS_DSH.md),
+  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md) and the
+  [published DSH package table](DSH_COMPATIBILITY.md)
 
 ## Safety and trust
 

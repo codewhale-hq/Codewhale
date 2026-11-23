@@ -4787,22 +4787,33 @@ impl CodewhaleClient {
         ));
     }
 
-    async fn maybe_probe_recovery(&self) {
+    async fn spawn_recovery_probe(&self) {
+        if self.claim_recovery_probe().await {
+            let client = self.clone();
+            tokio::spawn(async move { client.run_recovery_probe().await });
+        }
+    }
+
+    async fn claim_recovery_probe(&self) -> bool {
         if model_listing_unavailable(self.api_provider, &self.base_url) {
-            return;
+            return false;
         }
         let should_probe = {
             let mut health = self.connection_health.lock().await;
             mark_recovery_probe_if_due(&mut health, Instant::now())
         };
         if !should_probe {
-            return;
+            return false;
         }
         if !provider_api_key_verification_is_observed_for_route(self.api_provider, &self.base_url) {
             self.mark_request_success().await;
             logging::info("Skipping /models recovery probe for provider without a models endpoint");
-            return;
+            return false;
         }
+        true
+    }
+
+    async fn run_recovery_probe(&self) {
         let health_url = api_url(&self.base_url, "models");
         let request = self
             .models_http_client
@@ -5222,7 +5233,7 @@ impl CodewhaleClient {
                     codewhale_runtime::retry_status::failed(last.to_string());
                     self.mark_request_failure("non-streaming request envelope exceeded")
                         .await;
-                    self.maybe_probe_recovery().await;
+                    self.spawn_recovery_probe().await;
                     return Err(anyhow::Error::new(last));
                 }
             }
@@ -5257,7 +5268,7 @@ impl CodewhaleClient {
                     err.last_error,
                     LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
                 ) {
-                    self.maybe_probe_recovery().await;
+                    self.spawn_recovery_probe().await;
                 }
                 // Keep the structured `LlmError` downcastable so failure
                 // surfaces can classify auth/rate-limit/invalid-request

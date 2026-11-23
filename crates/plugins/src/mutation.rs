@@ -124,7 +124,7 @@ pub async fn execute(
 pub fn check_network_outcome(outcome: &PluginMutationOutcome) -> Result<()> {
     match outcome {
         PluginMutationOutcome::NeedsApproval(host) => {
-            bail!("Network approval required for {host}; use /network allow {host}, then retry")
+            bail!(install::npm_deps::network_approval_message(host, None))
         }
         PluginMutationOutcome::NetworkDenied(host) => bail!("Network access denied for {host}"),
         _ => Ok(()),

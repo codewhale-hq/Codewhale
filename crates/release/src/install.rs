@@ -105,14 +105,7 @@ impl InstallMethod {
         if path_method != Self::Binary {
             return path_method;
         }
-        if exe.parent().is_some_and(|bin| {
-            bin.file_name().is_some_and(|name| name == "bin")
-                && bin.parent().is_some_and(|root| {
-                    [".crates.toml", ".crates2.json"]
-                        .iter()
-                        .any(|name| std::fs::symlink_metadata(root.join(name)).is_ok())
-                })
-        }) {
+        if crate::installs::cargo_owns_a_command_beside(exe) {
             return Self::Cargo;
         }
         if owns_package(exe) {
@@ -365,7 +358,30 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        std::fs::write(root.path().join(".crates2.json"), b"{}").unwrap();
+        std::fs::write(
+            root.path().join(".crates.toml"),
+            b"[v1]\n\"other 0.1.0 (path+file:///src/other)\" = [\"other-bin\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            InstallMethod::detect(&bin.join("codewhale")),
+            InstallMethod::Binary
+        );
+        let record = format!(
+            r#"{{"installs":{{"codewhale-cli 0.10.3":{{"bins":["{}"]}}}}}}"#,
+            crate::installs::RECEIPT_COMMANDS[0]
+        );
+        std::fs::write(root.path().join(".crates2.json"), record).unwrap();
+        for command in ["codewhale", "codew"] {
+            assert_eq!(
+                InstallMethod::detect(&bin.join(command)),
+                InstallMethod::Cargo,
+                "{command}"
+            );
+        }
+        std::fs::remove_file(root.path().join(".crates2.json")).unwrap();
+        std::fs::remove_file(root.path().join(".crates.toml")).unwrap();
+        std::fs::create_dir(root.path().join(".crates.toml")).unwrap();
         assert_eq!(
             InstallMethod::detect(&bin.join("codewhale")),
             InstallMethod::Cargo
