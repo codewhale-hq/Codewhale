@@ -10277,26 +10277,8 @@ impl RuntimeThreadManager {
             .await?;
         }
 
-        let permission_receipt = match permission_receipt {
-            Some((from, to)) => {
-                let receipt_locale = runtime_receipt_locale().await;
-                let label = |policy: RuntimePolicyProjection| {
-                    crate::core::authority::permission_label_for(
-                        receipt_locale,
-                        policy.mode,
-                        policy.permission,
-                    )
-                    .into_owned()
-                };
-                Some((label(from), label(to)))
-            }
-            None => None,
-        };
-        if let Some((from, to)) = permission_receipt
-            && from != to
-        {
-            self.publish_permissions_changed(&thread, &from, &to)
-                .await?;
+        if let Some((from, to)) = permission_receipt {
+            self.publish_permissions_changed(&thread, from, to).await?;
         }
 
         Ok(thread)
@@ -10305,14 +10287,26 @@ impl RuntimeThreadManager {
     pub(super) async fn publish_permissions_changed(
         &self,
         thread: &ThreadRecord,
-        from: &str,
-        to: &str,
+        from: RuntimePolicyProjection,
+        to: RuntimePolicyProjection,
     ) -> Result<()> {
+        let label = |locale, policy: RuntimePolicyProjection| {
+            crate::core::authority::permission_label_for(locale, policy.mode, policy.permission)
+                .into_owned()
+        };
+        let english_from = label(codewhale_localization::Locale::En, from);
+        let english_to = label(codewhale_localization::Locale::En, to);
+        if english_from == english_to {
+            return Ok(());
+        }
+        let receipt_locale = runtime_receipt_locale().await;
+        let localized_to = label(receipt_locale, to);
+        let (from, to) = (english_from, english_to);
         let message = codewhale_localization::tr(
-            runtime_receipt_locale().await,
+            receipt_locale,
             codewhale_localization::MessageId::PermissionsChangedReceipt,
         )
-        .replace("{label}", to);
+        .replace("{label}", &localized_to);
         if let Some(turn_id) = thread.latest_turn_id.as_deref() {
             let item = TurnItemRecord {
                 schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
