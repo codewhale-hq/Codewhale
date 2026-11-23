@@ -173,7 +173,10 @@ pub(super) async fn close_github_thread(
 ) -> Result<ToolResult, ToolError> {
     validate_evidence(&input, true)?;
     if !optional_bool(&input, "allow_dirty", false)? {
-        let status = git_status_porcelain(context)?;
+        let worker_context = context.clone();
+        let status = tokio::task::spawn_blocking(move || git_status_porcelain(&worker_context))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("git status worker failed: {e}")))??;
         if !status.trim().is_empty() {
             return Ok(ToolResult::error(format!(
                 "Refusing to close {}: worktree is dirty and allow_dirty was false.",

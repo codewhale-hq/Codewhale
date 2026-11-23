@@ -255,17 +255,31 @@ pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
         || normalized.ends_with("passwd")
 }
 
+fn runtime_receipt_locale() -> codewhale_localization::Locale {
+    codewhale_localization::resolve_locale(
+        &codewhale_runtime::settings::Settings::load()
+            .unwrap_or_default()
+            .locale,
+    )
+}
+
 pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
     let mut out = String::new();
     let mut redact_next_credential = false;
     for token in raw.split_whitespace() {
-        let lower = token.to_ascii_lowercase();
+        if out.len() >= max_bytes {
+            break;
+        }
         let replacement = if redact_next_credential || agent_mail_token_is_credential(token) {
             redact_next_credential = false;
             "[redacted-credential]"
-        } else if matches!(lower.as_str(), "bearer" | "basic" | "digest" | "apikey")
-            || lower.contains("authorization:")
-            || lower.contains("proxy-authorization:")
+        } else if ["bearer", "basic", "digest", "apikey"]
+            .iter()
+            .any(|scheme| token.eq_ignore_ascii_case(scheme))
+            || token
+                .as_bytes()
+                .windows("authorization:".len())
+                .any(|window| window.eq_ignore_ascii_case(b"authorization:"))
         {
             redact_next_credential = true;
             "[redacted-credential]"
@@ -6004,6 +6018,14 @@ impl RuntimeThreadManager {
             json!({ "grant": grant.clone() }),
         )
         .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                target: "approval",
+                thread_id,
+                turn_id,
+                "session grant event was not recorded: {error:#}"
+            );
+        })
         .ok();
         Some(grant)
     }
@@ -10179,10 +10201,11 @@ impl RuntimeThreadManager {
             } else {
                 None
             };
+            let receipt_locale = runtime_receipt_locale();
             let permission_receipt = policy_patch.map(|policy| {
                 let label = |policy: RuntimePolicyProjection| {
                     crate::core::authority::permission_label_for(
-                        codewhale_localization::Locale::En,
+                        receipt_locale,
                         policy.mode,
                         policy.permission,
                     )
@@ -10278,7 +10301,7 @@ impl RuntimeThreadManager {
         to: &str,
     ) -> Result<()> {
         let message = codewhale_localization::tr(
-            codewhale_localization::Locale::En,
+            runtime_receipt_locale(),
             codewhale_localization::MessageId::PermissionsChangedReceipt,
         )
         .replace("{label}", to);
@@ -20126,7 +20149,7 @@ source_usage_records: Default::default(),
                     tools_removed,
                 } => {
                     let mut message = codewhale_localization::tr(
-                        codewhale_localization::Locale::En,
+                        runtime_receipt_locale(),
                         match decided_by.as_deref().filter(|value| !value.is_empty()) {
                             Some(_) => {
                                 codewhale_localization::MessageId::PluginChangedWithDeciderReceipt

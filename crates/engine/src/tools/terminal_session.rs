@@ -311,9 +311,23 @@ fn durable_path(owner: &str, name: &str, workspace: &Path) -> Result<PathBuf, St
 }
 
 #[cfg(unix)]
-fn load_durable(path: &Path) -> Option<DurableTerminalRecord> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+fn load_durable(path: &Path) -> Result<Option<DurableTerminalRecord>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read terminal session state {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+        format!(
+            "terminal session state {} is corrupt: {error}",
+            path.display()
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -394,13 +408,18 @@ fn create_session(
     let project = workspace.to_path_buf();
     let workspace = canonical(workspace);
     let durable_path = durable_path(owner, name, &workspace)?;
-    let previous = load_durable(&durable_path).map(|mut record| {
-        // A persisted shell is historical evidence only. A random per-process
-        // nonce makes PID reuse irrelevant and deliberately forbids reattach.
-        record.state = DurableTerminalState::StaleLost;
-        record.updated_at = chrono::Utc::now().to_rfc3339();
-        Box::new(record)
-    });
+    let previous = load_durable(&durable_path)
+        .unwrap_or_else(|error| {
+            tracing::warn!(name, "{error}");
+            None
+        })
+        .map(|mut record| {
+            // A persisted shell is historical evidence only. A random per-process
+            // nonce makes PID reuse irrelevant and deliberately forbids reattach.
+            record.state = DurableTerminalState::StaleLost;
+            record.updated_at = chrono::Utc::now().to_rfc3339();
+            Box::new(record)
+        });
     let pty = portable_pty::native_pty_system();
     let pair = pty
         .openpty(portable_pty::PtySize {
@@ -563,11 +582,13 @@ fn find(owner: &str, name: &str, workspace: &Path) -> Result<SharedSession, Stri
         return Ok(live);
     }
     if let Ok(path) = durable_path(owner, name, workspace)
-        && let Some(mut record) = load_durable(&path)
+        && let Some(mut record) = load_durable(&path)?
     {
         record.state = DurableTerminalState::StaleLost;
         record.updated_at = chrono::Utc::now().to_rfc3339();
-        let _ = persist_durable(&path, &record);
+        if let Err(error) = persist_durable(&path, &record) {
+            tracing::warn!(name, "{error}");
+        }
         return Err(format!(
             "terminal session '{name}' is stale/lost after restart (last cwd: {}); run {TERMINAL_RUN_NAME} with this name to start a replacement while preserving the historical summary",
             record.last_known_cwd.display()
@@ -703,11 +724,21 @@ fn kill_matching_sessions(mut matches: impl FnMut(&SessionKey) -> bool) -> Resul
             .session
             .lock()
             .map_err(|_| "terminal session lock poisoned".to_string())?;
-        let _ = kill_session(&mut session);
+        let killed = kill_session(&mut session)
+            .inspect_err(|error| {
+                tracing::warn!(owner = %key.owner, name = %key.name, "terminal PTY kill failed during thread cleanup: {error}");
+            })
+            .is_ok();
         session.durable.state = DurableTerminalState::Canceled;
         session.durable.updated_at = chrono::Utc::now().to_rfc3339();
-        let _ = persist_durable(&session.durable_path, &session.durable);
-        ended += 1;
+        let persisted = persist_durable(&session.durable_path, &session.durable)
+            .inspect_err(|error| {
+                tracing::warn!(owner = %key.owner, name = %key.name, "{error}");
+            })
+            .is_ok();
+        if killed && persisted {
+            ended += 1;
+        }
     }
     Ok(ended)
 }
@@ -1817,6 +1848,17 @@ impl ToolSpec for TerminalResetTool {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn corrupt_durable_record_is_reported_not_treated_as_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("record.json");
+        assert!(load_durable(&path).expect("missing is ok").is_none());
+        std::fs::write(&path, b"{not json").expect("write");
+        let error = load_durable(&path).expect_err("corrupt record must error");
+        assert!(error.contains("corrupt"), "{error}");
+    }
+
     fn test_shell_manager() -> crate::tools::shell::SharedShellManager {
         crate::tools::shell::new_shared_shell_manager(std::path::PathBuf::from("/tmp"))
     }

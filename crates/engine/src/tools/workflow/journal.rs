@@ -304,7 +304,7 @@ impl WorkflowRunJournal {
         line.push('\n');
         let mut file = codewhale_util::fs_confined::open_append(&self.root, &self.ledger_path)?;
         file.write_all(line.as_bytes())?;
-        file.flush()?;
+        file.sync_all()?;
         Ok(())
     }
 
