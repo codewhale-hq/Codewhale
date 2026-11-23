@@ -1656,6 +1656,10 @@ pub(crate) async fn attempt_steer_with_queue_fallback(
 /// the current turn to finish, then dispatches as a normal user message.
 pub(crate) async fn queue_follow_up(app: &mut App, message: QueuedMessage) -> Result<()> {
     let mut message = message;
+    if app.queued_messages.len() >= crate::tui::app::MAX_QUEUED_MESSAGES {
+        app.queue_message(message);
+        return Ok(());
+    }
     echo_queued_user_turn(app, &mut message);
     enqueue_offline_message(app, message);
     let toast = queued_follow_up_toast(app);
