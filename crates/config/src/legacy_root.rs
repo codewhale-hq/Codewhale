@@ -27,7 +27,9 @@
 //! sent) but disk never does: both keys stay where they are until the user
 //! runs `codewhale config migrate --prefer ...` or writes that value.
 
+use std::collections::HashSet;
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context as _, Result};
 
@@ -769,14 +771,22 @@ pub fn canonicalize_text(
     }
 }
 
+/// What [`try_apply_to_document`] would do, without doing it.
+pub fn try_preview_document(
+    doc: &toml_edit::DocumentMut,
+    prefer: Option<LegacyRootPrefer>,
+) -> Result<LegacyRootMigration> {
+    let mut cloned = doc.clone();
+    try_apply_to_document(&mut cloned, prefer)
+}
+
 /// What [`apply_to_document`] would do, without doing it.
 #[must_use]
 pub fn preview_document(
     doc: &toml_edit::DocumentMut,
     prefer: Option<LegacyRootPrefer>,
 ) -> LegacyRootMigration {
-    let mut cloned = doc.clone();
-    apply_to_document(&mut cloned, prefer)
+    try_preview_document(doc, prefer).unwrap_or_default()
 }
 
 /// Canonicalize a document on disk, keeping comments and layout. Conflicting
@@ -811,6 +821,29 @@ pub fn try_apply_to_document(
     Ok(receipt)
 }
 
+fn warn_once_skipped_migration_op(err: &anyhow::Error) {
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    const MAX_WARNED_ENTRIES: usize = 64;
+    let message = format!("{err:#}");
+    let seen = WARNED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|mut set| {
+            if set.contains(&message) {
+                true
+            } else {
+                if set.len() < MAX_WARNED_ENTRIES {
+                    set.insert(message.clone());
+                }
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !seen {
+        tracing::warn!("skipping legacy root migration op: {message}");
+    }
+}
+
 fn apply_planned_to_document(
     doc: &mut toml_edit::DocumentMut,
     planned: Vec<PlannedOp>,
@@ -825,7 +858,7 @@ fn apply_planned_to_document(
             }
             Ok(false) => {}
             Err(err) => {
-                tracing::warn!("skipping legacy root migration op: {err:#}");
+                warn_once_skipped_migration_op(&err);
             }
         }
     }
@@ -922,6 +955,7 @@ fn set_in_table(
 fn apply_op_to_document(doc: &mut toml_edit::DocumentMut, op: Op) -> Result<bool> {
     let (path, value) = match op {
         Op::Move { from, to, value } => {
+            // Move the value as written, trailing comment included.
             let carried = comment_travelling_with(doc, &from);
             let written = document_value(doc, &from)
                 .or_else(|| toml_value_to_edit(&value))

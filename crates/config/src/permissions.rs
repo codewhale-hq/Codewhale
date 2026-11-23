@@ -495,7 +495,7 @@ fn write_permissions_atomic_with_dir_sync(
     } else {
         parent
     };
-    sync_dir(sync_target)?;
+    crate::persistence::sync_parent_dir_best_effort(sync_target, sync_dir);
     Ok(())
 }
 
@@ -504,7 +504,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn write_permissions_atomic_syncs_parent_directory_and_propagates_failure() {
+    fn write_permissions_atomic_syncs_parent_directory_without_failing_persisted_save() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("permissions.toml");
         let mut synced = None;
@@ -515,10 +515,13 @@ mod tests {
         .expect("write should succeed when parent sync succeeds");
         assert_eq!(synced.as_deref(), Some(tmp.path()));
 
-        let err = write_permissions_atomic_with_dir_sync(&path, b"rules = []\n", |_| {
+        write_permissions_atomic_with_dir_sync(&path, b"rules = [\"allow\"]\n", |_| {
             anyhow::bail!("injected directory sync failure")
         })
-        .expect_err("failed directory sync must not report success");
-        assert!(err.to_string().contains("injected directory sync failure"));
+        .expect("best-effort parent directory sync must not fail an already-persisted write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read permissions"),
+            "rules = [\"allow\"]\n"
+        );
     }
 }

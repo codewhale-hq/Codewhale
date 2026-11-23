@@ -554,3 +554,23 @@ fn migrate_legacy_root_config_errors_and_writes_no_backup_on_non_table_providers
     let backup = path.with_file_name("config.toml.pre-migrate.bak");
     assert!(!backup.exists(), "failed migration must not write a backup");
 }
+
+#[test]
+fn preview_and_migrate_agree_when_profile_has_non_table_providers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("config.toml");
+    let body =
+        "api_key = \"sk-root\"\n\n[profiles.work]\napi_key = \"sk-work\"\nproviders = \"legacy\"\n";
+    std::fs::write(&path, body).expect("write config");
+
+    let preview_err = crate::preview_legacy_root_config(&path, None)
+        .expect_err("dry-run preview must fail on the same non-table providers shape");
+    let migrate_err = crate::migrate_legacy_root_config(&path, None)
+        .expect_err("real migration must fail on non-table providers");
+    assert!(format!("{preview_err:#}").contains("providers"));
+    assert!(format!("{migrate_err:#}").contains("providers"));
+
+    let doc = document(body);
+    assert!(!preview_document(&doc, None).changes_file());
+    assert_eq!(std::fs::read_to_string(&path).expect("read config"), body);
+}

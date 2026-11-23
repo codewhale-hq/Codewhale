@@ -55,6 +55,9 @@ fn migrate_config_between(
     primary: &Path,
     before_publish: impl FnOnce(),
 ) -> Result<Option<ConfigMigration>> {
+    // `exists()` follows links, so a dangling link would read as "absent" and
+    // the copy below would create whatever it points at. A link at the primary
+    // name is refused instead, dangling or not.
     reject_path_symlink(primary)?;
     if primary.exists() {
         return Ok(None);
@@ -62,6 +65,8 @@ fn migrate_config_between(
     if !legacy.exists() {
         return Ok(None);
     }
+    // Copy the config to the new home, owner-only, through a temporary file
+    // published without clobbering (the primary name is never overwritten).
     let contents = std::fs::read(legacy).context("failed to read legacy deepseek config")?;
     before_publish();
     if !persistence::atomic_write_if_absent(primary, &contents)

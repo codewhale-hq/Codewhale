@@ -31,15 +31,38 @@ use serde::Serialize;
 const SETUP_FILE_MODE: u32 = 0o600;
 
 #[cfg(unix)]
+fn is_unsupported_dir_sync_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+    ) || matches!(
+        err.raw_os_error(),
+        Some(libc::EINVAL | libc::ENOTSUP | libc::EOPNOTSUPP | libc::EROFS | libc::EBADF)
+    )
+}
+
+#[cfg(unix)]
 pub(crate) fn sync_parent_dir(dir: &Path) -> Result<()> {
-    fs::File::open(dir)
-        .and_then(|file| file.sync_all())
-        .with_context(|| format!("failed to sync directory {}", dir.display()))
+    match fs::File::open(dir).and_then(|file| file.sync_all()) {
+        Ok(()) => Ok(()),
+        Err(err) if is_unsupported_dir_sync_error(&err) => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to sync directory {}", dir.display())),
+    }
 }
 
 #[cfg(not(unix))]
 pub(crate) fn sync_parent_dir(_dir: &Path) -> Result<()> {
     Ok(())
+}
+
+pub(crate) fn sync_parent_dir_best_effort(dir: &Path, sync_dir: impl FnOnce(&Path) -> Result<()>) {
+    if let Err(err) = sync_dir(dir) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %format!("{err:#}"),
+            "failed to sync parent directory after write; new file is already in place"
+        );
+    }
 }
 
 fn prepare_parent_dir(path: &Path) -> Result<&Path> {
@@ -103,7 +126,7 @@ fn atomic_write_with_dir_sync(
     loop {
         match tmp.persist(path) {
             Ok(_) => {
-                sync_dir(dir)?;
+                sync_parent_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
             Err(error) if attempt + 1 < PERSIST_ATTEMPTS && rename_is_retryable(&error.error) => {
@@ -130,7 +153,7 @@ fn atomic_write_with_dir_sync(
                     "replacing rename refused; rewriting the file in place"
                 );
                 rewrite_in_place(path, bytes)?;
-                sync_dir(dir)?;
+                sync_parent_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
         }
@@ -142,7 +165,7 @@ pub fn atomic_write_if_absent(path: &Path, bytes: &[u8]) -> Result<bool> {
     let tmp = stage_temp_file(dir, path, bytes)?;
     match tmp.persist_noclobber(path) {
         Ok(_) => {
-            sync_parent_dir(dir)?;
+            sync_parent_dir_best_effort(dir, sync_parent_dir);
             Ok(true)
         }
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
@@ -926,7 +949,7 @@ PASSWORD=hunter2hunter2"
     }
 
     #[test]
-    fn atomic_write_syncs_parent_directory_and_propagates_sync_failure() {
+    fn atomic_write_syncs_parent_directory_without_failing_persisted_save() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("state.json");
         let mut synced_dir = None;
@@ -937,11 +960,27 @@ PASSWORD=hunter2hunter2"
         .unwrap();
         assert_eq!(synced_dir.as_deref(), Some(tmp.path()));
 
-        let err = atomic_write_with_dir_sync(&path, b"v2", |_| {
+        atomic_write_with_dir_sync(&path, b"v2", |_| {
             anyhow::bail!("injected directory sync failure")
         })
-        .expect_err("failed parent directory sync must not return Ok");
-        assert!(err.to_string().contains("injected directory sync failure"));
+        .expect("best-effort parent directory sync must not fail an already-persisted write");
+        assert_eq!(read(&path), "v2");
+
+        #[cfg(unix)]
+        {
+            assert!(is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "not supported"
+            )));
+            assert!(is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid argument"
+            )));
+            assert!(!is_unsupported_dir_sync_error(&std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied"
+            )));
+        }
     }
 
     #[test]
