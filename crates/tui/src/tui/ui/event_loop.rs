@@ -6291,7 +6291,12 @@ pub(crate) async fn run_event_loop(
                 key_shortcuts::PasteEdge::Route => {}
                 key_shortcuts::PasteEdge::Ignore => continue,
                 key_shortcuts::PasteEdge::ImageOnly => {
-                    if app.view_stack.is_empty() && !app.is_history_search_active() {
+                    let composer_owns_key = match app.focus() {
+                        crate::tui::shell_key_routing::Focus::Composer => true,
+                        crate::tui::shell_key_routing::Focus::Launch => app.launch.composer_focus,
+                        _ => false,
+                    };
+                    if composer_owns_key && !app.is_history_search_active() {
                         app.attach_clipboard_image();
                         app.needs_redraw = true;
                     }
