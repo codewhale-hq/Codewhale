@@ -426,38 +426,38 @@ pub async fn install_with_registry(
     // Write the marker last so a partial install never leaves a stale
     // .installed-from on disk. Prefer v2 with package content digest.
     let spec = source_spec_string(&source);
-    let finalized = {
+    {
         let final_path = final_path.clone();
         let source_url = source_url.clone();
         let checksum = checksum.clone();
         let skill_name = staged.skill_name.clone();
         tokio::task::spawn_blocking(move || {
-            let content_digest = crate::package_digest::compute_package_digest(&final_path)
+            let finalized = crate::package_digest::compute_package_digest(&final_path)
                 .map_err(|err| {
                     anyhow::anyhow!("installed package failed content digest validation: {err}")
-                })?;
-            write_installed_from_v2(
-                &final_path,
-                &spec,
-                Some(&source_url),
-                &checksum,
-                &content_digest,
-                &skill_name,
-            )
+                })
+                .and_then(|content_digest| {
+                    write_installed_from_v2(
+                        &final_path,
+                        &spec,
+                        Some(&source_url),
+                        &checksum,
+                        &content_digest,
+                        &skill_name,
+                    )
+                });
+            if finalized.is_err() {
+                let _ = fs::remove_dir_all(&final_path);
+                if let Some(backup) = &backup_path {
+                    let _ = fs::rename(backup, &final_path);
+                }
+            } else if let Some(backup) = &backup_path {
+                let _ = fs::remove_dir_all(backup);
+            }
+            finalized
         })
         .await
-        .context("skill finalize task failed")
-        .and_then(|result| result)
-    };
-    if let Err(err) = finalized {
-        let _ = tokio::fs::remove_dir_all(&final_path).await;
-        if let Some(backup) = backup_path.take() {
-            let _ = tokio::fs::rename(&backup, &final_path).await;
-        }
-        return Err(err);
-    }
-    if let Some(backup) = backup_path {
-        tokio::fs::remove_dir_all(&backup).await.ok();
+        .context("skill finalize task failed")??;
     }
 
     Ok(InstallOutcome::Installed(InstalledSkill {
