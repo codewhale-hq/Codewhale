@@ -83,7 +83,7 @@ test = false
 
 [dependencies]
 # Independent terminal kit, pinned and vendored for reproducible binary builds.
-codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
+codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.1" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.4" }
 anyhow.workspace = true
 codewhale-account-cli = { path = "../account-cli", version = "0.10.4" }
