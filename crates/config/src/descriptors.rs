@@ -421,6 +421,22 @@ mod tests {
     }
 
     #[test]
+    fn worldrouter_is_a_descriptor_row() {
+        let row = provider_descriptor("worldrouter").expect("worldrouter");
+        assert_eq!(row.id, "worldrouter");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://inference-api.worldrouter.ai/v1");
+        assert_eq!(row.api_key_env, "WORLDROUTER_API_KEY");
+        assert_eq!(row.default_model, "claude-sonnet-5-5");
+        assert_eq!(
+            provider_descriptor("world_router")
+                .as_ref()
+                .map(|row| row.id.as_str()),
+            Some("worldrouter")
+        );
+    }
+
+    #[test]
     fn opper_is_a_descriptor_row() {
         let row = provider_descriptor("opper").expect("opper");
         assert_eq!(row.id, "opper");
@@ -538,7 +554,7 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 17);
+        assert_eq!(bundled_provider_descriptors().len(), 18);
         let wafer = provider_descriptor("wafer").expect("wafer");
         assert_eq!(wafer.base_url, "https://pass.wafer.ai/v1");
         assert_eq!(wafer.default_model, "GLM-5.3");

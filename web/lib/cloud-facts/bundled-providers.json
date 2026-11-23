@@ -2397,6 +2397,25 @@
       },
       "wire_policy": "chat_completions"
     },
+    "worldrouter": {
+      "aliases": [
+        "world-router"
+      ],
+      "api_key_env": "WORLDROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "WORLDROUTER_API_KEY"
+        ],
+        "secret_slot": "worldrouter"
+      },
+      "base_url": "https://inference-api.worldrouter.ai/v1",
+      "credential_url": "https://www.worldrouter.ai/",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.worldrouter.ai/docs/quickstart",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "xai": {
       "aliases": [
         "x-ai",

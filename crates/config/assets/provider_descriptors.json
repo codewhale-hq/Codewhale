@@ -3527,6 +3527,28 @@
       }
     },
     {
+      "id": "worldrouter",
+      "label": "WorldRouter",
+      "wire": "openai-compatible",
+      "base_url": "https://inference-api.worldrouter.ai/v1",
+      "api_key_env": "WORLDROUTER_API_KEY",
+      "default_model": "claude-sonnet-5-5",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.worldrouter.ai/docs/quickstart",
+      "credential_url": "https://www.worldrouter.ai/",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models). Bare model ids such as claude-sonnet-5-5, deepseek-v4-flash or gemini-4-neon, as listed at worldrouter.ai/models. Live /v1/models is the model authority. Store WORLDROUTER_API_KEY, not a raw key.",
+      "aliases": [
+        "world-router"
+      ],
+      "models": {
+        "ids": "catalog",
+        "accept": [],
+        "strip_prefixes": [],
+        "aliases": {},
+        "wire_slugs": {}
+      }
+    },
+    {
       "id": "yolo-auto",
       "label": "Yolo-Auto",
       "wire": "openai-compatible",

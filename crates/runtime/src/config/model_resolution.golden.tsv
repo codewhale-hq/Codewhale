@@ -314,6 +314,14 @@ descriptor:wafer	deepseek-v4-pro	foreign-deepseek	deepseek-v4-pro	deepseek-v4-pr
 descriptor:wafer	models/GLM-5.3	variant-models-prefix	models/GLM-5.3	models/GLM-5.3	models/GLM-5.3	models/GLM-5.3	models/GLM-5.3	models/GLM-5.3	-	models/GLM-5.3	chat	-	route_canonical
 descriptor:wafer	totally-unknown-model-x	unknown	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	-	totally-unknown-model-x	chat	-	route_canonical
 descriptor:wafer	wafer/GLM-5.3	variant-provider-prefix	wafer/GLM-5.3	wafer/GLM-5.3	wafer/GLM-5.3	wafer/GLM-5.3	wafer/GLM-5.3	wafer/GLM-5.3	-	wafer/GLM-5.3	chat	-	route_canonical
+descriptor:worldrouter	"  claude-sonnet-5-5  "	variant-whitespace	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	-	claude-sonnet-5-5	chat	-	route_canonical
+descriptor:worldrouter	CLAUDE-SONNET-5-5	variant-uppercase	CLAUDE-SONNET-5-5	CLAUDE-SONNET-5-5	CLAUDE-SONNET-5-5	CLAUDE-SONNET-5-5	CLAUDE-SONNET-5-5	CLAUDE-SONNET-5-5	-	CLAUDE-SONNET-5-5	chat	-	route_canonical
+descriptor:worldrouter	auto	sentinel-auto	auto	auto	auto	auto	auto	auto	-	custom-model	chat	-	route_canonical,route_wire
+descriptor:worldrouter	claude-sonnet-5-5	default	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	claude-sonnet-5-5	-	claude-sonnet-5-5	chat	-	route_canonical
+descriptor:worldrouter	deepseek-v4-pro	foreign-deepseek	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	-	deepseek-v4-pro	chat	-	route_canonical
+descriptor:worldrouter	models/claude-sonnet-5-5	variant-models-prefix	models/claude-sonnet-5-5	models/claude-sonnet-5-5	models/claude-sonnet-5-5	models/claude-sonnet-5-5	models/claude-sonnet-5-5	models/claude-sonnet-5-5	-	models/claude-sonnet-5-5	chat	-	route_canonical
+descriptor:worldrouter	totally-unknown-model-x	unknown	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	-	totally-unknown-model-x	chat	-	route_canonical
+descriptor:worldrouter	worldrouter/claude-sonnet-5-5	variant-provider-prefix	worldrouter/claude-sonnet-5-5	worldrouter/claude-sonnet-5-5	worldrouter/claude-sonnet-5-5	worldrouter/claude-sonnet-5-5	worldrouter/claude-sonnet-5-5	worldrouter/claude-sonnet-5-5	-	worldrouter/claude-sonnet-5-5	chat	-	route_canonical
 descriptor:yolo-auto	"  qwen3.8-flash  "	variant-whitespace	qwen3.8-flash	qwen3.8-flash	qwen3.8-flash	qwen3.8-flash	qwen3.8-flash	qwen3.8-flash	-	qwen3.8-flash	chat	-	route_canonical
 descriptor:yolo-auto	QWEN3.8-FLASH	variant-uppercase	QWEN3.8-FLASH	QWEN3.8-FLASH	QWEN3.8-FLASH	QWEN3.8-FLASH	QWEN3.8-FLASH	QWEN3.8-FLASH	-	QWEN3.8-FLASH	chat	-	route_canonical
 descriptor:yolo-auto	auto	sentinel-auto	auto	auto	auto	auto	auto	auto	-	custom-model	chat	-	route_canonical,route_wire
