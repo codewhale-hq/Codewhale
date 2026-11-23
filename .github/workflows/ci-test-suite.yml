@@ -313,6 +313,7 @@ jobs:
             echo "RUSTUP_HOME=${state}/home/.rustup"
             echo "TMPDIR=${job_tmp}"
             echo "CW_JOB_TMP=${job_tmp}"
+            echo "NEXTEST_TEST_THREADS=8"
           } >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
       - name: Point terminal failure diagnostics at the runner temp directory
