@@ -10,8 +10,8 @@
 //!
 //! Whether life runs at all is decided by
 //! `underwater::ambient_life_motion_enabled` (Underwater theme, full motion,
-//! no attention hold, transcript at the tail, focused terminal, truecolor or
-//! 256 colours). Under reduced motion `presence` is 0 and nothing is painted.
+//! no attention hold, transcript at the tail, truecolor or 256 colours). Under
+//! reduced motion `presence` is 0 and nothing is painted.
 //! The habitat never changes the water's own colour, so a frame changes only
 //! the cells a creature moves through.
 //!

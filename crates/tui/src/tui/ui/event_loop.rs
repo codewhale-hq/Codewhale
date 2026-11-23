@@ -5652,12 +5652,8 @@ pub(crate) async fn run_event_loop(
         // Read once here so the animation tick and the frame limiter below
         // agree on the same tier for this frame.
         let cadence_tier = transcript_cadence_tier(app, has_running_agents);
-        let underwater_life_motion = !underwater_surface_obscured
-            && crate::tui::underwater::ambient_life_motion_enabled(app)
-            && app.viewport.last_transcript_area.is_some_and(|area| {
-                area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
-                    && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
-            });
+        let underwater_life_motion =
+            underwater_life_motion_requested(app, underwater_surface_obscured, ambient_settled);
         let underwater_life_only = underwater_life_motion
             && !(status_motion
                 || underwater_ambient_motion
@@ -6285,17 +6281,25 @@ pub(crate) async fn run_event_loop(
                 continue;
             };
 
-            if key.kind != KeyEventKind::Press {
-                // Windows Terminal consumes the key-down of any chord it handles
-                // itself (its own paste action, and any global hotkey) and
-                // forwards only the key-up. A Press-only gate therefore makes
-                // Ctrl+V unreachable in the one terminal where that chord is
-                // most used. Paste is a clipboard read, so acting on the release
-                // is safe; `paste_from_clipboard` de-duplicates the terminals
-                // that do send both edges.
-                let paste_release =
-                    key.kind == KeyEventKind::Release && key_shortcuts::is_paste_shortcut(&key);
-                if !paste_release {
+            // Windows Terminal consumes the key-down of any chord it handles
+            // itself (its own paste action, and any global hotkey) and
+            // forwards only the key-up. A release whose press was seen is the
+            // second edge of a paste already handled. A release with no press
+            // means the terminal took the chord and delivers any text itself,
+            // so that edge only picks up an image the terminal cannot send.
+            match key_shortcuts::paste_edge(&key, &mut app.paste_shortcut_press_seen) {
+                key_shortcuts::PasteEdge::Route => {}
+                key_shortcuts::PasteEdge::Ignore => continue,
+                key_shortcuts::PasteEdge::ImageOnly => {
+                    let composer_owns_key = match app.focus() {
+                        crate::tui::shell_key_routing::Focus::Composer => true,
+                        crate::tui::shell_key_routing::Focus::Launch => app.launch.composer_focus,
+                        _ => false,
+                    };
+                    if composer_owns_key && !app.is_history_search_active() {
+                        app.attach_clipboard_image();
+                        app.needs_redraw = true;
+                    }
                     continue;
                 }
             }
@@ -7185,10 +7189,6 @@ pub(crate) async fn run_event_loop(
                 app.backtrack.reset();
             }
 
-            // Global keybindings — voice first (⌥V) so it doesn't insert a char.
-            if handle_voice_key(app, &key) {
-                continue;
-            }
             if handle_reasoning_effort_key(app, &key) {
                 if let Err(err) = persist_pending_work_checkpoint(app).await {
                     app.status_message = Some(format!(

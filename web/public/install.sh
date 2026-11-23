@@ -298,8 +298,22 @@ if [ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)" 
   fail "$preflight_dir is writable by its group or others; run chmod go-w '$preflight_dir' or choose a directory only you can write"
 fi
 for cargo_receipt in "$(dirname "$install_dir")/.crates.toml" "$(dirname "$install_dir")/.crates2.json"; do
-  if [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; then
-    fail "Cargo install metadata beside this directory; use a fresh directory instead"
+  { [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; } || continue
+  cargo_owned=0
+  if [ -L "$cargo_receipt" ] || [ ! -f "$cargo_receipt" ] || [ ! -r "$cargo_receipt" ]; then
+    cargo_owned=1
+  else
+    cargo_size="$(wc -c < "$cargo_receipt" 2>/dev/null | tr -d ' ')"
+    case "$cargo_size" in
+      ''|*[!0-9]*) cargo_owned=1 ;;
+      *) [ "$cargo_size" -le 4194304 ] || cargo_owned=1 ;;
+    esac
+    cargo_grep=0
+    grep -F -q -e '"codewhale"' -e '"codew"' "$cargo_receipt" 2>/dev/null || cargo_grep=$?
+    [ "$cargo_grep" -eq 1 ] || cargo_owned=1
+  fi
+  if [ "$cargo_owned" -eq 1 ]; then
+    fail "Cargo installed Codewhale beside this directory, or its record $cargo_receipt cannot be read; manage it with cargo install or cargo uninstall, or use a fresh directory instead"
   fi
 done
 

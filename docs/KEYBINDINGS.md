@@ -242,10 +242,7 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 
 | Chord | Action |
 |---|---|
-| `F7` | View the OrcaRouter partner offer in `/provider` or `/model`, keeping the current selection |
-
-Click the OrcaRouter recommendation for the same offer. Its pager includes the
-redemption URL and referral disclosure. On Apple keyboards, hold Fn if needed.
+| `F7` | Opened the OrcaRouter partner offer in `/provider` or `/model` while its campaign ran. The campaign ended on 2026-11-21, so the key now does nothing and Help no longer lists it |
 
 ## Session Picker (`Ctrl-R` or `/sessions`)
 

@@ -406,8 +406,18 @@ doubles throughput. A build beyond the slot count waits and prints every
 holder. Set `CODEWHALE_BUILD_SLOTS=1` on a smaller machine,
 `CODEWHALE_BUILD_LOCK=0` to skip the lock, or `CODEWHALE_BUILD_LOCK_FILE` to
 name the slot-0 lock file. A self-hosted CI runner on the same machine joins the lock when its
-`.env` sets `CODEWHALE_BUILD_LOCK_FILE` to the same path: the macOS Test job
-then holds it from the first test build to the end of the job. The lock is advisory: Cargo started
+`.env` sets `CODEWHALE_BUILD_LOCK_FILE` to the same path: the macOS suite's
+Build job (`ci-test-suite.yml`) then holds it from the first test build through
+the doctests, with `CARGO_BUILD_JOBS=6`. That job and its single shard run on
+the `codewhale-mac` runner only for a `ci.yml` dispatch in this repository with
+the `macos_runner` input `self-hosted`, or `default` while the
+`CW_SELF_HOSTED_MAC` repository variable is `true`; pull requests never do.
+`gh variable set CW_SELF_HOSTED_MAC -R codewhale-hq/Codewhale --body false`
+sends every run back to hosted macOS (three shards, one Cargo job). There the
+job keeps its target, `CARGO_HOME` and `RUSTUP_HOME` under the runner's work
+directory (`ci-state/`), starts an empty target when `rustc -V` changes or the
+disk has under 100 GiB free, and uses a per-job `TMPDIR` it removes at the end.
+The lock is advisory: Cargo started
 directly, outside these scripts, does not take it, and on platforms without
 `fcntl` (Windows) the build runs unlocked after a warning.
 

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -96,11 +96,9 @@ La aplicación de terminal, `exec`, `web` y la Runtime API comparten un solo mot
 
 ## Cómo se mantiene seguro
 
-Dos interruptores dicen cuánto puede hacer Codewhale por su cuenta. Con la entrada vacía, `Tab` cambia el modo: **Plan** lee y busca pero no cambia nada, **Work** edita archivos y ejecuta comandos, y **Operate** tiene el mismo acceso que Work y sigue hasta verificar el objetivo o necesitarte. `Shift+Tab` cambia el permiso. **Ask**, el predeterminado, aplica cambios de archivos en tu repositorio sin preguntar y pregunta antes de los comandos de shell que no son de solo lectura. **Auto-Review** deja que reglas y un modelo revisor aprueben las llamadas rutinarias y rechaza las de alto riesgo; cambia a Ask para aprobarlas tú. **Full Access** nunca pregunta y desactiva el sandbox de Codewhale, aunque las reglas del repositorio y la política administrada siguen aplicando. La [guía de v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) tiene los detalles.
+Un solo selector dice cuánto puede hacer Codewhale por su cuenta. `Shift+Tab` lo avanza: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, el predeterminado, aplica cambios de archivos dentro del repositorio git sin preguntar y pregunta antes de los comandos. **Ask** pregunta antes de cada cambio de archivo y de cada comando. **Plan** lee y busca pero no cambia nada. **Auto-Review** deja que reglas y un modelo revisor aprueben las llamadas rutinarias y rechaza las de alto riesgo; cambia a Ask para aprobarlas tú. **Full Access** nunca pregunta y desactiva el sandbox de Codewhale, aunque las reglas del repositorio y la política administrada siguen aplicando. `Tab` solo autocompleta y nunca cambia el modo, y Operate se retiró. La [guía de modos](../MODES.md) tiene los detalles.
 
-Próximamente en 0.10.3: `Shift+Tab` se convierte en un solo selector que pasa por Ask, Accept Edits, Plan, Auto-Review y Full Access, `Tab` deja de cambiar el modo y Operate se retira. Ask preguntará también antes de cada cambio de archivo, y el nuevo predeterminado, Accept Edits, aplicará los cambios dentro del repositorio git y seguirá preguntando antes de los comandos. La [guía actual](../MODES.md) lo describe.
-
-En Ask y Auto-Review, los comandos se ejecutan en un sandbox del sistema operativo cuando el sistema tiene uno: Seatbelt en macOS, y bubblewrap en Linux cuando está instalado. Windows aún no tiene sandbox del sistema operativo, y Full Access apaga el sandbox. Dentro del sandbox, los comandos de shell y las sesiones de terminal no pueden leer almacenes de credenciales como `~/.ssh`, `~/.aws` y los archivos `.env`. `/preview-request` muestra una vista previa censurada de la próxima petición sin enviarla.
+En Ask, Accept Edits y Auto-Review, los comandos se ejecutan en un sandbox del sistema operativo cuando el sistema tiene uno: Seatbelt en macOS, y bubblewrap en Linux cuando está instalado. Windows aún no tiene sandbox del sistema operativo, y Full Access apaga el sandbox. Dentro del sandbox, los comandos de shell y las sesiones de terminal no pueden leer almacenes de credenciales como `~/.ssh`, `~/.aws` y los archivos `.env`. `/preview-request` muestra una vista previa censurada de la próxima petición sin enviarla.
 
 No necesitas cuenta, y las claves que agregas con `/provider` se quedan en tu máquina. Con tu propia clave de API le pagas directamente al proveedor, y los modelos locales no necesitan clave. El pie de página y `/cost` muestran lo que ha costado una sesión cuando se conoce el precio, y un precio desconocido se muestra como desconocido, nunca como gratis.
 

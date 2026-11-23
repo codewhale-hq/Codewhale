@@ -466,7 +466,8 @@ async fn models_redirects_never_reach_another_server_from_any_consumer() {
             apply_request_failure(&mut health, Instant::now());
             apply_request_failure(&mut health, Instant::now());
         }
-        recovery.maybe_probe_recovery().await;
+        assert!(recovery.claim_recovery_probe().await);
+        recovery.run_recovery_probe().await;
         assert!(recovery.connection_health.lock().await.last_probe.is_some());
         assert!(
             verify_provider_api_key(ProviderKind::Anthropic, KEY, &server.uri())

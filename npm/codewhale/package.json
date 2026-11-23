@@ -1,7 +1,7 @@
 {
   "name": "codewhale",
-  "version": "0.10.3",
-  "codewhaleBinaryVersion": "0.10.3",
+  "version": "0.10.4",
+  "codewhaleBinaryVersion": "0.10.4",
   "description": "Terminal coding agent for supported hosted and local models. One runtime on your machine. Rust, MIT.",
   "author": "Hmbown",
   "license": "MIT",

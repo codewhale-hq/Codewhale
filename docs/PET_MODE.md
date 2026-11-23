@@ -76,7 +76,7 @@ one.
 
 | View | What it draws | When its requirement is missing |
 | --- | --- | --- |
-| `whale` | The companion's live dot whale. | Shows `cove` (or `braille`) until the companion is reachable (`codewhale pet serve`) and this terminal's session is its source (`/pet source`). |
+| `whale` | The dot whale, drawn from this terminal's own session. It uses the companion's frame when this session is the companion's source. | Shows `cove` (or `braille`) for a moment while the local dot whale starts. If it cannot start, it keeps showing `cove` and the line under the title names what the companion needs (`codewhale pet serve` or `/pet source`). |
 | `cove` | The local half-block whale, without the translucent cove scenery. | Needs colour: `braille` is shown under `NO_COLOR`, a 16-colour terminal, or an unknown background. `COLORTERM=truecolor` enables true colour; `CODEWHALE_APPEARANCE=dark` or `light` selects a known background. |
 | `braille` | The local whale in coloured Braille dots. | Shows only the state words under `CODEWHALE_ASCII_SAFE` or when the art area is smaller than 16x8 cells. |
 | `pixels` | The companion's whale as a kitty-graphics image. | Needs kitty graphics, synchronized output, a known cell size in pixels, and `CODEWHALE_PET_GRAPHICS` not set to `braille`; otherwise shows `particles`. Terminal.app has no kitty graphics. |
@@ -129,10 +129,11 @@ sound, and the appearance view. It follows one session at a time,
 called the source:
 
 - The first saved terminal session to attach becomes the source.
-- Later terminals are views of the same companion. They still show their own
-  state word and mark, but the companion's finer activity detail inside the
-  whale body (reading, editing, searching and so on) appears only in the
-  terminal whose session is the source.
+- Every terminal's `whale` view draws the dot whale and its activity forms
+  (reading, editing, searching and so on) from that terminal's own session.
+- The source decides which session the companion records, plays sound for,
+  and shows in the `pixels` and `particles` views and the browser appearance
+  view.
 - Run `/pet source` in a terminal to make its session the source.
 
 The companion exits after ten minutes with no view, producer, or audio client.
@@ -221,8 +222,10 @@ execution API.
   refreshed when the turn ends, not on every change. The agent count in the
   status bar and the work bar are live; treat the inspector's rows as a
   snapshot until the turn finishes.
-- **One source at a time.** The companion's activity detail follows one session.
-  Other terminals show their own state word and mark, not the detail.
+- **One source at a time.** The companion's recording, sound, `pixels` and
+  `particles` views, and avatar packs follow one session. Only the `whale` view
+  follows each terminal's own session, and it starts unobserved: events from
+  before the first `/pet` in that Codewhale process are not shown.
 - **Sound needs `ffplay`** and one terminal holds the output at a time.
 - **The chosen view is not saved.** It lasts for this run of Codewhale,
   including session switches; a restart begins on `whale`.
