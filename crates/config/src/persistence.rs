@@ -288,10 +288,14 @@ impl SetupTransaction {
             };
 
             let result = atomic_write(&write.path, &write.bytes);
-            snapshots.push(Snapshot {
-                path: write.path.clone(),
-                original,
-            });
+            let landed =
+                result.is_ok() || fs::read(&write.path).is_ok_and(|current| current == write.bytes);
+            if landed {
+                snapshots.push(Snapshot {
+                    path: write.path.clone(),
+                    original,
+                });
+            }
             match result {
                 Ok(()) => {}
                 Err(err) => {
