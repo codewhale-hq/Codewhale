@@ -1,5 +1,5 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -62,6 +62,10 @@ const config = {
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || 900000),
   approvalTimeoutMs: Number(process.env.CODEWHALE_APPROVAL_TIMEOUT_MS || 300000)
 };
+
+if (!(config.approvalTimeoutMs > 0)) {
+  throw new Error("CODEWHALE_APPROVAL_TIMEOUT_MS must be a positive number of milliseconds");
+}
 
 setInterval(() => {
   const now = Date.now();
@@ -147,7 +151,9 @@ async function handleMediaMessage(frame, body, identity) {
     const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
     const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
     const target = path.join(dir, name);
-    await writeFile(target, buffer);
+    const staged = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.part`;
+    await writeFile(staged, buffer);
+    await rename(staged, target);
     await replyText(
       frame,
       `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
