@@ -1720,7 +1720,6 @@ pub struct App {
     /// press and the release of Ctrl+V pastes once instead of twice.
     pub last_clipboard_paste: Option<Instant>,
     pub paste_shortcut_press_seen: bool,
-    pub paste_from_release_edge: bool,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,

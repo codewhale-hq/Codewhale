@@ -449,9 +449,7 @@ pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
     }
     // The same guard the composer uses: a backend that forwards both edges of
     // Ctrl+V would otherwise paste the text twice into the credential field.
-    if std::mem::take(&mut app.paste_from_release_edge)
-        || app.clipboard_paste_within_dedupe_window()
-    {
+    if app.clipboard_paste_within_dedupe_window() {
         return true;
     }
     if app.clipboard.requires_terminal_paste() {

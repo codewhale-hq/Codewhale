@@ -5707,11 +5707,9 @@ fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_ima
         "already pasted".to_string(),
     ));
     app.insert_paste_text("already pasted");
-    app.paste_from_release_edge = true;
 
-    assert!(!app.paste_from_clipboard());
+    assert!(!app.attach_clipboard_image());
     assert_eq!(app.input, "already pasted");
-    assert!(!app.paste_from_release_edge);
 
     let mut app = App::new(test_options(false), &Config::default());
     app.clipboard = ClipboardHandler::with_content_for_test(ClipboardContent::Image(
@@ -5722,10 +5720,10 @@ fn release_only_paste_edge_leaves_text_to_the_terminal_and_still_attaches_an_ima
             byte_len: 2048,
         },
     ));
-    app.paste_from_release_edge = true;
 
-    assert!(app.paste_from_clipboard());
+    assert!(app.attach_clipboard_image());
     assert!(app.input.contains("pasted.png"), "{}", app.input);
+    assert!(!app.attach_clipboard_image());
 }
 
 #[test]

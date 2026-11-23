@@ -105,11 +105,7 @@ impl InstallMethod {
         if path_method != Self::Binary {
             return path_method;
         }
-        if exe
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| crate::installs::cargo_lists(exe, name))
-        {
+        if crate::installs::cargo_owns_a_command_beside(exe) {
             return Self::Cargo;
         }
         if owns_package(exe) {
@@ -371,11 +367,21 @@ mod tests {
             InstallMethod::detect(&bin.join("codewhale")),
             InstallMethod::Binary
         );
-        std::fs::write(
-            root.path().join(".crates2.json"),
-            br#"{"installs":{"codewhale-cli 0.10.3":{"bins":["codewhale","codew"]}}}"#,
-        )
-        .unwrap();
+        let record = format!(
+            r#"{{"installs":{{"codewhale-cli 0.10.3":{{"bins":["{}"]}}}}}}"#,
+            crate::installs::RECEIPT_COMMANDS[0]
+        );
+        std::fs::write(root.path().join(".crates2.json"), record).unwrap();
+        for command in ["codewhale", "codew"] {
+            assert_eq!(
+                InstallMethod::detect(&bin.join(command)),
+                InstallMethod::Cargo,
+                "{command}"
+            );
+        }
+        std::fs::remove_file(root.path().join(".crates2.json")).unwrap();
+        std::fs::remove_file(root.path().join(".crates.toml")).unwrap();
+        std::fs::create_dir(root.path().join(".crates.toml")).unwrap();
         assert_eq!(
             InstallMethod::detect(&bin.join("codewhale")),
             InstallMethod::Cargo
