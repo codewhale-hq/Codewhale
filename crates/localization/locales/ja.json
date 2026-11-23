@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "@{partial} に一致するファイルはありません (mention_walk_depth={walk_depth}; さらに深く検索するには /config set mention_walk_depth 0)",
   "JobsCancelAllPrompt": "{key} を押すと実行中のコマンドをすべてキャンセルします",
   "OnboardingMarkFailed": "オンボーディングの進行状況を保存できませんでした: {error}",
-  "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}"
+  "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}",
+  "QueueFullNotice": "フォローアップのキューが満杯です（{max} 件）。メッセージは入力欄に戻されました。"
 }

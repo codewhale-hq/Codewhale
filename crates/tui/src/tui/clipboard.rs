@@ -352,6 +352,12 @@ pub struct ClipboardHandler {
         all(target_os = "linux", not(target_env = "ohos"))
     ))]
     clipboard_init_attempted: bool,
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    clipboard_init_pending: Option<std::sync::mpsc::Receiver<Option<Clipboard>>>,
     #[cfg(test)]
     written_text: Vec<String>,
     #[cfg(test)]
@@ -394,6 +400,12 @@ impl ClipboardHandler {
                 all(target_os = "linux", not(target_env = "ohos"))
             ))]
             clipboard_init_attempted: false,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            clipboard_init_pending: None,
             #[cfg(test)]
             written_text: Vec::new(),
             #[cfg(test)]
@@ -555,9 +567,12 @@ impl ClipboardHandler {
             return;
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(Clipboard::new().ok());
+        let rx = self.clipboard_init_pending.take().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(Clipboard::new().ok());
+            });
+            rx
         });
         // A timeout is not proof that the clipboard is unusable: a capture tool
         // holding the clipboard open can delay the open past the budget, and
@@ -570,11 +585,15 @@ impl ClipboardHandler {
                 self.clipboard_init_attempted = true;
             }
             Ok(None) => self.clipboard_init_attempted = true,
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.clipboard_init_pending = Some(rx);
                 tracing::warn!(
                     target: "codewhale_tui::clipboard",
                     "clipboard open timed out; will retry on the next paste"
                 );
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.clipboard_init_attempted = true;
             }
         }
     }

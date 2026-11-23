@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "@{partial} से कोई फ़ाइल मेल नहीं खाती (mention_walk_depth={walk_depth}; और गहराई तक खोजने के लिए /config set mention_walk_depth 0 चलाएँ)",
   "JobsCancelAllPrompt": "चल रहे सभी कमांड रद्द करने के लिए {key} दबाएँ",
   "OnboardingMarkFailed": "ऑनबोर्डिंग प्रगति सहेजी नहीं जा सकी: {error}",
-  "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}"
+  "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}",
+  "QueueFullNotice": "फ़ॉलो-अप कतार भर गई है ({max} संदेश); आपका संदेश वापस कंपोज़र में है।"
 }

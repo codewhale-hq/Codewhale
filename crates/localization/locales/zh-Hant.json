@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "沒有符合 @{partial} 的檔案 (mention_walk_depth={walk_depth}; 使用 /config set mention_walk_depth 0 搜尋更深層級)",
   "JobsCancelAllPrompt": "按 {key} 取消所有執行中的命令",
   "OnboardingMarkFailed": "無法儲存導覽進度：{error}",
-  "FeatureIntroFlagSaveFailed": "無法儲存功能提示設定：{error}"
+  "FeatureIntroFlagSaveFailed": "無法儲存功能提示設定：{error}",
+  "QueueFullNotice": "後續訊息佇列已滿（{max} 則）；你的訊息已放回輸入框。"
 }

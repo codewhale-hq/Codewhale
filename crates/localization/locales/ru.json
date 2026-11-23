@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Нет файлов, совпадающих с @{partial} (mention_walk_depth={walk_depth}; используйте /config set mention_walk_depth 0 для поиска глубже)",
   "JobsCancelAllPrompt": "Нажмите {key}, чтобы отменить все запущенные команды",
   "OnboardingMarkFailed": "Не удалось сохранить прогресс первоначальной настройки: {error}",
-  "FeatureIntroFlagSaveFailed": "Не удалось сохранить настройку подсказки: {error}"
+  "FeatureIntroFlagSaveFailed": "Не удалось сохранить настройку подсказки: {error}",
+  "QueueFullNotice": "Очередь последующих сообщений заполнена ({max} сообщений); ваше сообщение возвращено в поле ввода."
 }

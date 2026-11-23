@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Ningún archivo coincide con @{partial} (mention_walk_depth={walk_depth}; usa /config set mention_walk_depth 0 para buscar más a fondo)",
   "JobsCancelAllPrompt": "Pulsa {key} para cancelar todos los comandos en ejecución",
   "OnboardingMarkFailed": "No se pudo guardar el progreso de la configuración inicial: {error}",
-  "FeatureIntroFlagSaveFailed": "No se pudo guardar la configuración del consejo de funciones: {error}"
+  "FeatureIntroFlagSaveFailed": "No se pudo guardar la configuración del consejo de funciones: {error}",
+  "QueueFullNotice": "La cola de seguimiento está llena ({max} mensajes); tu mensaje volvió al editor."
 }

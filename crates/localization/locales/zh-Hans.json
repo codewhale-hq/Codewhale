@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "没有与 @{partial} 匹配的文件 (mention_walk_depth={walk_depth}; 使用 /config set mention_walk_depth 0 搜索更深层级)",
   "JobsCancelAllPrompt": "按 {key} 取消所有正在运行的命令",
   "OnboardingMarkFailed": "无法保存引导进度：{error}",
-  "FeatureIntroFlagSaveFailed": "无法保存功能提示设置：{error}"
+  "FeatureIntroFlagSaveFailed": "无法保存功能提示设置：{error}",
+  "QueueFullNotice": "后续消息队列已满（{max} 条）；你的消息已放回输入框。"
 }

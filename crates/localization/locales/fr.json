@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Aucun fichier ne correspond à @{partial} (mention_walk_depth={walk_depth}; utilisez /config set mention_walk_depth 0 pour chercher plus profondément)",
   "JobsCancelAllPrompt": "Appuyez sur {key} pour annuler toutes les commandes en cours",
   "OnboardingMarkFailed": "Impossible d'enregistrer la progression de l'accueil : {error}",
-  "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}"
+  "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}",
+  "QueueFullNotice": "La file de suivi est pleine ({max} messages) ; votre message est revenu dans la zone de saisie."
 }

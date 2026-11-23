@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Tidak ada file yang cocok dengan @{partial} (mention_walk_depth={walk_depth}; gunakan /config set mention_walk_depth 0 untuk mencari lebih dalam)",
   "JobsCancelAllPrompt": "Tekan {key} untuk membatalkan semua perintah yang berjalan",
   "OnboardingMarkFailed": "Tidak dapat menyimpan progres orientasi: {error}",
-  "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}"
+  "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}",
+  "QueueFullNotice": "Antrean pesan lanjutan penuh ({max} pesan); pesan Anda dikembalikan ke kolom tulis."
 }

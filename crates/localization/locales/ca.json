@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Cap fitxer coincideix amb @{partial} (mention_walk_depth={walk_depth}; fes servir /config set mention_walk_depth 0 per cercar més a fons)",
   "JobsCancelAllPrompt": "Prem {key} per cancel·lar totes les ordres en curs",
   "OnboardingMarkFailed": "No s'ha pogut desar el progrés de la configuració inicial: {error}",
-  "FeatureIntroFlagSaveFailed": "No s'ha pogut desar el paràmetre del consell de funcions: {error}"
+  "FeatureIntroFlagSaveFailed": "No s'ha pogut desar el paràmetre del consell de funcions: {error}",
+  "QueueFullNotice": "La cua de seguiment és plena ({max} missatges); el teu missatge ha tornat a l'editor."
 }

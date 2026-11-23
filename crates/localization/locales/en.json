@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "No files match @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 to search deeper)",
   "JobsCancelAllPrompt": "Press {key} to cancel all running commands",
   "OnboardingMarkFailed": "Could not save onboarding progress: {error}",
-  "FeatureIntroFlagSaveFailed": "Could not save the feature tip setting: {error}"
+  "FeatureIntroFlagSaveFailed": "Could not save the feature tip setting: {error}",
+  "QueueFullNotice": "The follow-up queue is full ({max} messages); your message is back in the composer."
 }

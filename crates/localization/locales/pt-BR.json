@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Nenhum arquivo corresponde a @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 para buscar mais fundo)",
   "JobsCancelAllPrompt": "Pressione {key} para cancelar todos os comandos em execução",
   "OnboardingMarkFailed": "Não foi possível salvar o progresso da integração: {error}",
-  "FeatureIntroFlagSaveFailed": "Não foi possível salvar a configuração da dica de recurso: {error}"
+  "FeatureIntroFlagSaveFailed": "Não foi possível salvar a configuração da dica de recurso: {error}",
+  "QueueFullNotice": "A fila de acompanhamento está cheia ({max} mensagens); sua mensagem voltou para o editor."
 }

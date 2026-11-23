@@ -1621,6 +1621,8 @@ pub(crate) struct SkillCacheScope {
     pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
+pub(crate) const MAX_QUEUED_MESSAGES: usize = 64;
+
 pub struct App {
     pub mode: AppMode,
     /// Registered hotbar actions available for future slot config/render layers.
@@ -7491,6 +7493,14 @@ impl App {
     pub fn queue_message(&mut self, message: QueuedMessage) {
         if message.extension_command.is_some() {
             self.restore_unsent_message(message);
+            return;
+        }
+        if self.queued_messages.len() >= MAX_QUEUED_MESSAGES {
+            self.restore_unsent_message(message);
+            let notice = self
+                .tr(MessageId::QueueFullNotice)
+                .replace("{max}", &MAX_QUEUED_MESSAGES.to_string());
+            self.push_status_toast(notice, StatusToastLevel::Warning, None);
             return;
         }
         self.queued_messages.push_back(message);

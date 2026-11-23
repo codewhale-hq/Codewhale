@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Không có tệp nào khớp @{partial} (mention_walk_depth={walk_depth}; dùng /config set mention_walk_depth 0 để tìm sâu hơn)",
   "JobsCancelAllPrompt": "Nhấn {key} để hủy mọi lệnh đang chạy",
   "OnboardingMarkFailed": "Không thể lưu tiến trình giới thiệu: {error}",
-  "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}"
+  "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}",
+  "QueueFullNotice": "Hàng đợi tin nhắn tiếp theo đã đầy ({max} tin); tin nhắn của bạn đã được đưa lại vào ô soạn."
 }

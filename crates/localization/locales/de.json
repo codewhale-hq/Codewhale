@@ -2822,5 +2822,6 @@
   "MentionNoMatchesDepth": "Keine Dateien passen zu @{partial} (mention_walk_depth={walk_depth}; mit /config set mention_walk_depth 0 tiefer suchen)",
   "JobsCancelAllPrompt": "{key} drücken, um alle laufenden Befehle abzubrechen",
   "OnboardingMarkFailed": "Einrichtungsfortschritt konnte nicht gespeichert werden: {error}",
-  "FeatureIntroFlagSaveFailed": "Einstellung für den Funktionstipp konnte nicht gespeichert werden: {error}"
+  "FeatureIntroFlagSaveFailed": "Einstellung für den Funktionstipp konnte nicht gespeichert werden: {error}",
+  "QueueFullNotice": "Die Warteschlange für Folgenachrichten ist voll ({max} Nachrichten); deine Nachricht steht wieder im Eingabefeld."
 }
