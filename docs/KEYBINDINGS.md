@@ -238,6 +238,12 @@ panel and placement. `Alt-!`/`Alt-@`/`Alt-#`/`Alt-$` switch panels.
 | `Enter` / `Tab`                | Run / complete the highlighted command             |
 | `Esc`                          | Dismiss palette                                     |
 
+## Provider and model pickers
+
+| Chord | Action |
+|---|---|
+| `F7` | Opened the OrcaRouter partner offer in `/provider` or `/model` while its campaign ran. The campaign ended on 2026-11-21, so the key now does nothing and Help no longer lists it |
+
 ## Session Picker (`Ctrl-R` or `/sessions`)
 
 | Chord                | Action                                              |

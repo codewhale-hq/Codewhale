@@ -180,7 +180,7 @@ impl Projector {
         waiting: bool,
         body: &str,
     ) -> Result<Option<Frame>, ()> {
-        if !self.arm(Duration::from_secs(20)) {
+        if !self.arm(Duration::from_secs(60)) {
             return Err(());
         }
         let flat = self.context.with(|ctx| {
