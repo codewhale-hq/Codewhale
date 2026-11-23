@@ -11,8 +11,8 @@ export const MODELS_COPY = {
   latestSince: { en: "In Codewhale since {date}", zh: "{date} 起已加入 Codewhale" },
   pickerTitle: { en: "Pick a model by name", zh: "按名称挑选模型" },
   pickerLead: {
-    en: "Search the model picker, and the same model appears under every provider that offers it. These views are from real sessions on a 0.10.3 development build.",
-    zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面来自 0.10.3 开发版本上的真实会话。",
+    en: "Search the model picker, and the same model appears under every provider that offers it. These views are from real sessions recorded on a 0.10.3 pre-release build.",
+    zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面录制于 0.10.3 预发布构建上的真实会话。",
   },
   pickerTerminalLabel: {
     en: "Codewhale in a terminal. The model picker, searched for deepseek-flash, lists deepseek-flash from DeepSeek, Fireworks AI and OpenRouter, with DeepSeek selected.",

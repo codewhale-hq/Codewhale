@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand} es un agente de programación de código abierto para tu terminal, escrito en Rust. Funciona con cualquier modelo, puede repartir una tarea entre varios agentes y puedes leer cada línea de su código.",
   readTheCode: "Lee el código",
   installNote: "La versión {version} está publicada y no necesita cuenta.",
-  captionReleased: "Una sesión real con un modelo en vivo, deepseek-flash a través de la API de DeepSeek: el modelo escribió la edición, y la edición y la ejecución de las pruebas ocurrieron tal como se ve. Grabado con una compilación de desarrollo de 0.10.3.",
+  captionReleased: "Una sesión real con un modelo en vivo, deepseek-flash a través de la API de DeepSeek: el modelo escribió la edición, y la edición y la ejecución de las pruebas ocurrieron tal como se ve. Grabado con una compilación previa al lanzamiento de 0.10.3.",
   captureFrameNoPosture: "Los fotogramas Solicitud y Resultado muestran el nombre del modelo y el modo de aprobación.",
   frameLabelPrompt: "Instrucción",
   frameLabelEdit: "Edición",

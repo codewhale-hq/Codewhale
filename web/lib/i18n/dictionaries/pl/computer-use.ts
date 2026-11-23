@@ -38,7 +38,7 @@ export const computerUse: ComputerUseDict = {
   source: "Zobacz na GitHubie",
   platforms: "Pomocnik na Maca jest w wersji beta, a wtyczka z katalogu obsługuje tylko Maca. Opublikowane wydania zawierają też niepodpisaną eksperymentalną wersję podglądową dla Windows x64; Linux wymaga eksperymentalnej konfiguracji ze źródeł lub przez Docker. Wprowadzanie danych w Windows i Linuksie korzysta ze wspólnego pulpitu.",
   connectTitle: "Połącz Codewhale",
-  connectVersion: "Codewhale 0.10.2 zawiera starszą wtyczkę Computer Use. Instalacja pozycji z katalogu jej nie aktualizuje. Połącz zainstalowaną aplikację pomocniczą Mac bezpośrednio przez MCP.",
+  connectVersion: "W Codewhale 0.10.3 zainstaluj Computer Use z wbudowanego katalogu (/plugin marketplace install codewhale computer-use) albo połącz poniżej aplikację pomocniczą Mac bezpośrednio przez MCP. Codewhale 0.10.2 zawierał starszą wbudowaną wtyczkę, której instalacja z katalogu nie aktualizowała; w wersji 0.10.2 użyj bezpośredniego połączenia MCP.",
   connectLimit: "Bezpośrednie połączenie MCP dodaje narzędzia bez umiejętności wtyczki. Nie używaj go równocześnie ze starszą wbudowaną wtyczką. Jeśli jest włączona, najpierw uruchom /plugin disable computer-use.",
   connectRuntime: "Aplikacja zawiera Node; osobna instalacja nie jest potrzebna. Jeśli jest zainstalowana gdzie indziej, ustaw APP na rzeczywistą ścieżkę pakietu aplikacji.",
   connectReload: "W działającej sesji terminala uruchom /mcp reload i poproś:",

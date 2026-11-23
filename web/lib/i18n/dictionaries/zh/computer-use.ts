@@ -38,7 +38,7 @@ export const computerUse: ComputerUseDict = {
   source: "在 GitHub 上查看",
   platforms: "Mac 助手为测试版，市场插件支持 Mac。已发布版本另含未签名的 Windows x64 实验性预览包；Linux 需要实验性源码或 Docker 设置。Windows 和 Linux 的输入使用共享桌面。",
   connectTitle: "连接 Codewhale",
-  connectVersion: "Codewhale 0.10.2 内置较旧的 Computer Use 插件，安装目录中的同名条目不会将其升级。请通过 MCP 直接连接已安装的 Mac 助手。",
+  connectVersion: "在 Codewhale 0.10.3 中，可从内置目录安装 Computer Use（/plugin marketplace install codewhale computer-use），或按下方步骤通过 MCP 直接连接 Mac 助手。Codewhale 0.10.2 曾内置较旧的插件，安装目录条目不会将其升级；如使用 0.10.2，请改用直接连接 MCP。",
   connectLimit: "直接连接 MCP 只添加工具，不包含插件技能。请勿与旧版内置插件同时使用；如果该插件已启用，请先运行 /plugin disable computer-use。",
   connectRuntime: "应用自带 Node，无需另行安装。如果应用安装在其他位置，请将 APP 设为实际应用包路径。",
   connectReload: "在正在运行的终端会话中执行 /mcp reload，然后输入：",

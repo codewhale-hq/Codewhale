@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "Auf GitHub ansehen",
   platforms: "Der Mac-Helfer ist eine Beta; das Marketplace-Plugin unterstützt nur Mac. Veröffentlichte Versionen enthalten auch eine unsignierte experimentelle Vorschau für Windows x64; Linux erfordert eine experimentelle Einrichtung aus dem Quellcode oder mit Docker. Eingaben unter Windows und Linux nutzen den gemeinsamen Desktop.",
   connectTitle: "Codewhale verbinden",
-  connectVersion: "Codewhale 0.10.2 enthält ein älteres Computer-Use-Plugin. Die Installation des Katalogeintrags aktualisiert es nicht. Verbinde den installierten Mac-Helfer direkt über MCP.",
+  connectVersion: "Installiere Computer Use in Codewhale 0.10.3 aus dem integrierten Katalog (/plugin marketplace install codewhale computer-use) oder verbinde den Mac-Helfer unten direkt über MCP. Codewhale 0.10.2 enthielt ein älteres integriertes Plugin, das durch die Kataloginstallation nicht aktualisiert wurde; nutze unter 0.10.2 stattdessen direktes MCP.",
   connectLimit: "Die direkte MCP-Verbindung fügt Werkzeuge ohne Plugin-Skills hinzu. Nutze sie nicht parallel zum älteren integrierten Plugin. Falls dieses aktiviert ist, führe zuerst /plugin disable computer-use aus.",
   connectRuntime: "Die App enthält Node; eine separate Installation ist nicht nötig. Falls sie woanders installiert ist, setze APP auf den tatsächlichen Pfad des App-Bundles.",
   connectReload: "Führe in einer laufenden Terminalsitzung /mcp reload aus und frage:",

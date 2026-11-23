@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand} adalah agen pemrograman bersumber terbuka untuk terminal Anda, ditulis dalam Rust. Ia bekerja dengan model apa pun, dapat membagi satu tugas ke beberapa agen, dan setiap barisnya bisa Anda baca.",
   readTheCode: "Baca kodenya",
   installNote: "Versi {version} sudah dirilis dan tidak memerlukan akun.",
-  captionReleased: "Sesi nyata dengan model langsung, deepseek-flash melalui API DeepSeek: model yang menulis perubahan, dan perubahan serta uji coba terjadi seperti yang terlihat. Direkam dengan build pengembangan 0.10.3.",
+  captionReleased: "Sesi nyata dengan model langsung, deepseek-flash melalui API DeepSeek: model yang menulis perubahan, dan perubahan serta uji coba terjadi seperti yang terlihat. Direkam dengan build pra-rilis 0.10.3.",
   captureFrameNoPosture: "Bingkai Permintaan dan Hasil menampilkan nama model dan mode persetujuan.",
   frameLabelPrompt: "Perintah",
   frameLabelEdit: "Edit",

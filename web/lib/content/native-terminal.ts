@@ -80,8 +80,8 @@ export const NATIVE_TERMINAL_VIEWS = [
 export const NATIVE_TERMINAL_COPY = {
   title: { en: "Explore the terminal", zh: "探索终端界面" },
   description: {
-    en: "These views come from real sessions on a development build of 0.10.3, which is not released yet: deepseek-flash through DeepSeek's API, in Accept Edits.",
-    zh: "这些画面来自真实会话，运行在尚未发布的 0.10.3 开发版本上：通过 DeepSeek API 使用 deepseek-flash，处于 Accept Edits 模式。",
+    en: "These views come from real sessions recorded on a 0.10.3 pre-release build: deepseek-flash through DeepSeek's API, in Accept Edits.",
+    zh: "这些画面录制于 0.10.3 预发布构建上的真实会话：通过 DeepSeek API 使用 deepseek-flash，处于 Accept Edits 模式。",
   },
   viewsLabel: { en: "Terminal views", zh: "终端视图" },
 } satisfies Record<string, LocalizedText>;

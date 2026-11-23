@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand} 是一个运行在终端里的开源编程智能体，用 Rust 编写。它支持任意模型，可以把一项任务分给多个智能体，而且它的每一行代码都任你阅读。",
   readTheCode: "阅读代码",
   installNote: "版本 {version} 已发布，无需账号。",
-  captionReleased: "与实时模型的真实会话：通过 DeepSeek API 调用 deepseek-flash。修改由模型写出，修改和测试运行都如画面所示真实发生。录制于 0.10.3 开发版构建。",
+  captionReleased: "与实时模型的真实会话：通过 DeepSeek API 调用 deepseek-flash。修改由模型写出，修改和测试运行都如画面所示真实发生。录制于 0.10.3 预发布构建。",
   captureFrameNoPosture: "“提示”和“结果”两帧显示了模型名称和审批模式。",
   frameLabelPrompt: "提示",
   frameLabelEdit: "编辑",

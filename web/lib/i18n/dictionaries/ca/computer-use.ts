@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "Veure a GitHub",
   platforms: "L’ajudant del Mac és una beta i el connector del catàleg només admet Mac. Les versions publicades també inclouen una previsualització experimental sense signar per a Windows x64; Linux requereix una configuració experimental des del codi font o amb Docker. L’entrada a Windows i Linux utilitza l’escriptori compartit.",
   connectTitle: "Connecta Codewhale",
-  connectVersion: "Codewhale 0.10.2 inclou un connector Computer Use antic. Instal·lar l’entrada del catàleg no l’actualitza. Connecta directament l’auxiliar de Mac instal·lat mitjançant MCP.",
+  connectVersion: "A Codewhale 0.10.3, instal·la Computer Use des del catàleg integrat (/plugin marketplace install codewhale computer-use), o connecta directament l’auxiliar de Mac per MCP tot seguit. Codewhale 0.10.2 incloïa un connector integrat antic que la instal·lació des del catàleg no actualitzava; a la 0.10.2, fes servir MCP directe.",
   connectLimit: "La connexió MCP directa afegeix eines sense les habilitats del connector. No la facis servir alhora que el connector integrat antic. Si està activat, executa primer /plugin disable computer-use.",
   connectRuntime: "L’aplicació inclou Node; no cal instal·lar-lo per separat. Si està instal·lada en una altra ubicació, assigna a APP el camí real del paquet de l’aplicació.",
   connectReload: "En una sessió de terminal en execució, executa /mcp reload i demana:",

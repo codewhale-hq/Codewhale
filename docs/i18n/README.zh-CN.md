@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:b6024e3e06be -->
 <div align="center">
 
 <picture>
@@ -29,7 +29,7 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 deepseek-flash 的真实任务结束后的 Codewhale 终端界面。它运行了 python3 -m unittest -v test_ls.py，2 个测试通过，并报告已为 ls.py 添加 --json 参数。状态栏显示 accept edits 和 deepseek-flash。">
 
-<sub>0.10.3 开发构建上的一次真实会话：deepseek-flash 通过 DeepSeek API 写出了修改，测试运行由你允许了一次。</sub>
+<sub>0.10.3 开发期间录制的一次真实会话：deepseek-flash 通过 DeepSeek API 写出了修改，测试运行由你允许了一次。</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Fix the failing tests and explain what changed.
 
 ## 如何保证安全
 
-两个开关决定 Codewhale 可以自行做多少事。输入框为空时，`Tab` 切换模式：**Plan** 只阅读和搜索，不做任何修改；**Work** 编辑文件并运行命令；**Operate** 与 Work 权限相同，会一直工作到目标得到验证或需要你介入。`Shift+Tab` 切换权限。默认的 **Ask** 会直接应用仓库内的文件修改而不询问，并在非只读的 shell 命令前询问。**Auto-Review** 让规则和一个审查模型批准常规调用，并拒绝高风险调用；切换到 Ask 即可自己批准这些调用。**Full Access** 从不询问，并关闭 Codewhale 的沙箱，但仓库规则和托管策略仍然适用。[v0.10.2 指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)有详细说明。
+0.10.3 新变化：一个拨盘决定 Codewhale 可以自行做多少事。`Shift+Tab` 依次经过 **Ask**、**Accept Edits**、**Plan**、**Auto-Review** 和 **Full Access**（`Tab` 不再切换模式，Operate 已取消）。**Plan** 只阅读和搜索，不做任何修改；其余每一档都是带有相应权限的 **Work**。**Ask** 会在每次文件修改和每条非只读 shell 命令前询问。新安装的默认选项 **Accept Edits** 会直接应用 git 仓库内的文件修改而不询问，并仍在命令前询问。**Auto-Review** 让规则和一个审查模型批准常规调用，并拒绝高风险调用；切换到 Ask 即可自己批准这些调用。**Full Access** 从不询问，并关闭 Codewhale 的沙箱，但仓库规则和托管策略仍然适用。[模式与权限指南](../MODES.md)有详细说明。
 
-即将在 0.10.3 推出：`Shift+Tab` 将成为一个依次经过 Ask、Accept Edits、Plan、Auto-Review 和 Full Access 的拨盘，`Tab` 不再切换模式，Operate 也将取消。Ask 将在每次文件修改前也询问，而新的默认选项 Accept Edits 会应用 git 仓库内的修改，并仍在命令前询问。[当前指南](../MODES.md)对此有说明。
-
-在 Ask 和 Auto-Review 中，命令会在系统提供的操作系统沙箱中运行：macOS 上是 Seatbelt，Linux 上安装了 bubblewrap 时是 bubblewrap。Windows 目前还没有操作系统沙箱，Full Access 会关闭沙箱。在沙箱内，shell 命令和终端会话无法读取 `~/.ssh`、`~/.aws` 和 `.env` 文件等凭据存储。`/preview-request` 会显示下一个请求的脱敏预览，而不会真正发送。
+在 Ask、Accept Edits 和 Auto-Review 中，命令会在系统提供的操作系统沙箱中运行：macOS 上是 Seatbelt，Linux 上安装了 bubblewrap 时是 bubblewrap。Windows 目前还没有操作系统沙箱，Full Access 会关闭沙箱。在沙箱内，shell 命令和终端会话无法读取 `~/.ssh`、`~/.aws` 和 `.env` 文件等凭据存储。`/preview-request` 会显示下一个请求的脱敏预览，而不会真正发送。
 
 你不需要账号，用 `/provider` 添加的密钥只保存在你的机器上。使用你自己的 API 密钥时，你直接向提供商付费；本地模型不需要密钥。价格已知时，页脚和 `/cost` 会显示一次会话的花费；价格未知时显示为未知，绝不显示为免费。
 

@@ -38,7 +38,7 @@ export const computerUse: ComputerUseDict = {
   source: "Lihat di GitHub",
   platforms: "Aplikasi pembantu Mac masih beta dan plugin katalog hanya mendukung Mac. Rilis yang diterbitkan juga menyediakan pratinjau eksperimental tanpa tanda tangan untuk Windows x64; Linux memerlukan penyiapan eksperimental dari kode sumber atau Docker. Input pada Windows dan Linux menggunakan desktop bersama.",
   connectTitle: "Hubungkan Codewhale",
-  connectVersion: "Codewhale 0.10.2 menyertakan plugin Computer Use versi lama. Memasang entri katalog tidak memperbaruinya. Hubungkan langsung aplikasi pembantu Mac yang terpasang melalui MCP.",
+  connectVersion: "Di Codewhale 0.10.3, pasang Computer Use dari katalog bawaan (/plugin marketplace install codewhale computer-use), atau hubungkan langsung aplikasi pembantu Mac melalui MCP di bawah. Codewhale 0.10.2 menyertakan plugin bawaan versi lama yang tidak diperbarui oleh pemasangan katalog; pada 0.10.2, gunakan MCP langsung.",
   connectLimit: "Koneksi MCP langsung menambahkan alat tanpa keterampilan plugin. Jangan gunakan bersamaan dengan plugin bawaan lama. Jika plugin itu aktif, jalankan /plugin disable computer-use terlebih dahulu.",
   connectRuntime: "Aplikasi sudah menyertakan Node; tidak perlu pemasangan terpisah. Jika terpasang di lokasi lain, isi APP dengan jalur bundel aplikasi yang sebenarnya.",
   connectReload: "Dalam sesi terminal yang sedang berjalan, jalankan /mcp reload, lalu minta:",

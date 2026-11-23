@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "Xem trên GitHub",
   platforms: "Ứng dụng hỗ trợ trên Mac đang ở bản beta và plugin trong danh mục chỉ hỗ trợ Mac. Các bản phát hành cũng có bản xem trước thử nghiệm chưa được ký cho Windows x64; Linux cần thiết lập thử nghiệm từ mã nguồn hoặc qua Docker. Thao tác nhập trên Windows và Linux sử dụng màn hình nền dùng chung.",
   connectTitle: "Kết nối Codewhale",
-  connectVersion: "Codewhale 0.10.2 tích hợp một plugin Computer Use cũ. Cài mục trong danh mục không nâng cấp plugin đó. Hãy kết nối trực tiếp với ứng dụng trợ giúp Mac đã cài qua MCP.",
+  connectVersion: "Trong Codewhale 0.10.3, hãy cài Computer Use từ danh mục tích hợp (/plugin marketplace install codewhale computer-use), hoặc kết nối trực tiếp ứng dụng trợ giúp Mac qua MCP bên dưới. Codewhale 0.10.2 từng tích hợp sẵn một plugin cũ mà việc cài từ danh mục không nâng cấp; trên 0.10.2, hãy dùng kết nối MCP trực tiếp.",
   connectLimit: "Kết nối MCP trực tiếp thêm công cụ nhưng không thêm kỹ năng của plugin. Không dùng đồng thời với plugin tích hợp cũ. Nếu plugin đó đang bật, hãy chạy /plugin disable computer-use trước.",
   connectRuntime: "Ứng dụng có sẵn Node, không cần cài riêng. Nếu cài ở nơi khác, đặt APP thành đường dẫn thực tế của gói ứng dụng.",
   connectReload: "Trong phiên terminal đang chạy, chạy /mcp reload rồi yêu cầu:",

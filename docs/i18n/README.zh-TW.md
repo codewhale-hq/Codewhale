@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:b6024e3e06be -->
 <div align="center">
 
 <picture>
@@ -29,7 +29,7 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 <img src="../../web/public/codewhale-tui-latest.png" width="760" alt="一次使用 deepseek-flash 的真實任務結束後的 Codewhale 終端機畫面。它執行了 python3 -m unittest -v test_ls.py，2 個測試通過，並回報已為 ls.py 加上 --json 參數。狀態列顯示 accept edits 和 deepseek-flash。">
 
-<sub>0.10.3 開發版本上的一次真實工作階段：deepseek-flash 透過 DeepSeek API 寫出了修改，測試執行由你允許了一次。</sub>
+<sub>0.10.3 開發期間錄製的一次真實工作階段：deepseek-flash 透過 DeepSeek API 寫出了修改，測試執行由你允許了一次。</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Fix the failing tests and explain what changed.
 
 ## 如何保持安全
 
-兩個開關決定 Codewhale 可以自行做多少事。輸入框為空時，`Tab` 切換模式：**Plan** 只閱讀和搜尋，不做任何修改；**Work** 編輯檔案並執行指令；**Operate** 與 Work 權限相同，會持續工作到目標通過驗證或需要你介入。`Shift+Tab` 切換權限。預設的 **Ask** 會直接套用儲存庫內的檔案修改而不詢問，並在非唯讀的 shell 指令前詢問。**Auto-Review** 讓規則和一個審查模型核准例行呼叫，並拒絕高風險呼叫；切換到 Ask 即可自行核准這些呼叫。**Full Access** 從不詢問，並關閉 Codewhale 的沙箱，但儲存庫規則和受管政策仍然適用。[v0.10.2 指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md)有詳細說明。
+0.10.3 新變化：一個轉盤決定 Codewhale 可以自行做多少事。`Shift+Tab` 依序經過 **Ask**、**Accept Edits**、**Plan**、**Auto-Review** 和 **Full Access**（`Tab` 不再切換模式，Operate 已取消）。**Plan** 只閱讀和搜尋，不做任何修改；其餘每一檔都是帶有相應權限的 **Work**。**Ask** 會在每次檔案修改和每條非唯讀 shell 指令前詢問。新安裝的預設選項 **Accept Edits** 會直接套用 git 儲存庫內的檔案修改而不詢問，並仍在指令前詢問。**Auto-Review** 讓規則和一個審查模型核准例行呼叫，並拒絕高風險呼叫；切換到 Ask 即可自行核准這些呼叫。**Full Access** 從不詢問，並關閉 Codewhale 的沙箱，但儲存庫規則和受管政策仍然適用。[模式與權限指南](../MODES.md)有詳細說明。
 
-即將在 0.10.3 推出：`Shift+Tab` 將成為依序經過 Ask、Accept Edits、Plan、Auto-Review 和 Full Access 的轉盤，`Tab` 不再切換模式，Operate 也將取消。Ask 將在每次檔案修改前也詢問，而新的預設選項 Accept Edits 會套用 git 儲存庫內的修改，並仍在指令前詢問。[目前的指南](../MODES.md)有說明。
-
-在 Ask 和 Auto-Review 中，指令會在系統提供的作業系統沙箱中執行：macOS 上是 Seatbelt，Linux 上安裝了 bubblewrap 時是 bubblewrap。Windows 目前還沒有作業系統沙箱，Full Access 會關閉沙箱。在沙箱內，shell 指令和終端機工作階段無法讀取 `~/.ssh`、`~/.aws` 和 `.env` 檔案等憑證儲存。`/preview-request` 會顯示下一個請求的遮蔽後預覽，而不會實際送出。
+在 Ask、Accept Edits 和 Auto-Review 中，指令會在系統提供的作業系統沙箱中執行：macOS 上是 Seatbelt，Linux 上安裝了 bubblewrap 時是 bubblewrap。Windows 目前還沒有作業系統沙箱，Full Access 會關閉沙箱。在沙箱內，shell 指令和終端機工作階段無法讀取 `~/.ssh`、`~/.aws` 和 `.env` 檔案等憑證儲存。`/preview-request` 會顯示下一個請求的遮蔽後預覽，而不會實際送出。
 
 你不需要帳號，用 `/provider` 加入的金鑰只保存在你的電腦上。使用你自己的 API 金鑰時，你直接向提供者付費；本機模型不需要金鑰。價格已知時，頁尾和 `/cost` 會顯示一次工作階段的花費；價格未知時顯示為未知，絕不顯示為免費。
 

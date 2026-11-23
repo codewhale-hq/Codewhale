@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reasoning stays in the thinking card:** when a gateway opens a text block in the middle of a thinking stream and keeps sending thinking deltas, the reasoning no longer spills into the assistant's answer. Each streamed delta now goes to the cell its own kind owns. Thanks [@SparkofSpike](https://github.com/SparkofSpike). (#7452)
 - **Narrow terminals keep the working clock:** at 80 and 60 columns the status row under the composer keeps `working 3s` / `using tool 12s` while a turn runs. The `Shift+Tab to change` hint, then `Esc to interrupt`, stand down first, and a connector notice shortens (`MCP · 1 failed · /mcp`) instead of taking the clock's place. (CW-8264)
 - The Resume confirmation no longer draws its border over the composer on a 60x20 terminal, and the Plugins panel footer always keeps `Esc close`, dropping the per-row hints first at 80 columns.
+- **Website and README 0.10.3 copy:** removed the expired November 21 OrcaRouter offer from the README and home page, updated the README and website permission, Computer Use and session-recording notes now that v0.10.3 is published, and kept pre-release capture provenance explicit.
 
 ## [0.10.3] - 2026-11-21
 

@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "GitHub에서 보기",
   platforms: "Mac 도우미는 베타이며 마켓플레이스 플러그인은 Mac만 지원합니다. 공개 릴리스에는 서명되지 않은 실험용 Windows x64 프리뷰도 있습니다. Linux는 소스 또는 Docker를 통한 실험적 설정이 필요합니다. Windows와 Linux의 입력은 공유 데스크톱을 사용합니다.",
   connectTitle: "Codewhale 연결",
-  connectVersion: "Codewhale 0.10.2에는 이전 Computer Use 플러그인이 내장되어 있습니다. 카탈로그 항목을 설치해도 이 플러그인은 업데이트되지 않습니다. 설치된 Mac 도우미에 MCP로 직접 연결하세요.",
+  connectVersion: "Codewhale 0.10.3에서는 내장 카탈로그에서 Computer Use를 설치하거나(/plugin marketplace install codewhale computer-use) 아래 방법으로 Mac 도우미에 MCP로 직접 연결하세요. Codewhale 0.10.2에는 카탈로그 설치로 업데이트되지 않는 이전 내장 플러그인이 포함되어 있었으므로, 0.10.2에서는 직접 MCP 연결을 사용하세요.",
   connectLimit: "MCP 직접 연결은 도구만 추가하며 플러그인 스킬은 포함하지 않습니다. 이전 내장 플러그인과 함께 사용하지 마세요. 해당 플러그인이 켜져 있다면 먼저 /plugin disable computer-use를 실행하세요.",
   connectRuntime: "앱에 Node가 포함되어 있어 별도 설치가 필요 없습니다. 다른 위치에 설치했다면 APP를 실제 앱 번들 경로로 설정하세요.",
   connectReload: "실행 중인 터미널 세션에서 /mcp reload를 실행한 뒤 다음과 같이 요청하세요:",

@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "Voir sur GitHub",
   platforms: "L’assistant Mac est en bêta et le plugin du catalogue ne prend en charge que Mac. Les versions publiées comprennent aussi un aperçu expérimental non signé pour Windows x64 ; Linux nécessite une configuration expérimentale depuis les sources ou avec Docker. Les entrées sous Windows et Linux utilisent le bureau partagé.",
   connectTitle: "Connecter Codewhale",
-  connectVersion: "Codewhale 0.10.2 intègre une ancienne version du plugin Computer Use. Installer son entrée dans le catalogue ne la met pas à jour. Connectez directement l’application auxiliaire Mac installée via MCP.",
+  connectVersion: "Dans Codewhale 0.10.3, installez Computer Use depuis le catalogue intégré (/plugin marketplace install codewhale computer-use) ou connectez directement l’application auxiliaire Mac via MCP ci-dessous. Codewhale 0.10.2 intégrait une ancienne version du plugin que l’installation depuis le catalogue ne mettait pas à jour ; sur la 0.10.2, passez par MCP direct.",
   connectLimit: "La connexion MCP directe ajoute des outils sans les compétences du plugin. Ne l’utilisez pas avec l’ancien plugin intégré. S’il est activé, exécutez d’abord /plugin disable computer-use.",
   connectRuntime: "L’application inclut Node ; aucune installation séparée n’est nécessaire. Si elle est installée ailleurs, attribuez à APP le chemin réel du paquet de l’application.",
   connectReload: "Dans une session de terminal en cours, exécutez /mcp reload, puis demandez :",

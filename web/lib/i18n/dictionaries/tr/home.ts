@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand}, terminaliniz için Rust ile yazılmış açık kaynaklı bir kodlama ajanıdır. Her modelle çalışır, bir görevi birkaç ajana bölebilir ve her satırını okuyabilirsiniz.",
   readTheCode: "Kodu okuyun",
   installNote: "{version} sürümü yayımlandı ve hesap gerektirmez.",
-  captionReleased: "Canlı bir modelle, DeepSeek API’si üzerinden deepseek-flash ile gerçek bir oturum: düzenlemeyi model yazdı, düzenleme ve test çalıştırması gösterildiği gibi gerçekleşti. 0.10.3 geliştirme derlemesiyle kaydedildi.",
+  captionReleased: "Canlı bir modelle, DeepSeek API’si üzerinden deepseek-flash ile gerçek bir oturum: düzenlemeyi model yazdı, düzenleme ve test çalıştırması gösterildiği gibi gerçekleşti. 0.10.3 ön sürüm derlemesiyle kaydedildi.",
   captureFrameNoPosture: "İstem ve Sonuç kareleri model adını ve onay modunu gösterir.",
   frameLabelPrompt: "İstem",
   frameLabelEdit: "Düzenleme",

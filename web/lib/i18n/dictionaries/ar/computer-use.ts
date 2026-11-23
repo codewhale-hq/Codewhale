@@ -38,7 +38,7 @@ export const computerUse: ComputerUseDict = {
   source: "عرض على GitHub",
   platforms: "مساعد Mac في مرحلة بيتا، وإضافة السوق متاحة لنظام Mac فقط. تتضمن الإصدارات المنشورة أيضًا معاينة تجريبية غير موقّعة لنظام Windows x64؛ ويتطلب Linux إعدادًا تجريبيًا من المصدر أو عبر Docker. يستخدم الإدخال في Windows وLinux سطح المكتب المشترك.",
   connectTitle: "ربط Codewhale",
-  connectVersion: "يتضمن Codewhale 0.10.2 إضافة Computer Use قديمة. تثبيت مدخل الكتالوج لا يحدّثها. اتصل بمساعد Mac المثبّت مباشرة عبر MCP.",
+  connectVersion: "في Codewhale 0.10.3، ثبّت Computer Use من الكتالوج المدمج (/plugin marketplace install codewhale computer-use)، أو اتصل بمساعد Mac مباشرة عبر MCP أدناه. تضمّن Codewhale 0.10.2 إضافة مدمجة أقدم لم يكن التثبيت من الكتالوج يحدّثها؛ في 0.10.2 استخدم اتصال MCP المباشر بدلًا من ذلك.",
   connectLimit: "يضيف اتصال MCP المباشر أدوات دون مهارات الإضافة. لا تستخدمه بالتزامن مع الإضافة المدمجة القديمة. إذا كانت مفعّلة، فنفّذ /plugin disable computer-use أولاً.",
   connectRuntime: "يتضمن التطبيق Node؛ لا حاجة إلى تثبيته بشكل منفصل. إذا كان التطبيق مثبّتاً في مكان آخر، فاضبط APP على المسار الفعلي لحزمة التطبيق.",
   connectReload: "في جلسة طرفية قيد التشغيل، نفّذ /mcp reload ثم اطلب:",

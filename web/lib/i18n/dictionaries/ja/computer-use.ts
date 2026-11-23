@@ -39,7 +39,7 @@ export const computerUse: ComputerUseDict = {
   source: "GitHub で見る",
   platforms: "Mac ヘルパーはベータ版で、マーケットプレイスのプラグインは Mac のみに対応しています。公開リリースには署名のない実験的な Windows x64 プレビューもあります。Linux はソースまたは Docker による実験的なセットアップが必要です。Windows と Linux の入力は共有デスクトップを使用します。",
   connectTitle: "Codewhale に接続",
-  connectVersion: "Codewhale 0.10.2 には旧版の Computer Use プラグインが内蔵されています。カタログからインストールしても更新されません。インストール済みの Mac ヘルパーに MCP で直接接続してください。",
+  connectVersion: "Codewhale 0.10.3 では内蔵カタログから Computer Use をインストールするか（/plugin marketplace install codewhale computer-use）、下の手順で Mac ヘルパーに MCP で直接接続します。Codewhale 0.10.2 にはカタログからのインストールでは更新されない旧版の内蔵プラグインが含まれていたため、0.10.2 では MCP で直接接続してください。",
   connectLimit: "MCP での直接接続はツールを追加しますが、プラグインのスキルは含みません。旧版の内蔵プラグインと併用しないでください。有効なら、先に /plugin disable computer-use を実行してください。",
   connectRuntime: "アプリには Node が含まれるため、別途インストールする必要はありません。別の場所にインストールした場合は、APP を実際のアプリバンドルのパスに設定してください。",
   connectReload: "実行中のターミナルセッションで /mcp reload を実行し、次のように依頼します：",

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:b6024e3e06be -->
 <div align="center">
 
 <picture>
@@ -29,7 +29,7 @@ Isso instala a versão mais recente no macOS ou no Linux, e não exige conta. [W
 
 <img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale em um terminal depois de uma tarefa real com deepseek-flash. Ele executou python3 -m unittest -v test_ls.py, 2 testes passaram e ele informa que adicionou a opção --json ao ls.py. A linha de status mostra accept edits e deepseek-flash.">
 
-<sub>Uma sessão real em uma versão de desenvolvimento da 0.10.3: o deepseek-flash, pela API do DeepSeek, escreveu a alteração, e você permitiu uma vez a execução dos testes.</sub>
+<sub>Uma sessão real gravada durante o desenvolvimento da 0.10.3: o deepseek-flash, pela API do DeepSeek, escreveu a alteração, e você permitiu uma vez a execução dos testes.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ O app de terminal, `exec`, `web` e a Runtime API compartilham um motor ([arquite
 
 ## Como ele se mantém seguro
 
-Duas chaves dizem quanto o Codewhale pode fazer sozinho. Com a entrada vazia, `Tab` troca o modo: **Plan** lê e pesquisa mas não muda nada, **Work** edita arquivos e roda comandos, e **Operate** tem o mesmo acesso que Work e continua até o objetivo ser verificado ou precisar de você. `Shift+Tab` troca a permissão. **Ask**, o padrão, aplica edições de arquivos no seu repositório sem perguntar e pergunta antes de comandos de shell que não são somente leitura. **Auto-Review** deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Ask para aprová-las você mesmo. **Full Access** nunca pergunta e desliga o sandbox do Codewhale, embora as regras do repositório e a política gerenciada continuem valendo. O [guia da v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) tem os detalhes.
+Novidade na 0.10.3: um único seletor diz quanto o Codewhale pode fazer sozinho. `Shift+Tab` passa por **Ask**, **Accept Edits**, **Plan**, **Auto-Review** e **Full Access** (`Tab` não troca mais o modo e Operate foi aposentado). **Plan** lê e pesquisa mas não muda nada; todas as outras posições são **Work** com essa permissão. **Ask** pergunta antes de cada edição de arquivo e de cada comando de shell que não seja somente leitura. **Accept Edits**, o padrão em novas instalações, aplica edições de arquivos dentro do seu repositório git sem perguntar e continua perguntando antes de comandos. **Auto-Review** deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Ask para aprová-las você mesmo. **Full Access** nunca pergunta e desliga o sandbox do Codewhale, embora as regras do repositório e a política gerenciada continuem valendo. O [guia de modos e permissões](../MODES.md) tem os detalhes.
 
-Chegando na 0.10.3: `Shift+Tab` vira um único seletor que passa por Ask, Accept Edits, Plan, Auto-Review e Full Access, `Tab` deixa de trocar o modo e Operate é aposentado. Ask passará a perguntar também antes de cada edição de arquivo, e o novo padrão, Accept Edits, aplicará edições dentro do repositório git e continuará perguntando antes de comandos. O [guia atual](../MODES.md) descreve isso.
-
-Em Ask e Auto-Review, os comandos rodam em um sandbox do sistema operacional quando o sistema tem um: Seatbelt no macOS, e bubblewrap no Linux quando está instalado. O Windows ainda não tem sandbox do sistema, e Full Access desliga o sandbox. Dentro do sandbox, comandos de shell e sessões de terminal não conseguem ler armazenamentos de credenciais como `~/.ssh`, `~/.aws` e arquivos `.env`. `/preview-request` mostra uma prévia com dados ocultos da próxima requisição sem enviá-la.
+Em Ask, Accept Edits e Auto-Review, os comandos rodam em um sandbox do sistema operacional quando o sistema tem um: Seatbelt no macOS, e bubblewrap no Linux quando está instalado. O Windows ainda não tem sandbox do sistema, e Full Access desliga o sandbox. Dentro do sandbox, comandos de shell e sessões de terminal não conseguem ler armazenamentos de credenciais como `~/.ssh`, `~/.aws` e arquivos `.env`. `/preview-request` mostra uma prévia com dados ocultos da próxima requisição sem enviá-la.
 
 Você não precisa de conta, e as chaves adicionadas com `/provider` ficam na sua máquina. Com a sua própria chave de API, você paga o provedor diretamente, e modelos locais não precisam de chave. O rodapé e `/cost` mostram quanto uma sessão custou quando o preço é conhecido, e um preço desconhecido aparece como desconhecido, nunca como grátis.
 

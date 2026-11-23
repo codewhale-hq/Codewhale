@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:b6024e3e06be -->
 <div align="center">
 
 <picture>
@@ -29,7 +29,7 @@ To polecenie instaluje najnowsze wydanie w systemie macOS lub Linux i nie wymaga
 
 <img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale w terminalu po prawdziwym zadaniu z deepseek-flash. Uruchomił python3 -m unittest -v test_ls.py, 2 testy przeszły, a on zgłasza, że dodał do ls.py opcję --json. Wiersz stanu pokazuje accept edits i deepseek-flash.">
 
-<sub>Prawdziwa sesja na wersji deweloperskiej 0.10.3: deepseek-flash przez API DeepSeek napisał zmianę, a ty raz zezwoliłeś na uruchomienie testów.</sub>
+<sub>Prawdziwa sesja nagrana podczas prac nad wersją 0.10.3: deepseek-flash przez API DeepSeek napisał zmianę, a ty raz zezwoliłeś na uruchomienie testów.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Aplikacja terminalowa, `exec`, `web` i Runtime API korzystają z jednego silnika
 
 ## Jak dba o bezpieczeństwo
 
-Dwa przełączniki określają, ile Codewhale może zrobić sam. Gdy pole wpisywania jest puste, `Tab` zmienia tryb: **Plan** czyta i szuka, ale niczego nie zmienia, **Work** edytuje pliki i uruchamia polecenia, a **Operate** ma te same uprawnienia co Work i działa, dopóki cel nie zostanie zweryfikowany albo nie będzie potrzebować ciebie. `Shift+Tab` zmienia uprawnienie. **Ask**, domyślne, stosuje zmiany plików w twoim repozytorium bez pytania i pyta przed poleceniami powłoki, które nie tylko czytają. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. Szczegóły są w [przewodniku dla v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md).
+Nowość w 0.10.3: jedno pokrętło określa, ile Codewhale może zrobić sam. `Shift+Tab` przełącza kolejno **Ask**, **Accept Edits**, **Plan**, **Auto-Review** i **Full Access** (`Tab` nie zmienia już trybu, a Operate został wycofany). **Plan** czyta i szuka, ale niczego nie zmienia; każda inna pozycja to **Work** z tym uprawnieniem. **Ask** pyta przed każdą zmianą pliku i przed każdym poleceniem powłoki, które nie tylko czyta. **Accept Edits**, domyślne w nowych instalacjach, stosuje zmiany plików wewnątrz twojego repozytorium git bez pytania i nadal pyta przed poleceniami. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. Szczegóły są w [przewodniku po trybach i uprawnieniach](../MODES.md).
 
-Nadchodzi w 0.10.3: `Shift+Tab` stanie się jednym pokrętłem przez Ask, Accept Edits, Plan, Auto-Review i Full Access, `Tab` przestanie zmieniać tryb, a Operate zostanie wycofany. Ask będzie pytać także przed każdą zmianą pliku, a nowe ustawienie domyślne, Accept Edits, będzie stosować zmiany wewnątrz repozytorium git i nadal pytać przed poleceniami. Opisuje to [aktualny przewodnik](../MODES.md).
-
-W Ask i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
+W Ask, Accept Edits i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
 
 Nie potrzebujesz konta, a klucze dodane przez `/provider` zostają na twoim komputerze. Z własnym kluczem API płacisz dostawcy bezpośrednio, a modele lokalne nie potrzebują klucza. Stopka i `/cost` pokazują koszt sesji, gdy cena jest znana; nieznana cena jest pokazywana jako nieznana, nigdy jako darmowa.
 

@@ -38,7 +38,7 @@ export const computerUse: ComputerUseDict = {
   source: "GitHub’da görüntüle",
   platforms: "Mac yardımcısı beta sürümündedir ve pazar yeri eklentisi yalnızca Mac’i destekler. Yayımlanan sürümlerde imzasız, deneysel bir Windows x64 önizlemesi de bulunur; Linux için kaynak koddan veya Docker ile deneysel kurulum gerekir. Windows ve Linux girdileri ortak masaüstünü kullanır.",
   connectTitle: "Codewhale’i bağlayın",
-  connectVersion: "Codewhale 0.10.2 eski bir Computer Use eklentisi içerir. Katalog girdisini yüklemek bunu güncellemez. Yüklü Mac yardımcısına MCP üzerinden doğrudan bağlanın.",
+  connectVersion: "Codewhale 0.10.3'te Computer Use'u yerleşik katalogdan yükleyin (/plugin marketplace install codewhale computer-use) veya aşağıdan Mac yardımcısına MCP üzerinden doğrudan bağlanın. Codewhale 0.10.2, katalog kurulumunun güncellemediği eski bir yerleşik eklenti içeriyordu; 0.10.2'de bunun yerine doğrudan MCP kullanın.",
   connectLimit: "Doğrudan MCP bağlantısı, eklenti becerileri olmadan araçlar ekler. Eski yerleşik eklentiyle birlikte kullanmayın. Bu eklenti etkinse önce /plugin disable computer-use çalıştırın.",
   connectRuntime: "Uygulama Node içerir; ayrıca yüklemeniz gerekmez. Başka bir konuma yüklendiyse APP değerini gerçek uygulama paketi yoluna ayarlayın.",
   connectReload: "Açık bir terminal oturumunda /mcp reload çalıştırın ve şunu isteyin:",

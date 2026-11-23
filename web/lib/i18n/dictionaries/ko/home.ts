@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand}는 터미널에서 쓰는 오픈 소스 코딩 에이전트이며 Rust로 작성되었습니다. 어떤 모델과도 함께 작동하고, 하나의 작업을 여러 에이전트에게 나눌 수 있으며, 코드 한 줄 한 줄을 직접 읽을 수 있습니다.",
   readTheCode: "코드 읽기",
   installNote: "버전 {version}은(는) 릴리스되었으며 계정이 필요 없습니다.",
-  captionReleased: "실시간 모델, DeepSeek API를 통한 deepseek-flash과 함께한 실제 세션입니다. 수정은 모델이 작성했고, 수정과 테스트 실행은 보이는 그대로 일어났습니다. 0.10.3 개발 빌드로 녹화했습니다.",
+  captionReleased: "실시간 모델, DeepSeek API를 통한 deepseek-flash과 함께한 실제 세션입니다. 수정은 모델이 작성했고, 수정과 테스트 실행은 보이는 그대로 일어났습니다. 0.10.3 프리릴리스 빌드로 녹화했습니다.",
   captureFrameNoPosture: "프롬프트와 결과 프레임에는 모델 이름과 승인 모드가 표시됩니다.",
   frameLabelPrompt: "프롬프트",
   frameLabelEdit: "편집",

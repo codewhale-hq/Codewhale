@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:7162aa6f1feb -->
+<!-- source: README.md sha256:b6024e3e06be -->
 <div align="center">
 
 <picture>
@@ -29,7 +29,7 @@ Lệnh này cài bản phát hành mới nhất trên macOS hoặc Linux và kh�
 
 <img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale trong terminal sau một tác vụ thật với deepseek-flash. Nó đã chạy python3 -m unittest -v test_ls.py, 2 bài kiểm thử đạt, và cho biết đã thêm tùy chọn --json vào ls.py. Dòng trạng thái hiển thị accept edits và deepseek-flash.">
 
-<sub>Một phiên làm việc thật trên bản dựng phát triển của 0.10.3: deepseek-flash qua API của DeepSeek đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
+<sub>Một phiên làm việc thật được ghi lại trong quá trình phát triển 0.10.3: deepseek-flash qua API của DeepSeek đã viết thay đổi, và bạn cho phép chạy kiểm thử một lần.</sub>
 
 </div>
 
@@ -96,11 +96,9 @@ Kết nối [máy chủ MCP](../MCP.md), thêm [kỹ năng](../SKILLS.md) và [p
 
 ## Cách nó giữ an toàn
 
-Hai công tắc quyết định Codewhale được tự làm bao nhiêu. Khi ô nhập trống, `Tab` đổi chế độ: **Plan** chỉ đọc và tìm kiếm, không thay đổi gì, **Work** chỉnh sửa tệp và chạy lệnh, còn **Operate** có cùng quyền như Work và tiếp tục cho đến khi mục tiêu được xác minh hoặc cần đến bạn. `Shift+Tab` đổi quyền. **Ask**, mặc định, áp dụng chỉnh sửa tệp trong kho mà không hỏi và hỏi trước các lệnh shell không chỉ đọc. **Auto-Review** để các quy tắc và một mô hình duyệt phê duyệt các lệnh gọi thông thường và từ chối lệnh rủi ro cao; chuyển sang Ask để tự phê duyệt chúng. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale, dù quy tắc của kho và chính sách quản lý vẫn áp dụng. [Hướng dẫn v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) có chi tiết.
+Mới trong 0.10.3: một núm xoay quyết định Codewhale được tự làm bao nhiêu. `Shift+Tab` lần lượt đi qua **Ask**, **Accept Edits**, **Plan**, **Auto-Review** và **Full Access** (`Tab` không còn đổi chế độ, và Operate đã bị loại bỏ). **Plan** chỉ đọc và tìm kiếm, không thay đổi gì; mọi nấc còn lại đều là **Work** với quyền tương ứng. **Ask** hỏi trước mỗi chỉnh sửa tệp và mỗi lệnh shell không chỉ đọc. **Accept Edits**, mặc định cho bản cài mới, áp dụng chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước các lệnh. **Auto-Review** để các quy tắc và một mô hình duyệt phê duyệt các lệnh gọi thông thường và từ chối lệnh rủi ro cao; chuyển sang Ask để tự phê duyệt chúng. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale, dù quy tắc của kho và chính sách quản lý vẫn áp dụng. [Hướng dẫn chế độ và quyền](../MODES.md) có chi tiết.
 
-Sắp có trong 0.10.3: `Shift+Tab` trở thành một núm xoay qua Ask, Accept Edits, Plan, Auto-Review và Full Access, `Tab` không còn đổi chế độ, và Operate bị loại bỏ. Ask sẽ hỏi trước cả mỗi chỉnh sửa tệp, còn mặc định mới, Accept Edits, sẽ áp dụng chỉnh sửa trong kho git và vẫn hỏi trước các lệnh. [Hướng dẫn hiện tại](../MODES.md) mô tả điều này.
-
-Ở Ask và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có: Seatbelt trên macOS, và bubblewrap trên Linux khi đã cài. Windows chưa có sandbox hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox, lệnh shell và phiên terminal không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và tệp `.env`. `/preview-request` hiển thị bản xem trước đã che thông tin nhạy cảm của yêu cầu tiếp theo mà không gửi nó.
+Ở Ask, Accept Edits và Auto-Review, lệnh chạy trong sandbox của hệ điều hành nếu hệ thống có: Seatbelt trên macOS, và bubblewrap trên Linux khi đã cài. Windows chưa có sandbox hệ điều hành, và Full Access tắt sandbox. Bên trong sandbox, lệnh shell và phiên terminal không thể đọc các kho thông tin xác thực như `~/.ssh`, `~/.aws` và tệp `.env`. `/preview-request` hiển thị bản xem trước đã che thông tin nhạy cảm của yêu cầu tiếp theo mà không gửi nó.
 
 Bạn không cần tài khoản, và khóa bạn thêm bằng `/provider` ở lại trên máy của bạn. Với khóa API của riêng bạn, bạn trả tiền trực tiếp cho nhà cung cấp, còn mô hình cục bộ không cần khóa. Chân trang và `/cost` cho biết một phiên đã tốn bao nhiêu khi biết giá, và giá chưa biết được hiển thị là chưa biết, không bao giờ là miễn phí.
 

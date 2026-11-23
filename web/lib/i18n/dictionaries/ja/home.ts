@@ -10,7 +10,7 @@ export const home: HomeDict = {
   heroIntro: "{brand} は、ターミナルで使うオープンソースのコーディングエージェントで、Rust で書かれています。どんなモデルでも動き、1 つのタスクを複数のエージェントに分担させられます。そのコードは 1 行残らず読めます。",
   readTheCode: "コードを読む",
   installNote: "バージョン {version} はリリース済みで、アカウントは不要です。",
-  captionReleased: "ライブのモデル、DeepSeek の API 経由の deepseek-flash を使った実際のセッションです。編集はモデルが書き、編集とテストの実行は表示どおりに行われました。0.10.3 の開発ビルドで記録しています。",
+  captionReleased: "ライブのモデル、DeepSeek の API 経由の deepseek-flash を使った実際のセッションです。編集はモデルが書き、編集とテストの実行は表示どおりに行われました。0.10.3 のプレリリースビルドで記録しています。",
   captureFrameNoPosture: "「プロンプト」と「結果」のフレームには、モデル名と承認モードが表示されます。",
   frameLabelPrompt: "プロンプト",
   frameLabelEdit: "編集",
