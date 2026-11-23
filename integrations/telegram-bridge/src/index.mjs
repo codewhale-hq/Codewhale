@@ -10,6 +10,7 @@ import {
   helpText,
   isAllowed,
   isGroupChat,
+  isPermanentTelegramError,
   isTelegramMarkdownParseError,
   latestRunningTurn,
   looksLikePollingConflict,
@@ -159,6 +160,11 @@ async function pollTelegram() {
           await markUpdateHandled(update);
         } catch (error) {
           console.error("failed to handle incoming Telegram update", error);
+          if (isPermanentTelegramError(error)) {
+            await markUpdateHandled(update);
+            continue;
+          }
+          await delay(telegramRetryDelayMs(error));
           break;
         }
       }
