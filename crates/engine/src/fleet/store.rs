@@ -907,8 +907,7 @@ pub fn load_fleet_at(path: &Path) -> Result<(FleetFile, FleetScope), FleetStoreE
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
-    let personal_dir = personal_fleets_dir()?;
-    let scope = if path.starts_with(&personal_dir) {
+    let scope = if personal_fleets_dir().is_ok_and(|dir| path.starts_with(dir)) {
         FleetScope::Personal
     } else {
         FleetScope::Workspace
@@ -1846,7 +1845,7 @@ role = "scout"
     }
 
     #[test]
-    fn load_fleet_at_propagates_home_resolution_error_instead_of_personal_scope() {
+    fn load_fleet_at_returns_workspace_scope_when_home_is_unresolvable() {
         let _lock = crate::test_support::lock_test_env();
         let ws = tempfile::TempDir::new().unwrap();
         let fleet = sample_fleet();
@@ -1854,12 +1853,10 @@ role = "scout"
 
         let _broken_home =
             crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative/broken-home");
-        let err = load_fleet_at(&path)
-            .expect_err("broken home must not fall back to empty path and Personal scope");
-        assert!(
-            matches!(err, FleetStoreError::Io { ref path, .. } if path == "$CODEWHALE_HOME/fleets"),
-            "unexpected error: {err:?}"
-        );
+        let (loaded, scope) = load_fleet_at(&path)
+            .expect("workspace fleet must still load when home cannot be resolved");
+        assert_eq!(loaded.name, fleet.name);
+        assert_eq!(scope, FleetScope::Workspace);
     }
 
     #[test]
