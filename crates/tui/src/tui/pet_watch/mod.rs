@@ -25,6 +25,7 @@ pub use appearance::BodyStyle;
 mod audio;
 mod audio_cursor;
 mod avatars;
+mod dots;
 mod full;
 mod graphics;
 mod habitat;
@@ -65,6 +66,8 @@ pub struct PetWatch {
     pub(crate) view_area: Option<Rect>,
     copy_area: Arc<Mutex<Option<Rect>>>,
     raster: Option<Presentation>,
+    dots: Option<dots::Dots>,
+    dots_frame: Option<dots::Frame>,
     controls: Arc<Mutex<Vec<Control>>>,
     desired: Option<Rect>,
     painted: Option<Rect>,
@@ -115,6 +118,10 @@ impl PetWatch {
         self.session = session;
         self.active_turn_id = None;
         self.raster = None;
+        if let Some(dots) = &self.dots {
+            dots.reset();
+        }
+        self.dots_frame = None;
         self.failed = false;
         self.unavailable = false;
         self.last_tick = None;
@@ -137,6 +144,9 @@ impl PetWatch {
         #[cfg(test)]
         if self.detached {
             return;
+        }
+        if self.dots.is_none() {
+            self.dots = Some(dots::Dots::start());
         }
         if self.worker.is_none() && !self.failed {
             match Worker::start(self.session.clone()) {
@@ -188,6 +198,9 @@ impl PetWatch {
             self.active_turn_id = Some(turn_id.clone());
         }
         if let Some(text) = metadata(event, self.active_turn_id.as_deref()) {
+            if let Some(dots) = &self.dots {
+                dots.observe(text.clone());
+            }
             self.send(Command::Observe(text));
         }
         if matches!(event, Event::TurnComplete { .. }) {
@@ -504,6 +517,10 @@ pub fn tick(app: &mut App, now: Instant) {
         && app.onboarding == crate::tui::app::OnboardingState::None
         && is_open(app);
     let motion = visible && full::motion(app).animates();
+    let waiting = matches!(
+        ShellPhase::from_app(app),
+        ShellPhase::Waiting | ShellPhase::Approval
+    );
     if visible && app.pet_watch.avatars.refresh(&app.workspace, now) {
         app.needs_redraw = true;
     }
@@ -549,6 +566,35 @@ pub fn tick(app: &mut App, now: Instant) {
             app.needs_redraw = true;
         }
     }
+    if let Some(dots) = &state.dots {
+        let own = full::presentation(
+            state.raster.as_ref(),
+            app.current_session_id.as_deref(),
+            now,
+        )
+        .is_some_and(|r| r.scene.materials.is_some());
+        let body = state
+            .raster
+            .as_ref()
+            .map(|r| match r.scene.appearance.body_style {
+                BodyStyle::Smooth => "smooth",
+                BodyStyle::Pixel => "pixel",
+            });
+        dots.set_view(
+            visible && state.avatars.current() == "whale" && !own,
+            motion,
+            waiting,
+            body,
+        );
+        if dots.failed() {
+            state.dots_frame = None;
+        } else if let Some(frame) = dots.take() {
+            state.dots_frame = Some(frame);
+            if visible {
+                app.needs_redraw = true;
+            }
+        }
+    }
     if state
         .last_tick
         .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_millis(30))
@@ -556,10 +602,6 @@ pub fn tick(app: &mut App, now: Instant) {
         state.last_tick = Some(now);
         let state = &app.pet_watch;
         if let Some(worker) = &state.worker {
-            let waiting = matches!(
-                ShellPhase::from_app(app),
-                ShellPhase::Waiting | ShellPhase::Approval
-            );
             let a = state.area.unwrap_or(Rect::new(0, 0, 40, 8));
             let cell = cell_pixels().unwrap_or((8.0, 16.0));
             let next = live::View {

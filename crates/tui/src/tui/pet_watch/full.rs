@@ -233,7 +233,7 @@ pub(super) fn agents(app: &App) -> Vec<Subagent<'static>> {
         })
         .collect()
 }
-fn presentation<'a>(
+pub(super) fn presentation<'a>(
     raster: Option<&'a super::live::Presentation>,
     session: Option<&str>,
     now: Instant,
@@ -365,6 +365,12 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
             now,
         )
         .is_some_and(|r| r.scene.materials.is_some());
+    let local = app
+        .pet_watch
+        .dots_frame
+        .as_ref()
+        .filter(|_| app.pet_watch.avatars.current() == "whale" && !prepared)
+        .map(|f| Duration::from_millis(if motion.animates() && f.busy { 66 } else { 250 }));
     let state = &mut app.pet_watch;
     state.full.update(
         app.current_session_id.as_deref(),
@@ -380,6 +386,10 @@ pub(super) fn tick(app: &mut App, visible: bool, now: Instant) {
     }
     if prepared {
         state.full_next = None;
+    } else if let Some(interval) = local {
+        if state.full_next.is_none_or(|deadline| now >= deadline) {
+            state.full_next = now.checked_add(interval);
+        }
     } else if let Some(interval) = state.full.next_frame_in(&agents, &theme) {
         if state.full_next.is_none_or(|deadline| now >= deadline) {
             state.full_next = now.checked_add(interval);
@@ -490,6 +500,17 @@ fn render(frame: &mut Frame, area: Rect, app: &mut App, inspect: bool) {
                 .caption(&words)
                 .hollow(hollow)
         })
+    });
+    let dot_whale = dot_whale.or_else(|| {
+        app.pet_watch
+            .dots_frame
+            .as_ref()
+            .filter(|_| view_key == "whale" && prepared.is_none())
+            .map(|f| {
+                DotWhale::new(&f.points, &f.materials)
+                    .caption(&words)
+                    .hollow(f.hollow)
+            })
     });
     let (act, clock) = avatars::act(app.pet_watch.raster.as_ref(), app.is_loading);
     let missing_atlas = !plan.pet.is_empty()
@@ -805,6 +826,46 @@ mod tests {
         app.low_motion = false;
         app.fancy_animations = false;
         assert_eq!(motion(&app), MotionMode::Still);
+    }
+    #[test]
+    fn a_terminal_that_is_not_the_companion_source_draws_its_own_dot_whale() {
+        let projector = super::super::dots::Projector::new().expect("committed bundle loads");
+        assert!(projector.observe(r#"{"event":"turn_started","turn_id":"t"}"#, 0.0));
+        assert!(projector.observe(
+            r#"{"event":"operation_activity_started","span_id":"s","activity_kind":"editing"}"#,
+            0.0
+        ));
+        let frame = projector
+            .frame(100.0, false, false, "smooth")
+            .unwrap()
+            .expect("a moving frame");
+        assert_eq!(frame.points.len(), 980);
+        assert_eq!(frame.materials.len(), 980);
+        assert!(!frame.hollow);
+        let still = projector
+            .frame(3000.0, true, false, "smooth")
+            .unwrap()
+            .expect("a still frame");
+        assert_eq!(still.points.len(), 980);
+        assert_eq!(projector.frame(3100.0, true, false, "smooth"), Ok(None));
+        assert!(projector.reset());
+        let rest = projector
+            .frame(3200.0, true, false, "smooth")
+            .unwrap()
+            .expect("a still rest frame");
+        assert!(rest.hollow);
+        assert_ne!(rest.points, still.points, "editing reshapes the dots");
+
+        let mut app = app();
+        assert!(paint(&mut app, 100, 32).contains(" needs "));
+        app.pet_watch.dots_frame = Some(frame);
+        let painted = paint(&mut app, 100, 32);
+        assert!(!painted.contains(" needs "), "{painted}");
+        assert!(
+            painted
+                .chars()
+                .any(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+        );
     }
     #[test]
     fn roster_scope_and_missing_vs_zero_receipts_come_from_the_existing_owner_guard() {
