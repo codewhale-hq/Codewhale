@@ -2427,6 +2427,7 @@ mod tests {
             panic!("expected migration to succeed with atomic backup");
         };
         let backup = receipt.backup_path.expect("backup path");
+        assert!(backup.exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
