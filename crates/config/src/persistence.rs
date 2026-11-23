@@ -35,10 +35,16 @@ fn is_unsupported_dir_sync_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
         std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
-    ) || matches!(
-        err.raw_os_error(),
-        Some(libc::EINVAL | libc::ENOTSUP | libc::EOPNOTSUPP | libc::EROFS | libc::EBADF)
-    )
+    ) || err.raw_os_error().is_some_and(|code| {
+        [
+            libc::EINVAL,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EROFS,
+            libc::EBADF,
+        ]
+        .contains(&code)
+    })
 }
 
 #[cfg(unix)]
