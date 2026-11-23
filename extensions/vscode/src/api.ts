@@ -432,7 +432,7 @@ function ensureOk(response: RequestResult, label: string): void {
   }
 }
 
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 async function requestJson(
   url: string,
@@ -453,7 +453,7 @@ async function requestJson(
           },
         },
         (response) => {
-          const tooLarge = () => request.destroy(new Error("Runtime response exceeds the 8 MiB limit."));
+          const tooLarge = () => request.destroy(new Error("Runtime response exceeds the 64 MiB limit."));
           if (Number(response.headers["content-length"]) > MAX_RESPONSE_BYTES) {
             tooLarge();
             return;

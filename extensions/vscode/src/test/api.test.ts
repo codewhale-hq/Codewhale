@@ -359,14 +359,14 @@ describe("api client", () => {
     const huge = http.createServer((_request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });
       const chunk = "x".repeat(1024 * 1024);
-      for (let i = 0; i < 9; i += 1) {
+      for (let i = 0; i < 65; i += 1) {
         response.write(chunk);
       }
       response.end();
     });
     await new Promise<void>((resolve) => huge.listen(0, "127.0.0.1", resolve));
     const hugeBase = `http://127.0.0.1:${(huge.address() as AddressInfo).port}`;
-    await assert.rejects(getThreadDetail({ baseUrl: hugeBase }, "thr_1"), /8 MiB limit/);
+    await assert.rejects(getThreadDetail({ baseUrl: hugeBase }, "thr_1"), /64 MiB limit/);
     huge.close();
   });
 });
