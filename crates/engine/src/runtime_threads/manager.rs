@@ -255,12 +255,16 @@ pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
         || normalized.ends_with("passwd")
 }
 
-fn runtime_receipt_locale() -> codewhale_localization::Locale {
-    codewhale_localization::resolve_locale(
-        &codewhale_runtime::settings::Settings::load()
-            .unwrap_or_default()
-            .locale,
-    )
+async fn runtime_receipt_locale() -> codewhale_localization::Locale {
+    tokio::task::spawn_blocking(|| {
+        codewhale_localization::resolve_locale(
+            &codewhale_runtime::settings::Settings::load()
+                .unwrap_or_default()
+                .locale,
+        )
+    })
+    .await
+    .unwrap_or(codewhale_localization::Locale::En)
 }
 
 pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
@@ -10201,18 +10205,7 @@ impl RuntimeThreadManager {
             } else {
                 None
             };
-            let receipt_locale = runtime_receipt_locale();
-            let permission_receipt = policy_patch.map(|policy| {
-                let label = |policy: RuntimePolicyProjection| {
-                    crate::core::authority::permission_label_for(
-                        receipt_locale,
-                        policy.mode,
-                        policy.permission,
-                    )
-                    .into_owned()
-                };
-                (label(previous_policy), label(policy))
-            });
+            let permission_receipt = policy_patch.map(|policy| (previous_policy, policy));
             // Archiving ends the conversation's session grants: unarchiving
             // later starts from a clean slate and the next call prompts.
             let ended_grants = if changes.get("archived") == Some(&json!(true)) {
@@ -10284,6 +10277,21 @@ impl RuntimeThreadManager {
             .await?;
         }
 
+        let permission_receipt = match permission_receipt {
+            Some((from, to)) => {
+                let receipt_locale = runtime_receipt_locale().await;
+                let label = |policy: RuntimePolicyProjection| {
+                    crate::core::authority::permission_label_for(
+                        receipt_locale,
+                        policy.mode,
+                        policy.permission,
+                    )
+                    .into_owned()
+                };
+                Some((label(from), label(to)))
+            }
+            None => None,
+        };
         if let Some((from, to)) = permission_receipt
             && from != to
         {
@@ -10301,7 +10309,7 @@ impl RuntimeThreadManager {
         to: &str,
     ) -> Result<()> {
         let message = codewhale_localization::tr(
-            runtime_receipt_locale(),
+            runtime_receipt_locale().await,
             codewhale_localization::MessageId::PermissionsChangedReceipt,
         )
         .replace("{label}", to);
@@ -20149,7 +20157,7 @@ source_usage_records: Default::default(),
                     tools_removed,
                 } => {
                     let mut message = codewhale_localization::tr(
-                        runtime_receipt_locale(),
+                        runtime_receipt_locale().await,
                         match decided_by.as_deref().filter(|value| !value.is_empty()) {
                             Some(_) => {
                                 codewhale_localization::MessageId::PluginChangedWithDeciderReceipt
