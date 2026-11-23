@@ -256,7 +256,11 @@ pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
 }
 
 async fn runtime_receipt_locale() -> codewhale_localization::Locale {
-    tokio::task::spawn_blocking(|| {
+    #[cfg(any(test, feature = "test-support"))]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = crate::test_support::join_env_scope(ticket);
         codewhale_localization::resolve_locale(
             &codewhale_runtime::settings::Settings::load()
                 .unwrap_or_default()
