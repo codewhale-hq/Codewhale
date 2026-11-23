@@ -226,7 +226,7 @@ export const FEISHU_MAX_TEXT_CHARS = 30000;
 
 export function helpText() {
   return [
-    "CodeWhale phone bridge commands:",
+    "Codewhale phone bridge commands:",
     "/help - show this help",
     "/status - runtime and workspace status",
     "/threads - recent runtime threads",
@@ -238,6 +238,6 @@ export function helpText() {
     "/allow <approval_id> [remember] - approve a pending tool call",
     "/deny <approval_id> - deny a pending tool call",
     "",
-    "Anything else is sent as a CodeWhale prompt."
+    "Anything else is sent as a Codewhale prompt."
   ].join("\n");
 }

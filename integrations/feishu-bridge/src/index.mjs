@@ -97,7 +97,7 @@ const dispatcher = new Lark.EventDispatcher({}).register({
   }
 });
 
-console.log("Starting CodeWhale Feishu bridge");
+console.log("Starting Codewhale Feishu bridge");
 console.log(`Runtime: ${config.runtimeUrl}`);
 console.log(`Workspace: ${config.workspace}`);
 if (!config.allowlist.length && !config.allowUnlisted) {
