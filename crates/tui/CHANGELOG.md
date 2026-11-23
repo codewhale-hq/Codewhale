@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added WorldRouter, an OpenAI-compatible gateway, as a bundled provider (`WORLDROUTER_API_KEY`, base URL `https://inference-api.worldrouter.ai/v1`). Thanks [@Opgeek-1](https://github.com/Opgeek-1). (#7488)
+
 ### Security
 
 - Updated `url` to 2.5.9 for RUSTSEC-2026-0592: a deeply nested `blob:` URL could overflow the stack in `Url::origin()` and end the process. Codewhale computes origins for redirect targets, OAuth endpoints and MCP servers.
@@ -15,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/provider` failed for projects on a second drive on Windows:** on a drive such as D: or E:, where Windows gives your account Modify but not Full control by default, Codewhale could not make the project's `.codewhale\state` folder private, so `/provider` and starting a session showed "The Engine session acknowledgement does not match this UI". Codewhale created that folder and you own it, so it now applies the owner-only permissions without asking Windows for the right to change the folder's owner. A folder owned by another account is still refused, now with a message that names it and says how to fix it.
 - **Ctrl+V pasted text twice on Windows Terminal:** the terminal pastes text itself and also forwards the key release, which read the clipboard a second time. A release with no key press now only attaches a clipboard image, which is the case the terminal cannot deliver, and a held Ctrl+V no longer pastes again on release.
+- **Ctrl+V pasted text twice on Windows Terminal:** the terminal pastes text itself and also forwards the key release, which read the clipboard a second time. A release with no key press now only attaches a clipboard image, which is the case the terminal cannot deliver, and a held Ctrl+V no longer pastes again on release. Thanks [@diegovskytl](https://github.com/diegovskytl) for the report. (Refs #7485)
 - **`codewhale update` refused a release binary in `~/.local/bin`:** any `.crates.toml` beside the `bin` directory, left by an unrelated `cargo install --root`, made the updater treat the binary as Cargo-managed. It now checks that Cargo's record lists this executable, as `codewhale doctor` already did.
 - **Every terminal draws the dot whale in `/pet`:** terminals whose session is not the shared pet companion's source no longer show the old whale with `whale needs /pet source · showing cove`. Each draws the dot whale and its activity forms (editing, reading, waiting, done and so on) from its own session. The source still decides what the companion records and plays sound for. (CW-8359)
 - **Resumed reasoning opens a card below tools:** when a gateway continues sending `thinking_delta` chunks after a tool card has already appeared beneath the active thinking card, Codewhale finalizes that earlier card (preserving any unrevealed thinking text and clearing stalled translation placeholders) and opens a fresh thinking card below the tool instead of growing the card above it. Thanks [@SparkofSpike](https://github.com/SparkofSpike). (#7455, Refs #7454)

@@ -47,6 +47,8 @@ changelog or release notes, and this contributor record.
 - **[thejesh23](https://github.com/thejesh23)** — first contribution: stopped one permanently refused Telegram reply from wedging the bridge's poll loop, with a mock Bot API repro that counted 27,520 redeliveries in 15 seconds ([#7479](https://github.com/codewhale-hq/Codewhale/pull/7479)), and kept code fences balanced when the bridges split a long reply by UTF-8 bytes for WeCom ([#7480](https://github.com/codewhale-hq/Codewhale/pull/7480)).
 - **[NieZhuZhu](https://github.com/NieZhuZhu)** — fixed eight audit findings: JSON error detail in `/import-claude`, a timeout on hung notification sound players, durable and size-bounded telemetry files, server-keyed telemetry ingest rate limiting, and release-doc gates that fail closed without the published tag ([#7482](https://github.com/codewhale-hq/Codewhale/pull/7482), [issue 7476](https://github.com/codewhale-hq/Codewhale/issues/7476)).
 - **[Sh1Zuku / SparkofSpike](https://github.com/SparkofSpike)** — kept streamed reasoning in the thinking card when a gateway opens a text block mid-stream ([#7452](https://github.com/codewhale-hq/Codewhale/pull/7452)) and opened a fresh thinking card below tools when reasoning resumes ([#7455](https://github.com/codewhale-hq/Codewhale/pull/7455)).
+- **[Opgeek-1](https://github.com/Opgeek-1)** — first contribution: added WorldRouter as a bundled OpenAI-compatible provider descriptor with its docs, pricing coverage and model-resolution rows ([#7488](https://github.com/codewhale-hq/Codewhale/pull/7488)).
+- **[diegovskytl](https://github.com/diegovskytl)** — reported Ctrl+V pasting text twice in Windows Terminal ([#7485](https://github.com/codewhale-hq/Codewhale/issues/7485)).
 
 </details>
 
