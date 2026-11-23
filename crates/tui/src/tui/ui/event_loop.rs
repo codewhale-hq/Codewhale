@@ -1382,7 +1382,7 @@ pub async fn run_tui(
         media_originals_dir: codewhale_runtime::media_originals::default_store_dir(),
     };
     codewhale_runtime::startup_trace::mark("task_manager_ready");
-    refresh_active_task_panel(&mut app, &task_manager).await;
+    refresh_active_task_panel(&mut app).await;
     refresh_automation_panel_blocking(&mut app).await;
 
     // A `[redaction] model_bound = "disabled"` request lowers the model-bound
@@ -1742,7 +1742,6 @@ async fn dispatch_launch_composer_submit(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
@@ -1754,7 +1753,6 @@ async fn dispatch_launch_composer_submit(
             terminal,
             app,
             engine_handle,
-            task_manager,
             config,
             chord,
             protect_paste,
@@ -1767,7 +1765,7 @@ async fn dispatch_launch_composer_submit(
     }
     let action = app.decide_composer_submit(chord);
     let result = begin_launch_session(app, None);
-    if apply_command_result(terminal, app, engine_handle, task_manager, config, result).await? {
+    if apply_command_result(terminal, app, engine_handle, config, result).await? {
         return Ok(true);
     }
     // The input below is dispatched in this same keypress. Let the engine
@@ -1796,8 +1794,7 @@ async fn dispatch_launch_composer_submit(
     }
     if looks_like_slash_command_input(&input) {
         // Commands own their output; only model-bound prompts become user turns.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
-        {
+        if execute_command_input(terminal, app, engine_handle, config, &input).await? {
             return Ok(true);
         }
     } else {
@@ -1883,7 +1880,6 @@ async fn dispatch_session_composer_submit(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     chord: ComposerSubmitChord,
     protect_paste: bool,
@@ -1904,7 +1900,6 @@ async fn dispatch_session_composer_submit(
         terminal,
         app,
         engine_handle,
-        task_manager,
         config,
         action,
         protect_paste,
@@ -1926,7 +1921,6 @@ async fn submit_decided_composer_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     action: ComposerSubmitAction,
     protect_paste: bool,
@@ -1938,15 +1932,7 @@ async fn submit_decided_composer_input(
             && app.composer_enter_would_submit(protect_paste, now)
         {
             let input = app.input.clone();
-            return execute_command_input(
-                terminal,
-                app,
-                engine_handle,
-                task_manager,
-                config,
-                &input,
-            )
-            .await;
+            return execute_command_input(terminal, app, engine_handle, config, &input).await;
         }
         app.status_message = Some(
             "A new session is awaiting Engine confirmation; the draft is preserved.".to_string(),
@@ -2003,8 +1989,7 @@ async fn submit_decided_composer_input(
     if looks_like_slash_command_input(&input) {
         // Opening a view is not a conversation turn. SendMessage actions
         // record their real prompt through dispatch_composer_message instead.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
-        {
+        if execute_command_input(terminal, app, engine_handle, config, &input).await? {
             return Ok(true);
         }
     } else {
@@ -2012,7 +1997,6 @@ async fn submit_decided_composer_input(
             terminal,
             app,
             engine_handle,
-            task_manager,
             config,
             input,
             action,
@@ -2026,7 +2010,6 @@ async fn dispatch_submitted_composer_message(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: String,
     action: ComposerSubmitAction,
@@ -2036,8 +2019,7 @@ async fn dispatch_submitted_composer_message(
     // replacement. Sync the engine session so it also drops the old
     // exchange.
     if let Some(result) = edit_replacement_result(app, &input) {
-        return apply_command_result(terminal, app, engine_handle, task_manager, config, result)
-            .await;
+        return apply_command_result(terminal, app, engine_handle, config, result).await;
     }
     let (queued, recovery) = message_from_submitted_input(app, input);
     dispatch_composer_message(app, config, engine_handle, queued, recovery, action).await?;
@@ -2611,7 +2593,10 @@ pub(crate) async fn run_event_loop(
         }
 
         if last_task_refresh.elapsed() >= Duration::from_millis(2500) {
-            match refresh_active_task_panel(app, &task_manager).await {
+            // Reads through the App's slot: a session switch can replace the
+            // manager, and a launch-time handle would then describe a store
+            // this host no longer holds.
+            match refresh_active_task_panel(app).await {
                 LiveRefresh::Changed => app.needs_redraw = true,
                 LiveRefresh::ElapsedOnly => idle_clock.note_elapsed_only_change(),
                 LiveRefresh::Unchanged => {}
@@ -2725,15 +2710,8 @@ pub(crate) async fn run_event_loop(
         // potentially long engine batch so composer/modal input stays live.
         collect_pending_terminal_events(&terminal_input, &mut pending_terminal_events)?;
         if let Some(change) = app.poll_external_catalog_changes(mcp_engine_busy(app)) {
-            apply_external_catalog_change(
-                terminal,
-                app,
-                &mut engine_handle,
-                &task_manager,
-                config,
-                change,
-            )
-            .await?;
+            apply_external_catalog_change(terminal, app, &mut engine_handle, config, change)
+                .await?;
         }
 
         if drain_remote_control_events(app, config, &engine_handle).await? {
@@ -3356,7 +3334,7 @@ pub(crate) async fn run_event_loop(
                                 // any `tasks` completion refreshes the panel.
                                 | "tasks"
                         ) {
-                            refresh_active_task_panel(app, &task_manager).await;
+                            refresh_active_task_panel(app).await;
                             last_task_refresh = Instant::now();
                         }
                         if matches!(name.as_str(), "agent") {
@@ -5538,15 +5516,8 @@ pub(crate) async fn run_event_loop(
                 app.needs_redraw = true;
             }
             if !tick.events.is_empty()
-                && handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    tick.events,
-                )
-                .await?
+                && handle_view_events_boxed(terminal, app, config, &mut engine_handle, tick.events)
+                    .await?
             {
                 return Ok(());
             }
@@ -6158,15 +6129,8 @@ pub(crate) async fn run_event_loop(
                     &mut pending_terminal_events,
                 )?;
                 let events = handle_mouse_event(app, mouse, event_observed_at);
-                if handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    events,
-                )
-                .await?
+                if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                    .await?
                 {
                     return Ok(());
                 }
@@ -6185,7 +6149,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 result,
                             )
@@ -6200,7 +6163,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 result,
                             )
@@ -6236,7 +6198,6 @@ pub(crate) async fn run_event_loop(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         chord,
                         true,
@@ -6258,7 +6219,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 commands::CommandResult::action(action),
                             )
@@ -6473,7 +6433,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 &command,
                             )
@@ -6581,15 +6540,8 @@ pub(crate) async fn run_event_loop(
                     }
                     let events = app.view_stack.handle_key(key);
                     app.needs_redraw = true;
-                    if handle_view_events_boxed(
-                        terminal,
-                        app,
-                        config,
-                        &task_manager,
-                        &mut engine_handle,
-                        events,
-                    )
-                    .await?
+                    if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                        .await?
                     {
                         return Ok(());
                     }
@@ -6722,7 +6674,6 @@ pub(crate) async fn run_event_loop(
                     terminal,
                     app,
                     config,
-                    &task_manager,
                     &mut engine_handle,
                     vec![ViewEvent::TopbarRoutePickerRequested],
                 )
@@ -6741,15 +6692,8 @@ pub(crate) async fn run_event_loop(
                 if !app.view_stack.is_empty() {
                     let events = app.view_stack.handle_key(key);
                     app.needs_redraw = true;
-                    if handle_view_events_boxed(
-                        terminal,
-                        app,
-                        config,
-                        &task_manager,
-                        &mut engine_handle,
-                        events,
-                    )
-                    .await?
+                    if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                        .await?
                     {
                         return Ok(());
                     }
@@ -6844,7 +6788,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 chord,
                                 key.modifiers == KeyModifiers::NONE,
@@ -6901,7 +6844,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 result,
                             )
@@ -7044,15 +6986,8 @@ pub(crate) async fn run_event_loop(
                 };
                 clear_work_inspector_after_pager_close(app, closing_work_inspector);
                 app.needs_redraw = true;
-                if handle_view_events_boxed(
-                    terminal,
-                    app,
-                    config,
-                    &task_manager,
-                    &mut engine_handle,
-                    events,
-                )
-                .await?
+                if handle_view_events_boxed(terminal, app, config, &mut engine_handle, events)
+                    .await?
                 {
                     return Ok(());
                 }
@@ -7070,7 +7005,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 commands::CommandResult::action(action),
                             )
@@ -7786,7 +7720,6 @@ pub(crate) async fn run_event_loop(
                             terminal,
                             app,
                             &mut engine_handle,
-                            &task_manager,
                             config,
                             action,
                             false,
@@ -7805,7 +7738,6 @@ pub(crate) async fn run_event_loop(
                                 terminal,
                                 app,
                                 &mut engine_handle,
-                                &task_manager,
                                 config,
                                 &input,
                             )
@@ -7817,7 +7749,6 @@ pub(crate) async fn run_event_loop(
                             terminal,
                             app,
                             &mut engine_handle,
-                            &task_manager,
                             config,
                             input,
                             action,
@@ -7840,7 +7771,6 @@ pub(crate) async fn run_event_loop(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         action,
                         is_plain_enter,
@@ -8103,7 +8033,6 @@ pub(crate) async fn run_event_loop(
                         terminal,
                         app,
                         &mut engine_handle,
-                        &task_manager,
                         config,
                         "/update install",
                     )

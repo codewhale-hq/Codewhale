@@ -1523,7 +1523,6 @@ pub(crate) async fn handle_config_updated(
     terminal: &mut AppTerminal,
     app: &mut App,
     config: &mut Config,
-    task_manager: &SharedTaskManager,
     engine_handle: &mut EngineHandle,
     key: String,
     value: String,
@@ -1562,7 +1561,7 @@ pub(crate) async fn handle_config_updated(
         app.force_next_full_repaint = true;
     }
     let rejected = result.is_error;
-    if apply_command_result(terminal, app, engine_handle, task_manager, config, result).await? {
+    if apply_command_result(terminal, app, engine_handle, config, result).await? {
         return Ok(true);
     }
 
@@ -1586,7 +1585,6 @@ async fn handle_theme_selection_updated(
     terminal: &mut AppTerminal,
     app: &mut App,
     config: &mut Config,
-    task_manager: &SharedTaskManager,
     engine_handle: &mut EngineHandle,
     theme: String,
     persist: bool,
@@ -1598,7 +1596,7 @@ async fn handle_theme_selection_updated(
     // The theme owns the shell paint and must bypass ratatui's incremental
     // cell diff, including an Esc rollback.
     app.force_next_full_repaint = true;
-    if apply_command_result(terminal, app, engine_handle, task_manager, config, result).await? {
+    if apply_command_result(terminal, app, engine_handle, config, result).await? {
         return Ok(true);
     }
     refresh_config_view_if_open(app, "theme");
@@ -1883,7 +1881,6 @@ pub(crate) async fn handle_view_events(
     terminal: &mut AppTerminal,
     app: &mut App,
     config: &mut Config,
-    task_manager: &SharedTaskManager,
     engine_handle: &mut EngineHandle,
     events: Vec<ViewEvent>,
 ) -> Result<bool> {
@@ -1891,15 +1888,7 @@ pub(crate) async fn handle_view_events(
         match event {
             ViewEvent::CommandPaletteSelected { action } => match action {
                 crate::tui::views::CommandPaletteAction::ExecuteCommand { command } => {
-                    if execute_command_input(
-                        terminal,
-                        app,
-                        engine_handle,
-                        task_manager,
-                        config,
-                        &command,
-                    )
-                    .await?
+                    if execute_command_input(terminal, app, engine_handle, config, &command).await?
                     {
                         return Ok(true);
                     }
@@ -1940,9 +1929,7 @@ pub(crate) async fn handle_view_events(
                 {
                     open_text_pager(app, title, text);
                 }
-                if apply_command_result(terminal, app, engine_handle, task_manager, config, result)
-                    .await?
-                {
+                if apply_command_result(terminal, app, engine_handle, config, result).await? {
                     return Ok(true);
                 }
                 // The row the user just changed re-reads live state, and so
@@ -2311,7 +2298,7 @@ pub(crate) async fn handle_view_events(
                                 continue;
                             }
                         };
-                        sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
+                        sync_runtime_workspace_state(app, app.workspace.clone()).await;
                         // #6150 audit: these sends may await a full op channel,
                         // and that await is load-bearing — the session switch
                         // is already committed UI-side, so each op must land in
@@ -2449,17 +2436,8 @@ pub(crate) async fn handle_view_events(
                 value,
                 persist,
             } => {
-                if handle_config_updated(
-                    terminal,
-                    app,
-                    config,
-                    task_manager,
-                    engine_handle,
-                    key,
-                    value,
-                    persist,
-                )
-                .await?
+                if handle_config_updated(terminal, app, config, engine_handle, key, value, persist)
+                    .await?
                 {
                     return Ok(true);
                 }
@@ -2469,7 +2447,6 @@ pub(crate) async fn handle_view_events(
                     terminal,
                     app,
                     config,
-                    task_manager,
                     engine_handle,
                     theme,
                     persist,
@@ -3545,9 +3522,7 @@ pub(crate) async fn handle_view_events(
             // waiting for an unrelated mouse event to drain that queue.
             ViewEvent::LaunchResumeConfirmed { session_id } => {
                 let result = resume_launch_session(app, &session_id);
-                if apply_command_result(terminal, app, engine_handle, task_manager, config, result)
-                    .await?
-                {
+                if apply_command_result(terminal, app, engine_handle, config, result).await? {
                     return Ok(true);
                 }
                 app.needs_redraw = true;
@@ -3594,15 +3569,8 @@ pub(crate) async fn handle_view_events(
                 match apply_context_menu_action(app, action) {
                     ContextMenuOutcome::Done => {}
                     ContextMenuOutcome::Events(events) => {
-                        if handle_view_events_boxed(
-                            terminal,
-                            app,
-                            config,
-                            task_manager,
-                            engine_handle,
-                            events,
-                        )
-                        .await?
+                        if handle_view_events_boxed(terminal, app, config, engine_handle, events)
+                            .await?
                         {
                             return Ok(true);
                         }
@@ -3651,7 +3619,6 @@ pub(crate) fn handle_view_events_boxed<'a>(
     terminal: &'a mut AppTerminal,
     app: &'a mut App,
     config: &'a mut Config,
-    task_manager: &'a SharedTaskManager,
     engine_handle: &'a mut EngineHandle,
     events: Vec<ViewEvent>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + 'a>> {
@@ -3667,7 +3634,6 @@ pub(crate) fn handle_view_events_boxed<'a>(
                         terminal,
                         app,
                         config,
-                        task_manager,
                         engine_handle,
                         key,
                         value,
@@ -3683,7 +3649,6 @@ pub(crate) fn handle_view_events_boxed<'a>(
                         terminal,
                         app,
                         config,
-                        task_manager,
                         engine_handle,
                         theme,
                         persist,
@@ -3698,7 +3663,6 @@ pub(crate) fn handle_view_events_boxed<'a>(
                         terminal,
                         app,
                         config,
-                        task_manager,
                         engine_handle,
                         vec![other],
                     ))

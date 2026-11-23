@@ -1037,7 +1037,6 @@ async fn execute_command_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
@@ -1082,7 +1081,7 @@ async fn execute_command_input(
         app.api_key_env_only =
             codewhale_runtime::config::active_provider_uses_env_only_api_key(config);
     }
-    apply_command_result(terminal, app, engine_handle, task_manager, config, result).await
+    apply_command_result(terminal, app, engine_handle, config, result).await
 }
 
 #[derive(Debug, Clone)]

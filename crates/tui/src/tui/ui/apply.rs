@@ -1623,14 +1623,12 @@ pub(crate) fn apply_command_result<'a>(
     terminal: &'a mut AppTerminal,
     app: &'a mut App,
     engine_handle: &'a mut EngineHandle,
-    task_manager: &'a SharedTaskManager,
     config: &'a mut Config,
     result: commands::CommandResult,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + 'a>> {
     Box::pin(async move {
         let outcome =
-            apply_command_result_inner(terminal, app, engine_handle, task_manager, config, result)
-                .await;
+            apply_command_result_inner(terminal, app, engine_handle, config, result).await;
         // A save the command made may have moved legacy top-level `base_url` /
         // `api_key` into their provider tables (#6394); say so once.
         for notice in codewhale_config::legacy_root::take_notices() {
@@ -1644,10 +1642,15 @@ async fn apply_command_result_inner(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
+    // Read the slot for this dispatch. Only the task actions below consume it,
+    // and they each report their own failure, so a host between managers
+    // (`None`) must not swallow an unrelated command such as `/quit`. A switch
+    // cannot land between these reads and their use: the dispatcher owns the
+    // command result being applied.
+    let task_manager = app.task_manager();
     if app.pending_fresh_session.is_some()
         && !matches!(
             result.action.as_ref(),
@@ -1770,7 +1773,7 @@ async fn apply_command_result_inner(
                         return Ok(false);
                     }
                 };
-                sync_runtime_workspace_state(task_manager, app.workspace.clone()).await;
+                sync_runtime_workspace_state(app, app.workspace.clone()).await;
                 if respawn {
                     replace_tui_engine(app, config, engine_handle).await;
                 } else {
@@ -1852,10 +1855,13 @@ async fn apply_command_result_inner(
                     };
                     install_offline_queue_transition(app, transition);
                 }
-                let workspace_changed = task_manager.default_workspace().await != workspace;
+                let workspace_changed = match task_manager.as_ref() {
+                    Some(manager) => manager.default_workspace().await != workspace,
+                    None => true,
+                };
                 if workspace_changed {
                     apply_workspace_runtime_state(app, config, workspace.clone());
-                    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+                    sync_runtime_workspace_state(app, workspace.clone()).await;
                 }
                 let identity =
                     match app
@@ -2330,13 +2336,7 @@ async fn apply_command_result_inner(
                 }
             }
             AppAction::RouterSetup { request } => {
-                crate::tui::views::router_setup::handle_router_request(
-                    app,
-                    config,
-                    task_manager,
-                    request,
-                )
-                .await;
+                crate::tui::views::router_setup::handle_router_request(app, config, request).await;
             }
             AppAction::FetchBalance => {
                 let provider = app.api_provider;
@@ -3146,6 +3146,16 @@ async fn apply_command_result_inner(
                     owner_session_id: Some(owner_session_id),
                     disallowed_tools: Vec::new(),
                 };
+                let Some(task_manager) = task_manager.as_ref() else {
+                    app.add_message(HistoryCell::System {
+                        content: codewhale_localization::tr(
+                            app.ui_locale,
+                            codewhale_localization::MessageId::TaskInventoryUnavailable,
+                        )
+                        .to_string(),
+                    });
+                    return Ok(false);
+                };
                 match task_manager.add_task(request).await {
                     Ok(task) => {
                         app.add_message(HistoryCell::System {
@@ -3163,18 +3173,21 @@ async fn apply_command_result_inner(
                         });
                     }
                 }
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::TaskList => {
                 let tasks = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .list_tasks_for_owner(Some(30), None, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .list_tasks_for_owner(Some(30), None, session_id)
+                                .await
+                        }
+                        None => Ok(Vec::new()),
+                    },
                     None => Ok(Vec::new()),
                 };
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
                 app.add_message(HistoryCell::System {
                     content: match tasks {
                         Ok(tasks) => format_task_list(&tasks),
@@ -3199,11 +3212,14 @@ async fn apply_command_result_inner(
             },
             AppAction::TaskShow { id } => {
                 let task = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .get_task_for_interactive_session(&id, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .get_task_for_interactive_session(&id, session_id)
+                                .await
+                        }
+                        None => Err(anyhow::anyhow!("Task not found: {id}")),
+                    },
                     None => Err(anyhow::anyhow!("Task not found: {id}")),
                 };
                 match task {
@@ -3217,11 +3233,14 @@ async fn apply_command_result_inner(
             }
             AppAction::TaskCancel { id } => {
                 let cancellation = match app.current_session_id.as_deref() {
-                    Some(session_id) => {
-                        task_manager
-                            .cancel_task_for_interactive_session(&id, session_id)
-                            .await
-                    }
+                    Some(session_id) => match task_manager.as_ref() {
+                        Some(manager) => {
+                            manager
+                                .cancel_task_for_interactive_session(&id, session_id)
+                                .await
+                        }
+                        None => Err(anyhow::anyhow!("Task not found: {id}")),
+                    },
                     None => Err(anyhow::anyhow!("Task not found: {id}")),
                 };
                 match cancellation {
@@ -3239,24 +3258,23 @@ async fn apply_command_result_inner(
                         });
                     }
                 }
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::Automation(action) => {
-                crate::tui::automation_routing::handle_action(app, config, action, task_manager)
-                    .await;
+                crate::tui::automation_routing::handle_action(app, config, action).await;
             }
             AppAction::ShellJob(action) => {
                 handle_shell_job_action(app, action);
                 // Immediately sync the task panel after cancel/poll so the
                 // Activity sidebar stays accurate without waiting for the
                 // next 2.5 s periodic refresh (#2937).
-                refresh_active_task_panel(app, task_manager).await;
+                refresh_active_task_panel(app).await;
             }
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, engine_handle, config, action).await;
             }
             AppAction::SwitchWorkspace { workspace } => {
-                switch_workspace(app, engine_handle, task_manager, config, workspace).await;
+                switch_workspace(app, engine_handle, config, workspace).await;
             }
             AppAction::SwitchProfile { profile } => {
                 let previous_profile = app.config_profile.clone();

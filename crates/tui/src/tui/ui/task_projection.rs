@@ -7,10 +7,11 @@ use crate::tui::automation_panel::AutomationScan;
 use crate::tui::background_finished::{FinishedOutcome, FinishedWork, MAX_FINISHED_SHELLS};
 use codewhale_localization::{Locale, MessageId, tr};
 
-pub(super) async fn refresh_active_task_panel(
-    app: &mut App,
-    task_manager: &SharedTaskManager,
-) -> LiveRefresh {
+pub(super) async fn refresh_active_task_panel(app: &mut App) -> LiveRefresh {
+    let Some(task_manager) = app.task_manager() else {
+        return LiveRefresh::Unchanged;
+    };
+    let task_manager = &task_manager;
     let namespace_changed = app.task_panel_session_id != app.current_session_id;
     if namespace_changed {
         app.task_panel.clear();

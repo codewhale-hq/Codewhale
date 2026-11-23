@@ -35505,7 +35505,8 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
     let mut app = create_test_app();
     app.current_session_id = Some("session-a".into());
     app.session_started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     assert_eq!(
         app.background_finished.len(),
@@ -35513,20 +35514,20 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "first observed after completion"
     );
     app.background_finished.clear();
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.background_finished.is_empty(), "no repeated completion");
     let queue = root.path().join("queue.json");
     let saved = std::fs::read(&queue)?;
     std::fs::write(&queue, b"{corrupt")?;
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     app.current_session_id = Some("session-b".into());
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
@@ -35535,7 +35536,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "session A's stale rows cannot cross into B"
     );
     std::fs::write(queue, saved)?;
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(!app.task_panel_unavailable);
     assert!(app.task_panel.is_empty());
     tasks.shutdown_and_wait().await?;
