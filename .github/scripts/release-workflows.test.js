@@ -1283,7 +1283,12 @@ assert.equal(
   "only macOS release builds may use the self-hosted Mac, and only when pin chose it",
 );
 const releaseBuild = jobBlock(artifacts, "build");
-assert.match(namedStep(releaseBuild, "Fresh rustup, Cargo home and temp for a self-hosted release build"), /rm -rf "\$\{fresh\}"/);
+const freshReleaseHome = namedStep(releaseBuild, "Fresh rustup, Cargo home and temp for a self-hosted release build");
+assert.match(freshReleaseHome, /rm -rf "\$\{fresh\}"/);
+for (const remap of [/"\$\{CARGO_HOME\}=\/cargo"/, /"\$\(cd "\$\{fresh\}" && pwd -P\)\/\.cargo=\/cargo"/, /"\$\{GITHUB_WORKSPACE\}=\/codewhale"/, /"\$\(cd "\$\{GITHUB_WORKSPACE\}" && pwd -P\)=\/codewhale"/]) {
+  assert.match(freshReleaseHome, remap, "self-hosted shipping binaries must not embed the build machine's home or workspace paths");
+}
+assert.match(freshReleaseHome, /CARGO_ENCODED_RUSTFLAGS=/);
 assert.match(namedStep(releaseBuild, "Start the self-hosted release build from an empty target"), /rm -rf target\n\s+test -z "\$\(git status --porcelain --ignored\)"/);
 assert.match(releaseBuild, /uses: Swatinem\/rust-cache@[^\n]+\n        if: runner\.environment != 'self-hosted'\n/, "self-hosted shipping builds must not restore or save a shared cache");
 assert.match(candidate, /^      macos_runner: \$\{\{ inputs\.macos_runner \}\}$/m);

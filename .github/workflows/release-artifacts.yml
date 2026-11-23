@@ -203,6 +203,11 @@ jobs:
           export HOME="${fresh}" CARGO_HOME="${fresh}/.cargo" RUSTUP_HOME="${fresh}/.rustup"
           curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSf https://sh.rustup.rs \
             | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          read -ra flags <<< "${RUSTFLAGS}"
+          for prefix in "${CARGO_HOME}=/cargo" "$(cd "${fresh}" && pwd -P)/.cargo=/cargo" \
+            "${GITHUB_WORKSPACE}=/codewhale" "$(cd "${GITHUB_WORKSPACE}" && pwd -P)=/codewhale"; do
+            flags+=("--remap-path-prefix=${prefix}")
+          done
           {
             echo "HOME=${HOME}"
             echo "CARGO_HOME=${CARGO_HOME}"
@@ -210,6 +215,7 @@ jobs:
             echo "TMPDIR=${fresh}/tmp"
             echo "CARGO_BUILD_JOBS=6"
             echo "CW_RELEASE_HOME=${fresh}"
+            printf 'CARGO_ENCODED_RUSTFLAGS=%s\n' "$(IFS=$'\037'; echo "${flags[*]}")"
           } >> "${GITHUB_ENV}"
           echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
       # No ref: — GITHUB_SHA only. CodeQL treats workflow_call checkout-with-ref
