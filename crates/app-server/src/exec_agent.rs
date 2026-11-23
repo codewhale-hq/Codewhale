@@ -1468,30 +1468,12 @@ pub async fn run_exec_agent(
                 } else if let Ok(mut manager) = exec_shell_manager.lock() {
                     manager.abort_persistent_services();
                 }
-                summary.status = Some(format!("{terminal_status:?}").to_lowercase());
-                if terminal_error.is_some() {
-                    summary.error = terminal_error;
-                }
-                if sandbox_denied
-                    && summary.error.is_none()
-                    && matches!(
-                        terminal_status,
-                        codewhale_engine::core::events::TurnOutcomeStatus::Failed
-                    )
-                {
-                    summary.error = Some(
-                        "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
-                            .to_string(),
-                    );
-                }
-                if last_error_category.is_none() {
-                    last_error_category = summary
-                        .error
-                        .as_deref()
-                        .map(codewhale_error_taxonomy::classify_error_message);
-                    summary.error_category =
-                        last_error_category.map(|category| category.to_string());
-                }
+                summary.apply_turn_complete_error_summary(
+                    terminal_status,
+                    terminal_error,
+                    sandbox_denied,
+                    &mut last_error_category,
+                );
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     let saved = open_exec_session_manager().and_then(|manager| {
                         if exec_write_receipt.is_none() && exec_is_fresh {
@@ -3835,6 +3817,40 @@ impl ExecSummary {
         self.success = Some(self.error.is_none() && self.status.as_deref() == Some("completed"));
         self.usage = usage;
     }
+
+    fn apply_turn_complete_error_summary(
+        &mut self,
+        terminal_status: codewhale_engine::core::events::TurnOutcomeStatus,
+        terminal_error: Option<String>,
+        sandbox_denied: bool,
+        last_error_category: &mut Option<codewhale_error_taxonomy::ErrorCategory>,
+    ) {
+        self.status = Some(format!("{terminal_status:?}").to_lowercase());
+        if terminal_error.is_some() {
+            self.error = terminal_error;
+        }
+        let synthesized_sandbox_denial = if sandbox_denied
+            && self.error.is_none()
+            && matches!(
+                terminal_status,
+                codewhale_engine::core::events::TurnOutcomeStatus::Failed
+            ) {
+            self.error = Some(
+                "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
+                    .to_string(),
+            );
+            true
+        } else {
+            false
+        };
+        if last_error_category.is_none() && !synthesized_sandbox_denial {
+            *last_error_category = self
+                .error
+                .as_deref()
+                .map(codewhale_error_taxonomy::classify_error_message);
+            self.error_category = last_error_category.map(|category| category.to_string());
+        }
+    }
 }
 
 pub fn validate_exec_tool_authority_resume(
@@ -5347,5 +5363,60 @@ wire = "{wire}"
         );
         assert!(!exec_saved_session_line(session_id).contains(session_id));
         assert!(!exec_resumed_session_line(session_id).contains(session_id));
+    }
+
+    #[test]
+    fn sandbox_denial_fallback_preserves_approval_required_termination() {
+        let mut summary = ExecSummary::default();
+        let mut last_error_category = None;
+        summary.apply_turn_complete_error_summary(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            None,
+            true,
+            &mut last_error_category,
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some(
+                "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
+            )
+        );
+        assert_eq!(last_error_category, None);
+        assert_eq!(summary.error_category, None);
+        let termination = codewhale_engine::core::termination::classify_turn_termination(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            last_error_category,
+            false,
+            true,
+        );
+        assert_eq!(
+            termination,
+            codewhale_engine::core::termination::RunTerminationReason::ApprovalRequired
+        );
+        assert_eq!(termination.process_exit_code(), 3);
+
+        let mut timed_out_summary = ExecSummary::default();
+        let mut timed_out_category = None;
+        timed_out_summary.apply_turn_complete_error_summary(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            Some("upstream request timed out".to_string()),
+            true,
+            &mut timed_out_category,
+        );
+        assert_eq!(
+            timed_out_category,
+            Some(codewhale_error_taxonomy::ErrorCategory::Timeout)
+        );
+        let timed_out_termination = codewhale_engine::core::termination::classify_turn_termination(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
+            timed_out_category,
+            false,
+            true,
+        );
+        assert_eq!(
+            timed_out_termination,
+            codewhale_engine::core::termination::RunTerminationReason::Timeout
+        );
+        assert_eq!(timed_out_termination.process_exit_code(), 1);
     }
 }
