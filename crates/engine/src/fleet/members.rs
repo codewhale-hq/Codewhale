@@ -128,7 +128,7 @@ impl FleetModelError {
             Self::NotInFleet { route, fleet } => tr(locale, MessageId::FleetModelErrorNotInFleet)
                 .replace("{route}", route)
                 .replace("{fleet}", fleet),
-            Self::Store(error) => error.to_string(),
+            Self::Store(error) => error.message(locale),
         }
     }
 }
@@ -1047,6 +1047,65 @@ mod tests {
             err.message(Locale::En).contains("is not on the team"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn store_error_message_is_localized_for_non_english_locales() {
+        let cases = [
+            (
+                FleetStoreError::Invalid("bad schema".to_string()),
+                "invalid fleet:",
+            ),
+            (
+                FleetStoreError::Ambiguous(
+                    "team".to_string(),
+                    "user".to_string(),
+                    "folder".to_string(),
+                ),
+                "is defined in both",
+            ),
+            (
+                FleetStoreError::NotFound("missing.toml".to_string()),
+                "fleet file not found:",
+            ),
+            (
+                FleetStoreError::Io {
+                    path: "team.toml".to_string(),
+                    message: "permission denied".to_string(),
+                },
+                "failed to read",
+            ),
+            (
+                FleetStoreError::Parse {
+                    path: "team.toml".to_string(),
+                    message: "unexpected EOF".to_string(),
+                },
+                "failed to parse",
+            ),
+            (
+                FleetStoreError::NameTaken {
+                    name: "team".to_string(),
+                    path: "team.toml".to_string(),
+                },
+                "already exists at",
+            ),
+        ];
+
+        for (store_err, english_literal) in cases {
+            let err = FleetModelError::Store(store_err);
+            let en = err.message(Locale::En);
+            let zh = err.message(Locale::ZhHans);
+            assert!(en.contains(english_literal), "en={en}");
+            assert_eq!(err.to_string(), en);
+            assert_ne!(
+                zh, en,
+                "zh-Hans must differ from English for {english_literal}"
+            );
+            assert!(
+                !zh.contains(english_literal),
+                "zh-Hans must not leak English literal `{english_literal}`: {zh}"
+            );
+        }
     }
 
     /// The picker's ⇧F creates only a persisted model choice, never a role.

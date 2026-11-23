@@ -29,6 +29,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use codewhale_config::ProviderKind;
+use codewhale_localization::{Locale, MessageId, tr};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -278,6 +279,34 @@ pub enum FleetStoreError {
     Parse { path: String, message: String },
     #[error("a fleet named `{name}` already exists at {path}; rename it or choose another name")]
     NameTaken { name: String, path: String },
+}
+
+impl FleetStoreError {
+    /// The person-facing explanation in `locale`.
+    #[must_use]
+    pub fn message(&self, locale: Locale) -> String {
+        match self {
+            Self::Invalid(message) => {
+                tr(locale, MessageId::FleetStoreErrorInvalid).replace("{message}", message)
+            }
+            Self::Ambiguous(name, first, second) => tr(locale, MessageId::FleetStoreErrorAmbiguous)
+                .replace("{name}", name)
+                .replace("{first}", first)
+                .replace("{second}", second),
+            Self::NotFound(name) => {
+                tr(locale, MessageId::FleetStoreErrorNotFound).replace("{name}", name)
+            }
+            Self::Io { path, message } => tr(locale, MessageId::FleetStoreErrorIo)
+                .replace("{path}", path)
+                .replace("{message}", message),
+            Self::Parse { path, message } => tr(locale, MessageId::FleetStoreErrorParse)
+                .replace("{path}", path)
+                .replace("{message}", message),
+            Self::NameTaken { name, path } => tr(locale, MessageId::FleetStoreErrorNameTaken)
+                .replace("{name}", name)
+                .replace("{path}", path),
+        }
+    }
 }
 
 impl FleetFile {
@@ -878,7 +907,8 @@ pub fn load_fleet_at(path: &Path) -> Result<(FleetFile, FleetScope), FleetStoreE
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
-    let scope = if path.starts_with(personal_fleets_dir().unwrap_or_default()) {
+    let personal_dir = personal_fleets_dir()?;
+    let scope = if path.starts_with(&personal_dir) {
         FleetScope::Personal
     } else {
         FleetScope::Workspace
@@ -1813,6 +1843,23 @@ role = "scout"
         let msg = err.to_string();
         assert!(msg.contains("defined in both"), "{msg}");
         assert!(msg.contains("user") && msg.contains("folder"), "{msg}");
+    }
+
+    #[test]
+    fn load_fleet_at_propagates_home_resolution_error_instead_of_personal_scope() {
+        let _lock = crate::test_support::lock_test_env();
+        let ws = tempfile::TempDir::new().unwrap();
+        let fleet = sample_fleet();
+        let path = save_fleet(&fleet, FleetScope::Workspace, ws.path()).expect("save workspace");
+
+        let _broken_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative/broken-home");
+        let err = load_fleet_at(&path)
+            .expect_err("broken home must not fall back to empty path and Personal scope");
+        assert!(
+            matches!(err, FleetStoreError::Io { ref path, .. } if path == "$CODEWHALE_HOME/fleets"),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

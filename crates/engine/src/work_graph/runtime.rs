@@ -11,7 +11,7 @@ use codewhale_lane::LaneRegistry;
 use super::{
     BindingId, ChangeCtx, CompatPlanMetadata, CompatTodoBinding, EdgeKind, IdempotencyKey,
     NodeKind, NodeState, OperationBinding, OperationIntent, OperationObservation,
-    OperationOwnerSnapshot, Provenance, WorkActivityEvent, WorkEdge, WorkEdgeId, WorkGraph,
+    OperationOwnerSnapshot, Provenance, Ts, WorkActivityEvent, WorkEdge, WorkEdgeId, WorkGraph,
     WorkGraphChange, WorkGraphSnapshot, WorkNode, WorkNodeId, WorkNodePatch,
     external_identity_is_well_formed, fleet_task_owner_snapshot, import_legacy,
     lane_owner_snapshot, project_plan, project_todos, validate,
@@ -827,8 +827,10 @@ fn apply_observation_to_snapshot(
     } else {
         false
     };
-    if matches!(&observation, OperationObservation::OwnerMissing { .. })
-        && node.state == NodeState::Stale
+    if matches!(
+        &observation,
+        OperationObservation::OwnerMissing { .. } | OperationObservation::OwnerUnreadable { .. }
+    ) && node.state == NodeState::Stale
     {
         return Ok(None);
     }
@@ -838,9 +840,9 @@ fn apply_observation_to_snapshot(
             binding: BindingId::derive(session_id, &format!("binding:{external}")),
             seq: *seq,
         }),
-        OperationObservation::OwnerMissing { .. } | OperationObservation::CancelUpdate { .. } => {
-            None
-        }
+        OperationObservation::OwnerMissing { .. }
+        | OperationObservation::OwnerUnreadable { .. }
+        | OperationObservation::CancelUpdate { .. } => None,
     };
     let (next, receipt) = super::reducer::apply(
         base,
@@ -913,14 +915,7 @@ fn reconcile_workspace_snapshot(
                     checked_at: observed_at,
                 })
         } else if let Some(lane_id) = external.strip_prefix("lane:") {
-            lanes
-                .as_ref()
-                .and_then(|registry| registry.as_ref().ok())
-                .and_then(|registry| registry.load(lane_id).ok())
-                .map(|record| lane_owner_snapshot(&record, observed_at).into_observation())
-                .unwrap_or(OperationObservation::OwnerMissing {
-                    checked_at: observed_at,
-                })
+            observe_lane_owner(lanes.as_ref(), lane_id, observed_at)
         } else {
             continue;
         };
@@ -932,6 +927,43 @@ fn reconcile_workspace_snapshot(
         }
     }
     Ok((graph, changed))
+}
+
+fn is_not_found_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+fn observe_lane_owner(
+    lanes: Option<&anyhow::Result<LaneRegistry>>,
+    lane_id: &str,
+    observed_at: Ts,
+) -> OperationObservation {
+    let Some(Ok(registry)) = lanes else {
+        return OperationObservation::OwnerMissing {
+            checked_at: observed_at,
+        };
+    };
+    match registry.load(lane_id) {
+        Ok(record) => lane_owner_snapshot(&record, observed_at).into_observation(),
+        Err(err) if is_not_found_error(&err) => OperationObservation::OwnerMissing {
+            checked_at: observed_at,
+        },
+        Err(err) => {
+            tracing::warn!(
+                lane_id,
+                error = %err,
+                "Lane owner record could not be loaded; restored binding will be stale"
+            );
+            OperationObservation::OwnerUnreadable {
+                checked_at: observed_at,
+                reason: err.to_string(),
+            }
+        }
+    }
 }
 
 fn operation_parent(
@@ -2070,6 +2102,82 @@ mod tests {
                 .edges
                 .iter()
                 .all(|edge| graph.node(&edge.from).is_some() && graph.node(&edge.to).is_some())
+        );
+    }
+
+    #[test]
+    fn corrupt_lane_record_reconciles_as_unreadable_not_plain_missing() {
+        let _lock = crate::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("temp home");
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let _home_guard = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+
+        let registry = LaneRegistry::open_default().expect("open lane registry");
+        let corrupt_id = "lane-corrupt";
+        std::fs::write(registry.record_path(corrupt_id), "{not valid json")
+            .expect("write corrupt lane record");
+
+        let lanes = Some(Ok(registry));
+        let corrupt_obs = observe_lane_owner(lanes.as_ref(), corrupt_id, 100);
+        assert!(
+            matches!(
+                corrupt_obs,
+                OperationObservation::OwnerUnreadable { checked_at: 100, ref reason }
+                    if reason.contains("parse lane record")
+            ),
+            "corrupt lane record must produce OwnerUnreadable, got {corrupt_obs:?}"
+        );
+
+        let absent_obs = observe_lane_owner(lanes.as_ref(), "lane-absent", 101);
+        assert_eq!(
+            absent_obs,
+            OperationObservation::OwnerMissing { checked_at: 101 }
+        );
+
+        let runtime = new_shared_work_runtime(
+            crate::tools::todo::new_shared_todo_list(),
+            crate::tools::plan::new_shared_plan_state(),
+        );
+        let external = format!("lane:{corrupt_id}");
+        runtime
+            .register_operation(
+                "session",
+                OperationIntent::new(external.clone(), "Corrupt lane", true, "lane", corrupt_id),
+            )
+            .expect("register durable lane");
+        runtime
+            .reconcile_operation(
+                "session",
+                OperationOwnerSnapshot::new(external.clone(), OwnerState::Running, 1, 1),
+            )
+            .expect("mark lane running");
+        let snapshot = runtime
+            .capture(Some("session"))
+            .expect("capture")
+            .expect("snapshot")
+            .graph;
+
+        let (reconciled, changed) =
+            reconcile_workspace_snapshot(snapshot, "session", workspace.path())
+                .expect("reconcile workspace");
+        assert_eq!(changed, 1);
+        let node = reconciled
+            .nodes
+            .iter()
+            .find(|node| {
+                node.binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.external == external)
+            })
+            .expect("lane node");
+        assert_eq!(node.state, NodeState::Stale);
+        assert!(
+            reconciled
+                .history
+                .iter()
+                .any(|receipt| receipt.summary == "reconcile_operation_owner_unreadable"),
+            "expected unreadable-owner receipt, got {:?}",
+            reconciled.history
         );
     }
 }

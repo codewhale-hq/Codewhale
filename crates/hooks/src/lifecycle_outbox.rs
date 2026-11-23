@@ -17,10 +17,10 @@
 //!  "created_at": "…", "payload": {…}}
 //! ```
 //!
-//! - `seq` is monotonic per outbox file. On the first write the writer
-//!   recovers the `seq` of the file's last complete line (bounded tail scan,
-//   so an outbox that grows unbounded is never re-read in full) and continues
-//!   from `last + 1`.
+//! - `seq` is monotonic per outbox file. Each batched append acquires an
+//!   exclusive advisory file lock, recovers the `seq` of the file's last
+//!   complete line (bounded tail scan, so an outbox that grows unbounded is
+//!   never re-read in full), assigns `last + 1..`, and fsyncs before unlocking.
 //! - `event` is the snake-case lifecycle name (`turn_start`, `turn_end`, …);
 //!   `kind` is the dotted kind (`turn.started`, `turn.failed`, …).
 //! - Payloads are constructed by the emit sites from bounded, pre-redacted
@@ -35,10 +35,13 @@
 //! on an internal channel and a single writer task appends lines in order.
 //! If no tokio runtime is available the event is dropped with a warning.
 //! Webhook POSTs (`{"at": …, "event": …}`) are attempted after the local
-//! append; failures are logged and dropped, never retried into the agent
-//! loop. Process owners call [`LifecycleOutbox::flush`] before runtime teardown
-//! to give queued terminal events a bounded opportunity to finish delivery.
+//! append and fsync, carrying a stable `Idempotency-Key` header derived from
+//! the outbox identity and `event.seq` so receivers can deduplicate retries.
+//! Failures are logged and never retried into the agent loop; [`LifecycleOutbox::flush`]
+//! waits for queued events to finish their delivery attempt and reports any
+//! durable append or webhook failure.
 
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,7 +53,6 @@ use codewhale_app_server_protocol::runtime::{
     RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope,
 };
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -187,26 +189,28 @@ impl LifecycleOutbox {
 
     /// Wait for events queued before this call to finish their delivery attempt.
     ///
-    /// Local writes are flushed before the writer acknowledges this barrier.
-    /// Delivery errors remain logged and best effort; a stalled writer/webhook
-    /// or a stopped runtime returns an error within `timeout` instead of holding
-    /// process teardown indefinitely. This does not close other cloned handles.
+    /// Local writes are flushed and synced before the writer acknowledges this
+    /// barrier, and any append or webhook delivery failure since the previous
+    /// barrier is returned to the caller. A stalled writer/webhook or a stopped
+    /// runtime returns an error within `timeout` instead of holding process
+    /// teardown indefinitely. This does not close other cloned handles.
     pub async fn flush(&self, timeout: Duration) -> Result<()> {
         let Some(inner) = self.inner.as_ref() else {
             return Ok(());
         };
         let (reply, completed) = oneshot::channel();
         inner.enqueue(OutboxCommand::Flush(reply))?;
-        tokio::time::timeout(timeout, completed)
+        let outcome = tokio::time::timeout(timeout, completed)
             .await
             .context("lifecycle outbox flush timed out; queued events may be incomplete")?
-            .context("lifecycle outbox writer stopped before flush completed")
+            .context("lifecycle outbox writer stopped before flush completed")?;
+        outcome.map_err(anyhow::Error::msg)
     }
 }
 
 enum OutboxCommand {
     Event(LifecycleEvent),
-    Flush(oneshot::Sender<()>),
+    Flush(oneshot::Sender<std::result::Result<(), String>>),
 }
 
 struct OutboxInner {
@@ -277,13 +281,7 @@ impl OutboxInner {
         let Some(receiver) = receiver else {
             return;
         };
-        let mut state = WriterState {
-            path: self.path.clone(),
-            webhook: self.webhook.clone(),
-            next_seq: 0,
-            recovered: false,
-            receiver,
-        };
+        let mut state = WriterState::new(self.path.clone(), self.webhook.clone(), receiver);
         self.writer_spawned.store(true, Ordering::Release);
         handle.spawn(async move {
             state.run().await;
@@ -294,24 +292,60 @@ impl OutboxInner {
 /// The outbox writer: owns the file state and the event queue drain loop.
 struct WriterState {
     path: PathBuf,
+    sink_id: String,
     webhook: Option<WebhookHookSink>,
-    /// Next seq to assign; filled in by [`Self::recover_seq`] on first use.
-    next_seq: u64,
-    recovered: bool,
     receiver: Receiver<OutboxCommand>,
 }
 
+fn outbox_sink_id(path: &Path) -> String {
+    format!(
+        "outbox-{:016x}",
+        crate::fnv1a_64(path.to_string_lossy().as_bytes())
+    )
+}
+
+fn record_webhook_join(
+    joined: std::result::Result<std::result::Result<(), String>, tokio::task::JoinError>,
+    pending_error: &mut Option<String>,
+) {
+    match joined {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            pending_error.get_or_insert(error);
+        }
+        Err(error) => {
+            pending_error.get_or_insert_with(|| format!("lifecycle webhook task failed: {error}"));
+        }
+    }
+}
+
 impl WriterState {
+    fn new(
+        path: PathBuf,
+        webhook: Option<WebhookHookSink>,
+        receiver: Receiver<OutboxCommand>,
+    ) -> Self {
+        let sink_id = outbox_sink_id(&path);
+        Self {
+            path,
+            sink_id,
+            webhook,
+            receiver,
+        }
+    }
+
     /// Drain the queue until every sender is dropped, then exit.
     ///
     /// Events are gathered into batches ([`OUTBOX_MAX_BATCH`]) so a burst
-    /// shares one file open/write/flush. Webhook posts fan out through a
+    /// shares one file open/lock/write/sync. Webhook posts fan out through a
     /// bounded [`JoinSet`](tokio::task::JoinSet) and never delay the appends
     /// of later batches — a stalled webhook only holds back its own event
     /// plus the flush barrier, which the caller's timeout bounds (#6212).
     async fn run(&mut self) {
         let mut batch: Vec<OutboxCommand> = Vec::with_capacity(OUTBOX_MAX_BATCH);
-        let mut webhooks = tokio::task::JoinSet::new();
+        let mut webhooks: tokio::task::JoinSet<std::result::Result<(), String>> =
+            tokio::task::JoinSet::new();
+        let mut pending_error: Option<String> = None;
         while self.receiver.recv_many(&mut batch, OUTBOX_MAX_BATCH).await > 0 {
             let mut events = Vec::new();
             let mut replies = Vec::new();
@@ -321,155 +355,164 @@ impl WriterState {
                     OutboxCommand::Flush(reply) => replies.push(reply),
                 }
             }
-            if let Err(error) = self.deliver_batch(&events, &mut webhooks).await {
+            if let Err(error) = self
+                .deliver_batch(&events, &mut webhooks, &mut pending_error)
+                .await
+            {
                 tracing::warn!(
                     target: "lifecycle_outbox",
                     %error,
                     path = %self.path.display(),
                     "lifecycle outbox write failed"
                 );
+                pending_error.get_or_insert_with(|| format!("{error:#}"));
             }
             if !replies.is_empty() {
-                // The flush barrier covers every delivery attempt queued
-                // before it — appends above plus webhook attempts already
-                // spawned (mirroring the pre-batching serial writer, where
-                // a Flush was only reached after prior webhooks finished).
-                while webhooks.join_next().await.is_some() {}
+                while let Some(joined) = webhooks.join_next().await {
+                    record_webhook_join(joined, &mut pending_error);
+                }
+                let outcome = match pending_error.take() {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                };
                 for reply in replies {
-                    let _ = reply.send(());
+                    let _ = reply.send(outcome.clone());
                 }
             }
         }
     }
 
-    /// Assign a seq per event, build the envelopes, append the whole batch in
-    /// one file open/write/flush, then fan the batch's webhook posts out
-    /// concurrently (independently of the append result).
+    /// Lock the outbox file, recover the latest seq on disk, append and sync
+    /// the whole batch, then fan webhook posts out concurrently.
     async fn deliver_batch(
         &mut self,
         events: &[LifecycleEvent],
-        webhooks: &mut tokio::task::JoinSet<()>,
+        webhooks: &mut tokio::task::JoinSet<std::result::Result<(), String>>,
+        pending_error: &mut Option<String>,
     ) -> Result<()> {
         if events.is_empty() {
             return Ok(());
         }
-        if !self.recovered {
-            self.next_seq = recover_last_seq(&self.path).await?;
-            self.recovered = true;
-        }
 
-        let mut lines = Vec::with_capacity(events.len());
-        let mut webhook_posts = Vec::new();
-        for event in events {
-            let seq = self.next_seq;
-            self.next_seq = self.next_seq.saturating_add(1);
+        let file = crate::open_private_append(&self.path)
+            .await?
+            .into_std()
+            .await;
+        let path = self.path.clone();
+        let batch_events = events.to_vec();
+        let collect_webhooks = self.webhook.is_some();
 
-            let envelope = RuntimeEventEnvelope {
-                schema_version: RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-                seq,
-                event: event.event.clone(),
-                kind: event.kind.clone(),
-                thread_id: event.thread_id.clone(),
-                turn_id: event.turn_id.clone(),
-                item_id: event.item_id.clone(),
-                timestamp: Utc::now().to_rfc3339(),
-                created_at: Some(Utc::now().to_rfc3339()),
-                payload: event.payload.clone(),
-                extra: Default::default(),
-            };
-            if self.webhook.is_some() {
-                webhook_posts.push(json!({
-                    "at": envelope.timestamp,
-                    "event": envelope,
-                }));
-            }
-            lines.push(serde_json::to_string(&envelope).context("failed to encode outbox event")?);
-        }
-
-        // Appends land before any webhook work so the audit log never waits
-        // on a slow remote.
-        let append_result = self.append_lines(&lines).await;
+        let webhook_posts = tokio::task::spawn_blocking(move || -> Result<Vec<(u64, Value)>> {
+            let mut file = file;
+            file.lock()
+                .with_context(|| format!("failed to lock outbox {}", path.display()))?;
+            let result = (|| -> Result<Vec<(u64, Value)>> {
+                let mut next_seq = recover_last_seq_from_file(&mut file, &path)?;
+                let mut lines = Vec::with_capacity(batch_events.len());
+                let mut posts = Vec::new();
+                for event in batch_events {
+                    let seq = next_seq;
+                    next_seq = next_seq.saturating_add(1);
+                    let envelope = RuntimeEventEnvelope {
+                        schema_version: RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+                        seq,
+                        event: event.event,
+                        kind: event.kind,
+                        thread_id: event.thread_id,
+                        turn_id: event.turn_id,
+                        item_id: event.item_id,
+                        timestamp: Utc::now().to_rfc3339(),
+                        created_at: Some(Utc::now().to_rfc3339()),
+                        payload: event.payload,
+                        extra: Default::default(),
+                    };
+                    if collect_webhooks {
+                        posts.push((
+                            seq,
+                            json!({
+                                "at": envelope.timestamp,
+                                "event": envelope,
+                            }),
+                        ));
+                    }
+                    lines.push(
+                        serde_json::to_string(&envelope)
+                            .context("failed to encode outbox event")?,
+                    );
+                }
+                append_lines(&mut file, &lines)?;
+                Ok(posts)
+            })();
+            let _ = file.unlock();
+            result
+        })
+        .await
+        .context("lifecycle outbox writer task panicked")??;
 
         if let Some(webhook) = &self.webhook {
-            for payload in webhook_posts {
+            for (seq, payload) in webhook_posts {
                 while webhooks.len() >= WEBHOOK_MAX_INFLIGHT {
-                    let _ = webhooks.join_next().await;
+                    if let Some(joined) = webhooks.join_next().await {
+                        record_webhook_join(joined, pending_error);
+                    }
                 }
                 let sink = webhook.clone();
+                let idempotency_key = format!("{}:{seq}", self.sink_id);
                 webhooks.spawn(async move {
-                    if let Err(error) = sink.post_payload(payload).await {
+                    if let Err(error) = sink
+                        .post_payload_with_idempotency_key(payload, &idempotency_key)
+                        .await
+                    {
                         tracing::warn!(
                             target: "lifecycle_outbox",
                             %error,
                             "lifecycle webhook delivery failed (dropped)"
                         );
+                        return Err(format!("{error:#}"));
                     }
+                    Ok(())
                 });
             }
         }
 
-        append_result
+        Ok(())
     }
+}
 
-    /// Append complete JSONL lines:
-    /// lazy parent directories, append mode, flush before returning. The
-    /// writer task is the only appender for this outbox, so no extra lock is
-    /// needed here; the queue already serializes. The whole batch shares one
-    /// open and one flush; each line still lands as its own complete record.
-    async fn append_lines(&mut self, lines: &[String]) -> Result<()> {
-        let mut file = crate::open_private_append(&self.path).await?;
-        // Line + newline in a single `write_all` per record: with O_APPEND
-        // each `write` lands contiguously, so even a second process appending
-        // to the same file can interleave lines but can never splice one
-        // mid-line.
-        let mut records = Vec::with_capacity(lines.len());
-        for line in lines {
-            let mut record = Vec::with_capacity(line.len() + 1);
-            record.extend_from_slice(line.as_bytes());
-            record.push(b'\n');
-            records.push(record);
-        }
-        for record in &records {
-            file.write_all(record)
-                .await
-                .context("failed to write outbox event")?;
-        }
-        file.flush().await.context("failed to flush outbox event")
+fn append_lines(file: &mut std::fs::File, lines: &[String]) -> Result<()> {
+    file.seek(std::io::SeekFrom::End(0))
+        .context("failed to seek outbox event")?;
+    let mut records = Vec::with_capacity(lines.len());
+    for line in lines {
+        let mut record = Vec::with_capacity(line.len() + 1);
+        record.extend_from_slice(line.as_bytes());
+        record.push(b'\n');
+        records.push(record);
     }
+    for record in &records {
+        file.write_all(record)
+            .context("failed to write outbox event")?;
+    }
+    file.flush().context("failed to flush outbox event")?;
+    file.sync_all().context("failed to sync outbox event")
 }
 
 /// Recover the seq to continue from: the `seq` of the outbox file's last
 /// complete line, plus 1 — or 1 for a missing/empty file.
-///
-/// Only the tail of the file is read (bounded by [`SEQ_RECOVERY_TAIL_BYTES`]);
-/// outbox lines are bounded far below that window, so the last complete line
-/// is always within it. A partial trailing line from a crash mid-write is
-/// ignored (the previous newline-terminated line wins).
-async fn recover_last_seq(path: &Path) -> Result<u64> {
-    let mut file = match tokio::fs::File::open(path).await {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(1),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to open outbox {}", path.display()));
-        }
-    };
+fn recover_last_seq_from_file(file: &mut std::fs::File, path: &Path) -> Result<u64> {
     let len = file
         .metadata()
-        .await
         .with_context(|| format!("failed to stat outbox {}", path.display()))?
         .len();
     if len == 0 {
         return Ok(1);
     }
     let start = len.saturating_sub(SEQ_RECOVERY_TAIL_BYTES);
-    file.seek(std::io::SeekFrom::Start(start)).await?;
+    file.seek(std::io::SeekFrom::Start(start))?;
     let mut tail = vec![0u8; (len - start) as usize];
-    file.read_exact(&mut tail).await?;
+    file.read_exact(&mut tail)?;
 
     let line = match tail.iter().rposition(|byte| *byte == b'\n') {
-        // The bytes after the final newline are a torn trailing line from a
-        // crash mid-write; drop them. What remains ends at a newline, so the
-        // last complete line is the bytes after the previous newline.
         Some(last_nl) => {
             let body = &tail[..last_nl];
             match body.iter().rposition(|byte| *byte == b'\n') {
@@ -477,9 +520,6 @@ async fn recover_last_seq(path: &Path) -> Result<u64> {
                 None => body,
             }
         }
-        // No newline at all: no complete line inside this tail (a line can
-        // only exceed the tail window by violating the bounded-line
-        // invariant). Treat the file as not-yet-writable.
         None => return Ok(1),
     };
     let line = std::str::from_utf8(line).context("outbox tail is not UTF-8")?;
@@ -489,6 +529,24 @@ async fn recover_last_seq(path: &Path) -> Result<u64> {
     let envelope: RuntimeEventEnvelope =
         serde_json::from_str(line).context("failed to parse last outbox line")?;
     Ok(envelope.seq.saturating_add(1))
+}
+
+#[cfg(test)]
+async fn recover_last_seq(path: &Path) -> Result<u64> {
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file.into_std().await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to open outbox {}", path.display()));
+        }
+    };
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut file = file;
+        recover_last_seq_from_file(&mut file, &path)
+    })
+    .await
+    .context("outbox seq recovery task panicked")?
 }
 
 /// Bound free-form text to at most `max_chars` characters, stripping control
@@ -552,10 +610,19 @@ mod tests {
         }
     }
 
+    fn test_writer(path: PathBuf) -> WriterState {
+        WriterState::new(
+            path,
+            None,
+            tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
+        )
+    }
+
     async fn deliver_all(state: &mut WriterState, events: Vec<LifecycleEvent>) {
         let mut webhooks = tokio::task::JoinSet::new();
+        let mut pending_error = None;
         state
-            .deliver_batch(&events, &mut webhooks)
+            .deliver_batch(&events, &mut webhooks, &mut pending_error)
             .await
             .expect("deliver");
         while webhooks.join_next().await.is_some() {}
@@ -697,13 +764,7 @@ mod tests {
     #[tokio::test]
     async fn appends_one_jsonl_line_per_event_with_envelope_schema() {
         let (_dir, path) = temp_outbox_path("schema.jsonl");
-        let mut state = WriterState {
-            path: path.clone(),
-            webhook: None,
-            next_seq: 0,
-            recovered: false,
-            receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
-        };
+        let mut state = test_writer(path.clone());
         deliver_all(&mut state, vec![event("turn_start", "turn.started")]).await;
 
         let lines = read_lines(&path).await;
@@ -727,13 +788,7 @@ mod tests {
     #[tokio::test]
     async fn payload_workspace_and_subagent_fields_survive_the_round_trip() {
         let (_dir, path) = temp_outbox_path("routing-fields.jsonl");
-        let mut state = WriterState {
-            path: path.clone(),
-            webhook: None,
-            next_seq: 0,
-            recovered: false,
-            receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
-        };
+        let mut state = test_writer(path.clone());
         let workspace = "/home/cw/wt-lane";
         let subagent = "explore-1";
         let subagent_payload = json!({ "workspace": workspace, "subagent": subagent });
@@ -842,13 +897,7 @@ mod tests {
     #[tokio::test]
     async fn seq_is_monotonic_and_recovers_across_reopen() {
         let (_dir, path) = temp_outbox_path("seq.jsonl");
-        let mut state = WriterState {
-            path: path.clone(),
-            webhook: None,
-            next_seq: 0,
-            recovered: false,
-            receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
-        };
+        let mut state = test_writer(path.clone());
         deliver_all(
             &mut state,
             vec![
@@ -860,13 +909,7 @@ mod tests {
         .await;
 
         // A fresh writer (new process, same file) continues the sequence.
-        let mut reopened = WriterState {
-            path: path.clone(),
-            webhook: None,
-            next_seq: 0,
-            recovered: false,
-            receiver: tokio::sync::mpsc::channel(OUTBOX_QUEUE_CAPACITY).1,
-        };
+        let mut reopened = test_writer(path.clone());
         deliver_all(&mut reopened, vec![event("turn_start", "turn.started")]).await;
 
         let lines = read_lines(&path).await;
@@ -1039,5 +1082,117 @@ mod tests {
         let webhook = WebhookHookSink::new_with_token(format!("{}/hook", server.uri()), None);
         let result = webhook.post_payload(json!({})).await;
         assert!(result.is_err(), "expected the failure to be reported");
+    }
+
+    #[tokio::test]
+    async fn interleaved_writers_assign_unique_monotonic_seqs() {
+        let (_dir, path) = temp_outbox_path("two-writers.jsonl");
+        let mut writer_a = test_writer(path.clone());
+        let mut writer_b = test_writer(path.clone());
+
+        deliver_all(&mut writer_a, vec![event("turn_start", "turn.started")]).await;
+        deliver_all(&mut writer_b, vec![event("turn_start", "turn.started")]).await;
+        deliver_all(
+            &mut writer_a,
+            vec![
+                event("turn_end", "turn.completed"),
+                event("session_end", "session.ended"),
+            ],
+        )
+        .await;
+        deliver_all(&mut writer_b, vec![event("turn_end", "turn.completed")]).await;
+
+        let lines = read_lines(&path).await;
+        let seqs: Vec<u64> = lines
+            .iter()
+            .map(|line| line["seq"].as_u64().expect("seq"))
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn flush_returns_error_after_failed_durable_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outbox = LifecycleOutbox::new(Some(dir.path().to_path_buf()), None, None);
+
+        outbox.emit(event("turn_start", "turn.started"));
+        let err = outbox
+            .flush(Duration::from_secs(2))
+            .await
+            .expect_err("flush must fail when durable append fails");
+        assert!(
+            err.to_string().contains("failed to open sink file"),
+            "unexpected flush error: {err}"
+        );
+
+        outbox.emit(event("turn_end", "turn.completed"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        outbox
+            .flush(Duration::from_secs(2))
+            .await
+            .expect_err("flush in a subsequent batch must still surface prior append failure");
+    }
+
+    #[test]
+    fn append_lines_syncs_after_final_write_all() {
+        let source = include_str!("lifecycle_outbox.rs");
+        let fn_start = source
+            .find("fn append_lines(")
+            .expect("append_lines function must exist");
+        let body = &source[fn_start..];
+        let fn_end = body
+            .find("\n}\n")
+            .expect("append_lines closing brace must exist");
+        let fn_body = &body[..fn_end];
+        let write_pos = fn_body
+            .rfind("write_all(")
+            .expect("append_lines must call write_all");
+        let sync_pos = fn_body
+            .find(".sync_all(")
+            .or_else(|| fn_body.find(".sync_data("))
+            .expect("append_lines must fsync via sync_all or sync_data");
+        assert!(sync_pos > write_pos, "fsync must happen after write_all");
+    }
+
+    #[tokio::test]
+    async fn outbox_webhook_retry_sends_stable_sink_seq_idempotency_key() {
+        use std::sync::atomic::AtomicUsize;
+
+        let (_dir, path) = temp_outbox_path("webhook-idempotency.jsonl");
+        let server = wiremock::MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(move |_req: &wiremock::Request| {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    wiremock::ResponseTemplate::new(500)
+                } else {
+                    wiremock::ResponseTemplate::new(200)
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let outbox = LifecycleOutbox::new(Some(path.clone()), Some(server.uri()), None);
+        outbox.emit(event("turn_start", "turn.started"));
+        outbox.flush(Duration::from_secs(2)).await.expect("flush 1");
+        outbox.emit(event("turn_end", "turn.completed"));
+        outbox.flush(Duration::from_secs(2)).await.expect("flush 2");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 3);
+        let keys: Vec<&str> = requests
+            .iter()
+            .map(|req| {
+                req.headers
+                    .get("idempotency-key")
+                    .and_then(|v| v.to_str().ok())
+                    .expect("Idempotency-Key header")
+            })
+            .collect();
+        assert_eq!(keys[0], keys[1], "retry must reuse the same key");
+        assert!(keys[0].ends_with(":1"), "first event key: {}", keys[0]);
+        assert!(keys[2].ends_with(":2"), "second event key: {}", keys[2]);
+        assert_ne!(keys[0], keys[2]);
     }
 }

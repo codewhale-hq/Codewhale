@@ -411,7 +411,8 @@ fn reconcile(
                 OwnerState::Cancelled => NodeState::Cancelled,
             })
         }
-        OperationObservation::OwnerMissing { .. } => Some(NodeState::Stale),
+        OperationObservation::OwnerMissing { .. }
+        | OperationObservation::OwnerUnreadable { .. } => Some(NodeState::Stale),
         OperationObservation::CancelUpdate { outcome, .. } => match outcome {
             // In-flight acknowledgements: record only, no state claim yet.
             CancelOutcome::Requested

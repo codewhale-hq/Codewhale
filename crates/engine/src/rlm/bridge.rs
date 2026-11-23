@@ -474,12 +474,10 @@ fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<Bat
     }
     if prompt_count > MAX_BATCH {
         return Some(BatchResp {
-            results: (0..prompt_count)
-                .map(|_| SingleResp {
-                    text: String::new(),
-                    error: Some(format!("batch too large: {prompt_count} > {MAX_BATCH}")),
-                })
-                .collect(),
+            results: vec![SingleResp {
+                text: String::new(),
+                error: Some(format!("batch too large: {prompt_count} > {MAX_BATCH}")),
+            }],
         });
     }
     let mode = dependency_mode
@@ -492,15 +490,13 @@ fn batch_guard(prompt_count: usize, dependency_mode: Option<&str>) -> Option<Bat
         "independent" | "parallel_safe" | "map_reduce"
     ) {
         return Some(BatchResp {
-            results: (0..prompt_count)
-                .map(|_| SingleResp {
-                    text: String::new(),
-                    error: Some(
-                        "batch requires dependency_mode='independent'; use sub_query_sequence or sequential sub_query calls for dependent work"
-                            .to_string(),
-                    ),
-                })
-                .collect(),
+            results: vec![SingleResp {
+                text: String::new(),
+                error: Some(
+                    "batch requires dependency_mode='independent'; use sub_query_sequence or sequential sub_query calls for dependent work"
+                        .to_string(),
+                ),
+            }],
         });
     }
     None
@@ -700,39 +696,45 @@ mod tests {
     }
 
     #[test]
-    fn batch_guard_returns_one_error_per_oversized_prompt() {
-        let response = batch_guard(MAX_BATCH + 2, Some("independent"))
-            .expect("oversized batch should be handled");
-        assert_eq!(response.results.len(), MAX_BATCH + 2);
-        assert!(response.results.iter().all(|result| {
-            result.text.is_empty()
-                && result
+    fn batch_guard_returns_bounded_error_for_oversized_batch() {
+        for prompt_count in [MAX_BATCH + 2, 100_000] {
+            let response = batch_guard(prompt_count, Some("independent"))
+                .expect("oversized batch should be handled");
+            assert_eq!(response.results.len(), 1);
+            assert!(response.results.len() <= MAX_BATCH);
+            assert!(response.results[0].text.is_empty());
+            assert!(
+                response.results[0]
                     .error
                     .as_deref()
-                    .is_some_and(|err| err.contains("batch too large"))
-        }));
+                    .is_some_and(|err| err.contains("batch too large")),
+                "unexpected error for {prompt_count}: {:?}",
+                response.results[0].error
+            );
+        }
     }
 
     #[test]
     fn batch_guard_requires_explicit_independence_for_parallel_work() {
         let response = batch_guard(2, None).expect("missing dependency mode should be handled");
-        assert_eq!(response.results.len(), 2);
-        assert!(response.results.iter().all(|result| {
-            result.text.is_empty()
-                && result
-                    .error
-                    .as_deref()
-                    .is_some_and(|err| err.contains("dependency_mode='independent'"))
-        }));
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].text.is_empty());
+        assert!(
+            response.results[0]
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("dependency_mode='independent'"))
+        );
 
         let response = batch_guard(2, Some("sequential"))
             .expect("dependent dependency mode should be handled");
-        assert!(response.results.iter().all(|result| {
-            result
+        assert_eq!(response.results.len(), 1);
+        assert!(
+            response.results[0]
                 .error
                 .as_deref()
                 .is_some_and(|err| err.contains("sub_query_sequence"))
-        }));
+        );
     }
 
     #[tokio::test]
