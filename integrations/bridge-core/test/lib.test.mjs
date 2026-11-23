@@ -348,6 +348,20 @@ test("splitMessage splits CJK text by bytes when a byte cap is set", () => {
   assert.equal(chunks.join(""), cjk);
 });
 
+test("splitMessage byte cap keeps code fences balanced and splits on lines", () => {
+  let reply = "下面是修改后的代码：\n```js\n";
+  for (let i = 0; i < 120; i += 1) reply += `const v${i} = ${i}; // 这是第${i}行的中文注释说明\n`;
+  reply += "```\n完成。";
+  const chunks = splitMessage(reply, 3500, 3800);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.ok(Buffer.byteLength(chunk, "utf8") <= 3800);
+    assert.equal((chunk.match(/^```/gm) || []).length % 2, 0, chunk.slice(-40));
+  }
+  assert.equal(chunks[0].endsWith("\n```"), true);
+  assert.equal(chunks[1].startsWith("```js\nconst v"), true);
+});
+
 test("splitMessage keeps short messages single under a byte cap", () => {
   assert.deepEqual(splitMessage("hello", 3500, 3800), ["hello"]);
   const mixed = "字".repeat(100) + "x".repeat(100); // 400 bytes
