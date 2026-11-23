@@ -185,7 +185,7 @@ publish_crate() {
       echo "${crate_name} ${crate_version} was already uploaded."
       return 0
     fi
-    if ! grep -qE "429|Too Many Requests" "${log}"; then
+    if ! grep -qE "status 429|Too Many Requests" "${log}"; then
       rm -f "${log}"
       echo "Publishing ${crate_name} ${crate_version} failed; stopping." >&2
       return 1
