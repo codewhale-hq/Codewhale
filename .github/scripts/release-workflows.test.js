@@ -1289,6 +1289,22 @@ assert.ok(
   "ci.yml must run the full-CI receipt tests",
 );
 
+const mainLanding = read(".github/workflows/main-landing.yml");
+assert.match(mainLanding, /^  push:\n    branches: \[main\]\n/m, "the landing gate must run on every push to main");
+assert.match(jobBlock(mainLanding, "preflight"), /run: bash scripts\/preflight\.sh --check\n/, "the landing preflight must always run");
+assert.doesNotMatch(jobBlock(mainLanding, "preflight"), /^    if:/m, "the landing preflight must never be skipped");
+const landingDispatch = namedStep(mainLanding, "Run ci.yml with every gate on the pushed commit");
+const landingReceipt = landingDispatch.indexOf(
+  'if receipt="$(bash scripts/release/require-full-ci-receipt.sh "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 2>&1)"; then',
+);
+const landingFullRun = landingDispatch.indexOf(
+  'gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"',
+);
+assert.ok(landingReceipt >= 0, "the landing gate may skip only on a full-CI receipt for the exact pushed SHA");
+assert.ok(landingFullRun > landingReceipt, "without that receipt the landing gate must dispatch the full suite");
+assert.equal((landingDispatch.match(/exit 0/g) || []).length, 1, "the only early exit is the receipt branch");
+assert.match(landingDispatch, /set -euo pipefail\n/);
+
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",
 );

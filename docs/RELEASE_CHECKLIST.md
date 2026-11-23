@@ -159,8 +159,10 @@ known limitations and publication approval. These proofs are separate.
 - [ ] Both runs resolve to that SHA and all required jobs execute and succeed.
       A green workflow badge alone is insufficient: confirm that the required
       jobs ran for the exact candidate SHA. `main-landing.yml` dispatches full
-      exact-SHA CI on every push to `main`; a landing or pull-request CI receipt
-      does not replace release-candidate acceptance.
+      exact-SHA CI on every push to `main` unless that SHA already has a green
+      full `ci.yml` dispatch (for example from its `ci/*` branch), which is
+      then its full-CI receipt; a landing or pull-request CI receipt does not
+      replace release-candidate acceptance.
 - [ ] The candidate's Parity job succeeds, and its artifact jobs report all eight
       targets and the complete 38-file asset inventory, including Android
       arm64, Windows arm64, native HarmonyOS arm64, `codew`, the NSIS installer,

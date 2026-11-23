@@ -19,8 +19,11 @@ name: Main landing gate
 # feature receipts. Measured at 45 s on a warm Linux runner.
 #
 # Since 2026-11-08 (founder) the `full-ci` job also dispatches `ci.yml` on every
-# push to main, so every gate and the three-OS suite run on each landing. The
-# preflight job stays narrow so a red landing still shows up in minutes.
+# push to main, so every gate and the three-OS suite run on each landing. Since
+# 2026-11-22 (founder) it skips that dispatch when the exact pushed SHA already
+# has a green full `ci.yml` run (scripts/release/require-full-ci-receipt.sh);
+# any doubt dispatches as before. The preflight job stays narrow so a red
+# landing still shows up in minutes.
 
 on:
   push:
@@ -69,7 +72,18 @@ jobs:
       actions: write
       contents: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/release
+          persist-credentials: false
       - name: Run ci.yml with every gate on the pushed commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"
+        run: |
+          set -euo pipefail
+          if receipt="$(bash scripts/release/require-full-ci-receipt.sh "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 2>&1)"; then
+            echo "Not dispatching a duplicate full run. ${receipt}" | tee -a "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          echo "${receipt}"
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"
