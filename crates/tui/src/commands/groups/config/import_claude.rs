@@ -223,8 +223,9 @@ mod tests {
             "skipped, too large (5 bytes): ~/.claude.json"
         );
         assert_eq!(
-            CommandSourceStatus::InvalidJson.describe("~/.claude.json"),
-            "invalid JSON: ~/.claude.json"
+            CommandSourceStatus::InvalidJson("expected value at line 1 column 1".into())
+                .describe("~/.claude.json"),
+            "invalid JSON: ~/.claude.json (expected value at line 1 column 1)"
         );
         assert_eq!(
             CommandSourceStatus::Unreadable("boom".into()).describe("~/.claude.json"),

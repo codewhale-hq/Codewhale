@@ -62,7 +62,8 @@ fn read_bounded_json(path: &Path) -> Result<Value, CommandSourceStatus> {
         return Err(CommandSourceStatus::Oversize(meta.len()));
     }
     let raw = std::fs::read(path).map_err(|e| CommandSourceStatus::Unreadable(e.to_string()))?;
-    serde_json::from_slice::<Value>(&raw).map_err(|_| CommandSourceStatus::InvalidJson)
+    serde_json::from_slice::<Value>(&raw)
+        .map_err(|e| CommandSourceStatus::InvalidJson(e.to_string()))
 }
 
 /// Read the Claude sources under `home` (usually `~`).
@@ -308,10 +309,16 @@ mod tests {
         std::fs::write(home.join(".claude.json"), "not json").expect("bad json");
         let (sources, claude, _settings) = read_sources(&home);
         assert!(claude.is_none());
+        let status = sources
+            .iter()
+            .find_map(|(_, s)| matches!(s, CommandSourceStatus::InvalidJson(_)).then_some(s))
+            .expect("invalid json status");
+        let rendered = status.describe("~/.claude.json");
         assert!(
-            sources
-                .iter()
-                .any(|(_, s)| matches!(s, CommandSourceStatus::InvalidJson))
+            rendered.starts_with("invalid JSON: ~/.claude.json ("),
+            "{rendered}"
         );
+        assert!(rendered.contains("line 1"), "{rendered}");
+        assert!(rendered.contains("column 2"), "{rendered}");
     }
 }

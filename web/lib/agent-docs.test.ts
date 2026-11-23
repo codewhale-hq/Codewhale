@@ -48,12 +48,18 @@ describe("documents at the released tag", () => {
 
   it("fails its check on a tag mismatch and passes on the released tag", () => {
     const snapshot = JSON.parse(JSON.stringify(RELEASE_DOCS));
-    expect(checkReleaseDocs(snapshot, release, DOC_TOPICS, null)).toEqual([]);
+    expect(checkReleaseDocs(snapshot, release, DOC_TOPICS, snapshot)).toEqual([]);
     const next = { tag: "v0.10.3", version: "0.10.3" };
     const problems = checkReleaseDocs(snapshot, next, DOC_TOPICS, null);
     expect(problems.some((line) => line.includes(`is for ${release.tag}`) && line.includes("v0.10.3"))).toBe(true);
     expect(checkReleaseDocs({ ...snapshot, tag: "v0.10.3" }, release, DOC_TOPICS, null).length).toBeGreaterThan(0);
     expect(checkReleaseDocs(null, release, DOC_TOPICS, null).length).toBeGreaterThan(0);
+  });
+
+  it("fails closed when the release tag is unavailable unless allowShallow is explicitly opted in", () => {
+    const snapshot = JSON.parse(JSON.stringify(RELEASE_DOCS));
+    expect(checkReleaseDocs(snapshot, release, DOC_TOPICS, null).join("\n")).toContain("could not be verified");
+    expect(checkReleaseDocs(snapshot, release, DOC_TOPICS, null, undefined, { allowShallow: true })).toEqual([]);
   });
 
   it("fails its check when a document is altered or a topic is dropped", () => {
@@ -66,9 +72,9 @@ describe("documents at the released tag", () => {
   });
 
   it("fails its check when the topic index disagrees with the snapshot", () => {
-    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, null, releaseDocsIndex(RELEASE_DOCS))).toEqual([]);
+    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, RELEASE_DOCS, releaseDocsIndex(RELEASE_DOCS))).toEqual([]);
     const stale = { ...releaseDocsIndex(RELEASE_DOCS), slugs: [] };
-    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, null, stale).join("\n")).toContain("release-index");
+    expect(checkReleaseDocs(RELEASE_DOCS, release, DOC_TOPICS, RELEASE_DOCS, stale).join("\n")).toContain("release-index");
   });
 
   it("refuses to generate, and writes nothing, when the tag is missing and the snapshot is for another release", () => {

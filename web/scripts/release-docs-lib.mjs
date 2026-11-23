@@ -77,7 +77,7 @@ export function refreshReleaseDocs(webDir, release) {
   return fresh;
 }
 
-export function checkReleaseDocs(snapshot, release, registry, derived, index) {
+export function checkReleaseDocs(snapshot, release, registry, derived, index, { allowShallow = false } = {}) {
   const problems = [];
   if (!release) return ["the published release is unknown"];
   if (!snapshot || snapshot.format !== RELEASE_DOCS_FORMAT || !Array.isArray(snapshot.topics) || !Array.isArray(snapshot.omitted)) {
@@ -99,7 +99,11 @@ export function checkReleaseDocs(snapshot, release, registry, derived, index) {
   if (index !== undefined && JSON.stringify(index) !== JSON.stringify(releaseDocsIndex(snapshot))) {
     problems.push("data/agent-docs.release-index.json does not match data/agent-docs.release.json; run npm run prebuild");
   }
-  if (derived && problems.length === 0 && serializeReleaseDocs(derived) !== serializeReleaseDocs(snapshot)) {
+  if (!derived) {
+    if (!allowShallow) {
+      problems.push(`tag ${release.tag} is not in this checkout, so data/agent-docs.release.json could not be verified against the tagged documents; fetch tags or pass --allow-shallow / CODEWHALE_ALLOW_SHALLOW_CHECKOUT=1`);
+    }
+  } else if (problems.length === 0 && serializeReleaseDocs(derived) !== serializeReleaseDocs(snapshot)) {
     problems.push(`data/agent-docs.release.json differs from the documents at ${release.tag}; run npm run prebuild`);
   }
   return problems;

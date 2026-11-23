@@ -577,7 +577,7 @@ pub enum CommandSourceStatus {
     Found,
     NotFound,
     Oversize(u64),
-    InvalidJson,
+    InvalidJson(String),
     Unreadable(String),
 }
 
@@ -594,7 +594,7 @@ impl CommandSourceStatus {
             Self::Oversize(bytes) => {
                 format!("skipped, too large ({bytes} bytes): {display_path}")
             }
-            Self::InvalidJson => format!("invalid JSON: {display_path}"),
+            Self::InvalidJson(error) => format!("invalid JSON: {display_path} ({error})"),
             Self::Unreadable(error) => format!("unreadable: {display_path} ({error})"),
         }
     }

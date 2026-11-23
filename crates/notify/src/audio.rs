@@ -139,9 +139,43 @@ pub fn dispatch(_cue: &SoundCue, _out: &mut dyn Write) -> AudioOutcome {
 #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(any(test, not(all(feature = "test-thread-scoped-state", debug_assertions))))]
+fn spawn_with_latch(
+    playing: &'static std::sync::atomic::AtomicBool,
+    job: impl FnOnce() -> io::Result<()> + Send + 'static,
+) -> AudioOutcome {
+    use std::sync::atomic::Ordering;
+    if playing
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return AudioOutcome::Busy;
+    }
+    match std::thread::Builder::new()
+        .name("notification-audio".into())
+        .spawn(move || {
+            struct Reset(&'static std::sync::atomic::AtomicBool);
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _reset = Reset(playing);
+            if let Err(error) = job() {
+                // Do not log file names or external-player output (both may contain private data).
+                tracing::warn!(kind = ?error.kind(), "notification audio playback failed");
+            }
+        }) {
+        Ok(_) => AudioOutcome::Dispatched,
+        Err(_) => {
+            playing.store(false, Ordering::SeqCst);
+            AudioOutcome::Failed
+        }
+    }
+}
+
 #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 fn dispatch_wav(cue: &SoundCue) -> AudioOutcome {
-    use std::sync::atomic::Ordering;
     if !cfg!(any(
         target_os = "windows",
         target_os = "macos",
@@ -149,34 +183,8 @@ fn dispatch_wav(cue: &SoundCue) -> AudioOutcome {
     )) {
         return AudioOutcome::Unsupported;
     }
-    if PLAYING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return AudioOutcome::Busy;
-    }
     let cue = cue.clone();
-    match std::thread::Builder::new()
-        .name("notification-audio".into())
-        .spawn(move || {
-            struct Reset;
-            impl Drop for Reset {
-                fn drop(&mut self) {
-                    PLAYING.store(false, Ordering::SeqCst);
-                }
-            }
-            let _reset = Reset;
-            if let Err(error) = play_wav(&cue) {
-                // Do not log file names or external-player output (both may contain private data).
-                tracing::warn!(kind = ?error.kind(), "notification audio playback failed");
-            }
-        }) {
-        Ok(_) => AudioOutcome::Dispatched,
-        Err(_) => {
-            PLAYING.store(false, Ordering::SeqCst);
-            AudioOutcome::Failed
-        }
-    }
+    spawn_with_latch(&PLAYING, move || play_wav(&cue))
 }
 
 #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
@@ -220,26 +228,56 @@ fn play_file(path: &std::path::Path) -> io::Result<()> {
     }
 }
 
+#[cfg(any(
+    all(test, unix),
+    all(
+        not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))),
+        any(target_os = "macos", target_os = "linux")
+    )
+))]
+fn run_player(player: &Path, path: &Path, timeout: std::time::Duration) -> io::Result<()> {
+    let mut child = std::process::Command::new(player)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other("audio player failed"))
+            };
+        }
+        match deadline.checked_duration_since(std::time::Instant::now()) {
+            Some(remaining) if !remaining.is_zero() => {
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(25)));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "audio player timed out",
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(all(
     not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))),
     any(target_os = "macos", target_os = "linux")
 ))]
 fn play_file(path: &std::path::Path) -> io::Result<()> {
+    const AUDIO_PLAYER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
     #[cfg(target_os = "macos")]
     let player = PathBuf::from("/usr/bin/afplay");
     #[cfg(target_os = "linux")]
     let player = trusted_system_executable("aplay")?;
-    let status = std::process::Command::new(player)
-        .arg(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other("audio player failed"))
-    }
+    run_player(&player, path, AUDIO_PLAYER_TIMEOUT)
 }
 
 #[cfg(all(
@@ -342,5 +380,101 @@ mod tests {
             AudioOutcome::Unsupported
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn busy_latch_rejects_concurrent_dispatch_and_resets_after_worker_finishes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LATCH: AtomicBool = AtomicBool::new(false);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        assert_eq!(
+            spawn_with_latch(&LATCH, move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            }),
+            AudioOutcome::Dispatched
+        );
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(spawn_with_latch(&LATCH, || Ok(())), AudioOutcome::Busy);
+        release_tx.send(()).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while LATCH.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "busy latch never reset"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            spawn_with_latch(&LATCH, || Ok(())),
+            AudioOutcome::Dispatched
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while LATCH.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second latch never reset"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hung_player_is_killed_on_timeout_and_releases_busy_latch() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static HUNG_LATCH: AtomicBool = AtomicBool::new(false);
+
+        let dir = tempfile::tempdir().unwrap();
+        let fake_player = dir.path().join("hang-player");
+        std::fs::write(&fake_player, b"#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&fake_player, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wav = dir.path().join("cue.wav");
+        std::fs::write(&wav, b"").unwrap();
+
+        let started = std::time::Instant::now();
+        let err = run_player(&fake_player, &wav, std::time::Duration::from_millis(100))
+            .expect_err("hung player must time out");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let player_for_worker = fake_player.clone();
+        let wav_for_worker = wav.clone();
+        assert_eq!(
+            spawn_with_latch(&HUNG_LATCH, move || {
+                run_player(
+                    &player_for_worker,
+                    &wav_for_worker,
+                    std::time::Duration::from_millis(150),
+                )
+            }),
+            AudioOutcome::Dispatched
+        );
+        assert_eq!(spawn_with_latch(&HUNG_LATCH, || Ok(())), AudioOutcome::Busy);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while HUNG_LATCH.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "busy latch remained stuck after hung player timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        assert_eq!(
+            spawn_with_latch(&HUNG_LATCH, || Ok(())),
+            AudioOutcome::Dispatched
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while HUNG_LATCH.load(Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
