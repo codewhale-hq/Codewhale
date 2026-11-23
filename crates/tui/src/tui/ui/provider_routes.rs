@@ -321,6 +321,7 @@ async fn balance_get_json<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .map_err(|error| {
+            let error = error.without_url();
             tracing::warn!(%error, "provider balance request failed");
             if error.is_timeout() {
                 format!("request timed out: {error}")

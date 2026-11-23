@@ -457,7 +457,7 @@ pub async fn generate_suggestion(
     let response = match request.send().await {
         Ok(r) => r,
         Err(error) => {
-            debug!(%error, "prompt suggestion request failed");
+            debug!(error = %error.without_url(), "prompt suggestion request failed");
             return None;
         }
     };
