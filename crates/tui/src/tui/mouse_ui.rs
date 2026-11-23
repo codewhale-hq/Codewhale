@@ -112,7 +112,7 @@ use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::tideline::InteractionAction;
 use crate::tui::views::{ContextMenuAction, HelpView, ModalKind, ViewEvent};
-use codewhale_localization::MessageId;
+use codewhale_localization::{MessageId, tr};
 use codewhale_models::{ContentBlock, Message};
 use codewhale_tui_kit::scrolling::{ScrollDirection, TranscriptScroll};
 use codewhale_tui_kit::ui_text::{
@@ -513,7 +513,9 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent, now: Instant)
         } else {
             app.selected_text()
         };
-        let _ = app.clipboard.write_primary_text(&text);
+        if let Err(error) = app.clipboard.write_primary_text(&text) {
+            tracing::debug!(%error, "primary selection write failed");
+        }
     }
 
     // Topbar facts are typed controls, not decorative text. Route this before
@@ -912,20 +914,19 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
                 _ => RailPanel::Agents,
             };
             crate::tui::work_surface::select_dock_panel(app, target);
-            app.status_message = Some(
-                match target {
-                    RailPanel::Agents => "Showing subagents",
-                    _ => "Showing tasks",
-                }
-                .to_string(),
-            );
+            let message = match target {
+                RailPanel::Agents => MessageId::SidebarShowingSubagents,
+                _ => MessageId::SidebarShowingTasks,
+            };
+            app.status_message = Some(tr(app.ui_locale, message).into_owned());
             app.needs_redraw = true;
             Vec::new()
         }
         SidebarRowAction::OpenAgentDetail { agent_id } => {
             if !crate::tui::agent_details::open_agent_details(app, &agent_id) {
                 crate::tui::work_surface::agent_details_closed(app, &agent_id);
-                app.status_message = Some("Agent details are unavailable".to_string());
+                app.status_message =
+                    Some(tr(app.ui_locale, MessageId::SidebarAgentDetailsUnavailable).into_owned());
             }
             app.needs_redraw = true;
             Vec::new()
@@ -1118,10 +1119,10 @@ fn agent_message_text(message: &Message) -> String {
                 is_error,
                 ..
             } => {
-                let label = if is_error.unwrap_or(false) {
-                    "← tool error"
-                } else {
-                    "← tool result"
+                let label = match is_error {
+                    Some(true) => "← tool error",
+                    Some(false) => "← tool result",
+                    None => "← tool result (status unknown)",
                 };
                 text.push_str(&format!("{label} ({tool_use_id})\n{content}\n"));
             }

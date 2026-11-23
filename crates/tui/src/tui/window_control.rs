@@ -306,7 +306,7 @@ mod imp {
     fn is_desktop_shell(name: &str) -> bool {
         matches!(
             name.to_ascii_lowercase().as_str(),
-            "explorer.exe" | "dwm.exe" | "shell experience host.exe"
+            "explorer.exe" | "dwm.exe" | "shellexperiencehost.exe"
         )
     }
 
@@ -483,6 +483,12 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn desktop_shell_matches_lowercased_shell_experience_host_image() {
+            assert!(is_desktop_shell("ShellExperienceHost.exe"));
+            assert!(!is_desktop_shell("WindowsTerminal.exe"));
+        }
 
         #[test]
         fn pin_receipt_requires_observed_geometry_and_topmost_state() {

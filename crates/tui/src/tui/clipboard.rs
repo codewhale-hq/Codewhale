@@ -813,10 +813,13 @@ fn write_text_with_stdin_command(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run {label}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {label}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(text.as_bytes())
+    {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!("Failed to write to {label}: {e}"));
     }
     let _ = std::thread::Builder::new()
         .name("clipboard-wait".to_string())

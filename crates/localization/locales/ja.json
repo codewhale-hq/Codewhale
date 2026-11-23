@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "{count}時間ごと",
   "AutomationScheduleDays": "{count}日ごと",
   "AutomationScheduleWeeks": "{count}週間ごと",
-  "AutomationScheduleMonthly": "毎月"
+  "AutomationScheduleMonthly": "毎月",
+  "McpAuthRequiredState": "認証が必要",
+  "ConversationModeUnavailableDefault": "利用不可",
+  "ConversationModeSyncFailed": "実行中のセッションに会話モードを適用できませんでした。",
+  "ProviderExternalGateOneHeading": "ゲート 1/2 · アクセスを選択",
+  "ProviderExternalChoiceContinue": "{key} で続行 · ゲート 2 で確認するまで何も読み取り・保存されません。",
+  "SidebarShowingSubagents": "サブエージェントを表示中",
+  "SidebarShowingTasks": "タスクを表示中",
+  "SidebarAgentDetailsUnavailable": "エージェントの詳細を表示できません",
+  "MentionAttached": "@{path} を添付しました",
+  "MentionMatches": "一致: {preview}",
+  "MentionNoMatches": "@{partial} に一致するファイルはありません",
+  "MentionNoMatchesDepth": "@{partial} に一致するファイルはありません (mention_walk_depth={walk_depth}; さらに深く検索するには /config set mention_walk_depth 0)",
+  "JobsCancelAllPrompt": "{key} を押すと実行中のコマンドをすべてキャンセルします",
+  "OnboardingMarkFailed": "オンボーディングの進行状況を保存できませんでした: {error}",
+  "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}"
 }

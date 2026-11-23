@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "mỗi {count} giờ",
   "AutomationScheduleDays": "mỗi {count} ngày",
   "AutomationScheduleWeeks": "mỗi {count} tuần",
-  "AutomationScheduleMonthly": "hằng tháng"
+  "AutomationScheduleMonthly": "hằng tháng",
+  "McpAuthRequiredState": "cần xác thực",
+  "ConversationModeUnavailableDefault": "không khả dụng",
+  "ConversationModeSyncFailed": "Không thể áp dụng chế độ hội thoại cho phiên đang chạy.",
+  "ProviderExternalGateOneHeading": "Bước 1/2 · chọn quyền truy cập",
+  "ProviderExternalChoiceContinue": "{key} để tiếp tục · không đọc hay lưu gì cho đến khi bước 2 xác nhận.",
+  "SidebarShowingSubagents": "Đang hiển thị tác tử con",
+  "SidebarShowingTasks": "Đang hiển thị tác vụ",
+  "SidebarAgentDetailsUnavailable": "Không có chi tiết tác tử",
+  "MentionAttached": "Đã đính kèm @{path}",
+  "MentionMatches": "Kết quả khớp: {preview}",
+  "MentionNoMatches": "Không có tệp nào khớp @{partial}",
+  "MentionNoMatchesDepth": "Không có tệp nào khớp @{partial} (mention_walk_depth={walk_depth}; dùng /config set mention_walk_depth 0 để tìm sâu hơn)",
+  "JobsCancelAllPrompt": "Nhấn {key} để hủy mọi lệnh đang chạy",
+  "OnboardingMarkFailed": "Không thể lưu tiến trình giới thiệu: {error}",
+  "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}"
 }

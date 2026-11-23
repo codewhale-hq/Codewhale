@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "每 {count} 小時",
   "AutomationScheduleDays": "每 {count} 天",
   "AutomationScheduleWeeks": "每 {count} 週",
-  "AutomationScheduleMonthly": "每月"
+  "AutomationScheduleMonthly": "每月",
+  "McpAuthRequiredState": "需要驗證",
+  "ConversationModeUnavailableDefault": "無法使用",
+  "ConversationModeSyncFailed": "無法將對話模式套用到執行中的工作階段。",
+  "ProviderExternalGateOneHeading": "關卡 1/2 · 選擇存取權限",
+  "ProviderExternalChoiceContinue": "{key} 繼續 · 在關卡 2 確認前不會讀取或儲存任何內容。",
+  "SidebarShowingSubagents": "正在顯示子代理",
+  "SidebarShowingTasks": "正在顯示任務",
+  "SidebarAgentDetailsUnavailable": "無法查看代理詳情",
+  "MentionAttached": "已附加 @{path}",
+  "MentionMatches": "符合：{preview}",
+  "MentionNoMatches": "沒有符合 @{partial} 的檔案",
+  "MentionNoMatchesDepth": "沒有符合 @{partial} 的檔案 (mention_walk_depth={walk_depth}; 使用 /config set mention_walk_depth 0 搜尋更深層級)",
+  "JobsCancelAllPrompt": "按 {key} 取消所有執行中的命令",
+  "OnboardingMarkFailed": "無法儲存導覽進度：{error}",
+  "FeatureIntroFlagSaveFailed": "無法儲存功能提示設定：{error}"
 }

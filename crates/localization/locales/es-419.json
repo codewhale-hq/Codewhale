@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "cada {count} h",
   "AutomationScheduleDays": "cada {count} d",
   "AutomationScheduleWeeks": "cada {count} sem.",
-  "AutomationScheduleMonthly": "mensual"
+  "AutomationScheduleMonthly": "mensual",
+  "McpAuthRequiredState": "autenticación requerida",
+  "ConversationModeUnavailableDefault": "no disponible",
+  "ConversationModeSyncFailed": "No se pudo aplicar el modo de conversación a la sesión en curso.",
+  "ProviderExternalGateOneHeading": "Paso 1 de 2 · elige el acceso",
+  "ProviderExternalChoiceContinue": "{key} continúa · no se lee ni guarda nada hasta que el paso 2 lo confirme.",
+  "SidebarShowingSubagents": "Mostrando subagentes",
+  "SidebarShowingTasks": "Mostrando tareas",
+  "SidebarAgentDetailsUnavailable": "Los detalles del agente no están disponibles",
+  "MentionAttached": "@{path} adjuntado",
+  "MentionMatches": "Coincidencias: {preview}",
+  "MentionNoMatches": "Ningún archivo coincide con @{partial}",
+  "MentionNoMatchesDepth": "Ningún archivo coincide con @{partial} (mention_walk_depth={walk_depth}; usa /config set mention_walk_depth 0 para buscar más a fondo)",
+  "JobsCancelAllPrompt": "Pulsa {key} para cancelar todos los comandos en ejecución",
+  "OnboardingMarkFailed": "No se pudo guardar el progreso de la configuración inicial: {error}",
+  "FeatureIntroFlagSaveFailed": "No se pudo guardar la configuración del consejo de funciones: {error}"
 }

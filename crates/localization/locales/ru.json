@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "каждые {count} ч",
   "AutomationScheduleDays": "каждые {count} дн.",
   "AutomationScheduleWeeks": "каждые {count} нед.",
-  "AutomationScheduleMonthly": "ежемесячно"
+  "AutomationScheduleMonthly": "ежемесячно",
+  "McpAuthRequiredState": "требуется вход",
+  "ConversationModeUnavailableDefault": "недоступен",
+  "ConversationModeSyncFailed": "Не удалось применить режим беседы к текущей сессии.",
+  "ProviderExternalGateOneHeading": "Шаг 1 из 2 · выберите доступ",
+  "ProviderExternalChoiceContinue": "{key} — продолжить · ничего не читается и не сохраняется до подтверждения на шаге 2.",
+  "SidebarShowingSubagents": "Показаны субагенты",
+  "SidebarShowingTasks": "Показаны задачи",
+  "SidebarAgentDetailsUnavailable": "Сведения об агенте недоступны",
+  "MentionAttached": "Прикреплено: @{path}",
+  "MentionMatches": "Совпадения: {preview}",
+  "MentionNoMatches": "Нет файлов, совпадающих с @{partial}",
+  "MentionNoMatchesDepth": "Нет файлов, совпадающих с @{partial} (mention_walk_depth={walk_depth}; используйте /config set mention_walk_depth 0 для поиска глубже)",
+  "JobsCancelAllPrompt": "Нажмите {key}, чтобы отменить все запущенные команды",
+  "OnboardingMarkFailed": "Не удалось сохранить прогресс первоначальной настройки: {error}",
+  "FeatureIntroFlagSaveFailed": "Не удалось сохранить настройку подсказки: {error}"
 }

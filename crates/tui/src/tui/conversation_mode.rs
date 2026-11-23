@@ -112,7 +112,10 @@ pub(crate) fn unavailable_reason(
             .as_deref()
             .filter(|_| !mode.available)
             .map(|reason| display_reason(locale, reason))
-            .or_else(|| (!mode.available).then(|| "unavailable".to_string())),
+            .or_else(|| {
+                (!mode.available)
+                    .then(|| tr(locale, MessageId::ConversationModeUnavailableDefault).into_owned())
+            }),
         None => Some(
             tr(locale, MessageId::ConversationModeUnknown)
                 .replace("{id}", &clean(id))
@@ -188,11 +191,9 @@ pub(crate) fn resolve(locale: Locale, table: &ConversationModeTable, id: &str) -
         ),
         Some(mode) if !mode.available => Resolution::Unavailable {
             name: display_name(locale, mode),
-            reason: display_reason(
-                locale,
-                mode.reason
-                    .as_deref()
-                    .unwrap_or("This mode is unavailable."),
+            reason: mode.reason.as_deref().map_or_else(
+                || tr(locale, MessageId::ConversationModeUnavailableDefault).into_owned(),
+                |reason| display_reason(locale, reason),
             ),
         },
         Some(mode) => Resolution::Ready {
@@ -235,8 +236,9 @@ pub(crate) async fn set_in_place(
             if app.conversation_mode_locked() {
                 return Err(locked_refusal(locale, id.trim()));
             }
+            let previous = app.conversation_mode.clone();
             app.install_conversation_mode(stored, None);
-            let _ = engine
+            let synced = engine
                 .send(codewhale_engine::core::ops::Op::SyncSession {
                     expected: None,
                     control: app.session_sync_control(),
@@ -250,6 +252,11 @@ pub(crate) async fn set_in_place(
                     agent_preset: app.agent_preset(),
                 })
                 .await;
+            if let Err(error) = synced {
+                tracing::warn!(%error, "conversation mode session sync failed");
+                app.install_conversation_mode(previous, None);
+                return Err(tr(locale, MessageId::ConversationModeSyncFailed).into_owned());
+            }
             Ok(done)
         }
     }

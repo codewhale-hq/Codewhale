@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "кожні {count} год",
   "AutomationScheduleDays": "кожні {count} дн.",
   "AutomationScheduleWeeks": "кожні {count} тиж.",
-  "AutomationScheduleMonthly": "щомісяця"
+  "AutomationScheduleMonthly": "щомісяця",
+  "McpAuthRequiredState": "потрібен вхід",
+  "ConversationModeUnavailableDefault": "недоступний",
+  "ConversationModeSyncFailed": "Не вдалося застосувати режим розмови до поточної сесії.",
+  "ProviderExternalGateOneHeading": "Крок 1 з 2 · оберіть доступ",
+  "ProviderExternalChoiceContinue": "{key} — продовжити · нічого не читається і не зберігається до підтвердження на кроці 2.",
+  "SidebarShowingSubagents": "Показано субагентів",
+  "SidebarShowingTasks": "Показано завдання",
+  "SidebarAgentDetailsUnavailable": "Відомості про агента недоступні",
+  "MentionAttached": "Прикріплено: @{path}",
+  "MentionMatches": "Збіги: {preview}",
+  "MentionNoMatches": "Немає файлів, що збігаються з @{partial}",
+  "MentionNoMatchesDepth": "Немає файлів, що збігаються з @{partial} (mention_walk_depth={walk_depth}; використайте /config set mention_walk_depth 0 для глибшого пошуку)",
+  "JobsCancelAllPrompt": "Натисніть {key}, щоб скасувати всі запущені команди",
+  "OnboardingMarkFailed": "Не вдалося зберегти прогрес початкового налаштування: {error}",
+  "FeatureIntroFlagSaveFailed": "Не вдалося зберегти налаштування підказки: {error}"
 }

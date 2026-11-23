@@ -620,8 +620,15 @@ fn run(
             if s.display_language.is_some() {
                 body["locale"] = json!(view.locale);
             }
-            producer_seq = client.post("/v1/producer", &body).ok().map(|_| seq);
-            events.clear();
+            match client.post("/v1/producer", &body) {
+                Ok(_) => {
+                    producer_seq = Some(seq);
+                    events.clear();
+                }
+                Err(error) => {
+                    tracing::debug!(%error, seq, "pet producer post failed; events retained");
+                }
+            }
             last_produce = Instant::now();
         } else if source.as_deref() != Some(s.source.as_str()) {
             events.clear();

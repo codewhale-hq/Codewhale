@@ -6712,7 +6712,7 @@ fn mcp_problems_are_announced_once_per_session_and_never_pinned_in_the_footer() 
         .collect::<Vec<_>>();
     let expected = format!(
         "MCP · {}: slack · failed: supabase · /mcp",
-        crate::tui::session_boot::mcp_auth_required_state_label()
+        crate::tui::session_boot::mcp_auth_required_state_label(codewhale_localization::Locale::En)
     );
     assert_eq!(announcements, vec![expected]);
     let rendered_80 = render_underwater_test_app(&mut app, 80, 30);
@@ -17649,9 +17649,10 @@ fn ctrl_x_jobs_prefill_only_catches_running_shell_jobs_in_tasks_sidebar() {
     assert!(prefill_jobs_cancel_all_if_tasks_sidebar(&mut app));
     assert_eq!(app.input, "/jobs cancel-all");
     assert_eq!(app.cursor_position, app.input.len());
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("Press Enter to cancel all running commands")
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|toast| toast.text == "Press Enter to cancel all running commands")
     );
 }
 

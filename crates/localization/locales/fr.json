@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "toutes les {count} h",
   "AutomationScheduleDays": "tous les {count} j",
   "AutomationScheduleWeeks": "toutes les {count} sem.",
-  "AutomationScheduleMonthly": "mensuel"
+  "AutomationScheduleMonthly": "mensuel",
+  "McpAuthRequiredState": "authentification requise",
+  "ConversationModeUnavailableDefault": "indisponible",
+  "ConversationModeSyncFailed": "Impossible d'appliquer le mode de conversation à la session en cours.",
+  "ProviderExternalGateOneHeading": "Étape 1 sur 2 · choisir l'accès",
+  "ProviderExternalChoiceContinue": "{key} continue · rien n'est lu ni enregistré avant la confirmation à l'étape 2.",
+  "SidebarShowingSubagents": "Affichage des sous-agents",
+  "SidebarShowingTasks": "Affichage des tâches",
+  "SidebarAgentDetailsUnavailable": "Les détails de l'agent sont indisponibles",
+  "MentionAttached": "@{path} joint",
+  "MentionMatches": "Correspondances : {preview}",
+  "MentionNoMatches": "Aucun fichier ne correspond à @{partial}",
+  "MentionNoMatchesDepth": "Aucun fichier ne correspond à @{partial} (mention_walk_depth={walk_depth}; utilisez /config set mention_walk_depth 0 pour chercher plus profondément)",
+  "JobsCancelAllPrompt": "Appuyez sur {key} pour annuler toutes les commandes en cours",
+  "OnboardingMarkFailed": "Impossible d'enregistrer la progression de l'accueil : {error}",
+  "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}"
 }

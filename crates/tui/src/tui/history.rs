@@ -934,9 +934,26 @@ pub fn history_cells_from_message_with_results(
                 }
             }
             ContentBlock::ToolUse { name, input, .. } if name == "update_plan" => {
+                let key = block.tool_call_key();
+                let failed = messages
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .find_map(|candidate| match candidate {
+                        ContentBlock::ToolResult { is_error, .. }
+                            if key.is_some() && candidate.tool_call_key() == key =>
+                        {
+                            Some(is_error.unwrap_or(false))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
                 cells.push(HistoryCell::Tool(ToolCell::PlanUpdate(PlanUpdateCell {
                     snapshot: PlanSnapshot::from_tool_input(input),
-                    status: ToolStatus::Success,
+                    status: if failed {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Success
+                    },
                 })));
             }
             ContentBlock::ToolUse { name, input, .. } if name == "show_data" => {
@@ -1779,16 +1796,9 @@ impl ExploringCell {
                     width,
                 ));
             } else if !header_shows_label {
-                let prefix = match entry.status {
-                    ToolStatus::Running => "live",
-                    ToolStatus::Success => "done",
-                    ToolStatus::Hydrated => "loaded",
-                    ToolStatus::Stopped => "stopped",
-                    ToolStatus::Warning => "issue",
-                    ToolStatus::Failed => "failed",
-                };
+                let prefix = tool_status_label(entry.status, locale);
                 lines.extend(render_compact_kv(
-                    prefix,
+                    &prefix,
                     &entry.label,
                     tool_value_style(),
                     width,

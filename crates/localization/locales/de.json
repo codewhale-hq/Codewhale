@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "alle {count} Std.",
   "AutomationScheduleDays": "alle {count} T.",
   "AutomationScheduleWeeks": "alle {count} Wo.",
-  "AutomationScheduleMonthly": "monatlich"
+  "AutomationScheduleMonthly": "monatlich",
+  "McpAuthRequiredState": "Anmeldung erforderlich",
+  "ConversationModeUnavailableDefault": "nicht verfügbar",
+  "ConversationModeSyncFailed": "Der Gesprächsmodus konnte nicht auf die laufende Sitzung angewendet werden.",
+  "ProviderExternalGateOneHeading": "Schritt 1 von 2 · Zugriff wählen",
+  "ProviderExternalChoiceContinue": "{key} fährt fort · nichts wird gelesen oder gespeichert, bis Schritt 2 bestätigt.",
+  "SidebarShowingSubagents": "Subagenten werden angezeigt",
+  "SidebarShowingTasks": "Aufgaben werden angezeigt",
+  "SidebarAgentDetailsUnavailable": "Agentendetails sind nicht verfügbar",
+  "MentionAttached": "@{path} angehängt",
+  "MentionMatches": "Treffer: {preview}",
+  "MentionNoMatches": "Keine Dateien passen zu @{partial}",
+  "MentionNoMatchesDepth": "Keine Dateien passen zu @{partial} (mention_walk_depth={walk_depth}; mit /config set mention_walk_depth 0 tiefer suchen)",
+  "JobsCancelAllPrompt": "{key} drücken, um alle laufenden Befehle abzubrechen",
+  "OnboardingMarkFailed": "Einrichtungsfortschritt konnte nicht gespeichert werden: {error}",
+  "FeatureIntroFlagSaveFailed": "Einstellung für den Funktionstipp konnte nicht gespeichert werden: {error}"
 }

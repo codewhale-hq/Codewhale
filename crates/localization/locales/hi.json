@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "हर {count} घं.",
   "AutomationScheduleDays": "हर {count} दिन",
   "AutomationScheduleWeeks": "हर {count} सप्ताह",
-  "AutomationScheduleMonthly": "मासिक"
+  "AutomationScheduleMonthly": "मासिक",
+  "McpAuthRequiredState": "प्रमाणीकरण आवश्यक",
+  "ConversationModeUnavailableDefault": "अनुपलब्ध",
+  "ConversationModeSyncFailed": "चल रहे सत्र पर बातचीत मोड लागू नहीं हो सका।",
+  "ProviderExternalGateOneHeading": "चरण 1/2 · पहुँच चुनें",
+  "ProviderExternalChoiceContinue": "{key} जारी रखता है · चरण 2 की पुष्टि तक कुछ भी पढ़ा या सहेजा नहीं जाता।",
+  "SidebarShowingSubagents": "सब-एजेंट दिखाए जा रहे हैं",
+  "SidebarShowingTasks": "कार्य दिखाए जा रहे हैं",
+  "SidebarAgentDetailsUnavailable": "एजेंट विवरण उपलब्ध नहीं है",
+  "MentionAttached": "@{path} संलग्न किया गया",
+  "MentionMatches": "मिलान: {preview}",
+  "MentionNoMatches": "@{partial} से कोई फ़ाइल मेल नहीं खाती",
+  "MentionNoMatchesDepth": "@{partial} से कोई फ़ाइल मेल नहीं खाती (mention_walk_depth={walk_depth}; और गहराई तक खोजने के लिए /config set mention_walk_depth 0 चलाएँ)",
+  "JobsCancelAllPrompt": "चल रहे सभी कमांड रद्द करने के लिए {key} दबाएँ",
+  "OnboardingMarkFailed": "ऑनबोर्डिंग प्रगति सहेजी नहीं जा सकी: {error}",
+  "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}"
 }

@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "每 {count} 小时",
   "AutomationScheduleDays": "每 {count} 天",
   "AutomationScheduleWeeks": "每 {count} 周",
-  "AutomationScheduleMonthly": "每月"
+  "AutomationScheduleMonthly": "每月",
+  "McpAuthRequiredState": "需要认证",
+  "ConversationModeUnavailableDefault": "不可用",
+  "ConversationModeSyncFailed": "无法将对话模式应用到正在运行的会话。",
+  "ProviderExternalGateOneHeading": "关卡 1/2 · 选择访问权限",
+  "ProviderExternalChoiceContinue": "{key} 继续 · 在关卡 2 确认前不会读取或保存任何内容。",
+  "SidebarShowingSubagents": "正在显示子代理",
+  "SidebarShowingTasks": "正在显示任务",
+  "SidebarAgentDetailsUnavailable": "无法查看代理详情",
+  "MentionAttached": "已附加 @{path}",
+  "MentionMatches": "匹配：{preview}",
+  "MentionNoMatches": "没有与 @{partial} 匹配的文件",
+  "MentionNoMatchesDepth": "没有与 @{partial} 匹配的文件 (mention_walk_depth={walk_depth}; 使用 /config set mention_walk_depth 0 搜索更深层级)",
+  "JobsCancelAllPrompt": "按 {key} 取消所有正在运行的命令",
+  "OnboardingMarkFailed": "无法保存引导进度：{error}",
+  "FeatureIntroFlagSaveFailed": "无法保存功能提示设置：{error}"
 }

@@ -124,22 +124,23 @@ fn run(
         // Hydrating a bounded recording validates its whole accepted history.
         // It runs off the UI thread and can take longer than a frame command.
         *deadline.lock().map_err(|_| ())? = Instant::now() + Duration::from_secs(10);
-        let loaded = (|| -> Result<Store, ()> {
-            let mut files = Store::open(session).map_err(|_| ())?;
-            if let Some(saved) = files.load().map_err(|_| ())? {
+        let loaded = (|| -> Result<Store, String> {
+            let mut files = Store::open(session).map_err(|error| format!("{error:?}"))?;
+            if let Some(saved) = files.load().map_err(|error| format!("{error:?}"))? {
                 offset_ms = context
                     .with(|ctx| -> rquickjs::Result<f64> {
                         ctx.globals().set("savedHabitat", saved)?;
                         ctx.eval("pet.restoreRecording(savedHabitat); delete globalThis.savedHabitat; pet.resumeEngine()")
                     })
-                    .map_err(|_| ())?;
+                    .map_err(|error| format!("{error:?}"))?;
                 let _ = notices.try_send(Notice::Restored);
             }
             Ok(files)
         })();
         match loaded {
             Ok(files) => store = Some(files),
-            Err(()) => {
+            Err(error) => {
+                tracing::warn!(%error, "pet recording hydration failed");
                 // A damaged/concurrent file stays untouched; this run can still
                 // show unknown/live telemetry and export its own accepted tape.
                 context

@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "{count}시간마다",
   "AutomationScheduleDays": "{count}일마다",
   "AutomationScheduleWeeks": "{count}주마다",
-  "AutomationScheduleMonthly": "매월"
+  "AutomationScheduleMonthly": "매월",
+  "McpAuthRequiredState": "인증 필요",
+  "ConversationModeUnavailableDefault": "사용할 수 없음",
+  "ConversationModeSyncFailed": "실행 중인 세션에 대화 모드를 적용하지 못했습니다.",
+  "ProviderExternalGateOneHeading": "관문 1/2 · 접근 방식 선택",
+  "ProviderExternalChoiceContinue": "{key} 계속 · 관문 2에서 확인할 때까지 아무것도 읽거나 저장하지 않습니다.",
+  "SidebarShowingSubagents": "하위 에이전트 표시 중",
+  "SidebarShowingTasks": "작업 표시 중",
+  "SidebarAgentDetailsUnavailable": "에이전트 세부 정보를 사용할 수 없습니다",
+  "MentionAttached": "@{path} 첨부됨",
+  "MentionMatches": "일치 항목: {preview}",
+  "MentionNoMatches": "@{partial}와(과) 일치하는 파일이 없습니다",
+  "MentionNoMatchesDepth": "@{partial}와(과) 일치하는 파일이 없습니다 (mention_walk_depth={walk_depth}; 더 깊이 검색하려면 /config set mention_walk_depth 0)",
+  "JobsCancelAllPrompt": "{key}을(를) 눌러 실행 중인 모든 명령을 취소",
+  "OnboardingMarkFailed": "온보딩 진행 상황을 저장하지 못했습니다: {error}",
+  "FeatureIntroFlagSaveFailed": "기능 팁 설정을 저장하지 못했습니다: {error}"
 }

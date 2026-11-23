@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "a cada {count} h",
   "AutomationScheduleDays": "a cada {count} d",
   "AutomationScheduleWeeks": "a cada {count} sem.",
-  "AutomationScheduleMonthly": "mensal"
+  "AutomationScheduleMonthly": "mensal",
+  "McpAuthRequiredState": "autenticação necessária",
+  "ConversationModeUnavailableDefault": "indisponível",
+  "ConversationModeSyncFailed": "Não foi possível aplicar o modo de conversa à sessão em execução.",
+  "ProviderExternalGateOneHeading": "Etapa 1 de 2 · escolha o acesso",
+  "ProviderExternalChoiceContinue": "{key} continua · nada é lido ou salvo até a etapa 2 confirmar.",
+  "SidebarShowingSubagents": "Mostrando subagentes",
+  "SidebarShowingTasks": "Mostrando tarefas",
+  "SidebarAgentDetailsUnavailable": "Os detalhes do agente não estão disponíveis",
+  "MentionAttached": "@{path} anexado",
+  "MentionMatches": "Correspondências: {preview}",
+  "MentionNoMatches": "Nenhum arquivo corresponde a @{partial}",
+  "MentionNoMatchesDepth": "Nenhum arquivo corresponde a @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 para buscar mais fundo)",
+  "JobsCancelAllPrompt": "Pressione {key} para cancelar todos os comandos em execução",
+  "OnboardingMarkFailed": "Não foi possível salvar o progresso da integração: {error}",
+  "FeatureIntroFlagSaveFailed": "Não foi possível salvar a configuração da dica de recurso: {error}"
 }

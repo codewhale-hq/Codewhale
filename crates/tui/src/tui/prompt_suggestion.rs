@@ -11,6 +11,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tracing::debug;
 
+const MAX_SUGGESTION_RESPONSE_BYTES: usize = 64 * 1024;
+
 use codewhale_config::ProviderKind;
 use codewhale_engine::core::events::TurnRoute;
 use codewhale_engine::route_receipt::{TurnRouteReceipt, endpoint_identity};
@@ -454,12 +456,41 @@ pub async fn generate_suggestion(
     }
     let response = match request.send().await {
         Ok(r) => r,
-        Err(_) => return None,
+        Err(error) => {
+            debug!(%error, "prompt suggestion request failed");
+            return None;
+        }
     };
-
-    let value: Value = match response.json().await {
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_SUGGESTION_RESPONSE_BYTES as u64)
+    {
+        debug!("prompt suggestion response exceeds the size limit");
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        match chunk {
+            Ok(chunk) if body.len() + chunk.len() <= MAX_SUGGESTION_RESPONSE_BYTES => {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(_) => {
+                debug!("prompt suggestion response exceeds the size limit");
+                return None;
+            }
+            Err(error) => {
+                debug!(%error, "prompt suggestion response read failed");
+                return None;
+            }
+        }
+    }
+    let value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(error) => {
+            debug!(%error, "prompt suggestion response is not valid JSON");
+            return None;
+        }
     };
 
     let suggestion = value["choices"][0]["message"]["content"]

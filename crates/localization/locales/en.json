@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "every {count}h",
   "AutomationScheduleDays": "every {count}d",
   "AutomationScheduleWeeks": "every {count}w",
-  "AutomationScheduleMonthly": "monthly"
+  "AutomationScheduleMonthly": "monthly",
+  "McpAuthRequiredState": "auth required",
+  "ConversationModeUnavailableDefault": "unavailable",
+  "ConversationModeSyncFailed": "Could not apply the conversation mode to the running session.",
+  "ProviderExternalGateOneHeading": "Gate 1 of 2 · choose access",
+  "ProviderExternalChoiceContinue": "{key} continues · nothing is read or saved until Gate 2 confirms.",
+  "SidebarShowingSubagents": "Showing subagents",
+  "SidebarShowingTasks": "Showing tasks",
+  "SidebarAgentDetailsUnavailable": "Agent details are unavailable",
+  "MentionAttached": "Attached @{path}",
+  "MentionMatches": "Matches: {preview}",
+  "MentionNoMatches": "No files match @{partial}",
+  "MentionNoMatchesDepth": "No files match @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 to search deeper)",
+  "JobsCancelAllPrompt": "Press {key} to cancel all running commands",
+  "OnboardingMarkFailed": "Could not save onboarding progress: {error}",
+  "FeatureIntroFlagSaveFailed": "Could not save the feature tip setting: {error}"
 }

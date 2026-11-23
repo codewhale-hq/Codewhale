@@ -2807,5 +2807,20 @@
   "AutomationScheduleHours": "setiap {count} jam",
   "AutomationScheduleDays": "setiap {count} hari",
   "AutomationScheduleWeeks": "setiap {count} pekan",
-  "AutomationScheduleMonthly": "bulanan"
+  "AutomationScheduleMonthly": "bulanan",
+  "McpAuthRequiredState": "perlu autentikasi",
+  "ConversationModeUnavailableDefault": "tidak tersedia",
+  "ConversationModeSyncFailed": "Tidak dapat menerapkan mode percakapan ke sesi yang berjalan.",
+  "ProviderExternalGateOneHeading": "Tahap 1 dari 2 · pilih akses",
+  "ProviderExternalChoiceContinue": "{key} lanjut · tidak ada yang dibaca atau disimpan sampai tahap 2 mengonfirmasi.",
+  "SidebarShowingSubagents": "Menampilkan subagen",
+  "SidebarShowingTasks": "Menampilkan tugas",
+  "SidebarAgentDetailsUnavailable": "Detail agen tidak tersedia",
+  "MentionAttached": "@{path} dilampirkan",
+  "MentionMatches": "Cocok: {preview}",
+  "MentionNoMatches": "Tidak ada file yang cocok dengan @{partial}",
+  "MentionNoMatchesDepth": "Tidak ada file yang cocok dengan @{partial} (mention_walk_depth={walk_depth}; gunakan /config set mention_walk_depth 0 untuk mencari lebih dalam)",
+  "JobsCancelAllPrompt": "Tekan {key} untuk membatalkan semua perintah yang berjalan",
+  "OnboardingMarkFailed": "Tidak dapat menyimpan progres orientasi: {error}",
+  "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}"
 }
