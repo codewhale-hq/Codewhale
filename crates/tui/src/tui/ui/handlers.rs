@@ -231,6 +231,9 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
     // so fast typing / IME commits / autocomplete bursts don't get
     // mis-classified as a paste.
     app.bracketed_paste_seen = true;
+    if !text.is_empty() {
+        app.note_clipboard_paste();
+    }
     if app.is_history_search_active() && app.view_stack.is_empty() {
         app.history_search_insert_str(text);
     } else if paste_text_into_provider_picker(app, text) || app.view_stack.handle_paste(text) {

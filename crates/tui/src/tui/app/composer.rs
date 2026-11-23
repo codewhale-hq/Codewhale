@@ -978,15 +978,21 @@ impl App {
         // The window is measured from the end of the previous read (see
         // `note_clipboard_paste`), so a slow clipboard open cannot push the
         // second edge outside it.
+        let release_edge = std::mem::take(&mut self.paste_from_release_edge);
         if self.clipboard_paste_within_dedupe_window() {
             return false;
         }
         if self.clipboard.requires_terminal_paste() {
-            self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
+            if !release_edge {
+                self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
+            }
             return false;
         }
         let content = self.clipboard.read_markdown(self.workspace.as_path());
         self.note_clipboard_paste();
+        if release_edge && !matches!(content, Some(ClipboardContent::Image(_))) {
+            return false;
+        }
         if let Some(content) = content {
             self.apply_clipboard_content(content);
             return true;

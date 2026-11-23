@@ -553,7 +553,7 @@ fn cargo_root_beside(path: &Path) -> Option<PathBuf> {
         .then(|| root.to_path_buf())
 }
 
-fn cargo_lists(path: &Path, name: &str) -> bool {
+pub(crate) fn cargo_lists(path: &Path, name: &str) -> bool {
     let Some(root) = cargo_root_beside(path) else {
         return false;
     };

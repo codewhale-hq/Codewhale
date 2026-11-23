@@ -839,6 +839,8 @@ impl App {
             dispatch_cancel: None,
             last_enter_instant: None,
             last_clipboard_paste: None,
+            paste_shortcut_press_seen: false,
+            paste_from_release_edge: false,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),
