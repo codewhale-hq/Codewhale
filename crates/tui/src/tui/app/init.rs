@@ -848,6 +848,7 @@ impl App {
             offline_mode: false,
             turn_error_posted: false,
             turn_error_notice: None,
+            turn_error_cause: None,
             // Surface parse warnings so the user knows their config file is
             // broken instead of silently losing all settings.
             status_message: admission_error

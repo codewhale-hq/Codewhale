@@ -5968,6 +5968,17 @@ impl Engine {
         usage: Option<&Usage>,
         outcome: &str,
     ) -> Result<Option<crate::cost_status::RuntimeUsageRecord>, String> {
+        self.settle_provider_request_receipt_with_cause(pending, usage, outcome, None)
+            .await
+    }
+
+    pub(super) async fn settle_provider_request_receipt_with_cause(
+        &self,
+        pending: &mut Option<PendingProviderRequestReceipt>,
+        usage: Option<&Usage>,
+        outcome: &str,
+        cause: Option<&crate::llm_error_envelope::ProviderFailureCause>,
+    ) -> Result<Option<crate::cost_status::RuntimeUsageRecord>, String> {
         let Some(pending) = pending.take() else {
             return Ok(None);
         };
@@ -6041,33 +6052,37 @@ impl Engine {
         } else {
             None
         };
-        let _ = self.send_event(Event::ProviderRequestReceipt {
-            receipt: json!({
-                "source_accounting": pending.primary,
-                "accounting_error": accounting_error.as_deref(),
-                "session_id": self.session.id,
-                "turn_id": pending.turn_id,
-                "request_index": pending.request_index,
-                "request_id": pending.request_id,
-                "source_id": source_id,
-                "route": pending.route.sanitized_for_persistence(),
-                "primary": pending.primary,
-                "transmission": transmission,
-                "coverage": coverage,
-                "physical_requests": wire.transmissions,
-                "physical_requests_dropped": wire.transmissions_dropped,
-                "prefix_check": pending.prefix_check,
-                "reused_preparation": pending.reused_preparation,
-                "wire_observations": wire.observations,
-                "wire_observations_dropped": wire.dropped,
-                "usage": usage,
-                "usage_reported": usage.is_some(),
-                "outcome": outcome,
-                "transport_retries": pending.transport_retries.load(std::sync::atomic::Ordering::Relaxed),
-                "elapsed_ms": u64::try_from(pending.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-                "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
-            }),
-        }).await;
+        let mut receipt = json!({
+            "source_accounting": pending.primary,
+            "accounting_error": accounting_error.as_deref(),
+            "session_id": self.session.id,
+            "turn_id": pending.turn_id,
+            "request_index": pending.request_index,
+            "request_id": pending.request_id,
+            "source_id": source_id,
+            "route": pending.route.sanitized_for_persistence(),
+            "primary": pending.primary,
+            "transmission": transmission,
+            "coverage": coverage,
+            "physical_requests": wire.transmissions,
+            "physical_requests_dropped": wire.transmissions_dropped,
+            "prefix_check": pending.prefix_check,
+            "reused_preparation": pending.reused_preparation,
+            "wire_observations": wire.observations,
+            "wire_observations_dropped": wire.dropped,
+            "usage": usage,
+            "usage_reported": usage.is_some(),
+            "outcome": outcome,
+            "transport_retries": pending.transport_retries.load(std::sync::atomic::Ordering::Relaxed),
+            "elapsed_ms": u64::try_from(pending.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
+        });
+        if let Some(cause) = cause {
+            receipt["cause"] = json!(cause);
+        }
+        let _ = self
+            .send_event(Event::ProviderRequestReceipt { receipt })
+            .await;
         if let Some(error) = accounting_error {
             return Err(error);
         }
@@ -6083,6 +6098,7 @@ impl Engine {
     ) -> StreamOutcome {
         let mut stream = stream;
         let mut stream_error: Option<String> = None;
+        let mut stream_cause: Option<crate::llm_error_envelope::ProviderFailureCause> = None;
         let mut steer_preempted = false;
         let stream_cancel = self.cancel_token.clone();
 
@@ -6202,6 +6218,12 @@ impl Engine {
                             // over a frozen block.
                             stream_errors = stream_errors.saturating_add(1);
                             stream_error.get_or_insert(envelope.message.clone());
+                            stream_cause.get_or_insert_with(|| {
+                                crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                                    &envelope,
+                                    Some("idle_timeout"),
+                                )
+                            });
                             let _ = self.send_stream_event(Event::error(envelope)).await;
                             None
                         }
@@ -6224,6 +6246,12 @@ impl Engine {
                 .into_envelope();
                 codewhale_runtime::logging::warn(&envelope.message);
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("duration_limit"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6252,6 +6280,12 @@ impl Engine {
                     let message = self.decorate_auth_error_message(e.to_string());
                     let user_message =
                         stream_read_error_user_message(&message, any_content_received);
+                    stream_cause.get_or_insert_with(|| {
+                        crate::llm_error_envelope::ProviderFailureCause::from_llm_error(
+                            &e,
+                            Some("stream"),
+                        )
+                    });
                     let envelope =
                         crate::llm_error_envelope::envelope_for_llm_error(e, user_message.clone());
                     stream_error.get_or_insert(user_message);
@@ -6276,6 +6310,12 @@ impl Engine {
                 .into_envelope();
                 codewhale_runtime::logging::warn(&envelope.message);
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("overflow"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6291,6 +6331,12 @@ impl Engine {
             {
                 let envelope = super::streaming::tool_call_limit_error();
                 stream_error.get_or_insert(envelope.message.clone());
+                stream_cause.get_or_insert_with(|| {
+                    crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                        &envelope,
+                        Some("tool_call_limit"),
+                    )
+                });
                 let _ = self.send_stream_event(Event::error(envelope)).await;
                 break;
             }
@@ -6809,6 +6855,12 @@ impl Engine {
                     ));
                     stream_errors = stream_errors.saturating_add(1);
                     let envelope = ErrorEnvelope::classify(message.to_string(), false);
+                    stream_cause.get_or_insert_with(|| {
+                        crate::llm_error_envelope::ProviderFailureCause::from_envelope(
+                            &envelope,
+                            Some("stream"),
+                        )
+                    });
                     let _ = self.send_stream_event(Event::error(envelope)).await;
                     stream_error.get_or_insert(message.to_string());
                     break;
@@ -6842,10 +6894,11 @@ impl Engine {
             "completion_unknown"
         };
         let accounting = match self
-            .settle_provider_request_receipt(
+            .settle_provider_request_receipt_with_cause(
                 &mut request_receipt,
                 attempt_usage_reported.then_some(&usage),
                 receipt_outcome,
+                stream_cause.as_ref(),
             )
             .await
         {
@@ -9286,6 +9339,73 @@ mod tests {
             panic!("expected ProviderRequestReceipt, got {event:?}");
         };
         assert_eq!(receipt["accounting_error"].as_str(), Some(err.as_str()));
+        assert!(
+            receipt.get("cause").is_none(),
+            "completed receipt must omit cause: {receipt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_request_receipt_includes_structured_cause_on_failure() {
+        let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(tmp.path());
+        let (engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let retry_observation = engine.request_retry_observation();
+        let route = crate::core::model_client::ModelClient::effective_route_envelope(
+            model.as_ref(),
+            "test-model",
+            chrono::Utc::now(),
+        );
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            None,
+        );
+        let mut pending = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_origin: None,
+            route,
+            primary: false,
+            accounting_owned_elsewhere: true,
+            invoked: true,
+            turn_id: "turn-open-failed".to_string(),
+            request_index: 1,
+            prefix_check: json!({ "outcome": "stable" }),
+            reused_preparation: false,
+            wire: retry_observation.wire_observations.clone(),
+            transport_retries: retry_observation.retries.clone(),
+            started_at: Instant::now(),
+        });
+        let err: anyhow::Error = crate::llm_client::LlmError::HeaderTimeout {
+            waited: std::time::Duration::from_secs(30),
+            phase: "SSE stream",
+        }
+        .into();
+        let cause =
+            crate::llm_error_envelope::ProviderFailureCause::from_llm_error(&err, Some("open"));
+        let _ = engine
+            .settle_provider_request_receipt_with_cause(
+                &mut pending,
+                None,
+                "open_failed",
+                Some(&cause),
+            )
+            .await;
+
+        let event = rx
+            .try_recv()
+            .expect("ProviderRequestReceipt must be emitted");
+        let Event::ProviderRequestReceipt { receipt } = event else {
+            panic!("expected ProviderRequestReceipt, got {event:?}");
+        };
+        assert_eq!(receipt["outcome"], "open_failed");
+        assert_eq!(receipt["cause"]["code"], "llm_network_error");
+        assert_eq!(receipt["cause"]["category"], "network");
+        assert_eq!(receipt["cause"]["transmission"], "outcome_unknown");
+        assert_eq!(receipt["cause"]["timeout_ms"], 30_000);
+        assert_eq!(receipt["cause"]["phase"], "header_timeout");
     }
 
     /// Regression test for the OpenAI streaming batch tool_calls bug.

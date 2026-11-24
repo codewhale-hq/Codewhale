@@ -1918,6 +1918,8 @@ pub struct SavedTurnOutcome {
     pub error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<crate::llm_error_envelope::ProviderFailureCause>,
     pub ended_at: DateTime<Utc>,
     /// Transcript messages that existed when the turn ended. Resume places
     /// the notice after that many messages (clamped to the transcript).
@@ -1928,10 +1930,19 @@ impl SavedTurnOutcome {
     /// Build the persisted record for a failed turn. Redacts before bounding
     /// so a cut can never leave half a secret behind.
     pub fn failed(error: &str, after_message_count: usize) -> Self {
-        Self::failed_with_code(error, None, after_message_count)
+        Self::failed_with_cause(error, None, None, after_message_count)
     }
 
     pub fn failed_with_code(error: &str, code: Option<&str>, after_message_count: usize) -> Self {
+        Self::failed_with_cause(error, code, None, after_message_count)
+    }
+
+    pub fn failed_with_cause(
+        error: &str,
+        code: Option<&str>,
+        cause: Option<crate::llm_error_envelope::ProviderFailureCause>,
+        after_message_count: usize,
+    ) -> Self {
         let redacted = codewhale_sanitize::redact::redact_secrets(error.trim());
         let error = if redacted.chars().count() > MAX_SAVED_TURN_OUTCOME_ERROR_CHARS {
             let mut cut: String = redacted
@@ -1951,6 +1962,7 @@ impl SavedTurnOutcome {
             status: crate::core::events::TurnOutcomeStatus::Failed,
             error,
             code,
+            cause,
             ended_at: Utc::now(),
             after_message_count,
         }

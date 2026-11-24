@@ -1869,9 +1869,10 @@ pub(super) fn present_turn_failure(
     // Persist the failure with the session (redacted), so resume, export,
     // and the Runtime API can say why the turn stopped after the TUI closes.
     if failed && let Some(shown) = shown {
-        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_code(
+        let outcome = codewhale_engine::session_manager::SavedTurnOutcome::failed_with_cause(
             &shown,
             error_code.as_deref(),
+            app.turn_error_cause.take(),
             app.api_messages.len(),
         );
         codewhale_engine::session_manager::push_turn_outcome(
@@ -3378,6 +3379,7 @@ pub(crate) async fn run_event_loop(
                         app.offline_mode = false;
                         app.turn_error_posted = false;
                         app.turn_error_notice = None;
+                        app.turn_error_cause = None;
                         app.lsp_repair = crate::tui::app::LspRepairState::default();
                         app.prompt_suggestion = None;
                         app.prompt_suggestion_gen

@@ -284,8 +284,17 @@ impl Engine {
                 s
             }
             Err(mut e) => {
+                let open_cause = crate::llm_error_envelope::ProviderFailureCause::from_llm_error(
+                    &e,
+                    Some("open"),
+                );
                 let _ = self
-                    .settle_provider_request_receipt(&mut request_receipt, None, "open_failed")
+                    .settle_provider_request_receipt_with_cause(
+                        &mut request_receipt,
+                        None,
+                        "open_failed",
+                        Some(&open_cause),
+                    )
                     .await;
                 if let Some(dispatch) = rlm_dispatch.as_mut() {
                     dispatch.settle_open_error(&e).await;

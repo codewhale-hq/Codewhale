@@ -335,6 +335,7 @@
         let legacy: SavedTurnOutcome =
             serde_json::from_str(legacy_json).expect("legacy turn_outcome deserializes");
         assert_eq!(legacy.code, None);
+        assert_eq!(legacy.cause, None);
         assert_eq!(legacy.after_message_count, 95);
         assert_eq!(
             legacy.error,
@@ -346,13 +347,27 @@
             serialized_legacy.get("code").is_none(),
             "missing code must stay omitted in JSON: {serialized_legacy}"
         );
+        assert!(
+            serialized_legacy.get("cause").is_none(),
+            "missing cause must stay omitted in JSON: {serialized_legacy}"
+        );
 
-        let coded = SavedTurnOutcome::failed_with_code(
+        let cause = crate::llm_error_envelope::ProviderFailureCause {
+            code: "llm_network_error".to_string(),
+            category: codewhale_error_taxonomy::ErrorCategory::Network,
+            transmission: Some(crate::llm_client::RequestTransmission::OutcomeUnknown),
+            http_status: None,
+            timeout_ms: Some(45_000),
+            phase: Some("header_timeout".to_string()),
+        };
+        let coded = SavedTurnOutcome::failed_with_cause(
             "SSE stream request did not receive response headers after 45s",
             Some("[llm_network_error]"),
+            Some(cause.clone()),
             95,
         );
         assert_eq!(coded.code.as_deref(), Some("llm_network_error"));
+        assert_eq!(coded.cause.as_ref(), Some(&cause));
         let round_tripped: SavedTurnOutcome =
             serde_json::from_str(&serde_json::to_string(&coded).expect("serialize coded"))
                 .expect("deserialize coded");
