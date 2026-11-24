@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "Nhấn {key} để hủy mọi lệnh đang chạy",
   "OnboardingMarkFailed": "Không thể lưu tiến trình giới thiệu: {error}",
   "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}",
-  "QueueFullNotice": "Hàng đợi tin nhắn tiếp theo đã đầy ({max} tin); tin nhắn của bạn đã được đưa lại vào ô soạn."
+  "QueueFullNotice": "Hàng đợi tin nhắn tiếp theo đã đầy ({max} tin); tin nhắn của bạn đã được đưa lại vào ô soạn.",
+  "ConfigLookupFailed": "Không thể đọc `{key}`: không tải được cấu hình ({error})"
 }

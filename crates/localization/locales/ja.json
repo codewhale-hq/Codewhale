@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "{key} を押すと実行中のコマンドをすべてキャンセルします",
   "OnboardingMarkFailed": "オンボーディングの進行状況を保存できませんでした: {error}",
   "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}",
-  "QueueFullNotice": "フォローアップのキューが満杯です（{max} 件）。メッセージは入力欄に戻されました。"
+  "QueueFullNotice": "フォローアップのキューが満杯です（{max} 件）。メッセージは入力欄に戻されました。",
+  "ConfigLookupFailed": "`{key}` を読み取れませんでした: 設定の読み込みに失敗しました ({error})"
 }

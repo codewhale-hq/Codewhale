@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "चल रहे सभी कमांड रद्द करने के लिए {key} दबाएँ",
   "OnboardingMarkFailed": "ऑनबोर्डिंग प्रगति सहेजी नहीं जा सकी: {error}",
   "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}",
-  "QueueFullNotice": "फ़ॉलो-अप कतार भर गई है ({max} संदेश); आपका संदेश वापस कंपोज़र में है।"
+  "QueueFullNotice": "फ़ॉलो-अप कतार भर गई है ({max} संदेश); आपका संदेश वापस कंपोज़र में है।",
+  "ConfigLookupFailed": "`{key}` नहीं पढ़ा जा सका: कॉन्फ़िग लोड नहीं हो सका ({error})"
 }

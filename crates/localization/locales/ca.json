@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "Prem {key} per cancel·lar totes les ordres en curs",
   "OnboardingMarkFailed": "No s'ha pogut desar el progrés de la configuració inicial: {error}",
   "FeatureIntroFlagSaveFailed": "No s'ha pogut desar el paràmetre del consell de funcions: {error}",
-  "QueueFullNotice": "La cua de seguiment és plena ({max} missatges); el teu missatge ha tornat a l'editor."
+  "QueueFullNotice": "La cua de seguiment és plena ({max} missatges); el teu missatge ha tornat a l'editor.",
+  "ConfigLookupFailed": "No s'ha pogut llegir `{key}`: la configuració no s'ha pogut carregar ({error})"
 }

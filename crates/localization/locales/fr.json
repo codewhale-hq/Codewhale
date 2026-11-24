@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "Appuyez sur {key} pour annuler toutes les commandes en cours",
   "OnboardingMarkFailed": "Impossible d'enregistrer la progression de l'accueil : {error}",
   "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}",
-  "QueueFullNotice": "La file de suivi est pleine ({max} messages) ; votre message est revenu dans la zone de saisie."
+  "QueueFullNotice": "La file de suivi est pleine ({max} messages) ; votre message est revenu dans la zone de saisie.",
+  "ConfigLookupFailed": "Impossible de lire `{key}` : le chargement de la configuration a échoué ({error})"
 }

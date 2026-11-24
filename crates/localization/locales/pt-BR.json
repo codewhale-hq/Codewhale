@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "Pressione {key} para cancelar todos os comandos em execução",
   "OnboardingMarkFailed": "Não foi possível salvar o progresso da integração: {error}",
   "FeatureIntroFlagSaveFailed": "Não foi possível salvar a configuração da dica de recurso: {error}",
-  "QueueFullNotice": "A fila de acompanhamento está cheia ({max} mensagens); sua mensagem voltou para o editor."
+  "QueueFullNotice": "A fila de acompanhamento está cheia ({max} mensagens); sua mensagem voltou para o editor.",
+  "ConfigLookupFailed": "Não foi possível ler `{key}`: a configuração não pôde ser carregada ({error})"
 }

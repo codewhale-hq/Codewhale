@@ -528,6 +528,9 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// written to disk, so `--continue` loads the *previous* save — effectively
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
+    if app.dispatch_in_flight {
+        return;
+    }
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
@@ -622,7 +625,9 @@ pub(crate) fn maybe_throttled_recovery_snapshot(
     now: Instant,
     last_snapshot_at: &mut Option<Instant>,
 ) {
-    if !app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+    if app.dispatch_in_flight
+        || (!app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
+    {
         return;
     }
     if last_snapshot_at

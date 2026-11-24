@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "按 {key} 取消所有正在运行的命令",
   "OnboardingMarkFailed": "无法保存引导进度：{error}",
   "FeatureIntroFlagSaveFailed": "无法保存功能提示设置：{error}",
-  "QueueFullNotice": "后续消息队列已满（{max} 条）；你的消息已放回输入框。"
+  "QueueFullNotice": "后续消息队列已满（{max} 条）；你的消息已放回输入框。",
+  "ConfigLookupFailed": "无法读取 `{key}`：配置加载失败（{error}）"
 }

@@ -2847,5 +2847,6 @@
   "JobsCancelAllPrompt": "Tekan {key} untuk membatalkan semua perintah yang berjalan",
   "OnboardingMarkFailed": "Tidak dapat menyimpan progres orientasi: {error}",
   "FeatureIntroFlagSaveFailed": "Tidak dapat menyimpan pengaturan tips fitur: {error}",
-  "QueueFullNotice": "Antrean pesan lanjutan penuh ({max} pesan); pesan Anda dikembalikan ke kolom tulis."
+  "QueueFullNotice": "Antrean pesan lanjutan penuh ({max} pesan); pesan Anda dikembalikan ke kolom tulis.",
+  "ConfigLookupFailed": "Tidak dapat membaca `{key}`: konfigurasi gagal dimuat ({error})"
 }

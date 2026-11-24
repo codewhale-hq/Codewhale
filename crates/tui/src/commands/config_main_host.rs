@@ -450,21 +450,21 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
                 "{} (restart required for engine tools)",
                 settings.workspace_follow_symlinks
             )),
-            Err(err) => return config_lookup_failed(&key, err),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
         },
         "search" | "search.provider" | "search_provider" => match load_command_config(app) {
             Ok(config) => Some(search_provider_display(&config, app.ui_locale)),
-            Err(err) => return config_lookup_failed(&key, err),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
         },
         "telemetry" => match load_command_config(app) {
             Ok(config) => Some(
                 codewhale_engine::telemetry_notice::saved_preference_enabled(&config).to_string(),
             ),
-            Err(err) => return config_lookup_failed(&key, err),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
         },
         "prompt_suggestion" => match load_command_config(app) {
             Ok(config) => Some(prompt_suggestion_display(&config)),
-            Err(err) => return config_lookup_failed(&key, err),
+            Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
         },
         "auto_review.reviewer_model" => Some(match app.auto_review_reviewer_model.clone() {
             Some(model) => model,
@@ -473,7 +473,7 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
                     .auto_review
                     .and_then(|cfg| cfg.reviewer_model)
                     .unwrap_or_else(|| "auto (default)".to_string()),
-                Err(err) => return config_lookup_failed(&key, err),
+                Err(err) => return config_lookup_failed(app.ui_locale, &key, err),
             },
         }),
         "notifications" => Some(notifications_summary_value(&app.notification_settings)),
@@ -494,10 +494,16 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
     }
 }
 
-fn config_lookup_failed(key: &str, err: impl std::fmt::Display) -> ConfigReply {
-    ConfigReply::error(format!(
-        "Could not read `{key}`: config failed to load ({err:#})"
-    ))
+fn config_lookup_failed(
+    locale: codewhale_localization::Locale,
+    key: &str,
+    err: impl std::fmt::Display,
+) -> ConfigReply {
+    ConfigReply::error(
+        tr(locale, MessageId::ConfigLookupFailed)
+            .replace("{key}", key)
+            .replace("{error}", &format!("{err:#}")),
+    )
 }
 
 /// Error for `/config <key>` when `key` is not a known setting: name the

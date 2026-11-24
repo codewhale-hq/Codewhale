@@ -22107,6 +22107,30 @@ fn throttled_recovery_snapshot_persists_during_loading_turns() {
     );
 }
 
+#[test]
+fn recovery_snapshot_waits_for_dispatch_admission_without_error() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "first prompt"));
+    app.is_loading = true;
+    app.dispatch_in_flight = true;
+    let history_len = app.history.len();
+
+    let mut last_snapshot_at = None;
+    maybe_throttled_recovery_snapshot(&mut app, Instant::now(), &mut last_snapshot_at);
+    persist_recovery_snapshot(&mut app);
+
+    assert!(last_snapshot_at.is_none());
+    assert_eq!(app.history.len(), history_len);
+    assert!(
+        !app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::Error { .. }))
+    );
+    assert!(app.status_toasts.is_empty() && app.sticky_status.is_none());
+}
+
 #[tokio::test]
 async fn steer_failure_queues_message_and_surfaces_toast() {
     let mut app = create_test_app();
