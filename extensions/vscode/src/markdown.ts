@@ -106,7 +106,7 @@ function renderCodeBlock(slot: number, language: string, code: string): string {
     `<button type="button" class="cb-copy" data-cb="${slot}" title="Copy code">Copy</button>` +
     `<button type="button" class="cb-insert" data-cb="${slot}" title="Insert at cursor">Insert</button>` +
     `</span></div>` +
-    `<pre><code title="${escapeHtml(firstLine.slice(0, 80))}">${escapeHtml(code)}</code></pre>` +
+    `<pre><code title="${escapeHtml(Array.from(firstLine).slice(0, 80).join(""))}">${escapeHtml(code)}</code></pre>` +
     `</div>`
   );
 }
