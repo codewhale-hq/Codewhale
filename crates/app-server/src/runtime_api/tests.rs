@@ -24198,39 +24198,24 @@ async fn targets_report_self_and_probe_remote_endpoints() -> Result<()> {
     assert_eq!(remote["auth_required"], true);
     assert_eq!(remote["port"], json!(addr.port()));
 
-    // The probe identifies this same server as a Codewhale runtime.
-    let probed: Value = client
-        .post(format!("{base}/v1/remote/connect"))
-        .bearer_auth("targets-token")
-        .json(&json!({"endpoint": base}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(probed["ok"], true);
-    assert_eq!(probed["remote"]["service"], "codewhale-runtime-api");
-    assert_eq!(probed["remote"]["auth_required"], true);
-    assert_eq!(probed["attach"], "client");
-
-    // A closed port is an honest negative verdict, not a server error.
-    let refused: Value = client
-        .post(format!("{base}/v1/remote/connect"))
-        .bearer_auth("targets-token")
-        .json(&json!({"endpoint": "http://127.0.0.1:1"}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    assert_eq!(refused["ok"], false);
-    assert_eq!(refused["reason"], "unreachable");
-
-    // Malformed, non-http, and credentialed endpoints fail closed at 400.
+    // Loopback, link-local/metadata, unspecified, multicast, malformed,
+    // non-http, and credentialed endpoints fail closed at 400.
     for endpoint in [
+        base.as_str(),
+        "http://127.0.0.1:1",
+        "http://[::1]:7878",
+        "http://localhost:7878",
+        "http://169.254.169.254",
+        "http://[fe80::1]:7878",
+        "http://0.0.0.0:7878",
+        "http://[::]:7878",
+        "http://[64:ff9b::127.0.0.1]:7878",
+        "http://[::ffff:0:127.0.0.1]:7878",
+        "http://[2002:7f00:1::]:7878",
+        "http://224.0.0.1:7878",
         "not-a-url",
         "ftp://example.com",
-        "http://user:pass@127.0.0.1:7878",
+        "http://user:pass@192.168.1.5:7878",
     ] {
         let status = client
             .post(format!("{base}/v1/remote/connect"))
