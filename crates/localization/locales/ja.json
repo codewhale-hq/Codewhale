@@ -1959,6 +1959,8 @@
   "SavedAsStartupDefault": "起動時の既定として保存しました",
   "ModeAlreadyActiveSavedAsDefault": "すでに {mode} モードです — 起動時の既定として保存しました。",
   "StartupDefaultNotSaved": "{setting}を保存できませんでした: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} はこのプロジェクトの設定によるものです — 起動時の既定は変更していません。",
+  "ProjectConfigStillPinsModel": "このプロジェクトの設定では引き続き {model} が固定されています",
   "RouteSaveNothingPending": "保存する保留中のルート変更はありません。",
   "RouteSaveNoTeamSelected": "更新するものはありません — チームが選択されていません。/fleet save-as でこのルートを新しいチームとして保存してください。",
   "RouteSaveTeamUpdated": "チーム `{name}` は {route} を使うようになりました — {path} に書き込みました",

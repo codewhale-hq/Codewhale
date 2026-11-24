@@ -1959,6 +1959,8 @@
   "SavedAsStartupDefault": "salvo como padrão de inicialização",
   "ModeAlreadyActiveSavedAsDefault": "Já está no modo {mode} — salvo como padrão de inicialização.",
   "StartupDefaultNotSaved": "Não foi possível salvar {setting}: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} vem da configuração deste projeto — padrão de inicialização inalterado.",
+  "ProjectConfigStillPinsModel": "a configuração deste projeto ainda fixa {model}",
   "RouteSaveNothingPending": "Nenhuma mudança de rota pendente para salvar.",
   "RouteSaveNoTeamSelected": "Nada para atualizar — nenhuma equipe está selecionada. Use /fleet save-as para salvar esta rota como uma nova equipe.",
   "RouteSaveTeamUpdated": "A equipe `{name}` agora usa {route} — gravado em {path}",

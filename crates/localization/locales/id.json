@@ -1940,6 +1940,8 @@
   "SavedAsStartupDefault": "disimpan sebagai default startup",
   "ModeAlreadyActiveSavedAsDefault": "Sudah dalam mode {mode} — disimpan sebagai default startup.",
   "StartupDefaultNotSaved": "{setting} tidak tersimpan: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} berasal dari konfigurasi proyek ini — default startup tidak berubah.",
+  "ProjectConfigStillPinsModel": "konfigurasi proyek ini masih menetapkan {model}",
   "RouteSaveNothingPending": "Tidak ada perubahan rute tertunda untuk disimpan.",
   "RouteSaveNoTeamSelected": "Tidak ada yang perlu diperbarui — tidak ada tim yang dipilih. Gunakan /fleet save-as untuk menyimpan rute ini sebagai tim baru.",
   "RouteSaveTeamUpdated": "Tim `{name}` sekarang memakai {route} — ditulis ke {path}",

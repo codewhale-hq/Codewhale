@@ -1959,6 +1959,8 @@
   "SavedAsStartupDefault": "đã lưu làm mặc định khi khởi động",
   "ModeAlreadyActiveSavedAsDefault": "Đang ở chế độ {mode} — đã lưu làm mặc định khi khởi động.",
   "StartupDefaultNotSaved": "Không lưu được {setting}: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} đến từ cấu hình của dự án này — mặc định khi khởi động không đổi.",
+  "ProjectConfigStillPinsModel": "cấu hình của dự án này vẫn cố định {model}",
   "RouteSaveNothingPending": "Không có thay đổi tuyến nào đang chờ để lưu.",
   "RouteSaveNoTeamSelected": "Không có gì để cập nhật — chưa chọn nhóm nào. Dùng /fleet save-as để lưu tuyến này thành nhóm mới.",
   "RouteSaveTeamUpdated": "Nhóm `{name}` giờ dùng {route} — đã ghi {path}",

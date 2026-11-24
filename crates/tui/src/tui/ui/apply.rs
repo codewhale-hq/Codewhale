@@ -903,7 +903,7 @@ pub(crate) async fn apply_model_picker_choice(
         if !model_is_auto {
             apply_picker_effort_choice(app, engine_handle, effort, previous_effort).await;
             if save_as_startup_default {
-                app.status_message = Some(app.save_live_route_as_startup_default());
+                app.status_message = Some(save_picker_route_as_default(app, config, effort));
             }
             return;
         }
@@ -1046,8 +1046,36 @@ pub(crate) async fn apply_model_picker_choice(
         record_provider_model_setup_progress(app, config);
     }
     if save_as_startup_default {
-        app.status_message = Some(app.save_live_route_as_startup_default());
+        app.status_message = Some(save_picker_route_as_default(app, config, effort));
     }
+}
+
+fn save_picker_route_as_default(app: &mut App, config: &Config, effort: ReasoningEffort) -> String {
+    use codewhale_localization::MessageId;
+    if config.project_model.as_deref() == Some(app.model.as_str()) {
+        return app
+            .tr(MessageId::ProjectModelNotSavedAsDefault)
+            .replace("{model}", &app.model);
+    }
+    let mut receipt = app.save_live_route_as_startup_default();
+    if let Err(error) = app.startup_defaults.apply_blocking(
+        crate::tui::startup_defaults::StartupDefaults::reasoning_effort(effort.as_setting()),
+    ) {
+        receipt.push_str(" · ");
+        receipt.push_str(
+            &app.tr(MessageId::StartupDefaultNotSaved)
+                .replace("{setting}", &app.tr(MessageId::SettingSubjectThinking))
+                .replace("{error}", &error.to_string()),
+        );
+    }
+    if let Some(project_model) = config.project_model.as_deref() {
+        receipt.push_str(" · ");
+        receipt.push_str(
+            &app.tr(MessageId::ProjectConfigStillPinsModel)
+                .replace("{model}", project_model),
+        );
+    }
+    receipt
 }
 
 pub(crate) async fn apply_picker_effort_choice(
@@ -1079,14 +1107,6 @@ pub(crate) async fn apply_picker_effort_choice(
         app.update_model_compaction_budget();
     }
 
-    let persist_warning = app
-        .startup_defaults
-        .apply_blocking(
-            crate::tui::startup_defaults::StartupDefaults::reasoning_effort(effort.as_setting()),
-        )
-        .err()
-        .map(|err| format!(" (not persisted: {err})"));
-
     if live_changed {
         apply_model_and_compaction_update(
             engine_handle,
@@ -1097,8 +1117,7 @@ pub(crate) async fn apply_picker_effort_choice(
         .await;
     }
 
-    let persisted = persist_warning.is_none();
-    let mut summary = if selection_changed {
+    let summary = if selection_changed {
         format!(
             "Thinking: {} → {} · model {}",
             previous_effort.display_label_for_provider(app.api_provider),
@@ -1106,20 +1125,12 @@ pub(crate) async fn apply_picker_effort_choice(
             app.model_display_label()
         )
     } else {
-        let mut summary = format!(
+        format!(
             "Thinking unchanged: {} · model {}",
             effort.display_label_for_provider(app.api_provider),
             app.model_display_label()
-        );
-        if persisted {
-            summary.push_str(" · ");
-            summary.push_str(&app.tr(codewhale_localization::MessageId::SavedAsStartupDefault));
-        }
-        summary
+        )
     };
-    if let Some(warning) = persist_warning {
-        summary.push_str(&warning);
-    }
     app.status_message = Some(summary);
 }
 

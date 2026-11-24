@@ -1959,6 +1959,8 @@
   "SavedAsStartupDefault": "saved as startup default",
   "ModeAlreadyActiveSavedAsDefault": "Already in {mode} — saved as startup default.",
   "StartupDefaultNotSaved": "{setting} was not saved: {error}",
+  "ProjectModelNotSavedAsDefault": "{model} comes from this project's config — startup default unchanged.",
+  "ProjectConfigStillPinsModel": "this project's config still pins {model}",
   "RouteSaveNothingPending": "No pending route change to save.",
   "RouteSaveNoTeamSelected": "Nothing to update — no team is selected. Use /fleet save-as to save this route as a new team.",
   "RouteSaveTeamUpdated": "Team `{name}` now runs on {route} — wrote {path}",

@@ -401,12 +401,19 @@ Supported keys in the project overlay (top-level fields only):
 
 | Key | Effect |
 |---|---|
-| `model` | override `default_text_model` |
+| `model` | override `default_text_model`; `codewhale model resolve` reports it as `project config model` |
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
 | `approval_policy` | only values that tighten the user's current permission posture |
 | `sandbox_mode` | only values that tighten the user's current sandbox posture |
 | `max_subagents` | clamp sub-agent concurrency for a constrained repo (clamped to 1..=128) |
 | `allow_shell` | `false` can disable shell access; `true` is ignored |
+
+In `/model`, Enter switches the model and thinking level for this session
+only. Shift+D also saves them as the startup default in
+`~/.codewhale/config.toml` and `settings.toml`. Shift+D on the model this
+project pins saves nothing, so one repo's choice never becomes the default in
+every other workspace; saving a different model notes that the project still
+pins its own model here.
 
 The overlay is intentionally narrow — it covers the fields a repo
 maintainer is most likely to want to standardize across contributors.
