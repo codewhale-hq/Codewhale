@@ -56,22 +56,7 @@ mod recovery {
     }
 
     async fn close_engines(manager: &RuntimeThreadManager) -> Result<()> {
-        let handles = manager
-            .active
-            .lock()
-            .await
-            .engines
-            .drain()
-            .map(|(_, state)| state.engine)
-            .collect::<Vec<_>>();
-        for handle in handles {
-            handle.send(Op::Shutdown).await?;
-            tokio::time::timeout(Duration::from_secs(10), async {
-                while handle.rx_event.write().await.recv().await.is_some() {}
-            })
-            .await?;
-        }
-        Ok(())
+        manager.shutdown_and_wait().await
     }
 
     async fn history_case(restart: bool) -> Result<()> {
