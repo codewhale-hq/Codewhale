@@ -225,6 +225,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     }
     if let Ok(home) = codewhale_config::codewhale_home() {
         autoupdate::discard_staged(&home);
+        autoupdate::record_failure(&home, None);
         let mut state = autoupdate::load_state(&home);
         if state.skip_version.take().is_some() {
             let _ = autoupdate::store_state(&home, &state);
@@ -439,6 +440,20 @@ fn adopt_receipt_for(executable: &Path, bytes: &[u8]) {
 }
 
 pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
+    let result = stage_release(beta, proxy_arg);
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        autoupdate::record_failure(
+            &home,
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("the background download failed: {error:#}")),
+        );
+    }
+    result
+}
+
+fn stage_release(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     let identity = update_executable_identity()?;
     let exe = identity.path.clone();
     if !InstallMethod::detect(&exe).supports_self_update() {
@@ -565,6 +580,12 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     }
     let version = staged.version.clone();
     let fail = |reason: String| {
+        autoupdate::record_failure(
+            &home,
+            Some(format!(
+                "v{version} could not be applied at start: {reason}"
+            )),
+        );
         eprintln!(
             "Couldn't apply v{version} ({reason}). Still on v{current}. Details: codewhale doctor"
         );
@@ -637,6 +658,7 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         Err(error) => return fail(format!("{error:#}")),
     };
     autoupdate::discard_staged(&home);
+    autoupdate::record_failure(&home, None);
     eprintln!(
         "Updated to v{version} · What's new: {} · {}",
         autoupdate::changelog_url(&version),
@@ -3318,7 +3340,7 @@ mod tests {
             (
                 InstallMethod::Npm,
                 "/usr/local/lib/node_modules/codewhale/bin/codewhale",
-                "npm install -g codewhale@latest --prefix \"/usr/local\"",
+                "npm install -g codewhale@latest",
             ),
             (
                 InstallMethod::Homebrew,
@@ -3328,7 +3350,7 @@ mod tests {
             (
                 InstallMethod::Cargo,
                 "/home/u/.cargo/bin/codewhale",
-                "cargo install codewhale-cli --locked --force --root \"/home/u/.cargo\"",
+                "cargo install codewhale-cli --locked --force",
             ),
             (
                 InstallMethod::Omarchy,
@@ -3337,7 +3359,9 @@ mod tests {
             ),
         ] {
             let answer = installs::update_answer(method, Path::new(exe));
-            assert!(answer.contains(command), "{answer}");
+            let exact = installs::manager_update_command(method, Path::new(exe));
+            assert!(exact.starts_with(command), "{exact}");
+            assert!(answer.contains(&format!("`{exact}`")), "{answer}");
             assert!(answer.contains("cannot update itself"), "{answer}");
             assert!(!answer.contains('\n'), "{answer}");
         }

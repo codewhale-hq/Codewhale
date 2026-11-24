@@ -616,12 +616,23 @@ pub(crate) async fn print_update_report(
     for line in update_mode_lines(update) {
         println!("  · {line}");
     }
+    let cached = (!probes.should_check_updates())
+        .then(codewhale_config::codewhale_home)
+        .and_then(Result::ok)
+        .and_then(|home| {
+            codewhale_release::UpdateCheckCache::load(&codewhale_release::check::cache_path_in(
+                &home,
+            ))
+        })
+        .and_then(|entry| entry.latest_tag);
     let report = if probes.should_check_updates() {
         doctor_update_report(
             current_version,
             codewhale_release::latest_release_tag_async(codewhale_release::ReleaseChannel::Stable)
                 .await,
         )
+    } else if let Some(tag) = cached.as_deref() {
+        doctor_update_report(current_version, Ok::<_, ()>(tag.to_string()))
     } else {
         DoctorUpdateReport::NotChecked
     };
@@ -637,6 +648,11 @@ pub(crate) async fn print_update_report(
     {
         let indent = if index == 0 { "  ·" } else { "   " };
         println!("{indent} {line}");
+    }
+    if cached.is_some() {
+        println!(
+            "    (latest is from the last automatic check; `codewhale doctor --check-updates` asks again)"
+        );
     }
 }
 
@@ -768,9 +784,15 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
                 },
             );
         }
-        if let Some(skip) = autoupdate::load_state(&home).skip_version {
+        let state = autoupdate::load_state(&home);
+        if let Some(skip) = state.skip_version {
             lines.push(format!(
                 "skipped: v{skip} was rolled back and is not reinstalled automatically"
+            ));
+        }
+        if let Some(reason) = state.last_failure {
+            lines.push(format!(
+                "last automatic update failed: {reason}. Run `codewhale update` to retry and see the full error."
             ));
         }
     }

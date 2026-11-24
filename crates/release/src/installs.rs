@@ -669,6 +669,15 @@ pub fn update_answer(method: InstallMethod, executable: &Path) -> String {
     match method {
         InstallMethod::DesktopApp => crate::install::DESKTOP_APP_UPDATE_HELP.to_string(),
         InstallMethod::System => "This copy is in a system or package directory, so it cannot update itself; update it with the package manager that installed it.".to_string(),
+        InstallMethod::ReadOnly => format!(
+            "This copy is in {}, which this account cannot write, so it cannot update itself; rerun the installer into a folder you own, or update it as that folder's owner.",
+            quoted(executable.parent().unwrap_or(executable))
+        ),
+        InstallMethod::Npm => format!(
+            "This copy belongs to {}, so it cannot update itself; update it with `{}`.",
+            npm_family(executable).map_or("npm", |family| family.0),
+            manager_update_command(method, executable)
+        ),
         method if method.supports_self_update() => {
             "This copy updates itself: `codewhale update`.".to_string()
         }
@@ -711,6 +720,15 @@ fn owner_command(method: InstallMethod, executable: &Path, update: bool) -> Stri
                 None => fallback(),
             }
         }
+        InstallMethod::Npm if npm_family(&real).is_some() => {
+            let (_, update_command, uninstall_command) = npm_family(&real).unwrap_or_default();
+            if update {
+                update_command
+            } else {
+                uninstall_command
+            }
+            .to_string()
+        }
         InstallMethod::Npm => match position("node_modules") {
             Some(index) if index > 0 => {
                 let mut root: PathBuf = names[..index].iter().collect();
@@ -733,6 +751,51 @@ fn owner_command(method: InstallMethod, executable: &Path, update: bool) -> Stri
         }
         _ => fallback(),
     }
+}
+
+/// The npm-compatible manager whose global folder holds `executable`:
+/// `(label, update command, uninstall command)`. `None` for npm itself.
+fn npm_family(executable: &Path) -> Option<(&'static str, &'static str, &'static str)> {
+    let real = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    let has = |marker: &str| {
+        real.components()
+            .any(|part| part.as_os_str().eq_ignore_ascii_case(marker))
+    };
+    [
+        (
+            "pnpm",
+            "pnpm",
+            "pnpm add -g codewhale@latest",
+            "pnpm remove -g codewhale",
+        ),
+        (
+            ".bun",
+            "Bun",
+            "bun add -g codewhale@latest",
+            "bun remove -g codewhale",
+        ),
+        (
+            "yarn",
+            "Yarn",
+            "yarn global add codewhale@latest",
+            "yarn global remove codewhale",
+        ),
+        (
+            ".volta",
+            "Volta",
+            "volta install codewhale@latest",
+            "volta uninstall codewhale",
+        ),
+        (
+            "mise",
+            "mise",
+            "mise use -g npm:codewhale@latest",
+            "mise uninstall npm:codewhale",
+        ),
+    ]
+    .into_iter()
+    .find(|(marker, ..)| has(marker))
+    .map(|(_, label, update, uninstall)| (label, update, uninstall))
 }
 
 #[must_use]
@@ -1485,4 +1548,21 @@ pub fn directory_is_private(directory: &Path) -> bool {
 #[must_use]
 pub fn directory_is_private(_directory: &Path) -> bool {
     true
+}
+
+#[cfg(test)]
+mod npm_family_tests {
+    use super::*;
+
+    #[test]
+    fn npm_compatible_managers_get_their_own_command() {
+        let pnpm =
+            Path::new("/home/u/.local/share/pnpm/global/5/node_modules/codewhale/bin/codewhale");
+        assert_eq!(
+            update_answer(InstallMethod::Npm, pnpm),
+            "This copy belongs to pnpm, so it cannot update itself; update it with `pnpm add -g codewhale@latest`."
+        );
+        let bun = Path::new("/home/u/.bun/install/global/node_modules/codewhale/bin/codewhale");
+        assert!(update_answer(InstallMethod::Npm, bun).contains("`bun add -g codewhale@latest`"));
+    }
 }

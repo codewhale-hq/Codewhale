@@ -664,7 +664,12 @@ Release-binary installs update themselves:
 3. The next time you start `codewhale`, before any session opens, the staged
    binary replaces the installed one. A running session is never touched.
    You see one line:
-   `Updated to v0.10.4 · What's new: https://codewhale.net/en/changelog/0.10.4 · Undo: codewhale update --rollback`.
+   `Updated to v0.10.5 · What's new: https://codewhale.net/en/changelog/0.10.5 · Undo: codewhale update --rollback (back to v0.10.4)`.
+   The Undo part appears only when the kept version can be rolled back to.
+   v0.10.3 and later refuse to roll back to v0.10.3 or earlier, because
+   workspace state they migrated cannot be checked against those releases;
+   the line then says `No rollback: …` instead, and `codewhale doctor` says
+   the same.
 
 **Until releases are signed, an update waits for your OK.** The download is
 checksum-verified, but the checksum comes from the same place as the binary, so
@@ -747,7 +752,7 @@ Every update, automatic or manual, keeps the version it replaced in
 
 ```bash
 codewhale update --rollback
-#   Rolled back to v0.10.3. v0.10.4 will not be installed automatically again; the next newer release will.
+#   Rolled back to v0.10.4. v0.10.5 will not be installed automatically again; the next newer release will.
 ```
 
 Run it again to swap forward. `codewhale update` never downgrades, and

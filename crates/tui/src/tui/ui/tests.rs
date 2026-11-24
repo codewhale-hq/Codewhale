@@ -18902,7 +18902,7 @@ fn update_notice_names_the_command_for_the_actual_install_method() {
         "names the npm command: {npm_block:?}"
     );
     assert!(
-        npm_block.contains("Do not use `codewhale update`"),
+        npm_block.contains("cannot update itself"),
         "warns against self-update: {npm_block:?}"
     );
     assert!(
@@ -18957,7 +18957,7 @@ fn update_notice_block_is_persistent_and_actionable() {
     );
     assert!(block.contains("v0.8.47"), "shows latest version: {block:?}");
     assert!(
-        block.contains("https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.8.47"),
+        block.contains(&codewhale_release::autoupdate::changelog_url("0.8.47")),
         "includes release-notes link: {block:?}"
     );
     assert!(

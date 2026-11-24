@@ -202,6 +202,19 @@ pub struct UpdateState {
     pub last_stage_attempt_unix: u64,
     #[serde(default)]
     pub last_stage_version: Option<String>,
+    /// Why the last background stage or start-up apply failed, kept until one
+    /// succeeds so `doctor` and the update notice can show it.
+    #[serde(default)]
+    pub last_failure: Option<String>,
+}
+
+/// Park (or with `None`, clear) the reason the last automatic update failed.
+pub fn record_failure(home: &Path, reason: Option<String>) {
+    let mut state = load_state(home);
+    if state.last_failure != reason {
+        state.last_failure = reason;
+        let _ = store_state(home, &state);
+    }
 }
 
 #[must_use]

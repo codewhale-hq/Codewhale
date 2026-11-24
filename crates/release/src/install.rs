@@ -73,6 +73,8 @@ pub enum InstallMethod {
     /// `Uninstall.exe`. `codewhale update` replaces the binary in place; the
     /// installer removes it.
     WindowsInstaller,
+    /// A self-updating layout in a folder this account cannot write.
+    ReadOnly,
     /// A release binary the user placed on disk themselves. The default.
     Binary,
 }
@@ -103,6 +105,24 @@ impl InstallMethod {
             }
             _ => detected,
         }
+        .unless_unwritable(exe)
+    }
+
+    /// A copy that would update itself, but whose folder this account cannot
+    /// write, cannot apply an update: say so before offering or staging one.
+    fn unless_unwritable(self, exe: &Path) -> Self {
+        let Some(dir) = exe.parent().filter(|dir| dir.is_dir()) else {
+            return self;
+        };
+        if self.supports_self_update()
+            && tempfile::Builder::new()
+                .prefix(".codewhale-write-probe")
+                .tempfile_in(dir)
+                .is_err()
+        {
+            return Self::ReadOnly;
+        }
+        self
     }
 
     /// Who owns `exe` on disk, ignoring [`INSTALL_METHOD_ENV`]: the answer for
@@ -243,6 +263,7 @@ impl InstallMethod {
             Self::WinGet => "winget upgrade --id HunterBown.CodeWhale",
             Self::DesktopApp => DESKTOP_APP_UPDATE,
             Self::System => "the package manager that installed it",
+            Self::ReadOnly => "the installer, into a folder you own",
             Self::WindowsInstaller | Self::Binary => "codewhale update",
         }
     }
@@ -262,6 +283,7 @@ impl InstallMethod {
             Self::WinGet => "winget uninstall --id HunterBown.CodeWhale",
             Self::DesktopApp => "remove the Codewhale app; this Engine is part of it",
             Self::System => "remove it with the package manager that installed it",
+            Self::ReadOnly => "remove it as the account that owns its folder",
             Self::WindowsInstaller => "Settings > Apps > CodeWhale > Uninstall",
             Self::Binary => "codewhale uninstall --yes",
         }
@@ -288,6 +310,7 @@ impl InstallMethod {
             Self::WinGet => "WinGet",
             Self::DesktopApp => "the Codewhale app",
             Self::System => "a system package manager",
+            Self::ReadOnly => "a folder this account cannot write",
             Self::WindowsInstaller => "the Codewhale Windows installer",
             Self::Binary => "release binary",
         }
