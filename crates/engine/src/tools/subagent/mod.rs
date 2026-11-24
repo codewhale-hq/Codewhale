@@ -2700,9 +2700,9 @@ fn terminal_mailbox_message(result: &SubAgentResult, report_ref: Option<&str>) -
         SubAgentStatus::Cancelled => MailboxMessage::Cancelled {
             agent_id: result.agent_id.clone(),
         },
-        SubAgentStatus::BudgetExhausted => MailboxMessage::Failed {
+        SubAgentStatus::BudgetExhausted => MailboxMessage::BudgetExhausted {
             agent_id: result.agent_id.clone(),
-            error: summarize_subagent_result(result),
+            summary: summarize_subagent_result(result),
         },
         SubAgentStatus::Running => MailboxMessage::Progress {
             agent_id: result.agent_id.clone(),
@@ -18414,6 +18414,12 @@ fn subagent_completion_with_verification(
                 .map(|checkpoint| checkpoint.reason.as_str())
                 .unwrap_or("child token budget exhausted"),
         ),
+        SubAgentStatus::Interrupted(_) => {
+            subagent_stopped_sentinel(result, "subagent.interrupted", summary_truncated)
+        }
+        SubAgentStatus::Cancelled => {
+            subagent_stopped_sentinel(result, "subagent.cancelled", summary_truncated)
+        }
         _ => subagent_done_sentinel(&result.agent_id, result, summary_truncated),
     };
     let sentinel = {
@@ -18591,6 +18597,39 @@ fn subagent_failed_sentinel(res: &SubAgentResult, error: &str) -> String {
         .and_then(lifecycle::reasoning_override_note)
     {
         payload["reasoning_note"] = json!(note);
+    }
+    format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
+}
+
+fn subagent_stopped_sentinel(res: &SubAgentResult, event: &str, truncated: bool) -> String {
+    let transcript_handle = format!("agent:{}/full_transcript", res.agent_id);
+    let mut payload = json!({
+        "event": event,
+        "agent_id": res.agent_id,
+        "name": subagent_result_display_name(res),
+        "agent_type": res.agent_type.as_str(),
+        "status": subagent_status_name(&res.status),
+        "steps": res.steps_taken,
+        "elapsed_ms": res.duration_ms,
+        "transcript_handle": transcript_handle,
+        "summary_location": "previous_line",
+        "summary_kind": if truncated { "truncated" } else { "complete" },
+    });
+    if matches!(res.status, SubAgentStatus::Interrupted(_)) {
+        let continuable = res
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.continuable && !checkpoint.messages.is_empty());
+        payload["continuable"] = json!(continuable);
+    }
+    if let Some(needs_input) = res.needs_input.clone() {
+        payload["needs_input"] = json!(needs_input);
+    }
+    if let Some(child_route) = res.child_route.clone() {
+        if let Some(note) = lifecycle::reasoning_override_note(&child_route) {
+            payload["reasoning_note"] = json!(note);
+        }
+        payload["child_route"] = json!(child_route);
     }
     format!("<codewhale:subagent.done>{payload}</codewhale:subagent.done>")
 }

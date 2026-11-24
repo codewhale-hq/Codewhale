@@ -8542,13 +8542,11 @@ default_token_budget = 50000
 
 #[test]
 fn fleet_exec_config_default_matches_subagent_depth() {
-    // Fleet workers and standalone sub-agents share one recursion axis:
-    // the fleet default equals DEFAULT_SPAWN_DEPTH without a nesting cap.
     assert_eq!(
         FleetExecConfig::default().max_spawn_depth,
         codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
     );
-    assert_eq!(FleetExecConfig::default().max_spawn_depth, u32::MAX);
+    assert_eq!(FleetExecConfig::default().max_spawn_depth, 3);
 }
 
 #[test]

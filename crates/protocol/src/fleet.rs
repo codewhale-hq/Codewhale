@@ -1893,9 +1893,10 @@ mod tests {
     }
 }
 
-/// Runtime delegation has no default product depth limit. Explicit owner
-/// values still restrict child authority; zero disables delegation.
-pub const DEFAULT_SPAWN_DEPTH: u32 = u32::MAX;
+/// Default maximum sub-agent delegation depth (root -> child -> grandchild ->
+/// great-grandchild). Explicit owner values may raise or lower this limit;
+/// zero disables delegation.
+pub const DEFAULT_SPAWN_DEPTH: u32 = 3;
 
 /// Shell posture, ordered most → least restrictive so `min_with` is the safe
 /// side of a clamp.

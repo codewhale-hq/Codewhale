@@ -171,6 +171,11 @@ pub(crate) fn subagent_terminal_projection_from_mailbox(
             SubAgentStatus::Failed(error.clone()),
             Some(error.clone()),
         )),
+        MailboxMessage::BudgetExhausted { agent_id, summary } => Some((
+            agent_id.as_str(),
+            SubAgentStatus::BudgetExhausted,
+            Some(summary.clone()),
+        )),
         MailboxMessage::Interrupted { agent_id, reason } => Some((
             agent_id.as_str(),
             SubAgentStatus::Interrupted(reason.clone()),

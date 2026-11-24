@@ -44,7 +44,7 @@ pub struct FleetExecConfig {
     #[serde(default = "default_fleet_max_turns")]
     pub max_turns: u32,
     /// Recursive child-agent budget for headless fleet workers.
-    /// Defaults to [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`], with no product depth cap.
+    /// Defaults to [`codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH`].
     /// Set zero to block child delegation while preserving the root worker.
     #[serde(default = "default_fleet_max_spawn_depth")]
     pub max_spawn_depth: u32,

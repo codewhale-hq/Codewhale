@@ -13839,9 +13839,69 @@ fn child_launch_error_names_provider_model_and_route_source() {
 }
 
 #[test]
-fn subagent_runtime_default_depth_does_not_restrict_delegation() {
-    // Sanity-check the constant — bumping it without a test means stale docs.
-    assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, u32::MAX);
+fn subagent_runtime_default_depth_is_bounded() {
+    assert_eq!(DEFAULT_MAX_SPAWN_DEPTH, 3);
+}
+
+#[test]
+fn subagent_completion_emits_distinct_events_for_interrupted_and_cancelled() {
+    let mut interrupted = make_snapshot(SubAgentStatus::Interrupted("API timeout".to_string()));
+    interrupted.checkpoint = Some(build_subagent_checkpoint(
+        &interrupted.agent_id,
+        "API timeout",
+        &[Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        }],
+        2,
+        true,
+    ));
+    let interrupted_completion = subagent_completion_from_result(&interrupted);
+    assert!(!interrupted_completion.is_high_priority_failure());
+    let interrupted_json = interrupted_completion
+        .payload
+        .lines()
+        .last()
+        .unwrap()
+        .trim_start_matches("<codewhale:subagent.done>")
+        .trim_end_matches("</codewhale:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(interrupted_json).unwrap();
+    assert_eq!(parsed["event"], "subagent.interrupted");
+    assert_eq!(parsed["status"], "interrupted");
+    assert_eq!(parsed["continuable"], true);
+    assert_eq!(
+        parsed["transcript_handle"],
+        format!("agent:{}/full_transcript", interrupted.agent_id)
+    );
+
+    let cancelled = make_snapshot(SubAgentStatus::Cancelled);
+    let cancelled_completion = subagent_completion_from_result(&cancelled);
+    assert!(!cancelled_completion.is_high_priority_failure());
+    let cancelled_json = cancelled_completion
+        .payload
+        .lines()
+        .last()
+        .unwrap()
+        .trim_start_matches("<codewhale:subagent.done>")
+        .trim_end_matches("</codewhale:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(cancelled_json).unwrap();
+    assert_eq!(parsed["event"], "subagent.cancelled");
+    assert_eq!(parsed["status"], "cancelled");
+}
+
+#[test]
+fn terminal_mailbox_message_preserves_budget_exhausted_variant() {
+    let mut snap = make_snapshot(SubAgentStatus::BudgetExhausted);
+    snap.result = Some("step budget exhausted".to_string());
+    let msg = terminal_mailbox_message(&snap, None);
+    assert!(matches!(
+        msg,
+        MailboxMessage::BudgetExhausted { ref agent_id, ref summary }
+            if agent_id == &snap.agent_id && summary.contains("step budget exhausted")
+    ));
 }
 
 #[test]

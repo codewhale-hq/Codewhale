@@ -1535,6 +1535,18 @@ impl ChildJob {
             )
             .await);
         }
+        let repaired_messages;
+        let messages = if status == SubAgentStatus::BudgetExhausted {
+            let mut cloned = messages.to_vec();
+            budget_handback::repair_stopped_tool_calls(
+                &mut cloned,
+                reason.unwrap_or("child work budget exhausted"),
+            );
+            repaired_messages = cloned;
+            repaired_messages.as_slice()
+        } else {
+            messages
+        };
         let checkpoint = build_subagent_checkpoint(
             &self.authority.owner_agent_id,
             reason.unwrap_or_else(|| subagent_status_name(&status)),
