@@ -116,8 +116,8 @@ pub(super) fn authorized_workflow_source(source: &str) -> bool {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    let output = Command::new("git")
-        .current_dir(cwd)
+    let output = codewhale_dependencies::Git::workspace_command(cwd)
+        .map_err(|error| format!("git {}: {error}", args.join(" ")))?
         .args(args)
         .output()
         .map_err(|error| format!("git {}: {error}", args.join(" ")))?;
