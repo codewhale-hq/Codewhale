@@ -54,14 +54,17 @@ pub(in crate::commands) fn write_artifacts(
         .unwrap_or_else(|_| std::path::PathBuf::from(".codewhale/imports"));
     let report_path = imports_dir.join("claude-import-report.md");
     let bundle_path = imports_dir.join("claude-portable-bundle.json");
-    let wrote_report =
-        codewhale_config::persistence::atomic_write(&report_path, report.as_bytes()).is_ok();
-    let wrote_bundle = match bundle {
-        Some(json) => {
-            codewhale_config::persistence::atomic_write(&bundle_path, json.as_bytes()).is_ok()
+    let write = |path: &Path, bytes: &[u8]| match codewhale_config::persistence::atomic_write(
+        path, bytes,
+    ) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(target: "commands", path = %path.display(), error = %error, "claude import artifact write failed");
+            false
         }
-        None => false,
     };
+    let wrote_report = write(&report_path, report.as_bytes());
+    let wrote_bundle = bundle.is_some_and(|json| write(&bundle_path, json.as_bytes()));
     CommandClaudeArtifacts {
         report_path,
         bundle_path,

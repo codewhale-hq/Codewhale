@@ -1325,7 +1325,8 @@ pub(crate) fn prefill_jobs_cancel_all_if_tasks_sidebar(app: &mut App) -> bool {
 
     app.input = "/jobs cancel-all".to_string();
     app.cursor_position = app.input.len();
-    app.status_message = Some("Press Enter to cancel all running commands".to_string());
+    let prompt = tr(app.ui_locale, MessageId::JobsCancelAllPrompt).replace("{key}", "Enter");
+    app.push_status_toast(prompt, StatusToastLevel::Info, None);
     true
 }
 

@@ -1437,7 +1437,9 @@ fn mcp_model(app: &App, locale: Locale) -> ExtensionsTabModel {
             } else if observed.is_some_and(|server| server.connected) {
                 tr(locale, MessageId::ExtensionsStateConnected)
             } else if observed.is_some_and(|server| server.auth_required) {
-                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label())
+                Cow::Owned(crate::tui::session_boot::mcp_auth_required_state_label(
+                    locale,
+                ))
             } else if observed.is_some_and(|server| server.error.is_some()) {
                 tr(locale, MessageId::ExtensionsStateError)
             } else if stale {
@@ -3579,7 +3581,7 @@ mod tests {
     fn login_row(name: &str) -> ExtensionItem {
         mcp_row(
             name,
-            &crate::tui::session_boot::mcp_auth_required_state_label(),
+            &crate::tui::session_boot::mcp_auth_required_state_label(Locale::En),
             "401 Unauthorized: the session is no longer accepted",
             ExtensionAction::Command {
                 label: "re-auth".into(),

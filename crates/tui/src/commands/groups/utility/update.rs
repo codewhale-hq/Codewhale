@@ -180,7 +180,10 @@ fn update(arg: Option<&str>) -> CommandResult {
     match resolve_updater(exe.as_deref(), method, &|path: &Path| path.is_file()) {
         UpdaterPlan::Managed(method) => CommandResult::message(managed_install_message(method)),
         UpdaterPlan::NoUpdater { exe } => CommandResult::message(no_updater_message(&exe)),
-        UpdaterPlan::Run(updater) => run_updater(&updater, mode),
+        UpdaterPlan::Run(updater) => {
+            crate::commands::contract::run_owner_blocking(move || Ok(run_updater(&updater, mode)))
+                .unwrap_or_else(CommandResult::error)
+        }
     }
 }
 

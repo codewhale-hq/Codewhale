@@ -1002,6 +1002,11 @@ pub fn import_claude(contexts: CommandContexts<'_>, arg: Option<&str>) -> Config
                 "\nFull report: {}",
                 facet.display_path(&outcome.report_path)
             ));
+        } else {
+            message.push_str("\n(the report could not be written; the summary above is complete)");
+        }
+        if bundle.is_some() && !artifacts.wrote_bundle {
+            message.push_str("\n(the portable bundle could not be written)");
         }
         return ConfigCommandResult::message(message);
     }
@@ -1024,6 +1029,8 @@ pub fn import_claude(contexts: CommandContexts<'_>, arg: Option<&str>) -> Config
             "\nPortable bundle (review, then `codewhale config import {}`): apply it there for the consent/rollback path.",
             facet.display_path(&artifacts.bundle_path)
         ));
+    } else if bundle.is_some() {
+        message.push_str("\n(the portable bundle could not be written)");
     }
     ConfigCommandResult::message(message)
 }

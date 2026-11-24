@@ -6727,7 +6727,7 @@ fn mcp_problems_are_announced_once_per_session_and_never_pinned_in_the_footer() 
         .collect::<Vec<_>>();
     let expected = format!(
         "MCP · {}: slack · failed: supabase · /mcp",
-        crate::tui::session_boot::mcp_auth_required_state_label()
+        crate::tui::session_boot::mcp_auth_required_state_label(codewhale_localization::Locale::En)
     );
     assert_eq!(announcements, vec![expected]);
     let rendered_80 = render_underwater_test_app(&mut app, 80, 30);
@@ -17667,9 +17667,10 @@ fn ctrl_x_jobs_prefill_only_catches_running_shell_jobs_in_tasks_sidebar() {
     assert!(prefill_jobs_cancel_all_if_tasks_sidebar(&mut app));
     assert_eq!(app.input, "/jobs cancel-all");
     assert_eq!(app.cursor_position, app.input.len());
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("Press Enter to cancel all running commands")
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|toast| toast.text == "Press Enter to cancel all running commands")
     );
 }
 
@@ -22122,6 +22123,30 @@ fn throttled_recovery_snapshot_persists_during_loading_turns() {
         t0 + RECOVERY_SNAPSHOT_INTERVAL,
         &mut last_snapshot_at,
     );
+}
+
+#[test]
+fn recovery_snapshot_waits_for_dispatch_admission_without_error() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "first prompt"));
+    app.is_loading = true;
+    app.dispatch_in_flight = true;
+    let history_len = app.history.len();
+
+    let mut last_snapshot_at = None;
+    maybe_throttled_recovery_snapshot(&mut app, Instant::now(), &mut last_snapshot_at);
+    persist_recovery_snapshot(&mut app);
+
+    assert!(last_snapshot_at.is_none());
+    assert_eq!(app.history.len(), history_len);
+    assert!(
+        !app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::Error { .. }))
+    );
+    assert!(app.status_toasts.is_empty() && app.sticky_status.is_none());
 }
 
 #[tokio::test]

@@ -316,7 +316,7 @@ impl SessionBootSurface {
         if !needs_login.is_empty() {
             line.push_str(&format!(
                 "{ITEM_SEPARATOR}{}: {}",
-                mcp_auth_required_state_label(),
+                mcp_auth_required_state_label(locale),
                 named_list(&needs_login)
             ));
         }
@@ -388,7 +388,7 @@ impl SessionBootSurface {
             );
         }
         if self.phase == SessionBootPhase::Booting {
-            let count = self.servers.len().max(self.unnamed_connecting);
+            let count = self.unnamed_connecting;
             if count > 0 {
                 return activity_notice_from_candidates(
                     SessionBootActivityLevel::Active,
@@ -494,8 +494,12 @@ pub fn mcp_error_requires_login(error: &str) -> bool {
 /// The `◆ auth required` state label every TUI MCP surface prints for a
 /// server whose login is missing, expired, or revoked.
 #[must_use]
-pub fn mcp_auth_required_state_label() -> String {
-    format!("{} auth required", codewhale_tui_kit::glyphs::ATTENTION)
+pub fn mcp_auth_required_state_label(locale: Locale) -> String {
+    format!(
+        "{} {}",
+        codewhale_tui_kit::glyphs::ATTENTION,
+        tr(locale, MessageId::McpAuthRequiredState)
+    )
 }
 
 fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> String {
@@ -814,7 +818,7 @@ mod tests {
             chip.text,
             format!(
                 "MCP{ITEM_SEPARATOR}{}: slack{ITEM_SEPARATOR}failed: beta{ITEM_SEPARATOR}/mcp",
-                mcp_auth_required_state_label()
+                mcp_auth_required_state_label(Locale::En)
             )
         );
         for _ in 0..10 {

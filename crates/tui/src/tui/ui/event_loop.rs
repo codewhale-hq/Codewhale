@@ -2735,7 +2735,6 @@ pub(crate) async fn run_event_loop(
         let mut respawn_after_provider_rollback: Option<String> = None;
         let mut fallback_after_engine_error: Option<ProviderFallbackRollback> = None;
         {
-            let mut rx = engine_handle.rx_event.write().await;
             let mut progress_redraw_agents: HashSet<String> = HashSet::new();
             let drain_started = Instant::now();
             let mut events_drained = 0usize;
@@ -2745,7 +2744,8 @@ pub(crate) async fn run_event_loop(
                 {
                     break;
                 }
-                let event = match rx.try_recv() {
+                let next = engine_handle.rx_event.write().await.try_recv();
+                let event = match next {
                     Ok(event) => event,
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -3307,9 +3307,13 @@ pub(crate) async fn run_event_loop(
                                 error = %err,
                                 "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
-                            app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
-                            ));
+                            app.push_status_toast(
+                                format!(
+                                    "To-do list update pending: checkpoint or Work update did not complete ({err})"
+                                ),
+                                StatusToastLevel::Error,
+                                Some(12_000),
+                            );
                         }
 
                         // Immediately refresh the task panel sidebar when a
@@ -4976,9 +4980,10 @@ pub(crate) async fn run_event_loop(
                                 }),
                             );
                             app.add_message(HistoryCell::System {
-                                content: format!(
-                                    "Sandbox denied {tool_name}: {denial_reason} - auto-elevating to full access"
-                                ),
+                                content: app
+                                    .tr(MessageId::SandboxAutoElevating)
+                                    .replace("{tool_name}", tool_name.as_str())
+                                    .replace("{denial_reason}", denial_reason.as_str()),
                             });
                             // Auto-elevate to full access (no sandbox)
                             let policy = codewhale_sandbox::SandboxPolicy::DangerFullAccess;

@@ -187,6 +187,10 @@ pub(crate) fn write_export_file(path: &Path, contents: &[u8], force: bool) -> Re
         let _ = fs::remove_file(path);
         return Err(err.to_string());
     }
+    #[cfg(unix)]
+    if let Err(err) = fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+        tracing::warn!(dir = %parent.display(), %err, "could not sync export directory");
+    }
     set_owner_only(path).map_err(|err| format!("could not secure file permissions: {err}"))
 }
 

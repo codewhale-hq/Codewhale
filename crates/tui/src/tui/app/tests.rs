@@ -3988,6 +3988,17 @@ fn test_queue_message() {
 }
 
 #[test]
+fn queue_message_at_cap_returns_message_to_composer() {
+    let mut app = App::new(test_options(false), &Config::default());
+    for index in 0..MAX_QUEUED_MESSAGES {
+        app.queue_message(QueuedMessage::new(format!("m{index}"), None));
+    }
+    app.queue_message(QueuedMessage::new("overflow".to_string(), None));
+    assert_eq!(app.queued_message_count(), MAX_QUEUED_MESSAGES);
+    assert_eq!(app.input, "overflow");
+}
+
+#[test]
 fn test_remove_scenario() {
     // Scenario consolidation of: test_remove_queued_message, test_remove_queued_message_invalid_index
     // from test_remove_queued_message
