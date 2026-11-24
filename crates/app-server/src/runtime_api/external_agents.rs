@@ -228,7 +228,7 @@ async fn describe_custom(agent: CustomExternalAgent) -> Value {
         "adapter_installed": false,
         "runnable": runnable,
         "depth": if runnable { "driven" } else { "observed" },
-        "auth_status": "unknown",
+        "auth_status": codewhale_engine::fleet::agents::sign_in_status(&agent.id),
         "custom": true,
         "reason_code": reason_code,
         "reason": reason,
@@ -343,7 +343,7 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
         "adapter_installed": adapter_installed,
         "runnable": runnable,
         "depth": if runnable { "driven" } else { "observed" },
-        "auth_status": "unknown",
+        "auth_status": codewhale_engine::fleet::agents::sign_in_status(agent.id),
         "reason_code": reason_code,
         "reason": reason,
     })

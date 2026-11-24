@@ -8433,22 +8433,29 @@ impl RuntimeThreadManager {
         };
         let executor = match req.executor.as_ref() {
             Some(requested) => {
-                anyhow::ensure!(
-                    req.dynamic_tools.is_empty() && req.environments.is_empty(),
-                    "dynamic tools and environments are not available in a session with another agent"
-                );
-                anyhow::ensure!(
-                    req.model.is_none()
-                        && req.model_provider.is_none()
-                        && req.model_provider_id.is_none()
-                        && req.route_selection.is_none()
-                        && req.reasoning_effort.is_none(),
-                    "set another agent's model through executor.config.model; Codewhale provider controls are unavailable"
-                );
-                anyhow::ensure!(
-                    req.allowed_tools.is_none() && req.system_prompt.is_none(),
-                    "a session with another agent uses its own tools and instructions; tool allowlists and system prompts are unavailable"
-                );
+                if !req.dynamic_tools.is_empty() || !req.environments.is_empty() {
+                    return Err(external_agent::refuse(
+                        crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                        "Dynamic tools and environments are not available in a session with another agent.",
+                    ));
+                }
+                if req.model.is_some()
+                    || req.model_provider.is_some()
+                    || req.model_provider_id.is_some()
+                    || req.route_selection.is_some()
+                    || req.reasoning_effort.is_some()
+                {
+                    return Err(external_agent::refuse(
+                        crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                        "Set another agent's model through executor.config.model; Codewhale provider controls are unavailable.",
+                    ));
+                }
+                if req.allowed_tools.is_some() || req.system_prompt.is_some() {
+                    return Err(external_agent::refuse(
+                        crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                        "A session with another agent uses its own tools and instructions; tool allowlists and system prompts are unavailable.",
+                    ));
+                }
                 Some(external_executor_record(requested).await?)
             }
             None => None,
@@ -9844,9 +9851,10 @@ impl RuntimeThreadManager {
                 .load_thread(id)
                 .is_ok_and(|thread| thread.executor.is_some())
         {
-            bail!(
-                "A session with another agent keeps its agent, models and folder for its whole life; start a new session instead"
-            );
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent keeps its agent, models and folder for its whole life; start a new session instead.",
+            ));
         }
 
         if let Some(model) = req.model.as_ref()
@@ -11524,10 +11532,12 @@ impl RuntimeThreadManager {
         source: ThreadRecord,
         sessions_dir: &Path,
     ) -> Result<ThreadRecord> {
-        anyhow::ensure!(
-            source.executor.is_none(),
-            "a session with another agent cannot be forked; its history lives in the agent"
-        );
+        if source.executor.is_some() {
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent cannot be forked; its history lives in the agent.",
+            ));
+        }
         let mut forked = source.clone();
         let now = Utc::now();
         forked.id = runtime_record_id("thr");
@@ -11940,10 +11950,12 @@ impl RuntimeThreadManager {
         sessions_dir: &Path,
         admission: Option<tokio::sync::OwnedRwLockWriteGuard<()>>,
     ) -> Result<PreparedThreadFork> {
-        anyhow::ensure!(
-            source.executor.is_none(),
-            "a session with another agent cannot be forked; its history lives in the agent"
-        );
+        if source.executor.is_some() {
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent cannot be forked; its history lives in the agent.",
+            ));
+        }
         let (source_turns, items_by_turn) = {
             let store = self.store.clone();
             let source_id = source.id.clone();
@@ -11991,10 +12003,12 @@ impl RuntimeThreadManager {
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
         let source = self.get_thread(id).await?;
-        anyhow::ensure!(
-            source.executor.is_none(),
-            "a session with another agent cannot be forked; its history lives in the agent"
-        );
+        if source.executor.is_some() {
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent cannot be forked; its history lives in the agent.",
+            ));
+        }
         let (source_turns, items_by_turn) = {
             let store = self.store.clone();
             let source_id = source.id.clone();
@@ -12040,10 +12054,12 @@ impl RuntimeThreadManager {
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
         let source = self.get_thread(id).await?;
-        anyhow::ensure!(
-            source.executor.is_none(),
-            "a session with another agent cannot be forked; its history lives in the agent"
-        );
+        if source.executor.is_some() {
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent cannot be forked; its history lives in the agent.",
+            ));
+        }
         let (source_turns, items_by_turn) = {
             let store = self.store.clone();
             let source_id = source.id.clone();
@@ -16019,9 +16035,10 @@ source_usage_records: Default::default(),
             bail!("prompt is required");
         }
         if self.external_thread_loaded(thread_id).await {
-            bail!(
-                "This agent cannot be steered during a turn; send the message after the turn ends"
-            );
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "This agent cannot be steered during a turn; send the message after the turn ends.",
+            ));
         }
 
         let engine = {
@@ -16164,6 +16181,12 @@ source_usage_records: Default::default(),
         let _config_admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let thread = self.get_thread(thread_id).await?;
+        if thread.executor.is_some() {
+            return Err(external_agent::refuse(
+                crate::fleet::acp::refusal::UNSUPPORTED_CONTROL,
+                "A session with another agent keeps its own history; compaction is unavailable.",
+            ));
+        }
         let engine = self.ensure_engine_loaded(&thread).await?;
 
         let client_preflight_required = {

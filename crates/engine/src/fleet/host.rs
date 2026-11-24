@@ -1209,6 +1209,88 @@ fn shutdown_unix_worker_session(
     process: &mut LocalWorkerProcess,
     graceful_signals: &[libc::c_int],
 ) -> FleetHostResult<()> {
+    let escaped = escaped_descendants(process.session_id);
+    for signal in graceful_signals {
+        signal_escaped(&escaped, *signal);
+    }
+    let result = stop_unix_session_members(process, graceful_signals);
+    signal_escaped(&escaped, libc::SIGKILL);
+    result
+}
+
+#[cfg(unix)]
+fn escaped_descendants(session_id: libc::pid_t) -> Vec<(libc::pid_t, libc::pid_t)> {
+    let Ok(parents) = unix_parent_pids() else {
+        return Vec::new();
+    };
+    // SAFETY: getsid(2) dereferences no pointers.
+    let own_session = unsafe { libc::getsid(0) };
+    let mut tree: Vec<libc::pid_t> = parents
+        .iter()
+        .map(|(pid, _)| *pid)
+        .filter(|pid| unix_pid_in_session(*pid, session_id))
+        .collect();
+    let mut escaped = Vec::new();
+    let mut next = 0;
+    while let Some(parent) = tree.get(next).copied() {
+        next += 1;
+        for (pid, ppid) in &parents {
+            if *ppid != parent || tree.contains(pid) {
+                continue;
+            }
+            tree.push(*pid);
+            // SAFETY: getsid(2) dereferences no pointers.
+            let sid = unsafe { libc::getsid(*pid) };
+            if sid > 0 && sid != session_id && sid != own_session {
+                escaped.push((*pid, sid));
+            }
+        }
+    }
+    escaped
+}
+
+#[cfg(unix)]
+fn signal_escaped(escaped: &[(libc::pid_t, libc::pid_t)], signal: libc::c_int) {
+    for (pid, sid) in escaped {
+        if unix_pid_in_session(*pid, *sid) {
+            // SAFETY: kill(2) dereferences no pointers.
+            unsafe { libc::kill(*pid, signal) };
+        }
+    }
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn unix_parent_pids() -> FleetHostResult<Vec<(libc::pid_t, libc::pid_t)>> {
+    Ok(unix_process_ids()?
+        .into_iter()
+        .filter_map(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let ppid = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?;
+            Some((pid, ppid.parse().ok()?))
+        })
+        .collect())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn unix_parent_pids() -> FleetHostResult<Vec<(libc::pid_t, libc::pid_t)>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid="])
+        .output()
+        .map_err(|err| FleetHostError::retryable(format!("listing process parents: {err}")))?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect())
+}
+
+#[cfg(unix)]
+fn stop_unix_session_members(
+    process: &mut LocalWorkerProcess,
+    graceful_signals: &[libc::c_int],
+) -> FleetHostResult<()> {
     let mut signal_errors = Vec::new();
     let known_leader = process.session_id;
     for signal in graceful_signals {
@@ -1834,6 +1916,46 @@ fn safe_path_segment(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_reaches_a_descendant_that_left_the_worker_session() {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+        let mut leader = std::process::Command::new("sh");
+        leader
+            .args(["-c", "setsid sleep 30 & echo $!; wait"])
+            .stdout(std::process::Stdio::piped());
+        // SAFETY: setsid(2) is async-signal-safe.
+        unsafe {
+            leader.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = leader.spawn().expect("spawn session leader");
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let escaped_pid: libc::pid_t = line.trim().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !unix_pid_in_session(escaped_pid, escaped_pid) {
+            assert!(
+                Instant::now() < deadline,
+                "the helper never left the session"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let leader_session = child.id() as libc::pid_t;
+        let escaped = escaped_descendants(leader_session);
+        assert_eq!(escaped, [(escaped_pid, escaped_pid)]);
+        signal_escaped(&escaped, libc::SIGKILL);
+        child.wait().unwrap();
+        assert!(!unix_pid_exists(escaped_pid));
+    }
 
     /// Worker output is opened through the pinned no-follow writer: a link in
     /// `.codewhale` or at the log's name is refused, and a plain log is
