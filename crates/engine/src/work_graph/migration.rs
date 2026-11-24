@@ -288,7 +288,7 @@ fn strip_plan_provenance(content: &str) -> (String, Option<u32>) {
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn plan_provenance_marker(index: u32) -> String {
     format!("{PLAN_PROVENANCE_PREFIX}{index}{PLAN_PROVENANCE_SUFFIX}")
 }

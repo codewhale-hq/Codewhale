@@ -69,6 +69,21 @@ fn sessions_archive_cli_keeps_legacy_listing_and_export_options() {
     assert!(
         matches!(export.command, Some(Commands::Sessions { command: Some(SessionsCommand::Export { ref id, output: Some(ref output), skip_artifacts: true, compression: 0, force: true }), .. }) if id == "abc123" && output == Path::new("session.tar.xz"))
     );
+    let migrate = parse_cli(&[
+        "codewhale",
+        "sessions",
+        "migrate",
+        "--old-path",
+        "/tmp/Project_A",
+        "--new-path",
+        "/tmp/Project_B",
+        "--session",
+        "abc123",
+        "--dry-run",
+    ]);
+    assert!(
+        matches!(migrate.command, Some(Commands::Sessions { command: Some(SessionsCommand::Migrate { ref old_path, ref new_path, session: Some(ref session), dry_run: true }), .. }) if old_path == Path::new("/tmp/Project_A") && new_path == Path::new("/tmp/Project_B") && session == "abc123")
+    );
 }
 
 #[test]
@@ -305,6 +320,109 @@ fn saved_exec_session(provider: &str, model: &str) -> session_manager::SavedSess
 }
 
 #[test]
+fn exec_conversation_mode_flag_sets_a_new_session_mode() {
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+    let cli = parse_cli(&["codewhale", "exec", "--conversation-mode", "creator", "hi"]);
+    let Some(Commands::Exec(args)) = cli.command else {
+        panic!("exec command");
+    };
+    assert_eq!(args.conversation_mode.as_deref(), Some("creator"));
+    let none = parse_cli(&["codewhale", "exec", "hi"]);
+    let Some(Commands::Exec(args_none)) = none.command else {
+        panic!("exec command");
+    };
+    assert_eq!(args_none.conversation_mode, None);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let config = codewhale_runtime::config::Config::default();
+    let locale = codewhale_localization::Locale::En;
+    let resolve = |flag: Option<&str>| {
+        runtime.block_on(tui::conversation_mode::launch_conversation_mode(
+            &config, locale, flag, None,
+        ))
+    };
+    {
+        let _available = CreatorAvailabilityGuard::set(None);
+        assert_eq!(resolve(Some("creator")), Ok(Some("creator".to_string())));
+        assert_eq!(resolve(Some("standard")), Ok(None));
+        assert_eq!(resolve(None), Ok(None));
+        let unknown = resolve(Some("minimal")).expect_err("unknown id");
+        assert!(unknown.contains("standard, creator"), "{unknown}");
+    }
+    {
+        let _unavailable = CreatorAvailabilityGuard::set(Some(
+            codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON,
+        ));
+        let refused = resolve(Some("creator")).expect_err("unavailable");
+        assert!(
+            refused.contains(codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON),
+            "{refused}"
+        );
+    }
+
+    let mut saved = saved_exec_session("deepseek", "deepseek-v4-pro");
+    saved.agent_preset = resolve_stored_for_test(&runtime, &config, "creator");
+    let raw = serde_json::to_value(&saved).unwrap();
+    assert_eq!(raw["agent_preset"], "creator");
+    let standard = saved_exec_session("deepseek", "deepseek-v4-pro");
+    assert!(serde_json::to_value(&standard).unwrap().get("agent_preset").is_none());
+}
+
+fn resolve_stored_for_test(
+    runtime: &tokio::runtime::Runtime,
+    config: &codewhale_runtime::config::Config,
+    flag: &str,
+) -> Option<String> {
+    let _available = codewhale_engine::conversation_modes::CreatorAvailabilityGuard::set(None);
+    runtime
+        .block_on(tui::conversation_mode::launch_conversation_mode(
+            config,
+            codewhale_localization::Locale::En,
+            Some(flag),
+            None,
+        ))
+        .expect("resolves")
+}
+
+#[test]
+fn exec_conversation_mode_flag_that_differs_from_a_resumed_session_is_refused_before_any_model_call() {
+    use codewhale_engine::conversation_modes::CreatorAvailabilityGuard;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let config = codewhale_runtime::config::Config::default();
+    let locale = codewhale_localization::Locale::En;
+    let resolve = |flag: &str, saved: &session_manager::SavedSession| {
+        runtime.block_on(tui::conversation_mode::launch_conversation_mode(
+            &config,
+            locale,
+            Some(flag),
+            Some(saved),
+        ))
+    };
+    let _unavailable = CreatorAvailabilityGuard::set(Some(
+        codewhale_engine::conversation_modes::CREATOR_KEY_OFF_REASON,
+    ));
+    let standard = saved_exec_session("deepseek", "deepseek-v4-pro");
+    let mut creator = saved_exec_session("deepseek", "deepseek-v4-pro");
+    creator.agent_preset = Some("creator".to_string());
+
+    let refused = resolve("creator", &standard).expect_err("Standard session, creator flag");
+    assert!(refused.contains("fixed") && refused.contains("/new creator"), "{refused}");
+    let refused = resolve("standard", &creator).expect_err("creator session, standard flag");
+    assert!(refused.contains("fixed") && refused.contains("/new"), "{refused}");
+    assert!(resolve("minimal", &creator).is_err());
+    assert_eq!(resolve("standard", &standard), Ok(None));
+    assert_eq!(
+        resolve("creator", &creator),
+        Ok(Some("creator".to_string())),
+        "a matching flag resumes even while the mode is unavailable"
+    );
+}
+
+#[test]
 fn prompt_flag_accepts_split_prompt_words_for_windows_cmd_shims() {
     let cli = parse_cli(&["codewhale", "-p", "hello", "world"]);
 
@@ -440,10 +558,16 @@ async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
     let origin = source
         .usage_origin(codewhale_engine::cost_status::scope_token())
         .expect("captured Workflow usage origin");
-    let (tool, context) =
-        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins, origin)
-            .await
-            .expect("build direct workflow runtime");
+    let (tool, context) = build_direct_workflow_tool(
+        &config,
+        &route,
+        workspace.path(),
+        event_tx,
+        plugins,
+        Some(origin),
+    )
+    .await
+    .expect("build direct workflow runtime");
 
     let result = tool
         .execute(

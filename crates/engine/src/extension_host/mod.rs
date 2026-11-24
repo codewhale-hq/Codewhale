@@ -11,7 +11,8 @@
 //! policy v4, selected by the flag) makes [`ExtensionHostManager::reconcile_in_background`]
 //! spawn the host in the background — never on the first-prompt path — and
 //! activate one owner per plugin. Tools join the per-turn registry at the next
-//! rebuild, deferred. Disabling, revoking or updating the plugin revokes its
+//! rebuild, or before the next model request when the creator `plugin_manager`
+//! changes a plugin mid-turn. Disabling, revoking or updating the plugin revokes its
 //! registrations synchronously before the host is asked to tear down.
 //!
 //! `core/call` ([`core_call`], tickets in [`ticket`]): an extension tool that
@@ -122,16 +123,21 @@
 pub mod command;
 pub mod composition_review;
 pub mod core_call;
+pub(crate) mod creator_policy;
+mod dsh_attachments;
 pub mod dsh_broker;
 mod dsh_catalog;
 mod dsh_llm;
-mod dsh_network;
+pub(crate) mod dsh_network;
+mod dsh_plugins;
 mod dsh_remote;
-pub use dsh_remote::{RemoteClient, RemoteDenial, RemoteGrants, RemotePairing, remote_grants};
+pub(crate) use dsh_remote::end_remote_session;
+pub use dsh_remote::{RemoteClient, RemoteDenial, RemotePairing, RemoteSecret, RemoteState};
 mod dsh_settings;
-mod dsh_terminal;
+pub(crate) mod dsh_terminal;
 mod dsh_workspace;
 pub mod execution;
+pub use dsh_network::forget_plugin_credentials;
 pub use execution::StockOperation;
 pub mod avatars;
 mod hooks;
@@ -151,6 +157,8 @@ pub mod tool;
 mod windows;
 
 #[cfg(test)]
+mod cohort_tests;
+#[cfg(test)]
 mod core_call_tests;
 #[cfg(test)]
 mod dsh_grant_tests;
@@ -159,7 +167,7 @@ pub mod test_support;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -176,11 +184,11 @@ use self::protocol::{
 };
 use self::registry::{CommandRegistration, OwnerRegistry, OwnerState, ToolRegistration};
 use self::supervisor::{HostEvents, HostProcess, HostRequestContext};
-use self::tier::{BuiltinModule, HostTier};
+use self::tier::{BuiltinModule, HostCohort, HostTier, PluginCohort};
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
-use codewhale_plugins::PluginRegistry;
 use codewhale_plugins::activation::{self, PluginActivationCapability};
+use codewhale_plugins::{PluginRegistry, types::LoadedPlugin};
 
 /// The host bundle, embedded so every distribution channel carries it.
 const BUNDLE: &[u8] = include_bytes!("../../extension-host/dist/codewhale-extension-host.mjs");
@@ -194,6 +202,7 @@ const NOTICES_FILE_NAME: &str = "LICENSES.txt";
 const MAX_DIAGNOSTICS: usize = 64;
 const MAX_DIAGNOSTIC_BYTES: usize = 2048;
 const DIRTY_RESTART_REASON: &str = "planned restart after repeated dirty teardowns";
+const NO_DESIRED_OWNERS_REASON: &str = "no desired owners remain";
 
 struct Diagnostic {
     plugin_id: Option<String>,
@@ -245,6 +254,11 @@ fn materialize_bundle(root: &Path) -> Result<PathBuf, String> {
         "harness.mjs",
         include_bytes!("../../extension-host/dist/builtin/harness.mjs"),
     )?;
+    materialize_file(
+        &dir.join("builtin"),
+        "creator.mjs",
+        include_bytes!("../../extension-host/dist/builtin/creator.mjs"),
+    )?;
     Ok(bundle)
 }
 
@@ -266,19 +280,15 @@ fn materialize_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
     if !matches(&path) {
         std::fs::create_dir_all(dir)
             .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-        let staging = dir.join(format!(".{file_name}.{}", uuid::Uuid::new_v4().simple()));
-        std::fs::write(&staging, bytes)
-            .map_err(|error| format!("cannot write {}: {error}", staging.display()))?;
+        if let Err(error) = codewhale_util::utils::write_atomic(&path, bytes)
+            && !matches(&path)
+        {
+            return Err(format!("cannot publish {}: {error}", path.display()));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o400));
-        }
-        if let Err(error) = std::fs::rename(&staging, &path) {
-            let _ = std::fs::remove_file(&staging);
-            if !matches(&path) {
-                return Err(format!("cannot publish {}: {error}", path.display()));
-            }
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400));
         }
     }
     // Re-check what will actually be used.
@@ -525,6 +535,7 @@ struct TierRuntime {
     spawn_attempts: AtomicU64,
     /// Lock order: see [`ManagerShared`].
     supervision: Mutex<SupervisionState>,
+    imported_entries: Mutex<(u64, BTreeMap<PathBuf, String>)>,
 }
 
 impl TierRuntime {
@@ -534,11 +545,14 @@ impl TierRuntime {
             host_generation: AtomicU64::new(0),
             spawn_attempts: AtomicU64::new(0),
             supervision: Mutex::new(SupervisionState::default()),
+            imported_entries: Mutex::new((0, BTreeMap::new())),
         }
     }
 }
 
+#[derive(Clone)]
 struct DesiredOwner {
+    cohort: HostCohort,
     plugin_name: String,
     authority: PluginAuthority,
     entries: Vec<(PathBuf, String)>,
@@ -548,7 +562,7 @@ struct DesiredOwner {
 /// What [`ExtensionHostManager::activate_owner`] activates, on either tier:
 /// a plugin's reviewed bytes, or a built-in module's pinned source.
 struct Activation {
-    tier: HostTier,
+    cohort: HostCohort,
     owner_id: String,
     /// The plugin's manifest name, or the module's name.
     name: String,
@@ -559,6 +573,12 @@ struct Activation {
     content_hash: String,
     entries: Vec<(PathBuf, String)>,
     host_services: Vec<protocol::DshService>,
+}
+
+impl Activation {
+    pub fn tier(&self) -> HostTier {
+        self.cohort.tier()
+    }
 }
 
 /// One engine's view: its plugin snapshot and the owners (plugin id →
@@ -572,17 +592,19 @@ struct AttachmentState {
     settled: Option<codewhale_plugins::composition_scope::SelectionRevision>,
     session_id: Option<String>,
     agent_id: Option<String>,
+    creator_demanded: bool,
 }
 
 /// Lock order, outermost first, everywhere in this module:
 ///
 /// 1. `sync_lock` (async; the only lock held across an await, and it only
 ///    serializes reconciliation);
-/// 2. one tier's `host` slot, then that same tier's `supervision`;
-/// 3. `registry`.
+/// 2. `agent_cohorts` and `pending_migrations` (cohort discovery and migration coordination);
+/// 3. one cohort's `host` slot, then that same cohort's `supervision`;
+/// 4. `registry`.
 ///
-/// No code holds both tiers' slots or both tiers' supervision state at once:
-/// a path that must visit both tiers visits one, releases it, then the other.
+/// No code holds multiple cohorts' slots or multiple cohorts' supervision state at once:
+/// a path that must visit multiple cohorts visits one, releases it, then the other.
 /// `attachments`, `runtime`, `plugin_configs` and `diagnostics` are leaf
 /// locks, never held together with another lock (`diagnostics` is only ever
 /// taken last, from the `diagnostic` helpers). No lock but `sync_lock` is held
@@ -593,6 +615,7 @@ pub struct ManagerShared {
     /// [`tier::BUILTIN_MODULES`] in production; a test substitutes its
     /// own through [`ExtensionHostManager::with_builtin_modules`].
     builtin_modules: &'static [BuiltinModule],
+    materialize_default_builtins: bool,
     attachments: Mutex<BTreeMap<u64, AttachmentState>>,
     next_attachment: AtomicU64,
     /// One registry for both tiers: an owner's entry records which.
@@ -604,12 +627,16 @@ pub struct ManagerShared {
     execution_broker: execution::Broker,
     harness_users: AtomicU64,
     stock_users: AtomicU64,
+    creator_users: AtomicU64,
     mcp_broker: mcp::Broker,
     mcp_users: AtomicU64,
     /// Tier 1: reviewed third-party plugins.
-    plugin: TierRuntime,
+    plugin: Arc<TierRuntime>,
     /// Tier 0: Codewhale's own host code. Starts only for a built-in module.
-    builtin: TierRuntime,
+    builtin: Arc<TierRuntime>,
+    agent_cohorts: Mutex<BTreeMap<PathBuf, Arc<TierRuntime>>>,
+    agent_host_generation: AtomicU64,
+    pending_migrations: Mutex<BTreeMap<String, HostCohort>>,
     sync_lock: tokio::sync::Mutex<()>,
     /// Bound native root parsing independently of reconciliation (activation
     /// itself calls admission while reconciliation owns sync_lock).
@@ -619,6 +646,7 @@ pub struct ManagerShared {
     runtime: Mutex<RuntimePin>,
     /// User settings per plugin name.
     plugin_configs: Mutex<plugin_config::PluginConfigs>,
+    reconcile_settled: tokio::sync::Notify,
 }
 
 /// Which runtime this manager's hosts run on.
@@ -642,7 +670,7 @@ struct RuntimePin {
 /// Blocking.
 fn prepare_launch(
     options: &ExtensionHostOptions,
-    tier: HostTier,
+    cohort: &HostCohort,
     pinned: Option<(codewhale_dependencies::HostRuntime, String)>,
     bun_failed: bool,
     snapshot_state_paths: &[PathBuf],
@@ -677,7 +705,7 @@ fn prepare_launch(
     let root = host_root(options)?;
     let bundle = materialize_bundle(&root)?;
     let launch = supervisor::plan_launch(
-        tier,
+        cohort,
         &runtime,
         &bundle,
         &root,
@@ -703,7 +731,7 @@ pub fn planned_sandbox(
     runtime: &codewhale_dependencies::HostRuntime,
     tier: HostTier,
 ) -> Result<supervisor::HostSandbox, String> {
-    supervisor::planned_sandbox(tier, runtime, &host_root(options)?)
+    supervisor::planned_sandbox_tier(tier, runtime, &host_root(options)?)
 }
 
 impl ManagerShared {
@@ -711,11 +739,56 @@ impl ManagerShared {
         self.engine_handle.get().cloned().ok_or_else(|| "enabled execution requires the Engine scheduler; no new runtime or legacy fallback is allowed".to_string())
     }
 
+    fn cohort_runtime(&self, cohort: &HostCohort) -> Option<Arc<TierRuntime>> {
+        match cohort {
+            HostCohort::Builtin => Some(Arc::clone(&self.builtin)),
+            HostCohort::Plugin(PluginCohort::Reviewed) => Some(Arc::clone(&self.plugin)),
+            HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                let path = cohort.agent_project_path()?;
+                self.agent_cohorts
+                    .lock()
+                    .expect("agent cohorts lock")
+                    .get(&path)
+                    .cloned()
+            }
+        }
+    }
+
+    fn get_or_create_cohort_runtime(&self, cohort: &HostCohort) -> Arc<TierRuntime> {
+        match cohort {
+            HostCohort::Builtin => Arc::clone(&self.builtin),
+            HostCohort::Plugin(PluginCohort::Reviewed) => Arc::clone(&self.plugin),
+            HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                let path = cohort
+                    .agent_project_path()
+                    .unwrap_or_else(|| PathBuf::from(""));
+                self.agent_cohorts
+                    .lock()
+                    .expect("agent cohorts lock")
+                    .entry(path)
+                    .or_insert_with(|| Arc::new(TierRuntime::new()))
+                    .clone()
+            }
+        }
+    }
+
+    fn all_runtimes(&self) -> Vec<Arc<TierRuntime>> {
+        let mut runtimes = vec![Arc::clone(&self.builtin), Arc::clone(&self.plugin)];
+        runtimes.extend(
+            self.agent_cohorts
+                .lock()
+                .expect("agent cohorts lock")
+                .values()
+                .cloned(),
+        );
+        runtimes
+    }
+
     /// The supervision state of `tier`'s host.
-    fn tier_runtime(&self, tier: HostTier) -> &TierRuntime {
+    fn tier_runtime(&self, tier: HostTier) -> Arc<TierRuntime> {
         match tier {
-            HostTier::Plugin => &self.plugin,
-            HostTier::Builtin => &self.builtin,
+            HostTier::Plugin => Arc::clone(&self.plugin),
+            HostTier::Builtin => Arc::clone(&self.builtin),
         }
     }
 
@@ -757,7 +830,9 @@ impl ManagerShared {
     }
 
     fn record_dirty_teardown(&self, host: &Arc<HostProcess>) {
-        let runtime = self.tier_runtime(host.tier);
+        let Some(runtime) = self.cohort_runtime(&host.cohort) else {
+            return;
+        };
         let slot = runtime.host.lock().expect("host lock");
         if !matches!(&*slot, HostSlot::Ready(current) | HostSlot::Unresponsive(current)
             if Arc::ptr_eq(current, host))
@@ -769,6 +844,14 @@ impl ManagerShared {
             .lock()
             .expect("supervision lock")
             .record_dirty_teardown(Instant::now(), &self.options.supervision);
+    }
+
+    fn revoke_owner_state(&self, plugin_id: &str) {
+        self.core_calls.revoke_owner(plugin_id);
+        self.execution_broker.revoke_owner(plugin_id);
+        self.mcp_users
+            .fetch_sub(self.mcp_broker.revoke_owner(plugin_id), Ordering::SeqCst);
+        dsh_terminal::kill_plugin_sessions(plugin_id);
     }
 
     fn diagnostic(&self, message: String) {
@@ -793,14 +876,23 @@ impl ManagerShared {
         }
     }
 
-    /// `tier`'s host, when it can take a call; otherwise why not.
-    fn ready_host(&self, tier: HostTier) -> Result<Arc<HostProcess>, HostStatus> {
-        match &*self.tier_runtime(tier).host.lock().expect("host lock") {
+    fn ready_host(&self, cohort: &HostCohort) -> Result<Arc<HostProcess>, HostStatus> {
+        let Some(runtime) = self.cohort_runtime(cohort) else {
+            return Err(HostStatus::Idle);
+        };
+        match &*runtime.host.lock().expect("host lock") {
             HostSlot::Ready(host) if !host.has_exited() && !host.is_retiring() => {
                 Ok(Arc::clone(host))
             }
             slot => Err(slot.status()),
         }
+    }
+
+    fn clear_plugin_diagnostics(&self, plugin_id: &str) {
+        self.diagnostics
+            .lock()
+            .expect("diagnostics lock")
+            .retain(|entry| entry.plugin_id.as_deref() != Some(plugin_id));
     }
 
     /// The shared fast liveness guard: current policy, running host, exact
@@ -812,14 +904,16 @@ impl ManagerShared {
     /// generation the call belongs to, or why it is no longer registered.
     fn live_owner_authority(
         &self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         owner_if_live: impl FnOnce(&OwnerRegistry) -> Result<OwnerRef, String>,
     ) -> Result<Option<PluginAuthority>, String> {
+        let cohort = cohort.into();
+        let tier = cohort.tier();
         let native_policy = activation::extension_host_policy_enabled();
         if tier == HostTier::Plugin && !native_policy {
             return Err(host_down(tier, &HostStatus::Disabled));
         }
-        self.ready_host(tier)
+        self.ready_host(&cohort)
             .map_err(|status| host_down(tier, &status))?;
         {
             let registry = self.registry.lock().expect("registry lock");
@@ -828,18 +922,20 @@ impl ManagerShared {
             // Script/hook jobs still require Native policy in Caller::check.
             let core_stock =
                 owner.plugin_id == "host:harness" && self.stock_users.load(Ordering::SeqCst) > 0;
-            if !native_policy && owner.plugin_id != "host:mcp" && !core_stock {
+            let creator_live =
+                owner.plugin_id == "host:creator" && self.creator_users.load(Ordering::SeqCst) > 0;
+            if !native_policy && owner.plugin_id != "host:mcp" && !core_stock && !creator_live {
                 return Err(host_down(tier, &HostStatus::Disabled));
             }
-            let owner_tier = registry
-                .tier_of(&owner)
+            let owner_cohort = registry
+                .cohort_of(&owner)
                 .ok_or_else(|| "extension owner has no authority".to_string())?;
-            if owner_tier != tier {
+            if owner_cohort != cohort {
                 return Err(format!(
-                    "extension owner `{}` belongs to the {} tier, not the {} tier",
+                    "extension owner `{}` belongs to the {} cohort, not the {} cohort",
                     owner.plugin_id,
-                    owner_tier.name(),
-                    tier.name()
+                    owner_cohort.host_label(),
+                    cohort.host_label()
                 ));
             }
             match (tier, registry.authority_for(&owner)) {
@@ -852,11 +948,13 @@ impl ManagerShared {
 
     async fn live_host(
         &self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         owner_if_live: impl FnOnce(&OwnerRegistry) -> Result<OwnerRef, String>,
     ) -> Result<Arc<HostProcess>, String> {
+        let cohort = cohort.into();
+        let tier = cohort.tier();
         let policy = activation::extension_host_policy_enabled();
-        let authority = self.live_owner_authority(tier, owner_if_live)?;
+        let authority = self.live_owner_authority(&cohort, owner_if_live)?;
         if let Some(authority) = authority {
             #[cfg(any(test, feature = "test-support"))]
             let env_scope = crate::test_support::env_scope_ticket();
@@ -872,7 +970,7 @@ impl ManagerShared {
             .await
             .map_err(|error| format!("authority check failed: {error}"))??;
         }
-        self.ready_host(tier)
+        self.ready_host(&cohort)
             .map_err(|status| host_down(tier, &status))
     }
 
@@ -880,7 +978,7 @@ impl ManagerShared {
         &self,
         registration: &ToolRegistration,
     ) -> Result<Arc<HostProcess>, String> {
-        self.live_host(registration.tier, |registry| {
+        self.live_host(&registration.cohort, |registry| {
             if registry.is_live(registration.handle, &registration.owner) {
                 Ok(registration.owner.clone())
             } else {
@@ -899,9 +997,21 @@ impl ManagerShared {
         &self,
         command: &command::ExtensionCommandRef,
     ) -> Result<(Arc<HostProcess>, CommandRegistration), String> {
+        let cohort = {
+            let registry = self.registry.lock().expect("registry lock");
+            let registration = registry
+                .live_command(command.handle, &command.plugin_id, command.generation)
+                .ok_or_else(|| {
+                    format!(
+                        "extension command from `{}` is no longer registered (the plugin was reloaded, disabled or lost trust)",
+                        command.plugin_id
+                    )
+                })?;
+            registration.cohort.clone()
+        };
         let mut found = None;
         let host = self
-            .live_host(HostTier::Plugin, |registry| {
+            .live_host(&cohort, |registry| {
                 let registration = registry
                     .live_command(command.handle, &command.plugin_id, command.generation)
                     .ok_or_else(|| {
@@ -929,7 +1039,7 @@ fn host_down(tier: HostTier, status: &HostStatus) -> String {
 /// process and generation.
 struct Events {
     shared: Weak<ManagerShared>,
-    tier: HostTier,
+    cohort: HostCohort,
     generation: u64,
 }
 
@@ -940,7 +1050,7 @@ impl HostEvents for Events {
             // Completing a live request is evidence of recovery before its
             // caller's post-await liveness checks. The pending ping retains
             // its original hang deadline; this creates no new health clock.
-            set_host_health(&shared, self.tier, self.generation, false);
+            set_host_health(&shared, &self.cohort, self.generation, false);
         }
     }
 
@@ -960,7 +1070,7 @@ impl HostEvents for Events {
                     .shared
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
-                if self.tier != HostTier::Builtin {
+                if self.cohort != HostCohort::Builtin {
                     return Err(refuse("execution broker is builtin-only"));
                 }
                 shared
@@ -973,17 +1083,15 @@ impl HostEvents for Events {
                     .shared
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
-                if shared
-                    .tier_runtime(self.tier)
-                    .host_generation
-                    .load(Ordering::SeqCst)
-                    != self.generation
-                {
+                let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+                    return Err(refuse("unknown host cohort"));
+                };
+                if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
                     return Err(refuse("stale host generation"));
                 }
                 shared
                     .core_calls
-                    .serve_question(&shared, self.tier, self.generation, params, cx)
+                    .serve_question(&shared, &self.cohort, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::SubagentStart(_)
@@ -993,17 +1101,15 @@ impl HostEvents for Events {
                     .shared
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
-                if shared
-                    .tier_runtime(self.tier)
-                    .host_generation
-                    .load(Ordering::SeqCst)
-                    != self.generation
-                {
+                let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+                    return Err(refuse("unknown host cohort"));
+                };
+                if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
                     return Err(refuse("stale host generation"));
                 }
                 shared
                     .core_calls
-                    .serve_subagent(&shared, self.tier, self.generation, request, cx)
+                    .serve_subagent(&shared, &self.cohort, self.generation, request, cx)
                     .await
             }
             protocol::HostRequest::SessionCheckpoint(params) => {
@@ -1011,51 +1117,45 @@ impl HostEvents for Events {
                     .shared
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
-                if shared
-                    .tier_runtime(self.tier)
-                    .host_generation
-                    .load(Ordering::SeqCst)
-                    != self.generation
-                {
+                let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+                    return Err(refuse("unknown host cohort"));
+                };
+                if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
                     return Err(refuse("stale host generation"));
                 }
                 shared
                     .core_calls
-                    .serve_checkpoint(&shared, self.tier, self.generation, params, cx)
+                    .serve_checkpoint(&shared, &self.cohort, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::DshBroker(params) => {
                 let Some(shared) = self.shared.upgrade() else {
                     return Err(refuse("extension host manager is gone"));
                 };
-                if shared
-                    .tier_runtime(self.tier)
-                    .host_generation
-                    .load(Ordering::SeqCst)
-                    != self.generation
-                {
+                let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+                    return Err(refuse("unknown host cohort"));
+                };
+                if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
                     return Err(refuse("stale host generation"));
                 }
                 shared
                     .core_calls
-                    .serve_broker(&shared, self.tier, self.generation, params, cx)
+                    .serve_broker(&shared, &self.cohort, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::CoreCall(params) => {
                 let Some(shared) = self.shared.upgrade() else {
                     return Err(refuse("extension host manager is gone"));
                 };
-                if shared
-                    .tier_runtime(self.tier)
-                    .host_generation
-                    .load(Ordering::SeqCst)
-                    != self.generation
-                {
+                let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+                    return Err(refuse("unknown host cohort"));
+                };
+                if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
                     return Err(refuse("stale host generation"));
                 }
                 shared
                     .core_calls
-                    .serve(&shared, self.tier, self.generation, params, cx)
+                    .serve(&shared, &self.cohort, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::Register(params) if params.kind == RegisterKind::McpServer => {
@@ -1064,14 +1164,15 @@ impl HostEvents for Events {
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
                 let result =
-                    native_mcp::admit(&shared, self.tier, self.generation, params, &cx).await;
+                    native_mcp::admit(&shared, &self.cohort, self.generation, params, &cx).await;
                 Ok(serde_json::to_value(result).expect("registration result is JSON"))
             }
             protocol::HostRequest::Register(params) if params.kind == RegisterKind::AvatarPack => {
                 let Some(shared) = self.shared.upgrade() else {
                     return Err(refuse("extension host manager is gone"));
                 };
-                let result = avatars::admit(&shared, self.tier, self.generation, params, &cx).await;
+                let result =
+                    avatars::admit(&shared, &self.cohort, self.generation, params, &cx).await;
                 Ok(serde_json::to_value(result).expect("registration result is JSON"))
             }
             protocol::HostRequest::Register(params) if params.kind == RegisterKind::SkillRoot => {
@@ -1079,7 +1180,7 @@ impl HostEvents for Events {
                     return Err(refuse("extension host manager is gone"));
                 };
                 let result =
-                    skills::admit_root(&shared, self.tier, self.generation, params, &cx).await;
+                    skills::admit_root(&shared, &self.cohort, self.generation, params, &cx).await;
                 Ok(serde_json::to_value(result).expect("registration result is JSON"))
             }
             request @ (protocol::HostRequest::ProcLaunch(_)
@@ -1095,7 +1196,7 @@ impl HostEvents for Events {
                     .shared
                     .upgrade()
                     .ok_or_else(|| refuse("extension host manager is gone"))?;
-                if self.tier != HostTier::Builtin {
+                if self.cohort != HostCohort::Builtin {
                     return Err(refuse("MCP broker is builtin-only"));
                 }
                 shared
@@ -1113,7 +1214,11 @@ impl HostEvents for Events {
                 refused: "extension host manager is gone".to_string(),
             };
         };
-        let runtime = shared.tier_runtime(self.tier);
+        let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+            return RegisterResult::Refused {
+                refused: "unknown host cohort".to_string(),
+            };
+        };
         let slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
             return RegisterResult::Refused {
@@ -1121,21 +1226,32 @@ impl HostEvents for Events {
             };
         }
         let mut foreign_owner = false;
+        let unlisted_creator = self.cohort == HostCohort::Builtin
+            && params.owner.plugin_id == "host:creator"
+            && (params.kind != RegisterKind::Tool
+                || !shared.builtin_modules.iter().any(|module| {
+                    module.id == "creator"
+                        && module
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == params.spec.name)
+                }));
         let result = {
             let mut registry = shared.registry.lock().expect("registry lock");
-            // A host registers only for owners it was asked to activate: one
-            // of its own tier. The owner token already makes another tier's
-            // owner unreachable; this says so out loud.
             match registry.owner(&params.owner.plugin_id) {
-                Some(entry) if entry.tier != self.tier => {
+                Some(entry) if entry.cohort != self.cohort => {
                     foreign_owner = true;
                     Err(format!(
-                        "owner `{}` belongs to the {} tier, not this host's {} tier",
+                        "owner `{}` belongs to the {} cohort, not this host's {} cohort",
                         params.owner.plugin_id,
-                        entry.tier.name(),
-                        self.tier.name()
+                        entry.cohort.host_label(),
+                        self.cohort.host_label()
                     ))
                 }
+                _ if unlisted_creator => Err(format!(
+                    "built-in module `creator` may not register unlisted tool `{}`",
+                    params.spec.name
+                )),
                 _ => registry.register(params),
             }
         };
@@ -1184,7 +1300,9 @@ impl HostEvents for Events {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let runtime = shared.tier_runtime(self.tier);
+        let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+            return;
+        };
         let slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != self.generation {
             return;
@@ -1201,14 +1319,8 @@ impl HostEvents for Events {
             host.revoke_calls_of(&params.owner.plugin_id);
         }
         drop(slot);
-        shared.core_calls.revoke_owner(&params.owner.plugin_id);
-        shared
-            .execution_broker
-            .revoke_owner(&params.owner.plugin_id);
-        shared.mcp_users.fetch_sub(
-            shared.mcp_broker.revoke_owner(&params.owner.plugin_id),
-            Ordering::SeqCst,
-        );
+        shared.revoke_owner_state(&params.owner.plugin_id);
+        dsh_remote::withdraw_owner(&params.owner);
         shared.plugin_diagnostic(
             &params.owner.plugin_id,
             format!(
@@ -1223,51 +1335,84 @@ impl HostEvents for Events {
             return;
         };
         // Whatever this process was asked for, nothing it held is good again.
-        shared.core_calls.revoke_host(self.tier, host_generation);
+        shared.core_calls.revoke_host(&self.cohort, host_generation);
         shared
             .execution_broker
-            .revoke_host(self.tier, host_generation);
+            .revoke_host(&self.cohort, host_generation);
         shared.mcp_users.fetch_sub(
-            shared.mcp_broker.revoke_host(self.tier, host_generation),
+            shared.mcp_broker.revoke_host(&self.cohort, host_generation),
             Ordering::SeqCst,
         );
-        let runtime = shared.tier_runtime(self.tier);
+        let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+            return;
+        };
         let retry = {
+            let mut agent_cohorts_guard = if self.cohort.agent_project_path().is_some() {
+                Some(shared.agent_cohorts.lock().expect("agent cohorts lock"))
+            } else {
+                None
+            };
             let mut slot = runtime.host.lock().expect("host lock");
             if runtime.host_generation.load(Ordering::SeqCst) != host_generation
                 || !matches!(&*slot, HostSlot::Ready(_) | HostSlot::Unresponsive(_))
             {
                 return;
             }
-            let mut supervision = runtime.supervision.lock().expect("supervision lock");
-            let planned = supervision.planned_restart.take() == Some(host_generation)
-                && reason == DIRTY_RESTART_REASON;
-            let restart = if planned {
-                supervision.retry_ticket += 1;
-                true
-            } else {
-                supervision.record_crash(Instant::now(), &shared.options.supervision)
-            };
-            shared
+            let had_active_owners = shared
                 .registry
                 .lock()
                 .expect("registry lock")
-                .host_exited(self.tier, &reason);
-            *slot = if restart {
-                HostSlot::Restarting {
-                    reason: reason.clone(),
+                .host_exited(&self.cohort, &reason);
+
+            if !had_active_owners && reason == NO_DESIRED_OWNERS_REASON {
+                *slot = HostSlot::Idle;
+                if let Some(path) = self.cohort.agent_project_path()
+                    && let Some(ref mut cohorts) = agent_cohorts_guard
+                {
+                    cohorts.remove(&path);
                 }
+                None
             } else {
-                HostSlot::Failed {
-                    reason: format!("crash budget exhausted: {reason}"),
-                    stderr_tail,
-                }
-            };
-            restart.then_some((supervision.retry_ticket, supervision.policy))
+                let mut supervision = runtime.supervision.lock().expect("supervision lock");
+                let planned = supervision.planned_restart.take() == Some(host_generation)
+                    && reason == DIRTY_RESTART_REASON;
+                let restart = if planned {
+                    supervision.retry_ticket += 1;
+                    true
+                } else {
+                    supervision.record_crash(Instant::now(), &shared.options.supervision)
+                };
+                *slot = if restart {
+                    HostSlot::Restarting {
+                        reason: reason.clone(),
+                    }
+                } else {
+                    HostSlot::Failed {
+                        reason: format!("crash budget exhausted: {reason}"),
+                        stderr_tail,
+                    }
+                };
+                restart.then_some((supervision.retry_ticket, supervision.policy))
+            }
         };
-        shared.diagnostic(format!("{} {reason}", self.tier.host_label()));
+        shared.diagnostic(format!("{} {reason}", self.cohort.host_label()));
         if let Some((ticket, policy)) = retry {
-            schedule_restart(&shared, self.tier, host_generation, ticket, policy);
+            schedule_restart(
+                &shared,
+                self.cohort.clone(),
+                host_generation,
+                ticket,
+                policy,
+            );
+        }
+        shared.reconcile_settled.notify_waiters();
+        let has_pending = !shared
+            .pending_migrations
+            .lock()
+            .expect("pending migrations lock")
+            .is_empty();
+        if has_pending && self.cohort.agent_project_path().is_some() {
+            ExtensionHostManager::reconcile_shared_in_background(&shared);
         }
     }
 
@@ -1281,7 +1426,9 @@ impl HostEvents for Events {
         let Some(shared) = self.shared.upgrade() else {
             return;
         };
-        let runtime = shared.tier_runtime(self.tier);
+        let Some(runtime) = shared.cohort_runtime(&self.cohort) else {
+            return;
+        };
         let _slot = runtime.host.lock().expect("host lock");
         // Only for an owner of this host's own tier: a host cannot put
         // diagnostics under the other tier's owner ids.
@@ -1291,7 +1438,7 @@ impl HostEvents for Events {
                 .lock()
                 .expect("registry lock")
                 .owner(plugin_id)
-                .is_some_and(|entry| entry.tier == self.tier)
+                .is_some_and(|entry| entry.cohort == self.cohort)
         {
             return;
         }
@@ -1303,7 +1450,7 @@ impl HostEvents for Events {
 /// host generation invalidate it. The existing reconcile lock owns replay.
 fn schedule_restart(
     shared: &Arc<ManagerShared>,
-    tier: HostTier,
+    cohort: HostCohort,
     generation: u64,
     ticket: u64,
     policy: bool,
@@ -1317,7 +1464,9 @@ fn schedule_restart(
         };
         {
             let _serial = shared.sync_lock.lock().await;
-            let runtime = shared.tier_runtime(tier);
+            let Some(runtime) = shared.cohort_runtime(&cohort) else {
+                return;
+            };
             let mut slot = runtime.host.lock().expect("host lock");
             if runtime.host_generation.load(Ordering::SeqCst) != generation
                 || runtime
@@ -1341,11 +1490,13 @@ fn schedule_restart(
 
 fn set_host_health(
     shared: &ManagerShared,
-    tier: HostTier,
+    cohort: &HostCohort,
     generation: u64,
     unresponsive: bool,
 ) -> bool {
-    let runtime = shared.tier_runtime(tier);
+    let Some(runtime) = shared.cohort_runtime(cohort) else {
+        return false;
+    };
     let mut slot = runtime.host.lock().expect("host lock");
     if runtime.host_generation.load(Ordering::SeqCst) != generation {
         return false;
@@ -1371,7 +1522,9 @@ fn restart_dirty_host_when_idle(
     let Ok(_serial) = shared.sync_lock.try_lock() else {
         return false;
     };
-    let runtime = shared.tier_runtime(host.tier);
+    let Some(runtime) = shared.cohort_runtime(&host.cohort) else {
+        return false;
+    };
     let slot = runtime.host.lock().expect("host lock");
     if runtime.host_generation.load(Ordering::SeqCst) != generation
         || !matches!(&*slot, HostSlot::Ready(current) if Arc::ptr_eq(current, host))
@@ -1379,12 +1532,21 @@ fn restart_dirty_host_when_idle(
         return false;
     }
     let mut supervision = runtime.supervision.lock().expect("supervision lock");
-    let unload = host.tier == HostTier::Plugin
-        && shared
+    let unload = match &host.cohort {
+        HostCohort::Plugin(PluginCohort::Reviewed) => shared
             .registry
             .lock()
             .expect("registry lock")
-            .host_services_await_restart();
+            .host_services_await_restart(&host.cohort),
+        HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+            let registry = shared.registry.lock().expect("registry lock");
+            registry.cohort_departed(&host.cohort)
+                && registry
+                    .owners()
+                    .any(|entry| entry.loaded_in_cohort(&host.cohort))
+        }
+        HostCohort::Builtin => false,
+    };
     if !(supervision.dirty_restart_pending || unload)
         || !host.terminate_if_idle(DIRTY_RESTART_REASON)
     {
@@ -1397,7 +1559,7 @@ fn restart_dirty_host_when_idle(
 /// A monitor never owns the manager. Dropping the manager or changing host
 /// generation stops its monitor; pending calls are never retried here.
 fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation: u64) {
-    let tier = host.tier;
+    let cohort = host.cohort.clone();
     let weak = Arc::downgrade(shared);
     let host = Arc::clone(host);
     let options = shared.options.supervision.clone();
@@ -1408,13 +1570,10 @@ fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation
             let Some(shared) = weak.upgrade() else {
                 return;
             };
-            if shared
-                .tier_runtime(tier)
-                .host_generation
-                .load(Ordering::SeqCst)
-                != generation
-                || host.has_exited()
-            {
+            let Some(runtime) = shared.cohort_runtime(&cohort) else {
+                return;
+            };
+            if runtime.host_generation.load(Ordering::SeqCst) != generation || host.has_exited() {
                 return;
             }
             if restart_dirty_host_when_idle(&shared, &host, generation) {
@@ -1427,7 +1586,7 @@ fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation
             {
                 shared.diagnostic(format!(
                     "{} exceeded its memory cap ({} MiB resident, cap {} MiB); killed",
-                    tier.host_label(),
+                    cohort.host_label(),
                     resident / (1024 * 1024),
                     host.memory_cap / (1024 * 1024)
                 ));
@@ -1453,7 +1612,7 @@ fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation
                         let Some(shared) = weak.upgrade() else {
                             return;
                         };
-                        if !set_host_health(&shared, tier, generation, true) {
+                        if !set_host_health(&shared, &cohort, generation, true) {
                             return;
                         }
                     }
@@ -1468,7 +1627,7 @@ fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation
                         host.forget(id);
                         return;
                     };
-                    if !set_host_health(&shared, tier, generation, true) {
+                    if !set_host_health(&shared, &cohort, generation, true) {
                         host.forget(id);
                         return;
                     }
@@ -1495,7 +1654,7 @@ fn monitor_host(shared: &Arc<ManagerShared>, host: &Arc<HostProcess>, generation
             let Some(shared) = weak.upgrade() else {
                 return;
             };
-            if !set_host_health(&shared, tier, generation, false) {
+            if !set_host_health(&shared, &cohort, generation, false) {
                 return;
             }
         }
@@ -1512,20 +1671,30 @@ pub struct ExtensionHostManager {
 impl ExtensionHostManager {
     #[must_use]
     pub fn new(options: ExtensionHostOptions) -> Self {
-        Self::with_builtin_modules(options, tier::BUILTIN_MODULES)
+        Self::build(options, tier::BUILTIN_MODULES, true)
     }
 
     /// A manager with its own built-in module table. Production passes the
-    /// const table through [`Self::new`]; a test passes one of its own to
+    /// static table through [`Self::new`]; a test passes one of its own to
     /// exercise tier 0 without a production row.
+    #[cfg(test)]
     fn with_builtin_modules(
         options: ExtensionHostOptions,
         builtin_modules: &'static [BuiltinModule],
+    ) -> Self {
+        Self::build(options, builtin_modules, false)
+    }
+
+    fn build(
+        options: ExtensionHostOptions,
+        builtin_modules: &'static [BuiltinModule],
+        materialize_default_builtins: bool,
     ) -> Self {
         Self {
             shared: Arc::new(ManagerShared {
                 options,
                 builtin_modules,
+                materialize_default_builtins,
                 attachments: Mutex::new(BTreeMap::new()),
                 next_attachment: AtomicU64::new(0),
                 registry: Mutex::new(OwnerRegistry::new()),
@@ -1534,15 +1703,20 @@ impl ExtensionHostManager {
                 execution_broker: execution::Broker::default(),
                 harness_users: AtomicU64::new(0),
                 stock_users: AtomicU64::new(0),
+                creator_users: AtomicU64::new(0),
                 mcp_broker: mcp::Broker::default(),
                 mcp_users: AtomicU64::new(0),
-                plugin: TierRuntime::new(),
-                builtin: TierRuntime::new(),
+                plugin: Arc::new(TierRuntime::new()),
+                builtin: Arc::new(TierRuntime::new()),
+                agent_cohorts: Mutex::new(BTreeMap::new()),
+                agent_host_generation: AtomicU64::new(0),
+                pending_migrations: Mutex::new(BTreeMap::new()),
                 sync_lock: tokio::sync::Mutex::new(()),
                 skill_admission: Arc::new(tokio::sync::Semaphore::new(1)),
                 diagnostics: Mutex::new(VecDeque::new()),
                 runtime: Mutex::new(RuntimePin::default()),
                 plugin_configs: Mutex::new(plugin_config::PluginConfigs::default()),
+                reconcile_settled: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -1587,15 +1761,17 @@ impl ExtensionHostManager {
     /// tiers together.
     #[must_use]
     pub fn spawn_attempts(&self) -> u64 {
-        HostTier::ALL
-            .into_iter()
-            .map(|tier| self.tier_spawn_attempts(tier))
+        self.shared
+            .all_runtimes()
+            .iter()
+            .map(|r| r.spawn_attempts.load(Ordering::SeqCst))
             .sum()
     }
 
     /// How many times this manager has tried to start `tier`'s host.
+    #[cfg(test)]
     #[must_use]
-    fn tier_spawn_attempts(&self, tier: HostTier) -> u64 {
+    pub(crate) fn tier_spawn_attempts(&self, tier: HostTier) -> u64 {
         self.shared
             .tier_runtime(tier)
             .spawn_attempts
@@ -1617,18 +1793,43 @@ impl ExtensionHostManager {
     /// log. The command renderer escapes each field before displaying it.
     #[must_use]
     pub fn owner_report(&self, plugin_id: &str) -> Option<OwnerReport> {
+        self.owner_report_for(plugin_id, None)
+    }
+
+    #[must_use]
+    pub(super) fn owner_report_for(
+        &self,
+        plugin_id: &str,
+        expected_authority: Option<&PluginAuthority>,
+    ) -> Option<OwnerReport> {
         let registry = self.shared.registry.lock().expect("registry lock");
-        let state = registry.owner(plugin_id).map(|entry| match &entry.state {
+        let matching_entry = registry.owner(plugin_id).filter(|entry| {
+            expected_authority.is_none_or(|expected| {
+                entry.authority.as_ref().is_some_and(|auth| {
+                    auth.plugin_id == expected.plugin_id
+                        && auth.content_hash == expected.content_hash
+                        && auth.capability_hash == expected.capability_hash
+                        && auth.state_generation == expected.state_generation
+                        && auth.state_path == expected.state_path
+                })
+            })
+        });
+        let cohort = matching_entry.map(|entry| entry.cohort.clone());
+        let state = matching_entry.map(|entry| match &entry.state {
             OwnerState::Failed(reason) => OwnerState::Failed(bounded_diagnostic(reason.clone())),
             OwnerState::Faulted(reason) => OwnerState::Faulted(bounded_diagnostic(reason.clone())),
             state => state.clone(),
         });
-        let tools = registry
-            .live_tools()
-            .into_iter()
-            .filter(|tool| tool.owner.plugin_id == plugin_id)
-            .map(|tool| tool.name)
-            .collect();
+        let tools = if state.is_some() {
+            registry
+                .live_tools()
+                .into_iter()
+                .filter(|tool| tool.owner.plugin_id == plugin_id)
+                .map(|tool| tool.name)
+                .collect()
+        } else {
+            Vec::new()
+        };
         drop(registry);
         let mut diagnostics: Vec<_> = self
             .shared
@@ -1646,6 +1847,7 @@ impl ExtensionHostManager {
             return None;
         }
         Some(OwnerReport {
+            cohort,
             state,
             tools,
             diagnostics,
@@ -1687,6 +1889,35 @@ impl ExtensionHostManager {
             .expect("registry lock")
             .owner(plugin_id)
             .map(|entry| entry.state.clone())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn register_test_creator_tool(&self, name: &str) {
+        let mut reg = self.shared.registry.lock().expect("registry lock");
+        let owner = reg
+            .begin_owner(
+                HostCohort::Builtin,
+                "host:creator",
+                "creator",
+                None,
+                "test-creator-hash",
+            )
+            .expect("creator owner");
+        reg.register(&protocol::RegisterParams {
+            scope: None,
+            owner: owner.clone(),
+            kind: protocol::RegisterKind::Tool,
+            spec: protocol::RegisterSpecWire {
+                name: name.to_string(),
+                description: "creator tool".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}})
+                    .as_object()
+                    .cloned(),
+                argument_hint: None,
+            },
+        })
+        .expect("register creator tool");
+        reg.mark_active(&owner);
     }
 
     /// Install the user's `[plugins]` settings (boot), and the config file a
@@ -1752,9 +1983,12 @@ impl ExtensionHostManager {
     /// An explicit plugin mutation retries failed receipts and clears the
     /// shared crash budget. Merely opening another engine never does this.
     pub fn retry(&self) {
-        // One tier at a time, so no two tiers' locks are ever held together.
-        for tier in HostTier::ALL {
-            let runtime = self.shared.tier_runtime(tier);
+        self.retry_cohort(&HostCohort::reviewed());
+        self.retry_cohort(&HostCohort::Builtin);
+    }
+
+    pub fn retry_cohort(&self, cohort: &HostCohort) {
+        if let Some(runtime) = self.shared.cohort_runtime(cohort) {
             let mut slot = runtime.host.lock().expect("host lock");
             let mut supervision = runtime.supervision.lock().expect("supervision lock");
             supervision.crashes.clear();
@@ -1771,12 +2005,11 @@ impl ExtensionHostManager {
             .registry
             .lock()
             .expect("registry lock")
-            .forget_inactive();
+            .forget_inactive_for_cohort(cohort);
     }
 
     fn retry_launch_on_attach(&self) {
-        for tier in HostTier::ALL {
-            let runtime = self.shared.tier_runtime(tier);
+        for runtime in self.shared.all_runtimes() {
             let mut slot = runtime.host.lock().expect("host lock");
             let mut supervision = runtime.supervision.lock().expect("supervision lock");
             if matches!(&*slot, HostSlot::Failed { .. })
@@ -1830,6 +2063,7 @@ impl ExtensionHostManager {
                     settled: None,
                     session_id: None,
                     agent_id: None,
+                    creator_demanded: false,
                 },
             );
         command::bump_epoch();
@@ -1839,8 +2073,183 @@ impl ExtensionHostManager {
         }
     }
 
-    /// How many engines are attached.
-    #[must_use]
+    /// Re-scan plugins and optionally wait for one plugin's native owner to settle.
+    pub async fn plugins_changed_and_wait(
+        self: &Arc<Self>,
+        plugins: &Arc<PluginRegistry>,
+        plugin_id: Option<&str>,
+        expected_authority: Option<&PluginAuthority>,
+        exempt_invocation_id: Option<u64>,
+        wait_for_owner: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<OwnerReport>, String> {
+        self.refresh_workspace_except(plugins, exempt_invocation_id);
+        if !activation::extension_host_policy_enabled() {
+            return if wait_for_owner {
+                Err(
+                    "the extension host is switched off in this process, so native plugin code did not start"
+                        .to_string(),
+                )
+            } else {
+                Ok(None)
+            };
+        }
+        if wait_for_owner && self.attached_engines() == 0 {
+            if let Some(pid) = plugin_id
+                && let Some(report) = self.owner_report_for(pid, expected_authority)
+                && !matches!(report.state, Some(OwnerState::Activating) | None)
+            {
+                return Ok(Some(report));
+            }
+            return Err("the extension host is not running for this session".to_string());
+        }
+        self.revoke_stale_or_removed_owners(plugins);
+        self.retry_cohort(&HostCohort::reviewed());
+        self.retry_cohort(&HostCohort::agent(plugins.workspace()));
+        if self.attached_engines() == 0 {
+            return Ok(None);
+        }
+        let policy = activation::extension_host_policy_enabled();
+        let reconcile_manager = ExtensionHostManager {
+            shared: Arc::clone(&self.shared),
+        };
+        let mut reconcile_task =
+            tokio::spawn(async move { reconcile_manager.reconcile_with_policy(policy).await });
+        let reconcile_res = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                self.reload_and_reconcile_in_background();
+                return Err(
+                    "cancelled while waiting for the extension host to start plugin code"
+                        .to_string(),
+                );
+            }
+            res = &mut reconcile_task => match res {
+                Ok(res) => res,
+                Err(error) => Err(format!("extension host reconcile task failed: {error}")),
+            },
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+        if !wait_for_owner {
+            return Ok(None);
+        }
+        let Some(pid) = plugin_id else {
+            reconcile_res?;
+            return Ok(None);
+        };
+        let target_cohort = plugins
+            .get(pid)
+            .map(|plugin| {
+                if matches!(
+                    plugin.approved_by,
+                    Some(codewhale_plugins::host_services::PluginApprover::Agent(_))
+                ) {
+                    HostCohort::agent(plugins.workspace())
+                } else {
+                    HostCohort::reviewed()
+                }
+            })
+            .unwrap_or_else(HostCohort::reviewed);
+        loop {
+            let settled = self.shared.reconcile_settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            let report = self.owner_report_for(pid, expected_authority);
+            let migration_pending = self
+                .shared
+                .pending_migrations
+                .lock()
+                .expect("pending migrations lock")
+                .contains_key(pid);
+            if !migration_pending {
+                if let Some(report) = report {
+                    if !matches!(report.state, Some(OwnerState::Activating) | None) {
+                        return Ok(Some(report));
+                    }
+                } else {
+                    let (slot_status, restarting_in_flight) = self
+                        .shared
+                        .cohort_runtime(&target_cohort)
+                        .map(|rt| {
+                            let slot = rt.host.lock().expect("host lock");
+                            let status = slot.status();
+                            let retiring = matches!(
+                                &*slot,
+                                HostSlot::Ready(h) | HostSlot::Unresponsive(h) if h.is_retiring()
+                            );
+                            let (planned, dirty_pending) = {
+                                let sup = rt.supervision.lock().expect("supervision lock");
+                                (sup.planned_restart.is_some(), sup.dirty_restart_pending)
+                            };
+                            (Some(status), retiring || planned || dirty_pending)
+                        })
+                        .unwrap_or((None, false));
+                    if let Some(HostStatus::Failed { reason, .. }) = slot_status {
+                        return Err(reason);
+                    }
+                    if let Err(err) = &reconcile_res
+                        && !restarting_in_flight
+                        && !matches!(
+                            slot_status,
+                            Some(HostStatus::Starting | HostStatus::Restarting { .. })
+                        )
+                    {
+                        return Err(err.clone());
+                    }
+                    let is_desired = self
+                        .shared
+                        .attachments
+                        .lock()
+                        .expect("attachments lock")
+                        .values()
+                        .any(|state| state.desired.contains_key(pid));
+                    if !is_desired
+                        && !restarting_in_flight
+                        && !matches!(
+                            slot_status,
+                            Some(HostStatus::Starting | HostStatus::Restarting { .. })
+                        )
+                    {
+                        return Err(
+                            "the extension host did not select this plugin for activation"
+                                .to_string(),
+                        );
+                    }
+                    if !restarting_in_flight
+                        && matches!(
+                            slot_status,
+                            Some(
+                                HostStatus::Idle | HostStatus::Ready { .. } | HostStatus::Disabled
+                            ) | None
+                        )
+                    {
+                        return Err(
+                            "plugin activation did not register an owner in the extension host"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Err(
+                        "cancelled while waiting for the extension host to start plugin code"
+                            .to_string(),
+                    );
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(
+                        "the extension host did not finish starting native plugin code in time"
+                            .to_string(),
+                    );
+                }
+                () = settled => {}
+            }
+        }
+    }
+
     pub fn attached_engines(&self) -> usize {
         self.shared
             .attachments
@@ -1852,38 +2261,38 @@ impl ExtensionHostManager {
     /// Replace the snapshot of every engine attached to `plugins`'s
     /// workspace: a plugin was enabled, disabled, trusted or revoked there.
     fn refresh_workspace(&self, plugins: &Arc<PluginRegistry>) {
-        let ids: Vec<_> = self
-            .shared
-            .attachments
-            .lock()
-            .expect("attachments lock")
-            .iter()
-            .filter(|(_, state)| state.plugins.workspace() == plugins.workspace())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            self.shared.core_calls.revoke_attachment(id);
-        }
-        for state in self
-            .shared
-            .attachments
-            .lock()
-            .expect("attachments lock")
-            .values_mut()
+        self.refresh_workspace_except(plugins, None);
+    }
+
+    fn refresh_workspace_except(
+        &self,
+        plugins: &Arc<PluginRegistry>,
+        exempt_invocation_id: Option<u64>,
+    ) {
+        let mut ids_to_revoke = Vec::new();
         {
-            if state.plugins.workspace() == plugins.workspace() {
+            let mut attachments = self.shared.attachments.lock().expect("attachments lock");
+            for (&id, state) in attachments.iter_mut() {
+                let next = if state.plugins.workspace() == plugins.workspace() {
+                    Some(plugins.retain_native_selection_from(state.plugins.as_ref()))
+                } else {
+                    state.plugins.sync_user_plugins_from(plugins.as_ref())
+                };
+                let Some(next) = next else {
+                    continue;
+                };
+                ids_to_revoke.push(id);
                 state.selection_cancel.cancel();
                 state.selection_cancel = CancellationToken::new();
                 state.revision += 1;
-                let view = plugins.retain_native_selection_from(state.plugins.as_ref());
-                let id = state
+                let attachment_id = state
                     .plugins
                     .caller_selection()
                     .expect("attached caller")
                     .attachment_id;
-                state.plugins = Arc::new(view.bind_caller(
+                state.plugins = Arc::new(next.bind_caller(
                     codewhale_plugins::composition_scope::SelectionRevision {
-                        attachment_id: id,
+                        attachment_id,
                         revision: state.revision,
                     },
                 ));
@@ -1891,7 +2300,118 @@ impl ExtensionHostManager {
                 state.selection = Default::default();
             }
         }
+        for id in ids_to_revoke {
+            self.shared
+                .core_calls
+                .revoke_attachment_except(id, exempt_invocation_id);
+        }
         command::bump_epoch();
+    }
+
+    fn revoke_stale_or_removed_owners(self: &Arc<Self>, plugins: &PluginRegistry) {
+        let mut plugin_lookup: HashMap<&str, &LoadedPlugin> = HashMap::new();
+        for plugin in plugins.list() {
+            plugin_lookup.insert(plugin.id.as_str(), plugin);
+        }
+        let plugins_state_path = plugins.state_path();
+        let to_revoke: Vec<(String, OwnerRef, HostCohort, bool)> = {
+            let registry = self.shared.registry.lock().expect("registry lock");
+            registry
+                .owners()
+                .filter(|entry| entry.tier() == HostTier::Plugin)
+                .filter_map(|entry| {
+                    let auth = entry.authority.as_ref()?;
+                    let same_workspace = auth.workspace == plugins.workspace();
+                    let shared_user_scope = (entry.owner.plugin_id.starts_with("user/")
+                        || entry.owner.plugin_id.starts_with("builtin/"))
+                        && plugins_state_path.is_some_and(|sp| auth.state_path == sp);
+                    if !same_workspace && !shared_user_scope {
+                        return None;
+                    }
+                    let current = plugin_lookup.get(entry.owner.plugin_id.as_str()).copied();
+                    let matches_current = current.is_some_and(|plugin| {
+                        let expected_cohort = HostCohort::from_plugin_cohort(
+                            codewhale_plugins::host_services::cohort_of(
+                                plugin.approved_by.as_ref(),
+                            ),
+                        );
+                        plugin.active()
+                            && plugin.inventory.native > 0
+                            && !plugin.outside_reach
+                            && entry.cohort == expected_cohort
+                            && plugin.content_hash == auth.content_hash
+                            && plugin.capability_hash == auth.capability_hash
+                            && plugin.state_generation == auth.state_generation
+                            && plugins_state_path.is_some_and(|sp| sp == auth.state_path)
+                    });
+                    let promote_to_reviewed =
+                        matches!(entry.cohort, HostCohort::Plugin(PluginCohort::Agent { .. }))
+                            && current.is_some_and(|plugin| {
+                                let expected_cohort = HostCohort::from_plugin_cohort(
+                                    codewhale_plugins::host_services::cohort_of(
+                                        plugin.approved_by.as_ref(),
+                                    ),
+                                );
+                                plugin.active()
+                                    && plugin.inventory.native > 0
+                                    && !plugin.outside_reach
+                                    && expected_cohort == HostCohort::reviewed()
+                            });
+                    (!matches_current).then(|| {
+                        (
+                            entry.owner.plugin_id.clone(),
+                            entry.owner.clone(),
+                            entry.cohort.clone(),
+                            promote_to_reviewed,
+                        )
+                    })
+                })
+                .collect()
+        };
+        if to_revoke.is_empty() {
+            return;
+        }
+        if to_revoke.iter().any(|(_, _, _, promote)| *promote) {
+            let mut migrations = self
+                .shared
+                .pending_migrations
+                .lock()
+                .expect("pending migrations lock");
+            for (plugin_id, _, cohort, promote) in &to_revoke {
+                if *promote {
+                    migrations.insert(plugin_id.clone(), cohort.clone());
+                }
+            }
+        }
+        let mut live_owners = Vec::new();
+        {
+            let mut registry = self.shared.registry.lock().expect("registry lock");
+            for (plugin_id, owner, cohort, _) in &to_revoke {
+                if registry.revoke_owner(plugin_id).is_some() {
+                    live_owners.push((owner.clone(), cohort.clone()));
+                }
+                registry.forget_owner(plugin_id);
+            }
+        }
+        for (plugin_id, owner, cohort, _) in &to_revoke {
+            self.shared.revoke_owner_state(plugin_id);
+            self.shared.clear_plugin_diagnostics(plugin_id);
+            dsh_remote::withdraw_owner(owner);
+            if let Ok(host) = self.shared.ready_host(cohort) {
+                host.revoke_calls_of(plugin_id);
+            }
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            for (owner, cohort) in live_owners {
+                let Ok(host) = self.shared.ready_host(&cohort) else {
+                    continue;
+                };
+                let shared = Arc::clone(&self.shared);
+                handle.spawn(async move {
+                    shared.deactivate_owner(&host, &owner).await;
+                });
+            }
+        }
     }
 
     /// Add the live tools of the owners attachment `id` desires to
@@ -1923,15 +2443,21 @@ impl ExtensionHostManager {
             .live_tools()
             .into_iter()
             .filter(|tool| {
-                desired.includes(
-                    &tool.owner.plugin_id,
-                    &tool.content_hash,
-                    tool.scope.as_ref(),
-                )
+                tool.tier() != HostTier::Builtin
+                    && desired.includes(
+                        &tool.owner.plugin_id,
+                        &tool.content_hash,
+                        tool.scope.as_ref(),
+                    )
             })
             .collect();
         if tools.is_empty() {
             return Vec::new();
+        }
+        for gate in dsh_broker::BrokerActTool::all() {
+            if tool_registry.get(gate.name()).is_none() {
+                tool_registry.register(gate);
+            }
         }
         let taken: HashSet<String> = tool_registry
             .names()
@@ -1967,6 +2493,9 @@ impl ExtensionHostManager {
                 Arc::clone(&self.shared),
                 desired.revision,
             )));
+        }
+        if !installed.is_empty() && tool_registry.get(dsh_network::SEND_TOOL).is_none() {
+            tool_registry.register(Arc::new(dsh_network::SendConsent));
         }
         installed
     }
@@ -2062,14 +2591,21 @@ impl ExtensionHostManager {
     /// Reconcile without waiting (turn builds, session start,
     /// plugin changes).
     pub fn reconcile_in_background(self: &Arc<Self>) {
+        Self::reconcile_shared_in_background(&self.shared);
+    }
+
+    pub fn reconcile_shared_in_background(shared: &Arc<ManagerShared>) {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        let manager = Arc::clone(self);
+        let shared = Arc::clone(shared);
         let policy = activation::extension_host_policy_enabled();
         tokio::spawn(async move {
+            let manager = ExtensionHostManager {
+                shared: Arc::clone(&shared),
+            };
             if let Err(error) = manager.reconcile_with_policy(policy).await {
-                manager.shared.diagnostic(error);
+                shared.diagnostic(error);
             }
         });
     }
@@ -2100,8 +2636,33 @@ impl ExtensionHostManager {
     }
 
     async fn reconcile_with_policy(&self, policy: bool) -> Result<(), String> {
+        self.reconcile_with_policy_cancel(policy, None).await
+    }
+
+    async fn reconcile_with_policy_cancel(
+        &self,
+        policy: bool,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), String> {
         let shared = &self.shared;
-        let _serial = shared.sync_lock.lock().await;
+        struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);
+        impl Drop for NotifyOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.notify_waiters();
+            }
+        }
+        let _settled_notify = NotifyOnDrop(&shared.reconcile_settled);
+        let _serial = match cancel {
+            Some(token) => tokio::select! {
+                biased;
+                () = token.cancelled() => return Ok(()),
+                guard = shared.sync_lock.lock() => guard,
+            },
+            None => shared.sync_lock.lock().await,
+        };
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(());
+        }
         let (desired, errors) = loop {
             let snapshots: Vec<(u64, Arc<PluginRegistry>)> = shared
                 .attachments
@@ -2120,6 +2681,9 @@ impl ExtensionHostManager {
             })
             .await
             .map_err(|error| format!("plugin scan failed: {error}"))?;
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Ok(());
+            }
             let published = scan.publish(&mut shared.attachments.lock().expect("attachments lock"));
             if let Some(published) = published {
                 break published;
@@ -2150,107 +2714,500 @@ impl ExtensionHostManager {
         // the builtin tier's modules are not plugins, are never desired by an
         // attachment, and the table that wants them is fixed for the
         // manager's life, so no plugin change revokes one.
-        let mut revoked: Vec<OwnerRef> = Vec::new();
-        let mut to_activate: Vec<(String, DesiredOwner)> = Vec::new();
+        let mut revoked: Vec<(OwnerRef, HostCohort)> = Vec::new();
+        let mut to_activate: BTreeMap<HostCohort, Vec<(String, DesiredOwner)>> = BTreeMap::new();
         {
             let mut registry = shared.registry.lock().expect("registry lock");
-            let existing: Vec<(String, PluginAuthority, String)> = registry
+            let existing: Vec<(String, PluginAuthority, String, HostCohort)> = registry
                 .owners()
-                .filter(|entry| entry.tier == HostTier::Plugin)
+                .filter(|entry| entry.tier() == HostTier::Plugin)
                 .filter_map(|entry| {
                     Some((
                         entry.owner.plugin_id.clone(),
                         entry.authority.clone()?,
                         entry.config_hash.clone(),
+                        entry.cohort.clone(),
                     ))
                 })
                 .collect();
-            for (plugin_id, authority, config_hash) in &existing {
-                // An explicit trust/enable transition revokes the persisted
-                // authority even when the bytes stay identical. Refresh that
-                // owner instead of retaining a tool that can only fail closed.
-                // A changed config is a changed activation: a new generation.
+            for (plugin_id, authority, config_hash, cohort) in &existing {
                 let keep = desired.get(plugin_id).is_some_and(|want| {
-                    want.authority.content_hash == authority.content_hash
+                    want.cohort == *cohort
+                        && want.authority.content_hash == authority.content_hash
                         && want.authority.capability_hash == authority.capability_hash
                         && want.authority.state_generation == authority.state_generation
                         && want.authority.state_path == authority.state_path
                         && wanted_config.get(plugin_id) == Some(config_hash)
                 });
                 if !keep {
+                    if let Some(want) = desired.get(plugin_id)
+                        && matches!(cohort, HostCohort::Plugin(PluginCohort::Agent { .. }))
+                        && want.cohort == HostCohort::reviewed()
+                    {
+                        shared
+                            .pending_migrations
+                            .lock()
+                            .expect("pending migrations lock")
+                            .insert(plugin_id.clone(), cohort.clone());
+                    }
                     if let Some(owner) = registry.revoke_owner(plugin_id) {
-                        revoked.push(owner);
+                        revoked.push((owner, cohort.clone()));
                     }
                     registry.forget_owner(plugin_id);
                 }
             }
-            for (plugin_id, want) in desired {
-                // A failed or faulted activation of these exact bytes is not
-                // retried every turn; changed authority or an explicit
-                // plugin mutation/reload permits another attempt.
+            for (plugin_id, want) in desired.clone() {
                 if registry
                     .owner(&plugin_id)
                     .is_none_or(|owner| owner.state == OwnerState::Active)
                 {
-                    to_activate.push((plugin_id, want));
+                    to_activate
+                        .entry(want.cohort.clone())
+                        .or_default()
+                        .push((plugin_id, want));
                 }
             }
         }
-        let host = shared.ready_host(HostTier::Plugin).ok();
-        for owner in revoked {
-            shared.core_calls.revoke_owner(&owner.plugin_id);
-            shared.execution_broker.revoke_owner(&owner.plugin_id);
-            shared.mcp_users.fetch_sub(
-                shared.mcp_broker.revoke_owner(&owner.plugin_id),
-                Ordering::SeqCst,
-            );
+        for (owner, cohort) in revoked {
+            shared.revoke_owner_state(&owner.plugin_id);
+            dsh_remote::withdraw_owner(&owner);
             shared.plugin_diagnostic(
                 &owner.plugin_id,
                 format!("extension `{}` revoked", owner.plugin_id),
             );
-            if let Some(host) = &host {
+            if let Ok(host) = shared.ready_host(&cohort) {
                 host.revoke_calls_of(&owner.plugin_id);
-                shared.deactivate_owner(host, &owner).await;
+                shared.deactivate_owner(&host, &owner).await;
             }
         }
 
-        // The plugin tier first, then the builtin tier; each only when it has
-        // something to activate, so with no plugin and no module no host
-        // starts. One tier's failure never stops the other's.
-        let plugins = async {
-            if to_activate.is_empty() {
-                return Ok::<(), String>(());
-            }
-            let host = self.ensure_host(HostTier::Plugin, policy).await?;
-            for (plugin_id, want) in to_activate {
-                if host.has_exited() {
-                    break;
+        if let Some(reviewed_owners) = to_activate.get_mut(&HostCohort::reviewed()) {
+            let mut remaining = Vec::new();
+            for (plugin_id, want) in std::mem::take(reviewed_owners) {
+                let from_cohort = {
+                    let from = shared
+                        .pending_migrations
+                        .lock()
+                        .expect("pending migrations lock")
+                        .get(&plugin_id)
+                        .cloned();
+                    if from.is_some() {
+                        from
+                    } else if let Ok(home) = host_root(&shared.options) {
+                        let candidate_cohort = HostCohort::agent(&want.authority.workspace);
+                        let candidate_dir = supervisor::owner_data_dir(
+                            &home,
+                            &candidate_cohort,
+                            &plugin_id,
+                            &want.plugin_name,
+                        );
+                        if tokio::fs::symlink_metadata(&candidate_dir).await.is_ok() {
+                            shared
+                                .pending_migrations
+                                .lock()
+                                .expect("pending migrations lock")
+                                .insert(plugin_id.clone(), candidate_cohort.clone());
+                            Some(candidate_cohort)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some(from_cohort) = from_cohort {
+                    let old_host_live = match shared.cohort_runtime(&from_cohort) {
+                        Some(rt) => {
+                            let slot = rt.host.lock().expect("host lock");
+                            matches!(
+                                &*slot,
+                                HostSlot::Ready(h) | HostSlot::Unresponsive(h) if !h.has_exited()
+                            )
+                        }
+                        None => false,
+                    };
+                    if old_host_live {
+                        shared.plugin_diagnostic(
+                            &plugin_id,
+                            format!(
+                                "extension `{}` is waiting for its agent host to exit before moving to the reviewed host",
+                                want.plugin_name
+                            ),
+                        );
+                        continue;
+                    }
+                    let home = match host_root(&shared.options) {
+                        Ok(home) => home,
+                        Err(err) => {
+                            shared.plugin_diagnostic(&plugin_id, err);
+                            continue;
+                        }
+                    };
+                    let source_dir = supervisor::owner_data_dir(
+                        &home,
+                        &from_cohort,
+                        &plugin_id,
+                        &want.plugin_name,
+                    );
+                    let dest_dir =
+                        supervisor::plugin_data_dir(&home, &plugin_id, &want.plugin_name);
+                    enum MigrationStep {
+                        NoSource,
+                        DestExists,
+                        SourceIsLink,
+                        Failed(String),
+                        Success,
+                    }
+                    let plugin_name = want.plugin_name.clone();
+                    let s_dir = source_dir.clone();
+                    let d_dir = dest_dir.clone();
+                    let step = tokio::task::spawn_blocking(move || {
+                        let check_ancestors = |dir: &Path| -> Result<(), MigrationStep> {
+                            let mut check = dir.parent();
+                            while let Some(path) = check {
+                                let meta = match std::fs::symlink_metadata(path) {
+                                    Ok(m) => m,
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        check = path.parent();
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        return Err(MigrationStep::Failed(format!(
+                                            "cannot stat ancestor {}: {e}",
+                                            path.display()
+                                        )));
+                                    }
+                                };
+                                if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta)
+                                {
+                                    return Err(MigrationStep::SourceIsLink);
+                                }
+                                if path
+                                    .file_name()
+                                    .is_some_and(|name| name == "extension-host")
+                                {
+                                    break;
+                                }
+                                check = path.parent();
+                            }
+                            Ok(())
+                        };
+
+                        if let Err(step) = check_ancestors(&s_dir) {
+                            return step;
+                        }
+                        if let Err(step) = check_ancestors(&d_dir) {
+                            return step;
+                        }
+
+                        let s_meta = match std::fs::symlink_metadata(&s_dir) {
+                            Ok(m) => m,
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                return MigrationStep::NoSource;
+                            }
+                            Err(e) => {
+                                return MigrationStep::Failed(format!(
+                                    "cannot stat {}: {e}",
+                                    s_dir.display()
+                                ));
+                            }
+                        };
+                        if codewhale_util::path_identity::metadata_is_link_or_reparse(&s_meta) {
+                            return MigrationStep::SourceIsLink;
+                        }
+
+                        match std::fs::symlink_metadata(&d_dir) {
+                            Ok(_) => return MigrationStep::DestExists,
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => {
+                                return MigrationStep::Failed(format!(
+                                    "cannot stat {}: {e}",
+                                    d_dir.display()
+                                ));
+                            }
+                        }
+
+                        let mut stack = vec![s_dir.clone()];
+                        while let Some(path) = stack.pop() {
+                            let meta = match std::fs::symlink_metadata(&path) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    return MigrationStep::Failed(format!(
+                                        "cannot stat {}: {e}",
+                                        path.display()
+                                    ));
+                                }
+                            };
+                            if codewhale_util::path_identity::metadata_is_link_or_reparse(&meta) {
+                                return MigrationStep::SourceIsLink;
+                            }
+                            if meta.is_dir() {
+                                let entries = match std::fs::read_dir(&path) {
+                                    Ok(entries) => entries,
+                                    Err(e) => {
+                                        return MigrationStep::Failed(format!(
+                                            "cannot read dir {}: {e}",
+                                            path.display()
+                                        ));
+                                    }
+                                };
+                                for entry in entries {
+                                    match entry {
+                                        Ok(entry) => stack.push(entry.path()),
+                                        Err(e) => {
+                                            return MigrationStep::Failed(format!(
+                                                "cannot read entry in {}: {e}",
+                                                path.display()
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(parent) = d_dir.parent()
+                            && let Err(e) = std::fs::create_dir_all(parent)
+                        {
+                            return MigrationStep::Failed(format!(
+                                "cannot create parent directory {}: {e}",
+                                parent.display()
+                            ));
+                        }
+                        if let Err(err) = std::fs::rename(&s_dir, &d_dir) {
+                            return MigrationStep::Failed(format!(
+                                "cannot migrate data for `{plugin_name}` from {} to {}: {err}",
+                                s_dir.display(),
+                                d_dir.display()
+                            ));
+                        }
+                        MigrationStep::Success
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        MigrationStep::Failed(format!("migration task failed: {e}"))
+                    });
+                    match step {
+                        MigrationStep::NoSource => {
+                            shared
+                                .pending_migrations
+                                .lock()
+                                .expect("pending migrations lock")
+                                .remove(&plugin_id);
+                        }
+                        MigrationStep::DestExists => {
+                            let reason = format!(
+                                "cannot migrate data for `{}`: destination directory {} already exists",
+                                want.plugin_name,
+                                dest_dir.display()
+                            );
+                            shared.plugin_diagnostic(&plugin_id, reason.clone());
+                            let mut registry = shared.registry.lock().expect("registry lock");
+                            registry.record_activation_failure(
+                                want.cohort.clone(),
+                                &plugin_id,
+                                &want.plugin_name,
+                                Some(want.authority.clone()),
+                                &want.authority.content_hash,
+                                reason,
+                            );
+                            continue;
+                        }
+                        MigrationStep::SourceIsLink => {
+                            let reason = format!(
+                                "cannot migrate data for `{}`: source directory {} is a link or reparse point",
+                                want.plugin_name,
+                                source_dir.display()
+                            );
+                            shared.plugin_diagnostic(&plugin_id, reason.clone());
+                            let mut registry = shared.registry.lock().expect("registry lock");
+                            registry.record_activation_failure(
+                                want.cohort.clone(),
+                                &plugin_id,
+                                &want.plugin_name,
+                                Some(want.authority.clone()),
+                                &want.authority.content_hash,
+                                reason,
+                            );
+                            continue;
+                        }
+                        MigrationStep::Failed(reason) => {
+                            shared.plugin_diagnostic(&plugin_id, reason.clone());
+                            let mut registry = shared.registry.lock().expect("registry lock");
+                            registry.record_activation_failure(
+                                want.cohort.clone(),
+                                &plugin_id,
+                                &want.plugin_name,
+                                Some(want.authority.clone()),
+                                &want.authority.content_hash,
+                                reason,
+                            );
+                            continue;
+                        }
+                        MigrationStep::Success => {
+                            let grant_err = if cfg!(windows) {
+                                let d = dest_dir.clone();
+                                let s = source_dir.clone();
+                                let shared_c = Arc::clone(shared);
+                                tokio::task::spawn_blocking(move || {
+                                    if let Ok(host) = shared_c.ready_host(&HostCohort::reviewed())
+                                        && let Err(err) = host.grant_data_dir(&d)
+                                    {
+                                        if let Err(rollback_err) = std::fs::rename(&d, &s) {
+                                            return Some(format!(
+                                                "{err} (rollback also failed: {rollback_err})"
+                                            ));
+                                        }
+                                        return Some(err);
+                                    }
+                                    None
+                                })
+                                .await
+                                .unwrap_or_else(|e| Some(format!("grant task failed: {e}")))
+                            } else {
+                                None
+                            };
+                            if let Some(err) = grant_err {
+                                let reason = format!("cannot grant migrated data directory: {err}");
+                                shared.plugin_diagnostic(&plugin_id, reason.clone());
+                                let mut registry = shared.registry.lock().expect("registry lock");
+                                registry.record_activation_failure(
+                                    want.cohort.clone(),
+                                    &plugin_id,
+                                    &want.plugin_name,
+                                    Some(want.authority.clone()),
+                                    &want.authority.content_hash,
+                                    reason,
+                                );
+                                continue;
+                            }
+                            shared
+                                .pending_migrations
+                                .lock()
+                                .expect("pending migrations lock")
+                                .remove(&plugin_id);
+                        }
+                    }
                 }
-                let content_hash = want.authority.content_hash.clone();
-                self.activate_owner(
-                    &host,
-                    Activation {
-                        tier: HostTier::Plugin,
-                        owner_id: plugin_id,
-                        name: want.plugin_name,
-                        authority: Some(want.authority),
-                        content_hash,
-                        entries: want.entries,
-                        host_services: want.host_services,
-                    },
-                )
-                .await;
+                remaining.push((plugin_id, want));
             }
-            Ok(())
+            *reviewed_owners = remaining;
+        }
+
+        let plugins = async {
+            let mut last_err = None;
+            for (cohort, owners) in to_activate {
+                if owners.is_empty() {
+                    continue;
+                }
+                let host = match self.ensure_host(&cohort, policy).await {
+                    Ok(host) => host,
+                    Err(error) => {
+                        shared.diagnostic(format!(
+                            "{}: failed to ensure host: {error}",
+                            cohort.host_label()
+                        ));
+                        last_err = Some(error);
+                        continue;
+                    }
+                };
+                if let Some(runtime) = shared.cohort_runtime(&cohort) {
+                    let generation = runtime.host_generation.load(Ordering::SeqCst);
+                    let needs_fresh_module_cache = {
+                        let imported = runtime
+                            .imported_entries
+                            .lock()
+                            .expect("imported entries lock");
+                        imported.0 == generation
+                            && owners.iter().any(|(_, want)| {
+                                want.entries.iter().any(|(path, sha256)| {
+                                    imported
+                                        .1
+                                        .get(path)
+                                        .is_some_and(|prev_sha| prev_sha != sha256)
+                                })
+                            })
+                    };
+                    if needs_fresh_module_cache {
+                        let mut supervision = runtime.supervision.lock().expect("supervision lock");
+                        supervision.planned_restart = Some(generation);
+                        if !host.terminate_if_idle(DIRTY_RESTART_REASON) {
+                            supervision.planned_restart = None;
+                            supervision.dirty_restart_pending = true;
+                        }
+                        drop(supervision);
+                        continue;
+                    }
+                }
+                for (plugin_id, want) in owners {
+                    if host.has_exited() {
+                        break;
+                    }
+                    let content_hash = want.authority.content_hash.clone();
+                    self.activate_owner(
+                        &host,
+                        Activation {
+                            cohort: cohort.clone(),
+                            owner_id: plugin_id,
+                            name: want.plugin_name,
+                            authority: Some(want.authority),
+                            content_hash,
+                            entries: want.entries,
+                            host_services: want.host_services,
+                        },
+                    )
+                    .await;
+                }
+            }
+            match last_err {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
         }
         .await;
-        // MCP selection admits tier-0 demand independently of Native plugins.
-        // Harness demand still requires the captured Native policy below.
+
+        let mut cohorts_to_drop = Vec::new();
+        {
+            let agent_cohorts = shared.agent_cohorts.lock().expect("agent cohorts lock");
+            for (workspace, runtime) in agent_cohorts.iter() {
+                let has_owner = desired
+                    .values()
+                    .any(|d| d.cohort.agent_project_path().as_ref() == Some(workspace));
+                if !has_owner {
+                    let slot = runtime.host.lock().expect("host lock");
+                    match &*slot {
+                        HostSlot::Ready(host) | HostSlot::Unresponsive(host) => {
+                            host.terminate(NO_DESIRED_OWNERS_REASON.into());
+                        }
+                        HostSlot::Idle | HostSlot::Failed { .. } => {
+                            cohorts_to_drop.push(workspace.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if !cohorts_to_drop.is_empty() {
+            let mut agent_cohorts = shared.agent_cohorts.lock().expect("agent cohorts lock");
+            for workspace in cohorts_to_drop {
+                agent_cohorts.remove(&workspace);
+            }
+        }
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Ok(());
+        }
+        let has_creator_owner = shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .owner("host:creator")
+            .is_some();
         let builtin = if policy
             || shared.mcp_users.load(Ordering::SeqCst) > 0
             || shared.stock_users.load(Ordering::SeqCst) > 0
+            || shared.creator_users.load(Ordering::SeqCst) > 0
+            || has_creator_owner
         {
-            self.reconcile_builtin(policy).await
+            self.reconcile_builtin(policy, cancel).await
         } else {
             Ok(())
         };
@@ -2328,12 +3285,7 @@ impl ExtensionHostManager {
             .owner(owner_id)
             .is_some_and(|entry| entry.state != OwnerState::Active);
         if stale {
-            self.shared.core_calls.revoke_owner(owner_id);
-            self.shared.execution_broker.revoke_owner(owner_id);
-            self.shared.mcp_users.fetch_sub(
-                self.shared.mcp_broker.revoke_owner(owner_id),
-                Ordering::SeqCst,
-            );
+            self.shared.revoke_owner_state(owner_id);
             self.shared
                 .registry
                 .lock()
@@ -2342,10 +3294,10 @@ impl ExtensionHostManager {
         }
         // Replay the actual Native policy after a Builtin crash. MCP demand
         // must never switch optional third-party activation on.
-        self.reconcile_builtin(native_policy).await?;
+        self.reconcile_builtin(native_policy, None).await?;
         let host = self
             .shared
-            .ready_host(HostTier::Builtin)
+            .ready_host(&HostCohort::Builtin)
             .map_err(|status| host_down(HostTier::Builtin, &status))?;
         let owner = self
             .shared
@@ -2360,8 +3312,32 @@ impl ExtensionHostManager {
         Ok((host, owner, generation))
     }
 
-    async fn reconcile_builtin(&self, policy: bool) -> Result<(), String> {
+    async fn reconcile_builtin(
+        &self,
+        policy: bool,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), String> {
         let shared = &self.shared;
+        let revoked_creator = if shared.creator_users.load(Ordering::SeqCst) == 0 {
+            let mut registry = shared.registry.lock().expect("registry lock");
+            let revoked = registry.revoke_owner("host:creator");
+            registry.forget_owner("host:creator");
+            revoked
+        } else {
+            None
+        };
+        if let Some(owner) = revoked_creator {
+            shared.revoke_owner_state(&owner.plugin_id);
+            dsh_remote::withdraw_owner(&owner);
+            shared.plugin_diagnostic(
+                &owner.plugin_id,
+                format!("extension `{}` revoked", owner.plugin_id),
+            );
+            if let Ok(host) = shared.ready_host(&HostCohort::Builtin) {
+                host.revoke_calls_of(&owner.plugin_id);
+                shared.deactivate_owner(&host, &owner).await;
+            }
+        }
         let wanted: Vec<&'static BuiltinModule> = {
             let registry = shared.registry.lock().expect("registry lock");
             shared
@@ -2372,6 +3348,8 @@ impl ExtensionHostManager {
                         && (module.id != "harness"
                             || (policy && shared.harness_users.load(Ordering::SeqCst) > 0)
                             || shared.stock_users.load(Ordering::SeqCst) > 0)
+                        && (module.id != "creator"
+                            || shared.creator_users.load(Ordering::SeqCst) > 0)
                         && registry.owner(&module.owner_id()).is_none()
                 })
                 .collect()
@@ -2380,6 +3358,16 @@ impl ExtensionHostManager {
             return Ok(());
         }
         let root = host_root(&shared.options)?;
+        if !supervisor::bundle_dir(&root, bundle_sha256())
+            .join("builtin")
+            .exists()
+            && shared.materialize_default_builtins
+        {
+            let materialize_root = root.clone();
+            tokio::task::spawn_blocking(move || materialize_bundle(&materialize_root))
+                .await
+                .map_err(|error| format!("extension host bundle preparation failed: {error}"))??;
+        }
         let mut activations = Vec::new();
         for module in wanted {
             // The module's source, accepted only if its SHA-256 is the one the
@@ -2412,7 +3400,7 @@ impl ExtensionHostManager {
             let owner_id = module.owner_id();
             match source {
                 Ok(entry) => activations.push(Activation {
-                    tier: HostTier::Builtin,
+                    cohort: HostCohort::Builtin,
                     owner_id,
                     name: module.id.to_string(),
                     authority: None,
@@ -2423,7 +3411,7 @@ impl ExtensionHostManager {
                 Err(reason) => {
                     let mut registry = shared.registry.lock().expect("registry lock");
                     if let Ok(owner) = registry.begin_owner(
-                        HostTier::Builtin,
+                        HostCohort::Builtin,
                         &owner_id,
                         module.id,
                         None,
@@ -2442,12 +3430,12 @@ impl ExtensionHostManager {
                 }
             }
         }
-        if activations.is_empty() {
+        if activations.is_empty() || cancel.is_some_and(CancellationToken::is_cancelled) {
             return Ok(());
         }
-        let host = self.ensure_host(HostTier::Builtin, policy).await?;
+        let host = self.ensure_host(&HostCohort::Builtin, policy).await?;
         for activation in activations {
-            if host.has_exited() {
+            if host.has_exited() || cancel.is_some_and(CancellationToken::is_cancelled) {
                 break;
             }
             self.activate_owner(&host, activation).await;
@@ -2468,7 +3456,7 @@ impl ExtensionHostManager {
             } else {
                 registry
                     .begin_owner(
-                        want.tier,
+                        want.cohort.clone(),
                         plugin_id,
                         &want.name,
                         want.authority.clone(),
@@ -2489,13 +3477,33 @@ impl ExtensionHostManager {
                 return;
             }
         };
+        struct ActivatingGuard {
+            shared: Arc<ManagerShared>,
+            owner: OwnerRef,
+        }
+        impl Drop for ActivatingGuard {
+            fn drop(&mut self) {
+                let mut registry = self.shared.registry.lock().expect("registry lock");
+                let still_activating = registry.owner(&self.owner.plugin_id).is_some_and(|entry| {
+                    entry.owner == self.owner && entry.state == OwnerState::Activating
+                });
+                if still_activating {
+                    registry.revoke_owner(&self.owner.plugin_id);
+                    registry.forget_owner(&self.owner.plugin_id);
+                }
+            }
+        }
+        let _activating_guard = ActivatingGuard {
+            shared: Arc::clone(shared),
+            owner: owner.clone(),
+        };
         // What the owner is given: its settings and its own directory. A
         // config that is refused, or a directory that cannot be made, fails the
         // activation with the reason; the plugin is never started with
         // different settings than the user wrote. A built-in module takes no
         // user settings: `[plugins]` is keyed by plugin name and is not read
         // for tier 0.
-        let selection = match want.tier {
+        let selection = match want.tier() {
             HostTier::Plugin => shared
                 .plugin_configs
                 .lock()
@@ -2510,7 +3518,7 @@ impl ExtensionHostManager {
             .set_config_hash(&owner, &plugin_config::activation_hash(&selection));
         let context = match selection {
             Ok(config) => self
-                .owner_data_dir(want.tier, plugin_id, &want.name)
+                .owner_data_dir(&want.cohort, plugin_id, &want.name)
                 .await
                 .map(|data_dir| (config, data_dir)),
             Err(reason) => Err(reason),
@@ -2531,7 +3539,7 @@ impl ExtensionHostManager {
             }
         };
         // Retire no-longer-wanted entry handles before awaiting host disposal.
-        if want.tier == HostTier::Plugin {
+        if want.tier() == HostTier::Plugin {
             let scopes: Vec<_> = {
                 let registry = shared.registry.lock().expect("registry lock");
                 registry
@@ -2562,7 +3570,7 @@ impl ExtensionHostManager {
                 shared.deactivate_entry(host, &owner, Some(scope)).await;
             }
         }
-        if want.tier == HostTier::Plugin {
+        if want.tier() == HostTier::Plugin {
             let admission = match want.authority.clone() {
                 Some(authority) => host.admit_native_root(authority).await,
                 None => Err("Native owner has no reviewed bundle authority".into()),
@@ -2592,7 +3600,7 @@ impl ExtensionHostManager {
         // already-active sibling entries remain usable.
         let mut tools = BTreeSet::new();
         for (path, sha256) in &want.entries {
-            let scope = (want.tier == HostTier::Plugin).then(|| EntryRef {
+            let scope = (want.tier() == HostTier::Plugin).then(|| EntryRef {
                 path: path.to_string_lossy().into_owned(),
                 sha256: sha256.clone(),
             });
@@ -2604,6 +3612,18 @@ impl ExtensionHostManager {
                     .begin_scope(&owner, scope.clone());
                 if admitted.is_err() {
                     continue;
+                }
+            }
+            if want.tier() == HostTier::Plugin
+                && let Some(runtime) = shared.cohort_runtime(&want.cohort)
+            {
+                let generation = runtime.host_generation.load(Ordering::SeqCst);
+                let mut imported = runtime
+                    .imported_entries
+                    .lock()
+                    .expect("imported entries lock");
+                if imported.0 == generation {
+                    imported.1.insert(path.clone(), sha256.clone());
                 }
             }
             let request = CoreRequest::Activate(ActivateParams {
@@ -2631,6 +3651,22 @@ impl ExtensionHostManager {
                 });
             match outcome {
                 Ok((names, _slash)) => {
+                    if want.tier() == HostTier::Builtin
+                        && want.owner_id == "host:creator"
+                        && let Some(module) = shared
+                            .builtin_modules
+                            .iter()
+                            .find(|module| module.owner_id() == want.owner_id)
+                        && let Some(unlisted) = names.iter().find(|name| {
+                            !module.tools.iter().any(|tool| tool.name == name.as_str())
+                        })
+                    {
+                        failure = Some(format!(
+                            "built-in module `{}` reported unlisted tool `{unlisted}`",
+                            want.name
+                        ));
+                        break;
+                    }
                     tools.extend(names);
                     if let Some(scope) = &scope {
                         shared
@@ -2659,7 +3695,7 @@ impl ExtensionHostManager {
                 }
             }
         }
-        if want.tier == HostTier::Plugin
+        if want.tier() == HostTier::Plugin
             && shared
                 .registry
                 .lock()
@@ -2745,13 +3781,14 @@ impl ExtensionHostManager {
     /// long-standing path, a built-in module's under the builtin tier's.
     async fn owner_data_dir(
         &self,
-        tier: HostTier,
+        cohort: impl Into<HostCohort>,
         plugin_id: &str,
         plugin_name: &str,
     ) -> Result<String, String> {
+        let cohort = cohort.into();
         let path = supervisor::owner_data_dir(
             &host_root(&self.shared.options)?,
-            tier,
+            &cohort,
             plugin_id,
             plugin_name,
         );
@@ -2774,10 +3811,15 @@ impl ExtensionHostManager {
     }
 
     /// `tier`'s host, started (lazily, once per generation) if it is idle.
-    async fn ensure_host(&self, tier: HostTier, policy: bool) -> Result<Arc<HostProcess>, String> {
+    async fn ensure_host(
+        &self,
+        cohort: &HostCohort,
+        policy: bool,
+    ) -> Result<Arc<HostProcess>, String> {
         let shared = &self.shared;
-        let runtime = shared.tier_runtime(tier);
-        let label = tier.host_label();
+        let runtime = shared.get_or_create_cohort_runtime(cohort);
+        let tier = cohort.tier();
+        let label = cohort.host_label();
         let mut generation = {
             let mut slot = runtime.host.lock().expect("host lock");
             match &*slot {
@@ -2795,13 +3837,42 @@ impl ExtensionHostManager {
             supervision.dirty_teardowns.clear();
             supervision.dirty_restart_pending = false;
             supervision.planned_restart = None;
-            runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1
+            let next_gen = match cohort {
+                HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                    shared.agent_host_generation.fetch_add(1, Ordering::SeqCst) + 1
+                }
+                _ => runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1,
+            };
+            runtime.host_generation.store(next_gen, Ordering::SeqCst);
+            *runtime
+                .imported_entries
+                .lock()
+                .expect("imported entries lock") = (next_gen, BTreeMap::new());
+            next_gen
+        };
+        struct StartingGuard {
+            runtime: Arc<TierRuntime>,
+            generation: u64,
+        }
+        impl Drop for StartingGuard {
+            fn drop(&mut self) {
+                let mut slot = self.runtime.host.lock().expect("host lock");
+                if self.runtime.host_generation.load(Ordering::SeqCst) == self.generation
+                    && matches!(&*slot, HostSlot::Starting)
+                {
+                    *slot = HostSlot::Idle;
+                }
+            }
+        }
+        let mut starting_guard = StartingGuard {
+            runtime: Arc::clone(&runtime),
+            generation,
         };
         shared
             .registry
             .lock()
             .expect("registry lock")
-            .host_process_started(tier);
+            .host_process_started(cohort);
         // At most two launches: under `auto`, before anything is pinned, a
         // Bun that cannot start is reported once and Node is resolved for the
         // rest of the session. An explicit `bun` or `node` never falls back.
@@ -2823,12 +3894,19 @@ impl ExtensionHostManager {
                 let runtime = shared.runtime.lock().expect("runtime lock");
                 (runtime.pinned.clone(), runtime.bun_failed)
             };
+            let cohort_cloned = cohort.clone();
             #[cfg(any(test, feature = "test-support"))]
             let env_scope = crate::test_support::env_scope_ticket();
             let prepared = tokio::task::spawn_blocking(move || {
                 #[cfg(any(test, feature = "test-support"))]
                 let _env_scope = crate::test_support::join_env_scope(env_scope);
-                prepare_launch(&options, tier, pinned, bun_failed, &snapshot_state_paths)
+                prepare_launch(
+                    &options,
+                    &cohort_cloned,
+                    pinned,
+                    bun_failed,
+                    &snapshot_state_paths,
+                )
             })
             .await
             .map_err(|error| format!("extension host preparation failed: {error}"))
@@ -2839,7 +3917,7 @@ impl ExtensionHostManager {
             };
             let events: Arc<dyn HostEvents> = Arc::new(Events {
                 shared: Arc::downgrade(shared),
-                tier,
+                cohort: cohort.clone(),
                 generation,
             });
             let reason =
@@ -2869,8 +3947,16 @@ impl ExtensionHostManager {
                 {
                     break Err(format!("{label} startup was superseded"));
                 }
-                runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1
+                let next_gen = match cohort {
+                    HostCohort::Plugin(PluginCohort::Agent { .. }) => {
+                        shared.agent_host_generation.fetch_add(1, Ordering::SeqCst) + 1
+                    }
+                    _ => runtime.host_generation.fetch_add(1, Ordering::SeqCst) + 1,
+                };
+                runtime.host_generation.store(next_gen, Ordering::SeqCst);
+                next_gen
             };
+            starting_guard.generation = generation;
         };
         let mut slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != generation
@@ -2899,7 +3985,7 @@ impl ExtensionHostManager {
                 if host.has_exited() {
                     Events {
                         shared: Arc::downgrade(shared),
-                        tier,
+                        cohort: cohort.clone(),
                         generation,
                     }
                     .exited(
@@ -2945,8 +4031,7 @@ impl ExtensionHostManager {
     /// parent changes.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn shutdown(&self) {
-        for tier in HostTier::ALL {
-            let runtime = self.shared.tier_runtime(tier);
+        for runtime in self.shared.all_runtimes() {
             let host = {
                 let mut slot = runtime.host.lock().expect("host lock");
                 runtime.host_generation.fetch_add(1, Ordering::SeqCst);
@@ -2965,7 +4050,7 @@ impl ExtensionHostManager {
                     .registry
                     .lock()
                     .expect("registry lock")
-                    .revoke_all(tier, "extension host shut down");
+                    .revoke_cohort(&host.cohort, "extension host shut down");
                 host.shutdown().await;
             }
         }
@@ -2974,7 +4059,7 @@ impl ExtensionHostManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn host_requests_started(&self) -> Option<u64> {
         self.shared
-            .ready_host(HostTier::Plugin)
+            .ready_host(&HostCohort::reviewed())
             .ok()
             .map(|host| host.requests_started())
     }
@@ -2982,7 +4067,7 @@ impl ExtensionHostManager {
     #[cfg(any(test, feature = "test-support"))]
     pub fn host_pid(&self) -> Option<u32> {
         self.shared
-            .ready_host(HostTier::Plugin)
+            .ready_host(&HostCohort::reviewed())
             .ok()
             .and_then(|host| host.pid)
     }
@@ -3023,6 +4108,34 @@ pub fn render_status(manager: &ExtensionHostManager) -> String {
             let _ = write!(out, "{down}");
         }
     }
+    for (workspace, runtime) in manager
+        .shared
+        .agent_cohorts
+        .lock()
+        .expect("agent cohorts lock")
+        .iter()
+    {
+        let slot = runtime.host.lock().expect("host lock");
+        match &*slot {
+            HostSlot::Ready(host) if !host.has_exited() && !host.is_retiring() => {
+                let _ = write!(
+                    out,
+                    "\n  agent host ({}): running · pid {} · {} {} · {}",
+                    workspace.display(),
+                    host.pid
+                        .map_or_else(|| "?".to_string(), |pid| pid.to_string()),
+                    host.runtime.kind.name(),
+                    host.runtime_version.get().map_or("?", String::as_str),
+                    host.sandbox.label()
+                );
+            }
+            HostSlot::Idle => {}
+            other => {
+                let status = other.status();
+                let _ = write!(out, "\n  agent host ({}): {status}", workspace.display());
+            }
+        }
+    }
     if let Some(summary) = manager.runtime_summary() {
         let _ = write!(out, "\n  runtime: {summary}");
         // How the running host's cap is enforced, as its handshake settled
@@ -3060,28 +4173,30 @@ pub fn render_status(manager: &ExtensionHostManager) -> String {
             let _ = write!(out, "\n  built-in host (tier 0): {other}");
         }
     }
-    let (tools, commands, owners) = {
+    let (tools, commands, reviewed_owners) = {
         let registry = manager.shared.registry.lock().expect("registry lock");
-        let owners = registry
+        let reviewed_owners = registry
             .owners()
-            .filter(|entry| entry.tier == HostTier::Plugin && entry.state == OwnerState::Active)
+            .filter(|entry| {
+                entry.cohort == HostCohort::reviewed() && entry.state == OwnerState::Active
+            })
             .count();
         let tools: Vec<_> = registry
             .live_tools()
             .into_iter()
-            .filter(|tool| tool.tier == HostTier::Plugin)
+            .filter(|tool| tool.cohort == HostCohort::reviewed())
             .collect();
         let commands: Vec<_> = registry
             .live_commands()
             .into_iter()
-            .filter(|command| command.tier == HostTier::Plugin)
+            .filter(|command| command.cohort == HostCohort::reviewed())
             .collect();
-        (tools, commands, owners)
+        (tools, commands, reviewed_owners)
     };
-    if owners > 1 {
+    if reviewed_owners > 1 {
         let _ = write!(
             out,
-            "\n  {owners} plugins share this one host process and can alter each other's behaviour"
+            "\n  {reviewed_owners} plugins share this one host process and can alter each other's behaviour"
         );
     }
     for tool in tools {
@@ -3105,18 +4220,41 @@ pub fn render_status(manager: &ExtensionHostManager) -> String {
     out
 }
 
-/// A plugin was enabled, disabled, trusted, revoked or removed: reconcile the
-/// host now, so a disabled plugin's calls are cancelled and its code torn
-/// down without waiting for the next turn. No-op with the flag off.
+/// A plugin was enabled, disabled, trusted, revoked or removed: refresh the
+/// workspace view now, and when the extension host is enabled reconcile it so
+/// a disabled plugin's calls are cancelled and its code torn down without
+/// waiting for the next turn.
 pub fn plugins_changed(plugins: Arc<PluginRegistry>) {
+    let manager = manager();
+    manager.refresh_workspace(&plugins);
     if activation::extension_host_policy_enabled() {
-        let manager = manager();
-        manager.refresh_workspace(&plugins);
-        manager.retry();
-        // An explicit plugin action, so also the moment to pick up an edit to
-        // `[plugins."<name>".config]`.
+        manager.revoke_stale_or_removed_owners(&plugins);
+        manager.retry_cohort(&HostCohort::reviewed());
+        manager.retry_cohort(&HostCohort::agent(plugins.workspace()));
         manager.reload_and_reconcile_in_background();
     }
+}
+
+pub async fn plugins_changed_and_wait(
+    plugins: &Arc<PluginRegistry>,
+    plugin_id: Option<&str>,
+    expected_authority: Option<&PluginAuthority>,
+    exempt_invocation_id: Option<u64>,
+    wait_for_owner: bool,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> Result<Option<OwnerReport>, String> {
+    manager()
+        .plugins_changed_and_wait(
+            plugins,
+            plugin_id,
+            expected_authority,
+            exempt_invocation_id,
+            wait_for_owner,
+            cancel,
+            timeout,
+        )
+        .await
 }
 
 /// Install the user's per-plugin settings at boot (the host's other boot
@@ -3194,6 +4332,7 @@ pub fn status_report() -> String {
 }
 
 pub struct OwnerReport {
+    pub cohort: Option<HostCohort>,
     pub state: Option<OwnerState>,
     pub tools: Vec<String>,
     pub diagnostics: Vec<String>,
@@ -3285,31 +4424,55 @@ fn desired_owners_from(
                             continue;
                         }
                     };
-                    let by_agent =
-                        |approver: Option<&codewhale_plugins::host_services::PluginApprover>| {
-                            approver.is_some_and(|approver| {
-                                approver.cohort()
-                                    != codewhale_plugins::host_services::PluginCohort::Reviewed
-                            })
-                        };
-                    if by_agent(record.approved_by.as_ref())
-                        || by_agent(
-                            plugins
-                                .get(&plugin_id)
-                                .and_then(|plugin| plugin.approved_by.as_ref()),
-                        )
-                    {
+                    let record_approver = record.approved_by.as_ref();
+                    let snapshot_approver = plugins
+                        .get(&plugin_id)
+                        .and_then(|plugin| plugin.approved_by.as_ref());
+                    if record_approver != snapshot_approver {
                         if broken.insert(plugin_id) {
                             errors.push(format!(
-                                "Plugin `{}` was approved by the agent, so its code does not run in the host of the plugins you reviewed; review it to run its code",
+                                "Plugin `{}` was not loaded because review record approver disagrees with snapshot",
                                 source.plugin_name
                             ));
                         }
                         continue;
                     }
+                    let approver = match record_approver {
+                        Some(a) => a,
+                        None => {
+                            if broken.insert(plugin_id) {
+                                errors.push(format!(
+                                    "Plugin `{}` was not loaded because review record has no approver",
+                                    source.plugin_name
+                                ));
+                            }
+                            continue;
+                        }
+                    };
+                    let cohort = approver.cohort();
+                    if let PluginCohort::Agent { ref workspace } = cohort {
+                        let norm_rec =
+                            codewhale_config::normalize_project_workspace(Path::new(workspace));
+                        let norm_sess =
+                            codewhale_config::normalize_project_workspace(plugins.workspace());
+                        let match_ws = match (&norm_rec, &norm_sess) {
+                            (Ok(a), Ok(b)) => a == b,
+                            _ => Path::new(workspace) == plugins.workspace(),
+                        };
+                        if !match_ws {
+                            if broken.insert(plugin_id) {
+                                errors.push(format!(
+                                    "Plugin `{}` was approved for another project workspace and cannot load here",
+                                    source.plugin_name
+                                ));
+                            }
+                            continue;
+                        }
+                    }
                     desired.insert(
                         plugin_id.clone(),
                         DesiredOwner {
+                            cohort: HostCohort::from_plugin_cohort(cohort),
                             plugin_name: source.plugin_name.clone(),
                             authority: source.authority.clone(),
                             entries: Vec::new(),
@@ -3421,6 +4584,7 @@ fn union_of_desired_owners(snapshots: Vec<(u64, Arc<PluginRegistry>)>) -> Desire
     let mut per_attachment = Vec::with_capacity(snapshots.len());
     let mut scanned: Vec<(Arc<PluginRegistry>, BTreeMap<String, String>)> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
+    let mut conflicted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (id, plugins) in snapshots {
         if let Some((_, hashes)) = scanned.iter().find(|(seen, _)| Arc::ptr_eq(seen, &plugins)) {
             per_attachment.push((id, Arc::clone(&plugins), hashes.clone()));
@@ -3437,11 +4601,23 @@ fn union_of_desired_owners(snapshots: Vec<(u64, Arc<PluginRegistry>)>) -> Desire
             .map(|(plugin_id, want)| (plugin_id.clone(), want.authority.content_hash.clone()))
             .collect();
         for (plugin_id, want) in desired {
-            match union.entry(plugin_id) {
+            if conflicted.contains(&plugin_id) {
+                continue;
+            }
+            match union.entry(plugin_id.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(want);
                 }
                 std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    if entry.get().cohort != want.cohort {
+                        conflicted.insert(plugin_id);
+                        errors.push(format!(
+                            "Plugin `{}` was requested in conflicting cohorts",
+                            want.plugin_name
+                        ));
+                        entry.remove();
+                        continue;
+                    }
                     for native in want.entries {
                         if !entry.get().entries.contains(&native) {
                             entry.get_mut().entries.push(native);
@@ -3452,6 +4628,16 @@ fn union_of_desired_owners(snapshots: Vec<(u64, Arc<PluginRegistry>)>) -> Desire
         }
         per_attachment.push((id, Arc::clone(&plugins), hashes.clone()));
         scanned.push((plugins, hashes));
+    }
+    if !conflicted.is_empty() {
+        for plugin_id in &conflicted {
+            union.remove(plugin_id);
+        }
+        for (_, _, hashes) in &mut per_attachment {
+            for plugin_id in &conflicted {
+                hashes.remove(plugin_id);
+            }
+        }
     }
     DesiredScan {
         attachments: per_attachment,
@@ -3509,6 +4695,8 @@ impl HostAttachment {
     }
 
     pub fn set_identity(&self, session_id: Option<String>, agent_id: Option<String>) {
+        let mut left = None;
+        let mut dropped_creator = false;
         if let Some(state) = self
             .manager
             .shared
@@ -3517,9 +4705,184 @@ impl HostAttachment {
             .expect("attachments lock")
             .get_mut(&self.id)
         {
+            if state.session_id != session_id {
+                left = state.session_id.take();
+            }
+            if agent_id.is_some() && state.creator_demanded {
+                state.creator_demanded = false;
+                dropped_creator = true;
+            }
             state.session_id = session_id;
             state.agent_id = agent_id;
         }
+        if dropped_creator
+            && self
+                .manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst)
+                == 1
+        {
+            self.manager.reconcile_in_background();
+        }
+        if let Some(left) = left {
+            dsh_remote::end_remote_session(&left);
+        }
+    }
+
+    pub fn set_creator_demand(&self, demanded: bool) -> bool {
+        let delta = {
+            let mut attachments = self
+                .manager
+                .shared
+                .attachments
+                .lock()
+                .expect("attachments lock");
+            let Some(state) = attachments.get_mut(&self.id) else {
+                return false;
+            };
+            let next = demanded && state.agent_id.is_none();
+            if state.creator_demanded == next {
+                return false;
+            }
+            state.creator_demanded = next;
+            next
+        };
+        if delta {
+            self.manager
+                .shared
+                .creator_users
+                .fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst);
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn creator_ready(&self) -> bool {
+        self.manager
+            .shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .owner("host:creator")
+            .is_some_and(|entry| entry.state == OwnerState::Active)
+    }
+
+    pub fn sync_creator_in_background(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let manager = Arc::clone(&self.manager);
+        tokio::spawn(async move {
+            if let Err(error) = manager.reconcile_with_policy(false).await {
+                manager.shared.diagnostic(error);
+            }
+        });
+    }
+
+    async fn sync_policy_within(&self, policy: bool, limit: Duration) -> bool {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return false;
+        }
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let manager = Arc::clone(&self.manager);
+        let mut task = tokio::spawn(async move {
+            if let Err(error) = manager
+                .reconcile_with_policy_cancel(policy, Some(&task_cancel))
+                .await
+            {
+                manager.shared.diagnostic(error);
+            }
+        });
+        tokio::select! {
+            result = &mut task => result.is_ok(),
+            () = tokio::time::sleep(limit) => {
+                // Signal cooperative cancellation so reconcile stops at its next safe point
+                // without aborting an in-flight host handshake that may legitimately take
+                // longer than the first-sync wait (up to HANDSHAKE_DEADLINE).
+                cancel.cancel();
+                self.manager.shared.diagnostic(format!(
+                    "extension host sync timed out after {}ms and signalled cancellation",
+                    limit.as_millis()
+                ));
+                false
+            }
+        }
+    }
+
+    pub async fn sync_creator_within(&self, limit: Duration) -> bool {
+        self.sync_policy_within(false, limit).await
+    }
+
+    pub fn install_creator_tools(
+        &self,
+        tool_registry: &mut crate::tools::ToolRegistry,
+    ) -> Vec<String> {
+        let allowed = self
+            .manager
+            .shared
+            .attachments
+            .lock()
+            .expect("attachments lock")
+            .get(&self.id)
+            .is_some_and(|state| state.creator_demanded && state.agent_id.is_none())
+            && self.manager.shared.creator_users.load(Ordering::SeqCst) > 0;
+        if !allowed {
+            return Vec::new();
+        }
+        let tools: Vec<ToolRegistration> = self
+            .manager
+            .shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .live_tools()
+            .into_iter()
+            .filter(|tool| {
+                tool.tier() == HostTier::Builtin && tool.owner.plugin_id == "host:creator"
+            })
+            .collect();
+        if tools.is_empty() {
+            return Vec::new();
+        }
+        if tool_registry.get(dsh_broker::ACT_TOOL).is_none() {
+            tool_registry.register(Arc::new(dsh_broker::BrokerActTool::ACT));
+        }
+        let taken: HashSet<String> = tool_registry
+            .names()
+            .into_iter()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let mut installed = Vec::new();
+        for registration in tools {
+            if taken.contains(&registration.name.to_ascii_lowercase()) {
+                let origin = tool_registry
+                    .get(&registration.name)
+                    .map(|existing| existing.registration_origin().into_owned())
+                    .unwrap_or_else(|| "another tool".to_string());
+                self.manager.shared.plugin_diagnostic(
+                    &registration.owner.plugin_id,
+                    format!(
+                        "extension tool `{}` from `{}` skipped: the name is already registered by {origin}",
+                        registration.name, registration.plugin_name
+                    ),
+                );
+                continue;
+            }
+            installed.push(registration.name.clone());
+            tool_registry.register(Arc::new(tool::HostToolSpec::for_selection(
+                registration,
+                Arc::clone(&self.manager.shared),
+                None,
+            )));
+        }
+        installed
     }
     pub fn plugin_view(&self) -> Arc<PluginRegistry> {
         self.manager
@@ -3558,18 +4921,9 @@ impl HostAttachment {
             })
     }
 
-    pub async fn sync_within(&self, limit: Duration) {
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
-        let manager = Arc::clone(&self.manager);
-        let policy = activation::extension_host_policy_enabled();
-        let task = tokio::spawn(async move {
-            if let Err(error) = manager.reconcile_with_policy(policy).await {
-                manager.shared.diagnostic(error);
-            }
-        });
-        let _ = tokio::time::timeout(limit, task).await;
+    pub async fn sync_within(&self, limit: Duration) -> bool {
+        self.sync_policy_within(activation::extension_host_policy_enabled(), limit)
+            .await
     }
 
     /// Add this engine's live extension tools to `tool_registry`.
@@ -3629,6 +4983,9 @@ impl ManagerShared {
             })
     }
     pub(super) fn broker_services(&self, owner: &OwnerRef) -> Vec<protocol::DshService> {
+        if let Some(granted) = dsh_broker::test_grants() {
+            return granted;
+        }
         dsh_broker::granted_services(&self.registry.lock().expect("registry lock"), owner)
     }
 
@@ -3637,15 +4994,23 @@ impl ManagerShared {
         owner: &OwnerRef,
         service: protocol::DshService,
     ) -> bool {
+        if let Some(granted) = dsh_broker::builtin_granted(
+            &self.registry.lock().expect("registry lock"),
+            owner,
+            service,
+        ) {
+            return granted;
+        }
         if let Some(granted) = dsh_broker::test_grants() {
             return granted.contains(&service);
         }
-        let authorities = {
+        let (_cohort, authorities) = {
             let registry = self.registry.lock().expect("registry lock");
             if !dsh_broker::granted(&registry, owner, service) {
                 return false;
             }
-            registry.plugin_host_authorities()
+            let cohort = registry.cohort_of(owner).unwrap_or(HostCohort::reviewed());
+            (cohort.clone(), registry.cohort_authorities(&cohort))
         };
         let Some(wanted) = codewhale_plugins::host_services::HostService::parse(service.name())
         else {
@@ -3720,16 +5085,14 @@ pub fn native_presets_for_plugins(
         .into_iter()
         .map(|(preset, _, authority)| (preset, authority))
         .collect();
-    if manager.shared.ready_host(HostTier::Plugin).is_err() {
-        return presets;
-    }
     let registry = manager.shared.registry.lock().expect("registry lock");
     for owner in registry.owners() {
         let Some(authority) = owner.authority.as_ref() else {
             continue;
         };
-        if owner.tier != HostTier::Plugin
+        if owner.tier() != HostTier::Plugin
             || owner.state != OwnerState::Active
+            || manager.shared.ready_host(&owner.cohort).is_err()
             || authority.workspace != plugins.workspace()
             || !plugins.get(&owner.owner.plugin_id).is_some_and(|plugin| {
                 plugin.component_active(PluginActivationCapability::Native)
@@ -3783,10 +5146,22 @@ pub fn caller_view(
 impl Drop for HostAttachment {
     fn drop(&mut self) {
         self.manager.shared.core_calls.revoke_attachment(self.id);
+        let mut dropped_creator = false;
         if let Ok(mut attachments) = self.manager.shared.attachments.lock()
             && let Some(state) = attachments.remove(&self.id)
         {
             state.selection_cancel.cancel();
+            dropped_creator = state.creator_demanded;
+        }
+        if dropped_creator
+            && self
+                .manager
+                .shared
+                .creator_users
+                .fetch_sub(1, Ordering::SeqCst)
+                == 1
+        {
+            self.manager.reconcile_in_background();
         }
         command::bump_epoch();
     }
@@ -3845,6 +5220,10 @@ pub struct TestManagerGuard(Option<Arc<ExtensionHostManager>>);
 
 #[cfg(any(test, feature = "test-support"))]
 impl TestManagerGuard {
+    pub fn current() -> Option<Arc<ExtensionHostManager>> {
+        TEST_MANAGER.with(|cell| cell.borrow().clone())
+    }
+
     pub fn install(manager: Arc<ExtensionHostManager>) -> Self {
         install_ports();
         Self(TEST_MANAGER.with(|cell| cell.replace(Some(manager))))

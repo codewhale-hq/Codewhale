@@ -179,6 +179,31 @@ python3 "${script_dir}/validate-crate-publish-order.py" \
 grep -F $'version\t0.9.5\t' "${good_output}" >/dev/null
 grep -F $'crate\tcodewhale-core\t1' "${good_output}" >/dev/null
 
+independent_metadata_file="${tmp_dir}/independent-metadata.json"
+python3 - "${metadata_file}" "${independent_metadata_file}" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+metadata["workspace_members"].append("ratatui")
+metadata["packages"].append(
+    {"id": "ratatui", "name": "codewhale-ratatui", "version": "0.2.0", "dependencies": []}
+)
+pathlib.Path(sys.argv[2]).write_text(json.dumps(metadata), encoding="utf-8")
+PY
+independent_output="${tmp_dir}/independent-order.txt"
+python3 "${script_dir}/validate-crate-publish-order.py" \
+  --metadata-file "${independent_metadata_file}" \
+  codewhale-build-support \
+  codewhale-ratatui \
+  codewhale-core \
+  codewhale-tui \
+  codewhale-app-server \
+  codewhale-cli >"${independent_output}"
+grep -F $'version\t0.9.5\t' "${independent_output}" >/dev/null
+grep -F $'own-version\tcodewhale-ratatui\t0.2.0' "${independent_output}" >/dev/null
+
 # Keep the checked-in order synchronized with the live locked workspace graph.
 # shellcheck source=scripts/release/crates.sh
 source "${script_dir}/crates.sh"

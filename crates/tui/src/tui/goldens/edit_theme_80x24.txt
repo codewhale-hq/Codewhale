@@ -1,23 +1,23 @@
 
-   Settings  ──────────────────────────────────────────────────────────────────
-
-  Edit Theme [theme]
-
-  Scope: SAVED
-  Current: underwater
-
-  Choose:
-       1. system                                                             █
-       2. terminal                                                           █
-       3. shoreline                                                          █
-       4. shoreline-light                                                    █
-    ▸  5. underwater                                                         █
-       6. underwater-retro                                                   █
-       7. dark                                                               █
-       8. light                                                              █
-       9. grayscale                                                          │
-      10. catppuccin-mocha                                                   │
-      11. tokyo-night                                                        │
-  [ Apply ]  [ Cancel ]
-  ↑/↓ or click choose · Enter/Apply · Esc/Cancel · 1-9 jump
- ──────────────────────────────────────────────────────────────────────────────
+ ╭ Settings ─────────────────────────────────────────────────────────── SAVED ╮
+ │ Edit Theme [theme]                                                         │
+ │                                                                            │
+ │ Scope: SAVED                                                               │
+ │ Current: underwater                                                        │
+ │                                                                            │
+ │ Choose:                                                                    │
+ │      1. system                                                           █ │
+ │      2. terminal                                                         █ │
+ │      3. shoreline                                                        █ │
+ │      4. shoreline-light                                                  █ │
+ │   ▸  5. underwater                                                       █ │
+ │      6. underwater-retro                                                 █ │
+ │      7. dark                                                             █ │
+ │      8. light                                                            █ │
+ │      9. grayscale                                                        █ │
+ │     10. catppuccin-mocha                                                 │ │
+ │     11. tokyo-night                                                      │ │
+ │     12. dracula                                                          │ │
+ │ [ Apply ]  [ Cancel ]                                                      │
+ │ ↑/↓ or click choose · Enter/Apply · Esc/Cancel · 1-9 jump                  │
+ ╰────────────────────────────────────────────────────────────────────────────╯

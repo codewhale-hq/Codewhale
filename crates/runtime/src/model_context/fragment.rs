@@ -24,7 +24,7 @@ pub enum FragmentId {
     Route,
     AgentTopology,
     SkillsTools,
-    TokenBudget,
+    SessionRelay,
     ProjectInstructions,
     Constitution,
 }
@@ -38,7 +38,7 @@ impl FragmentId {
             Self::Route => "route",
             Self::AgentTopology => "agent_topology",
             Self::SkillsTools => "skills_tools",
-            Self::TokenBudget => "token_budget",
+            Self::SessionRelay => "session_relay",
             Self::ProjectInstructions => "project_instructions",
             Self::Constitution => "constitution",
         }
@@ -53,7 +53,7 @@ impl FragmentId {
             Self::Route => "<!-- cw:ctx:route -->",
             Self::AgentTopology => "<!-- cw:ctx:agent_topology -->",
             Self::SkillsTools => "<!-- cw:ctx:skills_tools -->",
-            Self::TokenBudget => "<!-- cw:ctx:token_budget -->",
+            Self::SessionRelay => "<!-- cw:ctx:session_relay -->",
             Self::ProjectInstructions => "<!-- cw:ctx:project_instructions -->",
             Self::Constitution => "<!-- cw:ctx:constitution -->",
         }
@@ -67,7 +67,7 @@ impl FragmentId {
             Self::Route => FragmentRole::Route,
             Self::AgentTopology => FragmentRole::AgentTopology,
             Self::SkillsTools => FragmentRole::SkillsTools,
-            Self::TokenBudget => FragmentRole::TokenBudget,
+            Self::SessionRelay => FragmentRole::SessionRelay,
             Self::ProjectInstructions => FragmentRole::ProjectInstructions,
             Self::Constitution => FragmentRole::Constitution,
         }
@@ -81,7 +81,7 @@ impl FragmentId {
             Self::Route,
             Self::AgentTopology,
             Self::SkillsTools,
-            Self::TokenBudget,
+            Self::SessionRelay,
             Self::ProjectInstructions,
             Self::Constitution,
         ]
@@ -102,7 +102,7 @@ pub enum FragmentRole {
     /// Skills, plugins, and tool availability summary.
     SkillsTools,
     /// Token budget and compaction status.
-    TokenBudget,
+    SessionRelay,
     /// Project instructions (AGENTS.md + imported instruction files).
     ProjectInstructions,
     /// Codewhale-specific repo constitution.
@@ -118,7 +118,7 @@ impl FragmentRole {
             Self::Route => "route",
             Self::AgentTopology => "agent_topology",
             Self::SkillsTools => "skills_tools",
-            Self::TokenBudget => "token_budget",
+            Self::SessionRelay => "session_relay",
             Self::ProjectInstructions => "project_instructions",
             Self::Constitution => "constitution",
         }
@@ -225,7 +225,11 @@ fn enforce_byte_cap(raw: String, max_bytes: usize) -> String {
     let omitted = raw.len().saturating_sub(max_bytes);
     let marker = format!("\n[…truncated: {omitted} bytes omitted]");
     if marker.len() >= max_bytes {
-        return marker.chars().take(max_bytes).collect();
+        let mut cut = max_bytes;
+        while !marker.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return marker[..cut].to_string();
     }
     let keep = max_bytes.saturating_sub(marker.len());
     // Truncate on a char boundary.
@@ -241,6 +245,13 @@ fn enforce_byte_cap(raw: String, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_byte_cap_never_exceeds_its_bytes() {
+        for max in 1..48 {
+            assert!(enforce_byte_cap("x".repeat(100), max).len() <= max);
+        }
+    }
 
     #[test]
     fn render_diff_detects_change_and_retain() {

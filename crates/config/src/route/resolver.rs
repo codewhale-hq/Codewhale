@@ -15,17 +15,10 @@
 //! 3. `auto` => the [`LogicalModelRef::is_auto`] sentinel, never a literal
 //!    model.
 //!
-//! It encodes its OWN minimal direct/aggregator/local classification because
-//! the tui helpers (`provider_passes_model_through` /
-//! `accepts_custom_model_ids`) are not reachable from `crates/config`. The
-//! classification here is deliberately NARROWER than tui's `validate_route`:
-//! it only rejects [`RouteError::ForeignModelForDirectProvider`] for a small
-//! set of strict direct providers given a clearly-foreign selector;
-//! aggregators, local, and custom endpoints pass through `Ok` with
-//! `validation.ok == true`.
-//!
 //! There is deliberately no prompt-text / freeform field on [`RouteRequest`],
 //! which structurally bars prompt-content routing.
+
+use std::sync::OnceLock;
 
 use super::candidate::{
     LimitField, PricingSku, ReadyRouteCandidate, ResolvedAuthSource, ResolvedEndpoint,
@@ -33,16 +26,341 @@ use super::candidate::{
 };
 use super::capabilities::{
     RouteCapabilities, documented_deepseek_files_api_for_route,
-    documented_deepseek_image_input_for_route, documented_moonshot_web_search_for_route,
-    documented_zai_web_search_for_route,
+    documented_deepseek_image_input_for_route, documented_deepseek_web_search_for_route,
+    documented_moonshot_web_search_for_route, documented_zai_web_search_for_route,
 };
 use super::descriptor::ProviderDescriptor;
 use super::errors::RouteError;
-use super::ids::{LogicalModelRef, ModelId, ProviderId, WireModelId};
+use super::ids::{AUTO_SENTINEL, LogicalModelRef, ModelId, ProviderId, WireModelId};
 use super::offering::{ProviderModelOffering, RouteLimits, bundled_offerings};
-use crate::catalog::{CatalogOffering, bundled_catalog_offerings};
+use super::policy::wildcard_match;
+use crate::catalog::{CatalogOffering, seed_catalog_offerings};
+use crate::cloud_facts::CompiledNamingRules;
+use crate::descriptors::{ModelIdsPolicy, model_rules_for, normalize_model_lookup_key};
 use crate::provider::{WireFormat, WirePolicy};
-use crate::{ProviderKind, opencode_go_model_id, provider_preserves_custom_base_url_model};
+use crate::{ProviderKind, provider_preserves_custom_base_url_model};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedModel {
+    pub logical: String,
+    pub wire_id: String,
+    pub offering: Option<ProviderModelOffering>,
+    pub model: Option<ModelId>,
+    pub alias_matched: bool,
+    pub is_auto: bool,
+}
+
+static DEFAULT_OFFERINGS: OnceLock<Vec<ProviderModelOffering>> = OnceLock::new();
+
+fn default_offerings_slice() -> &'static [ProviderModelOffering] {
+    DEFAULT_OFFERINGS.get_or_init(build_default_offerings)
+}
+
+pub(crate) fn seed_route_offerings() -> &'static [ProviderModelOffering] {
+    default_offerings_slice()
+}
+
+#[must_use]
+pub fn bundled_offering_wire_id(provider: ProviderKind, id: &str) -> Option<&'static str> {
+    find_offering(
+        default_offerings_slice(),
+        &ProviderId::from(provider.as_str()),
+        id,
+        true,
+        false,
+    )
+    .map(|offering| offering.wire_model_id.as_str())
+}
+
+pub fn resolve_model(
+    provider: ProviderKind,
+    raw: &str,
+    base_url: Option<&str>,
+) -> Result<ResolvedModel, RouteError> {
+    let pulled = crate::cloud_facts::overlay::pulled_registry();
+    let offerings: &[ProviderModelOffering] = match pulled.as_deref() {
+        Some(reg) => reg.compiled.route_offerings.as_slice(),
+        None => default_offerings_slice(),
+    };
+    let naming = pulled
+        .as_deref()
+        .and_then(|reg| reg.compiled.naming.get(provider.as_str()));
+    resolve_model_against_offerings(provider, raw, base_url, offerings, &[], naming)
+}
+
+#[must_use]
+pub fn aliases_for_wire_model(provider: ProviderKind, wire_id: &str) -> Vec<String> {
+    model_rules_for(provider)
+        .aliases
+        .iter()
+        .filter_map(|(alias, _)| {
+            let resolved = resolve_model(provider, alias, None).ok()?;
+            (resolved.wire_id == wire_id && *alias != wire_id).then(|| (*alias).to_string())
+        })
+        .collect()
+}
+
+fn find_offering<'a>(
+    offerings: &'a [ProviderModelOffering],
+    provider_id: &ProviderId,
+    candidate: &str,
+    allow_casefold: bool,
+    allow_aggregator_tail: bool,
+) -> Option<&'a ProviderModelOffering> {
+    let mut casefold_match: Option<&'a ProviderModelOffering> = None;
+    let mut casefold_ambiguous = false;
+    let mut suffix_match: Option<&'a ProviderModelOffering> = None;
+    let mut suffix_ambiguous = false;
+
+    for offering in offerings {
+        if offering.provider != *provider_id {
+            continue;
+        }
+        let exact_wire = offering.wire_model_id.as_str() == candidate;
+        let exact_canonical = offering
+            .canonical_model
+            .as_ref()
+            .is_some_and(|m| m.as_str() == candidate);
+        if exact_wire || exact_canonical {
+            return Some(offering);
+        }
+        if allow_casefold
+            && (offering
+                .wire_model_id
+                .as_str()
+                .eq_ignore_ascii_case(candidate)
+                || offering
+                    .canonical_model
+                    .as_ref()
+                    .is_some_and(|m| m.as_str().eq_ignore_ascii_case(candidate)))
+        {
+            match casefold_match {
+                None => casefold_match = Some(offering),
+                Some(first) if first.wire_model_id != offering.wire_model_id => {
+                    casefold_ambiguous = true;
+                }
+                Some(_) => {}
+            }
+        }
+        if allow_aggregator_tail && !candidate.contains('/') {
+            let wire_tail = offering
+                .wire_model_id
+                .as_str()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            let canonical_tail = offering
+                .canonical_model
+                .as_ref()
+                .map(|m| m.as_str().rsplit('/').next().unwrap_or_default());
+            if wire_tail.eq_ignore_ascii_case(candidate)
+                || canonical_tail.is_some_and(|tail| tail.eq_ignore_ascii_case(candidate))
+            {
+                match suffix_match {
+                    None => suffix_match = Some(offering),
+                    Some(first) if first.wire_model_id != offering.wire_model_id => {
+                        suffix_ambiguous = true;
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+
+    if !casefold_ambiguous && let Some(offering) = casefold_match {
+        return Some(offering);
+    }
+    if !suffix_ambiguous && let Some(offering) = suffix_match {
+        return Some(offering);
+    }
+    None
+}
+
+fn resolve_model_against_offerings(
+    provider: ProviderKind,
+    raw: &str,
+    base_url: Option<&str>,
+    offerings: &[ProviderModelOffering],
+    configured_offerings: &[(String, ProviderModelOffering)],
+    pulled_naming: Option<&CompiledNamingRules>,
+) -> Result<ResolvedModel, RouteError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+        return Err(RouteError::EmptyModel);
+    }
+    if trimmed.eq_ignore_ascii_case(AUTO_SENTINEL) {
+        return Ok(ResolvedModel {
+            logical: AUTO_SENTINEL.to_string(),
+            wire_id: AUTO_SENTINEL.to_string(),
+            offering: None,
+            model: None,
+            alias_matched: false,
+            is_auto: true,
+        });
+    }
+
+    let rules = model_rules_for(provider);
+    let provider_id = ProviderId::from(provider.as_str());
+
+    if rules.ids != ModelIdsPolicy::Roster {
+        if let Some((_, offering)) = configured_offerings.iter().find(|(_, offering)| {
+            offering.provider == provider_id && offering.wire_model_id.as_str() == trimmed
+        }) {
+            return Ok(ResolvedModel {
+                logical: offering
+                    .canonical_model
+                    .as_ref()
+                    .map_or_else(|| trimmed.to_string(), |m| m.as_str().to_string()),
+                wire_id: offering.wire_model_id.as_str().to_string(),
+                model: offering.canonical_model.clone(),
+                offering: Some(offering.clone()),
+                alias_matched: false,
+                is_auto: false,
+            });
+        }
+        if base_url.is_some_and(|url| provider_preserves_custom_base_url_model(provider, url)) {
+            let offering = find_offering(offerings, &provider_id, trimmed, false, false);
+            return Ok(ResolvedModel {
+                logical: trimmed.to_string(),
+                wire_id: trimmed.to_string(),
+                model: offering.as_ref().and_then(|o| o.canonical_model.clone()),
+                offering: offering.cloned(),
+                alias_matched: false,
+                is_auto: false,
+            });
+        }
+    }
+
+    let mut stripped = trimmed;
+    for prefix in pulled_naming
+        .into_iter()
+        .flat_map(|n| n.strip_prefixes.iter().map(String::as_str))
+        .chain(rules.strip_prefixes.iter().copied())
+    {
+        if stripped.len() >= prefix.len()
+            && stripped.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        {
+            stripped = &stripped[prefix.len()..];
+            break;
+        }
+    }
+    let stripped = stripped.trim();
+    if stripped.is_empty() {
+        return Err(RouteError::EmptyModel);
+    }
+    if rules.ids == ModelIdsPolicy::Verbatim {
+        let offering = find_offering(offerings, &provider_id, stripped, false, false);
+        return Ok(ResolvedModel {
+            logical: stripped.to_string(),
+            wire_id: stripped.to_string(),
+            model: offering.and_then(|o| o.canonical_model.clone()),
+            offering: offering.cloned(),
+            alias_matched: false,
+            is_auto: false,
+        });
+    }
+
+    let key = normalize_model_lookup_key(stripped);
+    let (alias_matched, candidate) =
+        if let Some(target) = pulled_naming.and_then(|n| n.aliases.get(&key).map(String::as_str)) {
+            (true, target)
+        } else if let Some((_, target)) = rules.aliases.iter().find(|(k, _)| *k == key) {
+            (true, *target)
+        } else {
+            (false, stripped)
+        };
+
+    if let Some((_, offering)) = configured_offerings.iter().find(|(_, offering)| {
+        offering.provider == provider_id && offering.wire_model_id.as_str() == candidate
+    }) {
+        return Ok(ResolvedModel {
+            logical: candidate.to_string(),
+            wire_id: offering.wire_model_id.as_str().to_string(),
+            model: offering.canonical_model.clone(),
+            offering: Some(offering.clone()),
+            alias_matched,
+            is_auto: false,
+        });
+    }
+
+    let allow_tail = rules.ids == ModelIdsPolicy::Catalog && provider != ProviderKind::Zai;
+    let matched_offering = find_offering(offerings, &provider_id, candidate, true, allow_tail);
+
+    let slug_key = normalize_model_lookup_key(candidate);
+    let wire_slug = pulled_naming
+        .and_then(|n| n.wire_slugs.get(&slug_key).map(String::as_str))
+        .or_else(|| {
+            rules
+                .wire_slugs
+                .iter()
+                .find(|(k, _)| *k == slug_key)
+                .map(|(_, v)| *v)
+        });
+
+    if let Some(slug) = wire_slug {
+        let slug_offering = find_offering(offerings, &provider_id, slug, true, false);
+        let logical = candidate.to_string();
+        return Ok(ResolvedModel {
+            logical,
+            wire_id: slug.to_string(),
+            model: slug_offering
+                .as_ref()
+                .and_then(|o| o.canonical_model.clone()),
+            offering: slug_offering.cloned(),
+            alias_matched,
+            is_auto: false,
+        });
+    }
+
+    match rules.ids {
+        ModelIdsPolicy::Roster if matched_offering.is_none() => {
+            return Err(RouteError::UnsupportedModelProtocol {
+                provider: provider_id,
+                model: candidate.to_string(),
+                endpoint_key: "unproven".to_string(),
+            });
+        }
+        ModelIdsPolicy::Strict if !alias_matched && matched_offering.is_none() => {
+            let lower = candidate.to_ascii_lowercase();
+            let accepted = rules.accept.iter().any(|pat| wildcard_match(pat, &lower))
+                || pulled_naming
+                    .is_some_and(|n| n.accept.iter().any(|pat| wildcard_match(pat, &lower)));
+            if !accepted {
+                return Err(RouteError::ForeignModelForDirectProvider {
+                    provider: provider_id,
+                    model: candidate.to_string(),
+                });
+            }
+        }
+        _ => {}
+    }
+
+    let (logical, wire_id, model) = if let Some(offering) = matched_offering {
+        let wire = offering.wire_model_id.as_str();
+        let authoritative = if alias_matched && wire.eq_ignore_ascii_case(candidate) {
+            candidate.to_string()
+        } else {
+            wire.to_string()
+        };
+        let logical = if authoritative.eq_ignore_ascii_case(candidate) {
+            authoritative.clone()
+        } else {
+            candidate.to_string()
+        };
+        (logical, authoritative, offering.canonical_model.clone())
+    } else {
+        (candidate.to_string(), candidate.to_string(), None)
+    };
+
+    Ok(ResolvedModel {
+        logical,
+        wire_id,
+        offering: matched_offering.cloned(),
+        model,
+        alias_matched,
+        is_auto: false,
+    })
+}
 
 /// A request to resolve into an executable route.
 ///
@@ -81,6 +399,7 @@ pub struct RouteRequest {
 pub struct RouteResolver {
     offerings: Vec<ProviderModelOffering>,
     configured_offerings: Vec<(String, ProviderModelOffering)>,
+    follow_registry_overlay: bool,
 }
 
 /// Offering-owned facts selected within one provider scope before the final
@@ -139,7 +458,11 @@ impl RouteResolver {
     /// candidates were previously missing.
     #[must_use]
     pub fn new() -> Self {
-        Self::from_offerings(default_offerings())
+        Self {
+            offerings: default_offerings(),
+            configured_offerings: Vec::new(),
+            follow_registry_overlay: true,
+        }
     }
 
     /// The process-wide resolver built from the committed bundled asset.
@@ -171,6 +494,7 @@ impl RouteResolver {
         Self {
             offerings,
             configured_offerings: Vec::new(),
+            follow_registry_overlay: false,
         }
     }
 
@@ -186,6 +510,13 @@ impl RouteResolver {
         if crate::catalog::configured::validate_configured_models(models).is_err() {
             return self;
         }
+        let pulled = self
+            .follow_registry_overlay
+            .then(crate::cloud_facts::overlay::pulled_registry)
+            .flatten();
+        let current_offerings = pulled.as_deref().map_or(self.offerings.as_slice(), |reg| {
+            reg.compiled.route_offerings.as_slice()
+        });
         for model in models
             .iter()
             .filter(|model| model.matches_route(identity, base_url))
@@ -194,7 +525,7 @@ impl RouteResolver {
             offering.provider = ProviderId::from(provider.as_str());
             // Preserve an adapter's established protocol for an existing ID.
             // The label/config declaration cannot choose a new wire dialect.
-            if let Some(existing) = self.offerings.iter().find(|row| {
+            if let Some(existing) = current_offerings.iter().find(|row| {
                 row.provider == offering.provider && row.wire_model_id == offering.wire_model_id
             }) {
                 offering.endpoint_key.clone_from(&existing.endpoint_key);
@@ -270,12 +601,27 @@ impl RouteResolver {
         req: &RouteRequest,
         endpoint_catalog_authoritative: bool,
     ) -> Result<ReadyRouteCandidate, RouteError> {
-        if self.configured_offerings.is_empty() {
-            return self.resolve_scoped(req, endpoint_catalog_authoritative);
-        }
-        let mut scoped = self.clone();
-        scoped.configured_offerings.clear();
+        let pulled = self
+            .follow_registry_overlay
+            .then(crate::cloud_facts::overlay::pulled_registry)
+            .flatten();
+        let active_offerings = pulled.as_deref().map_or(self.offerings.as_slice(), |reg| {
+            reg.compiled.route_offerings.as_slice()
+        });
         let provider = req.explicit_provider.unwrap_or_default();
+        let active_naming = pulled
+            .as_deref()
+            .and_then(|reg| reg.compiled.naming.get(provider.as_str()));
+        if self.configured_offerings.is_empty() {
+            return self.resolve_scoped(
+                req,
+                endpoint_catalog_authoritative,
+                active_offerings,
+                active_naming,
+            );
+        }
+        let mut scoped_offerings = active_offerings.to_vec();
+        let mut scoped_configured = Vec::new();
         let base_url = req
             .base_url_override
             .as_deref()
@@ -292,22 +638,32 @@ impl RouteResolver {
                 && offering.provider.as_str() == provider.as_str()
                 && selected_id == Some(offering.wire_model_id.as_str())
             {
-                scoped.offerings.retain(|row| {
+                scoped_offerings.retain(|row| {
                     row.provider != offering.provider || row.wire_model_id != offering.wire_model_id
                 });
-                scoped.offerings.push(offering.clone());
-                scoped
-                    .configured_offerings
-                    .push((endpoint.clone(), offering.clone()));
+                scoped_offerings.push(offering.clone());
+                scoped_configured.push((endpoint.clone(), offering.clone()));
             }
         }
-        scoped.resolve_scoped(req, endpoint_catalog_authoritative)
+        let scoped = Self {
+            offerings: scoped_offerings,
+            configured_offerings: scoped_configured,
+            follow_registry_overlay: false,
+        };
+        scoped.resolve_scoped(
+            req,
+            endpoint_catalog_authoritative,
+            &scoped.offerings,
+            active_naming,
+        )
     }
 
     fn resolve_scoped(
         &self,
         req: &RouteRequest,
         endpoint_catalog_authoritative: bool,
+        offerings: &[ProviderModelOffering],
+        pulled_naming: Option<&CompiledNamingRules>,
     ) -> Result<ReadyRouteCandidate, RouteError> {
         // 1. Provider scope from explicit choice only; default otherwise.
         //    The provider is NEVER inferred from a model prefix.
@@ -319,7 +675,7 @@ impl RouteResolver {
         }
         let descriptor = ProviderDescriptor::for_kind(provider_kind);
         let provider_id = descriptor.id();
-        let default_offering = self.default_offering(&provider_id);
+        let default_offering = Self::default_offering(offerings, &provider_id);
         // Bound once so the endpoint-key consumers below cannot desync from
         // the protocol stamp: only a custom table may override the descriptor
         // policy, and a `chat` / unknown dialect arrives as `None` (the
@@ -364,11 +720,6 @@ impl RouteResolver {
         //    Prefixed selectors are preserved VERBATIM as the wire id.
         let custom_endpoint =
             request_uses_custom_endpoint(&descriptor, req.base_url_override.as_deref());
-        let class = if custom_endpoint {
-            ProviderClass::LocalOrCustom
-        } else {
-            classify(provider_kind)
-        };
         let model_aware = descriptor.wire_policy() == WirePolicy::ModelAware;
         // A model-aware protocol row is an exact provider-endpoint fact.
         // OpenCode Zen's published roster is closed; DeepSeek's direct route
@@ -395,8 +746,11 @@ impl RouteResolver {
                 provider_kind,
                 &provider_id,
                 &logical_model,
-                class,
+                req.base_url_override.as_deref(),
+                custom_endpoint,
                 require_catalog_match,
+                offerings,
+                pulled_naming,
             )?
         };
         if provider_kind == ProviderKind::OpencodeGo {
@@ -500,6 +854,11 @@ impl RouteResolver {
                 .base_url_override
                 .as_deref()
                 .unwrap_or_else(|| descriptor.default_base_url());
+            selected.capabilities.server_side_web_search = documented_deepseek_web_search_for_route(
+                provider_kind,
+                selected.wire_model_id.as_str(),
+                effective_base_url,
+            );
             selected.capabilities.files_api = documented_deepseek_files_api_for_route(
                 provider_kind,
                 selected.wire_model_id.as_str(),
@@ -604,214 +963,85 @@ impl RouteResolver {
     }
 
     /// Interpret a concrete (non-auto) selector strictly within provider scope.
+    #[expect(clippy::too_many_arguments)]
     fn scope_selector(
         &self,
         provider_kind: ProviderKind,
         provider_id: &ProviderId,
         logical_model: &LogicalModelRef,
-        class: ProviderClass,
+        base_url_override: Option<&str>,
+        custom_endpoint: bool,
         require_catalog_match: bool,
+        offerings: &[ProviderModelOffering],
+        pulled_naming: Option<&CompiledNamingRules>,
     ) -> Result<ResolvedOffering, RouteError> {
-        // Go's provider roster owns each model's protocol, including when a
-        // custom base URL is configured. Unknown IDs must not fall through.
-        let raw = if provider_kind == ProviderKind::OpencodeGo {
-            opencode_go_model_id(logical_model.raw()).ok_or_else(|| {
-                RouteError::UnsupportedModelProtocol {
-                    provider: provider_id.clone(),
-                    model: logical_model.raw().to_string(),
-                    endpoint_key: "unproven".to_string(),
-                }
-            })?
-        } else if provider_kind == ProviderKind::OpencodeZen {
-            logical_model
-                .raw()
-                .strip_prefix("opencode/")
-                .or_else(|| logical_model.raw().strip_prefix("opencode-zen/"))
-                .unwrap_or_else(|| logical_model.raw())
-        } else if self.configured_offerings.iter().any(|(_, offering)| {
-            offering.provider == *provider_id
-                && offering.wire_model_id.as_str() == logical_model.raw()
-        }) {
-            // An explicitly declared wire ID is not a convenience selector.
-            logical_model.raw()
-        } else if provider_kind == ProviderKind::Concentrate {
-            // Concentrate's own namespace is not part of its wire ids.
-            // `concentrate/auto` is the explicit spelling for the gateway's
-            // `auto` router — Codewhale's bare `auto` is the resolver sentinel
-            // above, never a literal model id — and `concentrate/<id>` is
-            // `<id>`. Upstream prefixes (`openai/gpt-5.6-sol`) stay verbatim:
-            // they pin the upstream provider inside the gateway.
-            logical_model
-                .raw()
-                .strip_prefix("concentrate/")
-                .unwrap_or_else(|| logical_model.raw())
-        } else {
-            provider_scoped_wire_alias(provider_kind, logical_model.raw(), class)
-        };
-
-        // This list was scoped to the exact endpoint and raw selector in
-        // resolve_inner, after closed-protocol admission in the builder.
-        // Prefer that literal declaration over a bundled canonical alias.
-        // Keep this after provider protocol/allowlist normalization above;
-        // a declaration cannot preserve an alias those guards must rewrite.
-        if let Some((_, offering)) = self.configured_offerings.iter().find(|(_, offering)| {
-            offering.provider == *provider_id && offering.wire_model_id.as_str() == raw
-        }) {
-            return Ok(ResolvedOffering::from_offering(offering));
+        let resolved = resolve_model_against_offerings(
+            provider_kind,
+            logical_model.raw(),
+            base_url_override,
+            offerings,
+            &self.configured_offerings,
+            pulled_naming,
+        )?;
+        if let Some(offering) = resolved.offering {
+            return Ok(ResolvedOffering::from_offering(&offering));
         }
 
-        // Try to match a catalog offering owned by THIS provider, either by
-        // canonical model id or by exact wire id. This keeps interpretation
-        // inside provider scope; offerings from other providers are ignored.
-        // DeepSeek and Z.ai also publish marketing-cased wire ids while saved
-        // selectors can be lowercase. Defer that fallback until exact matching
-        // is exhausted, and only accept a unique provider-owned match so
-        // catalog order can never choose between case-distinct model ids.
-        let allow_casefold_wire_match = class == ProviderClass::StrictDirect
-            && matches!(provider_kind, ProviderKind::Deepseek | ProviderKind::Zai);
-        let mut casefold_match = None;
-        let mut casefold_ambiguous = false;
-        let mut suffix_match = None;
-        let mut suffix_ambiguous = false;
-        for offering in &self.offerings {
-            if offering.provider != *provider_id {
-                continue;
+        if !custom_endpoint
+            && provider_kind == ProviderKind::Zai
+            && (Self::selector_matches_other_provider_offering(
+                offerings,
+                provider_id,
+                &resolved.logical,
+            ) || logical_model.namespace_hint().is_some())
+        {
+            return Err(RouteError::ForeignModelForDirectProvider {
+                provider: provider_id.clone(),
+                model: resolved.logical,
+            });
+        }
+
+        if require_catalog_match {
+            if provider_kind == ProviderKind::Codewhale {
+                return Ok(ResolvedOffering {
+                    wire_model_id: WireModelId::from(resolved.wire_id.as_str()),
+                    canonical_model: None,
+                    endpoint_key: super::codewhale_endpoint_key_for_model(&resolved.wire_id)
+                        .to_string(),
+                    limits: RouteLimits::default(),
+                    capabilities: RouteCapabilities::default(),
+                    pricing: PricingSku::UnknownOrStale,
+                });
             }
-            let matches_canonical = offering
-                .canonical_model
-                .as_ref()
-                .is_some_and(|m| m.as_str() == raw);
-            let matches_wire = offering.wire_model_id.as_str() == raw;
-            if matches_canonical || matches_wire {
-                return Ok(ResolvedOffering::from_offering(offering));
-            }
-            // Aggregator wire ids carry an org namespace (`deepseek/<id>`)
-            // while saved selectors and canonical joins use the bare logical
-            // id. A bare selector that uniquely names the last segment of
-            // one wire id owned by THIS provider resolves to that offering;
-            // ambiguity stays unmatched rather than guessing.
-            let wire_tail = offering
-                .wire_model_id
-                .as_str()
-                .rsplit('/')
-                .next()
-                .unwrap_or_default();
-            let canonical_tail = offering
-                .canonical_model
-                .as_ref()
-                .map(|model| model.as_str().rsplit('/').next().unwrap_or_default());
-            if class == ProviderClass::Aggregator
-                && !raw.contains('/')
-                && (wire_tail == raw || canonical_tail == Some(raw))
+            if provider_kind == ProviderKind::OpencodeZen
+                && resolved.wire_id.to_ascii_lowercase().contains("muse-spark")
             {
-                match suffix_match {
-                    None => suffix_match = Some(offering),
-                    Some(first) if first.wire_model_id != offering.wire_model_id => {
-                        suffix_ambiguous = true;
-                    }
-                    Some(_) => {}
-                }
+                return Ok(ResolvedOffering {
+                    wire_model_id: WireModelId::from(resolved.wire_id.as_str()),
+                    canonical_model: None,
+                    endpoint_key: "responses".to_string(),
+                    limits: RouteLimits::default(),
+                    capabilities: RouteCapabilities::default(),
+                    pricing: PricingSku::UnknownOrStale,
+                });
             }
-            if allow_casefold_wire_match
-                && offering.wire_model_id.as_str().eq_ignore_ascii_case(raw)
-            {
-                if casefold_match.is_some() {
-                    casefold_ambiguous = true;
-                } else {
-                    casefold_match = Some(offering);
-                }
-            }
-        }
-        if !suffix_ambiguous && let Some(offering) = suffix_match {
-            return Ok(ResolvedOffering::from_offering(offering));
-        }
-        if !casefold_ambiguous && let Some(offering) = casefold_match {
-            return Ok(ResolvedOffering::from_offering(offering));
+            return Err(RouteError::UnsupportedModelProtocol {
+                provider: provider_id.clone(),
+                model: resolved.wire_id,
+                endpoint_key: "unproven".to_string(),
+            });
         }
 
-        // No catalog match. Apply class-specific pass-through rules.
-        match class {
-            ProviderClass::StrictDirect => {
-                if self.selector_matches_other_provider_offering(provider_id, raw) {
-                    return Err(RouteError::ForeignModelForDirectProvider {
-                        provider: provider_id.clone(),
-                        model: raw.to_string(),
-                    });
-                }
-                // A clearly-foreign selector for a strict direct provider is
-                // rejected. "Clearly foreign" = it carries an aggregator/org
-                // namespace prefix, which a direct provider never expects.
-                if logical_model.namespace_hint().is_some() {
-                    return Err(RouteError::ForeignModelForDirectProvider {
-                        provider: provider_id.clone(),
-                        model: raw.to_string(),
-                    });
-                }
-                if require_catalog_match {
-                    return Err(RouteError::UnsupportedModelProtocol {
-                        provider: provider_id.clone(),
-                        model: raw.to_string(),
-                        endpoint_key: "unproven".to_string(),
-                    });
-                }
-                // A bare, unknown model on a strict direct provider is passed
-                // through verbatim (the provider validates it server-side). No
-                // offering matched, so pricing is honestly unknown (#3085).
-                Ok(ResolvedOffering::unknown(WireModelId::from(raw)))
-            }
-            // Aggregators, local runtimes, and custom OpenAI-compatible
-            // endpoints legitimately accept arbitrary / prefixed ids verbatim.
-            ProviderClass::Aggregator | ProviderClass::LocalOrCustom => {
-                if require_catalog_match {
-                    // The Codewhale API's protocol roster is the *account's*
-                    // live catalog, not a compiled list: a customer who
-                    // connects a new provider gets new `provider/model` rows
-                    // without a Codewhale release. Failing closed on a row the
-                    // local catalog has not seen yet would make the account's
-                    // own connected provider unreachable, so infer the
-                    // protocol from the namespace the account API itself uses
-                    // (`anthropic/` is the Messages passthrough; everything
-                    // else is Chat Completions).
-                    if provider_kind == ProviderKind::Codewhale {
-                        return Ok(ResolvedOffering {
-                            wire_model_id: WireModelId::from(raw),
-                            canonical_model: None,
-                            endpoint_key: super::codewhale_endpoint_key_for_model(raw).to_string(),
-                            limits: RouteLimits::default(),
-                            capabilities: RouteCapabilities::default(),
-                            pricing: PricingSku::UnknownOrStale,
-                        });
-                    }
-                    // Opencode Zen serves Muse Spark exclusively over Responses.
-                    // Handle any future muse-spark variant (e.g. -free suffix)
-                    // even when no exact bundled offering exists — fail open to
-                    // responses rather than failing closed to "unproven".
-                    if provider_kind == ProviderKind::OpencodeZen
-                        && raw.to_ascii_lowercase().contains("muse-spark")
-                    {
-                        return Ok(ResolvedOffering {
-                            wire_model_id: WireModelId::from(raw),
-                            canonical_model: None,
-                            endpoint_key: "responses".to_string(),
-                            limits: RouteLimits::default(),
-                            capabilities: RouteCapabilities::default(),
-                            pricing: PricingSku::UnknownOrStale,
-                        });
-                    }
-                    return Err(RouteError::UnsupportedModelProtocol {
-                        provider: provider_id.clone(),
-                        model: raw.to_string(),
-                        endpoint_key: "unproven".to_string(),
-                    });
-                }
-                // No offering matched: pricing is honestly unknown (#3085).
-                Ok(ResolvedOffering::unknown(WireModelId::from(raw)))
-            }
-        }
+        Ok(ResolvedOffering::unknown(WireModelId::from(
+            resolved.wire_id,
+        )))
     }
 
-    fn default_offering(&self, provider_id: &ProviderId) -> Option<&ProviderModelOffering> {
-        self.offerings
+    fn default_offering<'a>(
+        offerings: &'a [ProviderModelOffering],
+        provider_id: &ProviderId,
+    ) -> Option<&'a ProviderModelOffering> {
+        offerings
             .iter()
             .find(|offering| offering.provider == *provider_id && offering.default_for_provider)
     }
@@ -827,11 +1057,11 @@ impl RouteResolver {
     /// kept deliberately so a bare canonical selector cannot masquerade as a
     /// pass-through model on the wrong provider.
     fn selector_matches_other_provider_offering(
-        &self,
+        offerings: &[ProviderModelOffering],
         provider_id: &ProviderId,
         raw: &str,
     ) -> bool {
-        self.offerings.iter().any(|offering| {
+        offerings.iter().any(|offering| {
             offering.provider != *provider_id
                 && (offering.wire_model_id.as_str() == raw
                     || offering
@@ -842,39 +1072,10 @@ impl RouteResolver {
     }
 }
 
-/// Normalize aliases whose provider wire identity is publicly documented but
-/// intentionally absent from the offline offering catalog. Keeping this seam
-/// provider-scoped avoids claiming unverified limits or pricing while ensuring
-/// receipts and HTTP requests carry the exact upstream model id.
-fn provider_scoped_wire_alias(
-    provider_kind: ProviderKind,
-    raw: &str,
-    class: ProviderClass,
-) -> &str {
-    if class != ProviderClass::LocalOrCustom {
-        if provider_kind == ProviderKind::Together
-            && (raw.eq_ignore_ascii_case("inkling") || raw.eq_ignore_ascii_case("together-inkling"))
-        {
-            return "thinkingmachines/inkling";
-        }
-        if provider_kind == ProviderKind::Openrouter
-            && (raw.eq_ignore_ascii_case("qwen3.7-plus")
-                || raw.eq_ignore_ascii_case("qwen-3.7-plus"))
-        {
-            return "qwen/qwen3.7-plus";
-        }
-    }
-    raw
-}
-
-/// Build the default resolver offerings from the bundled Models.dev asset.
-///
-/// Curated transport rows win a `(provider, wire id)` collision over the asset;
-/// all other offerings continue to come from Models.dev.
-fn default_offerings() -> Vec<ProviderModelOffering> {
+fn build_default_offerings() -> Vec<ProviderModelOffering> {
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let asset_rows = bundled_catalog_offerings()
+    let asset_rows = seed_catalog_offerings()
         .iter()
         .map(CatalogOffering::to_offering)
         .collect::<Vec<_>>();
@@ -910,34 +1111,8 @@ fn default_offerings() -> Vec<ProviderModelOffering> {
     out
 }
 
-/// The resolver's minimal route classification.
-///
-/// Intentionally narrower than tui's `validate_route`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderClass {
-    /// Strict direct provider: rejects clearly-foreign (prefixed) selectors.
-    StrictDirect,
-    /// Aggregator: serves many catalogs under prefixed wire ids.
-    Aggregator,
-    /// Local runtime or custom OpenAI-compatible endpoint: pass-through.
-    LocalOrCustom,
-}
-
-/// Classify a provider kind for resolver pass-through rules.
-///
-/// Only a SMALL set of providers are strict-direct. Everything else passes
-/// through, so the resolver stays permissive by default.
-fn classify(kind: ProviderKind) -> ProviderClass {
-    match kind {
-        // Strict first-party direct providers.
-        ProviderKind::Deepseek | ProviderKind::Zai => ProviderClass::StrictDirect,
-        // Local runtimes / custom OpenAI-compatible endpoints.
-        ProviderKind::Ollama | ProviderKind::Vllm | ProviderKind::Sglang | ProviderKind::Openai => {
-            ProviderClass::LocalOrCustom
-        }
-        // Everything else is treated as an aggregator-style pass-through.
-        _ => ProviderClass::Aggregator,
-    }
+fn default_offerings() -> Vec<ProviderModelOffering> {
+    default_offerings_slice().to_vec()
 }
 
 fn request_uses_custom_endpoint(

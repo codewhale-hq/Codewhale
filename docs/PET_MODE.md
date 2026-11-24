@@ -50,6 +50,15 @@ as a mark and a word, so it reads without colour or motion:
 | Done | `✓ Done` | The last turn completed. |
 | Failed | `✕ failed` | The last turn ended in failure. |
 
+While a turn runs, the whale's dots leave it and become the thing the work is,
+in motion, then return: a wrench for commands and tools, a pencil for edits, a
+book for reading, a lens for searching, a flask for tests, a globe for
+browsing, a pointer for computer use, stacked layers for memory, a bulb for
+thinking, a speech bubble for replies, a pod of small whales for parallel
+agents, a ringing bell when it needs you and a check mark when it is done.
+Reduced motion holds one still pose of the form. The caption keeps the same
+meaning in words.
+
 The status bar underneath keeps its usual live readouts, such as the agent
 count (`2 agents`) and the work bar. Transient notices, such as a retry
 (`Retry attempt: transport 1/3; network error; waiting 0.94s`), show on the
@@ -67,7 +76,7 @@ one.
 
 | View | What it draws | When its requirement is missing |
 | --- | --- | --- |
-| `whale` | The companion's live dot whale. | Shows `cove` (or `braille`) until the companion is reachable (`codewhale pet serve`) and this terminal's session is its source (`/pet source`). |
+| `whale` | The dot whale, drawn from this terminal's own session. It uses the companion's frame when this session is the companion's source. | Shows `cove` (or `braille`) for a moment while the local dot whale starts. If it cannot start, it keeps showing `cove` and the line under the title names what the companion needs (`codewhale pet serve` or `/pet source`). |
 | `cove` | The local half-block whale, without the translucent cove scenery. | Needs colour: `braille` is shown under `NO_COLOR`, a 16-colour terminal, or an unknown background. `COLORTERM=truecolor` enables true colour; `CODEWHALE_APPEARANCE=dark` or `light` selects a known background. |
 | `braille` | The local whale in coloured Braille dots. | Shows only the state words under `CODEWHALE_ASCII_SAFE` or when the art area is smaller than 16x8 cells. |
 | `pixels` | The companion's whale as a kitty-graphics image. | Needs kitty graphics, synchronized output, a known cell size in pixels, and `CODEWHALE_PET_GRAPHICS` not set to `braille`; otherwise shows `particles`. Terminal.app has no kitty graphics. |
@@ -95,17 +104,16 @@ inspector over it:
 | `Ctrl+]` / `Ctrl+Tab`, `Ctrl+Shift+Tab` | Next or previous pet view (main view only). The Tab chords require a terminal that sends them; use `Ctrl+]` in Terminal.app. |
 | `F6` | Turn the companion's sound on or off. |
 | `F8` | Open the appearance studio in your browser. |
-| `F9` | Open the native Codewhale Pet window (macOS). |
 | `Esc` | Back to the message box. Your draft, the transcript, and any running turn are untouched. |
 | `Tab` | Switch between the Reply and Agents panes. |
 | `Up` / `Down`, `PgUp` / `PgDn`, `Home` / `End` | Scroll the focused pane. |
 | `Enter` (Agents pane) | Open the selected agent's transcript. |
 | `c` | Copy the last finished reply, through the same path as `/copy`. |
 
-`F5`, `F6`, `F8` and `F9` work on the main view and in the inspector. On a Mac
+`F5`, `F6` and `F8` work on the main view and in the inspector. On a Mac
 keyboard the top row sends media keys unless Fn is held, so F-key hints
 throughout the TUI, including help, read `fn+F5`, `fn+F8` and so on; press
-Fn with the key. ASCII-safe hints keep that prefix. A successful `F8` or `F9` says
+Fn with the key. ASCII-safe hints keep that prefix. A successful `F8` says
 `habitat open`; a failed launch shows its own reason.
 
 ## Several terminals, one pet each
@@ -115,16 +123,19 @@ each: each whale follows its own session, so one can show `✓ Done` while the
 other shows `● working`. Nothing is mixed between sessions.
 
 Behind the scenes, all terminals on a machine share one local companion
-(`codewhale pet serve`, started automatically when a view needs it). The
+(`codewhale pet serve`). The default `whale` view draws without it; the
+companion starts automatically for the habitat, sound, the other views, or a
+dot whale that could not start. The
 companion keeps the pet's identity, animation clock, saved recording, optional
-sound, and the appearance and window views. It follows one session at a time,
+sound, and the appearance view. It follows one session at a time,
 called the source:
 
 - The first saved terminal session to attach becomes the source.
-- Later terminals are views of the same companion. They still show their own
-  state word and mark, but the companion's finer activity detail inside the
-  whale body (reading, editing, searching and so on) appears only in the
-  terminal whose session is the source.
+- Every terminal's `whale` view draws the dot whale and its activity forms
+  (reading, editing, searching and so on) from that terminal's own session.
+- The source decides which session the companion records, plays sound for,
+  and shows in the `pixels` and `particles` views and the browser appearance
+  view.
 - Run `/pet source` in a terminal to make its session the source.
 
 The companion exits after ten minutes with no view, producer, or audio client.
@@ -155,7 +166,6 @@ This presentation data does not enter model requests or affect the KV cache.
 | `/pet status` | Show on or off, habitat open or closed, the companion's identity and tick, the source session, and measured output counters. |
 | `/pet source` | Make this terminal's session the companion's source. Needs a saved session. |
 | `/pet appearance` | Open the appearance studio (palette, brightness, dot size, glow) in your browser, on loopback. Same as `F8`. |
-| `/pet window` | Open the native Codewhale Pet window, if the macOS app is installed. Same as `F9`. If it is not installed, Codewhale says to build or install it. |
 | `/pet sound on`, `/pet sound off` | Turn the companion's sound on or off. Same toggle as `F6`. |
 | `/pet avatar [key]` | List the views, or choose one: `whale`, `cove`, `braille`, `pixels`, `particles`, `whale-girl`, and any avatar packs you have installed. |
 | `/pet action <name>`, `/pet view <name>`, `/pet action live` | Preview a named pose or view of the chosen avatar, or return to live. |
@@ -185,7 +195,7 @@ stays off.
   shows `particles` and says why.
 - **No companion.** If the companion cannot be reached, the view says so and the
   state word and mark continue to work, because they come from your session.
-  `/pet on`, `F8`, `F9` and the companion commands such as `/pet appearance`
+  `/pet on`, `F8` and the companion commands such as `/pet appearance`
   start it again.
 
 ## Privacy
@@ -214,9 +224,10 @@ execution API.
   refreshed when the turn ends, not on every change. The agent count in the
   status bar and the work bar are live; treat the inspector's rows as a
   snapshot until the turn finishes.
-- **One source at a time.** The companion's activity detail follows one session.
-  Other terminals show their own state word and mark, not the detail.
-- **`/pet window` is macOS only** and needs the Codewhale Pet app.
+- **One source at a time.** The companion's recording, sound, `pixels` and
+  `particles` views, and avatar packs follow one session. Only the `whale` view
+  follows each terminal's own session, and it starts unobserved: events from
+  before the first `/pet` in that Codewhale process are not shown.
 - **Sound needs `ffplay`** and one terminal holds the output at a time.
 - **The chosen view is not saved.** It lasts for this run of Codewhale,
   including session switches; a restart begins on `whale`.
@@ -224,8 +235,8 @@ execution API.
   only on the main view.
 - **`Ctrl+]` cannot open the work bar** while the pet main view is showing. Use
   `/pet off` first.
-- **The browser studio and the macOS window are not views in the ring**, because
-  each press would start a process. Use `F8` and `F9`.
+- **The browser studio is not a view in the ring**, because each press would
+  start a process. Use `F8`.
 - **No sixel or iTerm2 images.** The `pixels` view draws only through kitty
   graphics.
 

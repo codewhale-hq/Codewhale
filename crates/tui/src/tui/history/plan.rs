@@ -65,6 +65,7 @@ fn render_plan_snapshot_lines(snapshot: &PlanSnapshot, lines: &mut Vec<Line<'sta
     );
     render_plan_optional(lines, "risk", snapshot.risks_and_unknowns.as_deref(), width);
     render_plan_optional(lines, "handoff", snapshot.handoff_packet.as_deref(), width);
+    render_plan_list(lines, "replan if", &snapshot.replan_if, width);
 
     for step in &snapshot.items {
         let marker = match step.status {

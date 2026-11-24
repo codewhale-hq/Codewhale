@@ -590,6 +590,7 @@ impl App {
             needs_api_key,
             needs_workspace_trust,
         );
+        let auto_review_disabled = config.auto_review_disabled();
         let saved_permission_posture = if approval_policy_locked {
             None
         } else {
@@ -597,6 +598,7 @@ impl App {
                 .permission_posture
                 .as_deref()
                 .and_then(ApprovalMode::from_config_value)
+                .filter(|mode| !(auto_review_disabled && *mode == ApprovalMode::Auto))
         };
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
@@ -837,6 +839,8 @@ impl App {
             dispatch_cancel: None,
             last_enter_instant: None,
             last_clipboard_paste: None,
+            pending_paste: None,
+            paste_shortcut_press_seen: false,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),
@@ -858,6 +862,7 @@ impl App {
             context_pressure_warning_dismissed: None,
             plugin_reload_nudge_stamp: None,
             last_plugin_catalog_poll: None,
+            mcp_config_watch: None,
             plugin_cta: crate::tui::plugin_suggestions::PluginCtaState::from_settings(&settings),
             model,
             provider_models,
@@ -939,6 +944,7 @@ impl App {
             ambient_clock_ms: 0,
             ambient_clock_sampled_at: None,
             ambient_idle_since: None,
+            ambient_life_held_ms: None,
             ocean_completion_started_at: None,
             ocean_turn_history_start: 0,
             ocean_receipt_settle_start: None,
@@ -982,6 +988,9 @@ impl App {
             sessions_rail: settings.sessions_rail,
             tool_collapse_threshold: 3,
             expanded_tool_runs: HashSet::new(),
+            turn_work_durations: HashMap::new(),
+            turn_durations_revision: 0,
+            active_turn_user_index: None,
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             file_tree: None,
             file_tree_visible: false,
@@ -995,6 +1004,7 @@ impl App {
             subagent_terminal_seen_at: HashMap::new(),
             agent_progress: HashMap::new(),
             agent_progress_meta: HashMap::new(),
+            delegated_writes: Default::default(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
             pending_subagent_dispatch: None,
@@ -1039,6 +1049,7 @@ impl App {
             lifecycle_outbox,
             yolo: yolo_compat,
             yolo_compat_notified: false,
+            permission_receipt_deferred: false,
             operate_retired_notified: false,
             startup_defaults: Default::default(),
             keybinding_migration_notified: false,
@@ -1046,6 +1057,14 @@ impl App {
             approval_policy_locked,
             approval_policy_root_editable,
             approval_policy_requirements_managed,
+            auto_review_disabled,
+            auto_review_reviewer_model: config.auto_review_reviewer_model().map(str::to_string),
+            exec_policy_engine: config.exec_policy_engine.clone(),
+            auto_review_broad_allow_warnings:
+                codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(
+                    config,
+                )
+                .suspended_allow_warnings,
             shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
@@ -1062,6 +1081,8 @@ impl App {
             backtrack: crate::tui::backtrack::BacktrackState::new(),
             undo_selection: false,
             current_session_id: None,
+            conversation_mode: None,
+            conversation_mode_unavailable: None,
             session_write_receipt: None,
             session_write_owner: None,
             offline_queue_lease: None,
@@ -1110,6 +1131,7 @@ impl App {
             mcp_snapshot_generation: 0,
             mcp_snapshot_generation_invalidated: false,
             mcp_connecting,
+            mcp_announced_problems: std::collections::BTreeMap::new(),
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
             // no live snapshot is available (#502). Cheap (just reads
@@ -1134,7 +1156,7 @@ impl App {
             agent_roster_print_requested: false,
             active_tool_entry_completed_at: HashMap::new(),
             exploring_entries: HashMap::new(),
-            ignored_tool_calls: HashSet::new(),
+            ignored_tool_calls: HashMap::new(),
             last_exec_wait_command: None,
             streaming_message_index: None,
             streaming_source_receipt: None,
@@ -1142,6 +1164,7 @@ impl App {
             streaming_thinking_active_entry: None,
             pending_thinking_translation_cells: HashMap::new(),
             thinking_revision_last_bump_at: None,
+            thinking_revision_owed: false,
             streaming_state: StreamingState::new(),
             streaming_output_token_estimate: 0,
             reasoning_buffer: String::new(),
@@ -1150,6 +1173,8 @@ impl App {
             pending_tool_uses: Vec::new(),
             pending_gate_receipts: Vec::new(),
             child_gate_receipts: std::collections::HashMap::new(),
+            auto_review_blocked_receipts: Vec::new(),
+            pending_auto_review_retry: None,
             queued_messages: VecDeque::new(),
             held_restored_queue: 0,
             queued_draft: None,
@@ -1257,6 +1282,10 @@ impl App {
         if settings.legacy_operate_default_detected() {
             app.notify_operate_retired_once();
         }
+        if app.approval_mode == ApprovalMode::Auto && app.has_suspended_broad_allows() {
+            app.emit_auto_review_broad_allows_paused_note();
+        }
+        app.refresh_agent_approved_plugins_notice();
         app
     }
 }

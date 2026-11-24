@@ -31,13 +31,17 @@ shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查�
 直接运行，因此 Full Access 下的 agent 可以信任并启用它自己编写的插件。每次信任都记录
 批准者。agent 运行的每条命令（shell 命令、持久终端、验证与测试运行、Python 内核里运行的代码、它用
 `start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记 `CODEWHALE_AGENT_PROJECT`，值为会话
-所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
+所在项目，与沙箱和权限模式无关；在 Auto-Review 下，shell 与验证器运行还会附带
+`CODEWHALE_AGENT_POSTURE=auto_review` 以及 `CODEWHALE_AGENT_THREAD_ID`、
+`CODEWHALE_AGENT_TURN_ID` 和 `CODEWHALE_AGENT_TOOL_CALL_ID`，使 `plugins trust` 与
+`plugins enable` 记录为 Auto-Review 下的 agent（而不是命令行）；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
 不带标记。带有标记时，信任和启用都记为该 agent，仅限该项目，即使
 提示是通过终端回答的也一样，绝不记为本人；而且只能信任从该项目内的文件夹用
 `codewhale install` 安装的插件（依据插件包的 `.installed-from` 记录），否则拒绝并交给本人。
 没有标记时，`--yes` 记为命令行，不授予任何宿主服务；在本人终端里回答提示记为本人。这个
 标记只是标签而不是锁：在 Full Access 下 agent 可以把它去掉，此时记录显示为命令行。`--review-token` 是插件包审查令牌
 （`<content-hash>.<capability-hash>`），不是宿主服务审查令牌。
+agent 批准的插件仅在其记录命名的项目内活跃，并在该项目独立的 agent 宿主进程中运行，与本人审查的插件隔离。当本人完成审查后，该插件将迁移至本人审查的宿主进程，其存储数据也会一并迁移；若目标位置已存在同名数据目录，则迁移将被拒绝且插件保持关闭。本人审查会取代 agent 的记录。
 
 ## 入口、审查与生命周期
 
@@ -98,7 +102,7 @@ CommonJS 解析也需要 Node；这些情况会明确提示使用
 需要未提供服务的插件会激活失败，并显示原因。目前没有已发布的插件编写 SDK；
 普通 ESM 示例使用这些文档规定的适配服务。
 
-共享进程内的插件并不相互隔离；所有者标签及 `dataDir` 不能构成彼此之间的安全边界。
+本人审查的 Native 插件共享同一个进程和数据目录，而 agent 批准的插件按项目在各自独立的宿主进程和隔离目录（`data-agent/<digest>`）中运行。同一个宿主进程内的插件并不相互隔离；所有者标签及 `dataDir` 不能构成同进程插件彼此之间的安全边界。
 宿主禁止进程内原生代码入口，包括 native addon、Worker 和相关 FFI/SQLite 入口。
 macOS Seatbelt 与 Linux bubblewrap 限制宿主进程，但不等于对每次插件文件访问执行
 工具审批。不要在描述、日志、配置或结果中保存凭据。
@@ -249,8 +253,15 @@ DSH 的 `allow` 被视为不干预，每个所有者提示一次；不能预先�
 和审批检查。理由及上下文沿用现有清理与大小限制。
 
 该桥接作用于 Engine 会话的模型工具、受 gate 管理的 code-mode 调用及 `exec.core`
-调用。独立 ACP 执行路径没有 TypeScript 宿主 attachment。`prepend`/`global` 顺序
-覆盖、包裹实际执行的中间件、DSH 运行时句柄和执行后结果改写均不支持。
+调用。编辑器通过 ACP（`codewhale serve --acp`）驱动的会话获得同一个扩展宿主，并受相同的
+`[features]` 开关（`extension_host`、`mcp`）约束：已审查的插件工具（TypeScript 与 DSH）和
+Codewhale 中配置的 MCP 服务器会作为 ACP 工具调用出现，并通过会话的权限设置询问；Plan 保持只读。
+插件工具通过 `exec.core` 请求核心执行需要审批的工具时，审批请求显示在该插件
+工具的调用上，并写明嵌套工具及其输入。
+ACP 服务器的能力声明会说明这一点（`agentCapabilities._meta.codewhale`）。ACP 客户端在
+`mcpServers` 中传入的服务器和已配置的 shell hooks 不会挂载。`prepend`/`global` 顺序
+覆盖、包裹实际执行的中间件、DSH 运行时句柄和执行后结果改写均不支持。Native
+`tool_call_after` 仍是只观察的契约。
 
 ## 提示词片段
 
@@ -273,6 +284,7 @@ Rust 只选择当前 Engine 所需、仍有效并具有已审查 Native 权限�
 ## 插件本地状态
 
 `ctx.storage.get(key)`、`set(key, json)`、`delete(key)` 操作 Rust 已指定的 `dataDir`
+（本人审查的插件位于 `~/.codewhale/extension-host/data/plugins/<name>-<id>`，agent 批准的插件位于 `~/.codewhale/extension-host/data-agent/<digest>/plugins/<name>-<id>`，其中 `<digest>` 为归一化项目路径的 128 位十六进制摘要）
 内的普通 JSON。状态跨重启和代际保留；停用和卸载不会删除该目录。该服务不暴露
 会话历史或凭据。所有者开始清理后拒绝访问，也拒绝链接文件、损坏记录和超限写入。
 
@@ -341,9 +353,12 @@ async execute({ path }, exec) {
 用户命令或 `execute_tools` 中的嵌套扩展工具执行里；调用结束、取消、
 插件停用或宿主退出后失效，等待中的审批以取消结果撤回。
 
-嵌套 shell 和网络调用强制要求用户审批，已记住的授权不满足它们；Ask 和
-Full Access 都会逐次询问用户，明确的会话拒绝仍然生效。Auto-Review 和 Never
-不会打开卡片，会直接拒绝。少数只读、工作区本地工具可免去新的卡片。外层插件工具的批准并不
+嵌套 shell 和网络调用在 Ask 和 Full Access 下都会逐次询问用户（已记住的授权不满足它们，
+明确的会话拒绝仍然生效）；在 Never 下不会打开卡片，直接拒绝。在 Auto-Review 下，
+需要审批的扩展调用（包括嵌套 `core/call`、宿主服务写/外联操作与插件宿主工具调用）会带着宿主铸造的
+插件身份交由 Auto-Review 审查模型结合上下文审查，且无法通过例行放行分级、
+`auto_review.allow` 规则或带类型的 `allow` 规则绕过；独立的带类型 `deny`/`ask` 规则、
+钩子拦截及安全底线阻断依然生效。少数只读、工作区本地工具可免去新的卡片。外层插件工具的批准并不
 批准它进一步发起的核心调用，授权按插件构建来源隔离。
 
 不允许递归调用扩展工具、MCP/Computer Use、解释器、agent/workflow/rlm、
@@ -351,6 +366,18 @@ Full Access 都会逐次询问用户，明确的会话拒绝仍然生效。Auto-
 目标。每次扩展工具调用最多发起 50 次核心调用，最多四个并发，一张等待审批卡片；
 宿主最多 256 个请求在途。审批等待期间，外层工具截止时钟暂停。完整的拒绝列表和
 `CoreCallError` 错误分类见[英文核心调用契约](../EXTENSIONS.md#asking-the-core-to-run-a-tool)。
+
+宿主服务的授予只表示插件可以提出请求；每次实际操作都由会话的权限模式决定，与 agent
+的其他操作一样：会改动内容或连到会话之外的操作，在 Ask 和 Accept Edits 下通过普通审批卡片
+询问本人，在 Auto-Review 下由审查模型判断，在 Full Access 下直接执行，在 Never 下拒绝，在
+Plan 下拒绝。在子 agent 中，这类操作不会随子 agent 的文件写入一并放行：它需要同样的决定，
+还需要子 agent 的 shell 权限，改动内容另需写入权限，连到外部另需网络权限。只读操作不弹卡片。
+服务经由核心工具完成的操作（读文件、终端命令）走该工具自己的关卡。工具调用结束时，每次
+操作，无论是否获准，都记录在结果的 `core_calls` 元数据的 `broker_acts` 中（前 50 条及总数）。
+工具在发起操作后失败时，返回的失败结果带有错误文本和这份记录。操作计入每次工具调用的 50 次
+嵌套调用上限，与其 `core/call` 共用；同时最多四个在关卡上等待，更多的操作排队等待空位。
+`plugins` 服务从不经审查授予：只有 Codewhale 自带的内置 creator 模块持有它，而且仅限会话
+自身的 agent，不含子 agent。
 
 ## 兼容边界
 

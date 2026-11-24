@@ -4,8 +4,10 @@
 //! module. Compatible harness roots, built-ins, and plugin snapshots are
 //! never mutated.
 
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -19,6 +21,10 @@ use super::audit::{
 use super::normalize_skill_name_for_lookup;
 use super::roots::{
     SkillRootCatalog, SkillRootDescriptor, SkillRootKind, SkillScope, safe_display_path,
+};
+use codewhale_skill_install::bounded_tar;
+use codewhale_skill_install::frontmatter::{
+    SkillValidationMode, parse_frontmatter, validate_skill_frontmatter,
 };
 use codewhale_skill_install::install::{
     self, InstallOutcome, InstallSource, UpdateResult, write_installed_from_v2, write_trust_v2,
@@ -47,6 +53,15 @@ pub enum ConflictPolicy {
     Reject,
     ReplaceConfirmed,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillInitiator {
+    Person,
+    Agent,
+    CommandLine,
+}
+
+pub type StartedBy = SkillInitiator;
 
 #[derive(Debug, Clone)]
 pub enum SkillMutationRequest {
@@ -104,17 +119,36 @@ pub enum SkillMutationOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub enum SkillOneStepRequest {
+    Install {
+        spec: String,
+        target: SkillTargetScope,
+    },
+    Mutation(SkillMutationRequest),
+}
+
+#[derive(Debug, Clone)]
 pub struct SkillMutationReceipt {
     #[allow(dead_code)] // surfaced by manager detail / future receipt toast
     pub action: SkillActionKind,
     pub name: String,
     pub scope: SkillScope,
     pub safe_target_path: String,
-    #[allow(dead_code)] // reserved for digest-diff UI
-    pub before_digest: Option<String>,
-    #[allow(dead_code)] // reserved for digest-diff UI
-    pub after_digest: Option<String>,
     pub outcome: SkillMutationOutcome,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillOneStepReceipt {
+    pub receipt: SkillMutationReceipt,
+    pub summary: String,
+}
+
+impl std::ops::Deref for SkillOneStepReceipt {
+    type Target = SkillMutationReceipt;
+
+    fn deref(&self) -> &Self::Target {
+        &self.receipt
+    }
 }
 
 /// Inputs shared by mutation operations.
@@ -125,6 +159,30 @@ pub struct MutationContext<'a> {
     pub network: &'a NetworkPolicy,
     pub max_size: u64,
     pub registry_url: &'a str,
+}
+
+async fn off_runtime<T: Send + 'static>(
+    ctx: &MutationContext<'_>,
+    work: impl FnOnce(&MutationContext<'_>) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let workspace = ctx.workspace.to_path_buf();
+    let home = ctx.home.map(Path::to_path_buf);
+    let configured_skills_dir = ctx.configured_skills_dir.map(Path::to_path_buf);
+    let network = ctx.network.clone();
+    let max_size = ctx.max_size;
+    let registry_url = ctx.registry_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        work(&MutationContext {
+            workspace: &workspace,
+            home: home.as_deref(),
+            configured_skills_dir: configured_skills_dir.as_deref(),
+            network: &network,
+            max_size,
+            registry_url: &registry_url,
+        })
+    })
+    .await
+    .context("skill mutation task failed")?
 }
 
 fn owned_anchor<'a>(
@@ -374,23 +432,58 @@ pub async fn execute(
     request: SkillMutationRequest,
     ctx: &MutationContext<'_>,
 ) -> Result<SkillMutationReceipt> {
+    execute_one_step(SkillOneStepRequest::Mutation(request), None, ctx)
+        .await
+        .map(|out| out.receipt)
+}
+
+pub async fn execute_one_step(
+    request: SkillOneStepRequest,
+    started_by: Option<SkillInitiator>,
+    ctx: &MutationContext<'_>,
+) -> Result<SkillOneStepReceipt> {
     match request {
-        SkillMutationRequest::InstallRemote { source, target } => {
-            install_remote(source, target, ctx).await
+        SkillOneStepRequest::Install { spec, target } => match local_path_spec(&spec) {
+            Some(raw) => {
+                let raw = raw.to_string();
+                off_runtime(ctx, move |ctx| install_local(&raw, target, started_by, ctx)).await
+            }
+            None => {
+                let source = InstallSource::parse(&spec)?;
+                install_remote(source, target, started_by, ctx).await
+            }
+        },
+        SkillOneStepRequest::Mutation(SkillMutationRequest::InstallRemote { source, target }) => {
+            install_remote(source, target, started_by, ctx).await
         }
-        SkillMutationRequest::Update {
+        SkillOneStepRequest::Mutation(SkillMutationRequest::Update {
             skill_id,
             expected_digest,
-        } => update_skill(skill_id, expected_digest, ctx).await,
-        SkillMutationRequest::UpdateByName {
+        }) => update_skill(skill_id, expected_digest, started_by, ctx).await,
+        SkillOneStepRequest::Mutation(SkillMutationRequest::UpdateByName {
             name,
             scope,
             expected_digest,
-        } => {
-            let resolved = resolve_owned_skill_by_name(ctx, &name, scope)?;
-            update_skill(resolved.id, expected_digest.or(Some(resolved.digest)), ctx).await
+        }) => {
+            let resolved = off_runtime(ctx, move |ctx| {
+                resolve_owned_skill_by_name(ctx, &name, scope)
+            })
+            .await?;
+            update_skill(
+                resolved.id,
+                expected_digest.or(Some(resolved.digest)),
+                started_by,
+                ctx,
+            )
+            .await
         }
-        sync => execute_sync(sync, ctx),
+        SkillOneStepRequest::Mutation(sync) => {
+            let receipt = off_runtime(ctx, move |ctx| execute_sync(sync, ctx)).await?;
+            Ok(SkillOneStepReceipt {
+                receipt,
+                summary: String::new(),
+            })
+        }
     }
 }
 
@@ -584,58 +677,723 @@ fn ensure_remote_updatable(skill_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+const LOCAL_SPEC_PREFIX: &str = "path:";
+const MAX_LOCAL_ARCHIVE_ENTRIES: usize = 512;
+
+#[must_use]
+pub fn local_path_spec(spec: &str) -> Option<&str> {
+    let spec = spec.trim();
+    if let Some(rest) = spec.strip_prefix(LOCAL_SPEC_PREFIX) {
+        return Some(rest.trim());
+    }
+    let bytes = spec.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    let local = matches!(spec, "." | "..")
+        || spec.starts_with(['/', '~', '\\'])
+        || spec.starts_with("./")
+        || spec.starts_with("../")
+        || spec.contains('\\')
+        || drive;
+    local.then_some(spec)
+}
+
+fn scope_label(target: SkillTargetScope) -> &'static str {
+    match target {
+        SkillTargetScope::Project => "project",
+        SkillTargetScope::Global => "global",
+    }
+}
+
+fn script_count(skill_dir: &Path) -> usize {
+    fn count(dir: &Path, depth: usize) -> usize {
+        if depth > 16 {
+            return 0;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => count(&entry.path(), depth + 1),
+                Ok(kind) if kind.is_file() => 1,
+                _ => 0,
+            })
+            .sum()
+    }
+    count(&skill_dir.join("scripts"), 0)
+}
+
+fn skill_is_on(name: &str, home: Option<&Path>) -> bool {
+    let store = match (codewhale_config::codewhale_home_is_explicit(), home) {
+        (false, Some(home)) => codewhale_runtime::skill_state::SkillStateStore::load_from(
+            home.join(".codewhale").join("skills_state.toml"),
+        ),
+        _ => codewhale_runtime::skill_state::SkillStateStore::load_default(),
+    };
+    let canonical = normalize_skill_name_for_lookup(name);
+    let legacy = (canonical != name).then_some(name);
+    store
+        .map(|state| state.is_enabled_with_legacy(&canonical, legacy))
+        .unwrap_or(true)
+}
+
+fn receipt_summary(
+    verb: &str,
+    name: &str,
+    target: SkillTargetScope,
+    spec: &str,
+    path: &Path,
+    replaced: Option<&str>,
+    home: Option<&Path>,
+) -> String {
+    let mut line = format!(
+        "{verb} skill {name} ({}) from {spec}, {}",
+        scope_label(target),
+        if skill_is_on(name, home) { "on" } else { "off" }
+    );
+    if let Some(old) = replaced {
+        line.push_str(&format!("; replaces the copy from {old}"));
+    }
+    match script_count(path) {
+        0 => {}
+        1 => line.push_str("; includes 1 script"),
+        n => line.push_str(&format!("; includes {n} scripts")),
+    }
+    line
+}
+
+struct InstalledMarker {
+    spec: String,
+    content_digest: Option<String>,
+}
+
+fn read_installed_marker(skill_dir: &Path) -> Result<Option<InstalledMarker>> {
+    let marker_path = skill_dir.join(install::INSTALLED_FROM_MARKER);
+    match fs::symlink_metadata(&marker_path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to inspect {}", marker_path.display()));
+        }
+    }
+    let body = fs::read_to_string(&marker_path)
+        .with_context(|| format!("failed to read {}", marker_path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .with_context(|| format!("malformed {}", install::INSTALLED_FROM_MARKER))?;
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    Ok(Some(InstalledMarker {
+        spec: text("spec").unwrap_or_default(),
+        content_digest: text("content_digest"),
+    }))
+}
+
+fn installed_specs(skills_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(skills_dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let meta = fs::symlink_metadata(entry.path()).ok()?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return None;
+            }
+            let marker = read_installed_marker(&entry.path()).ok()??;
+            Some((name, marker.spec))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+fn record_person_approval(
+    initiator: Option<SkillInitiator>,
+    target: SkillTargetScope,
+    skills_dir: &Path,
+    path: &Path,
+    digest: Option<&str>,
+) -> Result<()> {
+    if initiator != Some(SkillInitiator::Person) || target != SkillTargetScope::Global {
+        return Ok(());
+    }
+    let Some(digest) = digest else {
+        return Ok(());
+    };
+    validate_owned_child(skills_dir, path, true)?;
+    write_trust_v2(path, digest)
+}
+
 async fn install_remote(
     source: InstallSource,
     target: SkillTargetScope,
+    initiator: Option<SkillInitiator>,
     ctx: &MutationContext<'_>,
-) -> Result<SkillMutationReceipt> {
-    let skills_dir = prepare_owned_target(ctx.workspace, ctx.home, target)?;
-    let anchor = owned_anchor(ctx.workspace, ctx.home, target)?;
-
-    let outcome = install::install_with_registry(
-        source,
-        &skills_dir,
-        ctx.max_size,
-        ctx.network,
-        false,
-        ctx.registry_url,
-    )
+) -> Result<SkillOneStepReceipt> {
+    let spec = install::source_spec_string(&source);
+    let (skills_dir, before_specs) = off_runtime(ctx, move |ctx| {
+        let skills_dir = prepare_owned_target(ctx.workspace, ctx.home, target)?;
+        owned_anchor(ctx.workspace, ctx.home, target)?;
+        let before_specs = installed_specs(&skills_dir);
+        Ok((skills_dir, before_specs))
+    })
     .await?;
-    validate_owned_target_chain(anchor, &skills_dir, true)?;
+    let same_source = before_specs
+        .iter()
+        .find(|(_, installed)| *installed == spec)
+        .map(|(name, _)| name.clone());
 
-    match outcome {
-        InstallOutcome::Installed(installed) => {
-            validate_owned_child(&skills_dir, &installed.path, true)?;
-            let after = package_digest::compute_package_digest(&installed.path).ok();
-            Ok(SkillMutationReceipt {
+    enum Placed {
+        Installed(install::InstalledSkill),
+        NoChange(String),
+        Approval(String),
+        Denied(String),
+    }
+    let placed = match &same_source {
+        Some(name) => match install::update_with_registry(
+            name,
+            &skills_dir,
+            ctx.max_size,
+            ctx.network,
+            ctx.registry_url,
+        )
+        .await?
+        {
+            UpdateResult::Updated(installed) => Placed::Installed(installed),
+            UpdateResult::NoChange => Placed::NoChange(name.clone()),
+            UpdateResult::NeedsApproval(host) => Placed::Approval(host),
+            UpdateResult::NetworkDenied(host) => Placed::Denied(host),
+        },
+        None => match install::install_with_registry(
+            source,
+            &skills_dir,
+            ctx.max_size,
+            ctx.network,
+            true,
+            ctx.registry_url,
+        )
+        .await?
+        {
+            InstallOutcome::Installed(installed) => Placed::Installed(installed),
+            InstallOutcome::NeedsApproval(host) => Placed::Approval(host),
+            InstallOutcome::NetworkDenied(host) => Placed::Denied(host),
+        },
+    };
+    off_runtime(ctx, move |ctx| {
+        let anchor = owned_anchor(ctx.workspace, ctx.home, target)?;
+        validate_owned_target_chain(anchor, &skills_dir, true)?;
+
+        let blocked = |outcome: SkillMutationOutcome| SkillOneStepReceipt {
+            receipt: SkillMutationReceipt {
                 action: SkillActionKind::Install,
-                name: installed.name,
+                name: String::new(),
                 scope: target.as_skill_scope(),
-                safe_target_path: safe_display_path(&installed.path, Some(ctx.workspace), ctx.home),
-                before_digest: None,
-                after_digest: after,
-                outcome: SkillMutationOutcome::Installed,
+                safe_target_path: safe_display_path(&skills_dir, Some(ctx.workspace), ctx.home),
+                outcome,
+            },
+            summary: String::new(),
+        };
+
+        match placed {
+            Placed::Installed(installed) => {
+                validate_owned_child(&skills_dir, &installed.path, true)?;
+                let after = package_digest::compute_package_digest(&installed.path).ok();
+                let previous = before_specs
+                    .iter()
+                    .find(|(name, _)| *name == installed.name)
+                    .map(|(_, old)| old.as_str());
+                let replaced = previous.filter(|old| **old != *spec);
+                record_person_approval(
+                    initiator,
+                    target,
+                    &skills_dir,
+                    &installed.path,
+                    after.as_deref(),
+                )?;
+                let (action, outcome, verb) = if previous.is_some() {
+                    (
+                        SkillActionKind::Update,
+                        SkillMutationOutcome::Updated,
+                        "Updated",
+                    )
+                } else {
+                    (
+                        SkillActionKind::Install,
+                        SkillMutationOutcome::Installed,
+                        "Installed",
+                    )
+                };
+                let summary = receipt_summary(
+                    verb,
+                    &installed.name,
+                    target,
+                    &spec,
+                    &installed.path,
+                    replaced,
+                    ctx.home,
+                );
+                Ok(SkillOneStepReceipt {
+                    receipt: SkillMutationReceipt {
+                        action,
+                        name: installed.name,
+                        scope: target.as_skill_scope(),
+                        safe_target_path: safe_display_path(
+                            &installed.path,
+                            Some(ctx.workspace),
+                            ctx.home,
+                        ),
+                        outcome,
+                    },
+                    summary,
+                })
+            }
+            Placed::NoChange(name) => {
+                let path = skills_dir.join(&name);
+                validate_owned_child(&skills_dir, &path, true)?;
+                let current = package_digest::compute_package_digest(&path).ok();
+                let recorded = read_installed_marker(&path)?.and_then(|m| m.content_digest);
+                if current.is_some() && current == recorded {
+                    record_person_approval(
+                        initiator,
+                        target,
+                        &skills_dir,
+                        &path,
+                        current.as_deref(),
+                    )?;
+                }
+                let summary = format!(
+                    "Skill {name} ({}) is already up to date with {spec}",
+                    scope_label(target)
+                );
+                Ok(SkillOneStepReceipt {
+                    receipt: SkillMutationReceipt {
+                        action: SkillActionKind::Update,
+                        name,
+                        scope: target.as_skill_scope(),
+                        safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
+                        outcome: SkillMutationOutcome::NoChange,
+                    },
+                    summary,
+                })
+            }
+            Placed::Approval(host) => Ok(blocked(SkillMutationOutcome::NeedsApproval(host))),
+            Placed::Denied(host) => Ok(blocked(SkillMutationOutcome::NetworkDenied(host))),
+        }
+    })
+    .await
+}
+
+fn expand_local_source(raw: &str, ctx: &MutationContext<'_>) -> Result<PathBuf> {
+    if raw.is_empty() {
+        bail!("local skill path must not be empty");
+    }
+    if let Some(rest) = raw.strip_prefix('~') {
+        let rest = match rest {
+            "" => "",
+            _ if rest.starts_with(['/', '\\']) => rest.trim_start_matches(['/', '\\']),
+            _ => bail!("only '~' for your own home directory is supported (got {raw})"),
+        };
+        let home = ctx.home.context("'~' needs a home directory")?;
+        return Ok(home.join(rest));
+    }
+    let path = Path::new(raw);
+    Ok(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.workspace.join(path)
+    })
+}
+
+fn is_reserved_root_marker(name: &str) -> bool {
+    name.eq_ignore_ascii_case(install::INSTALLED_FROM_MARKER)
+        || name.eq_ignore_ascii_case(install::TRUSTED_MARKER)
+        || name.eq_ignore_ascii_case(".system-installed-version")
+}
+
+fn is_tar_gz_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".tar.gz") || lower.ends_with(".tgz")
+        })
+}
+
+fn map_archive_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    bounded_tar::map_stream_limit(err, || {
+        anyhow::anyhow!("skill archive exceeds maximum unpacked size of {max_size} bytes")
+    })
+}
+
+fn has_regular_skill_md(dir: &Path) -> bool {
+    fs::symlink_metadata(dir.join("SKILL.md")).is_ok_and(|meta| meta.is_file())
+}
+
+fn strip_reserved_markers_at_root(skill_root: &Path) -> Result<()> {
+    for entry in fs::read_dir(skill_root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if is_reserved_root_marker(&name.to_string_lossy()) {
+            let entry_path = entry.path();
+            let meta = fs::symlink_metadata(&entry_path)?;
+            if meta.is_dir() {
+                fs::remove_dir_all(&entry_path)?;
+            } else {
+                fs::remove_file(&entry_path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_archive_entry_path(raw_bytes: &[u8], raw_path: &Path) -> Result<Option<PathBuf>> {
+    if raw_bytes.iter().any(|&b| b == 0 || b == b'\\') || !install::is_safe_path(raw_path) {
+        bail!("unsafe archive entry path {}", raw_path.display());
+    }
+    let mut normalized = PathBuf::new();
+    for component in raw_path.components() {
+        match component {
+            Component::Normal(seg) => normalized.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("unsafe archive entry path {}", raw_path.display());
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(normalized))
+    }
+}
+
+fn resolve_unpacked_skill_root(unpack_root: &Path) -> Result<PathBuf> {
+    if has_regular_skill_md(unpack_root) {
+        return Ok(unpack_root.to_path_buf());
+    }
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in fs::read_dir(unpack_root)? {
+        let entry = entry?;
+        let meta = fs::symlink_metadata(entry.path())?;
+        if meta.file_type().is_symlink() {
+            bail!("refusing symlinked entry in unpacked skill archive");
+        }
+        if meta.is_dir() {
+            dirs.push(entry.path());
+        } else {
+            files.push(entry.path());
+        }
+    }
+    if dirs.len() == 1 && files.is_empty() && has_regular_skill_md(&dirs[0]) {
+        return Ok(dirs.swap_remove(0));
+    }
+    bail!("skill archive does not contain SKILL.md at root or inside a single top-level directory");
+}
+
+fn unpack_tar_gz(bytes: &[u8], max_size: u64) -> Result<(tempfile::TempDir, PathBuf)> {
+    let unpack_dir = tempfile::TempDir::new()?;
+    let mut archive = bounded_tar::open_bounded_tarball(bytes, max_size);
+    let entries = archive
+        .entries()
+        .map_err(|err| map_archive_limit(err.into(), max_size))?;
+    let mut entry_count: usize = 0;
+    let mut total_unpacked: u64 = 0;
+
+    for next in entries {
+        let mut entry = next.map_err(|err| {
+            map_archive_limit(
+                anyhow::Error::from(err).context("failed to read skill archive entry"),
+                max_size,
+            )
+        })?;
+        entry_count += 1;
+        if entry_count > MAX_LOCAL_ARCHIVE_ENTRIES {
+            bail!("skill archive exceeds maximum entry count ({MAX_LOCAL_ARCHIVE_ENTRIES})");
+        }
+        if !bounded_tar::entry_names_within_bound(&entry) {
+            bail!(
+                "archive entry path exceeds maximum length ({} bytes)",
+                bounded_tar::MAX_ENTRY_NAME_BYTES
+            );
+        }
+        let entry_type = entry.header().entry_type();
+        if entry_type == tar::EntryType::XGlobalHeader {
+            continue;
+        }
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            bail!("refusing symlink or hardlink entry in skill archive");
+        }
+        if !entry_type.is_dir() && !entry_type.is_file() {
+            bail!("refusing unsupported entry type ({entry_type:?}) in skill archive");
+        }
+
+        let path_bytes = entry.path_bytes().into_owned();
+        let raw_path = entry
+            .path()
+            .context("skill archive entry has invalid path")?
+            .into_owned();
+        let Some(rel) = normalize_archive_entry_path(&path_bytes, &raw_path)? else {
+            if entry_type.is_dir() {
+                continue;
+            }
+            bail!("unsafe empty file path in skill archive");
+        };
+
+        let dest = unpack_dir.path().join(&rel);
+        if entry_type.is_dir() {
+            if let Ok(meta) = fs::symlink_metadata(&dest)
+                && !meta.is_dir()
+            {
+                bail!(
+                    "archive directory conflicts with existing file at {}",
+                    rel.display()
+                );
+            }
+            fs::create_dir_all(&dest)?;
+            continue;
+        }
+
+        let remaining = max_size.saturating_sub(total_unpacked);
+        let declared_size = entry.header().size().unwrap_or(0);
+        if declared_size > remaining {
+            bail!("skill archive exceeds maximum unpacked size of {max_size} bytes");
+        }
+        let body = bounded_tar::read_body_within(&mut entry, remaining)
+            .map_err(|err| map_archive_limit(err.into(), max_size))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("skill archive exceeds maximum unpacked size of {max_size} bytes")
+            })?;
+        total_unpacked = total_unpacked.saturating_add(body.len() as u64);
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
+            .with_context(|| format!("failed to unpack archive entry {}", rel.display()))?;
+        out.write_all(&body)?;
+        #[cfg(unix)]
+        {
+            let mode = entry.header().mode().unwrap_or(0o644);
+            let perms = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+            fs::set_permissions(&dest, fs::Permissions::from_mode(perms))?;
+        }
+    }
+
+    let skill_root = resolve_unpacked_skill_root(unpack_dir.path())?;
+    strip_reserved_markers_at_root(&skill_root)?;
+    Ok((unpack_dir, skill_root))
+}
+
+struct PreparedLocalSource {
+    _unpacked: Option<tempfile::TempDir>,
+    package_dir: PathBuf,
+    provenance_spec: String,
+}
+
+fn prepare_local_source(given: &Path, ctx: &MutationContext<'_>) -> Result<PreparedLocalSource> {
+    match fs::symlink_metadata(given) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!("refusing symlinked skill source {}", given.display())
+        }
+        Ok(meta) if meta.is_dir() => {
+            let source = fs::canonicalize(given)
+                .with_context(|| format!("cannot resolve skill source {}", given.display()))?;
+            let provenance_spec = format!("{LOCAL_SPEC_PREFIX}{}", source.display());
+            Ok(PreparedLocalSource {
+                _unpacked: None,
+                package_dir: source,
+                provenance_spec,
             })
         }
-        InstallOutcome::NeedsApproval(host) => Ok(SkillMutationReceipt {
-            action: SkillActionKind::Install,
-            name: String::new(),
-            scope: target.as_skill_scope(),
-            safe_target_path: safe_display_path(&skills_dir, Some(ctx.workspace), ctx.home),
-            before_digest: None,
-            after_digest: None,
-            outcome: SkillMutationOutcome::NeedsApproval(host),
-        }),
-        InstallOutcome::NetworkDenied(host) => Ok(SkillMutationReceipt {
-            action: SkillActionKind::Install,
-            name: String::new(),
-            scope: target.as_skill_scope(),
-            safe_target_path: safe_display_path(&skills_dir, Some(ctx.workspace), ctx.home),
-            before_digest: None,
-            after_digest: None,
-            outcome: SkillMutationOutcome::NetworkDenied(host),
-        }),
+        Ok(meta) if meta.is_file() => {
+            if !is_tar_gz_path(given) {
+                bail!(
+                    "{} is a file; local installs support directories or .tar.gz / .tgz archives",
+                    given.display()
+                );
+            }
+            let compressed_cap = bounded_tar::stream_cap(ctx.max_size).max(1024);
+            if meta.len() > compressed_cap {
+                bail!(
+                    "skill archive {} exceeds maximum compressed size of {} bytes",
+                    given.display(),
+                    compressed_cap
+                );
+            }
+            let file = fs::File::open(given)
+                .with_context(|| format!("cannot read skill archive {}", given.display()))?;
+            let mut bytes = Vec::new();
+            Read::take(file, compressed_cap.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("cannot read skill archive {}", given.display()))?;
+            if bytes.len() as u64 > compressed_cap {
+                bail!(
+                    "skill archive {} exceeds maximum compressed size of {} bytes",
+                    given.display(),
+                    compressed_cap
+                );
+            }
+            let canonical_archive = fs::canonicalize(given)
+                .with_context(|| format!("cannot resolve skill archive {}", given.display()))?;
+            let (tempdir, skill_root) = unpack_tar_gz(&bytes, ctx.max_size)?;
+            let provenance_spec = format!("{LOCAL_SPEC_PREFIX}{}", canonical_archive.display());
+            Ok(PreparedLocalSource {
+                _unpacked: Some(tempdir),
+                package_dir: skill_root,
+                provenance_spec,
+            })
+        }
+        Ok(_) => bail!("refusing non-regular skill source {}", given.display()),
+        Err(err) => {
+            Err(err).with_context(|| format!("cannot read skill source {}", given.display()))
+        }
     }
+}
+
+fn skill_name_from_markdown(skill_dir: &Path) -> Result<String> {
+    let skill_md = skill_dir.join("SKILL.md");
+    match fs::symlink_metadata(&skill_md) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!("refusing symlinked {}", skill_md.display())
+        }
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => bail!("{} is not a regular file", skill_md.display()),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            bail!(
+                "{} has no SKILL.md; nothing to install",
+                skill_dir.display()
+            )
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to inspect {}", skill_md.display()));
+        }
+    }
+    let content = fs::read_to_string(&skill_md).context("SKILL.md is not valid UTF-8 text")?;
+    let parsed = parse_frontmatter(&content).map_err(anyhow::Error::msg)?;
+    validate_skill_frontmatter(
+        parsed.as_ref().map(|(metadata, _)| metadata),
+        None,
+        SkillValidationMode::Strict,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let (metadata, _) = parsed.context("SKILL.md frontmatter is missing")?;
+    let name = metadata.get("name").context("SKILL.md has no name")?;
+    Ok(install::validate_skill_name_segment(name)?.to_string())
+}
+
+fn install_local(
+    raw: &str,
+    target: SkillTargetScope,
+    initiator: Option<SkillInitiator>,
+    ctx: &MutationContext<'_>,
+) -> Result<SkillOneStepReceipt> {
+    let given = expand_local_source(raw, ctx)?;
+    let prepared = prepare_local_source(&given, ctx)?;
+    let name = skill_name_from_markdown(&prepared.package_dir)?;
+    place_local(
+        &prepared,
+        &name,
+        target,
+        initiator,
+        ctx,
+        SkillActionKind::Install,
+    )
+}
+
+fn place_local(
+    prepared: &PreparedLocalSource,
+    name: &str,
+    target: SkillTargetScope,
+    initiator: Option<SkillInitiator>,
+    ctx: &MutationContext<'_>,
+    action: SkillActionKind,
+) -> Result<SkillOneStepReceipt> {
+    let source = &prepared.package_dir;
+    let spec = prepared.provenance_spec.as_str();
+    let source_digest = package_digest::compute_package_digest(source)
+        .context("source package is not safe to copy")?;
+    let skills_dir = prepare_owned_target(ctx.workspace, ctx.home, target)?;
+    let anchor = owned_anchor(ctx.workspace, ctx.home, target)?;
+    let dest = skills_dir.join(name);
+
+    let dest_exists = validate_owned_child(&skills_dir, &dest, false)?;
+    let mut previous: Option<InstalledMarker> = None;
+    if dest_exists {
+        previous = read_installed_marker(&dest)?;
+        if previous.is_none() {
+            bail!(
+                "skill '{name}' already exists and was not installed by Codewhale; \
+                 refusing to replace it"
+            );
+        }
+        let before = package_digest::compute_package_digest(&dest).ok();
+        let same_source = previous.as_ref().is_some_and(|m| m.spec == spec);
+        let recorded = previous.as_ref().and_then(|m| m.content_digest.clone());
+        if same_source && before.as_deref() == Some(source_digest.as_str()) && before == recorded {
+            record_person_approval(initiator, target, &skills_dir, &dest, before.as_deref())?;
+            let summary = format!(
+                "Skill {name} ({}) is already up to date with {spec}",
+                scope_label(target)
+            );
+            return Ok(SkillOneStepReceipt {
+                receipt: SkillMutationReceipt {
+                    action,
+                    name: name.to_string(),
+                    scope: target.as_skill_scope(),
+                    safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
+                    outcome: SkillMutationOutcome::NoChange,
+                },
+                summary,
+            });
+        }
+    }
+
+    let after = place_package(&PlaceRequest {
+        skills_dir: &skills_dir,
+        anchor,
+        source,
+        expected_digest: &source_digest,
+        dest: &dest,
+        segment: name,
+        dest_exists,
+        spec,
+        installed_name: name,
+    })?;
+    record_person_approval(initiator, target, &skills_dir, &dest, Some(&after))?;
+
+    let replaced = previous
+        .as_ref()
+        .map(|m| m.spec.as_str())
+        .filter(|old| *old != spec);
+    let (outcome, verb) = if previous.is_some() {
+        (SkillMutationOutcome::Updated, "Updated")
+    } else {
+        (SkillMutationOutcome::Installed, "Installed")
+    };
+    let summary = receipt_summary(verb, name, target, spec, &dest, replaced, ctx.home);
+    Ok(SkillOneStepReceipt {
+        receipt: SkillMutationReceipt {
+            action,
+            name: name.to_string(),
+            scope: target.as_skill_scope(),
+            safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
+            outcome,
+        },
+        summary,
+    })
 }
 
 fn import_external(
@@ -669,7 +1427,7 @@ fn import_external(
         bail!("skill is not an import candidate");
     }
 
-    let before = verify_expected_digest(&source_path, Some(&expected_digest))?;
+    verify_expected_digest(&source_path, Some(&expected_digest))?;
 
     let skills_dir = prepare_owned_target(ctx.workspace, ctx.home, target)?;
     let anchor = owned_anchor(ctx.workspace, ctx.home, target)?;
@@ -713,8 +1471,6 @@ fn import_external(
                 name: source_id.canonical_name.clone(),
                 scope: target.as_skill_scope(),
                 safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-                before_digest: before,
-                after_digest: existing,
                 outcome: SkillMutationOutcome::AlreadyPresent,
             });
         }
@@ -726,91 +1482,121 @@ fn import_external(
         }
     }
 
-    // Re-verify source digest immediately before copy (TOCTOU).
-    let _ = verify_expected_digest(&source_path, Some(&expected_digest))?;
-    validate_owned_target_chain(anchor, &skills_dir, true)?;
-
-    let staging = skills_dir.join(format!("{dest_segment}.tmp"));
-    if validate_owned_child(&skills_dir, &staging, false)? {
-        fs::remove_dir_all(&staging)
-            .with_context(|| format!("failed to clean stale staging dir {}", staging.display()))?;
-    }
-    copy_skill_package(&source_path, &staging)?;
-    validate_owned_target_chain(anchor, &skills_dir, true)?;
-    validate_owned_child(&skills_dir, &staging, true)?;
-    package_digest::compute_package_digest(&staging)
-        .context("staged import package failed digest validation")?;
-
-    let mut backup_path: Option<PathBuf> = None;
-    if dest_exists {
-        validate_owned_child(&skills_dir, &dest, true)?;
-        let backup = skills_dir.join(format!("{dest_segment}.bak"));
-        if validate_owned_child(&skills_dir, &backup, false)? {
-            fs::remove_dir_all(&backup).with_context(|| {
-                format!("failed to clean stale backup dir {}", backup.display())
-            })?;
-        }
-        fs::rename(&dest, &backup)
-            .with_context(|| format!("failed to backup {}", dest.display()))?;
-        if let Err(err) = fs::rename(&staging, &dest) {
-            let _ = fs::rename(&backup, &dest);
-            let _ = fs::remove_dir_all(&staging);
-            return Err(err).context("failed to replace destination with imported skill");
-        }
-        backup_path = Some(backup);
-    } else if let Err(err) = fs::rename(&staging, &dest) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(err).context("failed to install imported skill");
-    }
-    validate_owned_target_chain(anchor, &skills_dir, true)?;
-    validate_owned_child(&skills_dir, &dest, true)?;
-
-    // Keep backup until digest + marker finalize succeed so a failed import
-    // can restore the previous owned skill.
-    let finalize = (|| -> Result<String> {
-        let _ = verify_expected_digest(&source_path, Some(&expected_digest))?;
-        validate_owned_target_chain(anchor, &skills_dir, true)?;
-        validate_owned_child(&skills_dir, &dest, true)?;
-        let after = package_digest::compute_package_digest(&dest)?;
-        if after != expected_digest {
-            bail!("imported content digest mismatch after copy; aborted");
-        }
-        write_installed_from_v2(
-            &dest,
-            &format!("import:{}", source_skill.safe_display_path),
-            None,
-            &expected_digest,
-            &after,
-            &source_id.canonical_name,
-        )?;
-        Ok(after)
-    })();
-
-    let after = match finalize {
-        Ok(after) => {
-            if let Some(backup) = backup_path.take() {
-                fs::remove_dir_all(&backup).ok();
-            }
-            after
-        }
-        Err(err) => {
-            let _ = fs::remove_dir_all(&dest);
-            if let Some(backup) = backup_path.take() {
-                let _ = fs::rename(&backup, &dest);
-            }
-            return Err(err);
-        }
-    };
+    place_package(&PlaceRequest {
+        skills_dir: &skills_dir,
+        anchor,
+        source: &source_path,
+        expected_digest: &expected_digest,
+        dest: &dest,
+        segment: &dest_segment,
+        dest_exists,
+        spec: &format!("import:{}", source_skill.safe_display_path),
+        installed_name: &source_id.canonical_name,
+    })?;
 
     Ok(SkillMutationReceipt {
         action: SkillActionKind::Import,
         name: source_id.canonical_name,
         scope: target.as_skill_scope(),
         safe_target_path: safe_display_path(&dest, Some(ctx.workspace), ctx.home),
-        before_digest: before,
-        after_digest: Some(after),
         outcome: SkillMutationOutcome::Imported,
     })
+}
+
+struct PlaceRequest<'a> {
+    skills_dir: &'a Path,
+    anchor: &'a Path,
+    source: &'a Path,
+    expected_digest: &'a str,
+    dest: &'a Path,
+    segment: &'a str,
+    dest_exists: bool,
+    spec: &'a str,
+    installed_name: &'a str,
+}
+
+fn place_package(req: &PlaceRequest<'_>) -> Result<String> {
+    let PlaceRequest {
+        skills_dir,
+        anchor,
+        source,
+        expected_digest,
+        dest,
+        segment,
+        dest_exists,
+        spec,
+        installed_name,
+    } = *req;
+
+    // Re-verify source digest immediately before copy (TOCTOU).
+    let _ = verify_expected_digest(source, Some(expected_digest))?;
+    validate_owned_target_chain(anchor, skills_dir, true)?;
+
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".staging-")
+        .tempdir_in(skills_dir)
+        .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?;
+    let staging = staging_dir.path().to_path_buf();
+    copy_skill_package(source, &staging)?;
+    validate_owned_target_chain(anchor, skills_dir, true)?;
+    validate_owned_child(skills_dir, &staging, true)?;
+    package_digest::compute_package_digest(&staging)
+        .context("staged package failed digest validation")?;
+
+    let mut backup: Option<(tempfile::TempDir, PathBuf)> = None;
+    if dest_exists {
+        validate_owned_child(skills_dir, dest, true)?;
+        let backup_dir = tempfile::Builder::new()
+            .prefix(".backup-")
+            .tempdir_in(skills_dir)
+            .with_context(|| format!("failed to create backup dir in {}", skills_dir.display()))?;
+        let backup_slot = backup_dir.path().join(segment);
+        fs::rename(dest, &backup_slot)
+            .with_context(|| format!("failed to backup {}", dest.display()))?;
+        if let Err(err) = fs::rename(&staging, dest) {
+            let _ = fs::rename(&backup_slot, dest);
+            return Err(err).context("failed to replace destination with new package");
+        }
+        let _ = staging_dir.keep();
+        backup = Some((backup_dir, backup_slot));
+    } else if validate_owned_child(skills_dir, dest, false)? {
+        bail!(
+            "{} appeared while the package was staged; aborted",
+            dest.display()
+        );
+    } else {
+        fs::rename(&staging, dest).context("failed to install package")?;
+        let _ = staging_dir.keep();
+    }
+    validate_owned_target_chain(anchor, skills_dir, true)?;
+    validate_owned_child(skills_dir, dest, true)?;
+
+    let finalize = (|| -> Result<String> {
+        let _ = verify_expected_digest(source, Some(expected_digest))?;
+        validate_owned_target_chain(anchor, skills_dir, true)?;
+        validate_owned_child(skills_dir, dest, true)?;
+        let after = package_digest::compute_package_digest(dest)?;
+        if after != expected_digest {
+            bail!("package content digest mismatch after copy; aborted");
+        }
+        write_installed_from_v2(dest, spec, None, expected_digest, &after, installed_name)?;
+        Ok(after)
+    })();
+
+    match finalize {
+        Ok(after) => {
+            drop(backup);
+            Ok(after)
+        }
+        Err(err) => {
+            let _ = fs::remove_dir_all(dest);
+            if let Some((backup_dir, backup_slot)) = backup.take() {
+                let _ = fs::rename(&backup_slot, dest);
+                drop(backup_dir);
+            }
+            Err(err)
+        }
+    }
 }
 
 fn copy_skill_package(src: &Path, dest: &Path) -> Result<()> {
@@ -831,11 +1617,7 @@ fn copy_dir_regular_files(src: &Path, dest: &Path, package_root: bool) -> Result
         }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if package_root
-            && (name_str == install::INSTALLED_FROM_MARKER
-                || name_str == install::TRUSTED_MARKER
-                || name_str == ".system-installed-version")
-        {
+        if package_root && is_reserved_root_marker(&name_str) {
             continue;
         }
         let target = dest.join(&name);
@@ -851,79 +1633,196 @@ fn copy_dir_regular_files(src: &Path, dest: &Path, package_root: bool) -> Result
 async fn update_skill(
     skill_id: AuditedSkillId,
     expected_digest: Option<String>,
+    initiator: Option<SkillInitiator>,
     ctx: &MutationContext<'_>,
-) -> Result<SkillMutationReceipt> {
-    let (skill, path) = find_audited_skill(ctx, &skill_id)?;
-    if !skill.root.is_writable_owned() {
-        bail!("refusing to update skill outside Codewhale-owned roots");
+) -> Result<SkillOneStepReceipt> {
+    enum UpdatePlan {
+        Done(SkillOneStepReceipt),
+        Remote {
+            skill: Box<AuditedSkill>,
+            path: PathBuf,
+            skills_dir: PathBuf,
+            before: Option<String>,
+            scope: SkillScope,
+            package_name: String,
+            installed_spec: String,
+        },
     }
-    if skill.source_kind != SkillSourceKind::CodeWhaleManaged {
-        bail!("only Codewhale managed skills can be updated");
-    }
-    let skills_dir = validate_owned_skill_path(ctx, &skill, &path)?;
-    // Imported skills carry `import:…` provenance and must not hit the registry.
-    ensure_remote_updatable(&path)?;
-    let before = verify_expected_digest(&path, expected_digest.as_deref())?;
-    let scope = match skill.root.kind {
-        SkillRootKind::CodeWhaleProject => SkillScope::Project,
-        SkillRootKind::CodeWhaleGlobal => SkillScope::Global,
-        _ => SkillScope::Logical,
-    };
+    let plan_id = skill_id.clone();
+    let plan = off_runtime(ctx, move |ctx| {
+        let (skill, path) = find_audited_skill(ctx, &plan_id)?;
+        if !skill.root.is_writable_owned() {
+            bail!("refusing to update skill outside Codewhale-owned roots");
+        }
+        if skill.source_kind != SkillSourceKind::CodeWhaleManaged {
+            bail!("only Codewhale managed skills can be updated");
+        }
+        let skills_dir = validate_owned_skill_path(ctx, &skill, &path)?;
+        // Imported skills carry `import:…` provenance and must not hit the registry.
+        ensure_remote_updatable(&path)?;
+        let before = verify_expected_digest(&path, expected_digest.as_deref())?;
+        let scope = match skill.root.kind {
+            SkillRootKind::CodeWhaleProject => SkillScope::Project,
+            SkillRootKind::CodeWhaleGlobal => SkillScope::Global,
+            _ => SkillScope::Logical,
+        };
 
-    let package_name = on_disk_package_name(&skill_id)?;
-    validate_owned_skill_path(ctx, &skill, &path)?;
+        let package_name = on_disk_package_name(&plan_id)?;
+        validate_owned_skill_path(ctx, &skill, &path)?;
+        let installed_spec = read_installed_marker(&path)?
+            .map(|m| m.spec)
+            .unwrap_or_default();
+        if let Some(raw) = installed_spec.strip_prefix(LOCAL_SPEC_PREFIX) {
+            let source_path = expand_local_source(raw, ctx)?;
+            let prepared = prepare_local_source(&source_path, ctx)?;
+            let name = skill_name_from_markdown(&prepared.package_dir)?;
+            if name != package_name {
+                bail!(
+                    "the source {} now names its skill '{name}', not '{package_name}'; \
+                     install it again to add it as a new skill",
+                    source_path.display()
+                );
+            }
+            let target = target_scope_for_root(&skill.root)?;
+            return place_local(
+                &prepared,
+                &name,
+                target,
+                initiator,
+                ctx,
+                SkillActionKind::Update,
+            )
+            .map(UpdatePlan::Done);
+        }
+        Ok(UpdatePlan::Remote {
+            skill: Box::new(skill),
+            path,
+            skills_dir,
+            before,
+            scope,
+            package_name: package_name.to_string(),
+            installed_spec,
+        })
+    })
+    .await?;
+    let (skill, path, skills_dir, before, scope, package_name, installed_spec) = match plan {
+        UpdatePlan::Done(receipt) => return Ok(receipt),
+        UpdatePlan::Remote {
+            skill,
+            path,
+            skills_dir,
+            before,
+            scope,
+            package_name,
+            installed_spec,
+        } => (
+            *skill,
+            path,
+            skills_dir,
+            before,
+            scope,
+            package_name,
+            installed_spec,
+        ),
+    };
     let outcome = install::update_with_registry(
-        package_name,
+        &package_name,
         &skills_dir,
         ctx.max_size,
         ctx.network,
         ctx.registry_url,
     )
     .await?;
-    validate_owned_root_descriptor(ctx, &skill.root)?;
-    validate_owned_child(&skills_dir, &path, true)?;
+    off_runtime(ctx, move |ctx| {
+        validate_owned_root_descriptor(ctx, &skill.root)?;
+        validate_owned_child(&skills_dir, &path, true)?;
 
-    match outcome {
-        UpdateResult::NoChange => Ok(SkillMutationReceipt {
-            action: SkillActionKind::Update,
-            name: skill_id.canonical_name,
-            scope,
-            safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-            before_digest: before.clone(),
-            after_digest: before,
-            outcome: SkillMutationOutcome::NoChange,
-        }),
-        UpdateResult::Updated(installed) => {
-            let after = package_digest::compute_package_digest(&installed.path).ok();
-            Ok(SkillMutationReceipt {
-                action: SkillActionKind::Update,
-                name: installed.name,
-                scope,
-                safe_target_path: safe_display_path(&installed.path, Some(ctx.workspace), ctx.home),
-                before_digest: before,
-                after_digest: after,
-                outcome: SkillMutationOutcome::Updated,
-            })
+        match outcome {
+            UpdateResult::NoChange => {
+                let target = target_scope_for_root(&skill.root)?;
+                let recorded = read_installed_marker(&path)?.and_then(|m| m.content_digest);
+                if before.is_some() && before == recorded {
+                    record_person_approval(
+                        initiator,
+                        target,
+                        &skills_dir,
+                        &path,
+                        before.as_deref(),
+                    )?;
+                }
+                let summary = format!(
+                    "Skill {} ({}) is already up to date with {installed_spec}",
+                    skill_id.canonical_name,
+                    scope_label(target)
+                );
+                Ok(SkillOneStepReceipt {
+                    receipt: SkillMutationReceipt {
+                        action: SkillActionKind::Update,
+                        name: skill_id.canonical_name,
+                        scope,
+                        safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
+                        outcome: SkillMutationOutcome::NoChange,
+                    },
+                    summary,
+                })
+            }
+            UpdateResult::Updated(installed) => {
+                let target = target_scope_for_root(&skill.root)?;
+                let after = package_digest::compute_package_digest(&installed.path).ok();
+                record_person_approval(
+                    initiator,
+                    target,
+                    &skills_dir,
+                    &installed.path,
+                    after.as_deref(),
+                )?;
+                let summary = receipt_summary(
+                    "Updated",
+                    &installed.name,
+                    target,
+                    &installed_spec,
+                    &installed.path,
+                    None,
+                    ctx.home,
+                );
+                Ok(SkillOneStepReceipt {
+                    receipt: SkillMutationReceipt {
+                        action: SkillActionKind::Update,
+                        name: installed.name,
+                        scope,
+                        safe_target_path: safe_display_path(
+                            &installed.path,
+                            Some(ctx.workspace),
+                            ctx.home,
+                        ),
+                        outcome: SkillMutationOutcome::Updated,
+                    },
+                    summary,
+                })
+            }
+            UpdateResult::NeedsApproval(host) => Ok(SkillOneStepReceipt {
+                receipt: SkillMutationReceipt {
+                    action: SkillActionKind::Update,
+                    name: skill_id.canonical_name,
+                    scope,
+                    safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
+                    outcome: SkillMutationOutcome::NeedsApproval(host),
+                },
+                summary: String::new(),
+            }),
+            UpdateResult::NetworkDenied(host) => Ok(SkillOneStepReceipt {
+                receipt: SkillMutationReceipt {
+                    action: SkillActionKind::Update,
+                    name: skill_id.canonical_name,
+                    scope,
+                    safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
+                    outcome: SkillMutationOutcome::NetworkDenied(host),
+                },
+                summary: String::new(),
+            }),
         }
-        UpdateResult::NeedsApproval(host) => Ok(SkillMutationReceipt {
-            action: SkillActionKind::Update,
-            name: skill_id.canonical_name,
-            scope,
-            safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-            before_digest: before,
-            after_digest: None,
-            outcome: SkillMutationOutcome::NeedsApproval(host),
-        }),
-        UpdateResult::NetworkDenied(host) => Ok(SkillMutationReceipt {
-            action: SkillActionKind::Update,
-            name: skill_id.canonical_name,
-            scope,
-            safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-            before_digest: before,
-            after_digest: None,
-            outcome: SkillMutationOutcome::NetworkDenied(host),
-        }),
-    }
+    })
+    .await
 }
 
 fn remove_skill(
@@ -939,7 +1838,7 @@ fn remove_skill(
         bail!("only Codewhale managed skills can be removed");
     }
     let skills_dir = validate_owned_skill_path(ctx, &skill, &path)?;
-    let before = verify_expected_digest(&path, expected_digest.as_deref())?;
+    verify_expected_digest(&path, expected_digest.as_deref())?;
     let scope = match skill.root.kind {
         SkillRootKind::CodeWhaleProject => SkillScope::Project,
         SkillRootKind::CodeWhaleGlobal => SkillScope::Global,
@@ -953,8 +1852,6 @@ fn remove_skill(
         name: skill_id.canonical_name,
         scope,
         safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-        before_digest: before,
-        after_digest: None,
         outcome: SkillMutationOutcome::Removed,
     })
 }
@@ -972,7 +1869,7 @@ fn trust_skill(
         bail!("only Codewhale managed skills can be trusted");
     }
     validate_owned_skill_path(ctx, &skill, &path)?;
-    let before = verify_expected_digest(&path, Some(&expected_digest))?;
+    verify_expected_digest(&path, Some(&expected_digest))?;
     validate_owned_skill_path(ctx, &skill, &path)?;
     write_trust_v2(&path, &expected_digest)?;
     let scope = match skill.root.kind {
@@ -985,11 +1882,13 @@ fn trust_skill(
         name: skill_id.canonical_name,
         scope,
         safe_target_path: safe_display_path(&path, Some(ctx.workspace), ctx.home),
-        before_digest: before.clone(),
-        after_digest: before,
         outcome: SkillMutationOutcome::Trusted,
     })
 }
+
+#[cfg(test)]
+#[path = "mutation_onestep_tests.rs"]
+mod onestep_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1872,5 +2771,146 @@ mod tests {
                 .join("SKILL.md")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn place_package_aborts_cleanly_if_destination_appears_while_staged() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let source = tmp.path().join("src-skill");
+        write_skill(&source, "alpha", "incoming");
+        let source_dir = source.join("alpha");
+        let expected_digest = package_digest::compute_package_digest(&source_dir).unwrap();
+
+        write_skill(&skills_dir, "alpha", "already-there");
+        let dest = skills_dir.join("alpha");
+        let before_digest = package_digest::compute_package_digest(&dest).unwrap();
+
+        let err = place_package(&PlaceRequest {
+            skills_dir: &skills_dir,
+            anchor: &workspace,
+            source: &source_dir,
+            expected_digest: &expected_digest,
+            dest: &dest,
+            segment: "alpha",
+            dest_exists: false,
+            spec: "path:src",
+            installed_name: "alpha",
+        })
+        .expect_err("appearing destination must abort install");
+        assert!(err.to_string().contains("appeared while"), "{err}");
+        assert_eq!(
+            package_digest::compute_package_digest(&dest).unwrap(),
+            before_digest
+        );
+        let leftovers: Vec<_> = fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover staging dirs: {leftovers:?}");
+    }
+
+    #[test]
+    fn place_package_concurrent_same_name_leaves_no_staging_or_mixed_digest() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let src_a = tmp.path().join("a");
+        let src_b = tmp.path().join("b");
+        write_skill(&src_a, "alpha", "payload-a");
+        write_skill(&src_b, "alpha", "payload-b");
+        let dir_a = src_a.join("alpha");
+        let dir_b = src_b.join("alpha");
+        let dig_a = package_digest::compute_package_digest(&dir_a).unwrap();
+        let dig_b = package_digest::compute_package_digest(&dir_b).unwrap();
+        let dest = skills_dir.join("alpha");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (res_a, res_b) = std::thread::scope(|scope| {
+            let skills_dir = skills_dir.as_path();
+            let workspace = workspace.as_path();
+            let dest = dest.as_path();
+            let dir_a = dir_a.as_path();
+            let dir_b = dir_b.as_path();
+            let dig_a = dig_a.as_str();
+            let dig_b = dig_b.as_str();
+            let b1 = std::sync::Arc::clone(&barrier);
+            let t1 = scope.spawn(move || {
+                b1.wait();
+                place_package(&PlaceRequest {
+                    skills_dir,
+                    anchor: workspace,
+                    source: dir_a,
+                    expected_digest: dig_a,
+                    dest,
+                    segment: "alpha",
+                    dest_exists: false,
+                    spec: "path:a",
+                    installed_name: "alpha",
+                })
+            });
+            let b2 = std::sync::Arc::clone(&barrier);
+            let t2 = scope.spawn(move || {
+                b2.wait();
+                place_package(&PlaceRequest {
+                    skills_dir,
+                    anchor: workspace,
+                    source: dir_b,
+                    expected_digest: dig_b,
+                    dest,
+                    segment: "alpha",
+                    dest_exists: false,
+                    spec: "path:b",
+                    installed_name: "alpha",
+                })
+            });
+            (t1.join().unwrap(), t2.join().unwrap())
+        });
+
+        assert!(res_a.is_ok() || res_b.is_ok(), "at least one must succeed");
+        if let Ok(after) = &res_a {
+            assert_eq!(after, &dig_a);
+        }
+        if let Ok(after) = &res_b {
+            assert_eq!(after, &dig_b);
+        }
+        let final_digest = package_digest::compute_package_digest(&dest).unwrap();
+        assert!(
+            final_digest == dig_a || final_digest == dig_b,
+            "final destination must match one uncorrupted source"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with('.') || name.ends_with(".bak")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover staging/backup dirs: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_runtime_runs_skill_mutation_off_the_caller_worker_thread() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let network = NetworkPolicy::default();
+        let c = ctx(&workspace, &home, &network);
+        let caller_thread = std::thread::current().id();
+        let blocking_thread = off_runtime(&c, |_| Ok(std::thread::current().id()))
+            .await
+            .unwrap();
+        assert_ne!(caller_thread, blocking_thread);
     }
 }

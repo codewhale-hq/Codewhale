@@ -122,9 +122,18 @@ pub fn discover_external_sources(
 }
 
 fn discover_from_json_file(path: &Path, kind: ExternalMcpSourceKind) -> Vec<ImportCandidate> {
-    checked_source(path, kind)
-        .map(|(candidates, _)| candidates)
-        .unwrap_or_default()
+    match checked_source(path, kind) {
+        Ok((candidates, problems)) => {
+            for problem in &problems {
+                tracing::warn!(target: "mcp", source = %path.display(), %problem, "skipping MCP import entry");
+            }
+            candidates
+        }
+        Err(error) => {
+            tracing::warn!(target: "mcp", source = %path.display(), %error, "skipping MCP import source");
+            Vec::new()
+        }
+    }
 }
 
 /// Most per-entry problems reported for one source; the rest are counted.
@@ -402,30 +411,6 @@ pub fn persist_decisions(
         codewhale_util::utils::write_atomic(path, &rendered)?;
         Ok(())
     })
-}
-
-/// Filter candidates that still need a user decision for this content hash.
-#[allow(dead_code)] // used by future selector UI + unit tests
-pub fn candidates_needing_consent(
-    candidates: &[ImportCandidate],
-    store: &ImportConsentStore,
-) -> Vec<ImportCandidate> {
-    candidates
-        .iter()
-        .filter(|c| {
-            let key = consent_key(&c.source_path, &c.content_hash);
-            match store.entries.get(&key) {
-                Some(entry) if entry.decision == ImportDecision::Decline => false,
-                Some(entry) if entry.decision == ImportDecision::Approve => {
-                    // Re-prompt only when the specific server was not part of
-                    // the prior approval list (partial approval).
-                    !entry.servers.iter().any(|s| s == &c.name)
-                }
-                _ => true,
-            }
-        })
-        .cloned()
-        .collect()
 }
 
 /// Apply approvals: returns servers to merge into user mcp.json.
@@ -1093,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_source_rewrites_keep_review_tokens_and_declines() {
+    fn unrelated_source_rewrites_keep_review_tokens() {
         with_import_context(|context| {
             let source = write_claude_json(
                 &context.home,
@@ -1116,23 +1101,6 @@ mod tests {
             )
             .unwrap();
             assert!(receipt.imported);
-
-            let candidates = discover_from_json_file(&source, ExternalMcpSourceKind::ClaudeJson);
-            let mut store = ImportConsentStore::default();
-            let decisions = HashMap::from([("y".to_string(), ImportDecision::Decline)]);
-            record_decisions(&mut store, &candidates, &decisions, 1);
-            fs::write(
-                &source,
-                r#"{"numStartups":3,"mcpServers":{"x":{"command":"echo"},"y":{"command":"echo"}}}"#,
-            )
-            .unwrap();
-            let refreshed = discover_from_json_file(&source, ExternalMcpSourceKind::ClaudeJson);
-            let needing: Vec<_> = candidates_needing_consent(&refreshed, &store)
-                .into_iter()
-                .map(|c| c.name)
-                .collect();
-            // `y` stays declined; `x` was never decided in this store.
-            assert_eq!(needing, ["x"]);
         });
     }
 
@@ -1206,32 +1174,6 @@ mod tests {
         assert_eq!(inserted, vec!["ok".to_string()]);
         assert!(!config.servers.contains_key("blocked"));
         assert!(!config.servers["ok"].is_enabled());
-    }
-
-    #[test]
-    fn declined_consent_skips_reprompt_until_hash_changes() {
-        let dir = tempdir().unwrap();
-        let path = write_claude_json(
-            dir.path(),
-            r#"{"mcpServers":{"x":{"command":"echo","enabled":true}}}"#,
-        );
-        let candidates = discover_from_json_file(&path, ExternalMcpSourceKind::ClaudeJson);
-        let mut store = ImportConsentStore::default();
-        let mut decisions = HashMap::new();
-        decisions.insert("x".into(), ImportDecision::Decline);
-        record_decisions(&mut store, &candidates, &decisions, 1);
-        let needing = candidates_needing_consent(&candidates, &store);
-        assert!(needing.is_empty(), "declined should not re-prompt");
-
-        // Content change → new hash → re-prompt.
-        fs::write(
-            &path,
-            r#"{"mcpServers":{"x":{"command":"echo","args":["changed"],"enabled":true}}}"#,
-        )
-        .unwrap();
-        let refreshed = discover_from_json_file(&path, ExternalMcpSourceKind::ClaudeJson);
-        let needing = candidates_needing_consent(&refreshed, &store);
-        assert_eq!(needing.len(), 1);
     }
 
     #[test]

@@ -1,10 +1,12 @@
 use super::CodewhaleClient;
-use super::chat::{parse_chat_message, parse_sse_chunk};
+use super::chat::{ChatToolStream, parse_chat_message, parse_sse_chunk};
 use anyhow::Result;
 use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Delta, Message, MessageRequest, StreamEvent, Tool};
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
 use serde_json::{Value, json};
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn ds4_client() -> CodewhaleClient {
     let mut providers = ProvidersConfig::default();
@@ -30,6 +32,132 @@ fn ds4_client() -> CodewhaleClient {
     .expect("DS4 client")
 }
 
+/// The same named `ds4` identity, bound to a mock endpoint. DS4 is identified by
+/// the identity key plus a local host, so a loopback mock server is a real DS4
+/// route as far as the client is concerned.
+fn ds4_client_at(server: &MockServer) -> CodewhaleClient {
+    let mut providers = ProvidersConfig::default();
+    providers.custom.insert(
+        "ds4".to_string(),
+        ProviderConfig {
+            kind: Some("openai-compatible".to_string()),
+            base_url: Some(format!("{}/v1", server.uri())),
+            model: Some("deepseek-v4-flash".to_string()),
+            context_window: Some(100_000),
+            auth_mode: Some("none".to_string()),
+            ..Default::default()
+        },
+    );
+    CodewhaleClient::new(&{
+        let __cw_config_init_1_0 = Some("ds4".to_string());
+        let __cw_config_init_1_1 = Some(providers);
+        let mut __cw_config_init_1_value: Config = Default::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
+    })
+    .expect("DS4 client")
+}
+
+/// DS4 is a named `openai-compatible` route, so its `api_provider` is `Custom`.
+/// It implements the first-party DeepSeek dialect, which means the helper paths
+/// that bypass `chat_shape_provider` must still send the thinking toggle.
+/// Translation is one of those paths and always requests `off`.
+#[tokio::test]
+async fn named_ds4_translation_keeps_the_disabled_thinking_toggle() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-ds4-translate",
+            "object": "chat.completion",
+            "model": "deepseek-v4-flash",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hola"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = ds4_client_at(&server);
+    client
+        .translate_with_usage(
+            "hello",
+            "deepseek-v4-flash",
+            "Spanish",
+            &crate::cost_status::NativeUsageSource::capture(
+                format!("ds4-translate-test:{}", uuid::Uuid::new_v4()),
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+            ),
+        )
+        .await?;
+
+    let requests = server.received_requests().await.expect("recorded request");
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body)?;
+    assert_eq!(
+        body.pointer("/thinking/type").and_then(Value::as_str),
+        Some("disabled"),
+        "DS4 speaks the first-party DeepSeek dialect: {body}"
+    );
+    Ok(())
+}
+
+/// The mirror of the test above on an ordinary compatible gateway. Translation
+/// always asks for `off`; on a gateway that must arrive as `none` with no
+/// `thinking` object, because the object is what such an endpoint rejects.
+/// Without this case a future shaper could re-add the toggle on the translation
+/// path and only the gateway would notice.
+#[tokio::test]
+async fn a_gateway_translation_asks_for_none_instead_of_the_thinking_toggle() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-gateway-translate",
+            "object": "chat.completion",
+            "model": "DeepSeek-V4.1-Flash",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hola"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = super::tests::custom_mock_client_for_identity(&server, "aicraft");
+    client
+        .translate_with_usage(
+            "hello",
+            "DeepSeek-V4.1-Flash",
+            "Spanish",
+            &crate::cost_status::NativeUsageSource::capture(
+                format!("gateway-translate-test:{}", uuid::Uuid::new_v4()),
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+            ),
+        )
+        .await?;
+
+    let requests = server.received_requests().await.expect("recorded request");
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body)?;
+    assert!(
+        body.get("thinking").is_none(),
+        "a gateway rejects DeepSeek's toggle object: {body}"
+    );
+    assert_eq!(
+        body.get("reasoning_effort").and_then(Value::as_str),
+        Some("none"),
+        "translation asks for off, which a gateway expresses as none: {body}"
+    );
+    Ok(())
+}
+
 fn request(effort: &str) -> MessageRequest {
     MessageRequest {
         model: "deepseek-v4-flash".to_string(),
@@ -50,6 +178,8 @@ fn request(effort: &str) -> MessageRequest {
         stream: None,
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -170,7 +300,7 @@ fn replay_placeholder_echo_is_dropped_from_ingest() {
     let mut content_index = 0;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let chunks = [
         json!({
@@ -231,7 +361,7 @@ fn streaming_fixture_accepts_delayed_tool_arguments_and_usage_tail() {
     let mut content_index = 0;
     let mut text_started = false;
     let mut thinking_started = false;
-    let mut tool_indices = std::collections::HashMap::new();
+    let mut tool_indices = ChatToolStream::default();
     let mut reasoning_detail_buffers = std::collections::HashMap::new();
     let chunks = [
         json!({

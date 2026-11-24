@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { FACTS } from "./facts.generated";
 import { SNIPPETS, VERIFY } from "./install-binary-snippets";
 import { INSTALL_GUIDE } from "./install-guide.generated";
-import { getChrome, getHome } from "./i18n/dictionaries";
+import { getChrome } from "./i18n/dictionaries";
 import { footerProjectLinks } from "./i18n/links";
 import { TERMINAL_SCREENSHOT } from "./media-manifest";
 import { PRODUCT_COPY } from "./content/product";
@@ -97,6 +97,7 @@ type PublicSurfaceMatrix = {
     website: string;
     sourceVersion: string | null;
     sourceCommit: string | null;
+    model: string;
     terminal: string;
     capture: string;
     sources: string[];
@@ -572,48 +573,29 @@ done
   });
 
   it("keeps supplied terminal screenshots and website dimensions truthful", () => {
-    // The site and README use the same measured native capture. Demo route
-    // and development-source provenance remain explicit in capture metadata.
+    // The README image is a frame of the real released-capture set; its build
+    // and model are recorded in the fact matrix and the capture provenance.
     const readmeImage = bytes(matrix.screenshot.readme);
     const websiteImage = bytes(matrix.screenshot.website);
 
     expect(imageDimensions(websiteImage)).toEqual([TERMINAL_SCREENSHOT.width, TERMINAL_SCREENSHOT.height]);
     expect(readmeImage).toEqual(websiteImage);
     expect(statSync(new URL(matrix.screenshot.readme, root)).size).toBeLessThan(500_000);
-    expect(statSync(new URL(matrix.screenshot.website, root)).size).toBeLessThan(500_000);
-    expect(matrix.screenshot.terminal).toContain("real PTY cell capture");
-    // A development-build capture, never a release claim.
+    expect(matrix.screenshot.terminal).toContain("real PTY capture");
     expect(matrix.screenshot.capture).toContain("development build");
-    const capture = JSON.parse(text("web/lib/terminal-captures/manifest.json"));
-    expect(capture.baseCommit).toBe(matrix.screenshot.sourceCommit);
-    expect(capture.binarySha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(capture.sourceDiffSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(capture.sourceDirty).toBe(true);
-    expect(capture.conditions.provider).toContain("loopback");
-    expect(capture.conditions.model).toBe("website-demo");
-    expect(capture.conditions.submittedPrompts).toBeGreaterThan(0);
-    expect(capture.conditions.fixtureHistory).toBe(false);
+    expect(matrix.screenshot.model).toBe(TERMINAL_SCREENSHOT.model);
+    expect(matrix.screenshot.sourceCommit).toBe(TERMINAL_SCREENSHOT.sourceCommit);
+    const provenance = JSON.parse(text("web/lib/terminal-captures/released/provenance.json"));
+    expect(provenance.model.scripted).toBe(false);
+    expect(provenance.model.model).toBe(TERMINAL_SCREENSHOT.model);
 
     const readme = text("README.md");
     const homePage = text("web/app/[locale]/page.tsx");
     const guidePage = text("web/app/[locale]/docs/guide/page.tsx");
     expect(readme).toContain(matrix.screenshot.readme);
     expect(`web/public${TERMINAL_SCREENSHOT.src}`).toBe(matrix.screenshot.website);
-    expect(imageDimensions(websiteImage)).toEqual([TERMINAL_SCREENSHOT.width, TERMINAL_SCREENSHOT.height]);
-    // The home shows frames from the released version only; the
-    // development-build gallery lives on the docs guide.
     expect(homePage).toContain("RELEASED_CAPTURE_FRAMES");
-    expect(homePage).not.toContain("NativeTerminalGallery");
-    expect(guidePage).toContain("<NativeTerminalGallery");
-    expect(TERMINAL_SCREENSHOT.capture).toBe("web/lib/terminal-captures/website-home-100x24.json");
-    expect(matrix.screenshot.sources).toContain(TERMINAL_SCREENSHOT.capture);
-    // Every locale describes the actual capture; build identity comes from
-    // the media manifest instead of a stale version embedded in translations.
-    expect(guidePage).toContain("label={fill(home.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}");
-    for (const locale of ["en", "zh", "ja", "vi", "ko", "ru", "uk", "es", "pt-BR", "id", "fr", "de", "ca", "hi", "tr", "it", "pl", "ar"]) {
-      const home = getHome(locale);
-      expect(home.screenshotAlt, `${locale} alt`).toContain("{version}");
-    }
+    expect(guidePage).toContain("RELEASED_CAPTURE_FRAMES");
   });
 
   it("keeps the homepage free of fabricated demo panels", () => {

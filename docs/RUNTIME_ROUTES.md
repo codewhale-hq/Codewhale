@@ -22,6 +22,7 @@ registration index.
 | GET | `/` |
 | GET | `/__codewhale/bootstrap/{nonce}` |
 | GET | `/__codewhale/mobile/bootstrap/{nonce}` |
+| GET | `/__codewhale/mobile/pair/{secret}` |
 | POST | `/__codewhale/mobile/session` |
 | POST | `/__codewhale/mobile/stream-ticket` |
 | POST | `/__codewhale/web/stream-ticket` |
@@ -39,6 +40,7 @@ registration index.
 | GET | `/v1/agents/external` |
 | GET | `/v1/agents/external/{id}/options` |
 | GET | `/v1/agents/external/quota` |
+| GET | `/v1/approval-grants` |
 | GET | `/v1/approvals` |
 | POST | `/v1/approvals/{approval_id}` |
 | GET | `/v1/apps/avatars` |
@@ -54,6 +56,7 @@ registration index.
 | POST | `/v1/apps/mcp/servers/{name}/enable` |
 | POST | `/v1/apps/mcp/servers/{name}/reconnect` |
 | GET | `/v1/apps/mcp/tools` |
+| GET | `/v1/apps/plugin-index` |
 | GET | `/v1/apps/plugins` |
 | DELETE / GET | `/v1/apps/plugins/{selector}` |
 | POST | `/v1/apps/plugins/{selector}/disable` |
@@ -73,6 +76,7 @@ registration index.
 | POST | `/v1/apps/plugins/install` |
 | GET / POST | `/v1/automations` |
 | DELETE / GET / PATCH | `/v1/automations/{id}` |
+| POST | `/v1/automations/{id}/adopt` |
 | GET | `/v1/automations/{id}/missed` |
 | PUT | `/v1/automations/{id}/missed/policy` |
 | POST | `/v1/automations/{id}/missed/run` |
@@ -95,6 +99,9 @@ registration index.
 | GET | `/v1/definition` |
 | GET | `/v1/diagnostics` |
 | GET | `/v1/diff` |
+| GET | `/v1/dsh/remote/pairings` |
+| DELETE | `/v1/dsh/remote/pairings/{grant}` |
+| POST | `/v1/dsh/remote/pairings/{grant}/present` |
 | POST | `/v1/fleet/placement` |
 | GET | `/v1/fleet/profiles` |
 | GET | `/v1/fleet/profiles/{id}/document` |
@@ -136,6 +143,8 @@ registration index.
 | POST | `/v1/operate/keepalive` |
 | PUT | `/v1/operate/plan` |
 | POST | `/v1/operate/stop` |
+| GET | `/v1/permissions/rules` |
+| POST | `/v1/permissions/rules/remove` |
 | GET | `/v1/plan` |
 | GET | `/v1/plans` |
 | GET | `/v1/process` |
@@ -189,11 +198,14 @@ registration index.
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/deliver` |
 | POST | `/v1/threads/{id}/agent-mail/{message_id}/read` |
 | DELETE | `/v1/threads/{id}/approval-grants/{grant_id}` |
+| POST | `/v1/threads/{id}/auto-review/approve` |
+| GET | `/v1/threads/{id}/auto-review/blocks` |
 | POST | `/v1/threads/{id}/commands` |
 | DELETE / GET | `/v1/threads/{id}/commands/{operation_key}` |
 | POST | `/v1/threads/{id}/commands/builtin` |
 | POST | `/v1/threads/{id}/compact` |
 | GET | `/v1/threads/{id}/context` |
+| GET | `/v1/threads/{id}/context/standing` |
 | GET | `/v1/threads/{id}/events` |
 | POST | `/v1/threads/{id}/file-revert` |
 | POST | `/v1/threads/{id}/fork` |
@@ -206,6 +218,7 @@ registration index.
 | GET | `/v1/threads/{id}/job-operations/{operation_key}` |
 | GET / POST | `/v1/threads/{id}/jobs` |
 | GET | `/v1/threads/{id}/jobs/{job_id}` |
+| POST | `/v1/threads/{id}/jobs/{job_id}/keepalive` |
 | POST | `/v1/threads/{id}/jobs/{job_id}/kill` |
 | GET | `/v1/threads/{id}/jobs/{job_id}/output` |
 | POST | `/v1/threads/{id}/jobs/{job_id}/resize` |
@@ -252,6 +265,8 @@ registration index.
 | POST | `/v1/voice/control` |
 | POST | `/v1/voice/dictate` |
 | POST | `/v1/voice/send` |
+| POST | `/v1/voice/transcribe` |
+| POST | `/v1/voice/tts` |
 | GET / PUT | `/v1/whale/soul` |
 | GET | `/v1/workspace/diff` |
 | GET / PUT | `/v1/workspace/files` |
@@ -263,4 +278,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 243 distinct literal paths in this table.
+The source contains 258 distinct literal paths in this table.

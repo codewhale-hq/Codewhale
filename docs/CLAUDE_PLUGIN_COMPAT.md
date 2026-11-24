@@ -48,5 +48,12 @@ OAuth or borrow another application's credentials.
 plugin archives rather than silently selecting one directory and dropping other
 components. Use `/plugin install` for supported bundles, or migrate one explicit
 skill directory when the repository depends on unsupported runtime behavior.
+For example, a hybrid package such as
+[`deja-vu`](https://github.com/vshulcz/deja-vu/tree/2b1baf0f79249429564150c2a39653aec2861260/extensions/codewhale)
+ships `.claude-plugin/plugin.json`, `.mcp.json`, `skills/`, and `commands/` for
+`/plugin install`, while wiring host lifecycle hooks separately in
+`~/.codewhale/config.toml` because the Claude bundle importer rejects `hooks`.
+Hooks in `config.toml` are your own shell commands and run outside plugin
+review, hashes and enablement, so read each hook command before adding it.
 
 See [PLUGIN_BUNDLES.md](PLUGIN_BUNDLES.md) for discovery, review and activation.

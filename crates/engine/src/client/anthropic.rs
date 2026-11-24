@@ -37,15 +37,15 @@ use codewhale_models::tool_projection::{
 use codewhale_models::{
     ContentBlock, ContentBlockStart, MessageRequest, MessageResponse, StreamEvent, Usage,
 };
-use codewhale_runtime::config::wire_model_for_provider_route;
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
-    extract_sse_data_value, from_api_tool_name, next_sse_line, push_sse_event_data,
-    to_api_tool_name,
+    ToolNameWire, check_history_tool_names, documented_tool_name_limit, extract_sse_data_value,
+    from_api_tool_name, next_sse_line, over_limit_tool_name_message, push_sse_event_data,
+    to_api_tool_name, tool_name_exceeds_limit, tool_name_limit,
 };
 
 /// Maximum `cache_control` breakpoints Anthropic accepts per request.
@@ -65,8 +65,15 @@ impl CodewhaleClient {
         request: &MessageRequest,
         stream: bool,
     ) -> Result<(Value, Vec<String>)> {
-        let model =
-            wire_model_for_provider_route(self.api_provider, &self.base_url, &request.model);
+        let model = codewhale_config::route::resolve_model(
+            self.api_provider,
+            &request.model,
+            Some(&self.base_url),
+        )
+        .map_or_else(
+            |_| request.model.trim().to_string(),
+            |resolved| resolved.wire_id,
+        );
         let mut body = json!({
             "model": model,
             "max_tokens": request.max_tokens,
@@ -94,6 +101,16 @@ impl CodewhaleClient {
             };
         }
 
+        super::role_placement::validate_latest_reminder_messages(&request.messages)?;
+        super::deepseek_tools::validate_and_apply_safety_check_and_title(
+            request,
+            &mut body,
+            matches!(
+                self.api_provider,
+                ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+            ),
+        )?;
+
         let mut messages: Vec<Value> = request
             .messages
             .iter()
@@ -103,16 +120,42 @@ impl CodewhaleClient {
         repair_dangling_tool_uses(&mut messages);
         body["messages"] = Value::Array(messages);
 
+        let tool_name_limit = tool_name_limit(self.api_provider, ToolNameWire::AnthropicMessages);
+        check_history_tool_names(
+            request,
+            documented_tool_name_limit(self.api_provider, ToolNameWire::AnthropicMessages),
+        )?;
         let mut omitted_tool_names = Vec::new();
         let mut omitted_logical_names = Vec::new();
+        let mut has_deepseek_web_tools = false;
         if let Some(tools) = request.tools.as_ref()
             && !tools.is_empty()
         {
+            has_deepseek_web_tools = super::deepseek_tools::validate_deepseek_web_tools(
+                tools,
+                WireDialect::AnthropicMessages,
+            )?;
             let route_projection = RouteToolProjection::Relaxed {
                 strict_honored: !self.is_local_ds4_model(&request.model),
             };
             let mut wire_tools = Vec::new();
             for tool in tools {
+                if let Some(kind) = super::deepseek_tools::deepseek_web_tool_kind(tool) {
+                    let mut value = json!({
+                        "type": kind,
+                        "name": kind,
+                    });
+                    if let Some(cache) = tool.cache_control.as_ref() {
+                        value["cache_control"] = json!({ "type": cache.cache_type });
+                    }
+                    wire_tools.push(value);
+                    continue;
+                }
+                if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
+                    omitted_logical_names.push(tool.name.clone());
+                    omitted_tool_names.push(to_api_tool_name(&tool.name));
+                    continue;
+                }
                 match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
                     ToolSchemaProjection::Exact {
                         parameters,
@@ -152,9 +195,16 @@ impl CodewhaleClient {
         }
 
         if let Some(tool_choice) = request.tool_choice.as_ref() {
+            super::deepseek_tools::validate_deepseek_web_tool_choice(
+                tool_choice,
+                has_deepseek_web_tools,
+            )?;
             if let Some(name) = forced_tool_name(tool_choice)
                 && omitted_logical_names.iter().any(|omitted| omitted == name)
             {
+                if tool_name_exceeds_limit(name, tool_name_limit) {
+                    anyhow::bail!(over_limit_tool_name_message(name, tool_name_limit));
+                }
                 anyhow::bail!(
                     "cannot force an omitted tool because its input schema is incompatible with this route"
                 );
@@ -339,12 +389,17 @@ impl CodewhaleClient {
         let url = self.messages_transport_url(url);
         let request_body =
             serde_json::to_vec(body).context("Failed to serialize Anthropic Messages request")?;
+        let needs_files_beta = has_files_api_document(body);
         self.send_with_retry(|| {
-            self.http_client
+            let mut req = self
+                .http_client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .header("Accept", "text/event-stream")
-                .body(request_body.clone())
+                .header("Accept", "text/event-stream");
+            if needs_files_beta {
+                req = req.header("anthropic-beta", "files-api-2025-04-14");
+            }
+            req.body(request_body.clone())
         })
         .await
         .context("Anthropic Messages API request failed")
@@ -362,16 +417,20 @@ impl CodewhaleClient {
         let url = self.messages_transport_url(url);
         let request_body =
             serde_json::to_vec(body).context("Failed to serialize Anthropic Messages request")?;
+        let needs_files_beta = has_files_api_document(body);
         self.send_stream_open_with_retry(|policy| {
-            super::stream_entry::client_for_policy(
+            let mut req = super::stream_entry::client_for_policy(
                 &self.http_client,
                 self.http1_fallback_client(),
                 policy,
             )
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header("Accept", "text/event-stream")
-            .body(request_body.clone())
+            .header("Accept", "text/event-stream");
+            if needs_files_beta {
+                req = req.header("anthropic-beta", "files-api-2025-04-14");
+            }
+            req.body(request_body.clone())
         })
         .await
         .context("Anthropic Messages API request failed")
@@ -551,7 +610,31 @@ fn decode_tool_use_names(value: &mut Value) {
     }
 }
 
+fn has_files_api_document(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|block| {
+                            block.get("type").and_then(Value::as_str) == Some("document")
+                                && block.pointer("/source/type").and_then(Value::as_str)
+                                    == Some("file")
+                        })
+                    })
+            })
+        })
+}
+
 fn decode_anthropic_message(mut value: Value) -> Result<MessageResponse> {
+    if value.get("type").and_then(Value::as_str) == Some("error") {
+        let err = value.get("error").unwrap_or(&value);
+        let (error_type, message) = anthropic_error_fields(err);
+        anyhow::bail!("Anthropic Messages error ({error_type}): {message}");
+    }
     discard_provider_execution_ids(&mut value);
     if let Some(usage) = value.get_mut("usage") {
         *usage = json!(parse_anthropic_usage(usage));
@@ -838,6 +921,21 @@ pub(super) fn message_to_anthropic(message: &codewhale_models::Message) -> Optio
     let wire_role = match placement {
         RolePlacement::User | RolePlacement::Developer => "user",
         RolePlacement::Assistant | RolePlacement::InterruptedAssistant => "assistant",
+        RolePlacement::LatestReminder => {
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                return None;
+            }
+            return Some(json!({ "role": "latest_reminder", "content": text }));
+        }
         // Unreachable in production: `reject_unsupported_roles` refuses these
         // pairs at the seam. Failing closed here keeps a future caller that
         // skips the seam from putting an unrepresentable role on the wire.
@@ -989,11 +1087,72 @@ fn content_block_to_anthropic(block: &ContentBlock) -> Option<Value> {
             Some(value)
         }
         ContentBlock::ImageUrl { image_url } => Some(anthropic_image_block(&image_url.url)),
-        // Server-tool block types are DeepSeek/internal concepts with no
-        // Anthropic client-side wire equivalent.
-        ContentBlock::ServerToolUse { .. }
-        | ContentBlock::ToolSearchToolResult { .. }
-        | ContentBlock::CodeExecutionToolResult { .. } => None,
+        ContentBlock::ServerToolUse {
+            id,
+            name,
+            input,
+            kind,
+            caller,
+        } => {
+            let mut value = json!({
+                "type": "server_tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            if let Some(caller) = caller {
+                value["caller"] = json!(caller);
+            }
+            Some(value)
+        }
+        ContentBlock::WebSearchToolResult {
+            tool_use_id,
+            content,
+            kind,
+        } => {
+            let mut value = json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            Some(value)
+        }
+        ContentBlock::WebFetchToolResult {
+            tool_use_id,
+            content,
+            kind,
+            signature,
+        } => {
+            let mut value = json!({
+                "type": "web_fetch_tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            });
+            if let Some(kind) = kind {
+                value["kind"] = json!(kind);
+            }
+            if let Some(signature) = signature {
+                value["signature"] = json!(signature);
+            }
+            Some(value)
+        }
+        ContentBlock::File { file_id } => Some(json!({
+            "type": "document",
+            "source": {
+                "type": "file",
+                "file_id": file_id,
+            },
+        })),
+        ContentBlock::ToolSearchToolResult { .. }
+        | ContentBlock::CodeExecutionToolResult { .. }
+        | ContentBlock::WebSearchCall { .. }
+        | ContentBlock::ServerToolCalls { .. } => None,
     }
 }
 
@@ -1172,6 +1331,20 @@ fn convert_anthropic_sse_usage_event(trimmed: &str) -> Option<Result<StreamEvent
             }
         }
         Some("message_delta") => {
+            let top_title = value.get("title").cloned();
+            let top_stop_details = value.get("stop_details").cloned();
+            if let Some(delta) = value.get_mut("delta").and_then(Value::as_object_mut) {
+                if !delta.contains_key("title")
+                    && let Some(title) = top_title
+                {
+                    delta.insert("title".to_string(), title);
+                }
+                if !delta.contains_key("stop_details")
+                    && let Some(stop_details) = top_stop_details
+                {
+                    delta.insert("stop_details".to_string(), stop_details);
+                }
+            }
             if let Some(usage) = value.get_mut("usage") {
                 *usage = json!(parse_anthropic_usage(usage));
             }
@@ -1202,6 +1375,9 @@ fn parse_anthropic_usage(usage: &Value) -> Usage {
     let cache_read = field("cache_read_input_tokens");
     let output = field("output_tokens");
 
+    let server_tool_use = super::wire::parse_server_tool_usage(Some(usage));
+    let safety_tokens = super::wire::parse_safety_tokens(Some(usage));
+
     Usage {
         input_tokens: input_raw
             .saturating_add(cache_creation)
@@ -1212,7 +1388,8 @@ fn parse_anthropic_usage(usage: &Value) -> Usage {
         prompt_cache_write_tokens: Some(cache_creation),
         reasoning_tokens: None,
         reasoning_replay_tokens: None,
-        server_tool_use: None,
+        server_tool_use,
+        safety_tokens,
 
         input_audio_tokens: None,
         output_audio_tokens: None,
@@ -1305,6 +1482,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn over_long_encoded_tool_names_are_withheld_at_128() {
+        let client = anthropic_test_client(None);
+        let tool = |name: &str| Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+        let mid = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let long = format!(
+            "mcp__tracker__{}.v2.issues.list-by-assignee",
+            "a".repeat(70)
+        );
+        assert!(to_api_tool_name(mid).len() > 64 && to_api_tool_name(mid).len() <= 128);
+        assert!(to_api_tool_name(&long).len() > 128);
+
+        let mut request = request_with("claude-sonnet-4-6", None, None, None);
+        request.tools = Some(vec![tool("read_file"), tool(mid), tool(&long)]);
+        let (body, omitted) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("body builds");
+        let sent: Vec<&str> = body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(sent, vec!["read_file".to_string(), to_api_tool_name(mid)]);
+        assert_eq!(omitted, vec![to_api_tool_name(&long)]);
+
+        request.tool_choice = Some(json!({"type": "tool", "name": long}));
+        let error = client
+            .build_anthropic_wire_body(&request, true)
+            .expect_err("forcing a withheld tool is refused");
+        assert!(error.to_string().contains("at most 128"), "{error}");
+    }
+
+    #[test]
+    fn a_100_character_encoded_name_is_offered_on_an_anthropic_wire_route_without_a_documented_limit()
+     {
+        let tool = |name: &str| Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+        let name = "a".repeat(100);
+        assert_eq!(to_api_tool_name(&name).len(), 100);
+        let client = minimax_test_client();
+        let mut request = request_with("MiniMax-M2", None, None, None);
+        request.tools = Some(vec![tool(&name)]);
+        let (body, omitted) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("body builds");
+        assert_eq!(body["tools"][0]["name"], name);
+        assert!(omitted.is_empty());
+    }
+
     fn request_with(
         model: &str,
         reasoning_effort: Option<&str>,
@@ -1336,6 +1582,8 @@ mod tests {
             stream: Some(true),
             temperature,
             top_p,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -3163,5 +3411,300 @@ mod tests {
             })
         });
         assert!(carried, "the summary text must survive: {messages:?}");
+    }
+
+    #[test]
+    fn deepseek_anthropic_web_tools_chatbot_options_and_replay() {
+        let client = deepseek_test_client("https://api.deepseek.com/anthropic");
+        let request = MessageRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "Summarize".to_string(),
+                            cache_control: None,
+                        },
+                        ContentBlock::File {
+                            file_id: "file_doc_1".to_string(),
+                        },
+                    ],
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::ServerToolUse {
+                            id: "srv_1".to_string(),
+                            name: "deepseek_web_search".to_string(),
+                            input: json!({ "query": "rust 2024" }),
+                            kind: Some("search".to_string()),
+                            caller: None,
+                        },
+                        ContentBlock::WebSearchToolResult {
+                            tool_use_id: "srv_1".to_string(),
+                            content: json!([{
+                                "type": "web_search_result_location",
+                                "url": "https://example.com",
+                                "title": "Rust"
+                            }]),
+                            kind: Some("search".to_string()),
+                        },
+                        ContentBlock::WebFetchToolResult {
+                            tool_use_id: "srv_2".to_string(),
+                            content: json!({ "type": "web_fetch_result", "url": "https://example.com" }),
+                            kind: Some("read_link".to_string()),
+                            signature: Some("sig_fetch".to_string()),
+                        },
+                    ],
+                },
+                Message {
+                    role: Role::LatestReminder,
+                    content: vec![ContentBlock::Text {
+                        text: "Cite URLs inline".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "Continue".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: None,
+            tools: Some(vec![
+                Tool {
+                    tool_type: Some("deepseek_web_search".to_string()),
+                    name: "deepseek_web_search".to_string(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                    allowed_callers: None,
+                    defer_loading: None,
+                    input_examples: None,
+                    strict: None,
+                    cache_control: None,
+                },
+                Tool {
+                    tool_type: Some("deepseek_read_url".to_string()),
+                    name: "deepseek_read_url".to_string(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                    allowed_callers: None,
+                    defer_loading: None,
+                    input_examples: None,
+                    strict: None,
+                    cache_control: None,
+                },
+            ]),
+            tool_choice: Some(json!({ "type": "auto" })),
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(true),
+            temperature: None,
+            top_p: None,
+            safety_check: Some(codewhale_models::SafetyCheckConfig {
+                level: "high".to_string(),
+            }),
+            title: Some(codewhale_models::ConversationTitleConfig { enabled: true }),
+        };
+
+        let (body, warnings) = client
+            .build_anthropic_wire_body(&request, true)
+            .expect("deepseek messages body builds");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(body["safety_check"], json!({ "level": "high" }));
+        assert_eq!(body["title"], json!({ "enabled": true }));
+        assert_eq!(
+            body["tools"],
+            json!([
+                { "type": "deepseek_web_search", "name": "deepseek_web_search" },
+                {
+                    "type": "deepseek_read_url",
+                    "name": "deepseek_read_url",
+                    "cache_control": { "type": "ephemeral" }
+                }
+            ])
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1],
+            json!({ "type": "document", "source": { "type": "file", "file_id": "file_doc_1" } })
+        );
+        assert_eq!(body["messages"][1]["content"][0]["kind"], "search");
+        assert_eq!(body["messages"][1]["content"][2]["signature"], "sig_fetch");
+        assert_eq!(body["messages"][2]["role"], "latest_reminder");
+        assert_eq!(body["messages"][3]["role"], "user");
+
+        let mut forced = request.clone();
+        forced.tool_choice = Some(json!({ "type": "tool", "name": "deepseek_web_search" }));
+        assert!(client.build_anthropic_wire_body(&forced, true).is_err());
+
+        let mut required_choice = request.clone();
+        required_choice.tool_choice = Some(json!({ "type": "any" }));
+        assert!(
+            client
+                .build_anthropic_wire_body(&required_choice, true)
+                .is_err()
+        );
+
+        let non_deepseek = anthropic_test_client(None);
+        assert!(
+            non_deepseek
+                .build_anthropic_wire_body(&request, true)
+                .is_err()
+        );
+
+        let mut bad_domain = request;
+        bad_domain.tools.as_mut().expect("tools")[0].input_schema =
+            json!({ "allowed_domains": ["example.com"] });
+        assert!(client.build_anthropic_wire_body(&bad_domain, true).is_err());
+    }
+
+    #[test]
+    fn deepseek_anthropic_sse_decodes_web_results_title_citations_and_refusal() {
+        let events = [
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srv_1",
+                    "name": "deepseek_web_search",
+                    "kind": "deep_search",
+                    "input": {}
+                }
+            }).to_string(),
+            json!({
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srv_1",
+                    "kind": "deep_search",
+                    "content": [{ "type": "web_search_result_location", "url": "https://example.com" }]
+                }
+            }).to_string(),
+            json!({
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": { "type": "web_search_result_location", "url": "https://example.com" }
+                }
+            }).to_string(),
+            json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "refusal",
+                    "title": "DeepSeek Chat",
+                    "refusal": "Content filtered",
+                    "stop_details": { "category": "safety" }
+                },
+                "usage": {
+                    "output_tokens": 18,
+                    "safety_tokens": 9,
+                    "server_tool_use": {
+                        "web_search_requests": 1,
+                        "web_fetch_requests": 0,
+                        "tool_search": 1,
+                        "tool_fetch": 0,
+                        "tool_image_search": 2
+                    }
+                }
+            }).to_string(),
+        ];
+
+        let decoded: Vec<StreamEvent> = events
+            .iter()
+            .map(|raw| {
+                convert_anthropic_sse_data(raw)
+                    .expect("sse event succeeds")
+                    .expect("sse event decoded")
+            })
+            .collect();
+
+        assert!(matches!(
+            &decoded[0],
+            StreamEvent::ContentBlockStart {
+                content_block: codewhale_models::ContentBlockStart::ServerToolUse {
+                    kind: Some(k), ..
+                }, ..
+            } if k == "deep_search"
+        ));
+        assert!(matches!(
+            &decoded[1],
+            StreamEvent::ContentBlockStart {
+                content_block: codewhale_models::ContentBlockStart::WebSearchToolResult {
+                    kind: Some(k), ..
+                }, ..
+            } if k == "deep_search"
+        ));
+        assert!(matches!(
+            &decoded[2],
+            StreamEvent::ContentBlockDelta {
+                delta: codewhale_models::Delta::CitationsDelta { .. },
+                ..
+            }
+        ));
+        let StreamEvent::MessageDelta { delta, usage } = &decoded[3] else {
+            panic!("expected MessageDelta");
+        };
+        assert_eq!(delta.stop_reason.as_deref(), Some("refusal"));
+        assert_eq!(delta.title.as_deref(), Some("DeepSeek Chat"));
+        assert_eq!(delta.refusal.as_deref(), Some("Content filtered"));
+        let usage = usage.as_ref().expect("usage present");
+        assert_eq!(usage.safety_tokens, Some(9));
+        let stu = usage.server_tool_use.as_ref().expect("server_tool_use");
+        assert_eq!(stu.tool_search, Some(1));
+        assert_eq!(stu.tool_image_search, Some(2));
+    }
+
+    #[tokio::test]
+    async fn deepseek_anthropic_sends_files_beta_header_and_surfaces_200_error_envelope() {
+        use crate::core::model_client::ModelClient;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("anthropic-beta", "files-api-2025-04-14"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "error",
+                "error": { "type": "invalid_request_error", "message": "bad file" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = deepseek_test_client(&server.uri());
+        let request = MessageRequest {
+            model: "deepseek-v4".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::File {
+                    file_id: "file_1".to_string(),
+                }],
+            }],
+            max_tokens: 128,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(false),
+            temperature: None,
+            top_p: None,
+            safety_check: None,
+            title: None,
+        };
+        let err = client
+            .create_message(request)
+            .await
+            .expect_err("200 error envelope must surface as Err");
+        assert!(err.to_string().contains("bad file"), "{err}");
     }
 }

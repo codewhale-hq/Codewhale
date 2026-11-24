@@ -1541,9 +1541,10 @@ async fn edit_file_requires_prior_read() {
         .expect_err("edit without read should fail");
     let message = err.to_string();
     assert!(message.contains("not been read"), "{message}");
-    // The recovery has to be spelled as a call the model can make: `read_file`
-    // was retired in v0.9.3 and the registry has no fuzzy resolve step.
-    assert!(message.contains(r#"File with action="read""#), "{message}");
+    assert!(
+        message.contains(r#"call read path="blind.txt""#),
+        "{message}"
+    );
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1569,7 +1570,10 @@ async fn edit_file_rejects_stale_prior_read() {
         .expect_err("stale read should fail");
     let message = err.to_string();
     assert!(message.contains("changed since"), "{message}");
-    assert!(message.contains(r#"File with action="read""#), "{message}");
+    assert!(
+        message.contains(r#"call read path="stale.txt""#),
+        "{message}"
+    );
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1595,12 +1599,11 @@ async fn edit_file_rejects_non_unique_exact_match() {
     let message = err.to_string();
     assert!(message.contains("non-unique"), "{message}");
     assert!(message.contains("matched 2"), "{message}");
-    // Recovery text must name the live surface. `read_file` is retired and
-    // cannot dispatch (crates/engine/src/tools/registry.rs:2067).
     assert!(
-        message.contains("call File with action=\"read\""),
+        message.contains("call `read` with path=\"multi.txt\""),
         "{message}"
     );
+    assert!(!message.contains("File with action=\"read\""), "{message}");
     assert!(!message.contains("read_file"), "{message}");
 
     let unchanged = fs::read_to_string(&test_file).expect("read");
@@ -1847,7 +1850,11 @@ async fn test_edit_file_not_found() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("not found"));
-    assert!(err.to_string().contains("call File with action=\"read\""));
+    assert!(
+        err.to_string()
+            .contains("call `read` with path=\"no_match.txt\"")
+    );
+    assert!(!err.to_string().contains("File with action=\"read\""));
     assert!(!err.to_string().contains("read_file"));
 }
 
@@ -1885,9 +1892,10 @@ async fn test_edit_file_rejects_identical_search_and_replace() {
         "error should size the payload: {err}"
     );
     assert!(
-        err.contains("Recovery"),
-        "error should offer recovery: {err}"
+        err.contains("Recovery: re-read the file with `read`"),
+        "error should offer recovery using `read`: {err}"
     );
+    assert!(!err.contains("File action=\"read\""), "{err}");
     let unchanged = fs::read_to_string(&test_file).expect("read");
     assert_eq!(unchanged, "a := \"foo\"");
 }
@@ -3316,4 +3324,96 @@ async fn read_file_refusal_names_home_spelling_not_denied_symlink_target() {
         "refusal message must NOT leak target path ({}): {message}",
         denied_file.display()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_file_refuses_symlinks_to_git_hooks_and_strict_trust_escape() {
+    let workspace_dir = tempfile::tempdir().expect("workspace");
+    let outside_dir = tempfile::tempdir().expect("outside");
+    let workspace = workspace_dir.path().canonicalize().expect("canonical ws");
+    let hooks_dir = workspace.join(".git/hooks");
+    fs::create_dir_all(&hooks_dir).expect("hooks dir");
+    fs::create_dir_all(workspace.join("notes")).expect("notes dir");
+    let hook = hooks_dir.join("pre-commit");
+    fs::write(&hook, "clean-hook\n").expect("write hook");
+    let outside_target = outside_dir.path().join("outside.txt");
+    fs::write(&outside_target, "clean-outside\n").expect("write outside");
+
+    let link_leaf = workspace.join("notes/hook_link");
+    std::os::unix::fs::symlink(&hook, &link_leaf).expect("symlink leaf");
+    let link_dir = workspace.join("linked_hooks");
+    std::os::unix::fs::symlink(&hooks_dir, &link_dir).expect("symlink dir");
+    let hardlink_leaf = workspace.join("notes/hook_hard");
+    fs::hard_link(&hook, &hardlink_leaf).expect("hard link leaf");
+
+    let ctx = ToolContext::new(&workspace);
+    for bad in [
+        "notes/hook_link",
+        "linked_hooks/new-hook",
+        "notes/hook_hard",
+    ] {
+        let err = WriteFileTool
+            .execute(json!({"path": bad, "content": "pwned\n"}), &ctx)
+            .await
+            .expect_err(bad);
+        assert!(
+            matches!(err, ToolError::PermissionDenied { .. }),
+            "expected permission denied for {bad}, got {err:?}"
+        );
+        let contract_err =
+            WriteFileTool::execute_contract_write(json!({"path": bad, "content": "pwned\n"}), &ctx)
+                .await
+                .expect_err(bad);
+        assert!(
+            matches!(contract_err, ToolError::PermissionDenied { .. }),
+            "expected contract permission denied for {bad}, got {contract_err:?}"
+        );
+    }
+
+    let mut strict_trusted =
+        ToolContext::with_options(&workspace, true, workspace.join("notes.md"));
+    strict_trusted.execution.follow_symlinks = true;
+    strict_trusted
+        .execution
+        .trusted_external_paths
+        .push(outside_dir.path().to_path_buf());
+    strict_trusted.execution.strict_workspace_confinement = true;
+
+    let escape_link = workspace.join("notes/escape_link");
+    std::os::unix::fs::symlink(&outside_target, &escape_link).expect("escape symlink");
+    let escape_dir = workspace.join("escape_dir");
+    std::os::unix::fs::symlink(outside_dir.path(), &escape_dir).expect("escape dir");
+
+    for escaped in [
+        "notes/escape_link",
+        "escape_dir/created.txt",
+        outside_target.to_str().expect("utf8 outside"),
+    ] {
+        let err = WriteFileTool
+            .execute(
+                json!({"path": escaped, "content": "pwned\n"}),
+                &strict_trusted,
+            )
+            .await
+            .expect_err(escaped);
+        assert!(
+            matches!(
+                err,
+                ToolError::PermissionDenied { .. } | ToolError::PathEscape { .. }
+            ),
+            "strict confinement must fail closed for {escaped}, got {err:?}"
+        );
+    }
+
+    assert_eq!(
+        fs::read_to_string(&hook).expect("read hook"),
+        "clean-hook\n"
+    );
+    assert!(!hooks_dir.join("new-hook").exists());
+    assert_eq!(
+        fs::read_to_string(&outside_target).expect("read outside"),
+        "clean-outside\n"
+    );
+    assert!(!outside_dir.path().join("created.txt").exists());
 }

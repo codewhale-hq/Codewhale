@@ -24,7 +24,10 @@
 
 pub mod rate_limit;
 
+pub use codewhale_error_taxonomy::RequestTransmission;
+
 use anyhow::Result;
+use codewhale_command_contract::metrics::format_duration;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
 use codewhale_runtime::config::{RateLimitRetryPolicy, RetryPolicy};
 use serde_json::Value;
@@ -154,6 +157,14 @@ pub trait LlmClient: Send + Sync {
             self.billing_base_url(),
             dispatched_at,
         )
+    }
+
+    fn supports_catalog_reviewer_model(&self, _candidate: &str) -> bool {
+        let Some(provider) = codewhale_config::ProviderKind::parse(self.provider_name()) else {
+            return false;
+        };
+        self.billing_base_url()
+            .is_some_and(|url| codewhale_config::provider_base_url_is_official(provider, url))
     }
 }
 
@@ -367,14 +378,6 @@ impl QuotaExhaustionError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RequestTransmission {
-    NotDispatched,
-    Rejected,
-    OutcomeUnknown,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ProviderUsageCoverage {
     Reported,
     Missing,
@@ -423,6 +426,12 @@ pub enum LlmError {
     /// Network connectivity error
     NetworkError(String),
 
+    HeaderTimeout {
+        waited: Duration,
+        http1: bool,
+        retried: u32,
+    },
+
     ConnectError {
         message: String,
         transient: bool,
@@ -457,6 +466,24 @@ pub enum LlmError {
     Other(String),
 }
 
+fn opencode_go_hint(message: &str) -> &'static str {
+    let lowered = message.to_lowercase();
+    if lowered.contains("codewhale auth set") {
+        return "";
+    }
+    if (lowered.contains("free usage limit")
+        || lowered.contains("freeusagelimiterror")
+        || lowered.contains("free models work in opencode"))
+        && lowered.contains("opencode")
+    {
+        " OpenCode Zen's *-free models are restricted to OpenCode's own client and fail from third-party clients like Codewhale; use a paid OpenCode Zen model or another provider, or for OpenCode Go (a separate provider with its own key) run: codewhale auth set --provider opencode-go"
+    } else if lowered.contains("opencode go") || lowered.contains("opencode.ai/go") {
+        " OpenCode Go is a separate provider with its own key; run: codewhale auth set --provider opencode-go"
+    } else {
+        ""
+    }
+}
+
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -464,11 +491,25 @@ impl std::fmt::Display for LlmError {
                 message,
                 retry_after,
                 ..
-            } => write!(
+            } => {
+                let hint = opencode_go_hint(message);
+                match retry_after {
+                    Some(d) => write!(
+                        f,
+                        "Rate limit exceeded: {message}; quota window resets in {}; automatic retry stopped{hint}",
+                        format_duration(*d)
+                    ),
+                    None => write!(
+                        f,
+                        "Rate limit exceeded: {message}; automatic retry stopped{hint}"
+                    ),
+                }
+            }
+            LlmError::RateLimited { message, .. } => write!(
                 f,
-                "Rate limit exceeded: {message}; quota window reset in {retry_after:?}; automatic retry stopped"
+                "Rate limit exceeded: {message}{}",
+                opencode_go_hint(message)
             ),
-            LlmError::RateLimited { message, .. } => write!(f, "Rate limit exceeded: {message}"),
             LlmError::QuotaExhausted(error) => {
                 write!(f, "Provider plan quota exhausted: {}", error.message)
             }
@@ -476,6 +517,9 @@ impl std::fmt::Display for LlmError {
                 write!(f, "Server error ({status}): {message}")
             }
             LlmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            LlmError::HeaderTimeout { .. } => {
+                write!(f, "Network error: {}", self.header_timeout_message())
+            }
             LlmError::ConnectError { message, .. } => {
                 write!(f, "Connection failed before request dispatch: {message}")
             }
@@ -503,7 +547,38 @@ impl std::fmt::Display for LlmError {
 
 impl std::error::Error for LlmError {}
 
+/// Added to a response-header timeout (#6889). A provider prefilling a large
+/// or high-thinking request or loading a cold model can hold headers back
+/// longer than this wait, and transport advice alone makes that read as a
+/// broken connection.
+const COLD_MODEL_HINT: &str = "The provider may still be prefilling a large or high-thinking \
+     request or loading a cold model: wait a moment and send the message again, or allow a \
+     longer wait with `codewhale config set stream.open_timeout_secs 300` (up to 600).";
+
 impl LlmError {
+    pub(crate) fn header_timeout_message(&self) -> String {
+        let Self::HeaderTimeout {
+            waited,
+            http1,
+            retried,
+        } = self
+        else {
+            return String::new();
+        };
+        let protocol = if *http1 { " on HTTP/1.1" } else { "" };
+        let retried = match retried {
+            0 => String::new(),
+            1 => " It was already retried once automatically and timed out again.".to_string(),
+            count => format!(
+                " It was already retried {count} times automatically and timed out each time."
+            ),
+        };
+        format!(
+            "SSE stream request did not receive response headers after {}s{protocol}; request outcome unknown.{retried} {COLD_MODEL_HINT}",
+            waited.as_secs()
+        )
+    }
+
     fn for_recovery_budget(self, remaining: Duration) -> Self {
         if let Self::RateLimited {
             message,
@@ -703,6 +778,18 @@ impl LlmError {
         Some(Self::QuotaExhausted(
             QuotaExhaustionError::from_http_message(message.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn from_linked_organization_billing_stop(status: u16, body: &str) -> Option<Self> {
+        let stopped = status == 402
+            && (body.contains("linked_organization_spend_limit_reached")
+                || body.contains("linked_organization_billing_unavailable"));
+        stopped.then(|| {
+            Self::QuotaExhausted(QuotaExhaustionError::from_http_message(
+                "Your Claude organization's spend cap or credit stopped this request. Check Linked platforms and Billing in the Claude Console.".to_string(),
+            ))
+        })
     }
 
     #[must_use]
@@ -1030,8 +1117,16 @@ pub fn image_count_rejection(lower: &str) -> Option<ImageCountRejection> {
     Some(ImageCountRejection { limit })
 }
 
+pub(super) fn unwrap_single_element_json_array(value: &Value) -> &Value {
+    value
+        .as_array()
+        .filter(|items| items.len() == 1)
+        .map_or(value, |items| &items[0])
+}
+
 fn explicit_quota_code(body: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(body).ok()?;
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    let value = unwrap_single_element_json_array(&parsed);
     [
         "/error/code",
         "/error/type",
@@ -1138,11 +1233,8 @@ fn has_explicit_quota_phrase(body: &str, bounded_rate_limit_hint: bool) -> bool 
 }
 
 fn extract_json_error_message(body: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    // Flat gateway bodies (`{"error":"Bad Request","message":"Invalid model
-    // name: 'x'"}` — Concentrate, among others) keep the class in `error` and
-    // the detail in `message`. Surfacing only the class hid the one line the
-    // person needed, so carry both when both are present and differ.
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    let value = unwrap_single_element_json_array(&parsed);
     if let (Some(class), Some(detail)) = (
         value.pointer("/error").and_then(Value::as_str),
         value.pointer("/message").and_then(Value::as_str),
@@ -1862,7 +1954,9 @@ pub fn retry_reason_summary(error: &LlmError) -> String {
     match error {
         LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => "rate limited".into(),
         LlmError::ServerError { status, .. } => format!("upstream {status}"),
-        LlmError::NetworkError(_) => "network error; request outcome unknown".into(),
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } => {
+            "network error; request outcome unknown".into()
+        }
         LlmError::ConnectError { .. } => "connection failed before dispatch".into(),
         LlmError::Timeout(_) => "timeout".into(),
         _ => "non-retryable provider failure".into(),
@@ -2701,5 +2795,82 @@ mod tests {
         assert!(display.contains("4 attempts"));
         assert!(display.contains("10"));
         assert!(display.contains("Server error"));
+    }
+
+    #[test]
+    fn test_opencode_zen_free_limit_hint_explains_client_restriction() {
+        let message = "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go";
+        let rendered = LlmError::QuotaWindow {
+            message: message.into(),
+            retry_after: Some(Duration::from_secs(78867)),
+            transmission: RequestTransmission::Rejected,
+        }
+        .to_string();
+        assert!(rendered.contains("*-free"), "{rendered}");
+        assert!(rendered.contains("third-party clients"), "{rendered}");
+        assert!(rendered.contains("paid OpenCode Zen model"), "{rendered}");
+        assert_eq!(
+            rendered
+                .matches("codewhale auth set --provider opencode-go")
+                .count(),
+            1,
+            "{rendered}"
+        );
+
+        let wrapped = LlmError::RateLimited {
+            message: rendered.clone(),
+            retry_after: None,
+        }
+        .to_string();
+        assert_eq!(
+            wrapped
+                .matches("codewhale auth set --provider opencode-go")
+                .count(),
+            1,
+            "{wrapped}"
+        );
+
+        let generic = LlmError::RateLimited {
+            message: "Free usage limit reached".into(),
+            retry_after: None,
+        }
+        .to_string();
+        assert!(!generic.contains("OpenCode"), "{generic}");
+    }
+
+    #[test]
+    fn single_element_array_error_envelope_extracts_message_and_quota_code() {
+        let google_err = serde_json::json!([{
+            "error": {
+                "code": 400,
+                "message": "Function call is missing a thought_signature in functionCall parts.",
+                "status": "INVALID_ARGUMENT"
+            }
+        }])
+        .to_string();
+        assert_eq!(
+            extract_json_error_message(&google_err).as_deref(),
+            Some("Function call is missing a thought_signature in functionCall parts.")
+        );
+
+        let google_quota = serde_json::json!([{
+            "error": {
+                "code": "quota_exceeded",
+                "message": "Quota exceeded for metric.",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "42s"
+                }]
+            }
+        }])
+        .to_string();
+        assert_eq!(
+            explicit_quota_code(&google_quota).as_deref(),
+            Some("quota_exceeded")
+        );
+        assert_eq!(
+            rate_limit::body_delay(&google_quota),
+            Some(Duration::from_secs(42))
+        );
     }
 }

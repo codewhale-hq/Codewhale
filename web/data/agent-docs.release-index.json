@@ -1,6 +1,7 @@
 {
-  "tag": "v0.10.2",
+  "tag": "v0.10.4",
   "slugs": [
+    "first-time",
     "install",
     "guide",
     "auth",
@@ -22,6 +23,10 @@
     "plugins",
     "runtime-api",
     "web",
+    "memory",
+    "read-media",
+    "github-action",
+    "cloud-dispatch",
     "troubleshooting",
     "contribution",
     "runtime-reference",

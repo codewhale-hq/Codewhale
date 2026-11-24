@@ -63,9 +63,38 @@ struct McpServerSettings {
 impl McpServerSettings {
     fn load() -> Result<Self> {
         let path = default_config_path();
-        if let Some(path) = path.filter(|p| p.exists()) {
-            let contents = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read MCP server config: {}", path.display()))?;
+        Self::load_from_path(path.as_deref())
+    }
+
+    fn load_from_path(path: Option<&std::path::Path>) -> Result<Self> {
+        let contents = match path {
+            Some(path) => match std::fs::File::open(path) {
+                Ok(file) => {
+                    let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+                    let (contents, len) =
+                        codewhale_engine::prompts::read_prompt_text_bounded(file, cap)
+                            .with_context(|| {
+                                format!("Failed to read MCP server config: {}", path.display())
+                            })?;
+                    if len.max(contents.len()) > cap {
+                        anyhow::bail!(
+                            "MCP server config {} exceeds the {} MiB limit",
+                            path.display(),
+                            cap / (1024 * 1024)
+                        );
+                    }
+                    Some(contents)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to read MCP server config: {}", path.display())
+                    });
+                }
+            },
+            None => None,
+        };
+        if let (Some(path), Some(contents)) = (path, contents) {
             Self::from_toml(&contents)
                 .with_context(|| format!("Failed to parse MCP server config: {}", path.display()))
         } else {
@@ -74,6 +103,18 @@ impl McpServerSettings {
                 require_approval: true,
             })
         }
+    }
+
+    fn refuse_shell_tools(&mut self) -> Vec<String> {
+        let (refused, kept): (Vec<String>, Vec<String>) = std::mem::take(&mut self.expose_tools)
+            .into_iter()
+            .partition(|name| {
+                build_exposed_tools(std::slice::from_ref(name))
+                    .iter()
+                    .any(|tool| tool.internal == "exec_shell")
+            });
+        self.expose_tools = kept;
+        refused
     }
 
     fn from_toml(contents: &str) -> Result<Self> {
@@ -98,12 +139,21 @@ pub async fn run_mcp_server(
     workspace: PathBuf,
     skills_dir: PathBuf,
     skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
+    tool_launcher_configured: bool,
 ) -> Result<()> {
     // Settings load is a synchronous config read; keep it off the async
     // worker per the blocking-call convention.
-    let settings = tokio::task::spawn_blocking(McpServerSettings::load)
+    let mut settings = tokio::task::spawn_blocking(McpServerSettings::load)
         .await
         .context("MCP server settings task failed")??;
+    if tool_launcher_configured {
+        for name in settings.refuse_shell_tools() {
+            eprintln!(
+                "codewhale mcp server: not exposing '{name}': the managed configuration sets \
+                 tool_launcher, and this server does not run commands through it."
+            );
+        }
+    }
     let server = McpServer::new(workspace, settings, skills_dir, skills_config)?;
     // stdout carries the protocol; the notice goes to stderr so an operator
     // whose config lists write tools sees why they are missing.
@@ -907,6 +957,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_launcher_refuses_shell_tools_even_when_the_operator_allows_them() {
+        let mut settings = McpServerSettings::from_toml(
+            "[server]\nexpose_tools = [\"file_read\", \"shell\", \"exec_shell\", \"Bash\"]\nrequire_approval = false\n",
+        )
+        .expect("parse config");
+        assert_eq!(settings.refuse_shell_tools(), vec!["shell", "exec_shell"]);
+        let server = test_server(PathBuf::from("."), settings);
+        let names: Vec<&str> = server.tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names, vec!["file_read"]);
+        for internal in ["exec_shell", "Bash", "bash"] {
+            assert!(server.registry.get(internal).is_none(), "{internal}");
+        }
+    }
+
+    #[test]
     fn existing_config_without_require_approval_withholds_and_names_write_tools() {
         let settings = McpServerSettings::from_toml(
             "[server]\nexpose_tools = [\"file_read\", \"file_write\", \"apply_patch\"]\n",
@@ -1079,5 +1144,20 @@ mod tests {
             assert_eq!(missing["error"]["code"], -32602);
             pipe.finish().await.unwrap();
         }
+    }
+
+    #[test]
+    fn load_from_path_rejects_oversized_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let defaults = McpServerSettings::load_from_path(Some(&missing)).expect("missing defaults");
+        assert!(defaults.require_approval);
+
+        let oversized = dir.path().join("mcp_server.toml");
+        let cap = codewhale_engine::mcp::MAX_MCP_CONFIG_BYTES as usize;
+        std::fs::write(&oversized, format!("# {}\n", "a".repeat(cap + 16))).unwrap();
+        let err = McpServerSettings::load_from_path(Some(&oversized))
+            .expect_err("oversized config must be rejected");
+        assert!(err.to_string().contains("exceeds the 1 MiB limit"), "{err}");
     }
 }

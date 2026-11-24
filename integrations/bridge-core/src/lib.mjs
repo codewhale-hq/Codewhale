@@ -5,6 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_ACTION_TTL_MS = 24 * 60 * 60 * 1000;
 
+export const THREAD_NOT_OWNED_MESSAGE = "This chat can only use threads it started. Send /new to start a new thread.";
+
 function normalizeCursorValue(value, fallback = 0) {
   const number = Number(value);
   if (Number.isFinite(number) && number >= 0) return Math.floor(number);
@@ -78,7 +80,9 @@ export class ThreadStore {
       actions: options.actions === true,
       actionLimit: options.actionLimit || 200,
       actionTtlMs: options.actionTtlMs || DEFAULT_ACTION_TTL_MS,
-      privateMode: options.privateMode === true
+      privateMode: options.privateMode === true,
+      ownerLimit: options.ownerLimit || options.actionLimit || 200,
+      legacyOwnerScope: typeof options.legacyOwnerScope === "function" ? options.legacyOwnerScope : () => ""
     };
     this.data = { chats: {} };
     this.saveDirty = false;
@@ -90,6 +94,7 @@ export class ThreadStore {
   ensureShape() {
     if (!this.data || typeof this.data !== "object") this.data = {};
     if (!this.data.chats || typeof this.data.chats !== "object") this.data.chats = {};
+    if (!Array.isArray(this.data.threadOwners)) this.data.threadOwners = [];
     if (this.options.messageLimit > 0 && !Array.isArray(this.data.messages)) {
       this.data.messages = [];
     }
@@ -107,8 +112,11 @@ export class ThreadStore {
   async load() {
     try {
       const raw = await readFile(this.filePath, "utf8");
-      this.data = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const unmigrated = !parsed || typeof parsed !== "object" || !Array.isArray(parsed.threadOwners);
+      this.data = parsed;
       this.ensureShape();
+      if (unmigrated) this.data.threadOwners = this.legacyThreadOwners();
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
@@ -213,6 +221,102 @@ export class ThreadStore {
     this.data.chats[chatId] = { ...current, ...patch };
     await this.save();
     return this.data.chats[chatId];
+  }
+
+  legacyThreadOwners() {
+    const chatsByThread = new Map();
+    const reference = (threadId, chatId) => {
+      if (!chatsByThread.has(threadId)) chatsByThread.set(threadId, new Set());
+      chatsByThread.get(threadId).add(chatId);
+    };
+    const candidates = [];
+    for (const [chatId, state] of Object.entries(this.data.chats || {})) {
+      if (!state || typeof state !== "object") continue;
+      const own = [];
+      for (const entry of Array.isArray(state.threadBindings) ? state.threadBindings : []) {
+        if (!entry?.threadId || !entry.actorId) continue;
+        reference(entry.threadId, chatId);
+        own.push({ threadId: entry.threadId, chatId, scope: String(entry.actorId) });
+      }
+      if (state.threadId) {
+        reference(state.threadId, chatId);
+        const scope = this.options.legacyOwnerScope(chatId, state);
+        if (typeof scope === "string") own.push({ threadId: state.threadId, chatId, scope, legacy: true });
+      }
+      candidates.push(...own.slice(-this.options.ownerLimit));
+    }
+    const seen = new Set();
+    return candidates.filter((entry) => {
+      const key = JSON.stringify([entry.threadId, entry.chatId, entry.scope]);
+      if (seen.has(key) || chatsByThread.get(entry.threadId).size !== 1) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  ownsThread(chatId, threadId, scope = "") {
+    if (!chatId || !threadId) return false;
+    return this.data.threadOwners.some((entry) => entry.legacy !== true && entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+  }
+
+  ownershipPending(chatId, threadId, scope = "") {
+    if (!chatId || !threadId || this.ownsThread(chatId, threadId, scope)) return false;
+    return this.data.threadOwners.some((entry) => entry.legacy === true && entry.threadId === threadId && entry.chatId === chatId && entry.scope === scope);
+  }
+
+  legacyOwnerCount() {
+    return this.data.threadOwners.filter((entry) => entry.legacy === true).length;
+  }
+
+  async verifyLegacyOwners(runtimeJson, accept, { concurrency = 8 } = {}) {
+    const ids = [...new Set(this.data.threadOwners.filter((entry) => entry.legacy === true).map((entry) => entry.threadId))];
+    const verdicts = new Map();
+    for (let index = 0; index < ids.length; index += concurrency) {
+      await Promise.all(ids.slice(index, index + concurrency).map(async (threadId) => {
+        try {
+          const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
+          verdicts.set(threadId, accept(detail?.thread ?? detail) === true);
+        } catch (error) {
+          if (error?.status === 404) verdicts.set(threadId, false);
+        }
+      }));
+    }
+    if (verdicts.size) {
+      this.data.threadOwners = this.data.threadOwners.flatMap((entry) => {
+        if (entry.legacy !== true || !verdicts.has(entry.threadId)) return [entry];
+        if (!verdicts.get(entry.threadId)) return [];
+        const { legacy, ...confirmed } = entry;
+        return [confirmed];
+      });
+      await this.save();
+    }
+    return this.legacyOwnerCount();
+  }
+
+  requireOwnedThread(chatId, threadId, scope = "") {
+    if (!this.ownsThread(chatId, threadId, scope)) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+  }
+
+  ownedThreadIds(chatId, scope = "") {
+    if (!chatId) return [];
+    return this.data.threadOwners
+      .filter((entry) => entry.legacy !== true && entry.chatId === chatId && entry.scope === scope)
+      .map((entry) => entry.threadId)
+      .reverse();
+  }
+
+  async recordThreadOwner(chatId, threadId, scope = "") {
+    if (!chatId || !threadId) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+    const held = this.data.threadOwners.find((entry) => entry.threadId === threadId);
+    if (held) {
+      if (held.chatId === chatId && held.scope === scope) return;
+      throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
+    }
+    const owners = [...this.data.threadOwners, { threadId, chatId, scope }];
+    const mine = owners.filter((entry) => entry.chatId === chatId);
+    const evicted = new Set(mine.slice(0, Math.max(0, mine.length - this.options.ownerLimit)));
+    this.data.threadOwners = owners.filter((entry) => !evicted.has(entry));
+    await this.save();
   }
 
   async finishObservedTurn(chatId, threadId, turnId) {
@@ -364,16 +468,59 @@ export class ApprovalOwnershipError extends Error {
   }
 }
 
+export class ThreadOwnershipError extends Error {
+  constructor(message = THREAD_NOT_OWNED_MESSAGE) {
+    super(message);
+    this.name = "ThreadOwnershipError";
+  }
+}
+
+export async function settleLegacyOwners(store, runtimeJson, accept, { retryMs = 30_000, timeoutMs = 15_000, onSettled = null } = {}) {
+  const bounded = (route) => runtimeJson(route, { signal: AbortSignal.timeout(timeoutMs) });
+  const run = async (retried) => {
+    const pendingBefore = new Set(
+      (store.data?.threadOwners || []).filter((entry) => entry.legacy === true).map((entry) => entry.threadId)
+    );
+    const remaining = await store.verifyLegacyOwners(bounded, accept).catch(() => store.legacyOwnerCount());
+    if (retried && typeof onSettled === "function" && pendingBefore.size) {
+      const stillPending = new Set(
+        (store.data?.threadOwners || []).filter((entry) => entry.legacy === true).map((entry) => entry.threadId)
+      );
+      const settled = new Set([...pendingBefore].filter((id) => !stillPending.has(id)));
+      if (settled.size) {
+        await Promise.resolve(onSettled(settled)).catch((error) => {
+          console.error("failed after settling legacy thread owners", error);
+        });
+      }
+    }
+    if (remaining > 0) setTimeout(() => void run(true), retryMs).unref();
+  };
+  await run(false);
+}
+
+export function createdByBridge(thread, { systemPrompt, workspace }) {
+  return thread?.system_prompt === systemPrompt && String(thread?.workspace ?? "") === workspace;
+}
+
+export async function listOwnedThreads(store, runtimeJson, chatId, scope = "", limit = 8) {
+  const ids = store.ownedThreadIds(chatId, scope);
+  if (!ids.length) return [];
+  const query = new URLSearchParams({ limit: String(limit), include_archived: "true", thread_ids: ids.join(",") });
+  const rows = await runtimeJson(`/v1/threads/summary?${query}`);
+  return (Array.isArray(rows) ? rows : []).filter((thread) => store.ownsThread(chatId, thread?.id, scope)).slice(0, limit);
+}
+
 /**
  * Runtime owns pending approvals and their turn ids. The existing chat store
  * owns the immutable human who initiated that accepted turn. Admission to a
  * group, a newer sender or a legacy unbound button does not grant this authority.
  */
-export async function decideApproval(runtimeJson, { store, chatId, actorId, approvalId, decision, remember = false, turnId = null }) {
+export async function decideApproval(runtimeJson, { store, chatId, actorId, approvalId, decision, remember = false, turnId = null, ownsThread = null }) {
   if (decision !== "allow" && decision !== "deny") throw new ApprovalOwnershipError("decision must be allow or deny");
   const state = await store.getChat(chatId);
   const threadId = state?.threadId;
   if (!threadId) throw new ApprovalOwnershipError("this chat has no Runtime thread yet");
+  if (typeof ownsThread === "function" && !ownsThread(threadId)) throw new ThreadOwnershipError(THREAD_NOT_OWNED_MESSAGE);
   if (!actorId) throw new ApprovalOwnershipError("missing initiating human");
   if (!approvalId) throw new ApprovalOwnershipError("missing approval id");
   const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(threadId)}`);
@@ -565,26 +712,34 @@ export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   // Materialize code points once; all chunking below works on index ranges
   // instead of re-running Array.from over the shrinking remainder.
   const chars = Array.from(value);
+  const byteLimit = Math.floor(Number(maxBytes) || 0);
   let chunks;
-  if (chars.length <= limit) {
+  if (chars.length <= limit && (byteLimit <= 0 || Buffer.byteLength(value, "utf8") <= byteLimit)) {
     chunks = value ? [value] : [];
   } else {
     chunks = [];
     let offset = 0;
     let openFence = null;
     while (offset < chars.length) {
-      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence);
+      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence, byteLimit);
       chunks.push(next.chunk);
       offset = next.offset;
       openFence = next.openFence;
     }
   }
-  const byteLimit = Math.floor(Number(maxBytes) || 0);
   if (byteLimit <= 0) return chunks;
   // Transport caps such as WeCom's 4096-byte message limit are measured in
   // UTF-8 bytes, not characters: a 3500-character CJK reply is ~10.5 KB and
   // gets silently truncated. Split any oversized chunk on code-point bounds.
   return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
+}
+
+export function splitAtCodePoint(text, maxChars) {
+  const value = String(text || "");
+  let cut = Math.min(value.length, Math.max(1, Math.floor(maxChars)));
+  const code = value.charCodeAt(cut - 1);
+  if (cut < value.length && cut > 1 && code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  return [value.slice(0, cut), value.slice(cut)];
 }
 
 function splitChunkByBytes(chunk, maxBytes) {
@@ -605,7 +760,7 @@ function splitChunkByBytes(chunk, maxBytes) {
   return out;
 }
 
-function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
+function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence, maxBytes = 0) {
   const prefix = openFence !== null ? `\`\`\`${openFence}\n` : "";
   const prefixLength = charLength(prefix);
   let payloadLimit = Math.max(1, maxChars - prefixLength);
@@ -619,10 +774,11 @@ function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
       nextOpenFence !== null && splitAt < chars.length ? (body.endsWith("\n") ? "```" : "\n```") : "";
     // prefix/suffix are ASCII fence markup, so string length == code points.
     const overflow = prefixLength + (splitAt - offset) + suffix.length - maxChars;
-    if (overflow <= 0 || payloadLimit === 1) {
+    const byteOverflow = maxBytes > 0 ? Buffer.byteLength(`${body}${suffix}`, "utf8") - maxBytes : 0;
+    if ((overflow <= 0 && byteOverflow <= 0) || payloadLimit === 1) {
       return { chunk: `${body}${suffix}`, offset: splitAt, openFence: nextOpenFence };
     }
-    payloadLimit = Math.max(1, payloadLimit - overflow);
+    payloadLimit = Math.max(1, payloadLimit - Math.max(overflow, Math.ceil(byteOverflow / 4)));
   }
 }
 
@@ -895,4 +1051,64 @@ export function activeTurnBlock(detail, state = {}) {
       runningTurn.id || activeTurnId || "(unknown)"
     }. Wait for it to finish or send /interrupt.`
   };
+}
+
+export function turnTerminalStatus(record) {
+  if (record.event === "turn.completed") return record.payload?.turn?.status || "completed";
+  if (record.event !== "turn.lifecycle") return null;
+  const status = record.payload?.turn?.status || record.payload?.status;
+  return ["failed", "canceled", "interrupted"].includes(status) ? status : null;
+}
+
+export function turnOutcomeText({ status, text, error }) {
+  if (status === "completed") return text.trim() || "Turn completed.";
+  return `Turn ${status}.${error ? `\n${error}` : ""}`;
+}
+
+export async function observeTurn({
+  fetchEvents,
+  threadId,
+  turnId,
+  sinceSeq,
+  responseText = "",
+  timeoutMs,
+  saveCursor,
+  onDelta = (text) => text,
+  onApproval = async () => {},
+  onTerminal,
+  onTimeout = async () => {}
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let text = responseText;
+  let latestSeq = Number(sinceSeq || 0);
+  try {
+    const response = await fetchEvents(latestSeq, controller.signal);
+    if (!response.ok) throw new Error(compactRuntimeError(response.status, await readJsonSafe(response)));
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
+      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
+      if (turnId && record.turn_id === turnId) {
+        if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
+          text = await onDelta(text + (record.payload.delta || ""));
+        }
+        if (record.event === "approval.required") await onApproval(record.payload || {});
+        const status = turnTerminalStatus(record);
+        if (status) {
+          const error = record.payload?.turn?.error || record.payload?.error || "";
+          await onTerminal({ status, text, error });
+          await saveCursor({ lastSeq: latestSeq, responseText: "" });
+          return true;
+        }
+      }
+      await saveCursor({ lastSeq: latestSeq, responseText: text });
+    }
+    return false;
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+    await onTimeout();
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

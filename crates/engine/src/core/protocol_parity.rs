@@ -301,7 +301,7 @@ fn mcp_snapshot_to_wire(snapshot: &McpManagerSnapshot) -> wire::McpManagerSnapsh
 /// `EventMsg::McpSessionBoot`, which every SSE and stream-JSON consumer
 /// receives and any frame-retaining log keeps.
 ///
-/// URLs reuse the existing masking in `codewhale_secrets::sanitize::redact_url_for_display`. Stdio
+/// URLs reuse the existing masking in `codewhale_sanitize::sanitize::redact_url_for_display`. Stdio
 /// keeps the program name and elides the arguments, because a secret there can
 /// be positional and is not reliably recognizable by key.
 fn redacted_command_or_url(raw: &str) -> String {
@@ -315,7 +315,7 @@ fn redacted_command_or_url(raw: &str) -> String {
     // mentions a URL — `docker run -e TOKEN=… img --url https://…` — would
     // reach the wire with its positional secret intact.
     if !trimmed.is_empty() && !trimmed.contains(char::is_whitespace) && trimmed.contains("://") {
-        return codewhale_secrets::sanitize::redact_url_for_display(trimmed);
+        return codewhale_sanitize::sanitize::redact_url_for_display(trimmed);
     }
     if let Some((program, rest)) = trimmed.split_once(char::is_whitespace)
         && !rest.trim().is_empty()
@@ -1053,7 +1053,12 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate,
             decision,
             risk,
+            reviewer_model,
             reason,
+            rule,
+            receipt_id,
+            call_digest,
+            action_summary,
         } => wire::EventMsg::ToolGateDecision {
             thread_id,
             session_id,
@@ -1063,7 +1068,21 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             gate: gate_to_wire(*gate),
             decision: verdict_to_wire(*decision),
             risk: risk.clone(),
+            reviewer_model: reviewer_model.clone(),
             reason: reason.clone(),
+            rule: rule.clone(),
+            receipt_id: receipt_id.clone(),
+            call_digest: call_digest.clone(),
+            action_summary: action_summary.clone(),
+        },
+        Event::AutoReviewPaused {
+            reason,
+            approval_mode,
+        } => wire::EventMsg::AutoReviewPaused {
+            thread_id,
+            session_id,
+            reason: reason.clone(),
+            approval_mode: approval_mode_str(*approval_mode).to_string(),
         },
         Event::AdvisoryNote {
             turn_id,
@@ -1098,6 +1117,36 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             pin_reason: pin_reason.clone(),
             last_miss_reason: last_miss_reason.clone(),
             context_updates: *context_updates,
+        },
+        Event::ConversationTitle { title } => wire::EventMsg::ConversationTitle {
+            thread_id,
+            session_id,
+            title: title.clone(),
+        },
+        Event::ContentFilterRefusal { reason, refusal } => wire::EventMsg::ContentFilterRefusal {
+            thread_id,
+            session_id,
+            reason: reason.clone(),
+            refusal: refusal.clone(),
+        },
+        Event::PluginChanged {
+            plugin,
+            action,
+            content_hash,
+            decided_by,
+            services,
+            tools_added,
+            tools_removed,
+        } => wire::EventMsg::PluginChanged {
+            thread_id,
+            session_id,
+            plugin: plugin.clone(),
+            action: action.clone(),
+            content_hash: content_hash.clone(),
+            decided_by: decided_by.clone(),
+            services: services.clone(),
+            tools_added: tools_added.clone(),
+            tools_removed: tools_removed.clone(),
         },
     }
 }
@@ -1225,6 +1274,11 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
         Op::SetStreamChunkTimeout { timeout_secs } => wire_op::Op::SetStreamChunkTimeout {
             timeout_secs: *timeout_secs,
         },
+        Op::SetAutoReviewReviewerModel { reviewer_model } => {
+            wire_op::Op::SetAutoReviewReviewerModel {
+                reviewer_model: reviewer_model.clone(),
+            }
+        }
         Op::SetSubagentRuntimeConfig {
             enabled,
             max_subagents,
@@ -1261,6 +1315,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model,
             workspace,
             mode,
+            agent_preset,
             ..
         } => wire_op::Op::SyncSession {
             expected: expected.as_ref().map(to_value),
@@ -1271,6 +1326,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model: model.clone(),
             workspace: workspace.clone(),
             mode: app_mode_str(*mode).to_string(),
+            agent_preset: agent_preset.clone(),
         },
         Op::RewindConversation {
             expected, messages, ..
@@ -1643,6 +1699,7 @@ mod tests {
                     recoverable: true,
                     code: "E429".into(),
                     message: "slow down".into(),
+                    request_transmission: None,
                 },
                 recoverable: true,
             },
@@ -1656,7 +1713,16 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Unavailable,
                 risk: None,
+                reviewer_model: None,
                 reason: "timeout".into(),
+                rule: Some("guardian-unavailable".into()),
+                receipt_id: Some("ar-1".into()),
+                call_digest: Some("d1".into()),
+                action_summary: Some("bash: ls".into()),
+            },
+            Event::AutoReviewPaused {
+                reason: "Auto-Review paused after 3 blocked calls in a row; Shift+Tab or /auto to resume".into(),
+                approval_mode: ApprovalMode::Suggest,
             },
             Event::WorkflowUi {
                 owner_session_id: "owner".into(),
@@ -1725,6 +1791,32 @@ mod tests {
     }
 
     #[test]
+    fn plugin_changed_projection_round_trips_and_preserves_fields() {
+        let ids = ids();
+        let event = Event::PluginChanged {
+            plugin: "alpha".into(),
+            action: "installed".into(),
+            content_hash: Some("sha256:abc".into()),
+            decided_by: Some("approved by you".into()),
+            services: vec!["workspace".into()],
+            tools_added: vec!["alpha_tool".into()],
+            tools_removed: vec!["legacy_tool".into()],
+        };
+        let wire_msg = event.to_protocol(&ids);
+        let value = serde_json::to_value(&wire_msg).unwrap();
+        assert_eq!(value["event"], "plugin_changed");
+        assert_eq!(value["plugin"], "alpha");
+        assert_eq!(value["action"], "installed");
+        assert_eq!(value["content_hash"], "sha256:abc");
+        assert_eq!(value["decided_by"], "approved by you");
+        assert_eq!(value["services"], json!(["workspace"]));
+        assert_eq!(value["tools_added"], json!(["alpha_tool"]));
+        assert_eq!(value["tools_removed"], json!(["legacy_tool"]));
+        let back: wire::EventMsg = serde_json::from_value(value).unwrap();
+        assert_eq!(back, wire_msg);
+    }
+
+    #[test]
     fn conditional_rewind_projection_preserves_expected_state_and_reply_owner() {
         let expected = crate::core::ops::SessionSnapshot {
             source: None,
@@ -1739,6 +1831,7 @@ mod tests {
             system_prompt: None,
             instruction_assembly: None,
             mode: "agent".into(),
+            agent_preset: None,
         };
         let (tx, mut receive) = tokio::sync::oneshot::channel();
         let op = Op::RewindConversation {
@@ -1781,6 +1874,9 @@ mod tests {
                 text: "go".into(),
             },
             Op::SetStreamChunkTimeout { timeout_secs: 30 },
+            Op::SetAutoReviewReviewerModel {
+                reviewer_model: Some("claude-sonnet-5-5".into()),
+            },
             Op::SetSubagentRuntimeConfig {
                 enabled: true,
                 max_subagents: 4,
@@ -1839,8 +1935,12 @@ mod tests {
             serde_json::to_value(ops[0].to_protocol()).unwrap(),
             json!({"kind": "set_goal_status", "status": "paused", "clear": false})
         );
+        let snapshot = ops
+            .iter()
+            .find(|op| matches!(op, Op::GetSessionSnapshot { .. }))
+            .unwrap();
         assert_eq!(
-            serde_json::to_value(ops[8].to_protocol()).unwrap(),
+            serde_json::to_value(snapshot.to_protocol()).unwrap(),
             json!({"kind": "get_session_snapshot"}),
             "reply channels must not leak onto the wire"
         );

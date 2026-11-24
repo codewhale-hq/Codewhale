@@ -32,6 +32,7 @@ function namedStep(source, name) {
 }
 
 const ci = read(".github/workflows/ci.yml");
+const ciSuite = read(".github/workflows/ci-test-suite.yml");
 const nightly = read(".github/workflows/nightly.yml");
 const candidate = read(".github/workflows/release-candidate.yml");
 const artifacts = read(".github/workflows/release-artifacts.yml");
@@ -46,28 +47,236 @@ const archiveInstaller = read("scripts/release/install.sh");
 const cliDispatcher = read("crates/cli/src/lib.rs");
 const runbook = read("docs/RELEASE_RUNBOOK.md");
 
-const ciTestJob = ci.slice(ci.indexOf("\n  test:\n"));
-assert.match(
-  ciTestJob,
-  /matrix\.os == 'ubuntu-latest'.*github\.event_name == 'pull_request'/,
-  "heavy pull requests must select the real Ubuntu test lane",
-);
-assert.match(
-  ciTestJob,
-  /cargo nextest run --workspace --all-features --locked --profile ci/,
-  "the Ubuntu pull-request lane must run workspace nextest",
-);
-assert.match(
-  ciTestJob,
-  /name: Linux test location \(CNB\)/,
-  "the non-PR CNB fallback must be named explicitly",
-);
+function jobBlock(source, job) {
+  const match = source.match(new RegExp(`^  ${job}:\\n([\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "m"));
+  assert.ok(match, `missing job: ${job}`);
+  return match[1];
+}
+
+function jobIf(source, job) {
+  const lines = jobBlock(source, job).split("\n");
+  const at = lines.findIndex((line) => /^    if:/.test(line));
+  assert.notEqual(at, -1, `${job} must declare an if`);
+  const first = lines[at].replace(/^    if:\s*/, "");
+  if (first !== ">-") return first.replace(/^'(.*)'$/, "$1");
+  const folded = [];
+  for (let i = at + 1; i < lines.length && /^      \S/.test(lines[i]); i += 1) folded.push(lines[i].trim());
+  return folded.join(" ");
+}
+
+function evaluate(expression, context) {
+  return Boolean(vm.runInNewContext(expression, context));
+}
 
 assert.match(
-  namedStep(ciTestJob, "Build canonical executable for acceptance tests"),
-  /cargo build -p codewhale-cli --bin codewhale --all-features --locked/,
-  "Engine acceptance must build the canonical executable first",
+  namedStep(ciSuite, "Archive test binaries"),
+  /cargo nextest archive --workspace --all-features --locked --profile ci/,
+  "the suite must archive the same workspace, features and profile the old single run used",
 );
+assert.match(
+  namedStep(ciSuite, "Build canonical executable for acceptance tests"),
+  /sh scripts\/with-hermetic-test-home.sh cargo test --workspace --all-features --locked --no-run --test help_dispatch/,
+  "Engine acceptance must build the canonical executable first, with the test build's features",
+);
+assert.match(
+  namedStep(ciSuite, "Run doctests"),
+  /cargo test --workspace --all-features --locked --doc/,
+  "nextest does not run doctests; the suite must run them once per OS",
+);
+const shardRun = namedStep(ciSuite, "Run tests");
+assert.match(shardRun, /--partition "slice:\$\{\{ matrix\.shard \}\}\/\$\{\{ inputs\.shards \}\}"/);
+assert.match(shardRun, /-E "not \(\$NATIVE_FILTER\)"/, "every shard must exclude the native tests that shard 1 runs apart");
+assert.match(namedStep(ciSuite, "Run native containment tests"), /-E "\$NATIVE_FILTER"/);
+assert.match(ciSuite, /nextest-shard-count\.py check counts/, "the suite must prove the shards add up to the archive's list");
+for (const name of ["Run tests", "Run native containment tests", "Run doctests"]) {
+  const step = namedStep(ciSuite, name);
+  assert.match(step, /shell: bash/, `${name} must invoke the POSIX helper on Windows too`);
+}
+assert.match(ciSuite, /RUST_MIN_STACK: '16777216'/);
+
+const receiptScript = read("scripts/compiled-host-native-receipt.py");
+const receiptNames = [
+  receiptScript.match(/^COMPILED = "([^"]+)"$/m)[1],
+  receiptScript.match(/^MEMORY = "([^"]+)"$/m)[1],
+  ...[...receiptScript.match(/^WINDOWS = \[([\s\S]*?)^\]/m)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+];
+const nativeFilter = ciSuite.match(/NATIVE_FILTER: >-\n([\s\S]*?)\n    steps:/)[1];
+assert.deepEqual(
+  [...nativeFilter.matchAll(/test\(=([^)]+)\)/g)].map((m) => m[1]).sort(),
+  receiptNames.sort(),
+  "NATIVE_FILTER must list exactly the tests scripts/compiled-host-native-receipt.py requires",
+);
+
+const suiteCallers = {};
+for (const job of ["test-ubuntu", "test-macos", "test-windows"]) {
+  const block = jobBlock(ci, job);
+  const os = block.match(/^      os: (\S+)$/m)[1];
+  const withValue = (key, selfHosted) => {
+    const raw = block.match(new RegExp(`^      ${key}: (.+)$`, "m"))[1];
+    const expression = raw.match(/^\$\{\{ (.+) \}\}$/)?.[1];
+    const context = { needs: { changes: { outputs: { macos_self_hosted: String(selfHosted) } } } };
+    return expression ? vm.runInNewContext(expression, context) : raw.replace(/^'(.*)'$/, "$1");
+  };
+  for (const selfHosted of [false, true]) {
+    const shards = Number(withValue("shards", selfHosted));
+    const list = JSON.parse(withValue("shard_list", selfHosted));
+    assert.deepEqual(list, Array.from({ length: shards }, (_, i) => i + 1), `${job} shard_list must be 1..shards`);
+    if (!selfHosted) suiteCallers[os] = shards;
+  }
+  assert.match(block, /uses: \.\/\.github\/workflows\/ci-test-suite\.yml/);
+  assert.equal(jobIf(ci, job), jobIf(ci, "test-ubuntu"), `${job} must share the suite condition`);
+  if (job !== "test-macos") assert.doesNotMatch(block, /self_hosted/, `${job} must stay on hosted runners`);
+}
+assert.deepEqual(Object.keys(suiteCallers).sort(), ["macos-latest", "ubuntu-latest", "windows-latest"]);
+assert.match(jobBlock(ci, "test-macos"), /^      self_hosted: \$\{\{ needs\.changes\.outputs\.macos_self_hosted == 'true' \}\}$/m);
+
+const macosRunnerStep = namedStep(ci, "Choose the macOS suite runner").match(/        run: \|\n([\s\S]*)/)[1].replace(/^ {10}/gm, "");
+for (const [event, repo, requested, variable, expected] of [
+  ["pull_request", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["pull_request", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["schedule", "codewhale-hq/Codewhale", "", "true", "false"],
+  ["pull_request_target", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["workflow_dispatch", "someone/Codewhale", "self-hosted", "true", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "", "", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "default", "false", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "default", "true", "true"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "hosted", "true", "false"],
+  ["workflow_dispatch", "codewhale-hq/Codewhale", "self-hosted", "false", "true"],
+]) {
+  const out = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cw-macos-runner-")), "out");
+  execFileSync("bash", ["-c", macosRunnerStep], {
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, EVENT_NAME: event, THIS_REPO: repo, REQUESTED: requested, SWITCH: variable },
+  });
+  assert.equal(fs.readFileSync(out, "utf8"), `self_hosted=${expected}\n`, `${event} ${repo} ${requested}/${variable}`);
+}
+for (const [file, source] of fs.readdirSync(path.join(repoRoot, ".github/workflows")).map((f) => [f, read(`.github/workflows/${f}`)])) {
+  for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
+    if (!/self-hosted|codewhale-mac/.test(value)) continue;
+    assert.ok(["ci-test-suite.yml", "release-artifacts.yml"].includes(file), `${file}: only the CI suite and the release build may name the self-hosted runner`);
+    const gate = file === "ci-test-suite.yml"
+      ? /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /
+      : /^\$\{\{ startsWith\(matrix\.os, 'macos-'\) && needs\.pin\.outputs\.macos_self_hosted == 'true' && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /;
+    assert.match(value, gate, `${file}: the self-hosted label must be gated by its trusted-run decision`);
+  }
+}
+
+const jobNames = (source) => [...source.matchAll(/^  [A-Za-z0-9_-]+:\n    name: (.+)$/gm)].map((m) => m[1]);
+assert.deepEqual(
+  [...jobNames(ci), ...jobNames(ciSuite)].filter((name) => /^Test \(/.test(name) || name === "Lint"),
+  ["Lint", "Test (windows-latest)"],
+  "only Lint and the compile-only Windows leg may use the required context names",
+);
+assert.match(jobBlock(ci, "test-windows-pr"), /^    name: Test \(windows-latest\)$/m);
+assert.equal(jobIf(ci, "test-windows-pr"), "github.event_name == 'pull_request'");
+assert.match(jobBlock(ci, "test-windows-pr"), /cargo check --workspace --all-features --all-targets|cargo check --workspace --all-targets --all-features --locked/);
+
+const gates = ["safety-gate", "msrv", "test-ubuntu", "test-macos", "test-windows", "portable-boundaries", "npm-wrapper-smoke", "mobile-smoke"];
+for (const job of gates) {
+  const guard = jobIf(ci, job);
+  const base = { inputs: { workspace_test_mode: "nextest" } };
+  const run = (event, heavy, extra = {}) =>
+    evaluate(guard, {
+      github: { event_name: event },
+      needs: { changes: { outputs: { heavy: String(heavy), mobile: "true", scoped: "false", ...extra } } },
+      ...base,
+    });
+  assert.equal(run("pull_request", true), true, `${job} must run on a heavy pull request`);
+  if (job !== "npm-wrapper-smoke") {
+    assert.equal(run("pull_request", false), false, `${job} must skip a docs-only pull request`);
+  }
+  assert.equal(run("workflow_dispatch", true), true, `${job} must run on a full dispatch`);
+  assert.equal(run("workflow_dispatch", true, { scoped: "true" }), false, `${job} must skip a scoped dispatch`);
+}
+assert.equal(
+  evaluate(jobIf(ci, "mobile-smoke"), {
+    github: { event_name: "pull_request" },
+    needs: { changes: { outputs: { heavy: "true", mobile: "false", scoped: "false" } } },
+  }),
+  false,
+  "mobile smoke keeps its path filter on pull requests",
+);
+for (const job of ["test-ubuntu", "test-macos", "test-windows"]) {
+  assert.equal(
+    evaluate(jobIf(ci, job), {
+      github: { event_name: "workflow_dispatch" },
+      inputs: { workspace_test_mode: "shared-process-twice" },
+      needs: { changes: { outputs: { heavy: "true", scoped: "false" } } },
+    }),
+    false,
+    `${job} must yield to the shared-process qualification`,
+  );
+}
+const sharedGuard = jobIf(ci, "test");
+for (const [event, mode, scoped, expected] of [
+  ["workflow_dispatch", "shared-process-twice", "false", true],
+  ["workflow_dispatch", "nextest", "false", false],
+  ["workflow_dispatch", "shared-process-twice", "true", false],
+  ["pull_request", "nextest", "false", false],
+]) {
+  assert.equal(
+    evaluate(sharedGuard, {
+      github: { event_name: event },
+      inputs: { workspace_test_mode: mode },
+      needs: { changes: { outputs: { heavy: "true", scoped } } },
+    }),
+    expected,
+    `shared-process job: ${event} ${mode} scoped=${scoped}`,
+  );
+}
+assert.equal(
+  evaluate(jobIf(ci, "scoped-test"), { needs: { changes: { outputs: { scoped: "true" } } } }),
+  true,
+);
+assert.equal(
+  evaluate(jobIf(ci, "scoped-test"), { needs: { changes: { outputs: { scoped: "false" } } } }),
+  false,
+);
+assert.match(ci, /^      expected_sha:\n        description: .*\n        required: true\n        type: string$/m, "expected_sha stays required");
+for (const input of ["crate", "filter", "os"]) {
+  assert.match(ci, new RegExp(`^      ${input}:\\n        description: .*\\n        required: false\\n`, "m"), `scoped dispatch input ${input}`);
+}
+
+const concurrency = ci.match(/^concurrency:\n  group: (.+)\n  cancel-in-progress: (.+)$/m);
+assert.ok(concurrency, "ci.yml must declare its concurrency");
+const strip = (value) => value.replace(/^\$\{\{ /, "").replace(/ \}\}$/, "");
+const format = (template, ...args) => template.replace(/\{(\d)\}/g, (_, i) => args[Number(i)]);
+const groupOf = (context) =>
+  vm.runInNewContext(strip(concurrency[1]), { ...context, format });
+const cancelOf = (context) => vm.runInNewContext(strip(concurrency[2]), context);
+const dispatch = (ref, sha, inputs = {}) => ({
+  github: { event_name: "workflow_dispatch", ref, sha, workflow: "CI", run_id: `run-${sha}` },
+  inputs: { crate: "", filter: "", ...inputs },
+});
+const pr = (number, sha) => ({
+  github: { event_name: "pull_request", ref: `refs/pull/${number}/merge`, sha, workflow: "CI", event: { pull_request: { number } }, run_id: `run-${sha}` },
+  inputs: {},
+});
+assert.equal(groupOf(pr(7, "a")), groupOf(pr(7, "b")), "a new push to a pull request shares its group");
+assert.notEqual(groupOf(pr(7, "a")), groupOf(pr(8, "a")));
+assert.equal(cancelOf(pr(7, "a")), true);
+assert.equal(groupOf(dispatch("refs/heads/ci/x", "a")), groupOf(dispatch("refs/heads/ci/x", "b")), "a new dispatch on the same ci branch shares its group");
+assert.notEqual(groupOf(dispatch("refs/heads/ci/x", "a")), groupOf(dispatch("refs/heads/ci/y", "a")));
+assert.equal(cancelOf(dispatch("refs/heads/ci/x", "a")), true);
+assert.notEqual(groupOf(dispatch("refs/heads/main", "a")), groupOf(dispatch("refs/heads/main", "b")), "runs on main never share a group");
+assert.equal(cancelOf(dispatch("refs/heads/main", "a")), false, "runs on main never cancel");
+assert.notEqual(
+  groupOf(dispatch("refs/heads/ci/x", "a", { crate: "codewhale-tui" })),
+  groupOf(dispatch("refs/heads/ci/x", "a")),
+  "a scoped dispatch never shares the full run's group",
+);
+assert.equal(cancelOf(dispatch("refs/heads/ci/x", "a", { filter: "test(x)" })), false, "a scoped dispatch cancels nothing");
+
+for (const [name, source] of [["ci.yml", ci], ["ci-test-suite.yml", ciSuite]]) {
+  assert.doesNotMatch(source, /pull_request_target/, `${name} must not use pull_request_target`);
+  assert.doesNotMatch(source, /\$\{\{\s*secrets\./, `${name} must not read secrets`);
+  assert.match(source, /^permissions:\n  contents: read\n/m, `${name} must keep read-only default permissions`);
+  assert.doesNotMatch(source.replace(/^permissions:\n  contents: read\n/m, ""), /^\s+(?:contents|actions|id-token|pull-requests|packages):\s*write/m, `${name} must not grant write permissions`);
+  for (const match of source.matchAll(/Swatinem\/rust-cache@[^\n]*\n(?:\s+(?:with|cache-bin):[^\n]*\n)*\s+save-if: ([^\n]+)/g)) {
+    assert.match(match[1], /refs\/heads\/main|false/, `${name}: rust-cache must save only on main`);
+  }
+  assert.doesNotMatch(source, /actions\/cache(?:\/save)?@/, `${name} must not write caches outside rust-cache and sccache`);
+}
 const npmSmokeJob = ci.match(/^  npm-wrapper-smoke:\n([\s\S]*?)(?=^  \S)/m)?.[1];
 assert.ok(npmSmokeJob, "CI must retain the npm-wrapper job");
 assert.match(
@@ -79,13 +288,11 @@ assert.match(
   /run: node scripts\/release\/npm-wrapper-smoke\.js/,
 );
 const npmSmokeSteps = npmSmokeJob.split(/(?=^      - )/m).slice(1);
-// Exercise the workflow's actual Boolean guards. The smoke is manual-only
-// (workflow_dispatch); pull requests, pushes and schedules skip the job.
 const npmSmokeCases = [
   // name, event, heavy, OS, trusted, cache success, execute, Linux deps, CNB
-  ["own PR", "pull_request", true, "ubuntu-latest", true, true, false, false, false],
-  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, false, false, false],
-  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, false, false, false],
+  ["own PR", "pull_request", true, "ubuntu-latest", true, true, true, true, false],
+  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, true, true, false],
+  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, true, true, false],
   ["light PR", "pull_request", false, "ubuntu-latest", true, true, false, false, false],
   ["manual Ubuntu", "workflow_dispatch", true, "ubuntu-latest", true, true, true, true, false],
   ["main Ubuntu", "push", true, "ubuntu-latest", true, true, false, false, false],
@@ -95,15 +302,19 @@ const npmSmokeCases = [
   ["light main", "push", false, "ubuntu-latest", true, true, false, false, false],
   ["schedule", "schedule", true, "ubuntu-latest", true, true, false, false, false],
 ];
-// The sccache GitHub Actions backend is main-only, mirroring rust-cache's
-// save-if: pull requests never install or enable it (cache bloat, PLAN D).
+for (const [name, source] of [["ci.yml", ci], ["ci-test-suite.yml", ciSuite]]) {
+  const enabled = source.match(/SCCACHE_GHA_ENABLED=true/g) ?? [];
+  const modes = source.match(/if \[ "\$\{GITHUB_REF\}" = refs\/heads\/main \]; then rw=READ_WRITE; else rw=READ_ONLY; fi\n(?:\s+\{\n\s+echo "SCCACHE_GHA_ENABLED=true"\n)?\s+echo "SCCACHE_GHA_RW_MODE=\$\{rw\}"/g) ?? [];
+  assert.ok(enabled.length > 0, `${name} must enable sccache`);
+  assert.equal(modes.length, enabled.length, `${name}: every sccache enable must be read-only off main`);
+  assert.doesNotMatch(source, /sccache-action[^\n]*\n(?:[^\n]*\n){0,4}\s+if: [^\n]*github\.ref == 'refs\/heads\/main'/, `${name}: sccache must install on every run`);
+}
 const sccacheInstallStep = "mozilla-actions/sccache-action@v0.0.11";
 for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of npmSmokeCases) {
   const ref = event === "pull_request" ? "refs/pull/1/merge" : "refs/heads/main";
-  const onMain = ref === "refs/heads/main";
-  const installed = execute && onMain;
+  const installed = execute;
   const context = {
-    needs: { changes: { outputs: { heavy: String(heavy), trusted: String(trusted) } } },
+    needs: { changes: { outputs: { heavy: String(heavy), trusted: String(trusted), scoped: "false" } } },
     github: { event_name: event, ref },
     matrix: { os },
     steps: { sccache: { outcome: installed ? (cache ? "success" : "failure") : "skipped" } },
@@ -248,7 +459,7 @@ assert.match(nightly, /startsWith\(matrix\.target, 'aarch64-'\).*runner\.arch ==
 const nightlyArmMuslSetup = namedStep(nightly, "Install Linux ARM64 musl toolchain");
 assert.match(nightlyArmMuslSetup, /matrix\.target == 'aarch64-unknown-linux-musl'/);
 assert.match(nightlyArmMuslSetup, /apt-get install -y binutils musl-tools/);
-assert.match(nightlyArmMuslSetup, /rustup target add --toolchain stable aarch64-unknown-linux-musl/);
+assert.match(nightlyArmMuslSetup, /rustup target add aarch64-unknown-linux-musl/);
 const nightlyArmStaticSmoke = namedStep(
   nightly,
   "Verify static Linux ARM64 binary and launch",
@@ -373,7 +584,7 @@ assert.deepEqual([...new Set(valuesForKey(artifacts, "target"))].sort(), expecte
 const releaseMuslBuild = namedStep(artifacts, "Build static Linux binaries (musl)");
 assert.match(releaseMuslBuild, /endsWith\(matrix\.target, '-unknown-linux-musl'\)/);
 assert.match(releaseMuslBuild, /apt-get install -y binutils musl-tools/);
-assert.match(releaseMuslBuild, /rustup target add --toolchain stable \$\{\{ matrix\.target \}\}/);
+assert.match(releaseMuslBuild, /rustup target add \$\{\{ matrix\.target \}\}/);
 assert.match(
   releaseMuslBuild,
   /cargo build --profile dist --locked --target \$\{\{ matrix\.target \}\} -p codewhale-cli/,
@@ -617,7 +828,7 @@ assert.match(releaseDockerSmoke, /linux\/arm64/);
 assert.match(releaseDockerSmoke, /--entrypoint codewhale/);
 assert.match(releaseDockerSmoke, /--entrypoint codew/);
 
-const npmJob = release.match(/\n  npm:\n([\s\S]*?)\n  homebrew:\n/);
+const npmJob = release.match(/\n  npm:\n([\s\S]*?)\n  crates:\n/);
 assert.ok(npmJob, "public release must retain a dedicated npm publication job");
 assert.match(npmJob[1], /^    needs: \[release, resolve\]$/m);
 assert.match(npmJob[1], /needs\.release\.result == 'success'/);
@@ -644,6 +855,52 @@ assert.ok(
     release.indexOf("Publish npm wrapper with trusted publishing"),
   "npm publication must follow the public exact-asset gate",
 );
+
+const cratesJob = jobBlock(release, "crates");
+assert.match(cratesJob, /^    environment: release$/m, "crates.io publication must wait for the protected release environment");
+assert.match(cratesJob, /^    needs: \[npm, release, resolve\]$/m);
+assert.match(cratesJob, /^    permissions:\n      contents: read\n    env:/m, "crates.io publication needs only contents: read");
+assert.doesNotMatch(cratesJob, /id-token|contents: write|actions: write/);
+assert.equal(jobTimeout(release, "crates"), 360);
+assert.match(cratesJob, /^    concurrency:\n      group: crates-io-\$\{\{ needs\.resolve\.outputs\.tag \}\}\n      cancel-in-progress: false$/m);
+assert.match(cratesJob, /persist-credentials: false/);
+assert.doesNotMatch(cratesJob, /uses: (?:Swatinem\/rust-cache|mozilla-actions\/sccache-action)|RUSTC_WRAPPER/, "the token-holding job must not restore shared build caches");
+assert.doesNotMatch(cratesJob, /set -x/);
+const cratesGuard = jobIf(release, "crates").replace(/^\$\{\{\s*(.*?)\s*\}\}$/, "$1");
+const cratesRuns = ({ repo = "codewhale-hq/Codewhale", ref = "refs/tags/v1.2.3", prerelease = "false", release: rel = "success", npm = "success" } = {}) =>
+  evaluate(cratesGuard, {
+    cancelled: () => false,
+    format: (template, ...args) => template.replace(/\{(\d+)\}/g, (_, i) => args[Number(i)]),
+    github: { repository: repo, ref },
+    needs: { release: { result: rel }, npm: { result: npm }, resolve: { outputs: { tag: "v1.2.3", prerelease } } },
+  });
+assert.equal(cratesRuns(), true, "crates.io publication must run for a stable release of this repository");
+assert.equal(cratesRuns({ repo: "someone/Codewhale" }), false, "a fork must never reach the crates.io job");
+assert.equal(cratesRuns({ ref: "refs/heads/main" }), false, "a dispatch from a branch must never reach the crates.io job");
+assert.equal(cratesRuns({ ref: "refs/tags/v9.9.9" }), false, "the ref must be the resolved release tag");
+assert.equal(cratesRuns({ prerelease: "true" }), false, "prereleases publish no crates");
+assert.equal(cratesRuns({ npm: "failure" }), false, "crates.io publication follows npm");
+assert.equal(cratesRuns({ release: "failure" }), false, "crates.io publication follows the GitHub Release");
+assert.equal(
+  (release.match(/secrets\.CARGO_REGISTRY_TOKEN/g) || []).length,
+  1,
+  "the crates.io token must be referenced exactly once",
+);
+const cratesPublish = namedStep(release, "Publish crates to crates.io");
+assert.match(cratesPublish, /^        env:\n          CARGO_REGISTRY_TOKEN: \$\{\{ secrets\.CARGO_REGISTRY_TOKEN \}\}$/m, "the token reaches only the publish step's environment");
+assert.doesNotMatch(cratesPublish.split("run: |")[1], /\$\{\{/, "the publish script must not interpolate expressions into its command line");
+assert.match(cratesPublish, /if \[\[ -z "\$\{CARGO_REGISTRY_TOKEN:-\}" \]\]; then\n\s+echo "::error::Secret CARGO_REGISTRY_TOKEN is not set in the 'release' environment/);
+assert.match(cratesPublish, /CARGO_HOME="\$\{root\}\/cargo-home" CARGO_TARGET_DIR="\$\{root\}\/target" \\\n\s+\.\/scripts\/release\/publish-crates\.sh publish/);
+const cratesOrder = [
+  "Require the clean release tag checkout before crates.io publish",
+  "Publish crates to crates.io",
+  "Verify crates.io and npm serve the release",
+].map((name) => release.indexOf(`      - name: ${name}\n`));
+assert.ok(cratesOrder.every((at, i) => at > 0 && (i === 0 || at > cratesOrder[i - 1])), "crates job: tag gate, publish, then registry check");
+assert.match(namedStep(release, "Require the clean release tag checkout before crates.io publish"), /require-release-tag-checkout\.sh "\$\{VERSION\}"/);
+assert.match(namedStep(release, "Verify crates.io and npm serve the release"), /check-published\.sh "\$\{VERSION\}"/);
+assert.doesNotMatch(namedStep(release, "Verify crates.io and npm serve the release"), /secrets\./);
+assert.match(read("scripts/release/publish-crates.sh"), /env -u CARGO_REGISTRY_TOKEN cargo publish "\$\{package_args\[@\]\}"/, "the pre-upload verification build must not see the token");
 
 assert.match(releaseDockerfile, /^FROM debian:bookworm-slim$/m);
 assert.match(releaseDockerfile, /ca-certificates/);
@@ -688,7 +945,8 @@ assert.doesNotMatch(
 // itself runs none: its parity job calls release-parity.yml.
 let hermeticInvocations = 0;
 for (const [label, workflow, expected] of [
-  ["CI", ci, 6],
+  ["CI", ci, 5],
+  ["CI test suite", ciSuite, 5],
   ["release", release, 0],
   ["release parity", parityWorkflow, 4],
   ["CNB", cnb, 3],
@@ -707,20 +965,15 @@ for (const [label, workflow, expected] of [
   }
   hermeticInvocations += commands.length;
 }
-for (const name of ["Run tests", "Run doctests"]) {
-  const step = namedStep(ciTestJob, name);
-  assert.match(step, /shell: bash/, `${name} must invoke the POSIX helper on Windows too`);
-  assert.match(step, /RUST_MIN_STACK: '16777216'/);
-}
 console.log(`Hermetic Rust workflow invocations OK: ${hermeticInvocations} checks passed.`);
 
 const nextest = read(".config/nextest.toml");
-const integrationGroup = nextest.search(/^filter = 'binary\(integration\)'$/m);
+const integrationGroup = nextest.search(/^filter = 'package\(codewhale-tui\) & binary\(integration\)'$/m);
 const telemetryGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^telemetry_contract::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^telemetry_contract::/)'",
 );
 const execGroup = nextest.indexOf(
-  "filter = 'binary(integration) & test(/^exec_persistent_service::/)'",
+  "filter = 'package(codewhale-tui) & binary(integration) & test(/^exec_persistent_service::/)'",
 );
 assert.ok(integrationGroup >= 0, "nextest must bound the integration binary");
 assert.ok(
@@ -810,6 +1063,20 @@ assert.doesNotMatch(
 // A job that calls a reusable workflow (`uses:`) cannot carry the key at all —
 // GitHub rejects it — so the callee owns its own caps. That is why the artifact
 // bounds live in release-artifacts.yml rather than in its callers.
+function timeoutMinutes(value) {
+  const literal = /^\d+$/.test(value);
+  const conditional = value.match(
+    /^\$\{\{\s*startsWith\(matrix\.os,\s*'macos-'\)\s*&&\s*(\d+)\s*\|\|\s*(\d+)\s*\}\}$/,
+  );
+  if (!literal && !conditional) return null;
+  const macos = Number(literal ? value : conditional[1]);
+  const other = Number(literal ? value : conditional[2]);
+  if (![macos, other].every((cap) => Number.isInteger(cap) && cap > 0 && cap <= 360)) {
+    return null;
+  }
+  return { macos, other };
+}
+
 function jobsWithoutTimeout(source) {
   const lines = source.split("\n");
   const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
@@ -823,7 +1090,8 @@ function jobsWithoutTimeout(source) {
     for (let j = i + 1; j < lines.length; j += 1) {
       if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[j])) break;
       if (/^    uses:/.test(lines[j])) reusable = true;
-      if (/^    timeout-minutes:\s*\d+\s*$/.test(lines[j])) capped = true;
+      const timeout = lines[j].match(/^    timeout-minutes:\s*(.+?)\s*$/);
+      if (timeout && timeoutMinutes(timeout[1])) capped = true;
     }
     if (!reusable && !capped) offenders.push(header[1]);
   }
@@ -853,6 +1121,7 @@ for (const [name, source] of [
   ["release-parity.yml", parityWorkflow],
   ["release-republish.yml", republish],
   ["ci.yml", ci],
+  ["ci-test-suite.yml", ciSuite],
   ["nightly.yml", nightly],
 ]) {
   assert.deepEqual(
@@ -862,26 +1131,41 @@ for (const [name, source] of [
   );
 }
 
-// The Windows artifact build historically runs 40-45 minutes, so its cap has to
-// keep real margin — a tight bound here fails healthy releases.
-const buildTimeout = artifacts.match(/^  build:\n(?:.*\n)*?    timeout-minutes: (\d+)$/m);
-assert.ok(buildTimeout, "release-artifacts build job must be capped");
-assert.ok(
-  Number(buildTimeout[1]) >= 60,
-  `artifact build cap ${buildTimeout[1]}m leaves no margin over a healthy 40-45m Windows build`,
-);
-
-function jobTimeout(source, job) {
+function jobTimeout(source, job, platform = "other") {
   const match = source.match(
-    new RegExp(`^  ${job}:\\n(?:.*\\n)*?    timeout-minutes: (\\d+)$`, "m"),
+    new RegExp(`^  ${job}:\\n(?:.*\\n)*?    timeout-minutes: (.+)$`, "m"),
   );
   assert.ok(match, `${job} must declare timeout-minutes`);
-  return Number(match[1]);
+  const caps = timeoutMinutes(match[1].trim());
+  assert.ok(caps, `${job} must declare a bounded timeout`);
+  return caps[platform];
 }
 
-// Fast setup and packaging fail quickly. Native builds need the same finite
-// cold-build allowance as full CI: both 0.10.1 macOS artifacts hit the old
-// 90m compilation cap before reaching their launch and inventory checks.
+const macosTimeout = "${{ startsWith(matrix.os, 'macos-') && 360 || 210 }}";
+assert.deepEqual(timeoutMinutes(macosTimeout), { macos: 360, other: 210 });
+for (const invalid of [
+  "0", "361", "Infinity", "${{ matrix.timeout }}",
+  "${{ startsWith(matrix.os, 'macos-') && 361 || 210 }}",
+  "${{ startsWith(matrix.os, 'macos-') && 360 || 0 }}",
+]) {
+  assert.equal(timeoutMinutes(invalid), null, `${invalid} must not count as a bounded cap`);
+}
+assert.deepEqual(
+  jobsWithoutTimeout(`jobs:\n  capped:\n    timeout-minutes: ${macosTimeout}\n`),
+  [],
+);
+assert.equal(jobTimeout(artifacts, "build", "macos"), 360);
+assert.equal(jobTimeout(artifacts, "build"), 210);
+const artifactCacheSetup = artifacts.match(
+  /      - uses: mozilla-actions\/sccache-action@[^\n]+\n(?:(?!      - ).*\n)*/,
+);
+assert.ok(artifactCacheSetup, "artifact compiler cache setup must be explicit");
+assert.match(artifactCacheSetup[0], /^        if: runner\.os == 'Linux'$/m);
+assert.match(
+  namedStep(artifacts, "Enable sccache"),
+  /^        if: steps\.sccache\.outcome == 'success' && runner\.os == 'Linux'$/m,
+);
+
 assert.equal(jobTimeout(candidate, "resolve"), 10);
 assert.equal(jobTimeout(candidate, "web"), 15);
 assert.equal(jobTimeout(artifacts, "pin"), 10);
@@ -894,7 +1178,7 @@ for (const job of ["bundle", "windows-installer", "assemble", "smoke"]) {
 }
 assert.equal(
   jobTimeout(nightly, "build"), jobTimeout(artifacts, "build"),
-  "nightly and release must share the native cold-build allowance",
+  "nightly and non-macOS release builds must share the cold-build allowance",
 );
 assert.equal(jobTimeout(release, "resolve"), 10);
 // The 0.10.1 cold parity build exhausted 45 minutes before tests started.
@@ -903,6 +1187,437 @@ assert.ok(
   jobTimeout(parityWorkflow, "parity") >= jobTimeout(ci, "test"),
   "release parity must allow the full CI suite's cold-build budget",
 );
+
+const pinnedToolchain = read("rust-toolchain.toml").match(/^channel\s*=\s*"([^"]+)"/m)[1];
+assert.match(pinnedToolchain, /^\d+\.\d+\.\d+$/, "rust-toolchain.toml must pin an exact Rust release");
+const msrv = read("Cargo.toml").match(/^rust-version\s*=\s*"([^"]+)"/m)[1];
+assert.match(msrv, /^\d+\.\d+$/, "Cargo.toml must declare a minor MSRV");
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const stripWorkflowComments = (source) =>
+  source
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/, ""))
+    .join("\n");
+const workflowDir = path.join(repoRoot, ".github", "workflows");
+const workflowSources = new Map();
+for (const file of fs.readdirSync(workflowDir).filter((name) => /\.ya?ml$/.test(name)).sort()) {
+  workflowSources.set(file, stripWorkflowComments(read(`.github/workflows/${file}`)));
+}
+const ciSource = workflowSources.get("ci.yml");
+const msrvHeader = /^  msrv:[ \t]*$/m.exec(ciSource);
+assert.ok(msrvHeader, "ci.yml must keep an MSRV job");
+const msrvStart = msrvHeader.index;
+const afterMsrvHeader = msrvStart + msrvHeader[0].length;
+const nextJob = /^  \S/m.exec(ciSource.slice(afterMsrvHeader));
+const msrvEnd = nextJob ? afterMsrvHeader + nextJob.index : ciSource.length;
+const selectorValue = (value) => value.trim().replace(/^(["'])(.*)\1$/, "$2");
+const inMsrvJob = (index) => index >= msrvStart && index < msrvEnd;
+for (const [file, source] of workflowSources) {
+  const selectors = [
+    ...[...source.matchAll(/dtolnay\/rust-toolchain@([^\s]+)/g)].map((m) => ["action ref", m[1], m.index]),
+    ...[...source.matchAll(/^[ \t]+toolchain:[ \t]*([^\r\n]*)$/gm)].map((m) => ["toolchain input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+rust-version:[ \t]*([^\r\n]*)$/gm)].map((m) => ["rust-version input", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/^[ \t]+RUSTUP_TOOLCHAIN:[ \t]*([^\r\n]*)$/gm)].map((m) => ["RUSTUP_TOOLCHAIN", selectorValue(m[1]), m.index]),
+    ...[...source.matchAll(/\bcargo\s+\+\s*["']?([^\s"']+)/g)].map((m) => ["cargo + selector", m[1], m.index]),
+  ];
+  for (const [kind, value, index] of selectors) {
+    if (kind === "action ref" && (/^[0-9a-f]{40}$/.test(value) || value === "master")) continue;
+    const expected = file === "ci.yml" && inMsrvJob(index) ? msrv : file === "toolchain-drift.yml" ? "stable" : pinnedToolchain;
+    assert.equal(value, expected, `${file}: ${kind} ${value} must equal ${expected}`);
+  }
+  assert.doesNotMatch(source, /rustup (?:target|component) add --toolchain/, `${file}: rustup adds must follow rust-toolchain.toml`);
+}
+const msrvJob = ciSource.slice(msrvStart, msrvEnd);
+assert.match(msrvJob, new RegExp(`RUSTUP_TOOLCHAIN: "${escapeRegExp(msrv)}"`), "the MSRV job must override rust-toolchain.toml for every step");
+assert.match(msrvJob, new RegExp(`toolchain: "?${escapeRegExp(msrv)}"?`));
+assert.match(msrvJob, new RegExp(`cargo \\+${escapeRegExp(msrv)} check --workspace --locked`));
+assert.doesNotMatch(msrvJob, new RegExp(`\\b${escapeRegExp(pinnedToolchain)}\\b`), "the MSRV job must not select the pinned release toolchain");
+
+const rootDockerfile = read("Dockerfile");
+const devcontainerDockerfile = read(".devcontainer/Dockerfile");
+const devcontainerConfig = read(".devcontainer/devcontainer.json");
+const tencentCnb = read("deploy/tencent-lighthouse/cnb/cnb.yml.example");
+const pinnedTag = `${pinnedToolchain}-bookworm`;
+for (const [label, source] of [
+  ["Dockerfile", rootDockerfile],
+  [".devcontainer/Dockerfile", devcontainerDockerfile],
+]) {
+  assert.match(source, new RegExp(`^ARG RUST_VERSION=${escapeRegExp(pinnedToolchain)}$`, "m"), `${label} must default RUST_VERSION to the pinned toolchain`);
+  assert.match(source, /^FROM .*\brust:\$\{RUST_VERSION\}/m, `${label} must build from the RUST_VERSION image`);
+}
+assert.match(devcontainerConfig, new RegExp(`"RUST_VERSION":\\s*"${escapeRegExp(pinnedToolchain)}"`), ".devcontainer/devcontainer.json must pass the pinned RUST_VERSION build arg");
+for (const [label, source] of [
+  [".cnb.yml", cnb],
+  ["deploy/tencent-lighthouse/cnb/cnb.yml.example", tencentCnb],
+]) {
+  const tags = [...stripWorkflowComments(source).matchAll(/^[ \t]*image:[ \t]*([^\r\n]*)$/gm)]
+    .map((m) => selectorValue(m[1]))
+    .filter((value) => value.startsWith("rust:"))
+    .map((value) => value.slice("rust:".length));
+  assert.ok(tags.length > 0, `${label} must declare a Rust build image`);
+  assert.deepEqual([...new Set(tags)], [pinnedTag], `${label}: Rust build images must match rust-toolchain.toml`);
+}
+
+const releaseMacosStep = namedStep(artifacts, "Choose the macOS build runner").match(/        run: \|\n([\s\S]*)/)[1].replace(/^ {10}/gm, "");
+for (const [event, ref, repo, requested, variable, expected] of [
+  ["pull_request", "refs/pull/1/merge", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["pull_request_target", "refs/heads/main", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/heads/main", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/tags/nightly", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["schedule", "refs/heads/main", "codewhale-hq/Codewhale", "default", "true", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "someone/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/tags/v0.10.4", "someone/Codewhale", "default", "true", "false"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "default", "false", "false"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "default", "true", "true"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "hosted", "true", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "codewhale-hq/Codewhale", "", "", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "codewhale-hq/Codewhale", "self-hosted", "false", "true"],
+]) {
+  const out = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cw-release-macos-")), "out");
+  execFileSync("bash", ["-c", releaseMacosStep], {
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, EVENT_NAME: event, EVENT_REF: ref, THIS_REPO: repo, REQUESTED: requested, SWITCH: variable },
+  });
+  assert.equal(fs.readFileSync(out, "utf8"), `self_hosted=${expected}\n`, `release macOS runner: ${event} ${ref} ${repo} ${requested}/${variable}`);
+}
+const releaseBuildRunsOn = jobBlock(artifacts, "build").match(/^    runs-on: (.+)$/m)[1];
+assert.equal(
+  releaseBuildRunsOn,
+  `\${{ startsWith(matrix.os, 'macos-') && needs.pin.outputs.macos_self_hosted == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]') || (matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os) }}`,
+  "only macOS release builds may use the self-hosted Mac, and only when pin chose it",
+);
+const releaseBuild = jobBlock(artifacts, "build");
+const freshReleaseHome = namedStep(releaseBuild, "Fresh rustup, Cargo home and temp for a self-hosted release build");
+assert.match(freshReleaseHome, /rm -rf "\$\{fresh\}"/);
+for (const remap of [/"\$\{CARGO_HOME\}=\/cargo"/, /"\$\(cd "\$\{fresh\}" && pwd -P\)\/\.cargo=\/cargo"/, /"\$\{GITHUB_WORKSPACE\}=\/codewhale"/, /"\$\(cd "\$\{GITHUB_WORKSPACE\}" && pwd -P\)=\/codewhale"/]) {
+  assert.match(freshReleaseHome, remap, "self-hosted shipping binaries must not embed the build machine's home or workspace paths");
+}
+assert.match(freshReleaseHome, /CARGO_ENCODED_RUSTFLAGS=/);
+assert.match(namedStep(releaseBuild, "Start the self-hosted release build from an empty target"), /rm -rf target\n\s+test -z "\$\(git status --porcelain --ignored\)"/);
+assert.match(releaseBuild, /uses: Swatinem\/rust-cache@[^\n]+\n        if: runner\.environment != 'self-hosted'\n/, "self-hosted shipping builds must not restore or save a shared cache");
+assert.match(candidate, /^      macos_runner: \$\{\{ inputs\.macos_runner \}\}$/m);
+
+let pinnedRunsOn = 0;
+for (const [file, source] of workflowSources) {
+  for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
+    pinnedRunsOn += 1;
+    assert.doesNotMatch(
+      value.replace(/==\s*'ubuntu-latest'/g, ""),
+      /ubuntu-latest/,
+      `${file}: runs-on must name ubuntu-24.04, never ubuntu-latest: ${value}`,
+    );
+    for (const [, key] of value.matchAll(/matrix\.(\w+)/g)) {
+      const listsUbuntuLatest = new RegExp(`^[ \\t-]*${key}:.*ubuntu-latest`, "m").test(source);
+      if (listsUbuntuLatest) {
+        assert.match(
+          value,
+          new RegExp(`matrix\\.${key} == 'ubuntu-latest' && 'ubuntu-24\\.04'`),
+          `${file}: runs-on must map matrix.${key} ubuntu-latest to ubuntu-24.04: ${value}`,
+        );
+      }
+    }
+  }
+}
+assert.ok(pinnedRunsOn > 50, "runs-on pin contract must scan every workflow");
+
+const nightlyCandidate = read(".github/workflows/nightly-candidate.yml");
+const fullCiReceipt = read("scripts/release/require-full-ci-receipt.sh");
+assert.match(nightlyCandidate, /^  schedule:\n    - cron: '\d+ \d+ \* \* \*'\n  workflow_dispatch:\n/m);
+assert.match(nightlyCandidate, /^concurrency:\n  group: nightly-candidate\n  cancel-in-progress: false\n/m);
+assert.deepEqual(jobsWithoutTimeout(nightlyCandidate), [], "nightly-candidate.yml: every job must set timeout-minutes");
+assert.doesNotMatch(nightlyCandidate, /secrets\./, "the nightly dispatcher must hold no secret");
+for (const forbidden of [/contents:\s*write/, /packages:\s*write/, /\bgh release\b/, /\bnpm publish\b/, /\bcargo publish\b/, /\bgit push\b/, /\bgit tag\b/, /release\.yml/]) {
+  assert.doesNotMatch(nightlyCandidate, forbidden, "the nightly dispatcher must not publish or start a release");
+}
+const nightlyDecide = namedStep(nightlyCandidate, "Decide whether main needs a candidate");
+assert.match(nightlyDecide, /commits\/main/, "the nightly builds main's tip");
+assert.match(nightlyDecide, /release-candidate\.yml\/runs\?head_sha=\$\{sha\}/, "skip a SHA that already has a candidate");
+assert.match(nightlyDecide, /select\(\.status != "completed"\)/, "never stack a candidate on one still building");
+assert.match(nightlyDecide, /require-full-ci-receipt\.sh "\$\{GITHUB_REPOSITORY\}" "\$\{sha\}"/, "build only a main with green full CI");
+const nightlyDispatch = namedStep(nightlyCandidate, "Dispatch release-candidate.yml for main");
+assert.match(nightlyDispatch, /if: steps\.decide\.outputs\.decision == 'dispatch' && !inputs\.dry_run/);
+assert.match(
+  nightlyDispatch,
+  /gh workflow run release-candidate\.yml --repo "\$\{GITHUB_REPOSITORY\}" --ref main \\\n\s+-f expected_sha="\$\{SHA\}" -f nightly=true/,
+  "the nightly must dispatch (not call) the candidate so release.yml finds a workflow_dispatch receipt",
+);
+assert.match(
+  candidate,
+  /CODEWHALE_RELEASE_SIGNING_KEY: \$\{\{ !inputs\.nightly && secrets\.CODEWHALE_RELEASE_SIGNING_KEY \|\| '' \}\}/,
+  "a nightly candidate must never receive the release signing key",
+);
+assert.match(
+  namedStep(candidate, "Check version and OHOS release contracts"),
+  /if \[\[ "\$\{NIGHTLY\}" == "true" \]\]; then\n\s+\.\/scripts\/release\/check-versions\.sh\n\s+else\n\s+\.\/scripts\/release\/check-versions\.sh --require-dated-release\n/,
+  "only the nightly may build an undated main; every other candidate keeps the dated-release gate",
+);
+for (const job of ["Change detection", "Lint", "Shared-process tests"]) {
+  assert.match(ci, new RegExp(`^    name: ${job.replace(/[()]/g, "\\$&")}\\n`, "m"), `ci.yml must still name the "${job}" job`);
+  assert.ok(fullCiReceipt.includes(`"${job}"`), `require-full-ci-receipt.sh must check "${job}"`);
+}
+assert.match(ci, /^    name: Scoped test \(/m, "ci.yml must still name the Scoped test job");
+assert.match(ciSuite, /^    name: Suite check\n/m, "ci-test-suite.yml must still name the Suite check job");
+for (const os of ["ubuntu-latest", "macos-latest", "windows-latest"]) {
+  assert.match(ci, new RegExp(`^    name: Sharded tests \\(${os}\\)\\n`, "m"), `ci.yml must still run Sharded tests (${os})`);
+  assert.ok(
+    fullCiReceipt.includes(`"Sharded tests (${os}) / Suite check"`),
+    `require-full-ci-receipt.sh must require the ${os} Suite check`,
+  );
+}
+assert.ok(
+  ci.includes("bash scripts/release/require-full-ci-receipt.test.sh\n"),
+  "ci.yml must run the full-CI receipt tests",
+);
+
+const mainLanding = read(".github/workflows/main-landing.yml");
+assert.match(mainLanding, /^  push:\n    branches: \[main\]\n/m, "the landing gate must run on every push to main");
+assert.match(jobBlock(mainLanding, "preflight"), /run: bash scripts\/preflight\.sh --check\n/, "the landing preflight must always run");
+assert.doesNotMatch(jobBlock(mainLanding, "preflight"), /^    if:/m, "the landing preflight must never be skipped");
+const landingDispatch = namedStep(mainLanding, "Run ci.yml with every gate on the pushed commit");
+const landingReceipt = landingDispatch.indexOf(
+  'if receipt="$(bash scripts/release/require-full-ci-receipt.sh "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" 2>&1)"; then',
+);
+const landingFullRun = landingDispatch.indexOf(
+  'gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main -f expected_sha="${GITHUB_SHA}"',
+);
+assert.ok(landingReceipt >= 0, "the landing gate may skip only on a full-CI receipt for the exact pushed SHA");
+assert.ok(landingFullRun > landingReceipt, "without that receipt the landing gate must dispatch the full suite");
+assert.equal((landingDispatch.match(/exit 0/g) || []).length, 1, "the only early exit is the receipt branch");
+assert.match(landingDispatch, /set -euo pipefail\n/);
+
+assert.deepEqual(jobsWithoutTimeout(mainLanding), [], "main-landing.yml: every job must set timeout-minutes");
+assert.doesNotMatch(
+  mainLanding,
+  /secrets\.|CLOUDFLARE_|npm run deploy|cf deploy/,
+  "the landing gate must never hold Cloudflare credentials or deploy",
+);
+const landingWeb = jobBlock(mainLanding, "web");
+assert.match(landingWeb, /^    needs: web_changes$/m);
+assert.equal(
+  evaluate(jobIf(mainLanding, "web"), { needs: { web_changes: { outputs: { web: "true" } } } }),
+  true,
+  "landing web gates must run when a website input changed",
+);
+assert.equal(
+  evaluate(jobIf(mainLanding, "web"), { needs: { web_changes: { outputs: { web: "false" } } } }),
+  false,
+  "landing web gates must skip unrelated commits",
+);
+assert.match(landingWeb, /^      run:\n        working-directory: web$/m);
+assert.match(landingWeb, /fetch-depth: 0/);
+assert.match(landingWeb, /cache-dependency-path: web\/package-lock\.json/);
+for (const [label, source] of [
+  ["main-landing.yml", landingWeb],
+  ["web.yml", jobBlock(read(".github/workflows/web.yml"), "lint")],
+]) {
+  const order = ["npm ci", "npm test", "npm run check"].map((cmd) => source.indexOf(`run: ${cmd}\n`));
+  assert.ok(
+    order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1])),
+    `${label} must run npm ci, npm test, and npm run check in order`,
+  );
+}
+for (const match of [...jobBlock(mainLanding, "web_changes").matchAll(/uses:\s+([^@\s]+)@([^#\s]+)/g), ...landingWeb.matchAll(/uses:\s+([^@\s]+)@([^#\s]+)/g)]) {
+  assert.match(match[2], /^[0-9a-f]{40}$/, `main-landing.yml ${match[1]} must pin a full commit SHA`);
+}
+const landingWebDetect = namedStep(jobBlock(mainLanding, "web_changes"), "Detect website input changes");
+assert.match(landingWebDetect, /EVENT_NAME.*==.*"workflow_dispatch"/);
+const landingWebCase = landingWebDetect.match(/\n( +)case "\$\{path\}" in\n[\s\S]*?\n\1esac\n/)?.[0];
+assert.ok(landingWebCase, "main-landing.yml must declare the website input path case block");
+function classifyLandingWeb(paths) {
+  const script = `while IFS= read -r path; do web=false\n${landingWebCase}\nprintf '%s\\t%s\\n' "$web" "$path"; done`;
+  const out = execFileSync("bash", ["-c", script], { input: `${paths.join("\n")}\n`, encoding: "utf8" });
+  return new Map(out.trim().split("\n").map((line) => line.split("\t").reverse()));
+}
+const docsMapSources = [...read("web/lib/docs-map.ts").matchAll(/repoSource:\s*(\[[^\]]+\]|"[^"]+")/g)].flatMap(
+  (m) => [...m[1].matchAll(/"([^"#]+)(?:#[^"]*)?"/g)].map((hit) => hit[1]),
+);
+const featureDocSources = [...read("docs/features.toml").matchAll(/^\s*docs\s*=\s*"([^"#]+)(?:#[^"]*)?"/gm)].map(
+  (m) => m[1],
+);
+const publicSurfaceMatrix = JSON.parse(read("docs/public-surface-facts.json"));
+const matrixSources = [];
+(function collectSources(value) {
+  if (Array.isArray(value)) value.forEach(collectSources);
+  else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      if (k === "sources" || k === "creditSources") matrixSources.push(...v);
+      else collectSources(v);
+    }
+  }
+})(publicSurfaceMatrix);
+const mustTriggerWebGates = [
+  ...new Set([
+    "web/package.json",
+    "web/app/[locale]/page.tsx",
+    "web/data/latest-published-release.json",
+    "web/scripts/derive-facts.mjs",
+    "docs/features.toml",
+    "docs/contributors.json",
+    "docs/public-surface-facts.json",
+    "docs/cloud-facts/stable.json",
+    "docs/cloud-facts/fixtures/envelope-stable-v7.json",
+    "docs/i18n/README.zh-CN.md",
+    "docs/zh_hans/INSTALL.md",
+    "docs/zh_hans/GUIDE.md",
+    "docs/zh_hans/MODES.md",
+    "docs/RUNTIME_ROUTES.md",
+    "docs/releases/v0.9.2-media-plan.md",
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "npm/codewhale/package.json",
+    "npm/codewhale/README.md",
+    "npm/codewhale/scripts/artifacts.js",
+    "crates/config/assets/provider_descriptors.json",
+    "crates/config/assets/models_dev.bundled.json",
+    "crates/config/src/cloud_facts/keys.rs",
+    "crates/config/src/app_mode.rs",
+    "crates/sandbox/src/lib.rs",
+    "crates/engine/src/tools/registry.rs",
+    "crates/engine/src/core/engine/tool_catalog.rs",
+    "crates/app-server/src/runtime_api.rs",
+    "crates/app-server/src/runtime_web/target.mjs",
+    "crates/palette/src/rgb.rs",
+    "crates/cli/Cargo.toml",
+    "crates/execpolicy/src/approval_mode.rs",
+    "crates/runtime/src/config.rs",
+    "crates/runtime/src/config/subagent_limits.rs",
+    "crates/tui/src/tui/app.rs",
+    "crates/tui/src/tui/app/init.rs",
+    "scripts/export-design-tokens.py",
+    "vendor/codewhale-design/tokens.json",
+    "telemetry-ingest/src/schema.ts",
+    ".github/workflows/web.yml",
+    ".github/workflows/main-landing.yml",
+    ...docsMapSources,
+    ...featureDocSources,
+    ...matrixSources,
+  ]),
+];
+const webVerdicts = classifyLandingWeb(mustTriggerWebGates);
+for (const target of mustTriggerWebGates) {
+  assert.equal(webVerdicts.get(target), "true", `${target} feeds the website or its tests and must trigger landing web gates`);
+}
+const nonWebPaths = [
+  "crates/core/src/lib.rs",
+  "crates/engine/src/core/engine/turn_loop.rs",
+  "crates/tui/src/main.rs",
+  "scripts/preflight.sh",
+  ".github/workflows/ci.yml",
+  "packaging/aur/PKGBUILD.in",
+];
+const nonWebVerdicts = classifyLandingWeb(nonWebPaths);
+for (const target of nonWebPaths) {
+  assert.equal(nonWebVerdicts.get(target), "false", `${target} is unrelated to the website and must skip landing web gates`);
+}
+console.log(`Landing web gate path filter OK: ${mustTriggerWebGates.length} web inputs trigger, ${nonWebPaths.length} unrelated paths skip.`);
+
+const webWorkflow = read(".github/workflows/web.yml");
+const webTriggerBlock = webWorkflow.slice(
+  webWorkflow.indexOf("on:\n"),
+  webWorkflow.indexOf("\n\npermissions:"),
+);
+assert.match(webTriggerBlock, /^on:\n  workflow_dispatch:(?:\n    .*)*$/, "web.yml must stay workflow_dispatch-only");
+assert.doesNotMatch(jobBlock(webWorkflow, "lint"), /^    if:/m, "web.yml lint job must run unconditionally on dispatch");
+const webDeployBlock = jobBlock(webWorkflow, "deploy");
+assert.match(webDeployBlock, /^    needs: lint$/m);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "workflow_dispatch", ref: "refs/heads/main" },
+  }),
+  true,
+);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "push", ref: "refs/heads/main" },
+  }),
+  false,
+);
+assert.equal(
+  evaluate(jobIf(webWorkflow, "deploy"), {
+    github: { event_name: "workflow_dispatch", ref: "refs/heads/release" },
+  }),
+  false,
+);
+assert.match(webDeployBlock, /^    concurrency:\n      group: deploy-codewhale-web\n      cancel-in-progress: false$/m);
+assert.match(webDeployBlock, /ref: \$\{\{ github\.sha \}\}\n\s+fetch-depth: 0/);
+assert.ok(webDeployBlock.indexOf("actions/checkout@") < webDeployBlock.indexOf("Verify expected commit"));
+assert.ok(webDeployBlock.indexOf("Verify expected commit") < webDeployBlock.indexOf("actions/setup-node@"));
+assert.match(webDeployBlock, /run: npm run check:deploy-env\n/);
+assert.match(webDeployBlock, /run: npm run deploy\n/);
+assert.doesNotMatch(webDeployBlock, /npm run build/);
+assert.match(webDeployBlock, /run: npm run check:deployed-facts -- --expected-revision "\$GITHUB_SHA"/);
+const webRefreshStep = namedStep(webDeployBlock, "Refresh published release facts");
+assert.match(webRefreshStep, /CLOUDFLARE_API_TOKEN: ''/);
+assert.match(webRefreshStep, /node scripts\/sync-latest-release\.mjs/);
+assert.ok(
+  webDeployBlock.indexOf("Refresh published release facts") < webDeployBlock.indexOf("run: npm run deploy\n"),
+  "web.yml deploy must sync the published release record before building the OpenNext bundle",
+);
+
+const releaseWebDeploy = jobBlock(release, "web_deploy");
+assert.match(releaseWebDeploy, /^    needs: \[npm, release, resolve\]$/m);
+assert.equal(jobTimeout(release, "web_deploy"), 45);
+assert.match(
+  releaseWebDeploy,
+  /^    permissions:\n      actions: write\n      contents: read\n    steps:/m,
+  "release web_deploy needs only actions: write and contents: read",
+);
+assert.doesNotMatch(
+  releaseWebDeploy,
+  /secrets\.|CLOUDFLARE_|contents:\s*write|packages:\s*write|id-token:\s*write|set -x/,
+  "release web_deploy must hold no Cloudflare or release secrets and no extra write scopes",
+);
+assert.match(
+  releaseWebDeploy,
+  /^    concurrency:\n      group: release-web-deploy-\$\{\{ needs\.resolve\.outputs\.tag \}\}\n      cancel-in-progress: false$/m,
+);
+const webDeployGuard = jobIf(release, "web_deploy").replace(/^\$\{\{\s*(.*?)\s*\}\}$/, "$1");
+const webDeployRuns = ({
+  repo = "codewhale-hq/Codewhale",
+  ref = "refs/tags/v1.2.3",
+  prerelease = "false",
+  release: rel = "success",
+  npm = "success",
+  isCancelled = false,
+} = {}) =>
+  evaluate(webDeployGuard, {
+    cancelled: () => isCancelled,
+    format: (template, ...args) => template.replace(/\{(\d+)\}/g, (_, i) => args[Number(i)]),
+    github: { repository: repo, ref },
+    needs: { release: { result: rel }, npm: { result: npm }, resolve: { outputs: { tag: "v1.2.3", prerelease } } },
+  });
+assert.equal(webDeployRuns(), true, "release website deploy must run for a stable release of this repository");
+assert.equal(webDeployRuns({ repo: "someone/Codewhale" }), false, "a fork must never trigger the website deploy");
+assert.equal(webDeployRuns({ prerelease: "true" }), false, "a prerelease must never trigger the website deploy");
+assert.equal(webDeployRuns({ ref: "refs/heads/main" }), false, "a branch ref must never trigger the website deploy");
+assert.equal(webDeployRuns({ ref: "refs/tags/v9.9.9" }), false, "a mismatched tag ref must never trigger the website deploy");
+assert.equal(webDeployRuns({ release: "failure" }), false, "website deploy requires a successful GitHub Release job");
+assert.equal(webDeployRuns({ npm: "failure" }), false, "website deploy requires a successful npm job");
+assert.equal(webDeployRuns({ isCancelled: true }), false, "cancelled runs must not trigger the website deploy");
+
+const webDispatchStep = namedStep(releaseWebDeploy, "Dispatch web.yml on main and wait for deploy");
+const webLiveVerifyStep = namedStep(releaseWebDeploy, "Verify live site names the released version");
+assert.ok(
+  releaseWebDeploy.indexOf("      - name: Dispatch web.yml on main and wait for deploy\n") <
+    releaseWebDeploy.indexOf("      - name: Verify live site names the released version\n"),
+  "live site check must follow the web.yml deploy wait",
+);
+assert.doesNotMatch(webDispatchStep.split("run: |")[1], /\$\{\{/, "dispatch script must pass workflow values via env");
+assert.match(webDispatchStep, /gh workflow run web\.yml --repo "\$\{GITHUB_REPOSITORY\}" --ref main -f expected_sha="\$\{main_sha\}"/);
+assert.match(webDispatchStep, /compare\/\$\{RELEASE_SHA\}\.\.\.\$\{main_sha\}/);
+assert.match(
+  webDispatchStep,
+  /\.name == "Lint & Type Check" and \.conclusion == "success"[\s\S]*\.name == "Deploy to Cloudflare" and \.conclusion == "success"/,
+);
+assert.doesNotMatch(webLiveVerifyStep.split("run: |")[1], /\$\{\{/, "live version check must pass VERSION via env");
+assert.match(webLiveVerifyStep, /VERSION: \$\{\{ needs\.resolve\.outputs\.version \}\}/);
+assert.match(webLiveVerifyStep, /expected="Version \$\{VERSION\} is released"/);
+assert.match(webLiveVerifyStep, /https:\/\/codewhale\.net\/en/);
+assert.match(webLiveVerifyStep, /grep -Fq "\$\{expected\}"/);
+assert.match(webLiveVerifyStep, /for attempt in \$\(seq 1 24\); do/);
+assert.match(webLiveVerifyStep, /exit 1\s*$/);
 
 console.log(
   "Workflow contracts OK: 6-target/12-asset single-runtime nightly and exact-head 8-target/38-asset release candidate.",

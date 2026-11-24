@@ -1008,6 +1008,7 @@ async fn assert_preview_matches_first_wire_body(
             hook_executor: None,
             verbosity,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             images: Vec::new(),
             max_output_tokens: None,
             submission_id: None,
@@ -1585,10 +1586,14 @@ async fn assert_matrix_route(route: &MatrixRoute) {
     let planned_provider = planned.route.identity.provider;
     let planned_base_url = planned.route.candidate.endpoint().base_url.clone();
     let planned_model = planned.route.model.clone();
-    let expected_wire_model = codewhale_runtime::config::wire_model_for_provider_route(
+    let expected_wire_model = codewhale_config::route::resolve_model(
         planned_provider,
-        &planned_base_url,
         &planned_model,
+        Some(&planned_base_url),
+    )
+    .map_or_else(
+        |_| planned_model.trim().to_string(),
+        |resolved| resolved.wire_id,
     );
     assert_eq!(
         planned_base_url.trim_end_matches('/'),
@@ -1982,6 +1987,7 @@ async fn provider_reported_usage_is_unavailable_until_a_response_reports_it() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             images: Vec::new(),
             max_output_tokens: None,
             submission_id: None,
@@ -2054,7 +2060,7 @@ async fn fixed_route_with_a_prompt_describes_the_exact_next_turn() {
     let route = manifest.route.exact().expect("a fixed route is exact");
     assert_eq!(route.provider_id.as_str(), "deepseek");
     assert_eq!(route.routing_source, "active-fixed-route");
-    assert_eq!(route.dialect, "chat-completions");
+    assert_eq!(route.dialect, "openai-responses");
     assert_eq!(route.caller_entrypoint, "streaming");
     assert_eq!(route.body_stream_field, Some(true));
     assert_eq!(route.context_limit_tokens, 123_456);
@@ -2140,10 +2146,14 @@ async fn host_supplied_auto_route_receipt_matches_the_production_planner() {
     assert_eq!(planned_identity, "deepseek");
     assert_eq!(
         route.wire_model.as_str(),
-        codewhale_runtime::config::wire_model_for_provider_route(
+        codewhale_config::route::resolve_model(
             planned_provider,
-            &planned_base_url,
             &planned_model,
+            Some(&planned_base_url),
+        )
+        .map_or_else(
+            |_| planned_model.trim().to_string(),
+            |resolved| resolved.wire_id
         ),
         "the wire model is the planner's model after route remapping — not \
              the model the session happens to have installed"

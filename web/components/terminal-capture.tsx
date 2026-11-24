@@ -1,10 +1,5 @@
 import type { CSSProperties } from "react";
-import {
-  TERMINAL_CAPTURE_FRAMES,
-  type TerminalCaptureFrame,
-  type TerminalCaptureFrameId,
-  type TerminalCaptureStyle,
-} from "@/lib/terminal-capture.generated";
+import type { TerminalCaptureFrame, TerminalCaptureStyle } from "@/lib/terminal-capture-types";
 
 export type TerminalCaptureData = Pick<TerminalCaptureFrame, "file" | "cols"> & {
   styles: readonly TerminalCaptureStyle[];
@@ -26,8 +21,8 @@ function runStyle(style: TerminalCaptureStyle): CSSProperties {
 
 /**
  * A real terminal frame as live HTML text: the PTY cells the terminal
- * emulator parsed (lib/terminal-captures, compacted by
- * scripts/render-terminal-capture.mjs), drawn as styled runs in the system
+ * emulator parsed (lib/terminal-captures/released, compacted by
+ * scripts/render-released-capture.mjs), drawn as styled runs in the system
  * monospace font. Nothing is retouched or staged.
  *
  * The frame or a contiguous detail scales with the frame's width and the
@@ -37,19 +32,16 @@ function runStyle(style: TerminalCaptureStyle): CSSProperties {
  * each, because system monospace fonts draw them from a fallback font.
  */
 export function TerminalCapture({
-  frame = "home",
   label,
   regionLabel,
   rows,
-  data: given,
+  data,
 }: {
-  frame?: TerminalCaptureFrameId;
-  data?: TerminalCaptureData;
+  data: TerminalCaptureData;
   label: string;
   regionLabel: string;
   rows?: readonly [number, number];
 }) {
-  const data: TerminalCaptureData = given ?? TERMINAL_CAPTURE_FRAMES[frame];
   const start = rows ? Math.max(0, Math.min(data.lines.length - 1, rows[0])) : 0;
   const end = rows ? Math.max(start + 1, Math.min(data.lines.length, rows[1])) : data.lines.length;
   const lines = data.lines.slice(start, end);

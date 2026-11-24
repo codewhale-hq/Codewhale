@@ -1,9 +1,9 @@
 # Codewhale: a whale living in code
 
 The current live experience is [one durable pet with attached views](SHARED.md):
-Ratatui Watch/full habitat, browser, native companion and mobile Shared modes.
-That guide contains build/run commands, source selection and the ownership
-contract. The standalone demos and file studies described below stay isolated.
+Ratatui Watch/full habitat and the owner's browser view; the Codewhale apps are
+the only other clients. That guide contains build/run commands, source selection
+and the ownership contract.
 
 
 The dots are Codewhale's material. The whale is its recognizable home form;
@@ -21,39 +21,27 @@ arbitrary task content. Missing telemetry stays visibly unknown.
 
 ## Build from this repository
 
-Requires Node 22.13 or later and Python 3 for the local static server.
+Requires Node 22.13 or later.
 No sibling repository, investor folder, credentials or provider call is needed.
 
 ```sh
 npm --prefix pet ci --ignore-scripts
 npm --prefix pet run check
-npm --prefix pet start
 ```
 
-Open <http://127.0.0.1:4632/pet.html>. Wild is a simulated creature; Event demo
-is synthetic telemetry. Import trace / tape accepts event-v1, OTLP, existing
-Codewhale session/Runtime journals and saved pet recordings. Sound requires an
-explicit gesture. Still preserves a static semantic pose. Follow local tape
-uses the browser's File System Access API; other browsers support import/export.
-
 ```sh
-# Regenerate embedded QuickJS and Apple bundles from the same source.
+# Regenerate the embedded QuickJS bundle from the same source.
 npm --prefix pet run sync
 # Full product terminal; use /pet and /pet export.
 cargo build --locked -p codewhale-tui --bin codewhale-tui
 # Small standalone braille renderer, without the full product link.
 cargo fetch --locked --manifest-path pet/tui/Cargo.toml
 cd pet
-./verify.sh --no-swift
+./verify.sh
 ```
 
-`./verify.sh` without the flag additionally requires Swift and compares all
-three ports. The script fails for a missing tool or failed build; it does not
-silently call an omitted platform verified. See [QA.md](QA.md) for native builds.
-
-The [Android application](android/README.md) builds with its Gradle wrapper and
-JDK 17. Compose, native audio, checkpoint import/export and lifecycle behavior
-are exercised on an Android 15 emulator; CI uploads the debug APK and test reports.
+`./verify.sh` compares the TypeScript and Rust cores and builds the ratatui
+widget. The script fails for a missing tool or failed build. See [QA.md](QA.md).
 
 In the full terminal, `/pet sound on` enables the shared score and
 `/pet sound off` mutes it. Sound starts off each time the application
@@ -76,23 +64,19 @@ disconnects and missing intervals are unknown, not successful idle time.
 It journals accepted telemetry, interactions, behaviors and persistent pod slots.
 `pet-audio.ts` schedules voices from that same clock. Noise uses absolute sample
 positions, so buffer partitioning cannot change the score. Audio mixing is a
-host concern. `pet-native.ts` exposes this exact core to QuickJS/JavaScriptCore.
-The TUI, Apple and Android hosts do not carry their own event bucketers or score schedulers.
-Apple copies validated Float32 PCM channels directly from JavaScriptCore into
-native buffers; it does not serialize sample arrays as JSON. AVAudioEngine
-follows the world clock, rebases presentation after a stall, and discards stale
-voices after a long gap. Device or rendering failures mute sound and report a
-message while the world, persistence and export continue.
+host concern. `pet-native.ts` exposes this exact core to QuickJS.
+The terminal host does not carry its own event bucketer or score scheduler.
+Device or rendering failures mute sound and report a message while the world,
+persistence and export continue.
 
 The Rust particle implementation lives in the product's
 `crates/tui/src/tui/ambient_life/pet_sim.rs`; this package's runner imports it.
-Swift and Kotlin particle ports must match its conformance digests. Generated
-native bundles are committed so the product Rust build needs no Node compiler.
+The TypeScript core must match its conformance digests. The generated
+native bundle is committed so the product Rust build needs no Node compiler.
 Run `npm run sync` after changing core source; `npm run check` (run by CI)
-rejects a stale bundle or `shared.html` copy. Local Whalesong consumers use aliases to these same
-canonical files, not separately maintained source copies.
+rejects a stale bundle or `shared.html` copy.
 
-The original Whalesong importer, signal model, schema and browser storage code
+The original Whalesong importer, signal model and schema
 are included because they are actual dependencies of the pet. Their original
 Apache-2.0 [license](LICENSE) and [notice](NOTICE) are retained. Rust files imported
 from the product retain that repository's license.
@@ -167,71 +151,30 @@ mismatched versions are rejected before changing the current world. This keeps
 old saved habitats replayable while letting new worlds change their visual form.
 The older TSV is a particle conformance tape and cannot preserve audio onsets.
 
-macOS watches `~/.codewhale/pet-state`. iOS watches `pet-state` in Documents.
-Android uses More → Follow file study to select a seekable device document.
-The browser's Follow local tape uses a user-granted File System Access handle.
-All three file readers use the same shared live cursor: the first complete packet
-establishes a baseline, and only an advancing sequence becomes an observation.
-Duplicate input, a restarted sequence, or bytes read during suspension cannot
-replay an old onset or human request. Missing/invalid input expires to unknown;
-resuming advances beyond already accepted input without replaying its sound.
-Apple watches appends and directory replacement. Android reads a bounded 256 KiB
-tail on an IO worker, closes it on pause/background, and discards delayed delivery.
-The file must be updated by a producer; selecting a completed tape does not make
-it live. Use Import to replay that tape. Device files are not automatically synced
-from the desktop recorder.
-The current live chain has been exercised with typed synthetic Engine events
-through the actual Runtime journal/SSE endpoint, recorder process and Apple
-file watcher/host. The world receives a fresh human request and clears it after
-its answer; prompt, question and answer text stay out of the recording. This
-uses the existing mock Engine handle without calling a provider. The older
-read-only Runtime 0.9.13 receipt predates the required progress capability and
-does not establish current compatibility.
-
 ## Persistence and current limits
 
-The standalone browser commits checkpoint and recording together with an optimistic
-IndexedDB revision. A saved live source reopens as Replay until explicitly
-reattached. Legacy TUI `artifacts/pet/habitat.json` files remain recoverable; current Watch attaches to the companion.
-Apple hosts keep source-specific files in Application Support/CodewhalePet.
-Android keeps separate wild/demo/recording/live habitats in private app storage.
-Native writes are private and atomic, use a writer lock and content revision,
-and preserve corrupt files or external edits. Recovery is visible in the UI.
-
-Modern checkpoints hydrate without replaying historical simulation. Live resume
-starts unknown and drops old human requests. Apple legacy wild preferences
-migrate only after a successful checkpoint save. Native autosave is every five
-seconds, so a crash may lose work since the last successful save.
+The owner commits its checkpoint and recording together. Legacy TUI
+`artifacts/pet/habitat.json` files remain recoverable; current Watch attaches to
+the companion. Writes are private and atomic, use a writer lock and content
+revision, and preserve corrupt files or external edits. Modern checkpoints
+hydrate without replaying historical simulation. A crash may lose work since the
+last successful checkpoint.
 
 New worlds use version 2 recordings with an exact starting checkpoint and
 absolute telemetry sequences. After 1,024 consumed buckets or 4,096 applied
-inputs, the host saves completed history as an immutable segment before replacing
-the active habitat. Only then does the running world retire that history. Its
+inputs, completed history is saved as an immutable segment before replacing the
+active habitat. Only then does the running world retire that history. Its
 particles, random streams and score continue without a reset. Gaps remain unknown;
 future imported events stay in the active segment. Version 1 imports still work.
 
-Earlier recordings opens saved segments in the browser and exports them on Apple
-and Android. TUI segments are JSON files beside `habitat.json` in the session's
+TUI segments are JSON files beside `habitat.json` in the session's
 `artifacts/pet` directory. Each segment replays independently from its starting
-checkpoint; seeking cannot precede that point. Browser source changes archive
-the entire outgoing recording, including unplayed imported events. Archived files
-are retained, so disk use grows with recorded history even though active history
-is bounded.
-
-Native autosaves and native imports are limited to 8 MiB; the QuickJS worker
-has a 64 MiB memory limit. All four hosts export recordings in chunks, including
-the exact checkpoint, with a 64 MiB file limit. Files over 8 MiB can be recovered
-in the browser. Android finishes the export in a private staging file before
-opening the user-selected destination. Apple source changes keep the current
-visit when saving fails; leaving without saving requires an explicit choice.
+checkpoint; seeking cannot precede that point. Archived files are retained, so
+disk use grows with recorded history even though active history is bounded.
+Autosaves and imports are limited to 8 MiB; the QuickJS worker has a 64 MiB
+memory limit, and exports stream in chunks up to 64 MiB.
 
 A 30-hour synthetic Still run of the shared core rotated 263 segments and kept
 the active file below 0.45 MB, with exact checkpoint continuation after every
-rotation. Apple and Android separately exercise archive publication, failed saves
-and continued execution in their actual embedded engines. This is not 30 hours
-of animated native-device or power testing. Current platform builds, replay,
-live file delivery and measured audio output have separate receipts in [QA.md](QA.md).
-Automatic desktop-to-phone transport is not included: mobile hosts consume a
-local file using the shared contract. Physical-phone listening/battery quality
-and current macOS popover inspection have not been established. The source is
-available as a development build; this branch has not been released.
+rotation. Replay, live file delivery and measured audio output have separate
+receipts in [QA.md](QA.md). The source is available as a development build.

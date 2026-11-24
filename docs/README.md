@@ -2,18 +2,18 @@
 
 Start with the [user guide](GUIDE.md). The website renders a subset of these
 pages at [codewhale.net/docs](https://codewhale.net/en/docs); the Markdown here
-is the source. Translations live beside their English page (`*.id.md`) or in
-[`id/`](id) and [`zh_hans/`](zh_hans).
+is the source. Translations live in [`id/`](id) and [`zh_hans/`](zh_hans).
 
 ## Get started
 
 - [Installing Codewhale](INSTALL.md), including PATH help and shell completions
 - [User guide](GUIDE.md): first run, sessions, commands, everyday workflows
+- [Sign in to a Codewhale account](ACCOUNT.md)
 - [Keybindings](KEYBINDINGS.md)
 - [Pet mode](PET_MODE.md): a glanceable whale view per terminal, with replies and agents on demand
-- [Modes and permission postures](MODES.md)
+- [Modes and permission postures](MODES.md), [Auto-Review](AUTO_REVIEW.md), and [Creator mode](CREATOR_MODE.md)
 - [Configuration](CONFIGURATION.md)
-- [Providers and local models](PROVIDERS.md) and the [Model Lab roadmap](MODEL_LAB.md)
+- [Providers and local models](PROVIDERS.md), [models and providers](MODELS_AND_PROVIDERS.md), and the [Model Lab roadmap](MODEL_LAB.md)
 - Platform notes: [Docker](DOCKER.md), [Termux / Android](TERMUX.md),
   [HarmonyOS](HarmonyOS.md), [environment caveats](ENVIRONMENTS.md),
   [classroom and lab installs](CLASSROOM_INSTALL.md)
@@ -21,6 +21,8 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 ## Using Codewhale
 
 - [Local browser client](WEB.md) (`codewhale web`)
+- [Use Codewhale from your editor](ACP.md) (`codewhale serve --acp`)
+- [Run other agents in Codewhale](OTHER_AGENTS.md)
 - [Agent fleet](FLEET.md), [sub-agents](SUBAGENTS.md), and the
   [fleet and workflow tutorial](FLEET_WORKFLOW_TUTORIAL.md)
 - [Workflow authoring](WORKFLOW_AUTHORING.md),
@@ -28,7 +30,7 @@ is the source. Translations live beside their English page (`*.id.md`) or in
   [experimental workflow search](WORKFLOW_EXPERIMENTAL_SEARCH.md)
 - [Skills](SKILLS.md) and [evaluating skill changes](SKILL_EVALUATION.md)
 - [User memory](MEMORY.md)
-- [`read_media`](READ_MEDIA.md) and [`/preview-request`](PREVIEW_REQUEST.md)
+- [`read_media`](READ_MEDIA.md), [voice input](VOICE_INPUT.md), and [`/preview-request`](PREVIEW_REQUEST.md)
 
 ## Extending Codewhale
 
@@ -41,8 +43,9 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 - [LSP: PHP and custom language servers](LSP_PHP_CUSTOM.md)
 - [Runtime API and integration contract](RUNTIME_API.md)
 - [GitHub App setup](GITHUB_APP.md)
-- [DeepSeek Harness integration](INTEGRATIONS_DSH.md) and
-  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md)
+- [DeepSeek Harness integration](INTEGRATIONS_DSH.md),
+  [DSH plugin compatibility](DSH_PLUGIN_COMPAT.md) and the
+  [published DSH package table](DSH_COMPATIBILITY.md)
 
 ## Safety and trust
 
@@ -57,7 +60,7 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 
 ## Architecture
 
-- [Product](PRODUCT.md) and [architecture overview](ARCHITECTURE.md)
+- [Product](PRODUCT.md), [architecture overview](ARCHITECTURE.md), and [workspace crates](reference/crates.md)
 - [Agent runtime](AGENT_RUNTIME.md) and [Codewhale Agent](CODEWHALE_AGENT.md)
 - [Command and control-plane contract](COMMAND_CONTROL_PLANE.md)
 - [Tool surface](TOOL_SURFACE.md)

@@ -59,10 +59,12 @@ pub use tabs::*;
 pub use toggle::*;
 
 // Package Display.
+mod chart;
 mod diff;
 mod progress;
 mod receipt;
 mod tree;
+pub use chart::*;
 pub use diff::*;
 pub use progress::*;
 pub use receipt::*;

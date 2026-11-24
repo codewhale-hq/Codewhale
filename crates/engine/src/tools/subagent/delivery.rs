@@ -28,6 +28,8 @@ pub struct DeliverableVerdict {
 pub struct DeliveryEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     baseline: Option<GitDeliveryBaseline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    baseline_error: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(super) observed_writes: BTreeSet<String>,
     #[serde(default)]
@@ -41,38 +43,31 @@ struct GitDeliveryBaseline {
     dirty: BTreeMap<String, String>,
 }
 
-fn git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(root)
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-        ])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1");
-    command
+fn git_command(root: &Path) -> Option<Command> {
+    let mut command = codewhale_dependencies::Git::workspace_command(root).ok()?;
+    command.args(["-c", "core.untrackedCache=false"]);
+    Some(command)
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Option<std::process::Output> {
-    git_command(root).args(args).output().ok()
+    git_command(root)?.args(args).output().ok()
 }
 
-fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = git_output(root, args)?;
-    output.status.success().then_some(output.stdout)
-}
-
-/// `git` that reports stderr on failure, for checkpoint notes.
-fn git_captured(root: &Path, args: &[&str]) -> Result<String, String> {
+fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = git_output(root, args).ok_or_else(|| "git spawn failed".to_string())?;
     if !output.status.success() {
         return Err(first_line_lossy(&output.stderr, 200));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
+}
+
+fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    git_bytes(root, args).ok()
+}
+
+/// `git` that reports stderr on failure, for checkpoint notes.
+fn git_captured(root: &Path, args: &[&str]) -> Result<String, String> {
+    git_bytes(root, args).map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// [`git_captured`] with `paths` fed to git's stdin NUL-terminated, for
@@ -83,6 +78,7 @@ fn git_captured_paths(root: &Path, args: &[&str], paths: &[&str]) -> Result<Stri
     use std::io::Write as _;
     use std::process::Stdio;
     let mut child = git_command(root)
+        .ok_or_else(|| "git spawn failed".to_string())?
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -120,26 +116,48 @@ fn first_line_lossy(bytes: &[u8], max_chars: usize) -> String {
     line.chars().take(max_chars).collect()
 }
 
-fn status_paths(root: &Path) -> Option<BTreeSet<String>> {
-    let output = git(
+fn status_paths_checked(root: &Path) -> Result<BTreeSet<String>, String> {
+    let output = git_bytes(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=dirty",
+        ],
+    )
+    .map_err(|err| format!("git status failed: {err}"))?;
     let mut entries = output
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty());
     let mut paths = BTreeSet::new();
     while let Some(entry) = entries.next() {
-        let path = std::str::from_utf8(entry.get(3..)?).ok()?;
+        let path_bytes = entry
+            .get(3..)
+            .ok_or_else(|| "git status returned malformed porcelain entry".to_string())?;
+        let path = std::str::from_utf8(path_bytes)
+            .map_err(|_| "git status returned non-UTF-8 path".to_string())?;
         paths.insert(path.to_string());
         if entry[..2].iter().any(|byte| matches!(byte, b'R' | b'C')) {
             // Porcelain -z emits the destination first, then the source.
             if let Some(source) = entries.next() {
-                paths.insert(std::str::from_utf8(source).ok()?.to_string());
+                let source = std::str::from_utf8(source)
+                    .map_err(|_| "git status returned non-UTF-8 rename source path".to_string())?;
+                paths.insert(source.to_string());
             }
         }
     }
-    (paths.len() <= MAX_BASELINE_PATHS).then_some(paths)
+    if paths.len() > MAX_BASELINE_PATHS {
+        return Err(format!(
+            "git status exceeded {MAX_BASELINE_PATHS} dirty paths"
+        ));
+    }
+    Ok(paths)
+}
+
+fn status_paths(root: &Path) -> Option<BTreeSet<String>> {
+    status_paths_checked(root).ok()
 }
 
 fn fingerprint(root: &Path, relative: &str) -> Option<String> {
@@ -182,6 +200,26 @@ fn fingerprint(root: &Path, relative: &str) -> Option<String> {
     ))
 }
 
+fn capture_baseline(workspace: &Path) -> Result<GitDeliveryBaseline, String> {
+    let root_bytes = git_bytes(workspace, &["rev-parse", "--show-toplevel"])
+        .map_err(|err| format!("git rev-parse --show-toplevel failed: {err}"))?;
+    let root = String::from_utf8(root_bytes)
+        .map_err(|_| "git rev-parse --show-toplevel returned non-UTF-8 path".to_string())?;
+    let root = PathBuf::from(root.trim());
+    let head = git(&root, &["rev-parse", "--verify", "HEAD"])
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(|head| head.trim().to_string());
+    let mut dirty = BTreeMap::new();
+    for path in status_paths_checked(&root)? {
+        let path = normalize_claim_path(&path)
+            .map_err(|_| format!("git baseline path could not be normalized: {path}"))?;
+        let hash = fingerprint(&root, &path)
+            .ok_or_else(|| format!("git baseline fingerprint failed for {path}"))?;
+        dirty.insert(path, hash);
+    }
+    Ok(GitDeliveryBaseline { root, head, dirty })
+}
+
 impl DeliveryEvidence {
     pub(super) fn capture(spec: &AgentWorkerSpec) -> Self {
         Self::capture_for_handle(&spec.workspace, spec.runtime_profile.permissions.write)
@@ -193,36 +231,49 @@ impl DeliveryEvidence {
     /// and threads the evidence through registration, so git + file
     /// fingerprints never run under the lock.
     pub(super) fn capture_for_handle(workspace: &Path, write: bool) -> Self {
-        let baseline = write
-            .then(|| {
-                let root =
-                    String::from_utf8(git(workspace, &["rev-parse", "--show-toplevel"])?).ok()?;
-                let root = PathBuf::from(root.trim());
-                let head = git(&root, &["rev-parse", "--verify", "HEAD"])
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .map(|head| head.trim().to_string());
-                let dirty = status_paths(&root)?
-                    .into_iter()
-                    .map(|path| {
-                        let path = normalize_claim_path(&path).ok()?;
-                        fingerprint(&root, &path).map(|hash| (path, hash))
-                    })
-                    .collect::<Option<BTreeMap<_, _>>>()?;
-                Some(GitDeliveryBaseline { root, head, dirty })
-            })
-            .flatten();
-        Self {
-            baseline,
-            ..Self::default()
+        if !write {
+            return Self::default();
+        }
+        match capture_baseline(workspace) {
+            Ok(baseline) => Self {
+                baseline: Some(baseline),
+                ..Self::default()
+            },
+            Err(reason) => {
+                tracing::warn!(
+                    target: "subagent",
+                    workspace = %workspace.display(),
+                    reason = %reason,
+                    "subagent git delivery baseline unavailable"
+                );
+                Self {
+                    baseline_error: Some(reason),
+                    ..Self::default()
+                }
+            }
         }
     }
 
     pub(super) fn changed_paths(&self, workspace: &Path) -> Option<BTreeSet<String>> {
-        let baseline = self.baseline.as_ref()?;
+        self.changed_paths_checked(workspace).ok()
+    }
+
+    pub(super) fn changed_paths_checked(
+        &self,
+        workspace: &Path,
+    ) -> Result<BTreeSet<String>, String> {
+        let Some(baseline) = self.baseline.as_ref() else {
+            return Err(self
+                .baseline_error
+                .clone()
+                .unwrap_or_else(|| "git delivery baseline unavailable at spawn".to_string()));
+        };
         // Persisted evidence is data, never authority to inspect another tree
         // or pass caller-controlled options to git after a restart.
-        let current_root =
-            String::from_utf8(git(workspace, &["rev-parse", "--show-toplevel"])?).ok()?;
+        let current_root_bytes = git_bytes(workspace, &["rev-parse", "--show-toplevel"])
+            .map_err(|err| format!("git rev-parse --show-toplevel failed: {err}"))?;
+        let current_root = String::from_utf8(current_root_bytes)
+            .map_err(|_| "git rev-parse --show-toplevel returned non-UTF-8 path".to_string())?;
         let current_root = PathBuf::from(current_root.trim());
         if !same_path_identity(&baseline.root, &current_root)
             || baseline.dirty.len() > MAX_BASELINE_PATHS
@@ -234,28 +285,36 @@ impl DeliveryEvidence {
                 !matches!(head.len(), 40 | 64) || !head.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
         {
-            return None;
+            return Err("git delivery baseline no longer matches workspace".to_string());
         }
-        let mut candidates = status_paths(&baseline.root)?;
+        let mut candidates = status_paths_checked(&baseline.root)?;
         candidates.extend(baseline.dirty.keys().cloned());
         if let Some(head) = baseline.head.as_deref() {
             let mut args = vec!["diff"];
             args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS);
             args.extend(["--name-only", "-z", head, "HEAD", "--"]);
-            let output = git(&baseline.root, &args)?;
+            let output = git_bytes(&baseline.root, &args)
+                .map_err(|err| format!("git diff failed: {err}"))?;
             for path in output
                 .split(|byte| *byte == 0)
                 .filter(|path| !path.is_empty())
             {
-                candidates.insert(std::str::from_utf8(path).ok()?.to_string());
+                let path = std::str::from_utf8(path)
+                    .map_err(|_| "git diff returned non-UTF-8 path".to_string())?;
+                candidates.insert(path.to_string());
             }
         }
         // Git status paths are already repo-relative. Prefer them when the
         // worker workspace is the git toplevel by identity; otherwise project
         // through a shared canonicalize spelling. Always normalize separators
         // so Windows `src\lib.rs` matches claim paths like `src/lib.rs`.
-        let workspace_root = workspace.canonicalize().ok()?;
-        let baseline_root = baseline.root.canonicalize().ok()?;
+        let workspace_root = workspace
+            .canonicalize()
+            .map_err(|_| "workspace path canonicalization failed".to_string())?;
+        let baseline_root = baseline
+            .root
+            .canonicalize()
+            .map_err(|_| "git baseline root canonicalization failed".to_string())?;
         let workspace_is_repo_root = same_path_identity(&workspace_root, &baseline_root);
         let mut changed = BTreeSet::new();
         for path in candidates {
@@ -281,7 +340,7 @@ impl DeliveryEvidence {
             };
             changed.insert(relative);
         }
-        Some(changed)
+        Ok(changed)
     }
 
     /// Commit the worker's uncommitted changes as labeled salvage, and only
@@ -336,6 +395,22 @@ impl DeliveryEvidence {
         if owned.is_empty() {
             return Clean;
         }
+        match codewhale_dependencies::Git::defines_repository_filters(&baseline.root) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Failed {
+                    reason: "the repository defines its own git filters, which this checkpoint does not run; nothing was staged"
+                        .to_string(),
+                };
+            }
+            Err(_) => {
+                return Failed {
+                    reason:
+                        "the repository's git filters could not be inspected; nothing was staged"
+                            .to_string(),
+                };
+            }
+        }
         // `update-index` takes literal paths and stages every status shape:
         // edits, new files (`--add`), and deletions or rename sources whose
         // file is gone (`--remove`), where `git add <path>` would fail.
@@ -361,6 +436,8 @@ impl DeliveryEvidence {
             &baseline.root,
             &[
                 "--literal-pathspecs",
+                "-c",
+                "commit.gpgsign=false",
                 "-c",
                 "user.name=Codewhale Subagent",
                 "-c",
@@ -622,16 +699,14 @@ pub(super) fn verify_changes(
     summary: &str,
     write_capable: bool,
     evidence: &DeliveryEvidence,
-    changed: Option<&BTreeSet<String>>,
+    changed: Result<&BTreeSet<String>, &str>,
     declared_outputs: &BTreeSet<String>,
 ) -> Option<AgentRunVerificationSummary> {
     if !write_capable {
         return None;
     }
     let claimed = explicit_change_paths(summary);
-    let missing = changed
-        .map(|changed| claimed.difference(changed).cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
+    let changed_set = changed.ok();
     // A path changing inside a writable scope proves neither the actor nor a
     // child write. External tools and people can edit the same checkout, so only
     // successful bounded write receipts can support an undeclared-write claim.
@@ -639,12 +714,37 @@ pub(super) fn verify_changes(
         .observed_writes
         .iter()
         .filter(|path| {
-            changed.is_none_or(|changed| changed.contains(*path))
+            changed_set.is_none_or(|changed| changed.contains(*path))
                 && !claimed.contains(*path)
                 && !declared_outputs.contains(*path)
         })
         .cloned()
         .collect::<Vec<_>>();
+    let missing = match changed {
+        Ok(changed) => claimed.difference(changed).cloned().collect::<Vec<_>>(),
+        Err(reason) => {
+            if !undeclared.is_empty() {
+                return Some(AgentRunVerificationSummary {
+                    status: "claim_mismatch".into(),
+                    summary: format!(
+                        "Git delivery baseline unavailable ({reason}); observed changes without a change declaration: {undeclared:?}. Inspect the worker receipt."
+                    ),
+                    deliverables: Vec::new(),
+                });
+            }
+            if !claimed.is_empty() {
+                let claimed_list = claimed.into_iter().collect::<Vec<_>>();
+                return Some(AgentRunVerificationSummary {
+                    status: "verification_incomplete".into(),
+                    summary: format!(
+                        "Could not verify declared file changes ({claimed_list:?}) because git delivery baseline was unavailable ({reason}). Inspect the worker receipt."
+                    ),
+                    deliverables: Vec::new(),
+                });
+            }
+            return None;
+        }
+    };
     if missing.is_empty() && undeclared.is_empty() {
         return None;
     }
@@ -679,12 +779,12 @@ pub(super) struct DeliveryVerificationInputs {
 pub(super) fn compute_delivery_verification(
     inputs: &DeliveryVerificationInputs,
 ) -> AgentRunVerificationSummary {
-    let changed = inputs.evidence.changed_paths(&inputs.workspace);
+    let changed = inputs.evidence.changed_paths_checked(&inputs.workspace);
     let mut verification = verify_changes(
         &inputs.result_text,
         inputs.write_perm,
         &inputs.evidence,
-        changed.as_ref(),
+        changed.as_ref().map_err(String::as_str),
         &inputs.deliverables.iter().cloned().collect(),
     )
     .unwrap_or_else(default_agent_run_verification);
@@ -701,7 +801,10 @@ pub(super) fn compute_delivery_verification(
         .map(|verdict| format!("{} ({})", verdict.path, verdict.status))
         .collect::<Vec<_>>();
     if !missing.is_empty() {
-        let prior = if verification.status == "claim_mismatch" {
+        let prior = if matches!(
+            verification.status.as_str(),
+            "claim_mismatch" | "verification_incomplete"
+        ) {
             format!(" {}", verification.summary)
         } else {
             String::new()

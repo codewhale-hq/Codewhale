@@ -4,7 +4,7 @@
 //! request building (`build_chat_messages*`), and SSE parsing
 //! (`parse_sse_chunk_with_reasoning_style`) all live here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use codewhale_runtime::config::{
     is_exact_direct_moonshot_k3_route, is_exact_kimi_code_k3_route, is_exact_zai_chat_route,
     is_exact_zai_forced_thinking_route, is_exact_zai_tiered_effort_route,
     is_kimi_code_membership_model, minimax_m3_route_uses_max_completion_tokens,
-    moonshot_base_url_is_exact_kimi_code, wire_model_for_provider_route,
+    moonshot_base_url_is_exact_kimi_code,
 };
 
 use crate::llm_client::StreamEventBox;
@@ -36,13 +36,19 @@ use codewhale_models::{
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
+use super::deepseek_tools::{
+    deepseek_web_tool_kind, validate_and_apply_safety_check_and_title,
+    validate_deepseek_web_tool_choice, validate_deepseek_web_tools,
+};
 use super::prepared::WireDialect;
 use super::reasoning_effort::apply_reasoning_effort;
 use super::role_placement::{RolePlacement, role_placement};
 use super::wire::{
     ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK, SSE_BACKPRESSURE_SLEEP_MS,
-    SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, bounded_error_text, from_api_tool_name,
-    parse_usage, release_stream_buffer, system_to_instructions, to_api_tool_name,
+    SSE_MAX_LINES_PER_CHUNK, ToolNameWire, acquire_stream_buffer, bounded_error_text,
+    check_history_tool_names, documented_tool_name_limit, from_api_tool_name,
+    over_limit_tool_name_message, parse_usage, release_stream_buffer, system_to_instructions,
+    to_api_tool_name, tool_name_exceeds_limit, tool_name_limit,
 };
 use super::wire::{extract_sse_data_value, flush_sse_line, push_sse_event_data, take_sse_line};
 use codewhale_config::route::RouteLimits;
@@ -579,9 +585,51 @@ fn modelstudio_reasoning_effort_for_model(effort: &str) -> Option<&'static str> 
     }
 }
 
+/// Whether `base_url` points at one of DeepSeek's own Chat Completions hosts.
+///
+/// The decision is the host's, not the path's: `https://api.deepseek.com/openai`
+/// is still DeepSeek, and treating a non-canonical path as a gateway would send
+/// `reasoning_effort: "none"` to the real endpoint, which documents no such tier
+/// on this wire. Scheme stays exact so an http downgrade cannot claim the
+/// dialect.
+///
+/// The host set deliberately includes the legacy typo host `api.deepseeki.com`,
+/// which `docs/REBRAND.md` records as not an official endpoint and kept only for
+/// existing configs (#1079). `deepseek_base_url_supports_strict_tools`, the beta
+/// path guard, and the Responses dialect all accept it too; excluding it here
+/// would make the same host DeepSeek for strict tools and Responses but not for
+/// reasoning, silently dropping the toggle those configs rely on.
+fn is_deepseek_chat_host(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim()).is_ok_and(|url| {
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some("api.deepseek.com" | "api.deepseeki.com")
+            )
+    })
+}
+
 /// Final reasoning-control pass shared by streaming and non-streaming Chat
-/// Completions requests. Route-specific shapers run after the generic provider
-/// layer so they can remove fields that are invalid for their exact endpoint.
+/// Completions requests. Route-specific shapers run first so they can remove
+/// fields that are invalid for their exact endpoint; the gateway cleanup below
+/// runs last, so nothing in this function can re-add what it removes.
+///
+/// Which dialect a route speaks is decided by the endpoint, not by the model id.
+/// A route labeled `deepseek` speaks DeepSeek's, and so does a `custom` row
+/// pointed at DeepSeek's own host. A `custom` row pointed anywhere else may
+/// still carry a DeepSeek model id, but the endpoint's dialect is unknown: it
+/// keeps the documented `reasoning_effort` spelling and loses the native
+/// `thinking` object, which the gateway this was reproduced against rejects
+/// outright on `/v1/chat/completions`.
+///
+/// `off` is expressed as `reasoning_effort: "none"` on such a route, the OpenAI
+/// compatibility spelling this repository already maps `off` to for other
+/// compatible routes. On the gateway this was verified against, `none` stopped
+/// thinking (`reasoning_tokens: 0`, no reasoning field) rather than merely
+/// omitting the control. A gateway that validates the field fails loudly; one
+/// that silently ignores unknown values would fall back to its own default
+/// while the replay gate skips `reasoning_content` for `off` — which is why this
+/// mapping is only self-consistent on gateways that implement `none`.
 pub(super) fn apply_route_reasoning_controls(
     body: &mut Value,
     provider: ProviderKind,
@@ -589,12 +637,15 @@ pub(super) fn apply_route_reasoning_controls(
     model: &str,
     effort: Option<&str>,
 ) {
-    let reasoning_provider =
-        if provider == ProviderKind::Custom && requires_reasoning_content(model) {
-            ProviderKind::Deepseek
-        } else {
-            provider
-        };
+    let custom_claims_deepseek_model =
+        provider == ProviderKind::Custom && requires_reasoning_content(model);
+    let gateway_drops_deepseek_dialect =
+        custom_claims_deepseek_model && !is_deepseek_chat_host(base_url);
+    let reasoning_provider = if provider == ProviderKind::Deepseek || custom_claims_deepseek_model {
+        ProviderKind::Deepseek
+    } else {
+        provider
+    };
     apply_reasoning_effort(body, effort, reasoning_provider);
     codewhale_config::local_reasoning::apply_local_reasoning_controls(
         body, provider, model, effort,
@@ -609,6 +660,16 @@ pub(super) fn apply_route_reasoning_controls(
     apply_zai_route_reasoning_controls(body, provider, base_url, model, effort);
     apply_mistral_route_reasoning_controls(body, provider, base_url, model, effort);
     apply_google_reasoning_effort(body, base_url, model, effort);
+    if gateway_drops_deepseek_dialect {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("thinking");
+        }
+        if effort.is_some_and(|effort| !reasoning_effort_enables_thinking(Some(effort)))
+            && body.get("reasoning_effort").is_none()
+        {
+            body["reasoning_effort"] = json!("none");
+        }
+    }
 }
 
 /// Mistral's polymorphic reasoning-content contract is only proven on its
@@ -656,32 +717,19 @@ fn is_google_openai_compat_chat_route(base_url: &str) -> bool {
     host == "generativelanguage.googleapis.com" && path == "v1beta/openai"
 }
 
-/// Gemini models whose thinking makes thought signatures load-bearing on
-/// the OpenAI-compat route. Gemini 2.5 Flash-Lite ships with thinking off
-/// by default, so a missing signature there degrades with a warning
-/// instead of failing the turn.
-fn google_model_requires_thought_signatures(model: &str) -> bool {
-    let model = model.trim().to_ascii_lowercase();
-    // Google names the same model both ways on this endpoint, and a route
-    // configured as `models/gemini-3-pro` matched none of the prefixes below:
-    // the model that most needs a signature looked like one that needs none,
-    // so the fail-closed check waved it through and Google rejected the replay
-    // instead (#6018).
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    if model.starts_with("gemini-3") {
-        return true;
-    }
-    if model.starts_with("gemini-2.5-pro") {
-        return true;
-    }
-    model.starts_with("gemini-2.5-flash") && !model.starts_with("gemini-2.5-flash-lite")
+fn resolve_google_route_model(model: &str) -> Option<String> {
+    codewhale_config::route::resolve_model(ProviderKind::Google, model, None)
+        .ok()
+        .filter(|resolved| !resolved.is_auto)
+        .map(|resolved| resolved.wire_id)
 }
 
-/// Google's compatibility endpoint accepts the ordinary `reasoning_effort`
-/// field across Gemini 2.5 and 3. A top-level `google` object is rejected;
-/// native thinking controls would require `extra_body.google` instead.
-/// Use one control, since the endpoint rejects overlapping effort and native
-/// thinking settings. https://ai.google.dev/gemini-api/docs/openai#thinking
+fn google_model_requires_thought_signatures(model: &str) -> bool {
+    resolve_google_route_model(model)
+        .as_deref()
+        .is_some_and(codewhale_models::model_requires_thought_signatures)
+}
+
 fn apply_google_reasoning_effort(
     body: &mut serde_json::Value,
     base_url: &str,
@@ -694,17 +742,57 @@ fn apply_google_reasoning_effort(
     let Some(effort) = effort else {
         return;
     };
-    let model = model.trim().to_ascii_lowercase();
-    let model = model.strip_prefix("models/").unwrap_or(&model);
-    let can_disable = model.starts_with("gemini-2.5-") && !model.starts_with("gemini-2.5-pro");
-    let effort = match effort.trim().to_ascii_lowercase().as_str() {
+    let resolved = resolve_google_route_model(model);
+    let can_disable = resolved
+        .as_deref()
+        .is_some_and(codewhale_models::model_can_disable_thinking);
+    let offering = resolved.as_deref().and_then(|wire_id| {
+        crate::provider_lake::bundled_catalog_offering_for_model(ProviderKind::Google, wire_id)
+    });
+    let declared_efforts: Option<Vec<&str>> = offering.as_ref().and_then(|row| {
+        row.reasoning_options
+            .iter()
+            .find(|option| option["type"] == "effort")
+            .and_then(|option| option["values"].as_array())
+            .map(|values| values.iter().filter_map(Value::as_str).collect())
+    });
+    let has_declared = |target: &str| {
+        declared_efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.contains(&target))
+    };
+    let normalized = effort.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "auto" | "automatic") {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+        return;
+    }
+    let effort = match normalized.as_str() {
         "off" | "disabled" | "none" | "false" if can_disable => "none",
-        // Gemini 3 and 2.5 Pro cannot disable thinking. The compatibility
-        // layer maps minimal to the selected model's lowest supported level.
-        "off" | "disabled" | "none" | "false" | "minimal" => "minimal",
-        "low" => "low",
-        "medium" | "mid" | "" => "medium",
-        "high" | "xhigh" | "max" | "highest" | "ultra" | "ultracode" => "high",
+        "off" | "disabled" | "none" | "false" | "minimal" | "minimum" => {
+            if declared_efforts.is_some() && !has_declared("minimal") && has_declared("low") {
+                "low"
+            } else {
+                "minimal"
+            }
+        }
+        "low" | "light" => "low",
+        "medium" | "mid" | "" => {
+            if declared_efforts.is_some() && !has_declared("medium") {
+                if has_declared("high") { "high" } else { "low" }
+            } else {
+                "medium"
+            }
+        }
+        "high" => "high",
+        "xhigh" | "max" | "maximum" | "highest" | "ultra" | "ultracode" => {
+            if has_declared("xhigh") {
+                "xhigh"
+            } else {
+                "high"
+            }
+        }
         _ => return,
     };
     body["reasoning_effort"] = json!(effort);
@@ -735,23 +823,24 @@ fn validate_google_thought_signature_replay(
         let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) else {
             continue;
         };
-        for call in tool_calls {
-            let missing = call
-                .pointer("/extra_content/google/thought_signature")
-                .and_then(Value::as_str)
-                .is_none();
-            if missing {
-                let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
-                if requires_signatures {
-                    anyhow::bail!(
-                        "Gemini model `{model}` requires a thought signature to replay tool call \
-                         `{id}`, but none was captured (the turn predates signature capture, or \
-                         the provider omitted it). Start a new session before using tools on \
-                         this route."
-                    );
-                }
-                unsigned_call_ids.push(id);
+        let Some(call) = tool_calls.first() else {
+            continue;
+        };
+        let missing = call
+            .pointer("/extra_content/google/thought_signature")
+            .and_then(Value::as_str)
+            .is_none_or(|signature| signature.is_empty());
+        if missing {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("?");
+            if requires_signatures {
+                anyhow::bail!(
+                    "Gemini model `{model}` requires a thought signature to replay tool call \
+                     `{id}`, but none was captured (the turn predates signature capture, or \
+                     the provider omitted it). Start a new session before using tools on \
+                     this route."
+                );
             }
+            unsigned_call_ids.push(id);
         }
     }
     if !unsigned_call_ids.is_empty() {
@@ -1178,7 +1267,11 @@ pub fn build_chat_wire_body_with_window(
         effective_window,
     );
     let model = {
-        let wire = wire_model_for_provider_route(provider, base_url, &request.model);
+        let wire = codewhale_config::route::resolve_model(provider, &request.model, Some(base_url))
+            .map_or_else(
+                |_| request.model.trim().to_string(),
+                |resolved| resolved.wire_id,
+            );
         codewhale_models::effective_muse_wire_id(&wire).to_string()
     };
     validate_google_thought_signature_replay(base_url, &model, &messages)?;
@@ -1207,12 +1300,47 @@ pub fn build_chat_wire_body_with_window(
     if let Some(top_p) = request.top_p {
         body["top_p"] = json!(top_p);
     }
+    super::role_placement::validate_latest_reminder_messages(&request.messages)?;
+    validate_and_apply_safety_check_and_title(
+        request,
+        &mut body,
+        matches!(
+            provider,
+            ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+        ),
+    )?;
     let mut omitted_tool_names = Vec::new();
+    let mut has_deepseek_web_tools = false;
+    let tool_name_limit = tool_name_limit(provider, ToolNameWire::OpenAiCompatible);
+    check_history_tool_names(
+        request,
+        documented_tool_name_limit(provider, ToolNameWire::OpenAiCompatible),
+    )?;
     if let Some(tools) = request.tools.as_ref() {
+        has_deepseek_web_tools = validate_deepseek_web_tools(tools, WireDialect::ChatCompletions)?;
+        if has_deepseek_web_tools
+            && request
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("web_search_options"))
+                .is_some()
+        {
+            bail!(
+                "web_search_options cannot be combined with deepseek_web_search or deepseek_read_url"
+            );
+        }
         let route_projection =
             chat_route_tool_projection(provider, base_url, strict_tools_disabled);
         let mut chat_tools = Vec::new();
         for tool in tools {
+            if let Some(kind) = deepseek_web_tool_kind(tool) {
+                chat_tools.push(json!({ "type": kind }));
+                continue;
+            }
+            if tool_name_exceeds_limit(&tool.name, tool_name_limit) {
+                omitted_tool_names.push(to_api_tool_name(&tool.name));
+                continue;
+            }
             match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
                 ToolSchemaProjection::Exact {
                     parameters,
@@ -1247,16 +1375,26 @@ pub fn build_chat_wire_body_with_window(
             .iter()
             .any(|omitted| omitted == name || *omitted == to_api_tool_name(name))
     {
+        if tool_name_exceeds_limit(name, tool_name_limit) {
+            bail!(over_limit_tool_name_message(name, tool_name_limit));
+        }
         bail!(
             "cannot force an omitted tool because its input schema is incompatible with this route"
         );
     }
-    if let Some(choice) = request.tool_choice.as_ref()
-        && let Some(mapped) = map_tool_choice_for_chat(choice)
-        && should_send_tool_choice_for_chat(provider, request.reasoning_effort.as_deref(), &mapped)
-        && body.get("tools").is_some()
-    {
-        body["tool_choice"] = mapped;
+    if let Some(choice) = request.tool_choice.as_ref() {
+        validate_deepseek_web_tool_choice(choice, has_deepseek_web_tools)?;
+        let mapped = map_tool_choice_for_chat(choice);
+        if let Some(mapped) = mapped
+            && should_send_tool_choice_for_chat(
+                provider,
+                request.reasoning_effort.as_deref(),
+                &mapped,
+            )
+            && body.get("tools").is_some()
+        {
+            body["tool_choice"] = mapped;
+        }
     }
     apply_route_reasoning_controls(
         &mut body,
@@ -1452,11 +1590,14 @@ impl CodewhaleClient {
                     stop_reason: None,
                     stop_sequence: None,
                     container: None,
+                    title: None,
+                    stop_details: None,
+                    refusal: None,
                     usage: Usage {
                         input_tokens: 0,
                         output_tokens: 0,
                         ..Usage::default()
-                    },
+                    }
                 },
             });
 
@@ -1465,7 +1606,7 @@ impl CodewhaleClient {
             let mut content_index: u32 = 0;
             let mut text_started = false;
             let mut thinking_started = false;
-            let mut tool_indices: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let mut tool_indices = ChatToolStream::for_base_url(&base_url);
             let mut reasoning_detail_buffers: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
             let mut inline_reasoning_tags = InlineReasoningTagState::default();
             let reasoning_stream_style = reasoning_stream_style_for_route(
@@ -1726,6 +1867,9 @@ impl CodewhaleClient {
 
             release_stream_buffer(byte_buf);
             if !stream_failed && (saw_done || saw_finish_reason) {
+                for event in tool_indices.finish() {
+                    yield Ok(event);
+                }
                 yield Ok(StreamEvent::MessageStop);
             } else if !stream_failed {
                 yield Err(anyhow::anyhow!(
@@ -1922,6 +2066,8 @@ impl<'a> PromptBuilder<'a> {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 }
@@ -2790,8 +2936,10 @@ fn build_chat_messages_with_reasoning(
         let placement = role_placement(&message.role, WireDialect::ChatCompletions);
         let mut text_parts = Vec::new();
         let mut image_parts = Vec::new();
+        let mut file_parts = Vec::new();
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
+        let mut server_tool_calls: Vec<Value> = Vec::new();
         let mut tool_call_infos = Vec::new();
         let mut tool_results: Vec<(String, String, String, Vec<Value>)> = Vec::new();
         let mut turn_meta_budget: Option<TurnMetaBudget> = None;
@@ -2814,6 +2962,12 @@ fn build_chat_messages_with_reasoning(
                         "image_url": {
                             "url": image_url.url.clone(),
                         },
+                    }));
+                }
+                ContentBlock::File { file_id } => {
+                    file_parts.push(json!({
+                        "type": "file",
+                        "file_id": file_id.clone(),
                     }));
                 }
                 ContentBlock::Thinking { thinking, .. } => thinking_parts.push(thinking.clone()),
@@ -2866,9 +3020,15 @@ fn build_chat_messages_with_reasoning(
                         content_blocks.clone().unwrap_or_default(),
                     ));
                 }
+                ContentBlock::ServerToolCalls { steps } => {
+                    server_tool_calls.extend(steps.iter().cloned());
+                }
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. } => {}
+                | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
+                | ContentBlock::WebSearchCall { .. } => {}
             }
         }
 
@@ -2886,6 +3046,7 @@ fn build_chat_messages_with_reasoning(
             let mut reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
+            let has_server_tool_calls = !server_tool_calls.is_empty();
             // Reasoning replay must be a function of the stored message ONLY,
             // never of later history. DeepSeek's prefix cache hashes the raw
             // bytes of every message; flipping `reasoning_content` on/off
@@ -2909,7 +3070,7 @@ fn build_chat_messages_with_reasoning(
             // `tool_calls` are missing/null. Skip such entries even if they
             // carry reasoning-only metadata unless we can send a non-null
             // placeholder content field.
-            if !has_text && !has_tool_calls && !has_reasoning {
+            if !has_text && !has_tool_calls && !has_reasoning && !has_server_tool_calls {
                 pending_tool_calls.clear();
                 deferred_tool_result_images.clear();
                 continue;
@@ -2927,6 +3088,9 @@ fn build_chat_messages_with_reasoning(
             });
             if has_reasoning {
                 msg["reasoning_content"] = json!(reasoning_content);
+            }
+            if has_server_tool_calls {
+                msg["server_tool_calls"] = json!(server_tool_calls);
             }
             if has_tool_calls {
                 msg["tool_calls"] = json!(tool_calls);
@@ -2960,12 +3124,21 @@ fn build_chat_messages_with_reasoning(
                 }
                 out.push(msg);
             }
+        } else if placement == RolePlacement::LatestReminder {
+            let content = text_parts.join("\n");
+            if !content.trim().is_empty() {
+                out.push(json!({
+                    "role": "latest_reminder",
+                    "content": content,
+                }));
+            }
         } else if placement == RolePlacement::User {
             let content = text_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_images = !image_parts.is_empty();
-            if has_text || has_images {
-                let wire_content = if has_images {
+            let has_files = !file_parts.is_empty();
+            if has_text || has_images || has_files {
+                let wire_content = if has_images || has_files {
                     let mut parts = Vec::new();
                     if has_text {
                         parts.push(json!({
@@ -2974,6 +3147,7 @@ fn build_chat_messages_with_reasoning(
                         }));
                     }
                     parts.extend(image_parts);
+                    parts.extend(file_parts);
                     json!(parts)
                 } else {
                     json!(content)
@@ -3255,11 +3429,25 @@ fn deepseek_base_url_supports_strict_tools(base_url: &str) -> bool {
 
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
     if let Some(choice_str) = choice.as_str() {
-        return Some(json!(choice_str));
+        return Some(match forced_tool_name(choice) {
+            Some(name) => json!({
+                "type": "function",
+                "function": { "name": to_api_tool_name(name) }
+            }),
+            None => json!(choice_str),
+        });
     }
     let Some(choice_type) = choice.get("type").and_then(Value::as_str) else {
         return Some(choice.clone());
     };
+    if choice_type == "function"
+        && let Some(name) = forced_tool_name(choice)
+    {
+        return Some(json!({
+            "type": "function",
+            "function": { "name": to_api_tool_name(name) }
+        }));
+    }
 
     match choice_type {
         "auto" | "none" => Some(json!(choice_type)),
@@ -3861,12 +4049,16 @@ fn parse_chat_message_for_route(
     }
 
     if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
-        for call in tool_calls {
+        let mut assigned_ids = tool_calls
+            .iter()
+            .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        for (call_index, call) in tool_calls.iter().enumerate() {
             let id = call
                 .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or("tool_call")
-                .to_string();
+                .map(str::to_string)
+                .unwrap_or_else(|| synthesize_chat_call_id(call_index, &mut assigned_ids));
             let function = call.get("function");
             let name = tool_name_or_fallback(
                 function.and_then(|f| f.get("name")).and_then(Value::as_str),
@@ -3905,7 +4097,28 @@ fn parse_chat_message_for_route(
         }
     }
 
+    if let Some(steps) = message
+        .get("server_tool_calls")
+        .and_then(Value::as_array)
+        .filter(|s| !s.is_empty())
+    {
+        content_blocks.push(ContentBlock::ServerToolCalls {
+            steps: steps.clone(),
+        });
+    }
+
     let usage = parse_usage(payload.get("usage"));
+    let title = message
+        .get("title")
+        .or_else(|| choice.get("title"))
+        .or_else(|| payload.get("title"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let refusal = message
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Ok(MessageResponse {
         id,
@@ -3920,6 +4133,9 @@ fn parse_chat_message_for_route(
         stop_sequence: None,
         container: None,
         usage,
+        title,
+        stop_details: None,
+        refusal,
     })
 }
 
@@ -4087,6 +4303,129 @@ enum SseDataFrame {
     Events(Vec<StreamEvent>),
 }
 
+#[derive(Default)]
+pub(super) struct ChatToolStream {
+    google: bool,
+    calls: Vec<ChatToolSlot>,
+    by_index: HashMap<u64, usize>,
+    by_id: HashMap<String, usize>,
+    previous_batch: Vec<usize>,
+}
+
+struct ChatToolSlot {
+    block: u32,
+    wire_index: Option<u64>,
+    id: Option<String>,
+}
+
+impl ChatToolStream {
+    fn for_base_url(base_url: &str) -> Self {
+        Self {
+            google: is_google_openai_compat_chat_route(base_url),
+            ..Self::default()
+        }
+    }
+
+    fn slot(
+        &self,
+        index: Option<u64>,
+        id: Option<&str>,
+        has_name: bool,
+        position: usize,
+        batch_len: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        let by_index = index.and_then(|i| self.by_index.get(&i).copied());
+        if !self.google {
+            if by_index
+                .and_then(|slot| self.calls[slot].id.as_deref())
+                .zip(id)
+                .is_some_and(|(previous, current)| previous != current)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
+            return Ok(by_index);
+        }
+        let by_id = id.and_then(|id| self.by_id.get(id).copied());
+        if let Some(slot) = by_index.or(by_id) {
+            let call = &self.calls[slot];
+            if by_index.zip(by_id).is_some_and(|(a, b)| a != b)
+                || index.zip(call.wire_index).is_some_and(|(a, b)| a != b)
+                || id.zip(call.id.as_deref()).is_some_and(|(a, b)| a != b)
+            {
+                return Err("Conflicting tool call identities in provider stream");
+            }
+            return Ok(Some(slot));
+        }
+        if has_name {
+            return Ok(None);
+        }
+        if index.is_none() && id.is_none() && self.previous_batch.len() == batch_len {
+            return Ok(self.previous_batch.get(position).copied());
+        }
+        Err("Cannot match a tool call delta to its provider stream block")
+    }
+
+    fn record_identity(&mut self, slot: usize, index: Option<u64>, id: Option<&str>) -> bool {
+        let call = &mut self.calls[slot];
+        if call.wire_index.is_none()
+            && let Some(index) = index
+        {
+            self.by_index.insert(index, slot);
+            call.wire_index = Some(index);
+        }
+        if call.id.is_none()
+            && let Some(id) = id
+        {
+            if self.google {
+                self.by_id.insert(id.to_owned(), slot);
+            }
+            call.id = Some(id.to_owned());
+            return true;
+        }
+        false
+    }
+
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        self.previous_batch.clear();
+        self.by_index.clear();
+        self.by_id.clear();
+        finish_chat_tool_calls(self.calls.drain(..).map(|call| (call.block, call.id))).collect()
+    }
+}
+
+fn synthesize_chat_call_id(ordinal: usize, assigned: &mut HashSet<String>) -> String {
+    let base = format!("call_missing_{ordinal}");
+    let mut id = base.clone();
+    let mut suffix = 0usize;
+    while !assigned.insert(id.clone()) {
+        suffix += 1;
+        id = format!("{base}_{suffix}");
+    }
+    id
+}
+
+fn finish_chat_tool_calls(
+    calls: impl Iterator<Item = (u32, Option<String>)>,
+) -> impl Iterator<Item = StreamEvent> {
+    let mut calls: Vec<_> = calls.collect();
+    calls.sort_unstable_by_key(|(block, _)| *block);
+    let mut assigned = calls.iter().filter_map(|(_, id)| id.clone()).collect();
+    calls
+        .into_iter()
+        .enumerate()
+        .flat_map(move |(ordinal, (index, id))| {
+            let pairing = id.is_none().then(|| StreamEvent::ContentBlockDelta {
+                index,
+                delta: Delta::ToolCallIdDelta {
+                    id: synthesize_chat_call_id(ordinal, &mut assigned),
+                },
+            });
+            pairing
+                .into_iter()
+                .chain([StreamEvent::ContentBlockStop { index }])
+        })
+}
+
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
 // shared parser-state set (mirrored by `parse_sse_chunk*`); bundling them into a
 // struct would only add reborrow noise on this hot SSE path.
@@ -4096,7 +4435,7 @@ fn parse_sse_data_frame(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4130,7 +4469,7 @@ pub(super) fn parse_sse_chunk(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     is_reasoning_model: bool,
 ) -> Vec<StreamEvent> {
@@ -4159,7 +4498,7 @@ fn parse_sse_chunk_with_reasoning_style(
     content_index: &mut u32,
     text_started: &mut bool,
     thinking_started: &mut bool,
-    tool_indices: &mut std::collections::HashMap<u32, u32>,
+    tool_indices: &mut ChatToolStream,
     reasoning_detail_buffers: &mut std::collections::HashMap<u32, String>,
     inline_reasoning_tags: &mut InlineReasoningTagState,
     reasoning_stream_style: ReasoningStreamStyle,
@@ -4184,28 +4523,64 @@ fn parse_sse_chunk_with_reasoning_style(
 
     let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
         // Usage-only chunk (sent at end with stream_options)
+        let title = chunk
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(usage_val) = chunk.get("usage") {
             let usage = parse_usage(Some(usage_val));
             events.push(StreamEvent::MessageDelta {
                 delta: MessageDelta {
                     stop_reason: None,
                     stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
                 },
                 usage: Some(usage),
+            });
+        } else if title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
         return events;
     };
 
     if choices.is_empty() {
+        let title = chunk
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(usage_val) = chunk.get("usage") {
             let usage = parse_usage(Some(usage_val));
             events.push(StreamEvent::MessageDelta {
                 delta: MessageDelta {
                     stop_reason: None,
                     stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
                 },
                 usage: Some(usage),
+            });
+        } else if title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
         return events;
@@ -4311,13 +4686,149 @@ fn parse_sse_chunk_with_reasoning_style(
                 (None, _) => {}
             }
 
+            if let Some(annotations) = delta.get("annotations").and_then(Value::as_array) {
+                for citation in annotations {
+                    if !*text_started {
+                        if *thinking_started {
+                            events.push(StreamEvent::ContentBlockStop {
+                                index: *content_index,
+                            });
+                            *content_index += 1;
+                            *thinking_started = false;
+                        }
+                        events.push(StreamEvent::ContentBlockStart {
+                            index: *content_index,
+                            content_block: ContentBlockStart::Text {
+                                text: String::new(),
+                            },
+                        });
+                        *text_started = true;
+                    }
+                    events.push(StreamEvent::ContentBlockDelta {
+                        index: *content_index,
+                        delta: Delta::CitationsDelta {
+                            citation: citation.clone(),
+                        },
+                    });
+                }
+            }
+
+            if let Some(refusal) = delta
+                .get("refusal")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                events.push(StreamEvent::ContentBlockDelta {
+                    index: *content_index,
+                    delta: Delta::RefusalDelta {
+                        refusal: refusal.to_string(),
+                    },
+                });
+            }
+
+            if let Some(steps) = delta
+                .get("server_tool_calls")
+                .and_then(Value::as_array)
+                .filter(|s| !s.is_empty())
+            {
+                if *text_started {
+                    events.push(StreamEvent::ContentBlockStop {
+                        index: *content_index,
+                    });
+                    *content_index += 1;
+                    *text_started = false;
+                }
+                if *thinking_started {
+                    events.push(StreamEvent::ContentBlockStop {
+                        index: *content_index,
+                    });
+                    *content_index += 1;
+                    *thinking_started = false;
+                }
+                let block_index = *content_index;
+                *content_index += 1;
+                events.push(StreamEvent::ContentBlockStart {
+                    index: block_index,
+                    content_block: ContentBlockStart::ServerToolCalls {
+                        steps: steps.clone(),
+                    },
+                });
+                events.push(StreamEvent::ContentBlockStop { index: block_index });
+            }
+
             // Handle tool calls
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for tc in tool_calls {
-                    let tc_index = tc.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let tool_block_index = match tool_indices.entry(tc_index) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::hash_map::Entry::Vacant(entry) => {
+            if let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .filter(|calls| !calls.is_empty())
+            {
+                let mut batch = if tool_indices.google {
+                    Vec::with_capacity(tool_calls.len())
+                } else {
+                    Vec::new()
+                };
+                let mut batch_slots = HashSet::new();
+                let mut inferred_positions = 0;
+                let mut changed_positions = false;
+                let mut carries_call_data = false;
+                for (tc_pos, tc) in tool_calls.iter().enumerate() {
+                    let wire_index = tc.get("index").and_then(Value::as_u64);
+                    let wire_index = if tool_indices.google {
+                        wire_index
+                    } else {
+                        Some(u64::from(wire_index.unwrap_or(0) as u32))
+                    };
+                    let id = tc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !tool_indices.google || !id.is_empty());
+                    let name = tc.pointer("/function/name").and_then(Value::as_str);
+                    let has_name = name.is_some_and(|name| !name.trim().is_empty());
+                    let args = tc
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .filter(|args| !args.is_empty());
+                    let slot =
+                        match tool_indices.slot(wire_index, id, has_name, tc_pos, tool_calls.len())
+                        {
+                            Ok(slot) => slot,
+                            Err(message) => {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": message }),
+                                }];
+                            }
+                        };
+                    let (slot, tool_block_index) = match slot {
+                        Some(slot) => {
+                            if tool_indices.google && !batch_slots.insert(slot) {
+                                return vec![StreamEvent::Error {
+                                    error: json!({ "message": "Duplicate tool call in provider stream batch" }),
+                                }];
+                            }
+                            let accepted_id = tool_indices.record_identity(slot, wire_index, id);
+                            let call = &tool_indices.calls[slot];
+                            if accepted_id && let Some(id) = call.id.as_ref() {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ToolCallIdDelta { id: id.clone() },
+                                });
+                            }
+                            if tool_indices.google
+                                && let Some(sig) = tc
+                                    .pointer("/extra_content/google/thought_signature")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                            {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: call.block,
+                                    delta: Delta::ThoughtSignatureDelta {
+                                        thought_signature: sig.to_string(),
+                                    },
+                                });
+                            }
+                            (slot, call.block)
+                        }
+                        None => {
                             // Close text block if transitioning to tool use
                             if *text_started {
                                 events.push(StreamEvent::ContentBlockStop {
@@ -4335,25 +4846,9 @@ fn parse_sse_chunk_with_reasoning_style(
                             }
 
                             let block_index = *content_index;
-                            let id = tc
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                // Some upstream gateways (and the responses-API
-                                // bridge) elide the `id` on the first chunk of a
-                                // tool call. Falling back to a constant string
-                                // collides when the model emits parallel tool
-                                // calls in the same delta — every call ended up
-                                // with the same id and downstream tool-result
-                                // routing matched the first one twice. Index by
-                                // the content-block position to keep the
-                                // fallback unique within the response.
-                                .unwrap_or_else(|| format!("call_{block_index}"));
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(Value::as_str);
-                            let name = tool_name_or_fallback(name, &id, "Streaming response chunk");
+                            let block_id = id.unwrap_or_default().to_owned();
+                            let name =
+                                tool_name_or_fallback(name, &block_id, "Streaming response chunk");
                             let caller = tc.get("caller").and_then(|v| {
                                 v.get("type").and_then(Value::as_str).map(|caller_type| {
                                     ToolCaller {
@@ -4373,7 +4868,7 @@ fn parse_sse_chunk_with_reasoning_style(
                             events.push(StreamEvent::ContentBlockStart {
                                 index: block_index,
                                 content_block: ContentBlockStart::ToolUse {
-                                    id,
+                                    id: block_id,
                                     name: from_api_tool_name(&name),
                                     input: json!({}),
                                     caller,
@@ -4381,18 +4876,29 @@ fn parse_sse_chunk_with_reasoning_style(
                                 },
                             });
                             *content_index = (*content_index).saturating_add(1);
-                            entry.insert(block_index);
-                            block_index
+                            let slot = tool_indices.calls.len();
+                            tool_indices.calls.push(ChatToolSlot {
+                                block: block_index,
+                                wire_index: None,
+                                id: None,
+                            });
+                            tool_indices.record_identity(slot, wire_index, id);
+                            if tool_indices.google {
+                                batch_slots.insert(slot);
+                            }
+                            (slot, block_index)
                         }
                     };
+                    if tool_indices.google {
+                        inferred_positions +=
+                            usize::from(wire_index.is_none() && id.is_none() && !has_name);
+                        changed_positions |= tool_indices.previous_batch.get(tc_pos) != Some(&slot);
+                        carries_call_data |= has_name || args.is_some();
+                        batch.push(slot);
+                    }
 
                     // Stream tool call arguments
-                    if let Some(args) = tc
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(Value::as_str)
-                        && !args.is_empty()
-                    {
+                    if let Some(args) = args {
                         events.push(StreamEvent::ContentBlockDelta {
                             index: tool_block_index,
                             delta: Delta::InputJsonDelta {
@@ -4401,8 +4907,56 @@ fn parse_sse_chunk_with_reasoning_style(
                         });
                     }
                 }
+                if inferred_positions > 1 || (inferred_positions == 1 && changed_positions) {
+                    return vec![StreamEvent::Error {
+                        error: json!({ "message": "Cannot infer positions in an ambiguous tool call batch" }),
+                    }];
+                }
+                if carries_call_data {
+                    tool_indices.previous_batch = batch;
+                }
             }
         }
+
+        if let Some(server_tool_event) = choice.get("server_tool_event")
+            && !server_tool_event.is_null()
+        {
+            if *text_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *content_index += 1;
+                *text_started = false;
+            }
+            if *thinking_started {
+                events.push(StreamEvent::ContentBlockStop {
+                    index: *content_index,
+                });
+                *content_index += 1;
+                *thinking_started = false;
+            }
+            let block_index = *content_index;
+            *content_index += 1;
+            events.push(StreamEvent::ContentBlockStart {
+                index: block_index,
+                content_block: ContentBlockStart::ServerToolCalls {
+                    steps: vec![server_tool_event.clone()],
+                },
+            });
+            events.push(StreamEvent::ContentBlockStop { index: block_index });
+        }
+
+        let chunk_title = delta
+            .and_then(|d| d.get("title"))
+            .or_else(|| choice.get("title"))
+            .or_else(|| chunk.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let chunk_refusal = delta
+            .and_then(|d| d.get("refusal"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
 
         // Handle finish reason
         if let Some(reason) = finish_reason {
@@ -4440,14 +4994,7 @@ fn parse_sse_chunk_with_reasoning_style(
                 *thinking_started = false;
             }
             // Close tool blocks
-            let mut open_tool_indices: Vec<u32> =
-                tool_indices.drain().map(|(_, idx)| idx).collect();
-            open_tool_indices.sort_unstable();
-            for tool_block_index in open_tool_indices {
-                events.push(StreamEvent::ContentBlockStop {
-                    index: tool_block_index,
-                });
-            }
+            events.extend(tool_indices.finish());
 
             // Emit usage from the chunk if available
             let chunk_usage = chunk.get("usage").map(|u| parse_usage(Some(u)));
@@ -4455,8 +5002,22 @@ fn parse_sse_chunk_with_reasoning_style(
                 delta: MessageDelta {
                     stop_reason: Some(reason),
                     stop_sequence: None,
+                    title: chunk_title,
+                    stop_details: None,
+                    refusal: chunk_refusal,
                 },
                 usage: chunk_usage,
+            });
+        } else if chunk_title.is_some() {
+            events.push(StreamEvent::MessageDelta {
+                delta: MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    title: chunk_title,
+                    stop_details: None,
+                    refusal: None,
+                },
+                usage: None,
             });
         }
     }
@@ -4504,7 +5065,7 @@ mod stream_diagnostics_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         for chunk in [
             json!({ "error": { "message": "rate limit exceeded", "type": "rate_limit_error" } }),
@@ -4684,6 +5245,8 @@ mod arcee_waf_message_encoding_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -4783,6 +5346,8 @@ mod minimax_reasoning_replay_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -6664,9 +7229,13 @@ mod image_block_wire_tests {
     //! most of them at once. The shape is fixed by OpenAI's spec: a `user`
     //! message whose `content` is an array of parts, with the image as
     //! `{"type":"image_url","image_url":{"url":…}}`.
-    use super::{ProviderKind, build_chat_messages, build_chat_wire_body};
+    use super::{
+        ChatWireBody, ProviderKind, build_chat_messages, build_chat_wire_body,
+        map_tool_choice_for_chat, to_api_tool_name,
+    };
     use codewhale_models::Role;
-    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest};
+    use codewhale_models::{ContentBlock, ImageUrlContent, Message, MessageRequest, Tool};
+    use serde_json::{Value, json};
 
     const DATA_URL: &str = "data:image/png;base64,QUJD";
 
@@ -6973,6 +7542,220 @@ mod image_block_wire_tests {
         }
     }
 
+    fn named_tool(name: &str) -> Tool {
+        Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        }
+    }
+
+    #[test]
+    fn function_object_tool_choice_encodes_the_tool_name() {
+        let encoded = to_api_tool_name("web.run");
+        assert_eq!(encoded, "web-x00002E-run");
+        let expected = json!({"type": "function", "function": {"name": encoded}});
+        for choice in [
+            json!({"type": "function", "function": {"name": "web.run"}}),
+            json!({"type": "function", "name": "web.run"}),
+            json!({"type": "tool", "name": "web.run"}),
+            json!("web.run"),
+        ] {
+            assert_eq!(
+                map_tool_choice_for_chat(&choice),
+                Some(expected.clone()),
+                "{choice}"
+            );
+        }
+        assert_eq!(
+            map_tool_choice_for_chat(&json!("required")),
+            Some(json!("required"))
+        );
+
+        let mut request = request_with_image();
+        request.tools = Some(vec![named_tool("read_file"), named_tool("web.run")]);
+        request.tool_choice = Some(json!({"type": "function", "function": {"name": "web.run"}}));
+        let body = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .expect("wire body");
+        assert_eq!(body.body["tool_choice"], expected);
+        let declared: Vec<&str> = body.body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert!(declared.contains(&"web-x00002E-run"));
+    }
+
+    #[test]
+    fn over_long_encoded_tool_names_are_withheld_by_provider_limit() {
+        let mid = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let long = format!(
+            "mcp__tracker__{}.v2.issues.list-by-assignee",
+            "a".repeat(70)
+        );
+        let mid_len = to_api_tool_name(mid).len();
+        assert!(mid_len > 64 && mid_len <= 128, "{mid_len}");
+        assert!(to_api_tool_name(&long).len() > 128);
+
+        let build = |provider, base_url: &str, choice: Option<Value>| {
+            let mut request = request_with_image();
+            request.tools = Some(vec![
+                named_tool("read_file"),
+                named_tool(mid),
+                named_tool(&long),
+            ]);
+            request.tool_choice = choice;
+            build_chat_wire_body(&request, provider, base_url, false, None)
+        };
+        let declared = |body: &ChatWireBody| -> Vec<String> {
+            body.body["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        };
+
+        let openai = build(ProviderKind::Openai, "https://api.openai.com/v1", None).expect("body");
+        assert_eq!(declared(&openai), vec!["read_file".to_string()]);
+        assert_eq!(
+            openai.omitted_tool_names,
+            vec![to_api_tool_name(mid), to_api_tool_name(&long)]
+        );
+
+        let deepseek =
+            build(ProviderKind::Deepseek, "https://api.deepseek.com", None).expect("body");
+        assert_eq!(
+            declared(&deepseek),
+            vec!["read_file".to_string(), to_api_tool_name(mid)]
+        );
+        assert_eq!(deepseek.omitted_tool_names, vec![to_api_tool_name(&long)]);
+
+        let forced = json!({"type": "function", "function": {"name": mid}});
+        let error = build(
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            Some(forced),
+        )
+        .err()
+        .expect("forcing a withheld tool is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("{mid_len} characters")),
+            "{message}"
+        );
+        assert!(message.contains("at most 64"), "{message}");
+    }
+
+    #[test]
+    fn over_long_tool_name_in_history_is_refused_with_the_limit() {
+        let long = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        let mut request = request_with_image();
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "call_1".to_string(),
+                name: long.to_string(),
+                input: json!({}),
+                caller: None,
+                thought_signature: None,
+            }],
+        });
+        let error = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .err()
+        .expect("history name over the limit is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("at most 64") && message.contains(long),
+            "{message}"
+        );
+        build_chat_wire_body(
+            &request,
+            ProviderKind::Deepseek,
+            "https://api.deepseek.com",
+            false,
+            None,
+        )
+        .expect("the same history fits a 128-character route");
+    }
+
+    #[test]
+    fn history_name_of_65_to_128_characters_is_sent_unchanged_on_undocumented_routes() {
+        let long = "mcp__tracker__projects.v2.issues.list-by-assignee";
+        assert!(to_api_tool_name(long).len() > 64);
+        let mut request = request_with_image();
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "call_1".to_string(),
+                name: long.to_string(),
+                input: json!({}),
+                caller: None,
+                thought_signature: None,
+            }],
+        });
+        for (provider, base_url) in [
+            (ProviderKind::Ollama, "http://localhost:11434/v1"),
+            (ProviderKind::Custom, "http://localhost:8000/v1"),
+            (ProviderKind::Minimax, "https://api.minimax.io/v1"),
+        ] {
+            build_chat_wire_body(&request, provider, base_url, false, None)
+                .unwrap_or_else(|error| panic!("{provider:?}: {error}"));
+        }
+        let error = build_chat_wire_body(
+            &request,
+            ProviderKind::Openai,
+            "https://api.openai.com/v1",
+            false,
+            None,
+        )
+        .err()
+        .expect("documented 64-character route refuses the history name");
+        assert!(
+            error.to_string().contains("earlier in this session"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_100_character_encoded_name_is_withheld_on_a_chat_wire_route() {
+        let name = "a".repeat(100);
+        let mut request = request_with_image();
+        request.tools = Some(vec![named_tool("read_file"), named_tool(&name)]);
+        let body = build_chat_wire_body(
+            &request,
+            ProviderKind::Minimax,
+            "https://api.minimax.io/v1",
+            false,
+            None,
+        )
+        .expect("wire body");
+        assert_eq!(body.omitted_tool_names, vec![name]);
+        assert_eq!(body.body["tools"].as_array().expect("tools").len(), 1);
+    }
+
     fn request_with_image() -> MessageRequest {
         MessageRequest {
             model: "gpt-4o".to_string(),
@@ -7000,6 +7783,8 @@ mod image_block_wire_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -7502,6 +8287,8 @@ mod mistral_reasoning_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -7943,6 +8730,8 @@ mod google_thought_signature_tests {
             stream: None,
             temperature: None,
             top_p: None,
+            safety_check: None,
+            title: None,
         }
     }
 
@@ -8080,21 +8869,27 @@ mod google_thought_signature_tests {
     /// that needs none and the replay reached Google unsigned (#6018).
     #[test]
     fn google_route_fails_closed_for_a_models_prefixed_thinking_id() {
-        let mut request = google_request_with_signed_tool(None);
-        request.model = "models/gemini-3-pro-preview".to_string();
-        let error = build_chat_wire_body(
-            &request,
-            ProviderKind::Google,
-            DEFAULT_GOOGLE_BASE_URL,
-            false,
-            None,
-        )
-        .err()
-        .expect("a models/-prefixed thinking id must fail closed like its bare spelling");
-        assert!(
-            error.to_string().contains("thought signature"),
-            "error must name the missing signature: {error}"
-        );
+        for model in [
+            "models/gemini-3-pro-preview",
+            "gemini-4-hydrogen",
+            "models/gemini-4-hydrogen",
+        ] {
+            let mut request = google_request_with_signed_tool(None);
+            request.model = model.to_string();
+            let error = build_chat_wire_body(
+                &request,
+                ProviderKind::Google,
+                DEFAULT_GOOGLE_BASE_URL,
+                false,
+                None,
+            )
+            .err()
+            .expect("a thinking id must fail closed across bare and models/-prefixed spellings");
+            assert!(
+                error.to_string().contains("thought signature"),
+                "error must name the missing signature for {model}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -8400,7 +9195,7 @@ mod google_thought_signature_tests {
         let mut content_index = 0u32;
         let mut text_started = false;
         let mut thinking_started = false;
-        let mut tool_indices = std::collections::HashMap::new();
+        let mut tool_indices = ChatToolStream::default();
         let mut reasoning_buffers = std::collections::HashMap::new();
         let mut inline_tags = InlineReasoningTagState::default();
         let events = parse_sse_chunk_with_reasoning_style(

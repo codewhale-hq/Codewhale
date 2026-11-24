@@ -1,0 +1,350 @@
+{
+  "capture": {
+    "surface": "Codewhale desktop app, development build (no public download)",
+    "app": "codewhale-app origin/main 8fd69503, built from source and launched with the Playwright Electron harness",
+    "engine": "codewhale 0.10.4 (48669ad108fa), published v0.10.4 Linux x64 release binary",
+    "provider": "DeepSeek",
+    "model": "deepseek-flash (DeepSeek V4.1 Flash 1017)",
+    "simulator": false,
+    "captured": "2026-11-24",
+    "window": "1440x900 at device scale factor 2"
+  },
+  "widths": [
+    1600,
+    800
+  ],
+  "formats": [
+    "avif",
+    "webp"
+  ],
+  "budgetBytes": 260000,
+  "outDir": "public/app/shots",
+  "shots": [
+    {
+      "id": "review",
+      "source": "05b-workpane-review"
+    },
+    {
+      "id": "approval",
+      "source": "04-approval-ask"
+    },
+    {
+      "id": "permissions",
+      "source": "06-permission-modes"
+    },
+    {
+      "id": "sessions",
+      "source": "09-sessions-running"
+    },
+    {
+      "id": "models",
+      "source": "07b-models-gemini4",
+      "crop": {
+        "left": 576,
+        "top": 0,
+        "width": 2304,
+        "height": 845
+      }
+    },
+    {
+      "id": "plugins",
+      "source": "08b-plugins-discover",
+      "crop": {
+        "left": 576,
+        "top": 470,
+        "width": 2304,
+        "height": 1330
+      }
+    }
+  ],
+  "outputs": {
+    "review-light-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 64238,
+      "sha256": "b5c35ebe8fad93ca4445fd31ce04ba1c332d04cf99be5681ff07b83e7cf892dd"
+    },
+    "review-light-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 93410,
+      "sha256": "2b224a02ac0db69e0763b770b6393e03501028785f4a6c0828efd7e2d3becc2f"
+    },
+    "review-light-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 24086,
+      "sha256": "751ce9365d4647a9abf5988ff29617d5500ae7beb75625dba4bca2965e2ad796"
+    },
+    "review-light-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 33262,
+      "sha256": "a68bc85757dcc3da6995eb16039ee01d178274af47c7679ebda45737d0c63574"
+    },
+    "review-dark-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 69332,
+      "sha256": "c0d91bf874ae1d28b0c183b00e7a6377d99d200d1872db75f4a0612146e3667a"
+    },
+    "review-dark-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 92842,
+      "sha256": "f37d0a6a89da30bbc2c7fcfc8852b49bcf2fef09626650bf469aa4e1b4958800"
+    },
+    "review-dark-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 25987,
+      "sha256": "83d2420549c3873e9c843779ba6574d35826fdf5e17ad45becff8a9255361db1"
+    },
+    "review-dark-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 33666,
+      "sha256": "fa6ae47d4ab9e55a82707e2600d97d975ea8139d760b2b1cdf3a00f1c02cd83f"
+    },
+    "approval-light-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 26876,
+      "sha256": "82df7cb9f3e631b9f57da91bded2e79d249246e4dbbe7682b77d8327a55135c5"
+    },
+    "approval-light-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 37258,
+      "sha256": "d0898141d891be99c20c14b2bf44ee1ed0b0d7bf2162ef097b89f74e0620db1e"
+    },
+    "approval-light-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 10087,
+      "sha256": "cf44a20a23c6ced870ff430daf7101f4ed486600030bdada0902173d74d82824"
+    },
+    "approval-light-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 12594,
+      "sha256": "7531bff727ffc9a0645dbf5f511302d1db294c1031705e2be3bf137c05f43ff3"
+    },
+    "approval-dark-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 28980,
+      "sha256": "b0b872ba75397677f794cd0367305689ffaf289898867c1e29b746ac10f66023"
+    },
+    "approval-dark-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 37344,
+      "sha256": "7a616f940f4044196b6a7dd14aa89e7cd279858dddcc19a98feffa7a0d799b40"
+    },
+    "approval-dark-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 10944,
+      "sha256": "083798b06cd72b806572475f490fc738a31d5b8e207c92986f195c47f725df6f"
+    },
+    "approval-dark-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 12888,
+      "sha256": "fb884f68c9622255511efa6899f4c3fab8a20ed142b5feca0463c0e811a0dee4"
+    },
+    "permissions-light-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 29718,
+      "sha256": "dad3b880083d7b516b9330865ddde02fbdd4fb347fb000dab99794816f64bf80"
+    },
+    "permissions-light-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 40026,
+      "sha256": "81f61eb0991b60e2848d615fa9dfbdf67c2d6f5171b3d93a04183cfde1bf1f57"
+    },
+    "permissions-light-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 11096,
+      "sha256": "d7312343fafe76a805f92d1c53017204f01fe3e913fdfaeb5ab594439c5b3de4"
+    },
+    "permissions-light-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 13724,
+      "sha256": "a124421dc07b96e53694aee9377d6b967d8c95aaf2b817fdfa9fd7749d507fc5"
+    },
+    "permissions-dark-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 32104,
+      "sha256": "feb223cdc3790297e2ed3a122f32411976ba3277696e726537f1b89af49c305e"
+    },
+    "permissions-dark-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 40928,
+      "sha256": "a20b1d7deb5aa7802aa5d4f7492024ce7b527b7ed33028b7bc6b83488fca1145"
+    },
+    "permissions-dark-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 11942,
+      "sha256": "94ca6a87c9ef5a8dcb5672c830a2f0b49821aeae06340de004b953bb8feb1c3f"
+    },
+    "permissions-dark-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 14446,
+      "sha256": "452101ca4a43a524f754947abeaa26b4505145d909ea56ec8876ff6b57fd849a"
+    },
+    "sessions-light-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 49888,
+      "sha256": "19027f00eeadd1bd83bd2ba800ffac3cd72fe89e81f0e0b9b6e69ef40a60fb3b"
+    },
+    "sessions-light-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 73986,
+      "sha256": "5ece0726ff8175d203df08e252e845d9446036f35fa48c26e4066abf19ab1744"
+    },
+    "sessions-light-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 18914,
+      "sha256": "d1b866af196aeca11664ba2da92332059489a035e35160c76ea833356cd4138f"
+    },
+    "sessions-light-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 26114,
+      "sha256": "4ba3c29ca967e33a48384f96c9483e274fb00201a8143eeedcbce8287f682dcd"
+    },
+    "sessions-dark-1600.avif": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 53927,
+      "sha256": "7736d1c02e175ad516c41a0c1405c23be227d8469dda698f398f5ea57938d018"
+    },
+    "sessions-dark-1600.webp": {
+      "width": 1600,
+      "height": 1000,
+      "bytes": 74604,
+      "sha256": "4e6c8457a78586c1a06784f75b4a8450fbc1b1addb615a23507b6c91777b3743"
+    },
+    "sessions-dark-800.avif": {
+      "width": 800,
+      "height": 500,
+      "bytes": 20474,
+      "sha256": "a2436b5212f94b854ca19bffd4c8d0a0a8d4aba58b60def59bf34d88557cd8a3"
+    },
+    "sessions-dark-800.webp": {
+      "width": 800,
+      "height": 500,
+      "bytes": 26990,
+      "sha256": "4aad4a7a172044c104f632f8519afb230e21245131ce38f1069d1a4578cfa8f0"
+    },
+    "models-light-1600.avif": {
+      "width": 1600,
+      "height": 587,
+      "bytes": 17066,
+      "sha256": "5d75881fa08201c934805d79754b24d68d4be99e6d48f930fc0703b3b310ab9c"
+    },
+    "models-light-1600.webp": {
+      "width": 1600,
+      "height": 587,
+      "bytes": 23496,
+      "sha256": "96108bb2a4453e466bc771ad01befe183fc7db7bf74a4fb82b4438cd121cf2bc"
+    },
+    "models-light-800.avif": {
+      "width": 800,
+      "height": 293,
+      "bytes": 6745,
+      "sha256": "d5728bf95cba038d2afe1f03f92b8572aec84a8468afda3e344595de5b56bfca"
+    },
+    "models-light-800.webp": {
+      "width": 800,
+      "height": 293,
+      "bytes": 8232,
+      "sha256": "b13272937ac0b50d65c1e23ba089240dd2e6d09b032f25466a202c61cfaa9c71"
+    },
+    "models-dark-1600.avif": {
+      "width": 1600,
+      "height": 587,
+      "bytes": 18548,
+      "sha256": "862c329b1a4350d18ec02d52b3bd515f92faf14c71b28df1be93a31af6d4db76"
+    },
+    "models-dark-1600.webp": {
+      "width": 1600,
+      "height": 587,
+      "bytes": 23750,
+      "sha256": "49cdf31503dcc3b19d132ceec13a4235d69600cf3443d596972eecd4ebd2597c"
+    },
+    "models-dark-800.avif": {
+      "width": 800,
+      "height": 293,
+      "bytes": 7378,
+      "sha256": "8c6fd8879a1c989205be0216bfef4453bc9f36ed93d8d0ee25d8a2d1503fe366"
+    },
+    "models-dark-800.webp": {
+      "width": 800,
+      "height": 293,
+      "bytes": 8646,
+      "sha256": "691bf4e44ee142bfd6557c864de9e716096d6520668d0c8e02b4d86e2a358ecc"
+    },
+    "plugins-light-1600.avif": {
+      "width": 1600,
+      "height": 924,
+      "bytes": 64448,
+      "sha256": "995135d4631c0eb0cbcf4df996897bfd65b17fbf864777dc381971d135b79e96"
+    },
+    "plugins-light-1600.webp": {
+      "width": 1600,
+      "height": 924,
+      "bytes": 89422,
+      "sha256": "38c354edd7cf0d2e62bf8ab4569fe2c14087770deb131c22123413e98b30c639"
+    },
+    "plugins-light-800.avif": {
+      "width": 800,
+      "height": 462,
+      "bytes": 23849,
+      "sha256": "582620a6320e0bf272cba39edc286c730c1d850e4c5b17dc4f3a18369ff41acd"
+    },
+    "plugins-light-800.webp": {
+      "width": 800,
+      "height": 462,
+      "bytes": 31500,
+      "sha256": "d6446b342064dd003c0c33222a17e45300832ea011a30481aceddfb200c6ca58"
+    },
+    "plugins-dark-1600.avif": {
+      "width": 1600,
+      "height": 924,
+      "bytes": 66106,
+      "sha256": "183bd44e9b589b17e5e4366c12538d311e6181186367a6e272589ed187c02843"
+    },
+    "plugins-dark-1600.webp": {
+      "width": 1600,
+      "height": 924,
+      "bytes": 88898,
+      "sha256": "080546450038e510b142289f611d205c9415b3fb6f8be4a40022264461353bd5"
+    },
+    "plugins-dark-800.avif": {
+      "width": 800,
+      "height": 462,
+      "bytes": 25488,
+      "sha256": "d5f35aea3636df7f5c687bbe0c1ba9f3b7e9e17d269db062a8c261ae1965c3e2"
+    },
+    "plugins-dark-800.webp": {
+      "width": 800,
+      "height": 462,
+      "bytes": 31978,
+      "sha256": "b3623394300d324c61889fc0638bfc76f36e628ec5c62bd0b243a7587a15749f"
+    }
+  }
+}

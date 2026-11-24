@@ -202,25 +202,95 @@ pub enum CommandOutcome {
     },
 }
 
-fn strip_escapes(text: &str) -> String {
-    let mut clean = String::with_capacity(text.len());
-    codewhale_secrets::sanitize::strip_ansi_into(text, &mut clean);
-    clean
+const TRUNCATED_SUFFIX: &str = "\n… (output truncated)";
+
+fn strip_escapes_bounded(text: &str, max_bytes: usize, reserve_extra: usize) -> (String, bool) {
+    let extra = if text.len() > max_bytes {
+        reserve_extra
+    } else {
+        0
+    };
+    let mut clean = String::with_capacity(text.len().min(max_bytes).saturating_add(extra));
+    let mut truncated = false;
+    codewhale_sanitize::sanitize::visit_ansi_text(text, |chunk| {
+        if truncated {
+            return;
+        }
+        let remaining = max_bytes.saturating_sub(clean.len());
+        if chunk.len() <= remaining {
+            clean.push_str(chunk);
+        } else {
+            let mut end = remaining;
+            while !chunk.is_char_boundary(end) {
+                end -= 1;
+            }
+            clean.push_str(&chunk[..end]);
+            truncated = true;
+        }
+    });
+    (clean, truncated)
 }
 
 /// Strip terminal escapes and bound the text. A command's output is
 /// plugin-controlled and goes straight into the transcript.
 fn display_text(text: &str) -> String {
-    let mut clean = strip_escapes(text);
-    if clean.len() > MAX_TEXT_BYTES {
-        let mut end = MAX_TEXT_BYTES;
-        while !clean.is_char_boundary(end) {
-            end -= 1;
-        }
-        clean.truncate(end);
-        clean.push_str("\n… (output truncated)");
+    let (mut clean, truncated) =
+        strip_escapes_bounded(text, MAX_TEXT_BYTES, TRUNCATED_SUFFIX.len());
+    if truncated {
+        clean.push_str(TRUNCATED_SUFFIX);
     }
     clean
+}
+
+fn decode_command_result(mut value: Value) -> Result<CommandOutcome, String> {
+    let mut pretruncated_text = None;
+    if let Some(obj) = value.as_object_mut() {
+        if obj.get("kind").and_then(Value::as_str) == Some("submit")
+            && let Some(prompt) = obj.get("prompt").and_then(Value::as_str)
+            && prompt.len() > MAX_PROMPT_BYTES
+        {
+            return Err(format!(
+                "returned a prompt of {} bytes, over the {MAX_PROMPT_BYTES}-byte limit; it was not submitted",
+                prompt.len()
+            ));
+        }
+        if let Some(Value::String(raw_text)) = obj.get_mut("text")
+            && raw_text.len() > MAX_TEXT_BYTES
+        {
+            pretruncated_text = Some(display_text(raw_text));
+            raw_text.clear();
+            raw_text.shrink_to_fit();
+        }
+    }
+    let wire: CommandResultWire = serde_json::from_value(value)
+        .map_err(|error| format!("returned a malformed result: {error}"))?;
+    match wire {
+        CommandResultWire::Success { text } => Ok(CommandOutcome::Show {
+            text: pretruncated_text
+                .or_else(|| text.as_deref().map(display_text))
+                .unwrap_or_default(),
+        }),
+        CommandResultWire::Error { text } => {
+            Err(pretruncated_text.unwrap_or_else(|| display_text(&text)))
+        }
+        CommandResultWire::Submit { prompt, text } => {
+            let (prompt, exceeded) = strip_escapes_bounded(&prompt, MAX_PROMPT_BYTES, 0);
+            if prompt.trim().is_empty() {
+                return Err("submitted an empty prompt".to_string());
+            }
+            if exceeded {
+                return Err(format!(
+                    "returned a prompt over the {MAX_PROMPT_BYTES}-byte limit; it was not submitted"
+                ));
+            }
+            Ok(CommandOutcome::Submit {
+                prompt,
+                note: pretruncated_text
+                    .or_else(|| text.as_deref().map(display_text))
+                    .filter(|t| !t.is_empty()),
+            })
+        }
+    }
 }
 
 /// The phrase shown after `/<name> (extension:<plugin>):` on failure.
@@ -299,28 +369,60 @@ pub async fn run(
         &command.content_hash,
         command.scope.as_ref(),
     )?;
-    let wire: CommandResultWire = serde_json::from_value(value)
-        .map_err(|error| format!("returned a malformed result: {error}"))?;
-    match wire {
-        CommandResultWire::Success { text } => Ok(CommandOutcome::Show {
-            text: text.as_deref().map(display_text).unwrap_or_default(),
-        }),
-        CommandResultWire::Error { text } => Err(display_text(&text)),
-        CommandResultWire::Submit { prompt, text } => {
-            let prompt = strip_escapes(&prompt);
-            if prompt.trim().is_empty() {
-                return Err("submitted an empty prompt".to_string());
+    decode_command_result(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn oversized_submit_prompt_is_rejected_before_deserialization() {
+        let payload = json!({
+            "kind": "submit",
+            "prompt": "p".repeat(MAX_PROMPT_BYTES + 1),
+            "text": 12345,
+        });
+        let err = decode_command_result(payload).unwrap_err();
+        assert!(
+            err.contains("not submitted"),
+            "expected pre-deserialize prompt cap error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn oversized_display_text_bounds_allocation_capacity() {
+        let huge = "x".repeat(MAX_TEXT_BYTES * 8);
+        let out = display_text(&huge);
+        assert!(out.ends_with(TRUNCATED_SUFFIX));
+        assert!(out.len() <= MAX_TEXT_BYTES + TRUNCATED_SUFFIX.len());
+        assert!(
+            out.capacity() <= MAX_TEXT_BYTES + 64,
+            "display_text allocated {} bytes for a {} byte cap",
+            out.capacity(),
+            MAX_TEXT_BYTES
+        );
+
+        let decoded = decode_command_result(json!({
+            "kind": "success",
+            "text": huge,
+        }))
+        .unwrap();
+        match decoded {
+            CommandOutcome::Show { text } => {
+                assert!(text.ends_with(TRUNCATED_SUFFIX));
+                assert!(text.capacity() <= MAX_TEXT_BYTES + 64);
             }
-            if prompt.len() > MAX_PROMPT_BYTES {
-                return Err(format!(
-                    "returned a prompt of {} bytes, over the {MAX_PROMPT_BYTES}-byte limit; it was not submitted",
-                    prompt.len()
-                ));
-            }
-            Ok(CommandOutcome::Submit {
-                prompt,
-                note: text.as_deref().map(display_text).filter(|t| !t.is_empty()),
-            })
+            other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn ansi_heavy_text_within_clean_cap_is_not_truncated() {
+        let ansi = format!("{}ok", "\u{001b}[31m".repeat(MAX_TEXT_BYTES));
+        let out = display_text(&ansi);
+        assert_eq!(out, "ok");
+        assert!(out.capacity() <= MAX_TEXT_BYTES + 64);
     }
 }

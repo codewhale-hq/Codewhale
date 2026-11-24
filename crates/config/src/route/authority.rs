@@ -201,7 +201,7 @@ mod tests {
     use crate::ProviderKind;
     use crate::catalog::{CatalogCompiler, CatalogSource};
     use crate::models_dev::ModelsDevLimit;
-    use crate::route::{LogicalModelRef, RouteRequest};
+    use crate::route::{LogicalModelRef, RouteError, RouteRequest};
 
     use super::{CatalogOfferingReceipt, RouteAuthoritySnapshot, RouteCatalogScope};
 
@@ -280,7 +280,7 @@ mod tests {
         let authority = RouteAuthoritySnapshot::new(CatalogCompiler::new().compile());
 
         let resolved = authority
-            .resolve(&request("future-deepseek-model"))
+            .resolve(&request("deepseek-future-model"))
             .expect("direct-provider pass-through remains executable");
 
         assert!(matches!(
@@ -288,6 +288,10 @@ mod tests {
             CatalogOfferingReceipt::NotCataloged { .. }
         ));
         assert!(resolved.receipt().offering().is_none());
+        assert!(matches!(
+            authority.resolve(&request("future-model-x")),
+            Err(RouteError::ForeignModelForDirectProvider { .. })
+        ));
     }
 
     #[test]

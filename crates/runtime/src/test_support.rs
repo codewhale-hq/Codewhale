@@ -45,30 +45,62 @@ pub fn isolated_test_state_root() -> &'static Path {
                 root.display()
             )
         });
-        remove_isolated_test_state_root_at_exit();
+        remove_test_roots_at_exit();
         // Match resolvers that canonicalize their root (macOS aliases /var to
         // /private/var). Every fence must name the same physical test store.
         root.canonicalize().expect("canonical test state root")
     })
 }
 
-static ISOLATED_TEST_STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+pub fn test_scratch_dir(prefix: &str) -> PathBuf {
+    let root = TEST_SCRATCH_ROOT.get_or_init(|| {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "codewhale-test-scratch-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap_or_else(|error| {
+            panic!(
+                "failed to create unit-test scratch root {}: {error}",
+                root.display()
+            )
+        });
+        remove_test_roots_at_exit();
+        root
+    });
+    root.join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
+}
 
-fn remove_isolated_test_state_root_at_exit() {
+static ISOLATED_TEST_STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+static TEST_SCRATCH_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+fn remove_test_roots_at_exit() {
     unsafe extern "C" {
         fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
     }
-    extern "C" fn remove_root() {
-        let Some(root) = ISOLATED_TEST_STATE_ROOT.get() else {
-            return;
-        };
-        if std::fs::remove_dir_all(root).is_err() {
-            #[cfg(unix)]
-            make_directories_writable(root);
-            let _ = std::fs::remove_dir_all(root);
+    extern "C" fn remove_roots() {
+        for root in [ISOLATED_TEST_STATE_ROOT.get(), TEST_SCRATCH_ROOT.get()]
+            .into_iter()
+            .flatten()
+        {
+            remove_test_root(root);
         }
     }
-    unsafe { atexit(remove_root) };
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| unsafe {
+        atexit(remove_roots);
+    });
+}
+
+fn remove_test_root(root: &Path) {
+    if std::fs::remove_dir_all(root).is_err() {
+        #[cfg(unix)]
+        make_directories_writable(root);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(unix)]
@@ -467,6 +499,35 @@ pub fn future_test_jwt(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_scratch_dirs_are_distinct_under_the_process_root_and_removable() {
+        let first = test_scratch_dir("codewhale-scratch-probe");
+        let second = test_scratch_dir("codewhale-scratch-probe");
+        let root = TEST_SCRATCH_ROOT.get().expect("scratch root initialized");
+
+        assert_ne!(first, second);
+        assert!(root.is_dir());
+        for dir in [&first, &second] {
+            assert_eq!(dir.parent(), Some(root.as_path()));
+            assert!(!dir.exists());
+        }
+
+        let nested = first.join("nested");
+        std::fs::create_dir_all(&nested).expect("create scratch dir");
+        std::fs::write(nested.join("file"), b"x").expect("write scratch file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o500))
+                .expect("make scratch dir read-only");
+        }
+
+        remove_test_root(&first);
+
+        assert!(!first.exists());
+        assert!(root.is_dir());
+    }
 
     #[test]
     fn ambient_codewhale_home_is_not_a_test_seal() {

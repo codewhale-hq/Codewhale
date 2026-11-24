@@ -390,7 +390,7 @@ pub fn windows_publish_retry_delay(
     error: &std::io::Error,
     attempt: usize,
 ) -> Option<std::time::Duration> {
-    const MAX_PERSIST_ATTEMPTS: usize = 8;
+    const MAX_PERSIST_ATTEMPTS: usize = 12;
     // 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION.
     let transient = error.kind() == std::io::ErrorKind::PermissionDenied
         || matches!(error.raw_os_error(), Some(5 | 32 | 33));
@@ -398,7 +398,7 @@ pub fn windows_publish_retry_delay(
         return None;
     }
     Some(std::time::Duration::from_millis(
-        10u64.saturating_mul(1u64 << attempt),
+        10u64.saturating_mul(1u64 << attempt.min(6)),
     ))
 }
 
@@ -1004,6 +1004,11 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
                 | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::WebSearchToolResult { .. }
+                | ContentBlock::WebFetchToolResult { .. }
+                | ContentBlock::WebSearchCall { .. }
+                | ContentBlock::ServerToolCalls { .. }
+                | ContentBlock::File { .. }
                 | ContentBlock::ImageUrl { .. } => {}
             }
         }

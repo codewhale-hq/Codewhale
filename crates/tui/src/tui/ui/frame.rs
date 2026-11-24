@@ -675,7 +675,7 @@ fn register_clickable_chrome_for_hover(app: &App) {
     // nothing is the same defect as one that acts without lighting up.
     if let Some(composer) = app.viewport.last_composer_area
         && let Some(submit) = crate::tui::widgets::active_composer_submit_rect(app, composer)
-        && app.composer_enter_would_submit(true)
+        && app.composer_enter_would_submit(true, Instant::now())
     {
         crate::tui::hover_layer::register_rect(
             crate::tui::hover_hit::HoverTargetKind::Link,
@@ -946,6 +946,8 @@ pub(crate) async fn build_preview_request_inputs(
         skill_instruction: app.active_skill.clone(),
         skill_provenance: app.active_skill_provenance.clone(),
         extension_command: None,
+        approved_plan: None,
+        owner_input: false,
         history_echoed: false,
     };
     let mut git_cache = crate::tui::git_mention::GitMentionCache::default();
@@ -1066,6 +1068,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
         skills_config: app.skills_config.clone(),
+        agent_preset: app.agent_preset(),
         plugin_registry: Some(std::sync::Arc::clone(&app.plugin_registry)),
         instructions: configured_instruction_sources(config),
         project_context_pack_enabled: config.project_context_pack_enabled(),
@@ -1361,6 +1364,7 @@ pub(crate) fn build_session_snapshot(
         app.system_prompt.as_ref(),
         Some(app.mode.as_setting()),
     );
+    session.agent_preset = app.agent_preset();
     session.write_receipt = if app.current_session_id.is_none() {
         Some(
             manager
@@ -1418,6 +1422,12 @@ pub(crate) fn build_session_snapshot(
     session.context_references = app.session_context_references.clone();
     session.artifacts = app.session_artifacts.clone();
     session.turn_outcomes = app.session_turn_outcomes.clone();
+    session.delegated_writes = app
+        .delegated_writes
+        .iter()
+        .filter(|((owner, _), _)| owner == &session.metadata.id)
+        .map(|((_, seq), paths)| (*seq, paths.iter().cloned().collect()))
+        .collect();
     session.work_state = work_state;
     session.last_auto_route = app.auto_route_for_persistence();
     session.window_title.clone_from(&app.window_title);
@@ -1437,8 +1447,8 @@ pub(crate) fn build_session_snapshot(
 }
 
 /// The stream sanitizer lives with the other output sanitizers in
-/// `codewhale-secrets`; the event loop reaches it through this module.
-pub(crate) use codewhale_secrets::sanitize::sanitize_stream_chunk;
+/// `codewhale-sanitize`; the event loop reaches it through this module.
+pub(crate) use codewhale_sanitize::sanitize::sanitize_stream_chunk;
 
 /// Ensure an in-flight streaming Assistant cell exists in history and return
 /// its index. Thinking cells go through `streaming_thinking::ensure_active_entry`
@@ -1489,6 +1499,15 @@ pub(crate) fn append_streaming_text(app: &mut App, index: usize, text: &str) {
             to_revision,
             content_len,
         });
+    }
+}
+
+fn estimate_output_tokens_from_text(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    if chars == 0 {
+        0
+    } else {
+        chars.saturating_add(3) / 4
     }
 }
 
@@ -1555,7 +1574,10 @@ pub(crate) fn commit_streaming_display_tick(
         updated = true;
     }
 
-    if app.streaming_state.has_pending_stream_text(0) {
+    if streaming_thinking::render_owed_revision(app, now) {
+        updated = true;
+    }
+    if app.streaming_state.has_pending_stream_text(0) || app.thinking_revision_owed {
         stream_display_clock.note_delta(now);
     }
 
@@ -1575,26 +1597,27 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     preview.locale = app.ui_locale;
     let selected_attachment = app.selected_composer_attachment_index();
     let mut attachment_index = 0usize;
-    preview.context_items = crate::tui::file_mention::pending_context_previews(&app.input)
-        .into_iter()
-        .map(|item| {
-            let selected = if item.removable {
-                let selected = selected_attachment == Some(attachment_index);
-                attachment_index += 1;
-                selected
-            } else {
-                false
-            };
-            ContextPreviewItem {
-                kind: item.kind,
-                label: item.label,
-                detail: item.detail,
-                included: item.included,
-                removable: item.removable,
-                selected,
-            }
-        })
-        .collect();
+    preview.context_items =
+        crate::tui::file_mention::pending_context_previews(&app.input, app.ui_locale)
+            .into_iter()
+            .map(|item| {
+                let selected = if item.removable {
+                    let selected = selected_attachment == Some(attachment_index);
+                    attachment_index += 1;
+                    selected
+                } else {
+                    false
+                };
+                ContextPreviewItem {
+                    kind: item.kind,
+                    label: item.label,
+                    detail: item.detail,
+                    included: item.included,
+                    removable: item.removable,
+                    selected,
+                }
+            })
+            .collect();
     // #6190: a steer the engine has not recorded yet is exactly what this
     // bucket's "sending into turn" label describes, so it shares it rather
     // than growing a fourth bucket and a fifteenth locale string.
@@ -1622,6 +1645,8 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
     app.viewport.working_glow_visible = false;
+    app.viewport.activity_sweep_visible = false;
+    app.viewport.settle_flash_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
@@ -1815,13 +1840,15 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     } else {
         app.plugin_cta_row_height()
     };
+    let approval_height = app.view_stack.top_docked_height(body_area.width);
     let auxiliary_budget = body_height.saturating_sub(
         top_work_strip_height
             .saturating_add(MIN_CHAT_HEIGHT)
             .saturating_add(composer_height)
             .saturating_add(footer_height)
             .saturating_add(info_height)
-            .saturating_add(plugin_cta_height),
+            .saturating_add(plugin_cta_height)
+            .saturating_add(approval_height),
     );
     // Queued-only previews author the direct controls in row two (and fall
     // back to controls-only when just one row remains). Mixed previews retain
@@ -1886,6 +1913,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(preview_height),     // Pending input preview (0 if empty)
             Constraint::Length(attachment_preview_height), // Image thumbnail (0 if none)
             Constraint::Length(plugin_cta_height),  // Live plugin CTA (0 unless matched)
+            Constraint::Length(approval_height),
             Constraint::Length(composer_height),    // Composer
             Constraint::Length(footer_height),      // Posture bar
             Constraint::Length(workbar_height),     // Workbar: one row per workflow run
@@ -1893,15 +1921,28 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_below_height), // Roster + To-do under the chrome (`bottom`)
         ])
         .split(body_area);
-    let strip_slot = if strip_below { 9 } else { 0 };
+    let strip_slot = if strip_below { 10 } else { 0 };
     let preview_slot = 2;
     let attachment_preview_slot = 3;
     let plugin_cta_slot = 4;
-    let composer_slot = 5;
-    let footer_slot = 6;
-    let workbar_slot = 7;
-    let info_slot = 8;
+    let approval_slot = 5;
+    let composer_slot = 6;
+    let footer_slot = 7;
+    let workbar_slot = 8;
+    let info_slot = 9;
 
+    if approval_height > 0 {
+        let dock_area = body_chunks[approval_slot];
+        let dock_canvas = Rect::new(
+            dock_area.x,
+            body_area.y,
+            dock_area.width,
+            dock_area.bottom().saturating_sub(body_area.y),
+        );
+        app.view_stack.set_approval_dock_canvas(Some(dock_canvas));
+    } else {
+        app.view_stack.set_approval_dock_canvas(None);
+    }
     if matches!(
         app.view_stack.top_kind(),
         Some(ModalKind::Approval | ModalKind::UserInput)
@@ -2082,6 +2123,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     };
     let cursor_pos = composer_plan.cursor.map(|pos| (pos.x, pos.y));
     app.viewport.last_composer_area = Some(body_chunks[composer_slot]);
+    app.view_stack
+        .set_composer_top(Some(body_chunks[composer_slot].y));
     app.viewport.last_composer_content = Some(composer_plan.geometry.inner);
     app.viewport.last_composer_scroll_offset = composer_plan.scroll_offset;
     app.viewport.last_composer_top_padding = composer_plan.top_padding;
@@ -2223,6 +2266,23 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 &app.viewport.ocean_semantic_surfaces,
             );
         }
+        if top_work_strip_height > 0 {
+            column.paint_matching_native(
+                body_chunks[strip_slot],
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        } else if let Some(work_area) = side_work_area {
+            column.paint_matching_native(
+                work_area,
+                f.buffer_mut(),
+                app.ui_theme.composer_bg,
+                &app.ui_theme,
+                &app.viewport.ocean_semantic_surfaces,
+            );
+        }
     }
     register_clickable_chrome_for_hover(app);
     crate::tui::hover_layer::apply_resolved_effects(
@@ -2281,25 +2341,56 @@ pub(super) fn finish_frame_cursor<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// Draw a complete application frame, optionally with a full viewport reset.
-///
-/// When `full_repaint` is true, the terminal scroll margins and origin mode
-/// are reset, the screen is cleared, ratatui's buffer is emptied, and then
-/// the full UI is drawn — all within a single DEC 2026 synchronized-update
-/// batch so GPU-accelerated terminals (Ghostty, VS Code, Kitty) render one
-/// complete frame instead of a blank intermediate frame followed by the UI.
-///
-/// When `full_repaint` is false, only the diff from the previous draw is
-/// written (normal incremental update path).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum FrameRepaint {
+    Diff,
+    Recapture,
+    Clear,
+}
+
+pub(super) fn draw_frame_with_repaint<B>(
+    terminal: &mut Terminal<B>,
+    repaint: FrameRepaint,
+    render: impl FnOnce(&mut Frame<'_>),
+) -> Result<()>
+where
+    B: ratatui::backend::Backend<Error = std::io::Error> + Write,
+{
+    if repaint != FrameRepaint::Diff {
+        terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
+    }
+    if repaint == FrameRepaint::Clear {
+        terminal.clear()?;
+    }
+    terminal.draw(|frame| {
+        render(frame);
+        if repaint == FrameRepaint::Recapture {
+            for cell in &mut frame.buffer_mut().content {
+                #[allow(deprecated)]
+                let skipped = cell.skip;
+                if cell.diff_option == ratatui::buffer::CellDiffOption::None && !skipped {
+                    cell.diff_option = ratatui::buffer::CellDiffOption::AlwaysUpdate;
+                }
+            }
+        }
+    })?;
+    Ok(())
+}
+
+/// Draw a complete application frame within a synchronized-update batch.
+/// Focus recapture covers the viewport without erasing it first; resize and
+/// external handoffs retain the clear-and-redraw path. A recapture can also
+/// cause one additional ordinary diff because Ratatui compares cell directives.
 pub(crate) fn draw_app_frame_inner(
     terminal: &mut AppTerminal,
     app: &mut App,
     config: &Config,
-    full_repaint: bool,
+    repaint: FrameRepaint,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
     terminal.backend_mut().set_theme(app.theme_id, app.ui_theme);
     app.viewport.ocean_caps = Some(terminal.backend().native_ocean_caps());
+    app.viewport.detected_background = terminal.backend().detected_background();
     // DEC 2026 wrapping is on by default but can be turned off for
     // terminals that mishandle it (Ptyxis 50.x + VTE 0.84.x flashes the
     // whole viewport on every wrapped frame instead of deferring as the
@@ -2326,13 +2417,14 @@ pub(crate) fn draw_app_frame_inner(
         // before clear/diff operations move it, then restore the one composer
         // position after ratatui finishes drawing (#5023).
         prepare_frame_cursor(terminal)?;
-        if full_repaint || resized.is_some() {
-            terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
-            terminal.clear()?;
-        }
+        let repaint = if resized.is_some() {
+            FrameRepaint::Clear
+        } else {
+            repaint
+        };
         let mut cursor_pos = None;
         let mut frame_area = ratatui::layout::Rect::default();
-        terminal.draw(|f| {
+        draw_frame_with_repaint(terminal, repaint, |f| {
             frame_area = f.area();
             cursor_pos = render(f, app, config);
         })?;
@@ -2561,10 +2653,21 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::{
-        drain_text_block, register_info_interaction_targets, render_info_row, short_title_truncate,
+        drain_text_block, estimate_output_tokens_from_text, register_info_interaction_targets,
+        render_info_row, short_title_truncate,
     };
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn estimated_streaming_tokens_round_up_from_text_chars() {
+        assert_eq!(estimate_output_tokens_from_text(""), 0);
+        assert_eq!(estimate_output_tokens_from_text("abc"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcd"), 1);
+        assert_eq!(estimate_output_tokens_from_text("abcde"), 2);
+    }
 
     /// #7123: the text drain must never take a reasoning block. A reasoning
     /// tail handed to the assistant cell would appear as prose, which is the
@@ -3366,6 +3469,7 @@ mod tests {
                     row: target.area.y,
                     modifiers: crossterm::event::KeyModifiers::NONE,
                 },
+                Instant::now(),
             );
             assert!(matches!(
                 events.as_slice(),
@@ -3525,10 +3629,14 @@ mod pet_main_tests {
                     column: cursor.0,
                     row: cursor.1,
                     modifiers: KeyModifiers::NONE,
-                }
+                },
+                Instant::now()
             ));
             assert_eq!(app.cursor_position, app.input.chars().count());
-            handle_bracketed_paste(&mut app, " pasted");
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(" pasted"),
+            );
             assert!(app.input.ends_with(" pasted"));
             assert!(app.view_stack.is_empty());
         }
@@ -3570,6 +3678,7 @@ mod pet_main_tests {
                 row: hint.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::PetHabitat));
         app.view_stack

@@ -22,9 +22,13 @@ struct UserCommandRegistryState {
     initialized: bool,
     workspace: Option<PathBuf>,
     command_dirs_snapshot: Vec<CommandDirSnapshot>,
-    plugin_workspace: Option<PathBuf>,
-    plugin_sources: Vec<codewhale_plugins::runtime::PluginComponentSource>,
-    plugin_errors: Vec<String>,
+    plugins: HashMap<
+        Option<PathBuf>,
+        (
+            Vec<codewhale_plugins::runtime::PluginComponentSource>,
+            Vec<String>,
+        ),
+    >,
     /// `extension_host::command::epoch()` when `registry` was built: it
     /// reloads when the live extension commands may have changed.
     extension_epoch: u64,
@@ -80,6 +84,7 @@ pub struct UserCommandMetadata {
     pub aliases: Vec<String>,
     pub hidden: bool,
     pub plugin_authority: Option<codewhale_config::PluginAuthority>,
+    pub workspace_sourced: bool,
     /// Set for a command contributed by an extension-host plugin: it runs in
     /// the host (`command/run`) instead of expanding `body`.
     pub extension: Option<codewhale_engine::extension_host::command::ExtensionCommandRef>,
@@ -246,6 +251,7 @@ impl UserCommandRegistry {
                 let (mut metadata, errors) =
                     parse_metadata(entry.name, &entry.content, &entry.path);
                 metadata.plugin_authority = entry.plugin_authority;
+                metadata.workspace_sourced = entry.workspace_sourced;
                 (metadata, errors, entry.path, entry.workspace_sourced)
             })
             .collect::<Vec<_>>();
@@ -395,6 +401,7 @@ impl UserCommandRegistry {
                     aliases: Vec::new(),
                     hidden: false,
                     plugin_authority: Some(entry.authority),
+                    workspace_sourced: false,
                     extension: Some(reference),
                 },
             );
@@ -452,7 +459,7 @@ impl UserCommandRegistry {
         &self.load_errors
     }
 
-    fn dispatch_error(&self, name: &str) -> Option<String> {
+    pub(crate) fn dispatch_error(&self, name: &str) -> Option<String> {
         let key = normalize_name(name);
         self.invalid_commands.get(&key).cloned().or_else(|| {
             self.aliases
@@ -461,6 +468,10 @@ impl UserCommandRegistry {
                 .cloned()
         })
     }
+}
+
+pub(crate) fn resolved_command_name(name: String, content: &str, path: &Path) -> String {
+    parse_metadata(name, content, path).0.name
 }
 
 fn parse_metadata(
@@ -482,6 +493,7 @@ fn parse_metadata(
         aliases: Vec::new(),
         hidden: false,
         plugin_authority: None,
+        workspace_sourced: false,
         extension: None,
     };
     let mut configured_name = None;
@@ -810,11 +822,42 @@ pub fn with_registry_for_workspace<R>(
     workspace: Option<&Path>,
     f: impl FnOnce(&UserCommandRegistry) -> R,
 ) -> R {
+    with_registry_for_workspace_inner(workspace, None, f)
+}
+
+pub fn with_registry_for_workspace_plugins<R>(
+    workspace: Option<&Path>,
+    plugins: &codewhale_plugins::PluginRegistry,
+    f: impl FnOnce(&UserCommandRegistry) -> R,
+) -> R {
+    with_registry_for_workspace_inner(workspace, Some(plugins), f)
+}
+
+fn with_registry_for_workspace_inner<R>(
+    workspace: Option<&Path>,
+    plugins: Option<&codewhale_plugins::PluginRegistry>,
+    f: impl FnOnce(&UserCommandRegistry) -> R,
+) -> R {
     let workspace = normalize_workspace(workspace);
+    let offered = plugins.map(|plugins| {
+        codewhale_plugins::runtime::active_component_sources(
+            plugins,
+            codewhale_plugins::activation::PluginActivationCapability::Commands,
+        )
+    });
     let lock = registry_lock();
     {
         let guard = lock.read().expect("user command registry lock poisoned");
-        if guard.initialized
+        let plugin_matches = offered.as_ref().is_none_or(|(sources, errors)| {
+            guard
+                .plugins
+                .get(&workspace)
+                .is_some_and(|(cached_sources, cached_errors)| {
+                    cached_sources == sources && cached_errors == errors
+                })
+        });
+        if plugin_matches
+            && guard.initialized
             && guard.workspace == workspace
             && guard.extension_epoch == codewhale_engine::extension_host::command::epoch()
             && guard.checked_recently()
@@ -822,12 +865,11 @@ pub fn with_registry_for_workspace<R>(
             return f(&guard.registry);
         }
     }
-    let (plugin_sources, plugin_errors) = {
-        let guard = lock.read().expect("user command registry lock poisoned");
-        if guard.plugin_workspace == workspace {
-            (guard.plugin_sources.clone(), guard.plugin_errors.clone())
-        } else {
-            (Vec::new(), Vec::new())
+    let (plugin_sources, plugin_errors) = match &offered {
+        Some((sources, errors)) => (sources.clone(), errors.clone()),
+        None => {
+            let guard = lock.read().expect("user command registry lock poisoned");
+            guard.plugins.get(&workspace).cloned().unwrap_or_default()
         }
     };
     let snapshot = command_dirs_snapshot_with_plugins(workspace.as_deref(), &plugin_sources);
@@ -835,7 +877,7 @@ pub fn with_registry_for_workspace<R>(
     // while the registry is being built leaves the epoch behind, so the next
     // read reloads.
     let extension_epoch = codewhale_engine::extension_host::command::epoch();
-    {
+    if offered.is_none() {
         let guard = lock.read().expect("user command registry lock poisoned");
         if !registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch) {
             guard.mark_checked();
@@ -855,7 +897,15 @@ pub fn with_registry_for_workspace<R>(
         ));
     }
     let mut guard = lock.write().expect("user command registry lock poisoned");
-    if registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch) {
+    let mut reload = registry_needs_reload(&guard, &workspace, &snapshot, extension_epoch);
+    if let Some((sources, errors)) = offered {
+        let offered = (sources, errors);
+        if guard.plugins.get(&workspace) != Some(&offered) {
+            guard.plugins.insert(workspace.clone(), offered);
+            reload = true;
+        }
+    }
+    if reload {
         guard.initialized = true;
         guard.workspace = workspace;
         guard.command_dirs_snapshot = snapshot;
@@ -882,9 +932,10 @@ pub fn install_plugin_registry(
         .write()
         .expect("user command registry lock poisoned");
     guard.initialized = false;
-    guard.plugin_workspace = Some(workspace.to_path_buf());
-    guard.plugin_sources = sources;
-    guard.plugin_errors = errors.clone();
+    guard.plugins.insert(
+        normalize_workspace(Some(workspace)),
+        (sources, errors.clone()),
+    );
     errors
 }
 
@@ -1249,6 +1300,54 @@ mod tests {
                 registry.get("plugin-hello").is_none()
             }),
             "a reload removes revoked plugin commands"
+        );
+    }
+
+    #[test]
+    fn user_commands_with_plugins_attributes_real_catalog_without_clobbering_other_workspace() {
+        let _lock = crate::test_support::lock_test_env();
+        let fixture = codewhale_plugins::test_fixture::DeclarativePluginFixture::new();
+        let other = TempDir::new().unwrap();
+        let empty = codewhale_plugins::PluginRegistry::default();
+        let catalog = crate::commands::CommandTable;
+
+        let cmds = codewhale_engine::command_catalog::CommandCatalog::user_commands_with_plugins(
+            &catalog,
+            &fixture.workspace,
+            &fixture.registry,
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| c.name == "plugin-hello" && c.plugin_id.is_some()),
+            "expected attributed plugin-hello command: {cmds:?}"
+        );
+
+        let other_cmds =
+            codewhale_engine::command_catalog::CommandCatalog::user_commands_with_plugins(
+                &catalog,
+                other.path(),
+                &empty,
+            );
+        assert!(!other_cmds.iter().any(|c| c.name == "plugin-hello"));
+
+        assert!(
+            with_registry_for_workspace(Some(&fixture.workspace), |registry| {
+                registry.get("plugin-hello").is_some()
+            }),
+            "plain workspace read must retain its plugin commands after listing another workspace"
+        );
+
+        let cmds_again =
+            codewhale_engine::command_catalog::CommandCatalog::user_commands_with_plugins(
+                &catalog,
+                &fixture.workspace,
+                &fixture.registry,
+            );
+        assert!(
+            cmds_again
+                .iter()
+                .any(|c| c.name == "plugin-hello" && c.plugin_id.is_some()),
+            "expected attributed plugin-hello after reading another workspace: {cmds_again:?}"
         );
     }
 

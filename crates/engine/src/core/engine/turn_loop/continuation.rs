@@ -8,13 +8,12 @@ impl Engine {
         turn: &mut TurnContext,
         tool_policy: &ToolSurfacePolicy,
         progress: &mut TurnLoopProgress,
-        client: &SharedModelClient,
         response: AcceptedModelStep,
     ) -> PhaseResult<AcceptedModelStep> {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("model_continuation");
         if self.rlm_host.is_some() {
             return self
-                .continue_rlm_model_step(turn, tool_policy, progress, client, response)
+                .continue_rlm_model_step(turn, tool_policy, progress, response)
                 .await;
         }
         let tool_registry = Some(&tool_policy.registry);
@@ -68,13 +67,6 @@ impl Engine {
             return PhaseResult::Retry;
         }
 
-        // If no tool uses, check for inline REPL blocks (paper §2) or
-        // finish the turn. Honest ladder (NOTE-turn-loop-wrongness §3):
-        // 1) pending steers → resume, 2) queued subagent completions →
-        // resume, 3) REPL fences → run (empty cap may end), 4) goal
-        // continuation if under cap → resume, 5) else end. Healthy
-        // children continue in the background; their existence alone
-        // does not authorize another parent model request.
         if tool_uses.is_empty() && !fleet_no_progress_report {
             if !pending_steers.is_empty() {
                 if let Some(guard) = progress.fleet_denial_guard.as_mut() {
@@ -83,12 +75,17 @@ impl Engine {
                         .permission_denial_rounds_without_progress = 0;
                 }
                 for pending in pending_steers.drain(..) {
-                    let steer = pending.commit().trim().to_string();
+                    let (raw_steer, person_text) = self.commit_pending_steer_with_intent(pending);
+                    let steer = raw_steer.trim().to_string();
                     self.session
                         .working_set
                         .observe_user_message(&steer, &self.session.workspace);
                     self.add_session_message(self.user_text_message_with_turn_metadata(steer))
                         .await;
+                    if let Some(person_text) = person_text {
+                        let index = self.session.messages.len().saturating_sub(1);
+                        self.session.record_person_message(person_text, Some(index));
+                    }
                 }
                 let _ = self
                     .send_event(Event::status("Continuing — queued steer input".to_string()))
@@ -116,23 +113,6 @@ impl Engine {
                     .await;
                 turn.next_step();
                 return PhaseResult::Retry;
-            }
-
-            match self
-                .run_inline_repl_phase(
-                    turn,
-                    tool_policy,
-                    progress,
-                    client,
-                    &current_text_visible,
-                    has_sendable_assistant_content,
-                )
-                .await
-            {
-                PhaseResult::Ready(()) => {}
-                PhaseResult::Retry => return PhaseResult::Retry,
-                PhaseResult::Break => return PhaseResult::Break,
-                PhaseResult::Return(outcome) => return PhaseResult::Return(outcome),
             }
 
             // Issue #1727: the turn is now genuinely finishing with no

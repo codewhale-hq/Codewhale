@@ -5,7 +5,9 @@ use codewhale_workflow_js::ToolCallResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::dsh_broker::{BrokerCall, BrokerFuture, BrokerMethods, BrokerRefusal, decode};
+use super::dsh_broker::{
+    BrokerCall, BrokerEffect, BrokerFuture, BrokerMethods, BrokerRefusal, decode,
+};
 use super::protocol::DshService;
 use crate::tools::execution_envelope::enforce_tool_denial;
 
@@ -16,7 +18,7 @@ const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT_SECS: u64 = 600;
 const MAX_SETTLE_MS: u64 = 60_000;
-pub(super) const MAX_TERMINALS: usize = 8;
+pub(crate) const MAX_TERMINALS: usize = 8;
 const LOG: &str = "codewhale::dsh_terminal";
 
 static REGISTRY_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
@@ -120,7 +122,8 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
         }
         match method {
             TerminalMethod::List(NoInput {}) => {
-                let live = live(&call, "terminal/wait").await?;
+                let live = live(&call, codewhale_tools::names::TERMINAL_WAIT_NAME).await?;
+                call.context.act("list", BrokerEffect::Read, None).await?;
                 tracing::info!(target: LOG, plugin = %call.owner.plugin_id, terminals = live.terminals.len(), "terminals listed");
                 Ok(json!({
                     "instance": live.instance,
@@ -143,7 +146,7 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                     )));
                 }
                 let timeout_secs = timeout(timeout_secs)?;
-                let live = live(&call, "terminal/run").await?;
+                let live = live(&call, codewhale_tools::names::TERMINAL_RUN_NAME).await?;
                 if !live.holds(session) && live.terminals.len() >= MAX_TERMINALS {
                     tracing::info!(target: LOG, plugin = %call.owner.plugin_id, "terminal limit reached");
                     return Err(refused(
@@ -155,7 +158,13 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                 if let Some(timeout_secs) = timeout_secs {
                     input["timeout_secs"] = json!(timeout_secs);
                 }
-                nested(&call, "terminal/run", session, input).await
+                nested(
+                    &call,
+                    codewhale_tools::names::TERMINAL_RUN_NAME,
+                    session,
+                    input,
+                )
+                .await
             }
             TerminalMethod::Send(SendInput {
                 session,
@@ -171,12 +180,20 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
                 if wait_ms.is_some_and(|wait_ms| wait_ms > MAX_SETTLE_MS) {
                     return Err(invalid(format!("wait_ms is at most {MAX_SETTLE_MS}")));
                 }
-                live(&call, "terminal/send").await?.existing(session)?;
+                live(&call, codewhale_tools::names::TERMINAL_SEND_NAME)
+                    .await?
+                    .existing(session)?;
                 let mut input = json!({ "session": owned_name(&call, session), "text": text });
                 if let Some(wait_ms) = wait_ms {
                     input["wait_ms"] = json!(wait_ms);
                 }
-                nested(&call, "terminal/send", session, input).await
+                nested(
+                    &call,
+                    codewhale_tools::names::TERMINAL_SEND_NAME,
+                    session,
+                    input,
+                )
+                .await
             }
             TerminalMethod::Wait(WaitInput {
                 session,
@@ -184,24 +201,48 @@ pub(super) fn serve(call: BrokerCall) -> BrokerFuture {
             }) => {
                 let session = session_name(&session)?;
                 let timeout_secs = timeout(timeout_secs)?;
-                live(&call, "terminal/wait").await?.existing(session)?;
+                live(&call, codewhale_tools::names::TERMINAL_WAIT_NAME)
+                    .await?
+                    .existing(session)?;
                 let mut input = json!({ "session": owned_name(&call, session) });
                 if let Some(timeout_secs) = timeout_secs {
                     input["timeout_secs"] = json!(timeout_secs);
                 }
-                nested(&call, "terminal/wait", session, input).await
+                nested(
+                    &call,
+                    codewhale_tools::names::TERMINAL_WAIT_NAME,
+                    session,
+                    input,
+                )
+                .await
             }
             TerminalMethod::Cancel(SessionInput { session }) => {
                 let session = session_name(&session)?;
-                live(&call, "terminal/cancel").await?.existing(session)?;
+                live(&call, codewhale_tools::names::TERMINAL_CANCEL_NAME)
+                    .await?
+                    .existing(session)?;
                 let input = json!({ "session": owned_name(&call, session) });
-                nested(&call, "terminal/cancel", session, input).await
+                nested(
+                    &call,
+                    codewhale_tools::names::TERMINAL_CANCEL_NAME,
+                    session,
+                    input,
+                )
+                .await
             }
             TerminalMethod::Reset(SessionInput { session }) => {
                 let session = session_name(&session)?;
-                live(&call, "terminal/reset").await?.existing(session)?;
+                live(&call, codewhale_tools::names::TERMINAL_RESET_NAME)
+                    .await?
+                    .existing(session)?;
                 let input = json!({ "session": owned_name(&call, session) });
-                nested(&call, "terminal/reset", session, input).await
+                nested(
+                    &call,
+                    codewhale_tools::names::TERMINAL_RESET_NAME,
+                    session,
+                    input,
+                )
+                .await
             }
         }
     })
@@ -221,19 +262,29 @@ fn refused(message: &str) -> BrokerRefusal {
     }
 }
 
-fn session_name(name: &str) -> Result<&str, BrokerRefusal> {
-    let ok = !name.is_empty()
+pub(crate) fn is_valid_session_name(name: &str) -> bool {
+    !name.is_empty()
         && name.len() <= MAX_SESSION_NAME
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
-    if ok {
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+fn session_name(name: &str) -> Result<&str, BrokerRefusal> {
+    if is_valid_session_name(name) {
         Ok(name)
     } else {
         Err(invalid(format!(
             "a terminal name is 1 to {MAX_SESSION_NAME} letters, digits, `_`, `-` or `.`"
         )))
     }
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+pub(crate) fn session_parts(full_name: &str) -> Option<(&str, &str)> {
+    let rest = full_name.strip_prefix("dsh:")?;
+    let (plugin_id, session) = rest.rsplit_once(':')?;
+    (!plugin_id.is_empty() && is_valid_session_name(session)).then_some((plugin_id, session))
 }
 
 fn timeout(secs: Option<u64>) -> Result<Option<u64>, BrokerRefusal> {
@@ -245,9 +296,20 @@ fn timeout(secs: Option<u64>) -> Result<Option<u64>, BrokerRefusal> {
     }
 }
 
-fn prefix(plugin: &str) -> String {
+pub(crate) fn prefix(plugin: &str) -> String {
     format!("dsh:{plugin}:")
 }
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+pub(super) fn kill_plugin_sessions(plugin_id: &str) {
+    let prefix = prefix(plugin_id);
+    if let Err(error) = crate::tools::terminal_session::kill_sessions_named(&prefix) {
+        tracing::warn!(target: LOG, plugin = %plugin_id, %error, "failed to end plugin terminal sessions");
+    }
+}
+
+#[cfg(not(all(unix, not(target_env = "ohos"))))]
+pub(super) fn kill_plugin_sessions(_plugin_id: &str) {}
 
 fn owned_name(call: &BrokerCall, session: &str) -> String {
     format!("{}{session}", prefix(&call.owner.plugin_id))
@@ -261,7 +323,12 @@ async fn live(call: &BrokerCall, tool_name: &'static str) -> Result<Live, Broker
     let _ = tool.refresh_live_posture();
     let needs_full = matches!(
         tool_name,
-        "terminal/run" | "terminal/send" | "terminal/reset"
+        codewhale_tools::names::TERMINAL_RUN_NAME
+            | codewhale_tools::names::TERMINAL_SEND_NAME
+            | codewhale_tools::names::TERMINAL_RESET_NAME
+            | codewhale_tools::names::LEGACY_TERMINAL_RUN_NAME
+            | codewhale_tools::names::LEGACY_TERMINAL_SEND_NAME
+            | codewhale_tools::names::LEGACY_TERMINAL_RESET_NAME
     );
     if !tool.shell_policy.allows_shell()
         || (needs_full && tool.shell_policy != ShellPolicy::Full)

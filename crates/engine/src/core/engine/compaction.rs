@@ -332,13 +332,7 @@ impl Engine {
         prepared.session_id = Some(self.session.id.clone());
         prepared.notice_sink = Some(std::sync::Arc::new(EngineCompactionNoticeSink {
             tx: self.tx_event.clone(),
-            origin: self
-                .config
-                .compaction
-                .runtime_cost_owner
-                .is_none()
-                .then(|| self.config.runtime_services.accounting_origin.clone())
-                .flatten(),
+            origin: self.turn_accounting_origin(),
             child: self
                 .child_host
                 .as_ref()

@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::role::Role;
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SafetyCheckConfig {
+    pub level: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ConversationTitleConfig {
+    pub enabled: bool,
+}
+
 /// Request payload handed to the model-client preparation seam.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageRequest {
@@ -36,6 +46,10 @@ pub struct MessageRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_check: Option<SafetyCheckConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<ConversationTitleConfig>,
 }
 
 /// Inputs that distinguish a primary agent-turn request.
@@ -75,6 +89,8 @@ pub fn prepare_primary_turn_request(input: PrimaryTurnRequest) -> MessageRequest
         stream: Some(true),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -216,6 +232,10 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<ToolCaller>,
     },
     #[serde(rename = "tool_search_tool_result")]
     ToolSearchToolResult {
@@ -227,6 +247,43 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: serde_json::Value,
     },
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    #[serde(rename = "web_fetch_tool_result")]
+    WebFetchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    #[serde(rename = "web_search_call")]
+    WebSearchCall {
+        id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sources: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<serde_json::Value>,
+    },
+    #[serde(rename = "server_tool_calls")]
+    ServerToolCalls { steps: Vec<serde_json::Value> },
+    #[serde(rename = "file")]
+    File { file_id: String },
 }
 
 /// Identity for pairing host history without conflating a provider's reused
@@ -266,10 +323,17 @@ impl ContentBlock {
                     .map_or(ToolCallKey::LegacyProvider(id), ToolCallKey::Execution),
             ),
             Self::ServerToolUse { id, .. }
+            | Self::WebSearchCall { id, .. }
             | Self::ToolSearchToolResult {
                 tool_use_id: id, ..
             }
             | Self::CodeExecutionToolResult {
+                tool_use_id: id, ..
+            }
+            | Self::WebSearchToolResult {
+                tool_use_id: id, ..
+            }
+            | Self::WebFetchToolResult {
                 tool_use_id: id, ..
             } => Some(ToolCallKey::LegacyProvider(id)),
             _ => None,
@@ -538,5 +602,92 @@ mod tests {
         assert!(request.thinking.is_none());
         assert!(request.temperature.is_none());
         assert!(request.top_p.is_none());
+        assert!(request.safety_check.is_none());
+        assert!(request.title.is_none());
+    }
+
+    #[test]
+    fn deepseek_chatbot_blocks_and_request_options_round_trip() {
+        let blocks = vec![
+            ContentBlock::ServerToolUse {
+                id: "srv_1".to_string(),
+                name: "deepseek_web_search".to_string(),
+                input: json!({ "query": "rust 2024" }),
+                kind: Some("search".to_string()),
+                caller: Some(ToolCaller {
+                    caller_type: "direct".to_string(),
+                    tool_id: None,
+                }),
+            },
+            ContentBlock::WebSearchToolResult {
+                tool_use_id: "srv_1".to_string(),
+                content: json!([{ "type": "web_search_result_location", "url": "https://example.com" }]),
+                kind: Some("search".to_string()),
+            },
+            ContentBlock::WebFetchToolResult {
+                tool_use_id: "srv_2".to_string(),
+                content: json!({ "type": "web_fetch_result", "url": "https://example.com" }),
+                kind: Some("read_link".to_string()),
+                signature: Some("sig_abc".to_string()),
+            },
+            ContentBlock::WebSearchCall {
+                id: "ws_1".to_string(),
+                status: "completed".to_string(),
+                kind: Some("deep_search".to_string()),
+                action: Some(json!({ "type": "search", "query": "rust" })),
+                sources: Some(json!([{ "url": "https://example.com" }])),
+                page: Some(json!({ "url": "https://example.com" })),
+                signature: Some("sig_ws".to_string()),
+                error: None,
+            },
+            ContentBlock::ServerToolCalls {
+                steps: vec![json!({ "type": "search", "query": "rust" })],
+            },
+            ContentBlock::File {
+                file_id: "file_123".to_string(),
+            },
+        ];
+        assert_eq!(
+            blocks[0].tool_call_key(),
+            Some(ToolCallKey::LegacyProvider("srv_1"))
+        );
+        assert_eq!(
+            blocks[1].tool_call_key(),
+            Some(ToolCallKey::LegacyProvider("srv_1"))
+        );
+        assert_eq!(
+            blocks[2].tool_call_key(),
+            Some(ToolCallKey::LegacyProvider("srv_2"))
+        );
+        assert_eq!(
+            blocks[3].tool_call_key(),
+            Some(ToolCallKey::LegacyProvider("ws_1"))
+        );
+
+        let mut req = prepare_primary_turn_request(primary_turn());
+        req.safety_check = Some(SafetyCheckConfig {
+            level: "high".to_string(),
+        });
+        req.title = Some(ConversationTitleConfig { enabled: true });
+        req.messages = vec![
+            Message {
+                role: Role::LatestReminder,
+                content: vec![ContentBlock::Text {
+                    text: "Respond briefly".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: blocks,
+            },
+        ];
+        let encoded = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(encoded["safety_check"]["level"], "high");
+        assert_eq!(encoded["title"]["enabled"], true);
+        let decoded: MessageRequest = serde_json::from_value(encoded).expect("deserialize");
+        assert_eq!(decoded.safety_check, req.safety_check);
+        assert_eq!(decoded.title, req.title);
+        assert_eq!(decoded.messages, req.messages);
     }
 }

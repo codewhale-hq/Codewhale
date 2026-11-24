@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Isso instala a versão mais recente no macOS ou no Linux, e não exige conta. [W
 
 <sub>Esta tradução é um rascunho automático que ainda não foi revisado por um falante nativo.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale em um terminal depois de uma tarefa de demonstração. Ele informa que adicionou uma opção --json ao export.py, que os 3 testes locais passaram e que uma revisão delegada não encontrou problemas. A lista de tarefas abaixo mostra três etapas concluídas, e a linha de status mostra Full Access e o provedor local website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale em um terminal depois de uma tarefa real com deepseek-flash. Ele executou python3 -m unittest -v test_ls.py, 2 testes passaram e ele informa que adicionou a opção --json ao ls.py. A linha de status mostra accept edits e deepseek-flash.">
 
-<sub>Uma build de desenvolvimento da 0.10.3, que ainda não foi lançada, com um modelo de teste roteirizado, em Full Access dentro de um workspace descartável. A edição, três testes e uma revisão por um subagente rodaram de verdade.</sub>
+<sub>Uma sessão real em uma versão de desenvolvimento da 0.10.3: o deepseek-flash, pela API do DeepSeek, escreveu a alteração, e você permitiu uma vez a execução dos testes.</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Mais de 40 provedores vêm integrados, entre eles Anthropic, OpenAI, DeepSeek, G
 
 `/goal` define um objetivo que continua entre turnos. O Codewhale pode dividir o trabalho entre [subagentes](../SUBAGENTS.md), rodar uma [Fleet](../FLEET.md) de agentes com papéis e modelos próprios, ou seguir um [fluxo de trabalho](../WORKFLOW_AUTHORING.md) salvo no repositório.
 
-### Extensões
+### Plugins
 
-Conecte [servidores MCP](../MCP.md), adicione [skills](../SKILLS.md) e [plugins](../PLUGINS.md), e rode [hooks](../HOOKS.md) em eventos de sessão e de ferramentas. O modo código (experimental, ativado por padrão) permite que o modelo escreva um programa `execute_tools` que chama várias ferramentas MCP e de plugins; cada chamada continua seguindo suas regras de aprovação e mantém seu recibo. O plugin Computer Use incluído na v0.10.2 (experimental, só macOS) pode observar e operar outros apps, e fica desligado até você revisar o acesso dele e ativá-lo ([guia](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Chegando na 0.10.3: o plugin passa a ser lançado [separadamente](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Conecte [servidores MCP](../MCP.md), adicione [skills](../SKILLS.md) e [plugins](../PLUGINS.md), e rode [hooks](../HOOKS.md) em eventos de sessão e de ferramentas. O modo código (experimental, ativado por padrão) permite que o modelo escreva um programa `execute_tools` que chama várias ferramentas MCP e de plugins; cada chamada continua seguindo suas regras de aprovação e mantém seu recibo. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) é um plugin separado lançado por conta própria (experimental, só macOS) e fica desligado até você revisar o acesso dele e ativá-lo.
 
 ### Formas de rodar
 
@@ -96,11 +96,9 @@ O app de terminal, `exec`, `web` e a Runtime API compartilham um motor ([arquite
 
 ## Como ele se mantém seguro
 
-Duas chaves dizem quanto o Codewhale pode fazer sozinho. Com a entrada vazia, `Tab` troca o modo: **Plan** lê e pesquisa mas não muda nada, **Work** edita arquivos e roda comandos, e **Operate** tem o mesmo acesso que Work e continua até o objetivo ser verificado ou precisar de você. `Shift+Tab` troca a permissão. **Ask**, o padrão, aplica edições de arquivos no seu repositório sem perguntar e pergunta antes de comandos de shell que não são somente leitura. **Auto-Review** deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Ask para aprová-las você mesmo. **Full Access** nunca pergunta e desliga o sandbox do Codewhale, embora as regras do repositório e a política gerenciada continuem valendo. O [guia da v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) tem os detalhes.
+Um único seletor diz quanto o Codewhale pode fazer sozinho. `Shift+Tab` avança por ele: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, o padrão, aplica edições de arquivos dentro do repositório git sem perguntar e pergunta antes de comandos. **Ask** pergunta antes de cada edição de arquivo e de cada comando. **Plan** lê e pesquisa mas não muda nada. **Auto-Review** deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Ask para aprová-las você mesmo. **Full Access** nunca pergunta e desliga o sandbox do Codewhale, embora as regras do repositório e a política gerenciada continuem valendo. `Tab` só completa e nunca troca o modo, e o Operate foi aposentado. O [guia de modos](../MODES.md) tem os detalhes.
 
-Chegando na 0.10.3: `Shift+Tab` vira um único seletor que passa por Ask, Accept Edits, Plan, Auto-Review e Full Access, `Tab` deixa de trocar o modo e Operate é aposentado. Ask passará a perguntar também antes de cada edição de arquivo, e o novo padrão, Accept Edits, aplicará edições dentro do repositório git e continuará perguntando antes de comandos. O [guia atual](../MODES.md) descreve isso.
-
-Em Ask e Auto-Review, os comandos rodam em um sandbox do sistema operacional quando o sistema tem um: Seatbelt no macOS, e bubblewrap no Linux quando está instalado. O Windows ainda não tem sandbox do sistema, e Full Access desliga o sandbox. Dentro do sandbox, comandos de shell e sessões de terminal não conseguem ler armazenamentos de credenciais como `~/.ssh`, `~/.aws` e arquivos `.env`. `/preview-request` mostra uma prévia com dados ocultos da próxima requisição sem enviá-la.
+Em Ask, Accept Edits e Auto-Review, os comandos rodam em um sandbox do sistema operacional quando o sistema tem um: Seatbelt no macOS, e bubblewrap no Linux quando está instalado. O Windows ainda não tem sandbox do sistema, e Full Access desliga o sandbox. Dentro do sandbox, comandos de shell e sessões de terminal não conseguem ler armazenamentos de credenciais como `~/.ssh`, `~/.aws` e arquivos `.env`. `/preview-request` mostra uma prévia com dados ocultos da próxima requisição sem enviá-la.
 
 Você não precisa de conta, e as chaves adicionadas com `/provider` ficam na sua máquina. Com a sua própria chave de API, você paga o provedor diretamente, e modelos locais não precisam de chave. O rodapé e `/cost` mostram quanto uma sessão custou quando o preço é conhecido, e um preço desconhecido aparece como desconhecido, nunca como grátis.
 

@@ -26,11 +26,14 @@ coordination, worker checkpoints and terminal delivery; it does not run another
 model/tool loop. Work uses the full explicit owner limit. At the limit the host
 preserves a partial-result receipt without an extra model reporting request.
 
-Transient provider failures use Core's dispatch and retry boundaries. An exhausted
-budget or interrupted request preserves the recorded checkpoint and a continuation
-handle. Each actually dispatched attempt carries its original session, route and
-source identity: provider usage is billed once, then projected to the worker
-ledger. A successful response without usage and an unknown request outcome retain
+Transient provider failures use Core's dispatch and retry boundaries. An interrupted
+worker can resume from a continuable checkpoint using `agent` follow-up. An
+exhausted budget ends the worker. The receipt labels clipped assistant text and
+reports how many characters it shows. Use addressed `agent` status with
+`detail: true` and `handle_read` on the returned `transcript_handle` to
+inspect the retained record. Each actually dispatched attempt carries its original
+session, route and source identity: provider usage is billed once, then projected
+to the worker ledger. A successful response without usage and an unknown request outcome retain
 distinct coverage gaps; neither is priced as zero. For work that must survive
 process restarts, sleep or remote execution, use Fleet or a Workflow-backed run.
 
@@ -120,7 +123,11 @@ callable, and a tool that is denied never appears.
 The session's **permission posture** applies inside every child exactly as
 it applies to the parent turn: under Auto-Review the same deterministic
 floor and one-shot model guardian decide a worker's held calls (never a
-prompt; an unavailable guardian denies, fail closed); under Ask a held call
+prompt; an unavailable guardian denies, fail closed), and on return a child
+that ran tool calls has its calls-only action list reviewed once against the
+root owner's requests — prepending a sanitized `[Auto-Review warning: ...]`
+notice to the returned report on a concern or unavailable check and surfacing
+child blocks (without retry grants) in the parent's blocked-actions list; under Ask a held call
 the role cannot delegate is raised as an approval prompt in the parent's
 UI and the worker waits visibly (`waiting for user`), or is denied with the
 reason on hosts that cannot prompt; Full Access applies
@@ -214,6 +221,20 @@ real isolated worktree may proceed in parallel. A `custom` role requires
 explicit write-capable authority to claim writes; otherwise it starts
 read-only.
 
+A read-only role (`explore`, `planner`, `reviewer`, `test`, `advisor`) that is
+given `deliverables`, `write_roots`, `exact_files` or `coordination_contracts`
+is refused at start, before any model call, with the roles and saved profiles
+on the current roster that can write. The child is never started only to
+discover it cannot do the job.
+
+Every write-capable child (`general`, `implement`, `custom`) is told how to
+work in a checkout: use its own worktree (the isolated one it was given, or
+ask the parent for `worktree=true` when others may write the same checkout),
+one agent per worktree, base new work on current upstream main, never switch,
+reset, stash or clean a shared checkout, commit coherent slices in its own
+worktree and report branch and SHA, and leave pushing, merging and cleanup to
+the parent unless the brief assigns them.
+
 Read-only is not file-only. A normally write-capable agent narrowed with
 `write_authority: "read_only"` keeps the existing classifier-bounded inspection
 shell when its parent permits it: Git history/status, search, and allowed `gh`
@@ -228,9 +249,10 @@ Optional fields:
 - `worktree_branch`: exact branch to create.
 - `worktree_base`: git ref to branch from; defaults to `HEAD`.
 - `worktree_path`: exact checkout path. Relative and absolute paths must stay
-  under the default sibling `.codewhale-worktrees/<repo>/` root (symlinks are
-  resolved before the check). Any worktree request keeps the approval card,
-  even for a read-only role.
+  under the default sibling `.codewhale-worktrees/<repo>/` root, and a link
+  anywhere on the way down to the checkout, including at the root itself, is
+  refused. Any worktree request keeps the approval card, even for a read-only
+  role, and that includes `workspace_policy: "worktree"`.
 
 `cwd` may be combined with `worktree`: the requested directory becomes the
 discovery anchor the repo root (and the new checkout) is resolved from
@@ -529,8 +551,9 @@ max_admitted = 200
 # Operator-selected Runtime delegation depth. Omit to leave it uncapped.
 # This explicit value restricts descendants to six levels.
 max_depth = 6
-# Omitted or zero model-step budget is unbounded. Set a positive value only
-# when an operator deliberately wants a per-child cap.
+# Omitted or zero model-step budget is unbounded, except `explore` children,
+# which default to 24 steps. Set a positive value only when an operator
+# deliberately wants a per-child cap; it also replaces the explore default.
 default_max_steps = 0
 default_wall_time_secs = 0
 
@@ -643,7 +666,9 @@ Models should specify the task, write scope, deliverables and acceptance criteri
 not guess how many turns or minutes completion will require.
 
 An operator can deliberately set `[subagents] default_max_steps` or
-`default_wall_time_secs`. Omission or zero means no limit. Positive owner
+`default_wall_time_secs`. Omission or zero means no limit, except that
+`explore` children default to a 24-step ceiling and to at most `medium`
+inherited reasoning effort (an explicit `thinking` value still wins). Positive owner
 limits and role, parent and saved-run bounds remain authoritative; a child
 cannot remove them. There is no additional 2,000-turn or 24-hour child ceiling.
 Continuations preserve an existing run's remaining steps and absolute deadline.
@@ -713,7 +738,9 @@ model = "deepseek/deepseek-v4-pro"
 
 These are manual pins for direct and Workflow `agent` starts. A task may restate
 the same model or exact provider/model pair, but cannot change the pin with
-`model` or `model_strength`. An explicit saved profile takes precedence over a
+`model` or `model_strength`. The refusal names the roles (unpinned `type`
+values) and saved profiles on the current roster that do accept the requested
+model. An explicit saved profile takes precedence over a
 manual role pin. A type-only start also selects a unique saved role pin when
 there is no manual override; ambiguous saved roles fail instead of choosing one.
 Durable Fleet runs retain their selected member's frozen route.
@@ -1033,6 +1060,28 @@ not contain `### BLOCKERS`.
 The parent reads `EVIDENCE` as a working set for the next turn, so
 scouts and reviewers should be precise here.
 
+## What a child knows at start
+
+A child's system prompt carries, after its role contract, memory and skills:
+
+- **Inherited instructions.** The same user-level and project-level
+  instructions pinned for the parent session (`AGENTS.md`/`CLAUDE.md` chain,
+  rules, constitution), each scope capped at 64 KiB with a truncation marker
+  pointing back to the source file. They are already within the parent's
+  instruction budget; the cap protects a child on a smaller context window.
+  A forked child receives them once, in its system prompt, not again in the
+  forked context block. They narrow behaviour only; they never widen the
+  child's permissions.
+- **Identity and capabilities.** Its workspace path, whether it is an isolated
+  worktree and on which branch, its file, shell, network and delegation grants
+  (resolved from the same grant the tool registry enforces), whether an
+  approval prompt can be answered for it, and the rule that a step needing a
+  missing capability comes back to the parent as a BLOCKER with the exact
+  command or edit, instead of a workaround.
+
+Both sit in the child's frozen system prefix: they are fixed for that child's
+lifetime and do not change its KV-cache prefix between turns.
+
 ## Memory and the `remember` tool (#489)
 
 Sub-agents share the parent's native memory store when memory is enabled
@@ -1040,6 +1089,28 @@ Sub-agents share the parent's native memory store when memory is enabled
 append durable notes via the `remember` tool — handy for a
 scout that discovers a project convention worth carrying across
 sessions, or a verifier that learns "this test is flaky".
+
+A child also *reads* the same reviewed memory the parent reads. Its system
+prompt carries the parent session's `codewhale.memory.context.v1` packet,
+followed by the same `## Memory Hygiene` guidance the root prompt uses
+(`crates/engine/src/tools/subagent/mod.rs`, `subagent_memory_section`), so a
+rule the user pinned — a deployment gate, a working-directory rule — binds the
+child that actually edits files rather than only the orchestrator. The packet
+is re-composed from the inherited `memory_path` instead of copied out of the
+parent's prompt, so a memory edited mid-session reaches a later spawn, and an
+isolated worktree still resolves to the same workspace scope through its
+shared git remote. Children record no context receipt of their own; the root
+session's preparation is the receipt for those bytes. With memory disabled,
+path absent, empty store, or every entry reviewed off, nothing is injected —
+no empty envelope.
+
+Consequences worth knowing: the packet is untrusted evidence with the same
+standing it has for the parent (it is not an authority channel), and it sits
+in the child's stable prefix, so a memory edit changes child prompt bytes the
+same way it changes the parent's pinned header. A workspace identity is
+resolved from the child's own workspace; a non-git workspace with a child
+`cwd` in a subdirectory resolves to a different identity and therefore misses
+workspace-scoped memory (global memory still applies).
 
 `remember` takes a `scope` of `global` or `workspace`
 (`crates/engine/src/tools/remember.rs`, schema enum plus scope handling) and

@@ -41,6 +41,18 @@ export const DOC_CATEGORY_LABELS: Record<DocTopic["category"], { en: string; zh:
 
 export const DOC_TOPICS: DocTopic[] = [
   {
+    id: "first-time",
+    slug: "first-time",
+    label: { en: "Use Codewhale for the first time", zh: "第一次使用 Codewhale" },
+    description: {
+      en: "Open a terminal, install, pick the folder Codewhale works in, connect a model and finish a first task.",
+      zh: "打开终端、安装、选择 Codewhale 工作的文件夹、连接模型并完成第一个任务。",
+    },
+    repoSource: ["docs/GUIDE.md", "docs/INSTALL.md", "docs/MODES.md", "docs/SANDBOX.md", "docs/KEYBINDINGS.md"],
+    hasPage: true,
+    category: "getting-started",
+  },
+  {
     id: "install",
     slug: "install",
     label: { en: "Install Codewhale", zh: "安装 Codewhale" },
@@ -73,7 +85,7 @@ export const DOC_TOPICS: DocTopic[] = [
       en: "Save a provider key, check which key is used, or run a local model.",
       zh: "保存提供商密钥、查看当前使用的密钥，或运行本地模型。",
     },
-    repoSource: ["docs/INSTALL.md", "docs/PROVIDERS.md", "docs/CODEWHALE_AGENT.md"],
+    repoSource: ["docs/INSTALL.md", "docs/PROVIDERS.md"],
     hasPage: true,
     category: "getting-started",
   },
@@ -146,7 +158,7 @@ export const DOC_TOPICS: DocTopic[] = [
       en: "Follow the goal, To-do list, and sub-agents in the workbar, and hand work to a fresh session.",
       zh: "在工作栏中跟踪目标、To-do 列表和子 Agent，并把工作交接给新的会话。",
     },
-    repoSource: ["docs/TOOL_SURFACE.md", "docs/TOOL_LIFECYCLE.md"],
+    repoSource: "docs/TOOL_SURFACE.md",
     hasPage: true,
     category: "core-concepts",
   },
@@ -215,8 +227,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "mcp",
     label: { en: "Connect tools with MCP", zh: "用 MCP 连接工具" },
     description: {
-      en: "Add local (stdio) or remote (HTTP) MCP servers, sign in with OAuth, serve Codewhale over MCP, and try code mode.",
-      zh: "添加本地（stdio）或远程（HTTP）MCP 服务器、用 OAuth 登录、把 Codewhale 作为 MCP 服务器运行，并试用代码模式。",
+      en: "Add a connector: a local (stdio) or remote (HTTP) MCP server. Sign in with OAuth, serve Codewhale over MCP, and try code mode.",
+      zh: "添加连接器：本地（stdio）或远程（HTTP）MCP 服务器。用 OAuth 登录、把 Codewhale 作为 MCP 服务器运行，并试用代码模式。",
     },
     repoSource: "docs/MCP.md",
     hasPage: true,
@@ -227,8 +239,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "hooks",
     label: { en: "Run commands on events", zh: "在事件发生时运行命令" },
     description: {
-      en: "Run your own scripts at session start, before a tool call, at turn end, or when Codewhale waits for you.",
-      zh: "在会话开始、工具调用之前、回合结束或 Codewhale 等你回应时运行你自己的脚本。",
+      en: "Add a hook that runs your own script at session start, before a tool call, at turn end, or when Codewhale waits for you.",
+      zh: "添加钩子，在会话开始、工具调用之前、回合结束或 Codewhale 等你回应时运行你自己的脚本。",
     },
     repoSource: ["docs/HOOKS.md", "docs/CONFIGURATION.md"],
     hasPage: true,
@@ -239,8 +251,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "skills",
     label: { en: "Add skills", zh: "添加技能" },
     description: {
-      en: "Install, find, trust, and load reusable instruction packages.",
-      zh: "安装、查找、信任并加载可复用的指令包。",
+      en: "Install, find, trust, and load reusable instruction packages. A skill can come on its own or inside a plugin.",
+      zh: "安装、查找、信任并加载可复用的指令包。技能可以单独添加，也可以包含在插件中。",
     },
     repoSource: ["docs/SKILLS.md", "docs/CLAUDE_PLUGIN_COMPAT.md"],
     hasPage: true,
@@ -263,8 +275,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "plugins",
     label: { en: "Add plugins", zh: "添加插件" },
     description: {
-      en: "Choose plugin formats, browse catalog examples, and review, trust and enable bundles.",
-      zh: "选择插件格式，浏览目录示例，并审阅、信任和启用插件包。",
+      en: "Choose plugin formats, browse catalog examples, and review, trust and enable plugin bundles. A bundle can carry skills, connectors and hooks.",
+      zh: "选择插件格式，浏览目录示例，并审阅、信任和启用插件包。一个插件包可以携带技能、连接器和钩子。",
     },
     repoSource: ["docs/PLUGINS.md", "docs/PLUGIN_BUNDLES.md", "docs/PLUGIN_MARKETPLACE.md", "docs/EXTENSIONS.md"],
     hasPage: true,
@@ -297,6 +309,54 @@ export const DOC_TOPICS: DocTopic[] = [
   },
   // Fleet is the canonical customer noun; `/docs/pod` remains a
   // permanent compatibility redirect in app/[locale]/docs/pod/page.tsx.
+  {
+    id: "memory",
+    slug: "memory",
+    label: { en: "Keep preferences in memory", zh: "用记忆保存偏好" },
+    description: {
+      en: "The local memory store: what it keeps between sessions, where it lives and how to edit it.",
+      zh: "本地记忆存储：跨会话保留什么、存放在哪里，以及如何编辑。",
+    },
+    repoSource: "docs/MEMORY.md",
+    hasPage: false,
+    category: "core-concepts",
+  },
+  {
+    id: "read-media",
+    slug: "read-media",
+    label: { en: "Show the agent an image", zh: "给 Agent 看图片" },
+    description: {
+      en: "How read_media opens screenshots, diagrams and mockups, with its format, size and privacy limits.",
+      zh: "read_media 如何读取截图、图表和设计稿，以及格式、大小和隐私方面的限制。",
+    },
+    repoSource: "docs/READ_MEDIA.md",
+    hasPage: false,
+    category: "core-concepts",
+  },
+  {
+    id: "github-action",
+    slug: "github-action",
+    label: { en: "Review pull requests on GitHub", zh: "在 GitHub 上审查拉取请求" },
+    description: {
+      en: "Run codewhale review from a GitHub workflow with a read-only analysis job and a separate publishing job.",
+      zh: "在 GitHub 工作流中运行 codewhale review：只读的分析作业加上独立的发布作业。",
+    },
+    repoSource: "docs/GITHUB_ACTION.md",
+    hasPage: false,
+    category: "extending",
+  },
+  {
+    id: "cloud-dispatch",
+    slug: "cloud-dispatch",
+    label: { en: "Dispatch to a cloud computer (preview)", zh: "派发到云端电脑（预览）" },
+    description: {
+      en: "Send a task to a computer in your Codewhale account and reopen the same conversation from the terminal or desktop.",
+      zh: "把任务派发到 Codewhale 账户中的电脑，并从终端或桌面重新打开同一个会话。",
+    },
+    repoSource: "docs/CLOUD_DISPATCH.md",
+    hasPage: false,
+    category: "extending",
+  },
   {
     id: "troubleshooting",
     slug: "troubleshooting",
@@ -373,7 +433,7 @@ export const DOC_TOPICS: DocTopic[] = [
       en: "The rules the agent follows: built-in rules, your personal constitution, and a repository's own.",
       zh: "Agent 遵循的规则：内置规则、你的个人宪章，以及仓库自己的宪章。",
     },
-    repoSource: "docs/ARCHITECTURE.md",
+    repoSource: "docs/CONFIGURATION.md",
     hasPage: true,
     category: "reference",
   },
@@ -385,7 +445,7 @@ export const DOC_TOPICS: DocTopic[] = [
       en: "The small set of tools every session starts with, and how Codewhale finds the rest.",
       zh: "每个会话默认携带的少量工具，以及 Codewhale 如何按需找到其余工具。",
     },
-    repoSource: ["docs/TOOL_SURFACE.md", "docs/RUNTIME_SIMPLIFICATION_DESIGN.md", "docs/LSP_PHP_CUSTOM.md"],
+    repoSource: ["docs/TOOL_SURFACE.md", "docs/LSP_PHP_CUSTOM.md"],
     hasPage: true,
     category: "reference",
   },

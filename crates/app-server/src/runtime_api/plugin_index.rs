@@ -1,0 +1,451 @@
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path as FsPath, PathBuf};
+
+use axum::Json;
+use axum::extract::{Query, State};
+use serde::Serialize;
+use serde_json::Value;
+
+use super::plugins::{self, PluginSummaryEntry};
+use super::{ApiError, CommandsQuery, HooksQuery, RuntimeApiState};
+
+const MAX_ADDED_NAMES: usize = 512;
+
+#[derive(Debug, Serialize)]
+pub(super) struct PluginIndexResponse {
+    workspace: String,
+    items: Vec<IndexItem>,
+    unavailable: Vec<IndexNote>,
+    problems: Vec<IndexNote>,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexNote {
+    kind: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct IndexItem {
+    id: String,
+    kind: &'static str,
+    name: String,
+    description: Option<String>,
+    source: &'static str,
+    state: &'static str,
+    labels: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adds: Option<PluginAdds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tier: Option<&'static str>,
+    owner: &'static str,
+    row: Value,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct PluginAdds {
+    skills: Vec<String>,
+    connectors: Vec<String>,
+    hooks: Vec<String>,
+    commands: Vec<String>,
+    profiles: Vec<String>,
+}
+
+impl PluginAdds {
+    fn labels(&self, entry: &PluginSummaryEntry) -> Vec<&'static str> {
+        [
+            ("skill", !self.skills.is_empty()),
+            ("connector", !self.connectors.is_empty()),
+            ("hook", !self.hooks.is_empty()),
+            ("command", !self.commands.is_empty()),
+            (
+                "tool",
+                entry.inventory.native > 0 || entry.inventory.lsp > 0,
+            ),
+            ("profile", !self.profiles.is_empty()),
+        ]
+        .into_iter()
+        .filter_map(|(label, present)| present.then_some(label))
+        .collect()
+    }
+}
+
+fn row_value<T: Serialize>(row: &T) -> Value {
+    serde_json::to_value(row).unwrap_or(Value::Null)
+}
+
+fn note_failure(unavailable: &mut Vec<IndexNote>, kind: &'static str, error: &ApiError) {
+    unavailable.push(IndexNote {
+        kind,
+        message: error.message.clone(),
+    });
+}
+
+fn plugin_source(origin: &str) -> &'static str {
+    match origin {
+        "codewhale-builtin" => "built_in",
+        "workspace-codewhale" => "project",
+        _ => "user",
+    }
+}
+
+fn plugin_state(entry: &PluginSummaryEntry) -> &'static str {
+    if matches!(
+        entry.trust_status,
+        "content-changed" | "capabilities-changed"
+    ) || entry.state == "enabled-untrusted"
+    {
+        return "needs_review";
+    }
+    match entry.state {
+        "active" => "enabled",
+        "disabled" => "disabled",
+        _ => "unavailable",
+    }
+}
+
+async fn component_names(
+    paths: &[PathBuf],
+    extension: Option<&'static str>,
+    lowercase: bool,
+    omitted: &mut bool,
+) -> Vec<String> {
+    let (names, cut) = codewhale_plugins::runtime::component_file_names(
+        paths,
+        extension,
+        lowercase,
+        MAX_ADDED_NAMES,
+    )
+    .await;
+    *omitted |= cut;
+    names
+}
+
+async fn plugin_adds(
+    plugin: &codewhale_plugins::types::LoadedPlugin,
+    omitted: &mut bool,
+) -> PluginAdds {
+    let mut skills: Vec<String> = plugin
+        .skill_snapshots
+        .iter()
+        .map(|skill| skill.name.clone())
+        .collect();
+    skills.sort();
+    let mut connectors: Vec<String> = plugin
+        .manifest
+        .mcp_servers
+        .as_ref()
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default();
+    connectors.sort();
+    PluginAdds {
+        skills,
+        connectors,
+        hooks: component_names(&plugin.components.hooks, None, false, omitted).await,
+        commands: component_names(&plugin.components.commands, Some("md"), true, omitted).await,
+        profiles: component_names(&plugin.components.agents, Some("toml"), false, omitted).await,
+    }
+}
+
+async fn plugin_adds_by_id(
+    state: &RuntimeApiState,
+    omitted: &mut BTreeSet<String>,
+) -> HashMap<String, PluginAdds> {
+    let registry = state
+        .plugin_discovery
+        .registry_for_workspace(&state.workspace);
+    let mut adds = HashMap::new();
+    for plugin in registry.list() {
+        let mut cut = false;
+        adds.insert(
+            plugin.id.as_str().to_string(),
+            plugin_adds(plugin, &mut cut).await,
+        );
+        if cut {
+            omitted.insert(plugin.name().to_string());
+        }
+    }
+    adds
+}
+
+fn skill_source(
+    path: Option<&PathBuf>,
+    is_bundled: bool,
+    skills_dir: &FsPath,
+    workspace: &FsPath,
+) -> &'static str {
+    if is_bundled {
+        return "built_in";
+    }
+    match path {
+        Some(path) if path.starts_with(skills_dir) => "user",
+        Some(path) if path.starts_with(workspace) => "project",
+        Some(_) => "other_app",
+        None => "plugin",
+    }
+}
+
+pub(super) async fn get_plugin_index(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<PluginIndexResponse>, ApiError> {
+    let mut items = Vec::new();
+    let mut unavailable = Vec::new();
+    let mut problems = Vec::new();
+
+    let commands = super::list_commands(
+        State(state.clone()),
+        Query(CommandsQuery { thread_id: None }),
+    )
+    .await;
+    let mut plugin_commands: HashMap<String, BTreeSet<String>> = HashMap::new();
+    if let Ok(Json(response)) = &commands {
+        for command in &response.commands {
+            if let (Some(plugin_id), "user") = (command.plugin_id.as_ref(), command.kind) {
+                plugin_commands
+                    .entry(plugin_id.clone())
+                    .or_default()
+                    .insert(command.name.clone());
+            }
+        }
+    }
+
+    match plugins::list_plugins(State(state.clone())).await {
+        Ok(Json(response)) => {
+            let mut omitted = BTreeSet::new();
+            let mut adds_by_id = plugin_adds_by_id(&state, &mut omitted).await;
+            for name in &omitted {
+                problems.push(IndexNote {
+                    kind: "plugin",
+                    message: format!(
+                        "plugin '{name}' adds more files than are listed, or a file name with control characters; some names are left out of `adds`"
+                    ),
+                });
+            }
+            for diagnostic in &response.registry_diagnostics {
+                problems.push(IndexNote {
+                    kind: "plugin",
+                    message: diagnostic.message.clone(),
+                });
+            }
+            for entry in &response.plugins {
+                let mut adds = adds_by_id.remove(&entry.id);
+                if entry.state == "active"
+                    && commands.is_ok()
+                    && let Some(adds) = adds.as_mut()
+                {
+                    adds.commands = plugin_commands
+                        .remove(&entry.id)
+                        .map(|names| names.into_iter().collect())
+                        .unwrap_or_default();
+                }
+                items.push(IndexItem {
+                    id: format!("plugin:{}", entry.id),
+                    kind: "plugin",
+                    name: entry
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| entry.name.clone()),
+                    description: entry.description.clone(),
+                    source: plugin_source(entry.origin),
+                    state: plugin_state(entry),
+                    labels: adds
+                        .as_ref()
+                        .map(|adds| adds.labels(entry))
+                        .unwrap_or_default(),
+                    plugin: None,
+                    adds,
+                    tier: None,
+                    owner: "/v1/apps/plugins",
+                    row: row_value(entry),
+                });
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "plugin", &error),
+    }
+
+    match plugins::list_plugin_catalog(State(state.clone())).await {
+        Ok(Json(catalog)) => {
+            for (tier, rows) in [
+                ("builtin", &catalog.builtin),
+                ("experimental", &catalog.experimental),
+                ("more", &catalog.more),
+            ] {
+                for row in rows {
+                    items.push(IndexItem {
+                        id: format!("plugin:catalog:{}", row.id),
+                        kind: "plugin",
+                        name: row.title.clone(),
+                        description: row.description.clone(),
+                        source: "built_in",
+                        state: if !row.available {
+                            "unavailable"
+                        } else if row.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        labels: Vec::new(),
+                        plugin: None,
+                        adds: None,
+                        tier: Some(tier),
+                        owner: "/v1/apps/plugins/catalog",
+                        row: row_value(row),
+                    });
+                }
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "plugin", &error),
+    }
+
+    match super::list_skills(State(state.clone())).await {
+        Ok(Json(response)) => {
+            for warning in &response.warnings {
+                problems.push(IndexNote {
+                    kind: "skill",
+                    message: warning.clone(),
+                });
+            }
+            for skill in &response.skills {
+                if skill.plugin_id.is_some() {
+                    continue;
+                }
+                items.push(IndexItem {
+                    id: format!("skill:{}", skill.name),
+                    kind: "skill",
+                    name: skill.name.clone(),
+                    description: Some(skill.description.clone()),
+                    source: skill_source(
+                        skill.path.as_ref(),
+                        skill.is_bundled,
+                        &response.directory,
+                        &state.workspace,
+                    ),
+                    state: if skill.enabled { "enabled" } else { "disabled" },
+                    labels: vec!["skill"],
+                    plugin: None,
+                    adds: None,
+                    tier: None,
+                    owner: "/v1/skills",
+                    row: row_value(skill),
+                });
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "skill", &error),
+    }
+
+    match super::list_mcp_servers(State(state.clone())).await {
+        Ok(Json(response)) => {
+            for server in &response.servers {
+                let source = match server.origin {
+                    "plugin" => continue,
+                    "project" => "project",
+                    "runtime" => "runtime",
+                    _ => "user",
+                };
+                items.push(IndexItem {
+                    id: format!("connector:{}", server.name),
+                    kind: "connector",
+                    name: server.name.clone(),
+                    description: None,
+                    source,
+                    state: if !server.enabled {
+                        "disabled"
+                    } else if server.auth_required {
+                        "needs_sign_in"
+                    } else {
+                        "enabled"
+                    },
+                    labels: vec!["connector"],
+                    plugin: None,
+                    adds: None,
+                    tier: None,
+                    owner: "/v1/apps/mcp/servers",
+                    row: row_value(server),
+                });
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "connector", &error),
+    }
+
+    match super::list_hooks(State(state.clone()), Query(HooksQuery { thread_id: None })).await {
+        Ok(Json(response)) => {
+            for problem in &response.problems {
+                problems.push(IndexNote {
+                    kind: "hook",
+                    message: problem.clone(),
+                });
+            }
+            let mut ordinals: HashMap<&'static str, usize> = HashMap::new();
+            for hook in &response.hooks {
+                let ordinal = ordinals.entry(hook.event).or_default();
+                *ordinal += 1;
+                let source = match hook.source {
+                    "plugin" => continue,
+                    "project" => "project",
+                    _ => "user",
+                };
+                let name = hook
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{} {}", hook.event, ordinal));
+                items.push(IndexItem {
+                    id: format!("hook:{source}:{}:{ordinal}", hook.event),
+                    kind: "hook",
+                    name,
+                    description: None,
+                    source,
+                    state: if response.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    labels: vec!["hook"],
+                    plugin: None,
+                    adds: None,
+                    tier: None,
+                    owner: "/v1/hooks",
+                    row: row_value(hook),
+                });
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "hook", &error),
+    }
+
+    match commands {
+        Ok(Json(response)) => {
+            for command in &response.commands {
+                let (source, plugin) = match (command.kind, command.plugin_id.as_ref()) {
+                    ("builtin", _) => continue,
+                    ("user", Some(_)) => continue,
+                    ("extension", plugin_id) => ("plugin", plugin_id.cloned()),
+                    _ if command.workspace_sourced => ("project", None),
+                    _ => ("user", None),
+                };
+                items.push(IndexItem {
+                    id: format!("command:{}", command.name),
+                    kind: "command",
+                    name: command.name.clone(),
+                    description: command.summary.clone(),
+                    source,
+                    state: "enabled",
+                    labels: vec!["command"],
+                    plugin,
+                    adds: None,
+                    tier: None,
+                    owner: "/v1/commands",
+                    row: row_value(command),
+                });
+            }
+        }
+        Err(error) => note_failure(&mut unavailable, "command", &error),
+    }
+
+    Ok(Json(PluginIndexResponse {
+        workspace: state.workspace.display().to_string(),
+        items,
+        unavailable,
+        problems,
+    }))
+}

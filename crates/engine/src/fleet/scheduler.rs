@@ -1,14 +1,16 @@
 //! Fleet scheduler policy: leases, heartbeats, backpressure, and recovery.
 
-#![allow(dead_code)]
-
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(test)]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use codewhale_protocol::fleet::*;
+#[cfg(test)]
 use serde_json::Value;
 
 use super::ledger::{FleetLedger, FleetLedgerState, FleetTaskLedgerStatus, FleetTaskState};
@@ -65,7 +67,7 @@ impl FleetScheduler {
         self.now = now;
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn tick_run(&self, run_id: &FleetRunId) -> Result<FleetSchedulerReport> {
         let mut report = FleetSchedulerReport::default();
         self.recover_unhealthy_work(run_id, &mut report, &mut |_, _, _, _| Ok(()))?;
@@ -83,7 +85,7 @@ impl FleetScheduler {
     /// and idempotent to call on a fresh process: a task re-leased by an
     /// earlier resume is no longer stale at the same instant, and a terminally
     /// failed task is never failed or escalated twice.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn resume_run(&self, run_id: &FleetRunId) -> Result<FleetSchedulerReport> {
         self.resume_run_with_restart_callback(run_id, |_, _, _, _| Ok(()))
     }
@@ -134,6 +136,7 @@ impl FleetScheduler {
         Ok(report)
     }
 
+    #[cfg(test)]
     fn recover_unhealthy_work(
         &self,
         run_id: &FleetRunId,
@@ -394,6 +397,7 @@ impl FleetScheduler {
         Ok(())
     }
 
+    #[cfg(test)]
     fn launch_queued_work(
         &self,
         run_id: &FleetRunId,
@@ -450,6 +454,7 @@ impl FleetScheduler {
         }
     }
 
+    #[cfg(test)]
     fn next_launch(
         &self,
         run: &FleetRun,
@@ -594,6 +599,7 @@ impl FleetScheduler {
             .update_run_status(run_id, status, &self.timestamp())
     }
 
+    #[cfg(test)]
     fn append_worker_event(
         &self,
         run_id: &FleetRunId,
@@ -615,12 +621,14 @@ impl FleetScheduler {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct ActiveCounts {
     by_host: BTreeMap<String, usize>,
     by_task_class: BTreeMap<String, usize>,
 }
 
+#[cfg(test)]
 fn active_counts(state: &FleetLedgerState, run: &FleetRun) -> ActiveCounts {
     let mut counts = ActiveCounts::default();
     for task in active_tasks_for_run(state, &run.id) {
@@ -646,6 +654,7 @@ fn active_counts(state: &FleetLedgerState, run: &FleetRun) -> ActiveCounts {
     counts
 }
 
+#[cfg(test)]
 fn active_tasks_for_run(state: &FleetLedgerState, run_id: &FleetRunId) -> Vec<FleetTaskState> {
     state
         .tasks
@@ -667,6 +676,7 @@ fn task_spec_for(state: &FleetLedgerState, task: &FleetTaskState) -> Option<Flee
         .cloned()
 }
 
+#[cfg(test)]
 fn host_key(worker: &FleetWorkerSpec) -> String {
     match &worker.host {
         FleetHostSpec::Local => "local".to_string(),
@@ -676,6 +686,7 @@ fn host_key(worker: &FleetWorkerSpec) -> String {
     }
 }
 
+#[cfg(test)]
 fn task_class(task: &FleetTaskSpec) -> String {
     task.metadata
         .get("class")

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/plugin.json",
+  "name": "dsh-attachments-render",
+  "version": "0.1.0",
+  "description": "Real-host fixture exercising renderResult { type: 'image', attachment } wire projection while attachments adapter stays unregistered.",
+  "license": "MIT",
+  "extensions": {
+    "net.codewhale": {
+      "native": {
+        "path": "index.mjs"
+      }
+    }
+  }
+}

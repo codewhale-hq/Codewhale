@@ -150,6 +150,12 @@ pub fn analyze_session_failure_jsonl(jsonl: &str) -> SessionFailureSummary {
 
 #[must_use]
 pub fn format_redacted_failure_summary(summary: &SessionFailureSummary) -> String {
+    if summary.counts.is_empty() && summary.malformed_lines > 0 {
+        return format!(
+            "Could not inspect {} of {} JSONL lines; failure status unknown.",
+            summary.malformed_lines, summary.total_lines
+        );
+    }
     if summary.counts.is_empty() {
         return "No session failure signals detected.".to_string();
     }
@@ -472,6 +478,12 @@ fn bool_field_any_at(value: &Value, keys: &[&str], depth: usize) -> Option<bool>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_malformed_log_is_not_reported_clean() {
+        let summary = analyze_session_failure_jsonl("not json\nstill not json\n");
+        assert!(!format_redacted_failure_summary(&summary).contains("No session failure"));
+    }
 
     #[test]
     fn bare_error_placeholder_is_not_a_schema_failure() {

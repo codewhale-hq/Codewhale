@@ -20,13 +20,16 @@ crates/telemetry/tests/golden/*.json text eol=lf
 # emits LF, so a CRLF Windows checkout reported all three as stale and would
 # embed different bytes.
 crates/tui/src/tui/pet_watch/pet-native.js text eol=lf
-pet/ios/Resources/pet-native.js text eol=lf
-pet/ios/Resources/demo.jsonl text eol=lf
 # Tideline component goldens (crates/tui/src/tui/goldens/*.txt) are
 # fs::read_to_string'd and compared byte for byte against buffer dumps that
 # always join rows with LF (golden_harness.rs::render_golden_text), so a
 # CRLF checkout failed all eight Windows golden tests with a pure \r\n diff.
 crates/tui/src/tui/goldens/*.txt text eol=lf
+vendor/codewhale-ratatui/tests/**/*.txt text eol=lf
+vendor/codewhale-ratatui/tests/**/*.json text eol=lf
+vendor/codewhale-ratatui/assets/**/*.json text eol=lf
+vendor/codewhale-ratatui/assets/**/*.js text eol=lf
+vendor/codewhale-ratatui/assets/*.scenes text eol=lf
 # FEAT-025 baseline export goldens (crates/tui/src/commands/fixtures/*.md) are
 # include_str!()'d and compared byte for byte against a document the exporter
 # builds with LF, so a CRLF checkout failed the four Windows golden tests with a
@@ -91,3 +94,8 @@ web/public/brand/fonts/OFL.txt text eol=lf whitespace=-blank-at-eol
 crates/app-server-protocol/schema/** text eol=lf
 crates/app-server-protocol/METHODS.md text eol=lf
 npm/runtime-sdk/generated/** text eol=lf
+
+/LICENSE text eol=lf
+/THIRD_PARTY_NOTICES.md text eol=lf
+/docs/THIRD_PARTY_NOTICES.md text eol=lf
+**/codewhale-notices/** text eol=lf

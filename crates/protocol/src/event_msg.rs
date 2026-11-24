@@ -803,7 +803,23 @@ pub enum EventMsg {
         decision: ToolGateVerdict,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         risk: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewer_model: Option<String>,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_digest: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action_summary: Option<String>,
+    },
+    AutoReviewPaused {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        reason: String,
+        approval_mode: String,
     },
     AdvisoryNote {
         thread_id: ThreadId,
@@ -826,6 +842,34 @@ pub enum EventMsg {
         pin_reason: String,
         last_miss_reason: String,
         context_updates: u64,
+    },
+    ConversationTitle {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        title: String,
+    },
+    ContentFilterRefusal {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refusal: Option<String>,
+    },
+    PluginChanged {
+        thread_id: ThreadId,
+        session_id: SessionId,
+        plugin: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        services: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools_added: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools_removed: Vec<String>,
     },
 }
 
@@ -895,8 +939,12 @@ pub const EVENT_KINDS: &[&str] = &[
     "elevation_required",
     "lsp_repair_update",
     "tool_gate_decision",
+    "auto_review_paused",
     "advisory_note",
     "prefix_cache_change",
+    "conversation_title",
+    "content_filter_refusal",
+    "plugin_changed",
 ];
 
 impl EventMsg {
@@ -957,8 +1005,12 @@ impl EventMsg {
             Self::ElevationRequired { .. } => "elevation_required",
             Self::LspRepairUpdate { .. } => "lsp_repair_update",
             Self::ToolGateDecision { .. } => "tool_gate_decision",
+            Self::AutoReviewPaused { .. } => "auto_review_paused",
             Self::AdvisoryNote { .. } => "advisory_note",
             Self::PrefixCacheChange { .. } => "prefix_cache_change",
+            Self::ConversationTitle { .. } => "conversation_title",
+            Self::ContentFilterRefusal { .. } => "content_filter_refusal",
+            Self::PluginChanged { .. } => "plugin_changed",
         }
     }
 
@@ -1019,8 +1071,12 @@ impl EventMsg {
             | Self::ElevationRequired { thread_id, .. }
             | Self::LspRepairUpdate { thread_id, .. }
             | Self::ToolGateDecision { thread_id, .. }
+            | Self::AutoReviewPaused { thread_id, .. }
             | Self::AdvisoryNote { thread_id, .. }
-            | Self::PrefixCacheChange { thread_id, .. } => thread_id,
+            | Self::PrefixCacheChange { thread_id, .. }
+            | Self::ConversationTitle { thread_id, .. }
+            | Self::ContentFilterRefusal { thread_id, .. }
+            | Self::PluginChanged { thread_id, .. } => thread_id,
         }
     }
 
@@ -1081,8 +1137,12 @@ impl EventMsg {
             | Self::ElevationRequired { session_id, .. }
             | Self::LspRepairUpdate { session_id, .. }
             | Self::ToolGateDecision { session_id, .. }
+            | Self::AutoReviewPaused { session_id, .. }
             | Self::AdvisoryNote { session_id, .. }
-            | Self::PrefixCacheChange { session_id, .. } => session_id,
+            | Self::PrefixCacheChange { session_id, .. }
+            | Self::ConversationTitle { session_id, .. }
+            | Self::ContentFilterRefusal { session_id, .. }
+            | Self::PluginChanged { session_id, .. } => session_id,
         }
     }
 }
@@ -1561,7 +1621,18 @@ mod tests {
                 gate: ToolGate::AutoReviewGuardian,
                 decision: ToolGateVerdict::Denied,
                 risk: Some("high".into()),
+                reviewer_model: Some("claude-sonnet-5-5".into()),
                 reason: "no".into(),
+                rule: Some("guardian".into()),
+                receipt_id: Some("ar-1".into()),
+                call_digest: Some("d1".into()),
+                action_summary: Some("bash: rm -rf /tmp".into()),
+            },
+            EventMsg::AutoReviewPaused {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                reason: "Auto-Review paused after 3 blocked calls in a row; Shift+Tab or /auto to resume".into(),
+                approval_mode: "suggest".into(),
             },
             EventMsg::AdvisoryNote {
                 thread_id: t.clone(),
@@ -1571,8 +1642,8 @@ mod tests {
                 tool_call_count: 2,
             },
             EventMsg::PrefixCacheChange {
-                thread_id: t,
-                session_id: s,
+                thread_id: t.clone(),
+                session_id: s.clone(),
                 description: "d".into(),
                 system_prompt_changed: false,
                 tools_changed: true,
@@ -1582,6 +1653,28 @@ mod tests {
                 pin_reason: "initial".into(),
                 last_miss_reason: String::new(),
                 context_updates: 0,
+            },
+            EventMsg::ConversationTitle {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                title: "Conversation".into(),
+            },
+            EventMsg::ContentFilterRefusal {
+                thread_id: t.clone(),
+                session_id: s.clone(),
+                reason: "content_filter".into(),
+                refusal: Some("Blocked by safety policy".into()),
+            },
+            EventMsg::PluginChanged {
+                thread_id: t,
+                session_id: s,
+                plugin: "alpha".into(),
+                action: "installed".into(),
+                content_hash: Some("sha256:abc".into()),
+                decided_by: Some("approved by you".into()),
+                services: vec!["workspace".into()],
+                tools_added: vec!["alpha_tool".into()],
+                tools_removed: Vec::new(),
             },
         ]
     }

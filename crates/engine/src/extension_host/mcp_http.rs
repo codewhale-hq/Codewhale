@@ -152,7 +152,7 @@ pub(super) async fn serve(
                 .redeem(&Presented {
                     ticket: &params.ticket,
                     kind: TicketKind::McpLaunch,
-                    tier: HostTier::Builtin,
+                    cohort: HostCohort::Builtin,
                     host_generation: generation,
                     owner: &params.owner,
                     method: "net/start",
@@ -674,7 +674,7 @@ fn renegotiate(
     }
     let ticket = shared.core_calls.tickets.mint(Grant {
         kind: TicketKind::McpOperation,
-        tier: HostTier::Builtin,
+        cohort: HostCohort::Builtin,
         host_generation: generation,
         owner: owner.clone(),
         method: "net/fetch",

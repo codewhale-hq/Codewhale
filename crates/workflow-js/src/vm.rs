@@ -13,10 +13,11 @@
 //! and `Date`/`Math.random` are overridden to throw so recorded runs stay
 //! deterministic for replay.
 
+use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rquickjs::function::{Async, Func};
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, CaughtError, Ctx, Promise, Value};
@@ -459,7 +460,10 @@ async fn run_in_ctx(
         &args_json,
         host_runtime,
     )?;
-    ctx.eval::<(), _>(prelude())
+    ctx.eval::<(), _>(URL_PRELUDE)
+        .catch(&ctx)
+        .map_err(|err| WorkflowJsError::VmInit(format!("url prelude failed: {err}")))?;
+    ctx.eval::<(), _>(prelude(invoker.is_some()))
         .catch(&ctx)
         .map_err(|err| WorkflowJsError::VmInit(format!("prelude failed: {err}")))?;
     if invoker.is_some() {
@@ -720,6 +724,39 @@ async fn tools_call_host(
     envelope.to_string()
 }
 
+async fn verify_candidate_host(
+    call_json: String,
+    driver: Arc<dyn WorkflowDriver>,
+    cancel: CancelHandle,
+    host_runtime: Handle,
+) -> String {
+    let outcome = async {
+        let request: serde_json::Value = serde_json::from_str(&call_json)
+            .map_err(|error| TaskError::new(TaskErrorKind::Admission, error.to_string()))?;
+        if !request.is_object() {
+            return Err(TaskError::new(
+                TaskErrorKind::Admission,
+                "verifyCandidate(): expected an object",
+            ));
+        }
+        call_on_host(
+            &host_runtime,
+            &cancel,
+            TaskError::new(TaskErrorKind::Cancelled, "verifyCandidate(): run cancelled"),
+            move || async move { driver.verify_candidate(request).await },
+        )
+        .await?
+        .map_err(|error| TaskError::new(TaskErrorKind::from(&error), error.to_string()))
+    }
+    .await;
+    match outcome {
+        Ok(result) => serde_json::json!({"result": result}).to_string(),
+        Err(TaskError { kind, message }) => {
+            serde_json::json!({"error": message, "error_kind": kind.as_str()}).to_string()
+        }
+    }
+}
+
 async fn tools_call_host_inner(
     call_json: String,
     invoker: Arc<dyn ToolInvoker>,
@@ -783,18 +820,50 @@ fn install_host(
         .map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))?;
     globals.set("args", args_value).map_err(init_err)?;
 
+    let tickets = TaskTickets::default();
     let task_driver = driver.clone();
     let task_cancel = cancel.clone();
     let task_runtime = host_runtime.clone();
+    let task_tickets = tickets.clone();
     globals
         .set(
             "__workflow_task",
-            Func::from(Async(move |opts_json: String| {
+            Func::from(Async(move |opts_json: String, ticket: u32| {
                 let driver = task_driver.clone();
                 let cancel = task_cancel.clone();
                 let host_runtime = task_runtime.clone();
-                async move { task_host(opts_json, driver, cancel, host_runtime).await }
+                let tickets = task_tickets.clone();
+                async move {
+                    task_host(opts_json, ticket, tickets, driver, cancel, host_runtime).await
+                }
             })),
+        )
+        .map_err(init_err)?;
+
+    let verifier_driver = driver.clone();
+    let verifier_cancel = cancel.clone();
+    let verifier_runtime = host_runtime.clone();
+    globals
+        .set(
+            "__workflow_verify_candidate",
+            Func::from(Async(move |call_json: String| {
+                let driver = verifier_driver.clone();
+                let cancel = verifier_cancel.clone();
+                let runtime = verifier_runtime.clone();
+                async move { verify_candidate_host(call_json, driver, cancel, runtime).await }
+            })),
+        )
+        .map_err(init_err)?;
+
+    let cancel_driver = driver.clone();
+    globals
+        .set(
+            "__workflow_cancel_tasks",
+            Func::from(move |group: Vec<u32>| {
+                for task_id in tickets.cancel(&group) {
+                    cancel_driver.cancel_task(&task_id);
+                }
+            }),
         )
         .map_err(init_err)?;
 
@@ -928,11 +997,15 @@ fn init_err(err: rquickjs::Error) -> WorkflowJsError {
 /// failure actually happened — never re-derived from the message text.
 async fn task_host(
     opts_json: String,
+    ticket: u32,
+    tickets: TaskTickets,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
     host_runtime: Handle,
 ) -> String {
-    let outcome = task_host_inner(opts_json, driver, cancel, host_runtime).await;
+    tickets.open(ticket);
+    let outcome = task_host_inner(opts_json, ticket, &tickets, driver, cancel, host_runtime).await;
+    tickets.close(ticket);
     let envelope = match outcome {
         Ok(value) => serde_json::json!({ "value": value }),
         Err(TaskError { kind, message }) => {
@@ -1031,6 +1104,59 @@ fn cancelled_task() -> TaskError {
     TaskError::new(TaskErrorKind::Cancelled, "task(): run cancelled")
 }
 
+#[derive(Clone, Default)]
+struct TaskTickets(Arc<Mutex<HashMap<u32, TicketState>>>);
+
+#[derive(Default)]
+struct TicketState {
+    task_id: Option<String>,
+    cancelled: bool,
+}
+
+impl TaskTickets {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, TicketState>> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn open(&self, ticket: u32) {
+        self.lock().insert(ticket, TicketState::default());
+    }
+
+    fn close(&self, ticket: u32) {
+        self.lock().remove(&ticket);
+    }
+
+    fn started(&self, ticket: u32, task_id: &str) -> bool {
+        let mut tickets = self.lock();
+        let Some(state) = tickets.get_mut(&ticket) else {
+            return false;
+        };
+        state.task_id = Some(task_id.to_string());
+        state.cancelled
+    }
+
+    fn is_cancelled(&self, ticket: u32) -> bool {
+        self.lock()
+            .get(&ticket)
+            .is_some_and(|state| state.cancelled)
+    }
+
+    fn cancel(&self, group: &[u32]) -> Vec<String> {
+        let mut tickets = self.lock();
+        group
+            .iter()
+            .filter_map(|ticket| {
+                let state = tickets.get_mut(ticket)?;
+                if state.cancelled {
+                    return None;
+                }
+                state.cancelled = true;
+                state.task_id.clone()
+            })
+            .collect()
+    }
+}
+
 /// A terminal `responseSchema` failure, already receipted by [`fail_schema`].
 fn schema_task(message: String) -> TaskError {
     TaskError::new(TaskErrorKind::Schema, message)
@@ -1038,6 +1164,8 @@ fn schema_task(message: String) -> TaskError {
 
 async fn task_host_inner(
     opts_json: String,
+    ticket: u32,
+    tickets: &TaskTickets,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
     host_runtime: Handle,
@@ -1100,6 +1228,9 @@ async fn task_host_inner(
         .await?
         .map_err(|err| TaskError::new(TaskErrorKind::from(&err), err.to_string()))?;
         let task_id = spawned_task.task_id;
+        if tickets.started(ticket, &task_id) {
+            driver.cancel_task(&task_id);
+        }
         let completion_rx = spawned_task.completion;
         let completion = tokio::select! {
             _ = cancel.cancelled() => return Err(cancelled_task()),
@@ -1176,7 +1307,7 @@ async fn task_host_inner(
                 Some("budget exhausted".to_string()),
             )));
         }
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() || tickets.is_cancelled(ticket) {
             return Err(cancelled_task());
         }
         current = repair_request(&request, attempt + 1, &error, &raw);
@@ -1578,20 +1709,26 @@ fn task_role_kind(value: &str) -> Option<TaskRoleKind> {
     }
 }
 
-/// The JS prelude injected before every script: determinism bans, the
-/// `task`/`parallel`/`pipeline`/`log`/`phase` stdlib (design §7), and the
-/// `budget` global.
-fn prelude() -> String {
-    PRELUDE_TEMPLATE.replace("__MAX_ITEMS__", &PARALLEL_MAX_ITEMS.to_string())
+const URL_PRELUDE: &str = include_str!("url_prelude.js");
+
+fn prelude(is_codemode: bool) -> String {
+    let determinism_reason = if is_codemode {
+        "in execute_tools programs: scripts run in a deterministic sandbox without wall-clock or random state"
+    } else {
+        "in Workflow scripts: runs must be deterministic for record/replay"
+    };
+    PRELUDE_TEMPLATE
+        .replace("__MAX_ITEMS__", &PARALLEL_MAX_ITEMS.to_string())
+        .replace("__DETERMINISM_REASON__", determinism_reason)
 }
 
 const PRELUDE_TEMPLATE: &str = r#""use strict";
 (() => {
   const banned = (name) => () => {
-    throw new Error(name + " is unavailable in Workflow scripts: runs must be deterministic for record/replay");
+    throw new Error(name + " is unavailable __DETERMINISM_REASON__");
   };
   const BannedDate = function Date() {
-    throw new Error("new Date()/Date() is unavailable in Workflow scripts: runs must be deterministic for record/replay");
+    throw new Error("new Date()/Date() is unavailable __DETERMINISM_REASON__");
   };
   BannedDate.now = banned("Date.now()");
   BannedDate.parse = banned("Date.parse()");
@@ -1602,6 +1739,8 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   // Capture temporary host bindings into this closure, then strip them from
   // globalThis so scripts only see the documented Workflow surface (#4129).
   const hostTask = __workflow_task;
+  const hostVerifyCandidate = __workflow_verify_candidate;
+  const hostCancelTasks = __workflow_cancel_tasks;
   const hostLog = __workflow_log;
   const hostEverySlotFailed = __workflow_every_slot_failed;
   const hostSlotDropped = __workflow_slot_dropped;
@@ -1687,11 +1826,16 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     return results;
   };
 
+  let taskTickets = 0;
+  const failFastGroups = [];
+
   globalThis.task = async (opts) => {
     if (opts === null || typeof opts !== "object") {
       throw new TypeError("task(): expected an options object");
     }
-    const envelope = JSON.parse(await hostTask(JSON.stringify(opts)));
+    const ticket = ++taskTickets;
+    for (const group of failFastGroups) group.push(ticket);
+    const envelope = JSON.parse(await hostTask(JSON.stringify(opts), ticket));
     if (envelope.error !== undefined) {
       const err = new Error(envelope.error);
       // The host always names the kind; a missing one means an envelope this
@@ -1702,6 +1846,19 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       throw err;
     }
     return envelope.value;
+  };
+
+  globalThis.task.verifyCandidate = async (request) => {
+    if (request === null || typeof request !== "object") {
+      throw new TypeError("verifyCandidate(): expected an object");
+    }
+    const envelope = JSON.parse(await hostVerifyCandidate(JSON.stringify(request)));
+    if (envelope.error !== undefined) {
+      const err = new Error(envelope.error);
+      err.kind = envelope.error_kind;
+      throw err;
+    }
+    return envelope.result;
   };
 
   globalThis.parallel = (thunks, opts) => {
@@ -1715,8 +1872,14 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     const failFast = mode === "fail-fast";
     const partial = mode === "partial";
     const errors = [];
+    const group = failFast ? [] : null;
+    let groupFailed = false;
+    const cancelGroup = () => {
+      groupFailed = true;
+      hostCancelTasks(group);
+    };
     // Returns the slot value, or throws to reject the whole fan-out.
-    const onSlotError = (index, err) => {
+    const slotError = (index, err) => {
       const kind = taskErrorKind(err);
       const message = taskErrorText(err);
       stampKind(err, kind);
@@ -1748,18 +1911,35 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       hostSlotDropped("parallel", kind, index);
       return null;
     };
-    const slots = thunks.map((thunk, index) => {
+    const onSlotError = (index, err) => {
       try {
-        return Promise.resolve(typeof thunk === "function" ? thunk() : thunk)
-          .catch((err) => onSlotError(index, err));
-      } catch (err) {
-        try {
-          return onSlotError(index, err);
-        } catch (rethrown) {
-          return Promise.reject(rethrown);
-        }
+        return slotError(index, err);
+      } catch (rethrown) {
+        if (group !== null) cancelGroup();
+        throw rethrown;
       }
-    });
+    };
+    if (group !== null) failFastGroups.push(group);
+    let slots;
+    try {
+      slots = thunks.map((thunk, index) => {
+        try {
+          return Promise.resolve(typeof thunk === "function" ? thunk() : thunk)
+            .catch((err) => onSlotError(index, err));
+        } catch (err) {
+          try {
+            return onSlotError(index, err);
+          } catch (rethrown) {
+            return Promise.reject(rethrown);
+          }
+        }
+      });
+    } finally {
+      if (group !== null) {
+        failFastGroups.splice(failFastGroups.indexOf(group), 1);
+        if (groupFailed) hostCancelTasks(group);
+      }
+    }
     return Promise.all(slots).then((results) => {
       // A fan-out where nothing survived is a dead fan-out, not resilience.
       // The default stays ergonomic (the array still resolves) but the run
@@ -1845,9 +2025,71 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     });
   };
 
-  globalThis.log = (message) => {
-    hostLog(typeof message === "string" ? message : (JSON.stringify(message) ?? String(message)));
+  const UrlCtor = globalThis.URL;
+  const UrlSearchParamsCtor = globalThis.URLSearchParams;
+  const safeString = (value) => {
+    try {
+      return String(value);
+    } catch (_) {
+      return "[object Object]";
+    }
   };
+  const formatLogValue = (value) => {
+    if (typeof value === "string") return value;
+    if (value === null) return "null";
+    if (value === undefined) return "undefined";
+    if (
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      typeof value === "bigint" ||
+      typeof value === "symbol" ||
+      typeof value === "function"
+    ) {
+      return String(value);
+    }
+    if (
+      value instanceof Error ||
+      (UrlCtor && value instanceof UrlCtor) ||
+      (UrlSearchParamsCtor && value instanceof UrlSearchParamsCtor)
+    ) {
+      return safeString(value);
+    }
+    try {
+      const encoded = JSON.stringify(value);
+      return encoded === undefined ? safeString(value) : encoded;
+    } catch (_) {
+      return safeString(value);
+    }
+  };
+  const formatConsoleArgs = (items) => {
+    if (items.length === 0) return "";
+    const parts = new Array(items.length);
+    for (let i = 0; i < items.length; i++) {
+      parts[i] = formatLogValue(items[i]);
+    }
+    return parts.join(" ");
+  };
+  const emitConsole = (prefix, items) => {
+    const text = formatConsoleArgs(items);
+    if (prefix === "") {
+      hostLog(text);
+    } else if (text === "") {
+      hostLog(prefix);
+    } else {
+      hostLog(prefix + " " + text);
+    }
+  };
+
+  globalThis.log = (message) => {
+    hostLog(formatLogValue(message));
+  };
+  globalThis.console = Object.freeze({
+    log: (...items) => emitConsole("", items),
+    info: (...items) => emitConsole("[info]", items),
+    warn: (...items) => emitConsole("[warn]", items),
+    error: (...items) => emitConsole("[error]", items),
+    debug: (...items) => emitConsole("[debug]", items),
+  });
   globalThis.phase = (title) => {
     hostPhase(String(title));
   };
@@ -1862,6 +2104,8 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
 
   for (const name of [
     "__workflow_task",
+    "__workflow_verify_candidate",
+    "__workflow_cancel_tasks",
     "__workflow_log",
     "__workflow_every_slot_failed",
     "__workflow_slot_dropped",

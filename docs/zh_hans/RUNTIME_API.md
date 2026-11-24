@@ -8,6 +8,7 @@
 > 2026-11-02 补齐控制帧大小、写入背压、ACP 拒绝恢复与当前 HTTP 监听器边界。
 > 2026-11-07 补齐线程作用域的终端会话标识、重新连接与重启语义。
 > 2026-11-07 补齐桌面侧边浏览器调用的过渡性账号约束及其已知限制。
+> 2026-11-14 补齐 `/v1/apps/plugins` 审计归属、队列隔离、作用域与宿主服务字段，以及回执中的插件变更契约。
 
 `codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
@@ -652,13 +653,19 @@ Codewhale 0.10.2 的 ACP v1 支持不完整。`session/new` 和 `session/load`
 会在创建、恢复或返回缓存会话之前拒绝非空 `mcpServers`，返回 `-32602`。
 该字段可省略或为 `[]`；null 与其他非数组值无效。验证不会执行所提供的命令。
 [ACP v1 要求 stdio MCP 支持](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)；HTTP/SSE 能力为 false 并不代表完整合规。
-需要 MCP 的集成请用完整 Runtime API。下列工具限制来自 Codewhale host profile，
+需要这类集成请用完整 Runtime API 及其现有 MCP 管理。下列工具限制来自 Codewhale host profile，
 不是 ACP 协议本身的限制。
 
 受信任的本地 ACP profile 将 Core 收窄到文件/搜索/git/patch，以及获准的前台
-shell 工具。Shell 同时要求编辑器声明 terminal 支持、操作者允许 `allow_shell`；
-指定的外部沙箱不可用时不提供 shell。此接口不提供 MCP、动态工具、任务、PTY、
-后台 shell、解释器、子智能体或 RLM 生命周期。内置工具覆盖会移除整个兼容别名族。
+shell 工具，外加已审查的插件工具（`extension_host` 功能）和 Codewhale 中配置的
+MCP 服务器的工具（`mcp` 功能），均受同一权限设置约束；这一点见于 0.10.2 之后的 main，0.10.2 本身不含。Shell 同时要求编辑器声明
+terminal 支持、操作者允许 `allow_shell`；指定的外部沙箱不可用时不提供 shell。此接口
+不提供客户端传入的 MCP 服务器、动态工具、任务、PTY、后台 shell、解释器、子智能体
+或 RLM 生命周期。ACP 没有工具搜索，因此每个已连接的 MCP 工具及其 schema 都会随每个请求
+发送，标记为 `lazy = true` 的服务器永不启动；MCP 集合很大时每回合都会消耗令牌，并可能超出
+提供商的工具数量上限。模型在运行时启动的 MCP 服务器不会进入 ACP profile 宿主；但当
+`serve --acp` 附着到正在运行的 Runtime owner 时（见下文），其回合使用该 owner 的 MCP 池，
+其中包含同一工作区其他会话在运行时启动的服务器。内置工具覆盖会移除整个兼容别名族。
 最终派发再次校验 profile；伪造别名、hook 改写或目录中缺失的工具不能绕过限制。
 Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端拥有的只读选项，
 编辑器不能放宽。`approval_policy = "never"` 不是 ACP 审批姿态，服务端会拒绝
@@ -667,7 +674,9 @@ Full Access 下 Plan 仍只读。Full Access 与普通审批姿态是服务端�
 
 工具首先显示 `pending`；只有 Core 到达最终派发才显示 `in_progress`。
 `completed`/`failed` 和类型化图片块来自实际 Core 结果。审批请求的私有 JSON-RPC ID
-绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。只有精确匹配、仍有效的
+绑定同一个 Runtime 铸造的待决审批与 Core 执行 ID。插件工具通过 `exec.core` 请求核心运行
+需要审批的工具时，请求显示在该插件工具的调用上，写明嵌套工具及其输入，答复释放嵌套调用，嵌套调用在会话的
+权限设置下决定。只有精确匹配、仍有效的
 `allow-once` 响应能释放等待器；错误 ID 被忽略，无效选项拒绝，取消会撤销等待器。
 ACP 不授予记忆权限或 Native 能力。
 
@@ -902,6 +911,20 @@ bootstrap URL。该能力会创建一个 30 分钟的进程内
 在 Runtime 拥有 TLS 或经过验证的传输边界之前，
 不要直接将它暴露给其他设备或公网。
 
+#### 远程配对授权（DSH remote 服务）
+
+获得 `remote` 宿主机服务授权的插件可通过 Engine `dsh_remote` 请求绑定单一对话的配对。
+Runtime 复用现有的 HTTP/SSE 表面提供宿主机管理与回环兑换（不新增监听器或 WebSocket）：
+
+- `GET /v1/dsh/remote/pairings` — 仅接受主 `Authorization: Bearer` 令牌（不接受移动端/Web cookie 或设备 Watch/Drive 令牌；未开启认证时返回 `409`）。返回 JSON 数组，每项包含 `grant`、`plugin_id`、`plugin_name`（来自已审核插件记录）、`session_id`、`state`（`"awaiting_host"` 或 `"paired"`）、`plugin_label`、`client_label` 与 `expires_in_seconds`，永不包含配对密钥或设备令牌。
+- `POST /v1/dsh/remote/pairings/{grant}/present` — 仅限主 bearer。生成并返回 `{ "grant", "url", "expires_in_seconds" }`（响应头带 `Cache-Control: no-store`），其中 `url` 为 `http://<bind>/__codewhale/mobile/pair/<secret>`。每次调用都会使此前生成的链接失效，因此必须仅在人工明确操作时调用，严禁轮询。未知或已配对授权返回不带细节的 `404`；若未启用移动端控制，或 `session_id` 不是活动的 Runtime HTTP 对话（例如终端会话或已归档线程），则拒绝并返回 `409 Conflict` 且不生成密钥。
+- `DELETE /v1/dsh/remote/pairings/{grant}` — 仅限主 bearer。撤销等待中的配对或终止已配对设备；无论授权是否存在或已结束，均统一返回 `204 No Content`。
+- `GET /__codewhale/mobile/pair/{secret}` — 无需 bearer 的一次性回环兑换端点（非回环对端忽略 `X-Forwarded-For` 并返回 `403`；未知、过期、重放、已撤销或格式错误均统一返回 `401` 固定文本）。成功后签发绑定到该授权的移动端会话（`HttpOnly; SameSite=Strict` cookie，TTL 不超过授权剩余有效期，并附带同源 fragment 证明与流票据），设备令牌与配对密钥绝不写入 cookie、fragment、URL、响应体或日志。
+
+来自配对授权的移动端会话会在每次 HTTP 请求与每次 SSE 流票据校验时向 Engine 实时校验；一旦授权被撤销、过期、插件被禁用/吊销信任或对话被归档/删除，会话将立即失效并删除（后续请求直接返回 `401`，已打开的 `GET /v1/threads/{id}/events` SSE 流也会立即发送 `stream.end { "reason": "remote_access_revoked", "retryable": false }` 并关闭，绝不泄漏撤销后的事件）。该会话仅允许读取并向其唯一绑定的对话发送/引导/中断消息（`GET /v1/threads` 与 `GET /v1/threads/summary` 仅返回该对话；仅放行该对话的 `GET /v1/threads/{id}`、`GET /v1/threads/{id}/events`、`POST /v1/threads/{id}/turns`、`/steer`、`/interrupt` 以及 `POST /__codewhale/mobile/stream-ticket` 和 `/mobile`）。在 `POST /v1/threads/{id}/turns` 上，已配对设备不得覆盖 `mode`、`permission_posture`、`allowed_tools`、`dynamic_tools`、`model`、`model_provider`、`model_provider_id`、`account_model_owner`、`profile_constitution`、`reasoning_effort`、`max_output_tokens` 或 `environment_id`（返回 `403 Forbidden`），也不得将 `allow_shell`、`trust_mode` 或 `auto_approve` 设为 `true`（`403`）；显式传入 `false` 会归一化为 `None`，以保留对话原有权限姿态。其他线程、新建线程、设置/凭据/终端/文件、配对管理以及审批路由（`POST /v1/approvals/{approval_id}`）均返回 `403 Forbidden`，审批卡仅能在宿主机上操作。
+
+客户端在界面上展示 `plugin_label` 或 `client_label` 时，必须将其放在方向隔离容器（如 HTML `<bdi>`）中，作为带引号的第三方文本显示在已审核的 `plugin_name` 旁，绝不能将其渲染为标题或宿主自身文案内文。
+
 ### 端点
 
 **健康检查**
@@ -1030,7 +1053,8 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
   "model_provider": "openai-codex",
   "model": "gpt-5.6",
   "reasoning_effort": "high",
-  "allowed_tools": ["read_file", "search"]
+  "allowed_tools": ["read_file", "search"],
+  "disallowed_tools": ["shell"]
 }
 ```
 
@@ -1038,8 +1062,10 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
 `low`、`medium`、`high`、`xhigh`、`ultra` 或 `max`；已记录的兼容
 别名会被接受，并以规范形式持久化）。`allowed_tools` 是一份对模型可见的允许名单。
 省略它会保留常规的已配置目录；显式空数组（`"allowed_tools": []`）
-则不会向模型暴露任何工具。
-两个字段都是加性（additive）的：省略它们的旧线程记录与客户端
+则不会向模型暴露任何工具。`disallowed_tools`（也接受 `disallowedTools`）
+为线程记录持久化的工具禁用规则（为空时从存储记录中省略）；被禁用的工具即使列在
+`allowed_tools` 中也仍会被拦截，非空规则会参与创建幂等性指纹计算。
+这些字段都是加性（additive）的：省略它们的旧线程记录与客户端
 保持之前的行为。
 
 `GET /v1/threads/summary` 是 VS Code Agent View 使用的只读摘要表面。
@@ -1097,12 +1123,12 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
   "default": "standard",
   "modes": [
     {"id": "standard", "name": "Standard", "description": "The everyday Codewhale agent with its normal tools and skills.", "source": "builtin", "available": true},
-    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": false, "reason": "Creator mode is not ready in this build."}
+    {"id": "creator", "name": "Creator", "description": "Build, inspect and test Codewhale plugins in this conversation, with the plugin authoring tools and guides loaded.", "source": "builtin", "available": true}
   ]
 }
 ```
 
-仅当 `available` 为 `false` 时才有 `reason`；客户端应将该行显示为禁用并展示原因。
+仅当 `available` 为 `false` 时才有 `reason`（例如在 `[features]` 中关闭了 `plugin_creator`，或未找到受支持的 Node.js / Bun 插件运行时）；客户端应将该行显示为禁用并展示原因。
 线程的模式是其 `agent_preset` 字符串，可在 `POST /v1/threads` 时设置，或在线程尚无
 任何回合时通过 `PATCH /v1/threads/{id}` 修改。没有 `agent_preset` 的线程记录即
 `standard`（线程记录对 `standard` 省略该字段；`GET /v1/threads/summary` 的每一行总是
@@ -1191,6 +1217,8 @@ fork 还可能包含 `backtrack_depth_from_tail` 与 `dropped_turn_id`，而
 
 有效权限发生变化时，会在线程最新回合追加一个已完成的 `status` 条目，并发布
 `thread.permissions_changed` 事件（`from`、`to`、`source`）。
+
+当运行中的回合安装、启用、停用或移除插件时，引擎会等待扩展宿主完成激活或停用（针对包含原生代码的插件），并在当前回合立即刷新插件工具目录以供下一次模型请求使用（无需重启线程），同时向该回合追加一个已完成的 `status` 条目并发布 `thread.plugin_changed` 事件（`plugin`、`action`、`content_hash`、`decided_by`、`services`、`tools_added`、`tools_removed`）。
 
 **回合**（线程内的）
 - `POST /v1/threads/{id}/turns`
@@ -1374,6 +1402,24 @@ Engine 的工具执行 ID 另行以 `tool_call_id` 出现在
 Runtime 重启后，线程的授权保持暂停，匹配的调用会再次提示，直到经过认证的客户端
 恢复该线程。无法读取的授权存储不含任何授权，因此每次调用都会提示。一个强制的
 （不可绕过的）提示永不会被授权回答。
+
+**Auto-Review 阻断与一次性重试授权**
+- `GET /v1/threads/{id}/auto-review/blocks` 返回 `{ thread_id, blocks[] }`，
+  列出线程上记录的 Auto-Review 阻断回执（`receipt_id`、`call_digest`、
+  `tool_id`、`tool_name`、`action_summary`、`rule`、`reason`、`gate`、
+  `verdict`、`approved`、`approvable`）。
+- `POST /v1/threads/{id}/auto-review/approve` 请求体为
+  `{ "target": "<receipt_id_or_call_digest>", "client"?: "desktop"|"tui"|"web"|"phone"|"acp" }`，
+  要求已附着所有者运行时且调用方为所有者界面（否则返回 `403 owner_required`，
+  浏览器 cookie 的 `"desktop"`/`"phone"` 亦被拒绝），要求线程仍处于 Auto-Review
+  （否则返回 `409 not_in_auto_review`）；找不到目标时返回 `404`，已批准或
+  不可批准时返回 `409`；成功后铸造一条绑定到精确 `(tool_name, call_digest)` 的
+  一次性重试授权并返回 `{ ok, thread_id, grant }`，同时发出
+  `auto_review.retry_approved`。重试用完即失效，并仍走全部非 Auto-Review 关卡
+  （在守护者审查时附带 `person_approved_retry`，守护者明确拒绝或不可用时仍阻断）。
+  子智能体与扩展调用不可创建、读取或消费重试授权。若所有者在场的交互式运行时
+  触发阈值（连续 3 次阻断、累计 20 次阻断或连续 3 次审查不可用），会自动将线程的
+  `permission_posture` 切至 `ask` 并发出 `auto_review.paused` 与 `thread.updated`。
 
 **用户输入**
 - `POST /v1/user-input/{thread_id}/{input_id}`，请求体
@@ -1676,12 +1722,12 @@ direction 为空、等待 lead 计划、缺少凭据或有
 `scripts/auto-merge-pr.py`。不要再发明第二个检查器。
 
 **工作区信任**（持久化的项目决定）
-- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能、命令和 MCP 配置会检查这个决定。项目钩子还需要单独批准钩子文件的精确摘要。
+- `GET /v1/workspace/status` 返回 `workspace_trusted`：服务器工作区是否已在发现的用户配置中被设为可信。项目技能和命令会检查这个决定。项目钩子和项目 MCP 配置还需要单独批准对应文件的精确摘要（`/hooks review`、`/mcp review`）。
 - `POST /v1/workspace/trust` 接受 `{"trusted": true|false}`，记录决定并返回 `{workspace, workspace_trusted, config_path, message}`。
 
 处理器复用 `/trust on|off --save` 使用的 `config::set_workspace_trust`，再通过 `is_workspace_trusted` 读回结果。请求不接受路径，只作用于服务器已接纳的工作区。`config_path` 标识实际写入的文档。读写都使用默认配置发现规则，包括已配置的环境变量覆盖；启动运行时的显式 `--config` 参数不会选择这个信任文档。
 
-项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子还需要单独的摘要批准，并在执行前重新检查权限。重启引擎可重新建立项目 MCP 连接；本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
+项目技能和命令会在各自现有的加载或回合边界检查信任。项目钩子和项目 MCP 服务器还需要单独的摘要批准（`.codewhale/mcp.json` 需经 `/mcp approve <digest>` 批准），并在执行前重新检查权限；已获批准时可重启引擎或重载连接池来重新建立项目 MCP 连接，本请求不会断开已有连接池或中断正在运行的回合。现有上下文加载器会独立于此标志加载 `AGENTS.md` 等项目指令文件和项目规则，因此撤销工作区信任不会移除这些指令或已持久化的历史。
 
 这个持久化的项目决定与线程的 `trust_mode` / Full Access，以及 `/trust add <path>` 的外部路径授权分别独立。`/trust on|off --save` 同时修改会话文件工具信任和持久化项目记录；本 HTTP 路由只修改项目记录。POST 使用其他状态变更路由相同的运行时写权限；watch 设备令牌可以读取状态，但不能写入信任。
 
@@ -1768,13 +1814,13 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
 同一文件夹里两个都使用 `term-1` 的对话会得到两个 shell。
 这些路由附着到这些 shell，且从不创建 shell，因为从一次 HTTP 请求中凭空变出一个 shell
 会让客户端得到一个 Engine 并不知道的终端。输入可按路由归因：
-`input` 是客户端的写入通道，`terminal/send` 是智能体的。
+`input` 是客户端的写入通道，`terminal_send` 是智能体的。
 
 - `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
   terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
   该线程的活动 shell，按最近活动排序。`terminal_id` 在 shell 启动时签发，
   且永不复用；智能体终端工具的结果以 `terminal_session_id` 携带同一个值，
-  `terminal/reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
+  `terminal_reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
   进程的终端注册表。shell 存活期间，`state` 是其最近一条命令的状态（`running`、
   `idle`、`canceled`、`failed`、`stale_lost` 或 `reset`）；shell 本身结束后为
   `exited`，此时 `running` 为 false，`exit_code` 给出 shell 的退出状态
@@ -1811,14 +1857,14 @@ Engine 从不以同名 shell 代替。
 - **重新连接**（连接中断、面板或窗口重新打开，或 Engine 持续运行期间客户端
   应用重启）：列出线程的终端，确认 `instance` 与记录的一致，然后从保存的游标
   继续每个 `terminal_id`。只会重放仍保留的输出；`gap` 报告环形缓冲区丢失的部分。
-- **重置**（`terminal/reset`）：旧 shell 被结束，同名的新 shell 以新的
+- **重置**（`terminal_reset`）：旧 shell 被结束，同名的新 shell 以新的
   `terminal_id` 启动。旧标识返回 `404`；列表会显示替代者，客户端只在用户
   选择后才切换过去。
 - **退出**：该标识仍会以 `running: false` 及其 `exit_code` 出现在列表中，
   直到智能体重置它或 Engine 重启。
 - **Engine 重启**：活动 shell 随进程一起结束。列表会报告不同的 `instance`，
   且不含任何旧标识，旧标识返回 `404`。不会重建 shell，也不会重新运行命令；
-  之后同名的 `terminal/run` 会启动一个新标识。
+  之后同名的 `terminal_run` 会启动一个新标识。
 - **故障中的输入**：已发送的输入无法撤回。在收到响应前失去连接的客户端
   无法知道这些字节是否到达 shell，且不得自动重发。
 
@@ -1985,6 +2031,37 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   保留命令回执——每个提供的处理器对快照都是纯函数——因此客户端不应寻找回执。
   任何会修改会话的操作仍是终端侧命令。
 
+**插件**
+- `GET /v1/apps/plugins` — `{workspace, plugins: [...], registry_diagnostics: [...],
+  validation_clean}`：当前工作区发现的已安装与工作区插件。除 `state`、`enabled`、
+  `trust_status` 与 `active` 外，每条记录还携带审计归属、队列隔离与宿主服务可达性字段：
+  - `approved_by`（`PluginApprover | null`）：当前信任审查的记录者——未审查时为
+    `null`，否则为 `{"kind": "person", "via": "terminal" | "app" |
+    "approval_card"}`、`{"kind": "agent", "posture", "workspace", "thread_id"?,
+    "turn_id"?, "tool_call_id"?}` 或 `{"kind": "command_line"}`（命令行/非交互式
+    审查，绝不会显示为由人审查）。
+  - `enabled_by`（`PluginApprover | null`）：最近一次开启该插件的主体（禁用或未记录时为 `null`）。
+  - `cohort`：`{"kind": "reviewed"}` 或 `{"kind": "agent", "workspace": "<normalized-path>"}`。
+    由智能体批准的插件留在限定于单个项目工作区的隔离队列中，不会与人审查的插件混入同一队列。
+  - `outside_reach`（`bool`）：当智能体批准的插件属于其他项目工作区时为 `true`，此时在当前工作区保持 `active: false`。
+  - `host_services`：`{"service", "state": "can_use" | "not_offered", "withheld_by"?:
+    [{ "id", "name" }]}` 的数组。`withheld_by` 为空时省略；非空时表示该服务当前因这些已开启的对等插件未在其自身审查中包含该宿主服务而被暂时禁用（off for now）。
+- `GET /v1/apps/plugins/{selector}` — 展平上述摘要条目，并附带插件包元数据
+  （`repository`、`license`、`keywords`、`staged`）、`review`（确认 `token`、能力清单，以及交互式人工审查可选的 `host_services` 预览）、`reviewed_at`（`string | null`，最近一次记录审查的 RFC 3339 时间戳，区别于开启时间）以及 `review_history`（按时间倒序的 `{"reviewed_at": "<rfc3339>", "approved_by"?: PluginApprover}` 历史列表）。通过 `POST /v1/apps/plugins/{selector}/trust` 由人重新审查后，`approved_by` 更新为人、`cohort` 切回 `{"kind": "reviewed"}`，原有智能体审查记录仍保留在 `review_history` 中。
+
+**插件索引**
+- `GET /v1/apps/plugin-index` — `{workspace, items: [...], unavailable: [...],
+  problems: [...]}`：跨所有插件、技能、连接器、钩子和手写命令的统一列表。它只是投影：每个条目的
+  `row` 就是其所属路由（`/v1/apps/plugins`、`/v1/apps/plugins/catalog`、`/v1/skills`、
+  `/v1/apps/mcp/servers`、`/v1/hooks`、`/v1/commands`）返回的那一行，`owner` 给出该路由。
+  每个条目有 `id`、`kind`（`plugin`、`skill`、`connector`、`hook`、`command`）、`name`、
+  `description`、`source`（`built_in`、`user`、`project`、`other_app`、`runtime`、`plugin`）、
+  `state`（`enabled`、`disabled`、`needs_review`、`needs_sign_in`、`unavailable`）和
+  `labels`（它添加的内容：`skill`、`connector`、`hook`、`command`、`tool`、`profile`）。插件条目另有 `adds`（`skills`、`connectors`、`hooks`、`commands`、
+  `profiles`：只含名称），插件所添加的内容不会再作为独立条目重复列出。内置开关是带 `tier`、无 `labels` 的
+  `plugin` 条目。`/v1/commands` 的行对插件添加的命令带有 `plugin_id`（与 `/v1/apps/plugins` 的 id 相同，即 `plugin:<id>` 条目），对从项目读取的命令带有 `workspace_sourced`；命令条目的 `plugin` 即该 id。某个所属路由失败时记入 `unavailable`，其余种类照常列出；`problems`
+  汇总各所属路由的加载警告。`adds` 中的名称是文件名，因此档案文件内部的 `id` 可能不同；通过扩展宿主注册的命令是 `source` 为 `plugin` 的条目。对已启用的插件，`adds.commands` 取自 `/v1/commands` 的行；其他插件以及 `hooks`、`profiles` 取自包内的文件名，每类最多 512 个，含控制字符的名称被略去，列表被截断时在 `problems` 中说明。钩子的行不带插件名，因此 `adds.hooks` 仍是文件名。`tool` 表示插件声明了原生或语言服务器组件；插件绘制的界面暂无标签。
+
 **钩子**
 - `GET /v1/hooks[?thread_id=...]` — `{workspace, enabled, hooks: [...],
   problems: [...]}`：Runtime API 线程为该工作区运行的钩子集合
@@ -2024,7 +2101,9 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   （`{path, index, worktree, staged, status, old_path?, rev}`）、`branches`、
   `remotes`。`files[].path` 与 `old_path` 是工作区相对路径，与写入路由使用同一坐标系；
   当工作区是其仓库的一个子目录时，工作区之外的行不会列出（计数仍是整个仓库的）。
-  移出工作区的重命名显示为其来源的删除。普通 Git 过滤器和未跟踪设置照常生效。
+  移出工作区的重命名显示为其来源的删除。重命名可能由变更的任一侧报出，因此该行在只有工作树移动时是
+  工作树侧删除（`index` 为空格，`worktree` 为 `D`），在移动已暂存时是索引侧删除（`index` 为 `D`）。
+  复制会保留来源，永不这样显示。普通 Git 过滤器和未跟踪设置照常生效。
   未跟踪目录保持折叠；只有指名工作区本身的那一行会展开为可逐个寻址的文件。
   前置条件令牌是不透明的：
   - `head_oid` — 完整的 HEAD commit id；在未出生分支上或无法读取 HEAD 时为 `null`
@@ -2287,6 +2366,12 @@ basename 校验（无分隔符、无 `..`），列表有上限，读取是
 证明端点可达、凭据有效、模型有权使用或请求会成功。下面那条模型路由也只是
 一个选择目录；非空列表并不证明该路由当前能服务请求。
 
+`lastCheck` 是本进程在该提供商上最近一次真实调用的结果，在有回合使用它之前不出现：
+回合完成后为 `{ "ok": true }`；提供商侧失败（网络、认证、授权、速率限制或
+HTTP 402 之类的额度用尽、超时）后为
+`{ "ok": false, "category": "rate_limit", "message": "HTTP 402: …" }`。`message`
+是提供商的错误文本，截断到 120 个字符。该记录只在内存中，Engine 重启后为空。
+
 ### `GET /v1/providers/{id}/models`
 
 ```json
@@ -2409,27 +2494,30 @@ OpenAI Codex。没有此路由的 Engine 返回 `404`。
 
 ### `GET /v1/agents/external` —— 本机已安装的外部 agent CLI
 
+安装、登录和创建会话的步骤见[在 Codewhale 中运行其他智能体](OTHER_AGENTS.md)。
+
 ```json
 // 响应
 { "agents": [
   { "id": "opencode", "name": "OpenCode", "state": "installed",
     "version": "1.19.5", "acp": "native",
     "auth_methods": [{ "id": "login", "name": "Log in", "type": "agent" }],
-    "website": "https://opencode.ai", "runnable": false },
+    "website": "https://opencode.ai", "runnable": true },
   { "id": "qoder", "name": "Qoder", "state": "not_installed", "version": null,
     "acp": null, "auth_methods": [], "website": "https://qoder.com", "runnable": false }
 ] }
 ```
 
-报告本机已有哪些外部 agent CLI，不启动任何会话。覆盖 Claude、Codex、Gemini
-CLI、OpenCode、Kimi Code、Mistral Vibe、Qoder、CodeBuddy 和 Grok。`state` 为
+报告本机已有哪些外部 agent CLI，不启动任何会话。可识别的智能体见
+[注册表](../../crates/engine/src/fleet/agents.rs)。`state` 为
 `installed` 或 `not_installed`；程序会在 `PATH`（仅绝对路径条目；在 Windows 上为可启动的 PATHEXT 后缀 `.com/.exe/.bat/.cmd` 以及 `%APPDATA%\npm`）以及常见的用户 bin 目录中查找。
 对已安装的 agent，该路由会同时执行 `--version`，并在该 CLI 本身支持 Agent
 Client Protocol 时通过 stdin 发送一次 `initialize`。`acp` 为 `native` 表示握手
 成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应，或回应了其他协议版本、不是 JSON-RPC 2.0，或返回了错误；`reason` 会说明属于哪种情况。
 `auth_methods` 来自握手结果；`type: "terminal"` 表示只能在该 agent 自己的终端里
 登录。探测超时为 8 秒（`--version` 为 5 秒），不会收到任何 Codewhale 或服务商
-凭据，也不会保存任何内容。`runnable` 为 `false`：该路由只做报告，不启动 agent。
+凭据，也不会保存任何内容。`runnable` 为 `true` 表示版本符合要求，且原生握手成功或所需适配器已经安装；
+它不代表智能体已经登录。该路由只做报告，不创建会话。
 
 ### `DELETE /v1/providers/{id}/key` —— 清除 Codewhale 拥有的凭据
 
@@ -2675,6 +2763,7 @@ data: {"schema_version":1,"event":"stream.end","kind":"stream.end","thread_id":"
 | `replay_failed` | 为开头回放提供数据的持久历史读取失败，包括第一个游标之后回放 worker 崩溃 | `true` |
 | `catch_up_failed` | 广播落后之后，从流的游标开始的持久重读无法打开或失败 | `true` |
 | `runtime_shutdown` | Runtime API 服务器正在停止（SIGINT、SIGTERM 或 SIGHUP；Windows 上为 Ctrl+C 或 Ctrl+Break）。打开的流会在进程退出前的一个有界排空窗口内收到此帧 | `true` |
+| `remote_access_revoked` | 已配对远程设备的授权会话结束（配对被撤销、插件被吊销、会话 TTL 到期或绑定对话已归档/删除） | `false` |
 
 每个 `200` 响应都带有 `x-codewhale-stream-end: 1`。有这个头时，**没有** `stream.end`
 的 EOF 意味着连接或 Runtime 进程在服务器没有选择结束流的情况下死掉了：网络或代理
@@ -2811,7 +2900,7 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 
 运行时 API 自带一份内置的开发源站允许名单：
 `http://localhost:3000`、`http://127.0.0.1:3000`、`http://localhost:1420`、
-`http://127.0.0.1:1420`、`tauri://localhost`。要添加更多源站（例如
+`http://127.0.0.1:1420`。要添加更多源站（例如
 在 Vite 默认的 `:5173` 上开发 UI 时），可用以下任一方式：
 
 - CLI 标志（可重复）：`codewhale serve --http --cors-origin http://localhost:5173`

@@ -616,6 +616,8 @@ fn make_plan_at(
         )))],
         blocked_error: None,
         guard_result: None,
+        grants_outside_workspace_read: false,
+        creator_gate: None,
     }
 }
 
@@ -697,6 +699,7 @@ fn active_goal_message_op(
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }
@@ -741,6 +744,7 @@ fn external_user_message_op(content: &str, mode: AppMode, config: &Config) -> Op
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }
@@ -791,6 +795,7 @@ fn auto_review_message_op(content: &str, config: &Config) -> Op {
         hook_executor: None,
         verbosity: None,
         provenance: UserInputProvenance::ExternalUser,
+        input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
         submission_id: None,
     })
 }
@@ -991,11 +996,294 @@ async fn tool_request_snapshot_matches_the_exact_mock_request_payload() {
     assert!(snapshot.delivery_status.starts_with("unknown"));
 }
 
-/// #6510: the inline ```repl kernel runs model-written Python, so it answers
-/// to the `code_execution` gate. A surface that leaves `code_execution` out of
-/// its allowlist (plain `exec`'s zero-tool surface, or a narrowed
-/// `--allowed-tools`) or denies it must not execute a fence: the reply is the
-/// answer, no kernel starts, and no second model call is made.
+/// A recursive `rlm_query` makes a child model write Python. That round runs
+/// only after the turn serving the `rlm` call admits it like `code_execution`:
+/// outside Full Access it waits on a card of its own, beyond the approval the
+/// direct `rlm` call already took. Denied, nothing runs; approved, it runs.
+#[tokio::test]
+async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
+    use crate::core::engine::tests::rlm_host::{
+        admitted_context, fixture_config, install_fixture_route,
+    };
+    use crate::llm_client::mock::{MockLlmClient, canned};
+    use codewhale_models::{ContentBlock, Message};
+
+    for (approval, should_run, read_only) in [
+        (ApprovalMode::Suggest, false, false),
+        (ApprovalMode::Suggest, true, false),
+        (ApprovalMode::Bypass, false, false),
+        (ApprovalMode::Bypass, false, true),
+        (ApprovalMode::Auto, true, false),
+    ] {
+        let workspace = if cfg!(target_os = "linux") && read_only {
+            tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        } else {
+            tempdir()
+        }
+        .expect("RLM fixture workspace");
+        let marker = workspace.path().join("nested-round-ran");
+        let path = marker.display().to_string();
+        let nested = format!(
+            "```repl\nimport errno\ntry:\n    open({path:?}, 'w').write('x')\nexcept OSError as error:\n    if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):\n        raise\n    FINAL('fixture write refused')\nelse:\n    FINAL('nested done')\n```"
+        );
+        let rlm = crate::tools::rlm::RLM_TOOL_NAME;
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn(
+                "rlm-open",
+                rlm,
+                r#"{"action":"open","name":"ctx","content":"fixture context"}"#,
+            ),
+            canned::tool_call_turn(
+                "rlm-eval",
+                rlm,
+                r#"{"action":"eval","name":"ctx","code":"print(rlm_query('nested context'))"}"#,
+            ),
+            canned::simple_text_turn(&nested),
+            canned::simple_text_turn("Done."),
+        ]));
+        let client: crate::core::model_client::SharedModelClient = mock.clone();
+        let mut config = fixture_config("captured-working-model");
+        if approval == ApprovalMode::Bypass && !read_only {
+            let mut block = codewhale_runtime::config::AutoReviewRuleConfig::default();
+            block.id = Some("nested-note".into());
+            block.tool = Some(CODE_EXECUTION_TOOL_NAME.into());
+            block.reason = Some("recursive code blocked by fixture".into());
+            config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+                block: vec![block],
+                ..Default::default()
+            });
+        } else if approval == ApprovalMode::Auto {
+            for _ in 0..3 {
+                mock.push_message_response(guardian_fixture_response(
+                    r#"{"risk_level":"low","decision":"allow","reason":"write a fixture marker"}"#,
+                ));
+            }
+        }
+        let mut engine_config = deterministic_engine_config(workspace.path());
+        engine_config.auto_review_policy =
+            crate::core::authority::auto_review::AutoReviewPolicy::from_config(&config);
+        engine_config.model = "captured-working-model".into();
+        let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
+        install_fixture_route(&mut engine);
+        engine.session.auto_approve = approval == ApprovalMode::Bypass;
+        engine.session.approval_mode = approval;
+        if approval == ApprovalMode::Auto {
+            engine.turn_run_origin = crate::core::authority::RunOrigin::Interactive;
+            engine.turn_owner_present = true;
+        }
+        if read_only {
+            let posture = engine.applied_runtime_authority();
+            engine
+                .apply_change_mode(
+                    posture.mode,
+                    posture.allow_shell,
+                    posture.trust_mode,
+                    true,
+                    approval,
+                    Some("read-only".into()),
+                )
+                .await;
+        }
+        engine.session.add_message(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Recurse.".to_string(),
+                cache_control: None,
+            }],
+        });
+        let context = admitted_context(&engine, "nested-gate-fixture-turn");
+        if read_only {
+            assert!(matches!(
+                context.elevated_sandbox_policy,
+                Some(codewhale_sandbox::SandboxPolicy::ReadOnly { .. })
+            ));
+        }
+        let registry = crate::tools::ToolRegistryBuilder::new()
+            .with_rlm_tool()
+            .build(context);
+        let policy = test_tool_surface(
+            &engine,
+            registry,
+            Some(vec![
+                catalog_tool(rlm),
+                catalog_tool(CODE_EXECUTION_TOOL_NAME),
+            ]),
+            AppMode::Agent,
+        );
+        let task = tokio::spawn(async move {
+            let mut turn = crate::core::turn::TurnContext::new(6);
+            engine.run_turn(&mut turn, policy, None, None).await
+        });
+
+        if approval == ApprovalMode::Suggest {
+            let events = handle.rx_event.clone();
+            let nested_card = tokio::time::timeout(Duration::from_secs(30), async {
+                let mut rx = events.write().await;
+                while let Some(event) = rx.recv().await {
+                    if let Event::ApprovalRequired { id, tool_name, .. } = event {
+                        if tool_name == CODE_EXECUTION_TOOL_NAME {
+                            return id;
+                        }
+                        // The direct `rlm` call's own approval.
+                        handle.approve_tool_call(&id).await.expect("approve rlm");
+                    }
+                }
+                panic!("event stream closed before the nested round asked for approval");
+            })
+            .await
+            .expect("the nested round must wait on its own approval card");
+            assert!(
+                nested_card.ends_with(".1"),
+                "the round is the rlm call's first nested request: {nested_card}"
+            );
+            assert!(!marker.exists(), "nothing runs before the decision");
+
+            if should_run {
+                handle
+                    .approve_tool_call(&nested_card)
+                    .await
+                    .expect("approve");
+            } else {
+                handle.deny_tool_call(&nested_card).await.expect("deny");
+            }
+        }
+        if approval == ApprovalMode::Auto {
+            let mut events = handle.rx_event.write().await;
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while let Some(event) = events.recv().await {
+                    if let Event::ApprovalRequired {
+                        id,
+                        tool_name,
+                        input,
+                        ..
+                    } = event
+                    {
+                        assert_eq!(tool_name, rlm);
+                        assert_eq!(input["action"], "eval");
+                        handle
+                            .approve_tool_call(&id)
+                            .await
+                            .expect("approve the outer RLM evaluation");
+                        return;
+                    }
+                }
+                panic!("event stream closed before the outer RLM evaluation asked its owner");
+            })
+            .await
+            .expect("the outer RLM eval requires its owner's confirmation");
+        }
+        let (status, error) = tokio::time::timeout(Duration::from_secs(60), task)
+            .await
+            .expect("turn deadline")
+            .expect("turn task");
+        assert_eq!(
+            status,
+            TurnOutcomeStatus::Completed,
+            "mode={approval:?}, read_only={read_only}, should_run={should_run}, {error:?}"
+        );
+        assert_eq!(
+            marker.exists(),
+            should_run,
+            "mode={approval:?}, read_only={read_only}"
+        );
+        if approval != ApprovalMode::Suggest {
+            let mut rx = handle.rx_event.write().await;
+            assert!(
+                !std::iter::from_fn(|| rx.try_recv().ok())
+                    .any(|event| matches!(event, Event::ApprovalRequired { .. }))
+            );
+            let requests = mock.captured_requests();
+            let results: Vec<_> = requests
+                .iter()
+                .flat_map(|request| &request.messages)
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, content, is_error, .. } => {
+                        Some((tool_use_id.as_str(), content.as_str(), *is_error))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let refused_start = read_only && results.iter().any(|(id, content, error)| {
+                *id == "rlm-open" && *error == Some(true) && content.contains(
+                    "read_only execution requires an enforcing native read-only sandbox; nothing was run",
+                )
+            });
+            assert_eq!(
+                mock.remaining_turns(),
+                usize::from(refused_start),
+                "mode={approval:?}, read_only={read_only}, results={results:?}"
+            );
+            if read_only && !refused_start {
+                assert!(
+                    results.iter().any(|(id, content, _)| {
+                        *id == "rlm-eval" && content.contains("fixture write refused")
+                    }),
+                    "the read-only child kernel must report refusing the attempted write: {results:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A kernel keeps what it loaded under the posture it ran in, so a narrower
+/// posture starts later code in a fresh interpreter; an unchanged or broader
+/// posture keeps the working kernel.
+#[tokio::test]
+async fn narrowing_the_posture_discards_python_kernels() {
+    use crate::llm_client::mock::MockLlmClient;
+
+    let workspace = tempdir().expect("tempdir");
+    let client: crate::core::model_client::SharedModelClient =
+        std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    // Without a Python interpreter there is no kernel to discard.
+    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::unconfined(&std::env::temp_dir()).await else {
+        return;
+    };
+    engine.repl_kernel = Some(kernel);
+    let posture = engine.applied_runtime_authority();
+
+    // Re-applying the same posture is not a narrowing.
+    engine
+        .apply_change_mode(
+            posture.mode,
+            posture.allow_shell,
+            posture.trust_mode,
+            posture.auto_approve,
+            posture.approval_mode,
+            posture.configured_sandbox_mode.clone(),
+        )
+        .await;
+    assert!(
+        engine.repl_kernel.is_some(),
+        "an unchanged posture keeps the kernel"
+    );
+
+    engine
+        .apply_change_mode(
+            posture.mode,
+            posture.allow_shell,
+            posture.trust_mode,
+            posture.auto_approve,
+            posture.approval_mode,
+            Some("read-only".to_string()),
+        )
+        .await;
+    assert!(
+        engine.applied_runtime_authority().narrows(&posture),
+        "fixture must actually narrow"
+    );
+    assert!(
+        engine.repl_kernel.is_none(),
+        "a narrower posture drops the kernel"
+    );
+}
+
 #[tokio::test]
 async fn repl_fence_does_not_run_when_code_execution_is_not_allowed() {
     use crate::llm_client::mock::{MockLlmClient, canned};
@@ -1041,369 +1329,6 @@ async fn repl_fence_does_not_run_when_code_execution_is_not_allowed() {
     }
 }
 
-#[tokio::test]
-async fn normal_repl_kernel_persists_across_user_turns() {
-    use crate::core::engine::tests::rlm_host::{
-        admitted_context, fixture_config, install_fixture_route,
-    };
-    use crate::llm_client::mock::{MockLlmClient, canned};
-    use codewhale_models::{ContentBlock, Message, Usage};
-
-    let workspace = tempdir().expect("tempdir");
-    let mock = std::sync::Arc::new(MockLlmClient::new(vec![
-        canned::simple_text_turn(
-            "```repl\nchild_verdict = sub_query('Return exactly: child route works')\nproof_from_first_turn = f'kernel state survives; {child_verdict}'\nprint('kernel primed', child_verdict)\n```",
-        ),
-        vec![
-            canned::message_start("kernel-child"),
-            canned::text_block_start(0),
-            canned::text_delta(0, "child route works"),
-            canned::block_stop(0),
-            canned::message_delta(
-                "end_turn",
-                Some(Usage {
-                    input_tokens: 7,
-                    output_tokens: 11,
-                    ..Usage::default()
-                }),
-            ),
-            canned::message_stop(),
-        ],
-        canned::simple_text_turn("First turn complete."),
-        canned::simple_text_turn(
-            "```repl\nprint(proof_from_first_turn)\nfinalize('persistent kernel verified')\n```",
-        ),
-    ]));
-    let client: crate::core::model_client::SharedModelClient = mock.clone();
-    let config = fixture_config("captured-working-model");
-    let mut engine_config = deterministic_engine_config(workspace.path());
-    engine_config.model = "captured-working-model".into();
-    let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
-    install_fixture_route(&mut engine);
-    let selected_model = engine.session.model.clone();
-    // Full Access: the fence takes `code_execution`'s approval, which this
-    // posture already grants.
-    engine.session.auto_approve = true;
-
-    engine.session.add_message(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "Prime the working kernel.".to_string(),
-            cache_control: None,
-        }],
-    });
-    let first_registry =
-        crate::tools::ToolRegistry::new(admitted_context(&engine, "first-fixture-turn"));
-    let first_policy = test_tool_surface(
-        &engine,
-        first_registry,
-        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
-        AppMode::Agent,
-    );
-    let mut first_turn = crate::core::turn::TurnContext::new(4);
-    let (status, error) = engine
-        .run_turn(&mut first_turn, first_policy, None, None)
-        .await;
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-    assert_eq!(first_turn.usage.input_tokens, 7);
-    assert_eq!(first_turn.usage.output_tokens, 11);
-    let child_usage_event = {
-        let mut events = handle.rx_event.write().await;
-        // Kernel child calls carry their own routed cost receipt, so their
-        // per-call telemetry arrives as `RoutedTurnUsage` rather than the
-        // parent-route `TurnUsage` receipt.
-        std::iter::from_fn(|| events.try_recv().ok()).find_map(|event| match event {
-            Event::RoutedTurnUsage { usage, .. }
-                if usage.input_tokens == 7 && usage.output_tokens == 11 =>
-            {
-                Some(usage)
-            }
-            _ => None,
-        })
-    }
-    .expect("kernel child usage must be visible to the cost UI");
-    assert_eq!(child_usage_event.input_tokens, 7);
-    assert_eq!(child_usage_event.output_tokens, 11);
-
-    engine.session.add_message(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "Use the state from the prior turn.".to_string(),
-            cache_control: None,
-        }],
-    });
-    let second_registry =
-        crate::tools::ToolRegistry::new(admitted_context(&engine, "second-fixture-turn"));
-    let second_policy = test_tool_surface(
-        &engine,
-        second_registry,
-        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
-        AppMode::Agent,
-    );
-    let mut second_turn = crate::core::turn::TurnContext::new(4);
-    let (status, error) = engine
-        .run_turn(&mut second_turn, second_policy, None, None)
-        .await;
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-
-    let kernel = engine.repl_kernel.as_ref().expect("persistent kernel");
-    assert!(
-        kernel.round_count() >= 4,
-        "each REPL call should refresh context and then execute code"
-    );
-    let final_text = engine
-        .session
-        .messages
-        .last()
-        .and_then(|message| {
-            message.content.iter().find_map(|block| match block {
-                ContentBlock::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-        })
-        .expect("final assistant text");
-    assert_eq!(final_text, "persistent kernel verified");
-
-    let child_request = mock
-        .captured_requests()
-        .into_iter()
-        .find(|request| request.messages.iter().any(|message| message.content.iter().any(|block| matches!(block, ContentBlock::Text { text, .. } if text == "Return exactly: child route works"))))
-        .expect("the injected model client must service a kernel child query");
-    assert_eq!(child_request.model, selected_model);
-    assert_eq!(
-        child_request.stream,
-        Some(true),
-        "the canonical Core stream producer services the nested call"
-    );
-    assert!(child_request.tools.as_ref().is_none_or(Vec::is_empty));
-    assert_eq!(mock.captured_requests().len(), 4);
-}
-
-/// A recursive `rlm_query` makes a child model write Python. That round runs
-/// only after the turn serving the `rlm` call admits it like `code_execution`:
-/// outside Full Access it waits on a card of its own, beyond the approval the
-/// direct `rlm` call already took. Denied, nothing runs; approved, it runs.
-#[tokio::test]
-async fn recursive_rlm_round_waits_on_the_code_execution_gate() {
-    use crate::core::engine::tests::rlm_host::{
-        admitted_context, fixture_config, install_fixture_route,
-    };
-    use crate::llm_client::mock::{MockLlmClient, canned};
-    use codewhale_models::{ContentBlock, Message};
-
-    for approve in [false, true] {
-        let workspace = tempdir().expect("tempdir");
-        let marker = workspace.path().join("nested-round-ran");
-        let nested = format!(
-            "```repl\nopen({:?}, 'w').write('x')\nFINAL('nested done')\n```",
-            marker.display().to_string()
-        );
-        let rlm = crate::tools::rlm::RLM_TOOL_NAME;
-        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
-            canned::tool_call_turn(
-                "rlm-open",
-                rlm,
-                r#"{"action":"open","name":"ctx","content":"fixture context"}"#,
-            ),
-            canned::tool_call_turn(
-                "rlm-eval",
-                rlm,
-                r#"{"action":"eval","name":"ctx","code":"print(rlm_query('nested context'))"}"#,
-            ),
-            canned::simple_text_turn(&nested),
-            canned::simple_text_turn("Done."),
-        ]));
-        let client: crate::core::model_client::SharedModelClient = mock.clone();
-        let config = fixture_config("captured-working-model");
-        let mut engine_config = deterministic_engine_config(workspace.path());
-        engine_config.model = "captured-working-model".into();
-        let (mut engine, handle) = Engine::new_with_model_client(engine_config, &config, client);
-        install_fixture_route(&mut engine);
-        engine.session.auto_approve = false;
-        engine.session.approval_mode = ApprovalMode::Suggest;
-        engine.session.add_message(Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "Recurse.".to_string(),
-                cache_control: None,
-            }],
-        });
-        let registry = crate::tools::ToolRegistryBuilder::new()
-            .with_rlm_tool()
-            .build(admitted_context(&engine, "nested-gate-fixture-turn"));
-        let policy = test_tool_surface(
-            &engine,
-            registry,
-            Some(vec![
-                catalog_tool(rlm),
-                catalog_tool(CODE_EXECUTION_TOOL_NAME),
-            ]),
-            AppMode::Agent,
-        );
-        let task = tokio::spawn(async move {
-            let mut turn = crate::core::turn::TurnContext::new(6);
-            engine.run_turn(&mut turn, policy, None, None).await
-        });
-
-        let events = handle.rx_event.clone();
-        let nested_card = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut rx = events.write().await;
-            while let Some(event) = rx.recv().await {
-                if let Event::ApprovalRequired { id, tool_name, .. } = event {
-                    if tool_name == CODE_EXECUTION_TOOL_NAME {
-                        return id;
-                    }
-                    // The direct `rlm` call's own approval.
-                    handle.approve_tool_call(&id).await.expect("approve rlm");
-                }
-            }
-            panic!("event stream closed before the nested round asked for approval");
-        })
-        .await
-        .expect("the nested round must wait on its own approval card");
-        assert!(
-            nested_card.ends_with(".1"),
-            "the round is the rlm call's first nested request: {nested_card}"
-        );
-        assert!(!marker.exists(), "nothing runs before the decision");
-
-        if approve {
-            handle
-                .approve_tool_call(&nested_card)
-                .await
-                .expect("approve");
-        } else {
-            handle.deny_tool_call(&nested_card).await.expect("deny");
-        }
-        let (status, error) = tokio::time::timeout(Duration::from_secs(60), task)
-            .await
-            .expect("turn deadline")
-            .expect("turn task");
-        assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-        assert_eq!(marker.exists(), approve, "approve={approve}");
-    }
-}
-
-/// A kernel keeps what it loaded under the posture it ran in, so a narrower
-/// posture starts later code in a fresh interpreter; an unchanged or broader
-/// posture keeps the working kernel.
-#[tokio::test]
-async fn narrowing_the_posture_discards_python_kernels() {
-    use crate::llm_client::mock::MockLlmClient;
-
-    let workspace = tempdir().expect("tempdir");
-    let client: crate::core::model_client::SharedModelClient =
-        std::sync::Arc::new(MockLlmClient::new(Vec::new()));
-    let (mut engine, _handle) = Engine::new_with_model_client(
-        deterministic_engine_config(workspace.path()),
-        &Config::default(),
-        client,
-    );
-    // Without a Python interpreter there is no kernel to discard.
-    let Ok(kernel) = codewhale_repl::runtime::PythonRuntime::new(&std::env::temp_dir()).await else {
-        return;
-    };
-    engine.repl_kernel = Some(kernel);
-    let posture = engine.applied_runtime_authority();
-
-    // Re-applying the same posture is not a narrowing.
-    engine
-        .apply_change_mode(
-            posture.mode,
-            posture.allow_shell,
-            posture.trust_mode,
-            posture.auto_approve,
-            posture.approval_mode,
-            posture.configured_sandbox_mode.clone(),
-        )
-        .await;
-    assert!(
-        engine.repl_kernel.is_some(),
-        "an unchanged posture keeps the kernel"
-    );
-
-    engine
-        .apply_change_mode(
-            posture.mode,
-            posture.allow_shell,
-            posture.trust_mode,
-            posture.auto_approve,
-            posture.approval_mode,
-            Some("read-only".to_string()),
-        )
-        .await;
-    assert!(
-        engine.applied_runtime_authority().narrows(&posture),
-        "fixture must actually narrow"
-    );
-    assert!(
-        engine.repl_kernel.is_none(),
-        "a narrower posture drops the kernel"
-    );
-}
-
-/// A turn dropped mid-round leaves its kernel broken, and a broken kernel
-/// refuses every later round. The next turn starts a fresh kernel instead of
-/// failing once on the stale one.
-#[tokio::test]
-async fn a_broken_repl_kernel_is_replaced_by_the_next_turn() {
-    use crate::llm_client::mock::{MockLlmClient, canned};
-    use codewhale_models::{ContentBlock, Message};
-
-    let workspace = tempdir().expect("tempdir");
-    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
-        "```repl\nfinalize('fresh kernel ran')\n```",
-    )]));
-    let client: crate::core::model_client::SharedModelClient = mock.clone();
-    let (mut engine, _handle) = Engine::new_with_model_client(
-        deterministic_engine_config(workspace.path()),
-        &Config::default(),
-        client,
-    );
-    engine.session.auto_approve = true;
-
-    // What a turn dropped mid-round leaves behind.
-    let mut stale = codewhale_repl::PythonRuntime::new(&std::env::temp_dir()).await.expect("spawn");
-    let dropped = tokio::time::timeout(
-        Duration::from_millis(50),
-        stale.execute("import time\ntime.sleep(30)"),
-    )
-    .await;
-    assert!(dropped.is_err(), "the round must still be running");
-    assert!(stale.is_broken());
-    engine.repl_kernel = Some(stale);
-
-    engine.session.add_message(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "Run the kernel again.".to_string(),
-            cache_control: None,
-        }],
-    });
-    let registry = crate::tools::ToolRegistry::new(crate::tools::ToolContext::new(
-        workspace.path().to_path_buf(),
-    ));
-    let policy = test_tool_surface(
-        &engine,
-        registry,
-        Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
-        AppMode::Agent,
-    );
-    let mut turn = crate::core::turn::TurnContext::new(4);
-    let (status, error) = engine.run_turn(&mut turn, policy, None, None).await;
-    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-    assert!(
-        !engine
-            .repl_kernel
-            .as_ref()
-            .expect("a fresh kernel")
-            .is_broken()
-    );
-}
-
-/// Plan mode withholds `code_execution`, and a ```repl fence is not a way
-/// around that: even under Full Access and with the tool named in the
-/// supplied catalog, the fenced Python does not run in Plan mode.
 #[tokio::test]
 async fn plan_mode_repl_fence_does_not_execute() {
     use crate::llm_client::mock::{MockLlmClient, canned};
@@ -1451,37 +1376,30 @@ async fn plan_mode_repl_fence_does_not_execute() {
     assert_eq!(mock.call_count(), 1, "no follow-up model call");
 }
 
-/// A ```repl fence runs model-written Python, so outside Full Access it waits
-/// on the same approval card as `code_execution`. Denied, it does not run and
-/// the turn says so; approved, it runs.
 #[tokio::test]
-async fn repl_fence_requires_code_execution_approval() {
+async fn prose_repl_fence_never_executes_outside_rlm() {
     use crate::llm_client::mock::{MockLlmClient, canned};
     use codewhale_models::{ContentBlock, Message};
 
-    for approve in [false, true] {
+    for mode in [AppMode::Agent, AppMode::Plan] {
         let workspace = tempdir().expect("tempdir");
         let marker = workspace.path().join("fence-ran");
         let fence = format!(
-            "```repl\nopen({:?}, 'w').write('x')\nfinalize('done')\n```",
+            "Example:\n```repl\nopen({:?}, 'w').write('x')\n```",
             marker.display().to_string()
         );
-        let mock = std::sync::Arc::new(MockLlmClient::new(vec![
-            canned::simple_text_turn(&fence),
-            canned::simple_text_turn("Done."),
-        ]));
+        let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(&fence)]));
         let client: crate::core::model_client::SharedModelClient = mock.clone();
-        let (mut engine, handle) = Engine::new_with_model_client(
+        let (mut engine, _handle) = Engine::new_with_model_client(
             deterministic_engine_config(workspace.path()),
             &Config::default(),
             client,
         );
-        engine.session.auto_approve = false;
-        engine.session.approval_mode = ApprovalMode::Suggest;
+        engine.session.auto_approve = true;
         engine.session.add_message(Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
-                text: "Compute.".to_string(),
+                text: "Show an example.".to_string(),
                 cache_control: None,
             }],
         });
@@ -1492,55 +1410,82 @@ async fn repl_fence_requires_code_execution_approval() {
             &engine,
             registry,
             Some(vec![catalog_tool(CODE_EXECUTION_TOOL_NAME)]),
-            AppMode::Agent,
+            mode,
         );
-        let task = tokio::spawn(async move {
-            let mut turn = crate::core::turn::TurnContext::new(4);
-            let outcome = engine.run_turn(&mut turn, policy, None, None).await;
-            (engine, outcome)
-        });
+        let mut turn = crate::core::turn::TurnContext::new(4);
+        let (status, error) = engine.run_turn(&mut turn, policy, None, None).await;
 
-        let events = handle.rx_event.clone();
-        let approval_id = tokio::time::timeout(Duration::from_secs(10), async {
-            let mut rx = events.write().await;
-            while let Some(event) = rx.recv().await {
-                if let Event::ApprovalRequired { id, tool_name, .. } = event {
-                    assert_eq!(tool_name, CODE_EXECUTION_TOOL_NAME);
-                    return id;
-                }
-            }
-            panic!("event stream closed before the fence asked for approval");
-        })
-        .await
-        .expect("the fence must wait on an approval card");
-        assert!(!marker.exists(), "nothing runs before the decision");
-
-        if approve {
-            handle
-                .approve_tool_call(&approval_id)
-                .await
-                .expect("approve");
-        } else {
-            handle.deny_tool_call(&approval_id).await.expect("deny");
-        }
-        let (engine, (status, error)) = tokio::time::timeout(Duration::from_secs(30), task)
-            .await
-            .expect("turn deadline")
-            .expect("turn task");
-        assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
-        assert_eq!(marker.exists(), approve, "approve={approve}");
-        if !approve {
-            assert!(
-                engine.repl_kernel.is_none(),
-                "denied fence starts no kernel"
-            );
-            let note = {
-                let mut rx = events.write().await;
-                std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
-                    matches!(event, Event::Status { message } if message.starts_with("REPL block not run: not approved"))
-                })
-            };
-            assert!(note, "a denied fence leaves a visible status note");
-        }
+        assert_eq!(status, TurnOutcomeStatus::Completed, "{mode:?}: {error:?}");
+        assert!(engine.repl_kernel.is_none(), "{mode:?}: no kernel");
+        assert!(!marker.exists(), "{mode:?}: prose fence must not run");
+        assert_eq!(mock.call_count(), 1, "{mode:?}: no follow-up model call");
     }
+}
+
+#[tokio::test]
+async fn any_sandbox_policy_change_discards_python_kernels() {
+    use crate::llm_client::mock::MockLlmClient;
+    use crate::rlm::session::{ContextMeta, RlmSession};
+
+    let workspace = tempdir().expect("tempdir");
+    let client: crate::core::model_client::SharedModelClient =
+        std::sync::Arc::new(MockLlmClient::new(Vec::new()));
+    let (mut engine, _handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let Ok(kernel) = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir()).await else {
+        return;
+    };
+    let Ok(rlm_kernel) = codewhale_repl::PythonRuntime::unconfined(&std::env::temp_dir()).await
+    else {
+        return;
+    };
+    engine.repl_kernel = Some(kernel);
+    engine.config.runtime_services.rlm_sessions.lock().await.insert(
+        "ctx".to_string(),
+        std::sync::Arc::new(tokio::sync::Mutex::new(RlmSession::new(
+            "ctx".to_string(),
+            rlm_kernel,
+            ContextMeta::from_body("body", "text"),
+            None,
+        ))),
+    );
+    let posture = engine.applied_runtime_authority();
+
+    engine
+        .apply_change_mode(
+            posture.mode,
+            posture.allow_shell,
+            posture.trust_mode,
+            true,
+            ApprovalMode::Bypass,
+            posture.configured_sandbox_mode.clone(),
+        )
+        .await;
+    let widened = engine.applied_runtime_authority();
+    assert!(
+        !widened.narrows(&posture),
+        "fixture must widen, not narrow"
+    );
+    assert_ne!(
+        engine.effective_sandbox_policy(&posture),
+        engine.effective_sandbox_policy(&widened),
+        "fixture must change the sandbox policy"
+    );
+    assert!(
+        engine.repl_kernel.is_none(),
+        "a different sandbox policy drops the session kernel"
+    );
+    assert!(
+        engine
+            .config
+            .runtime_services
+            .rlm_sessions
+            .lock()
+            .await
+            .is_empty(),
+        "a different sandbox policy drops the RLM kernels"
+    );
 }

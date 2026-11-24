@@ -5,7 +5,7 @@
 //! admitted package manifests; mixed missing/unbridged rows refuse explicitly,
 //! never a partial compatibility claim. Native install still lands disabled/untrusted and requires review.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
@@ -18,8 +18,8 @@ use serde_json::{Value as Json, json};
 pub mod presets;
 
 pub const CONVERTER_VERSION: &str = "0.10.1";
-const MAX_FILES: usize = 4096;
-const MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FILES: usize = 16_384;
+const MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DOCUMENT: usize = 1024 * 1024;
 const MAX_PATCH_FILES: usize = 64;
 const MAX_DEPTH: usize = 32;
@@ -114,7 +114,7 @@ impl Value {
         }
     }
 
-    fn str(&self) -> Option<&str> {
+    pub(super) fn str(&self) -> Option<&str> {
         match self {
             Value::Str(text) => Some(text),
             _ => None,
@@ -128,7 +128,7 @@ impl Value {
         }
     }
 
-    fn is_true(&self) -> bool {
+    pub(super) fn is_true(&self) -> bool {
         matches!(self, Value::Bool(true))
     }
 
@@ -341,6 +341,53 @@ pub fn parse_json(text: &str) -> Result<Value> {
     parse_yaml(text, false)
 }
 
+pub fn parse_package_json(text: &str) -> Result<Value> {
+    let raw: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| anyhow::Error::msg(PARSE_REFUSAL))?;
+    json_value_to_yaml_value(&raw, 0)
+}
+
+fn json_value_to_yaml_value(value: &serde_json::Value, depth: usize) -> Result<Value> {
+    require(depth <= MAX_DEPTH, PARSE_REFUSAL)?;
+    match value {
+        serde_json::Value::Null => Ok(Value::Null),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Int(i))
+            } else if let Some(u) = n.as_u64() {
+                match i64::try_from(u) {
+                    Ok(i) => Ok(Value::Int(i)),
+                    Err(_) => {
+                        let f = n.as_f64().unwrap_or(f64::NAN);
+                        require(f.is_finite(), PARSE_REFUSAL)?;
+                        Ok(Value::Float(f))
+                    }
+                }
+            } else {
+                let f = n.as_f64().unwrap_or(f64::NAN);
+                require(f.is_finite(), PARSE_REFUSAL)?;
+                Ok(Value::Float(f))
+            }
+        }
+        serde_json::Value::String(s) => Ok(Value::Str(s.clone())),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(json_value_to_yaml_value(item, depth + 1)?);
+            }
+            Ok(Value::Seq(out))
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = Vec::with_capacity(map.len());
+            for (k, v) in map {
+                out.push((k.clone(), json_value_to_yaml_value(v, depth + 1)?));
+            }
+            Ok(Value::Map(out))
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Contained reads
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,14 +458,7 @@ fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
         usize::try_from(metadata.len()).is_ok_and(|len| len <= limit),
         "Source file exceeds the conversion size limit.",
     )?;
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(path).map_err(|_| {
+    let mut file = codewhale_util::bundle_file::open_bundle_file(path).map_err(|_| {
         anyhow::Error::msg("File operation failed; source files must be accessible regular paths.")
     })?;
     #[cfg(unix)]
@@ -426,7 +466,7 @@ fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
         use std::os::unix::fs::MetadataExt as _;
         let opened = file.metadata()?;
         require(
-            (opened.dev(), opened.ino()) == (metadata.dev(), metadata.ino()),
+            (opened.dev(), opened.ino()) == (metadata.dev(), metadata.ino()) && opened.nlink() == 1,
             "Source changed during conversion.",
         )?;
     }
@@ -506,6 +546,9 @@ pub struct DshConversion {
     pub outcomes: Vec<DshOutcome>,
     pub diagnostics: Vec<String>,
     pub skills: Vec<String>,
+    pub commands: Vec<String>,
+    pub agents: Vec<String>,
+    pub hooks: Vec<String>,
     pub remote_servers: Vec<String>,
     pub local_servers: Vec<String>,
     pub network_hosts: Vec<String>,
@@ -1121,6 +1164,7 @@ pub struct DshClientClosure {
     pub inject: Vec<String>,
     pub host_provided: Vec<String>,
     pub files: BTreeMap<String, String>,
+    pub imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     pub bytes: usize,
 }
 
@@ -1236,6 +1280,7 @@ fn package_target(manifest: &Value, subpath: &str) -> Option<String> {
 struct ClientScan<'a> {
     files: &'a BTreeMap<String, Vec<u8>>,
     closure: BTreeMap<String, String>,
+    imports: BTreeMap<String, BTreeMap<String, Option<String>>>,
     host: std::collections::BTreeSet<String>,
     bytes: usize,
 }
@@ -1282,7 +1327,7 @@ impl ClientScan<'_> {
             if let Some(bytes) = self.files.get(&format!("{package}/package.json")) {
                 let manifest = std::str::from_utf8(bytes)
                     .ok()
-                    .and_then(|text| parse_json(text).ok())
+                    .and_then(|text| parse_package_json(text).ok())
                     .ok_or_else(|| format!("`{name}` has an unreadable package.json"))?;
                 let target = package_target(&manifest, &subpath)
                     .and_then(|target| normalize_slash(&format!("{package}/{target}")))
@@ -1299,8 +1344,12 @@ impl ClientScan<'_> {
                 None => break,
             }
         }
-        if name == "react" || name == "react-dom" || name.starts_with("@deepseek-ai/") {
-            self.host.insert(name);
+        if name == "react"
+            || name == "react-dom"
+            || name == "cosmokit"
+            || name.starts_with("@deepseek-ai/")
+        {
+            self.host.insert(specifier.to_string());
             return Ok(None);
         }
         Err(format!(
@@ -1324,6 +1373,7 @@ impl ClientScan<'_> {
         let dynamic = pattern(
             r#"\b(?:require|import)\s*\(\s*(?:[^\s"'\)]|"[^"\n]*"\s*[^\s,\)]|'[^'\n]*'\s*[^\s,\)])"#,
         );
+        let dynamic_import = pattern(r"\bimport\s*\(");
         let mut pending = vec![entry];
         while let Some(path) = pending.pop() {
             if self.closure.contains_key(&path) {
@@ -1344,6 +1394,9 @@ impl ClientScan<'_> {
             let text = std::str::from_utf8(&self.files[&path])
                 .map_err(|_| format!("`{path}` is not UTF-8"))?
                 .to_string();
+            if dynamic_import.is_match(&text) {
+                return Err(format!("`{path}` uses unsupported dynamic import"));
+            }
             if dynamic.is_match(&text) {
                 return Err(format!("`{path}` loads a module by a computed specifier"));
             }
@@ -1352,7 +1405,12 @@ impl ClientScan<'_> {
                     .get(1)
                     .or_else(|| capture.get(2))
                     .map_or("", |m| m.as_str());
-                if let Some(resolved) = self.resolve(&path, specifier)? {
+                let resolved = self.resolve(&path, specifier)?;
+                self.imports
+                    .entry(path.clone())
+                    .or_default()
+                    .insert(specifier.to_string(), resolved.clone());
+                if let Some(resolved) = resolved {
                     pending.push(resolved);
                 }
             }
@@ -1383,6 +1441,7 @@ fn client_closure(
     let mut scan = ClientScan {
         files,
         closure: BTreeMap::new(),
+        imports: BTreeMap::new(),
         host: Default::default(),
         bytes: 0,
     };
@@ -1411,6 +1470,7 @@ fn client_closure(
         inject,
         host_provided: scan.host.into_iter().collect(),
         files: scan.closure,
+        imports: scan.imports,
         bytes: scan.bytes,
     })
 }
@@ -1421,7 +1481,7 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
             anyhow::Error::msg("Not a DSH bundle package: package.json is missing or unreadable.")
         })?;
     let manifest_sha256 = sha256_hex(&manifest_bytes);
-    let manifest = parse_json(&utf8(manifest_bytes)?)?;
+    let manifest = parse_package_json(&utf8(manifest_bytes)?)?;
     mapping(&manifest, None)?;
     let bundle = manifest.get("dsh").and_then(|dsh| dsh.get("bundle"));
     require(
@@ -1691,10 +1751,7 @@ pub fn evaluate_patches(
             if let Some(identifier) = row.get("id").and_then(Value::str) {
                 index.insert(identifier.to_string(), path.clone());
             }
-            if (row.get("group").is_some_and(Value::is_true)
-                || row.get("name").and_then(Value::str).is_some_and(|name| {
-                    matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
-                }))
+            if is_group_row(row)
                 && let Some(Value::Seq(children)) = row.get("config")
             {
                 index_rows(children, &path, 0, index);
@@ -1868,12 +1925,15 @@ fn timeout_seconds(value: &Value) -> Result<i64> {
 
 fn server_options(config: &Value) -> Result<serde_json::Map<String, Json>> {
     let mut extension = serde_json::Map::new();
-    require(
-        config
-            .get("failOnStartupError")
-            .is_none_or(|v| *v == Value::Bool(false)),
-        "DSH startup-failure policy requires a manual port.",
-    )?;
+    match config.get("failOnStartupError") {
+        None | Some(Value::Bool(false)) => {}
+        Some(Value::Bool(true)) => {
+            extension.insert("required".to_string(), json!(true));
+        }
+        Some(_) => {
+            return refuse("DSH startup-failure policy must be a boolean.");
+        }
+    }
     if let Some(value) = config.get("toolCallTimeoutMs") {
         extension.insert(
             "execute_timeout".to_string(),
@@ -2295,42 +2355,21 @@ impl Components {
                         );
                         continue;
                     }
-                    let dirs = match row.get("config").and_then(|c| c.get("customSkillDirs")) {
-                        Some(Value::Seq(dirs)) if !dirs.is_empty() => dirs.clone(),
-                        _ => {
-                            self.record(
-                                row,
-                                "skill",
-                                "skipped",
-                                "skill row has no `customSkillDirs` to import",
-                            );
-                            continue;
-                        }
-                    };
-                    let mut imported = 0;
-                    for entry in dirs {
-                        let Value::Str(entry) = entry else {
-                            self.notes.push(format!(
-                                "{label}: a `customSkillDirs` entry is not a literal path; skipped"
-                            ));
-                            continue;
-                        };
-                        if !plain_relative(&entry) {
-                            self.notes.push(format!(
-                                "{label}: `customSkillDirs` entry `{entry}` is outside the bundle; skipped"
-                            ));
-                            continue;
-                        }
-                        let resolved = package.contained(Path::new(&entry))?;
-                        if !resolved.is_dir() {
-                            self.notes.push(format!(
-                                "{label}: `customSkillDirs` entry `{entry}` does not exist in the bundle; skipped"
-                            ));
-                            continue;
-                        }
-                        self.skill_dirs.push(resolved);
-                        imported += 1;
+                    let (resolved_dirs, has_dirs_list) =
+                        resolve_custom_skill_dirs(package, row, |msg| {
+                            self.notes.push(format!("{label}: {msg}"));
+                        })?;
+                    if !has_dirs_list {
+                        self.record(
+                            row,
+                            "skill",
+                            "skipped",
+                            "skill row has no `customSkillDirs` to import",
+                        );
+                        continue;
                     }
+                    let imported = resolved_dirs.len();
+                    self.skill_dirs.extend(resolved_dirs);
                     if imported > 0 {
                         self.record(
                             row,
@@ -2389,7 +2428,7 @@ impl OutputFiles {
         self.bytes += content.len();
         require(
             self.bytes <= MAX_BYTES,
-            "Output exceeds the 4096-file / 64 MiB bundle budget.",
+            "Output exceeds the 16384-file / 256 MiB bundle budget.",
         )?;
         self.files.insert(relative, content);
         Ok(())
@@ -2403,6 +2442,10 @@ impl OutputFiles {
 /// Walk a contained directory without following links, bounded.
 pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> Result<()> {
     let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(root)?),
+        "Source paths must not contain links or reparse points.",
+    )?;
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -2423,16 +2466,20 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
                     .components()
                     .any(|part| part.as_os_str().to_str() == Some("node_modules"));
                 let contained_target = dependency_link
-                    && fs::canonicalize(&path).is_ok_and(|target| {
-                        target.starts_with(&canonical_root)
-                            && fs::metadata(&target)
-                                .is_ok_and(|target| target.is_file() || target.is_dir())
-                    });
-                require(
-                    contained_target,
-                    "Source paths must not contain links or reparse points.",
-                )?;
-                continue;
+                    .then(|| fs::canonicalize(&path).ok())
+                    .flatten()
+                    .filter(|target| target.starts_with(&canonical_root));
+                match contained_target {
+                    Some(target) if target.is_dir() => {
+                        return refuse(
+                            "This source links `node_modules` dependencies (pnpm-style installs); the converted bundle cannot materialize linked dependency directories. Install dependencies in a real layout, or remove `node_modules` before converting.",
+                        );
+                    }
+                    Some(target) if target.is_file() => continue,
+                    _ => {
+                        return refuse("Source paths must not contain links or reparse points.");
+                    }
+                }
             }
             visit(&path, metadata.is_dir())?;
             if metadata.is_dir() {
@@ -2454,7 +2501,12 @@ fn relative_slash(path: &Path, root: &Path) -> String {
 
 /// Convert one skill directory or Markdown file into native skill files.
 fn skill_files(source: &Path, output: &mut OutputFiles) -> Result<String> {
-    let is_dir = source.is_dir();
+    let source_metadata = fs::symlink_metadata(source)?;
+    require(
+        !codewhale_util::path_identity::metadata_is_link_or_reparse(&source_metadata),
+        "Source paths must not contain links or reparse points.",
+    )?;
+    let is_dir = source_metadata.is_dir();
     let entry = if is_dir {
         source.join("SKILL.md")
     } else {
@@ -2563,23 +2615,36 @@ fn skill_files(source: &Path, output: &mut OutputFiles) -> Result<String> {
 }
 
 /// Copy a packaged MCP source directory as data; never resolve dependencies.
+fn ensure_no_hidden_or_credential_entry(
+    path: &Path,
+    reject_node_modules: bool,
+    message: &str,
+) -> Result<()> {
+    let lower = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let suffix = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
+    require(
+        !lower.starts_with('.')
+            && (!reject_node_modules || lower != "node_modules")
+            && !matches!(
+                lower.as_str(),
+                "credentials" | "credentials.json" | "secrets.json" | "id_rsa" | "id_ed25519"
+            )
+            && !matches!(suffix.as_deref(), Some("pem" | "key" | "p12" | "pfx")),
+        message,
+    )
+}
+
 fn stdio_files(root: &Path, name: &str, output: &mut OutputFiles) -> Result<()> {
     walk_files(root, |path, is_dir| {
-        let lower = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let suffix = path
-            .extension()
-            .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
-        require(
-            !lower.starts_with('.')
-                && !matches!(
-                    lower.as_str(),
-                    "credentials" | "credentials.json" | "secrets.json" | "id_rsa" | "id_ed25519"
-                )
-                && !matches!(suffix.as_deref(), Some("pem" | "key" | "p12" | "pfx")),
+        ensure_no_hidden_or_credential_entry(
+            path,
+            false,
             "Package MCP source without hidden files, repository metadata or credential files; nothing was copied.",
         )?;
         if is_dir {
@@ -2595,6 +2660,496 @@ fn stdio_files(root: &Path, name: &str, output: &mut OutputFiles) -> Result<()> 
 
 /// A native plugin name from the package name: its last path segment,
 /// lowercased, with other characters replaced by single hyphens.
+const OTHER_MANIFEST_SPELLINGS: [&str; 5] = [
+    crate::agent_plugin::KIMI_PLUGIN_JSON_NAME,
+    crate::agent_plugin::PLUGIN_TOML_NAME,
+    ".claude-plugin/plugin.json",
+    ".plugin/plugin.json",
+    ".github/plugin/plugin.json",
+];
+
+#[derive(Default)]
+struct MergedPluginJson {
+    present: bool,
+    commands_spec: Option<crate::manifest::PluginPathSpec>,
+    agents_spec: Option<crate::manifest::PluginPathSpec>,
+    hooks_spec: Option<crate::manifest::PluginPathSpec>,
+    commands: Vec<String>,
+    agents: Vec<String>,
+    hooks: Vec<String>,
+}
+
+fn package_entry_exists(package: &Package, relative: &str) -> Result<Option<PathBuf>> {
+    let resolved = package.contained(Path::new(relative))?;
+    match fs::symlink_metadata(&resolved) {
+        Ok(_) => Ok(Some(resolved)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn same_package_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn dsh_row_bridge_kind(name: &str) -> Option<&'static str> {
+    static TABLE: std::sync::OnceLock<Option<Json>> = std::sync::OnceLock::new();
+    let raw = TABLE
+        .get_or_init(|| serde_json::from_slice(crate::activation::DSH_COMPATIBILITY).ok())
+        .as_ref()?
+        .get("row_bridges")?
+        .get(name)?
+        .as_str()?;
+    if raw == "hooks" || raw.starts_with("hooks-") {
+        Some("hooks")
+    } else if raw == "commands" {
+        Some("commands")
+    } else if raw == "agents" {
+        Some("agents")
+    } else if raw == "skills" {
+        Some("skills")
+    } else if raw == "mcp" {
+        Some("mcp")
+    } else {
+        None
+    }
+}
+
+fn is_group_row(row: &Value) -> bool {
+    row.get("group").is_some_and(Value::is_true)
+        || row
+            .get("name")
+            .and_then(Value::str)
+            .is_some_and(|name| matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group"))
+}
+
+fn resolve_custom_skill_dirs(
+    package: &Package,
+    row: &Value,
+    mut note: impl FnMut(String),
+) -> Result<(Vec<PathBuf>, bool)> {
+    let dirs = match row.get("config").and_then(|c| c.get("customSkillDirs")) {
+        Some(Value::Seq(dirs)) if !dirs.is_empty() => dirs,
+        _ => return Ok((Vec::new(), false)),
+    };
+    let mut resolved_dirs = Vec::new();
+    for entry in dirs {
+        let Value::Str(entry) = entry else {
+            note("a `customSkillDirs` entry is not a literal path; skipped".to_string());
+            continue;
+        };
+        if !plain_relative(entry) {
+            note(format!(
+                "`customSkillDirs` entry `{entry}` is outside the bundle; skipped"
+            ));
+            continue;
+        }
+        let resolved = package.contained(Path::new(entry))?;
+        if !resolved.is_dir() {
+            note(format!(
+                "`customSkillDirs` entry `{entry}` does not exist in the bundle; skipped"
+            ));
+            continue;
+        }
+        resolved_dirs.push(resolved);
+    }
+    Ok((resolved_dirs, true))
+}
+
+fn collect_active_skill_dirs(
+    package: &Package,
+    rows: &[Value],
+    disabled_ancestor: bool,
+    out: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for row in rows {
+        let row_disabled = match row.get("disabled") {
+            None => false,
+            Some(Value::Bool(flag)) => *flag,
+            Some(_) => true,
+        };
+        let effective = disabled_ancestor || row_disabled;
+        if is_group_row(row) {
+            if let Some(Value::Seq(children)) = row.get("config") {
+                collect_active_skill_dirs(package, children, effective, out)?;
+            }
+            continue;
+        }
+        if effective {
+            continue;
+        }
+        if row.get("name").and_then(Value::str) == Some(DSH_SKILL_FILESYSTEM) {
+            let (dirs, _) = resolve_custom_skill_dirs(package, row, |_| {})?;
+            out.extend(dirs);
+        }
+    }
+    Ok(())
+}
+
+fn walk_entry_modules(rows: &[Value], require_names: bool, names: &mut Vec<String>) -> Result<()> {
+    for row in rows {
+        if is_group_row(row) {
+            if let Some(Value::Seq(children)) = row.get("config") {
+                walk_entry_modules(children, require_names, names)?;
+            }
+            continue;
+        }
+        let name = match row.get("name").and_then(Value::str) {
+            Some(name) => name,
+            None if require_names => {
+                return Err(anyhow::Error::msg("reviewed row has no module name"));
+            }
+            None => continue,
+        };
+        if !names.iter().any(|old| old == name) {
+            names.push(name.into());
+        }
+    }
+    Ok(())
+}
+
+fn enforce_no_other_manifests(package: &Package) -> Result<()> {
+    for spelling in OTHER_MANIFEST_SPELLINGS {
+        if package_entry_exists(package, spelling)?.is_some() {
+            return refuse(format!(
+                "Cannot import `{}` alongside `package.json`: declare Codewhale `commands`, `agents`, and `hooks` only in a sibling `plugin.json`.",
+                refusal_text(spelling),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_matches_source_closure(
+    package: &Package,
+    path: &Path,
+    bytes: &[u8],
+    output: &OutputFiles,
+) -> Result<()> {
+    let rel = relative_slash(path, &package.root);
+    if let Some(existing) = output.files.get(&format!("source/{rel}")) {
+        require(
+            bytes == existing.as_slice(),
+            "Component file changed during conversion; nothing was installed.",
+        )?;
+        return Ok(());
+    }
+    if let Ok(canonical) = fs::canonicalize(path)
+        && canonical.starts_with(&package.root)
+    {
+        let canonical_rel = relative_slash(&canonical, &package.root);
+        if let Some(existing) = output.files.get(&format!("source/{canonical_rel}")) {
+            require(
+                bytes == existing.as_slice(),
+                "Component file changed during conversion; nothing was installed.",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_component_destination(kind: &str, raw: &str) -> Result<String> {
+    require(
+        raw.len() <= 1_024 && !raw.chars().any(char::is_control) && plain_relative(raw),
+        &format!(
+            "`plugin.json` {kind} path `{}` must stay inside the package.",
+            refusal_text(raw)
+        ),
+    )?;
+    let mut parts = Vec::new();
+    for component in Path::new(raw).components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => {
+                let text = part.to_string_lossy().into_owned();
+                ensure_no_hidden_or_credential_entry(
+                    Path::new(&text),
+                    true,
+                    "Plugin component paths in `plugin.json` must not include hidden, dependency or credential files.",
+                )?;
+                parts.push(text);
+            }
+            _ => {
+                return refuse(format!(
+                    "`plugin.json` {kind} path `{}` must stay inside the package.",
+                    refusal_text(raw)
+                ));
+            }
+        }
+    }
+    require(
+        !parts.is_empty(),
+        "`plugin.json` component paths must name a file or subdirectory inside the package.",
+    )?;
+    if parts[0].eq_ignore_ascii_case(kind) {
+        if parts.len() == 1 {
+            Ok(kind.to_string())
+        } else {
+            Ok(format!("{kind}/{}", parts[1..].join("/")))
+        }
+    } else {
+        Ok(format!("{kind}/{}", parts.join("/")))
+    }
+}
+
+fn copy_declared_component(
+    package: &Package,
+    kind: &str,
+    spec: &crate::manifest::PluginPathSpec,
+    output: &mut OutputFiles,
+) -> Result<(Option<crate::manifest::PluginPathSpec>, Vec<String>)> {
+    let declared = spec.declared_paths(None).map_err(|error| {
+        anyhow::Error::msg(format!(
+            "Invalid `{kind}` declaration in sibling `plugin.json` beside `package.json`: {}",
+            refusal_text(&error)
+        ))
+    })?;
+    let mut seen_targets = BTreeSet::new();
+    let mut emitted_specs = Vec::with_capacity(declared.len());
+    let mut copied_files = BTreeSet::new();
+    for raw in declared {
+        let dest_rel = normalize_component_destination(kind, &raw)?;
+        require(
+            seen_targets.insert(dest_rel.clone()),
+            "Duplicate component target path in sibling `plugin.json`; nothing was written.",
+        )?;
+        let resolved = package.contained(Path::new(&raw))?;
+        let metadata = fs::symlink_metadata(&resolved).map_err(|_| {
+            anyhow::Error::msg(format!(
+                "`plugin.json` {kind} path `{}` does not exist inside `package.json` bundle.",
+                refusal_text(&raw)
+            ))
+        })?;
+        require(
+            !codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata),
+            "Source paths must not contain links or reparse points.",
+        )?;
+        let before = copied_files.len();
+        if metadata.is_file() {
+            let bytes = read_file(&resolved, output.remaining())?;
+            verify_matches_source_closure(package, &resolved, &bytes, output)?;
+            output.add(dest_rel.clone(), bytes)?;
+            copied_files.insert(dest_rel.clone());
+        } else if metadata.is_dir() {
+            walk_files(&resolved, |path, is_dir| {
+                ensure_no_hidden_or_credential_entry(
+                    path,
+                    true,
+                    "Plugin component paths in `plugin.json` must not include hidden, dependency or credential files.",
+                )?;
+                let rel_in_dir = relative_slash(path, &resolved);
+                if rel_in_dir.is_empty() || is_dir {
+                    return Ok(());
+                }
+                let target = format!("{dest_rel}/{rel_in_dir}");
+                let bytes = read_file(path, output.remaining())?;
+                verify_matches_source_closure(package, path, &bytes, output)?;
+                output.add(target.clone(), bytes)?;
+                copied_files.insert(target);
+                Ok(())
+            })?;
+        } else {
+            return refuse(format!(
+                "`plugin.json` {kind} path `{}` must be a regular file or directory.",
+                refusal_text(&raw)
+            ));
+        }
+        if copied_files.len() > before {
+            emitted_specs.push(dest_rel);
+        }
+    }
+    let emitted = if emitted_specs.is_empty() {
+        None
+    } else if emitted_specs.len() == 1 {
+        Some(crate::manifest::PluginPathSpec {
+            path: Some(emitted_specs.remove(0)),
+            paths: Vec::new(),
+        })
+    } else {
+        Some(crate::manifest::PluginPathSpec {
+            path: None,
+            paths: emitted_specs,
+        })
+    };
+    Ok((emitted, copied_files.into_iter().collect()))
+}
+
+fn merge_sibling_plugin_json(
+    package: &Package,
+    plugin_name: &str,
+    package_version: Option<&str>,
+    entries: &[Value],
+    skill_dirs: &[PathBuf],
+    output: &mut OutputFiles,
+    notes: &mut Vec<String>,
+) -> Result<MergedPluginJson> {
+    enforce_no_other_manifests(package)?;
+    let Some(plugin_json_path) =
+        package_entry_exists(package, crate::agent_plugin::PLUGIN_JSON_NAME)?
+    else {
+        return Ok(MergedPluginJson::default());
+    };
+    if package_entry_exists(package, crate::agent_plugin::MCP_JSON_NAME)?.is_some() {
+        return refuse(
+            "`plugin.json` beside `package.json` may not include a sibling `mcp.json`; declare MCP servers in the DSH patch instead.",
+        );
+    }
+    if let Some(skills_path) = package_entry_exists(package, "skills")? {
+        require(
+            skill_dirs
+                .iter()
+                .any(|dir| same_package_path(dir, &skills_path)),
+            "`plugin.json` beside `package.json` cannot auto-pick up a root `skills/` folder; declare skills in a `dsh-skill-filesystem` patch row or remove `skills/`.",
+        )?;
+    }
+
+    let raw_bytes = read_file(&plugin_json_path, MAX_DOCUMENT)?;
+    verify_matches_source_closure(package, &plugin_json_path, &raw_bytes, output)?;
+    let text = utf8(raw_bytes)?;
+    let standard = crate::agent_plugin::parse_plugin_json(&text).map_err(|error| {
+        anyhow::Error::msg(format!(
+            "Invalid sibling `plugin.json` beside `package.json`: {}",
+            refusal_text(&error)
+        ))
+    })?;
+
+    require(
+        standard.name == plugin_name,
+        &format!(
+            "`plugin.json` name `{}` does not match `package.json` derived plugin name `{}`.",
+            refusal_text(&standard.name),
+            refusal_text(plugin_name),
+        ),
+    )?;
+    let json_version = standard.version.as_deref().map(str::trim);
+    if json_version == Some("") {
+        return refuse("`plugin.json` beside `package.json` may not declare an empty `version`.");
+    }
+    if let (Some(pkg_v), Some(json_v)) = (package_version, json_version) {
+        require(
+            pkg_v == json_v,
+            &format!(
+                "`plugin.json` version `{}` does not match `package.json` version `{}`.",
+                refusal_text(json_v),
+                refusal_text(pkg_v),
+            ),
+        )?;
+    }
+
+    let mut ignored_fields = Vec::new();
+    if package_version.is_none() && json_version.is_some() {
+        ignored_fields.push("version");
+    }
+    if standard.description.is_some() {
+        ignored_fields.push("description");
+    }
+    if standard.author.is_some() {
+        ignored_fields.push("author");
+    }
+    if standard.homepage.is_some() {
+        ignored_fields.push("homepage");
+    }
+    if standard.repository.is_some() {
+        ignored_fields.push("repository");
+    }
+    if standard.license.is_some() {
+        ignored_fields.push("license");
+    }
+    if !standard.keywords.is_empty() {
+        ignored_fields.push("keywords");
+    }
+    if !ignored_fields.is_empty() {
+        notes.push(format!(
+            "sibling plugin.json metadata fields ignored (package.json controls bundle metadata): {}",
+            ignored_fields.join(", ")
+        ));
+    }
+
+    let extension = match standard
+        .extensions
+        .get(crate::agent_plugin::CODEWHALE_NAMESPACE)
+    {
+        Some(value) => {
+            let Some(object) = value.as_object() else {
+                return refuse(
+                    "`plugin.json` beside `package.json` must use an object for `extensions[\"net.codewhale\"]`.",
+                );
+            };
+            for key in object.keys() {
+                if !matches!(key.as_str(), "commands" | "agents" | "hooks") {
+                    return refuse(format!(
+                        "`plugin.json` beside `package.json` may only declare `commands`, `agents`, and `hooks` under `extensions[\"{}\"]`; forbidden key `{}`.",
+                        crate::agent_plugin::CODEWHALE_NAMESPACE,
+                        refusal_text(key),
+                    ));
+                }
+            }
+            serde_json::from_value::<crate::agent_plugin::CodewhalePluginExtension>(value.clone())
+                .map_err(|error| {
+                    anyhow::Error::msg(format!(
+                        "Invalid `extensions[\"{}\"]` in sibling `plugin.json` beside `package.json`: {}",
+                        crate::agent_plugin::CODEWHALE_NAMESPACE,
+                        refusal_text(&error.to_string()),
+                    ))
+                })?
+        }
+        None => crate::agent_plugin::CodewhalePluginExtension::default(),
+    };
+
+    let mut row_names = Vec::new();
+    walk_entry_modules(entries, false, &mut row_names)?;
+    for (kind, declared) in [
+        ("commands", extension.commands.is_some()),
+        ("agents", extension.agents.is_some()),
+        ("hooks", extension.hooks.is_some()),
+    ] {
+        if declared
+            && let Some(row_name) = row_names
+                .iter()
+                .find(|name| dsh_row_bridge_kind(name) == Some(kind))
+        {
+            return refuse(format!(
+                "Duplicate `{kind}` declaration in `package.json` patch row `{}` and sibling `plugin.json`: declare `{kind}` in only one place.",
+                refusal_text(row_name),
+            ));
+        }
+    }
+
+    let mut merged = MergedPluginJson {
+        present: true,
+        ..MergedPluginJson::default()
+    };
+    if let Some(spec) = extension.commands.as_ref() {
+        let (emitted, files) = copy_declared_component(package, "commands", spec, output)?;
+        merged.commands_spec = emitted;
+        merged.commands = files;
+    }
+    if let Some(spec) = extension.agents.as_ref() {
+        let (emitted, files) = copy_declared_component(package, "agents", spec, output)?;
+        merged.agents_spec = emitted;
+        merged.agents = files;
+    }
+    if let Some(spec) = extension.hooks.as_ref() {
+        let (emitted, files) = copy_declared_component(package, "hooks", spec, output)?;
+        merged.hooks_spec = emitted;
+        merged.hooks = files;
+    }
+    Ok(merged)
+}
+
 fn host_hook_bridge(name: &str) -> bool {
     crate::activation::dsh_row_bridge(name)
 }
@@ -2653,30 +3208,8 @@ fn native_composition_files(
     client_closures: &mut Vec<DshClientClosure>,
     ui: bool,
 ) -> Result<Vec<String>> {
-    fn modules(rows: &[Value], names: &mut Vec<String>) -> Result<()> {
-        for row in rows {
-            if row.get("group").is_some_and(Value::is_true)
-                || row.get("name").and_then(Value::str).is_some_and(|name| {
-                    matches!(name, "cordis:group" | "@deepseek-ai/cordis-plugin-group")
-                })
-            {
-                if let Some(Value::Seq(children)) = row.get("config") {
-                    modules(children, names)?;
-                }
-                continue;
-            }
-            let name = row
-                .get("name")
-                .and_then(Value::str)
-                .ok_or_else(|| anyhow::Error::msg("reviewed row has no module name"))?;
-            if !names.iter().any(|old| old == name) {
-                names.push(name.into());
-            }
-        }
-        Ok(())
-    }
     let mut names = Vec::new();
-    modules(entries, &mut names)?;
+    walk_entry_modules(entries, true, &mut names)?;
     if names.is_empty() && !ui {
         return Ok(names);
     }
@@ -2731,7 +3264,11 @@ fn native_composition_files(
             (dependency
                 || !lower.starts_with('.')
                 || lower == ".agent-presets"
+                || (lower == ".dsh-tui-managed.json"
+                    && (relative.starts_with("presets/")
+                        || relative.starts_with(".agent-presets/")))
                 || relative == ".gitignore")
+                && !lower.starts_with(".env.")
                 && !matches!(
                     lower.as_str(),
                     "credentials"
@@ -2789,7 +3326,7 @@ fn native_composition_files(
                     let text = std::str::from_utf8(bytes).map_err(|_| {
                         anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8.")
                     })?;
-                    let manifest = parse_json(text)?;
+                    let manifest = parse_package_json(text)?;
                     if declares_client(&manifest) {
                         let root = manifest_path
                             .rsplit_once('/')
@@ -2863,7 +3400,7 @@ fn native_composition_files(
     }
     document["modules"] = json!(selected);
     document["files"] = json!(files);
-    if presets::has_roster(entries) {
+    if selected.is_empty() && presets::has_roster(entries) {
         presets::prepare(package, &document, output)?;
         return Ok(names);
     }
@@ -2903,19 +3440,109 @@ fn valid_plugin_name(name: &str) -> bool {
         && !name.contains("--")
 }
 
+const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmInstallPlan {
+    pub spec: String,
+    pub plugin_name: String,
+}
+
+pub fn plan_npm_install(
+    package: &str,
+    version: &str,
+    registry: Option<&str>,
+) -> Result<NpmInstallPlan, String> {
+    let file = package.rsplit('/').next().unwrap_or(package);
+    let tarball = |base: &str| format!("{base}/{package}/-/{file}-{version}.tgz");
+    let remote = |url: String| {
+        super::PluginInstallSource::Remote(
+            codewhale_skill_install::install::InstallSource::DirectUrl(url),
+        )
+    };
+    let exact = format!("npm:{package}@{version}");
+    if super::PluginInstallSource::parse(&exact).ok() != Some(remote(tarball(NPM_REGISTRY))) {
+        return Err(format!(
+            "`{}@{}` is not an exact npm package version Codewhale can fetch: the name must be a lowercase npm name with an optional @scope, and the version exact, canonical SemVer",
+            refusal_text(package),
+            refusal_text(version)
+        ));
+    }
+    let plugin_name = derived_plugin_name(package).ok_or_else(|| {
+        format!(
+            "npm package `{}` cannot form a native plugin name (1–64 lowercase letters/digits with single dots or hyphens), so its bundle could not be imported",
+            refusal_text(package)
+        )
+    })?;
+    let Some(registry) = registry else {
+        return Ok(NpmInstallPlan {
+            spec: exact,
+            plugin_name,
+        });
+    };
+    let url = reqwest::Url::parse(registry)
+        .map_err(|_| "the declared npm registry is not an absolute URL".to_string())?;
+    let host = refusal_text(url.host_str().unwrap_or_default());
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(format!(
+            "npm registry `{host}` must be an https URL without credentials, query or fragment; Codewhale fetches a registry tarball only over https"
+        ));
+    }
+    let base = url.as_str().trim_end_matches('/');
+    if base == NPM_REGISTRY {
+        return Ok(NpmInstallPlan {
+            spec: exact,
+            plugin_name,
+        });
+    }
+    let spec = tarball(base);
+    if super::PluginInstallSource::parse(&spec).ok() != Some(remote(spec.clone())) {
+        return Err(format!(
+            "npm registry `{host}` does not give a tarball address the reviewed installer accepts"
+        ));
+    }
+    Ok(NpmInstallPlan { spec, plugin_name })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Return whether a DSH package imports declared external npm dependencies not bundled in `node_modules`.
+pub fn has_unresolved_npm_dependencies(package: &Path) -> Result<bool> {
+    let package = Package::open(package)?;
+    let loaded = load_bundle(&package)?;
+    let (_, seeds) = super::npm_deps::collect_unresolved_seeds(
+        &package.root,
+        &loaded.manifest,
+        &loaded.entries,
+    )?;
+    Ok(!seeds.is_empty())
+}
 
 /// Convert the DSH bundle package at `package` into a fresh native bundle at
 /// `output`. `output` must not exist; nothing is written unless every
 /// component validated, and a failed write removes what it created.
 pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
+    convert_package_with_network(package, output, None)
+}
+
+pub fn convert_package_with_network(
+    package: &Path,
+    output: &Path,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
+) -> Result<DshConversion> {
     static CONVERSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _conversion = CONVERSION
         .lock()
         .map_err(|_| anyhow::Error::msg("DSH preparation is unavailable"))?;
-    let package = Package::open(package)?;
+    let mut package = Package::open(package)?;
     require(
         !output.exists(),
         "Output already exists; choose a fresh directory. Nothing was overwritten.",
@@ -2927,6 +3554,25 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         )?;
     }
     let loaded = load_bundle(&package)?;
+    let staged_npm = if let Some(policy) = network {
+        if let Some(stage) = super::npm_deps::maybe_stage_with_dependencies(
+            &package.root,
+            &loaded.manifest,
+            &loaded.entries,
+            policy,
+        )? {
+            package = Package::open(stage.path())?;
+            Some(stage)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let fetched_npm = staged_npm
+        .as_ref()
+        .map(|stage| stage.fetched.clone())
+        .unwrap_or_default();
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
     let mut client_closures = Vec::new();
@@ -2942,6 +3588,9 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     )?;
     let requires_native = !native_rows.is_empty();
     let mut notes = loaded.notes;
+    if let Some(note) = fetched_npm_note(&fetched_npm) {
+        notes.push(note);
+    }
     let mut components = Components::default();
     if !requires_native {
         components.walk(&package, &loaded.entries, None)?;
@@ -2964,7 +3613,8 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         .manifest
         .get("version")
         .and_then(Value::str)
-        .filter(|v| !v.trim().is_empty())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
         .map(str::to_string);
     let Some(plugin_name) = package_name.as_deref().and_then(derived_plugin_name) else {
         return refuse(
@@ -2981,6 +3631,12 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
             if child.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
+            require(
+                !codewhale_util::path_identity::metadata_is_link_or_reparse(&fs::symlink_metadata(
+                    &path,
+                )?),
+                "Source paths must not contain links or reparse points.",
+            )?;
             if path.join("SKILL.md").is_file() || path.extension().is_some_and(|ext| ext == "md") {
                 skill_sources.push(path);
             }
@@ -3041,6 +3697,23 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
                     .to_string();
         }
     }
+    let mut native_skill_dirs = Vec::new();
+    let skill_dirs_for_merge = if requires_native {
+        collect_active_skill_dirs(&package, &loaded.entries, false, &mut native_skill_dirs)?;
+        &native_skill_dirs
+    } else {
+        &components.skill_dirs
+    };
+    let merged = merge_sibling_plugin_json(
+        &package,
+        &plugin_name,
+        package_version.as_deref(),
+        &loaded.entries,
+        skill_dirs_for_merge,
+        &mut output_files,
+        &mut notes,
+    )?;
+
     if !ui && output_files.files.is_empty() && components.servers.is_empty() {
         let skipped = refusal_list(
             outcomes
@@ -3076,14 +3749,24 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         "$schema": "https://agent-plugins.org/schemas/plugin.json",
         "name": plugin_name,
     });
-    for field in ["version", "description"] {
-        if let Some(value) = loaded
-            .manifest
-            .get(field)
-            .and_then(Value::str)
-            .filter(|v| !v.trim().is_empty())
-        {
-            manifest[field] = json!(value);
+    if let Some(version) = &package_version {
+        manifest["version"] = json!(version);
+    }
+    if let Some(raw_description) = loaded.manifest.get("description").and_then(Value::str) {
+        let cleaned: String = raw_description
+            .chars()
+            .filter(|c| !codewhale_sanitize::sanitize::is_bidi_control(*c))
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let trimmed = cleaned.trim();
+        if !trimmed.is_empty() {
+            let truncated = if trimmed.chars().count() > 1024 {
+                let prefix: String = trimmed.chars().take(1023).collect();
+                format!("{}…", prefix.trim_end())
+            } else {
+                trimmed.to_string()
+            };
+            manifest["description"] = json!(truncated);
         }
     }
     let mut extension = serde_json::Map::new();
@@ -3141,8 +3824,25 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         }
         extension.insert("when".into(), Json::Object(when));
     }
+    if let Some(spec) = merged.commands_spec {
+        extension.insert("commands".into(), serde_json::to_value(spec)?);
+    }
+    if let Some(spec) = merged.agents_spec {
+        extension.insert("agents".into(), serde_json::to_value(spec)?);
+    }
+    if let Some(spec) = merged.hooks_spec {
+        extension.insert("hooks".into(), serde_json::to_value(spec)?);
+    }
     if !extension.is_empty() {
         manifest["extensions"] = json!({"net.codewhale": extension});
+    }
+    if merged.present {
+        crate::agent_plugin::validate_plugin_json(&manifest).map_err(|error| {
+            anyhow::Error::msg(format!(
+                "Converted `plugin.json` is invalid: {}",
+                refusal_text(&error)
+            ))
+        })?;
     }
     notes.insert(
         0,
@@ -3184,6 +3884,9 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         outcomes,
         diagnostics: notes,
         skills,
+        commands: merged.commands,
+        agents: merged.agents,
+        hooks: merged.hooks,
         remote_servers: remote.iter().map(|(name, _)| name.clone()).collect(),
         local_servers: local.iter().map(|(name, _)| name.clone()).collect(),
         network_hosts: hosts,
@@ -3194,9 +3897,22 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     };
     output_files.add(
         "CONVERSION.md".into(),
-        conversion_markdown(&conversion).into_bytes(),
+        conversion_markdown(&conversion, !fetched_npm.is_empty()).into_bytes(),
     )?;
-    let receipt = json!({
+    let mut counts = json!({
+        "skills": conversion.skills.len(),
+        "mcp_servers": components.servers.len(),
+        "native_rows": conversion.native_rows.len(),
+    });
+    let has_merged_components = !conversion.commands.is_empty()
+        || !conversion.agents.is_empty()
+        || !conversion.hooks.is_empty();
+    if has_merged_components {
+        counts["commands"] = json!(conversion.commands.len());
+        counts["agents"] = json!(conversion.agents.len());
+        counts["hooks"] = json!(conversion.hooks.len());
+    }
+    let mut receipt = json!({
         "schema": "codewhale.plugin-conversion.v1",
         "converter_version": CONVERTER_VERSION,
         "converter": "codewhale-native",
@@ -3207,23 +3923,62 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
             "manifest_sha256": conversion.manifest_sha256,
             "patch_layers": conversion.layers,
         },
-        "counts": {"skills": conversion.skills.len(), "mcp_servers": components.servers.len(), "native_rows": conversion.native_rows.len()},
+        "counts": counts,
         "requires_native": conversion.requires_native,
         "outcomes": conversion.outcomes,
         "client_closures": conversion.client_closures,
         "diagnostics": conversion.diagnostics,
         "required_manual_ports": conversion.outcomes.iter().filter(|o| o.needs_manual_port()).collect::<Vec<_>>(),
     });
+    if has_merged_components {
+        receipt["commands"] = json!(conversion.commands);
+        receipt["agents"] = json!(conversion.agents);
+        receipt["hooks"] = json!(conversion.hooks);
+    }
     output_files.add(
         "CONVERSION.json".into(),
         format!("{}\n", serde_json::to_string_pretty(&receipt)?).into_bytes(),
     )?;
 
     write_output(output, &output_files)?;
+    if merged.present
+        && let Err(error) = crate::manifest::PluginManifest::validate_from_path(
+            &output.join(crate::agent_plugin::PLUGIN_JSON_NAME),
+        )
+    {
+        let _ = fs::remove_dir_all(output);
+        return refuse(format!(
+            "Converted bundle failed manifest validation: {}",
+            refusal_text(&error)
+        ));
+    }
     Ok(conversion)
 }
 
-fn conversion_markdown(conversion: &DshConversion) -> String {
+const MAX_FETCHED_NPM_NAMES: usize = 40;
+
+pub(super) fn fetched_npm_note(fetched: &[String]) -> Option<String> {
+    if fetched.is_empty() {
+        return None;
+    }
+    let shown = fetched
+        .iter()
+        .take(MAX_FETCHED_NPM_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = fetched.len().saturating_sub(MAX_FETCHED_NPM_NAMES);
+    Some(format!(
+        "Fetched from registry.npmjs.org (sha512-verified; install scripts not run): {shown}{}",
+        if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+pub(super) fn conversion_markdown(conversion: &DshConversion, fetched_npm: bool) -> String {
     let mut lines = vec![
         "# Conversion receipt".to_string(),
         String::new(),
@@ -3255,6 +4010,27 @@ fn conversion_markdown(conversion: &DshConversion) -> String {
         conversion.remote_servers.len(),
         conversion.local_servers.len(),conversion.native_rows.len()
     ));
+    if !conversion.commands.is_empty()
+        || !conversion.agents.is_empty()
+        || !conversion.hooks.is_empty()
+    {
+        let shown = |items: &[String]| {
+            if items.is_empty() {
+                "none".to_string()
+            } else {
+                items.join(", ")
+            }
+        };
+        lines.push(format!(
+            "Merged from sibling plugin.json: {} Commands ({}), {} Agents ({}), {} Hooks ({}).",
+            conversion.commands.len(),
+            shown(&conversion.commands),
+            conversion.agents.len(),
+            shown(&conversion.agents),
+            conversion.hooks.len(),
+            shown(&conversion.hooks),
+        ));
+    }
     lines.push(String::new());
     if !conversion.outcomes.is_empty() {
         lines.push("## Component outcomes".to_string());
@@ -3290,10 +4066,18 @@ fn conversion_markdown(conversion: &DshConversion) -> String {
         );
         lines.push(String::new());
     }
+    lines.push(if fetched_npm {
+        "No selected-package code, package manager, install hook or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    } else {
+        "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    }.to_string());
+    lines.push(if fetched_npm {
+        "No environment variable values were resolved. Files inside the selected package and the npm packages listed under Bundle diagnostics were read;"
+    } else {
+        "No environment variable values were resolved. Only files inside the selected package were read;"
+    }.to_string());
     lines.extend(
         [
-            "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration.",
-            "No environment variable values were resolved. Only files inside the selected package were read;",
             "host paths are never inferred from expressions or copied.",
             "Companion skill files and packaged Node source were copied as data.",
             "Local MCP runs with host-user process authority, not an OS sandbox; stdio does not confine its network or files.",
@@ -3340,31 +4124,49 @@ fn write_output(output: &Path, files: &OutputFiles) -> Result<()> {
 /// Convert into a private scratch directory and return it with the receipt.
 /// The directory is removed when the returned guard drops.
 pub fn convert_to_scratch(package: &Path) -> Result<(tempfile::TempDir, PathBuf, DshConversion)> {
+    convert_to_scratch_with_network(package, None)
+}
+
+pub fn convert_to_scratch_with_network(
+    package: &Path,
+    network: Option<&codewhale_net::network_policy::NetworkPolicy>,
+) -> Result<(tempfile::TempDir, PathBuf, DshConversion)> {
     let scratch = tempfile::Builder::new()
         .prefix("codewhale-dsh-import-")
         .tempdir()?;
     let bundle = scratch.path().join("bundle");
-    let conversion = convert_package(package, &bundle)?;
+    let conversion = convert_package_with_network(package, &bundle, network)?;
     Ok((scratch, bundle, conversion))
 }
 
 /// Whether `path` looks like a DSH bundle package (for routing a plain local
 /// install to the importer instead of the native bundle reader).
 pub fn is_dsh_package(path: &Path) -> bool {
-    let Ok(package) = Package::open(path) else {
-        return false;
+    matches!(try_is_dsh_package(path), Ok(true))
+}
+
+pub fn try_is_dsh_package(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(meta) if !meta.is_dir() => return Ok(false),
+        Ok(_) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let package = Package::open(path)?;
+    let Some(manifest_path) = package_entry_exists(&package, "package.json")? else {
+        return Ok(false);
     };
-    let Ok(path) = package.contained(Path::new("package.json")) else {
-        return false;
-    };
-    read_file(&path, MAX_DOCUMENT)
-        .ok()
-        .and_then(|bytes| utf8(bytes).ok())
-        .and_then(|text| parse_json(&text).ok())
-        .is_some_and(|manifest| {
-            manifest
-                .get("dsh")
-                .and_then(|dsh| dsh.get("bundle"))
-                .is_some()
-        })
+    let text = utf8(read_file(&manifest_path, MAX_DOCUMENT)?)?;
+    let manifest = parse_package_json(&text)?;
+    Ok(manifest
+        .get("dsh")
+        .and_then(|dsh| dsh.get("bundle"))
+        .is_some())
 }

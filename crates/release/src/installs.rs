@@ -17,7 +17,7 @@
 //! whose bytes differ from the running one reports "version unknown" because
 //! it is never run. Recovery expiry deletes only what a recovery manifest lists.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -313,26 +313,19 @@ fn classify(
     if !related {
         return None;
     }
-    if meta.is_symlink() {
-        let method = InstallMethod::detect(path);
-        return Some(if method == InstallMethod::DesktopApp {
-            InstallClass::AppBundle
-        } else if !method.supports_self_update() {
-            InstallClass::PackageManaged(method)
-        } else {
-            InstallClass::NotOurs("symlink; not changed")
-        });
-    }
-    let method = InstallMethod::from_path(path);
+    let method = InstallMethod::owner(path);
     if method == InstallMethod::DesktopApp {
         return Some(InstallClass::AppBundle);
     }
-    if method == InstallMethod::Cargo || cargo_root_beside(path).is_some() {
-        if cargo_lists(path, name) {
-            return Some(InstallClass::PackageManaged(InstallMethod::Cargo));
-        }
-    } else if !method.supports_self_update() {
+    // Cargo owns only the names its record lists; other files in its `bin`
+    // (old backups, renamed copies) are judged below like any directory.
+    if !method.supports_self_update()
+        && (method != InstallMethod::Cargo || meta.is_symlink() || cargo_lists(path, name))
+    {
         return Some(InstallClass::PackageManaged(method));
+    }
+    if meta.is_symlink() {
+        return Some(InstallClass::NotOurs("symlink; not changed"));
     }
     if !owned_by(&meta, owner) {
         return Some(InstallClass::NotOurs("owned by another user"));
@@ -343,13 +336,13 @@ fn classify(
             .ok()
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > STALE_AFTER);
-        return Some(
-            if stale && (meta.is_dir() || name.starts_with(".codewhale-update-")) {
-                InstallClass::BackupLeftover
-            } else {
-                InstallClass::NotOurs("in use or recent; not changed")
-            },
-        );
+        return Some(if !stale {
+            InstallClass::NotOurs("changed within the last hour, so it may be in use; not changed")
+        } else if meta.is_dir() || name.starts_with(".codewhale-update-") {
+            InstallClass::BackupLeftover
+        } else {
+            InstallClass::NotOurs("an install receipt or marker file, not a backup; not changed")
+        });
     }
     if host_recovery {
         return Some(if meta.is_file() && meta.len() <= 64 * 1024 {
@@ -553,6 +546,23 @@ fn cargo_root_beside(path: &Path) -> Option<PathBuf> {
         .then(|| root.to_path_buf())
 }
 
+pub(crate) fn cargo_owns_a_command_beside(path: &Path) -> bool {
+    let Some(root) = cargo_root_beside(path) else {
+        return false;
+    };
+    [".crates.toml", ".crates2.json"].iter().any(|file| {
+        let record = root.join(file);
+        if fs::symlink_metadata(&record).is_err() {
+            return false;
+        }
+        read_small(&record, 4 * 1024 * 1024).map_or(true, |text| {
+            RECEIPT_COMMANDS
+                .iter()
+                .any(|name| text.contains(&format!("\"{name}\"")))
+        })
+    })
+}
+
 fn cargo_lists(path: &Path, name: &str) -> bool {
     let Some(root) = cargo_root_beside(path) else {
         return false;
@@ -592,15 +602,22 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn dir_bytes(path: &Path) -> u64 {
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|entry| fs::symlink_metadata(entry.path()).ok())
-                .map(|meta| if meta.is_file() { meta.len() } else { 0 })
-                .sum()
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| fs::symlink_metadata(entry.path()).ok().map(|m| (entry, m)))
+        .map(|(entry, meta)| {
+            if meta.is_dir() {
+                dir_bytes(&entry.path())
+            } else if meta.is_file() {
+                meta.len()
+            } else {
+                0
+            }
         })
-        .unwrap_or(0)
+        .sum()
 }
 
 fn display(path: &Path) -> String {
@@ -632,8 +649,47 @@ fn quoted(path: &Path) -> String {
     format!("\"{}\"", path.display())
 }
 
+/// The command that removes the copy at `executable` through its owner.
 #[must_use]
 pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
+    owner_command(method, executable, false)
+}
+
+/// The command that updates the copy at `executable` through its owner,
+/// with the exact Cargo root or npm prefix that installed it.
+#[must_use]
+pub fn manager_update_command(method: InstallMethod, executable: &Path) -> String {
+    owner_command(method, executable, true)
+}
+
+/// One line answering "can this copy update itself, and if not, what does?"
+/// Shared by `codewhale update`, `/update`, rollback and `doctor`.
+#[must_use]
+pub fn update_answer(method: InstallMethod, executable: &Path) -> String {
+    match method {
+        InstallMethod::DesktopApp => crate::install::DESKTOP_APP_UPDATE_HELP.to_string(),
+        InstallMethod::System => "This copy is in a system or package directory, so it cannot update itself; update it with the package manager that installed it.".to_string(),
+        InstallMethod::ReadOnly => format!(
+            "This copy is in {}, which this account cannot write, so it cannot update itself; rerun the installer into a folder you own, or update it as that folder's owner.",
+            quoted(executable.parent().unwrap_or(executable))
+        ),
+        InstallMethod::Npm => format!(
+            "This copy belongs to {}, so it cannot update itself; update it with `{}`.",
+            npm_family(executable).map_or("npm", |family| family.0),
+            manager_update_command(method, executable)
+        ),
+        method if method.supports_self_update() => {
+            "This copy updates itself: `codewhale update`.".to_string()
+        }
+        method => format!(
+            "This copy belongs to {}, so it cannot update itself; update it with `{}`.",
+            method.label(),
+            manager_update_command(method, executable)
+        ),
+    }
+}
+
+fn owner_command(method: InstallMethod, executable: &Path, update: bool) -> String {
     let real = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
     let names: Vec<_> = real.components().map(|part| part.as_os_str()).collect();
     let position = |marker: &str| {
@@ -641,16 +697,37 @@ pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
             .iter()
             .position(|name| name.eq_ignore_ascii_case(marker))
     };
+    let fallback = || {
+        if update {
+            method.update_command()
+        } else {
+            method.uninstall_command()
+        }
+        .to_string()
+    };
     match method {
         InstallMethod::Cargo => match real.parent().and_then(Path::parent) {
+            Some(root) if update => format!(
+                "cargo install codewhale-cli --locked --force --root {}",
+                quoted(root)
+            ),
             Some(root) => format!("cargo uninstall codewhale-cli --root {}", quoted(root)),
-            None => method.uninstall_command().to_string(),
+            None => fallback(),
         },
-        InstallMethod::Homebrew => {
+        InstallMethod::Homebrew if !update => {
             match position("Cellar").and_then(|index| names.get(index + 1)) {
                 Some(formula) => format!("brew uninstall {}", formula.to_string_lossy()),
-                None => method.uninstall_command().to_string(),
+                None => fallback(),
             }
+        }
+        InstallMethod::Npm if npm_family(&real).is_some() => {
+            let (_, update_command, uninstall_command) = npm_family(&real).unwrap_or_default();
+            if update {
+                update_command
+            } else {
+                uninstall_command
+            }
+            .to_string()
         }
         InstallMethod::Npm => match position("node_modules") {
             Some(index) if index > 0 => {
@@ -658,12 +735,67 @@ pub fn manager_command(method: InstallMethod, executable: &Path) -> String {
                 if !cfg!(windows) && root.file_name().is_some_and(|name| name == "lib") {
                     root.pop();
                 }
-                format!("npm uninstall -g codewhale --prefix {}", quoted(&root))
+                if update {
+                    format!("npm install -g codewhale@latest --prefix {}", quoted(&root))
+                } else {
+                    format!("npm uninstall -g codewhale --prefix {}", quoted(&root))
+                }
             }
-            _ => method.uninstall_command().to_string(),
+            _ => fallback(),
         },
-        _ => method.uninstall_command().to_string(),
+        InstallMethod::WindowsInstaller if !update => {
+            match crate::install::windows_installer_uninstaller(&real) {
+                Some(uninstaller) => format!("{}, or run {}", fallback(), quoted(&uninstaller)),
+                None => fallback(),
+            }
+        }
+        _ => fallback(),
     }
+}
+
+/// The npm-compatible manager whose global folder holds `executable`:
+/// `(label, update command, uninstall command)`. `None` for npm itself.
+fn npm_family(executable: &Path) -> Option<(&'static str, &'static str, &'static str)> {
+    let real = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    let has = |marker: &str| {
+        real.components()
+            .any(|part| part.as_os_str().eq_ignore_ascii_case(marker))
+    };
+    [
+        (
+            "pnpm",
+            "pnpm",
+            "pnpm add -g codewhale@latest",
+            "pnpm remove -g codewhale",
+        ),
+        (
+            ".bun",
+            "Bun",
+            "bun add -g codewhale@latest",
+            "bun remove -g codewhale",
+        ),
+        (
+            "yarn",
+            "Yarn",
+            "yarn global add codewhale@latest",
+            "yarn global remove codewhale",
+        ),
+        (
+            ".volta",
+            "Volta",
+            "volta install codewhale@latest",
+            "volta uninstall codewhale",
+        ),
+        (
+            "mise",
+            "mise",
+            "mise use -g npm:codewhale@latest",
+            "mise uninstall npm:codewhale",
+        ),
+    ]
+    .into_iter()
+    .find(|(marker, ..)| has(marker))
+    .map(|(_, label, update, uninstall)| (label, update, uninstall))
 }
 
 #[must_use]
@@ -787,6 +919,10 @@ impl RecoveryBatch {
     }
 
     pub fn move_in(&mut self, path: &Path) -> Result<RecoveryMove> {
+        self.move_in_replaced(path, None)
+    }
+
+    fn move_in_replaced(&mut self, path: &Path, replacement: Option<&str>) -> Result<RecoveryMove> {
         let original = path.to_string_lossy();
         if original.contains(['\t', '\n', '\r']) {
             bail!(
@@ -835,7 +971,10 @@ impl RecoveryBatch {
                 format!("failed to move {} to {}", path.display(), to.display())
             })?;
         }
-        let line = format!("{original}\t{}\t{digest}\t{bytes}\n", to.display());
+        let suffix = replacement
+            .map(|digest| format!("\t{digest}"))
+            .unwrap_or_default();
+        let line = format!("{original}\t{}\t{digest}\t{bytes}{suffix}\n", to.display());
         let mut manifest = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -882,6 +1021,7 @@ pub struct RecoveryRecord {
     pub stored: PathBuf,
     pub sha256: Option<String>,
     pub bytes: u64,
+    pub replacement_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -950,6 +1090,7 @@ fn read_manifest(dir: &Path) -> Vec<RecoveryRecord> {
                 stored,
                 sha256,
                 bytes,
+                replacement_sha256: fields.next().map(str::to_string),
             })
         })
         .collect()
@@ -973,6 +1114,144 @@ pub struct RestoreReport {
     pub displaced: Option<String>,
 }
 
+pub fn parse_command_receipt(text: &str) -> Result<HashMap<String, String>> {
+    let hashes = crate::parse_checksum_manifest(text)?;
+    if hashes.is_empty()
+        || hashes.len() != text.lines().count()
+        || hashes
+            .keys()
+            .any(|name| !RECEIPT_COMMANDS.contains(&name.as_str()))
+    {
+        bail!("invalid command ownership receipt");
+    }
+    Ok(hashes)
+}
+
+fn verified_recovery_file(
+    folder: &RecoveryFolder,
+    record: &RecoveryRecord,
+) -> Result<fs::Metadata> {
+    if !stored_inside_recovery(folder, &record.stored) {
+        bail!("manifest entry points outside the recovery folder");
+    }
+    let meta = fs::symlink_metadata(&record.stored).context("no longer in the recovery folder")?;
+    if meta.is_symlink() {
+        bail!("stored entry is a symlink");
+    }
+    if record.sha256.is_some() && !meta.is_file() {
+        bail!("stored entry is no longer a regular file");
+    }
+    if meta.is_file() {
+        match &record.sha256 {
+            Some(expected) => {
+                if &file_sha256(&record.stored)? != expected {
+                    bail!("its bytes changed in the recovery folder");
+                }
+            }
+            None if record.bytes != meta.len() => {
+                bail!("its size changed in the recovery folder");
+            }
+            None => {}
+        }
+    }
+    Ok(meta)
+}
+
+struct DisplacedReceipt {
+    path: PathBuf,
+    retained: Vec<(String, String)>,
+}
+
+fn command_receipt_to_displace(
+    directory: &Path,
+    records: &BTreeMap<&Path, &RecoveryRecord>,
+    owner: Option<u64>,
+) -> Result<Option<DisplacedReceipt>> {
+    let receipt = directory.join(RECEIPT_FILE);
+    let meta = match fs::symlink_metadata(&receipt) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let dir_meta = fs::symlink_metadata(directory)?;
+    if !dir_meta.is_dir()
+        || !owned_by(&dir_meta, owner)
+        || !directory_is_private(directory)
+        || !meta.is_file()
+        || !owned_by(&meta, owner)
+    {
+        bail!("preserved untrusted command receipt {}", receipt.display());
+    }
+    let claims = parse_command_receipt(&read_small(&receipt, 512)?)?;
+    let mut changes_owned_bytes = false;
+    let mut retained = Vec::new();
+    for name in RECEIPT_COMMANDS {
+        let command = directory.join(name);
+        if let Some(record) = records.get(command.as_path())
+            && record.replacement_sha256.is_none()
+            && !claims.contains_key(*name)
+            && fs::symlink_metadata(&command).is_ok()
+        {
+            bail!("preserved unclaimed command {}", command.display());
+        }
+    }
+    for (name, expected) in claims {
+        let path = directory.join(&name);
+        match fs::symlink_metadata(&path) {
+            Ok(current)
+                if current.is_file()
+                    && owned_by(&current, owner)
+                    && file_sha256(&path)? == expected => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && records.contains_key(path.as_path()) => {}
+            _ => bail!("preserved modified command {}", path.display()),
+        }
+        if let Some(record) = records.get(path.as_path()) {
+            let changes = match &record.sha256 {
+                Some(digest) => digest != &expected,
+                None => file_sha256(&record.stored)? != expected,
+            };
+            if changes {
+                changes_owned_bytes = true;
+                continue;
+            }
+        }
+        retained.push((name, expected));
+    }
+    let saved = records.contains_key(receipt.as_path());
+    if saved {
+        retained.clear();
+    }
+    Ok((changes_owned_bytes || saved).then_some(DisplacedReceipt {
+        path: receipt,
+        retained,
+    }))
+}
+
+fn validate_saved_command_receipt(
+    record: &RecoveryRecord,
+    pending: &BTreeMap<&Path, &RecoveryRecord>,
+) -> Result<()> {
+    let directory = record
+        .original
+        .parent()
+        .context("command receipt has no directory")?;
+    for (name, expected) in parse_command_receipt(&read_small(&record.stored, 512)?)? {
+        let command = directory.join(name);
+        let bytes = pending
+            .get(command.as_path())
+            .map_or(command.as_path(), |entry| entry.stored.as_path());
+        if !fs::symlink_metadata(bytes)?.is_file() || file_sha256(bytes)? != expected {
+            bail!(
+                "preserved recovery receipt: {} has different bytes",
+                command.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreReport)> {
     let folders = recovery_folders(home);
     let folder = match stamp {
@@ -993,19 +1272,85 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
     };
     let mut report = RestoreReport::default();
     let mut remaining = Vec::new();
-    let mut displaced: Option<RecoveryBatch> = None;
-    for record in &folder.records {
-        let outcome = (|| -> Result<()> {
-            if !stored_inside_recovery(&folder, &record.stored) {
-                bail!("manifest entry points outside the recovery folder");
-            }
-            let meta =
-                fs::symlink_metadata(&record.stored).context("no longer in the recovery folder")?;
-            if let Some(expected) = &record.sha256
-                && meta.is_file()
-                && &file_sha256(&record.stored)? != expected
+    let records: BTreeMap<_, _> = folder
+        .records
+        .iter()
+        .map(|record| (record.original.as_path(), record))
+        .collect();
+    let directories: BTreeSet<_> = records
+        .keys()
+        .filter_map(|path| {
+            path.parent().filter(|_| {
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|name| name == RECEIPT_FILE || RECEIPT_COMMANDS.contains(&name))
+            })
+        })
+        .collect();
+    for record in records.values() {
+        if let Some(expected) = &record.replacement_sha256 {
+            let current = match fs::symlink_metadata(&record.original) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !current.is_file()
+                || !owned_by(&current, owner_id(home))
+                || file_sha256(&record.original)? != *expected
             {
-                bail!("its bytes changed in the recovery folder");
+                bail!("preserved modified command {}", record.original.display());
+            }
+        }
+    }
+    let mut receipts = Vec::new();
+    for dir in directories {
+        let receipt = dir.join(RECEIPT_FILE);
+        let displace = command_receipt_to_displace(dir, &records, owner_id(home))?;
+        let saved = records.get(receipt.as_path());
+        if saved.is_some() || displace.is_some() {
+            for name in RECEIPT_COMMANDS {
+                if let Some(command) = records.get(dir.join(name).as_path())
+                    && !verified_recovery_file(&folder, command)?.is_file()
+                {
+                    bail!(
+                        "saved command {} is not a regular file",
+                        command.stored.display()
+                    );
+                }
+            }
+        }
+        if let Some(saved) = saved {
+            verified_recovery_file(&folder, saved)?;
+            validate_saved_command_receipt(saved, &records)?;
+        }
+        if let Some(receipt) = displace {
+            receipts.push(receipt);
+        }
+    }
+    let mut displaced = None;
+    if !receipts.is_empty() {
+        let mut batch = RecoveryBatch::open(home)?;
+        for receipt in &receipts {
+            batch.move_in(&receipt.path)?;
+        }
+        displaced = Some(batch);
+    }
+    let mut ordered: Vec<_> = folder.records.iter().collect();
+    ordered.sort_by_key(|record| {
+        record
+            .original
+            .file_name()
+            .is_some_and(|name| name == RECEIPT_FILE)
+    });
+    for record in ordered {
+        let outcome = (|| -> Result<()> {
+            let meta = verified_recovery_file(&folder, record)?;
+            if record
+                .original
+                .file_name()
+                .is_some_and(|name| name == RECEIPT_FILE)
+            {
+                validate_saved_command_receipt(record, &BTreeMap::new())?;
             }
             if let Ok(current) = fs::symlink_metadata(&record.original) {
                 if !current.is_file() || !meta.is_file() {
@@ -1015,7 +1360,14 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
                     displaced = Some(RecoveryBatch::open(home)?);
                 }
                 let batch = displaced.as_mut().expect("batch was just opened");
-                batch.move_in(&record.original)?;
+                let replacement = record
+                    .original
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| RECEIPT_COMMANDS.contains(name))
+                    .map(|_| file_sha256(&record.stored))
+                    .transpose()?;
+                batch.move_in_replaced(&record.original, replacement.as_deref())?;
             }
             fs::rename(&record.stored, &record.original).context("move back failed")?;
             Ok(())
@@ -1038,6 +1390,16 @@ pub fn restore(home: &Path, stamp: Option<&str>) -> Result<(String, RestoreRepor
             report.displaced = Some(stamp);
         }
     }
+    for receipt in receipts {
+        if !receipt.retained.is_empty()
+            && !adopt_receipt(
+                receipt.path.parent().context("receipt has no directory")?,
+                &receipt.retained,
+            )?
+        {
+            bail!("command ownership receipt changed during restore");
+        }
+    }
     rewrite_manifest(&folder.dir, &remaining)?;
     if remaining.is_empty() {
         let _ = fs::remove_file(folder.dir.join(RECOVERY_MANIFEST));
@@ -1051,17 +1413,28 @@ fn rewrite_manifest(dir: &Path, records: &[RecoveryRecord]) -> Result<()> {
         .iter()
         .map(|record| {
             format!(
-                "{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}{}\n",
                 record.original.display(),
                 record.stored.display(),
                 record.sha256.as_deref().unwrap_or("-"),
-                record.bytes
+                record.bytes,
+                record
+                    .replacement_sha256
+                    .as_ref()
+                    .map(|digest| format!("\t{digest}"))
+                    .unwrap_or_default()
             )
         })
         .collect();
-    let tmp = dir.join(format!("{RECOVERY_MANIFEST}.tmp"));
-    fs::write(&tmp, text).context("failed to write the recovery manifest")?;
-    fs::rename(&tmp, dir.join(RECOVERY_MANIFEST)).context("failed to replace the recovery manifest")
+    write_file_atomically(dir, RECOVERY_MANIFEST, text.as_bytes(), false)
+        .context("failed to replace the recovery manifest")
+}
+
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    let _ = fs::File::open(dir).and_then(|file| file.sync_all());
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 pub fn prune_expired(home: &Path) -> Vec<(String, u64)> {
@@ -1080,8 +1453,13 @@ pub fn prune_expired(home: &Path) -> Vec<(String, u64)> {
                 complete = false;
                 continue;
             }
-            let Ok(meta) = fs::symlink_metadata(&record.stored) else {
-                continue;
+            let meta = match fs::symlink_metadata(&record.stored) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    complete = false;
+                    continue;
+                }
             };
             let removed = if meta.is_dir() {
                 fs::remove_dir_all(&record.stored)
@@ -1157,17 +1535,30 @@ pub fn adopt_receipt(directory: &Path, entries: &[(String, String)]) -> Result<b
 
 pub fn write_file_atomically(dir: &Path, name: &str, bytes: &[u8], executable: bool) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
-    fs::write(&tmp, bytes).with_context(|| format!("failed to write {}", tmp.display()))?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}.tmp-"))
+        .tempfile_in(dir)
+        .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("failed to write {}", tmp.path().display()))?;
     #[cfg(unix)]
     if executable {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to mark {} executable", tmp.path().display()))?;
     }
     #[cfg(not(unix))]
     let _ = executable;
-    fs::rename(&tmp, dir.join(name))
-        .with_context(|| format!("failed to write {}", dir.join(name).display()))
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", tmp.path().display()))?;
+    let target = dir.join(name);
+    tmp.persist(&target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to write {}", target.display()))?;
+    sync_dir(dir);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1181,4 +1572,21 @@ pub fn directory_is_private(directory: &Path) -> bool {
 #[must_use]
 pub fn directory_is_private(_directory: &Path) -> bool {
     true
+}
+
+#[cfg(test)]
+mod npm_family_tests {
+    use super::*;
+
+    #[test]
+    fn npm_compatible_managers_get_their_own_command() {
+        let pnpm =
+            Path::new("/home/u/.local/share/pnpm/global/5/node_modules/codewhale/bin/codewhale");
+        assert_eq!(
+            update_answer(InstallMethod::Npm, pnpm),
+            "This copy belongs to pnpm, so it cannot update itself; update it with `pnpm add -g codewhale@latest`."
+        );
+        let bun = Path::new("/home/u/.bun/install/global/node_modules/codewhale/bin/codewhale");
+        assert!(update_answer(InstallMethod::Npm, bun).contains("`bun add -g codewhale@latest`"));
+    }
 }

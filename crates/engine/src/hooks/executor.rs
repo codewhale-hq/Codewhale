@@ -611,7 +611,7 @@ const HOOK_PIPE_CAPTURE_MAX_BYTES: usize = 64 * 1024;
 /// Largest serialized `updatedInput` object accepted from a decision hook.
 /// This is intentionally smaller than the pipe cap so the surrounding JSON
 /// and other fields still have headroom.
-const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
+pub const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
 
 /// Largest replacement message accepted from `message_submit`.
 const HOOK_MESSAGE_REPLACEMENT_MAX_CHARS: usize = 32_000;
@@ -2911,7 +2911,10 @@ const HOOK_PIPE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 /// blocks forever if the kill did not take (a `SIGKILL`-immune uninterruptible
 /// state on Unix, a `TerminateJobObject` that a protected process survived on
 /// Windows), and that turned "this hook has a 30s budget" into a hung turn.
+#[cfg(not(windows))]
 const HOOK_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const HOOK_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
 const WINDOWS_TASKKILL_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -3883,6 +3886,7 @@ NOEQUAL line dropped
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
 
         let payload = super::turn_end_payload(TurnEndPayloadInput {
@@ -4341,6 +4345,7 @@ printf '%s\n' '{{"text":"stdout is not a mutation contract"}}'
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         let context = submit_context(&dir).with_tokens(15);
         let payload = super::turn_end_payload(TurnEndPayloadInput {
@@ -6792,6 +6797,7 @@ command = "echo project"
             ("read", "safe"),
             ("write", "file_write"),
             ("edit", "file_write"),
+            ("list_dir", "other"),
             // Searches the workspace without caller-named write targets, so it
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
@@ -6803,9 +6809,6 @@ command = "echo project"
             // Goal controls retain their existing hook classification when
             // promoted from deferred discovery to the eager catalog.
             ("create_goal", "other"),
-            ("get_goal", "other"),
-            ("update_goal", "other"),
-            ("task_shell_wait", "other"),
             ("present", "other"),
             // Reads the skill registry, not caller-named paths, so it keeps
             // the classification it already had as a deferred tool. Making it

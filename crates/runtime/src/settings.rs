@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{expand_path, normalize_model_name};
+use crate::config::expand_path;
 use codewhale_config::resolve::Layer;
 use codewhale_localization::normalize_configured_locale;
 use codewhale_palette::{normalize_hex_rgb_color, normalize_theme_setting};
@@ -492,6 +492,8 @@ pub struct Settings {
     /// One-time Operate-retirement toast has been shown. Same suppression
     /// contract as `yolo_deprecation_shown`.
     pub operate_deprecation_shown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_preferences_notice_shown: Option<String>,
     /// Round 3 (2026-09-01) moved the work bar under the composer. Every
     /// settings.toml saved before that carries `work_surface_placement =
     /// "top"` — the old default, persisted verbatim by ordinary saves, not a
@@ -650,9 +652,7 @@ impl Default for Settings {
             mention_menu_limit: 128,
             mention_walk_depth: 10,
             mention_menu_behavior: "fuzzy".to_string(),
-            // Reasoning is useful when explicitly requested, but it should
-            // never displace the actual conversation in the default TUI.
-            show_thinking: false,
+            show_thinking: true,
             thinking_default_expanded: false,
             thinking_preview_lines: default_thinking_preview_lines(),
             thinking_highlight: true,
@@ -694,6 +694,7 @@ impl Default for Settings {
             feature_intro_shown: false,
             yolo_deprecation_shown: false,
             operate_deprecation_shown: false,
+            account_preferences_notice_shown: None,
             legacy_operate_default: false,
             work_surface_bottom_migrated: false,
             behavioral_tip_impressions: std::collections::BTreeMap::new(),
@@ -1081,7 +1082,22 @@ impl Settings {
                 .to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
             s.theme = normalize_settings_theme(&s.theme);
-            s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
+            s.default_model = s.default_model.as_deref().and_then(|value| {
+                let trimmed = value.trim();
+                codewhale_config::route::resolve_model(
+                    codewhale_config::ProviderKind::Deepseek,
+                    trimmed,
+                    None,
+                )
+                .ok()
+                .map(|_| {
+                    if trimmed.eq_ignore_ascii_case("auto") {
+                        "auto".to_string()
+                    } else {
+                        trimmed.to_string()
+                    }
+                })
+            });
             s.reasoning_effort = s
                 .reasoning_effort
                 .as_deref()
@@ -2482,6 +2498,28 @@ fn reject_settings_lock_symlink(lock_path: &Path) -> Result<()> {
 /// owner-only otherwise. `NamedTempFile` removes itself if anything below fails,
 /// so a failed save leaves no debris and never damages the previous file.
 fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
+    atomically_replace_settings_file_with_dir_sync(
+        path,
+        body,
+        codewhale_config::persistence::sync_parent_dir,
+    )
+}
+
+fn sync_settings_dir_best_effort(dir: &Path, sync_dir: impl FnOnce(&Path) -> Result<()>) {
+    if let Err(err) = sync_dir(dir) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %format!("{err:#}"),
+            "failed to sync settings directory after write; new file is already in place"
+        );
+    }
+}
+
+fn atomically_replace_settings_file_with_dir_sync(
+    path: &Path,
+    body: &[u8],
+    sync_dir: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     use std::io::Write as _;
 
     let dir = path
@@ -2524,6 +2562,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
                 // ReplaceFileW consumed the temporary pathname. Do not ask
                 // TempPath to clean up that now-nonexistent source on drop.
                 temporary.disable_cleanup(true);
+                sync_settings_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
             // A directory that refuses every rename — Codewhale's own home is
@@ -2540,6 +2579,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
                 temporary.disable_cleanup(true);
                 drop(temporary);
                 rewrite_settings_in_place(path, body)?;
+                sync_settings_dir_best_effort(dir, sync_dir);
                 return Ok(());
             }
             Err(error) => {
@@ -2552,6 +2592,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("Failed to write settings to {}", path.display()))?;
+    sync_settings_dir_best_effort(dir, sync_dir);
     Ok(())
 }
 
@@ -2910,15 +2951,6 @@ fn migrate_settings_file_to_primary_if_needed(primary: &Path, active_read_path: 
             active_read_path.display(),
             primary.display()
         );
-    }
-}
-
-fn normalize_default_model(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("auto") {
-        Some("auto".to_string())
-    } else {
-        normalize_model_name(trimmed)
     }
 }
 
@@ -3748,6 +3780,36 @@ mod tests {
     }
 
     #[test]
+    fn thinking_shows_by_default_and_a_saved_choice_survives_reload_and_other_saves() {
+        let _g = config_path_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let settings_path = tmp.path().join("settings.toml");
+        let _config_override =
+            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        let absent = Settings::load().expect("load without a settings file");
+        assert!(absent.show_thinking);
+        assert!(!absent.thinking_default_expanded);
+        assert!(!absent.is_set("show_thinking"));
+
+        std::fs::write(&settings_path, "theme = \"light\"\n").expect("settings without the key");
+        let unnamed = Settings::load().expect("load settings without the key");
+        assert!(unnamed.show_thinking);
+        assert!(!unnamed.is_set("show_thinking"));
+
+        for saved in [false, true] {
+            std::fs::write(&settings_path, format!("show_thinking = {saved}\n"))
+                .expect("saved choice");
+            let loaded = Settings::load().expect("load the saved choice");
+            assert_eq!(loaded.show_thinking, saved);
+            assert!(loaded.is_set("show_thinking"));
+            Settings::transact(|settings| settings.set("locale", "en")).expect("another save");
+            let reloaded = Settings::load().expect("reload after another save");
+            assert_eq!(reloaded.show_thinking, saved);
+        }
+    }
+
+    #[test]
     fn settings_load_keeps_top_placement_chosen_after_the_bottom_migration() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3886,7 +3948,7 @@ mod tests {
         let mut settings = Settings::default();
         // Density is calm by default; motion is an independent axis.
         assert!(settings.calm_mode);
-        assert!(!settings.show_thinking);
+        settings.show_thinking = false;
 
         let changed = settings.apply_preset("CALM").expect("calm preset applies");
         assert_eq!(
@@ -3916,8 +3978,8 @@ mod tests {
         assert!(settings.fancy_animations);
         assert_eq!(settings.transcript_spacing, "spacious");
         assert_eq!(settings.tool_collapse_mode, "compact");
-        // Thinking is opt-in so the transcript stays focused on the chat.
-        assert!(!settings.show_thinking);
+        assert!(settings.show_thinking);
+        assert!(!settings.thinking_default_expanded);
     }
 
     #[test]
@@ -4152,6 +4214,33 @@ mod tests {
         assert!(
             !saved.contains("launch_screen"),
             "the retired setting must not be written back: {saved}"
+        );
+    }
+
+    #[test]
+    fn atomic_settings_replace_syncs_parent_dir_best_effort_after_persist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("settings.toml");
+
+        let mut synced_dir = None;
+        atomically_replace_settings_file_with_dir_sync(&path, b"first = true\n", |dir| {
+            synced_dir = Some(dir.to_path_buf());
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("persisted before dir sync"),
+                "first = true\n"
+            );
+            Ok(())
+        })
+        .expect("initial save");
+        assert_eq!(synced_dir.as_deref(), Some(tmp.path()));
+
+        atomically_replace_settings_file_with_dir_sync(&path, b"second = true\n", |_| {
+            anyhow::bail!("injected directory sync failure")
+        })
+        .expect("best-effort parent directory sync must not fail a landed write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("updated settings"),
+            "second = true\n"
         );
     }
 
@@ -4538,6 +4627,46 @@ mod tests {
                 "archived value shown as current: {display}"
             );
         }
+    }
+
+    #[test]
+    fn legacy_default_model_keeps_its_spelling_for_custom_deepseek_endpoints() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        for (value, expected) in [
+            ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro"),
+            (" deepseek-reasoner ", "deepseek-reasoner"),
+            ("AUTO", "auto"),
+        ] {
+            std::fs::write(&path, format!("default_model = '{value}'\n")).unwrap();
+            let settings = Settings::load_persisted_from_candidates_with_migration(
+                Some(path.clone()),
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+            assert_eq!(settings.default_model.as_deref(), Some(expected));
+        }
+
+        std::fs::write(&path, "default_model = 'deepseek-ai/DeepSeek-V4-Pro'\n").unwrap();
+        let settings =
+            Settings::load_persisted_from_candidates_with_migration(Some(path), None, None, false)
+                .unwrap();
+        let mut config: crate::config::Config = toml::from_str(
+            "provider = \"deepseek\"\n[providers.deepseek]\nbase_url = \"https://models.example/v1\"\n",
+        )
+        .unwrap();
+        config.apply_saved_selection(&settings);
+        let model = config.default_model();
+        let wire = codewhale_config::route::resolve_model(
+            codewhale_config::ProviderKind::Deepseek,
+            &model,
+            Some(&config.active_route_base_url()),
+        )
+        .expect("custom endpoint id resolves")
+        .wire_id;
+        assert_eq!(wire, "deepseek-ai/DeepSeek-V4-Pro");
     }
 
     #[test]

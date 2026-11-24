@@ -8,7 +8,8 @@ use tokio::process::Command;
 
 pub const FIXTURE_AGENT_ENV: &str = "CODEWHALE_ACP_FIXTURE_AGENT";
 pub const FIXTURE_AGENT_ID: &str = "fixture";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+pub const CUSTOM_AGENTS_ENV: &str = "CODEWHALE_CUSTOM_ACP_AGENTS";
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_VERSION_CHARS: usize = 80;
 const MAX_VERSION_BYTES: usize = 8192;
 const MAX_VERSION_STDERR_BYTES: usize = 64 * 1024;
@@ -30,6 +31,7 @@ impl ExecutorUnavailable {
     pub const BELOW_MIN_VERSION: &'static str = "below_min_version";
     pub const NEEDS_SIGN_IN: &'static str = "needs_sign_in";
     pub const NO_ACP: &'static str = "no_acp";
+    pub const VERSION_UNKNOWN: &'static str = "version_unknown";
     pub const EXECUTOR_NOT_SUPPORTED: &'static str = "executor_not_supported";
     pub const ENVIRONMENT_NOT_SUPPORTED: &'static str = "environment_not_supported";
 
@@ -54,6 +56,35 @@ pub struct ExternalAgent {
     pub adapter: Option<&'static str>,
     pub adapter_binary: Option<&'static str>,
     pub adapter_cli_env: Option<&'static str>,
+}
+
+impl ExternalAgent {
+    pub fn process_env(&self) -> BTreeMap<String, String> {
+        let vars: &[(&str, &str)] = match self.id {
+            "auggie" => &[("AUGMENT_DISABLE_AUTO_UPDATE", "1")],
+            "factory-droid" => &[
+                ("DROID_DISABLE_AUTO_UPDATE", "true"),
+                ("FACTORY_DROID_AUTO_UPDATE_ENABLED", "false"),
+            ],
+            _ => &[],
+        };
+        vars.iter()
+            .map(|&(key, value)| (key.into(), value.into()))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CustomExternalAgent {
+    pub id: String,
+    pub name: String,
+    pub binary: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub website: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 pub const AGENTS: &[ExternalAgent] = &[
@@ -110,6 +141,45 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_cli_env: None,
     },
     ExternalAgent {
+        id: "cursor",
+        name: "Cursor",
+        binary: "cursor-agent",
+        acp_args: Some(&["acp"]),
+        website: "https://cursor.com/docs/cli/acp",
+        min_version: None,
+        upgrade: None,
+        login: Some("cursor-agent login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "cline",
+        name: "Cline",
+        binary: "cline",
+        acp_args: Some(&["--acp"]),
+        website: "https://cline.bot/cli",
+        min_version: Some("3.0.73"),
+        upgrade: Some("npm i -g cline@latest"),
+        login: Some("cline auth"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "devin",
+        name: "Devin",
+        binary: "devin",
+        acp_args: Some(&["acp"]),
+        website: "https://docs.devin.ai/cli",
+        min_version: None,
+        upgrade: None,
+        login: Some("devin login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
         id: "opencode",
         name: "OpenCode",
         binary: "opencode",
@@ -118,6 +188,58 @@ pub const AGENTS: &[ExternalAgent] = &[
         min_version: Some("1.15.5"),
         upgrade: Some("npm i -g opencode-ai@latest"),
         login: Some("opencode auth login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "goose",
+        name: "Goose",
+        binary: "goose",
+        acp_args: Some(&["acp"]),
+        website: "https://block.github.io/goose/",
+        min_version: Some("1.56.0"),
+        upgrade: None,
+        login: Some("goose configure"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "junie",
+        name: "Junie",
+        binary: "junie",
+        acp_args: Some(&["--acp=true"]),
+        website: "https://junie.jetbrains.com",
+        min_version: None,
+        upgrade: None,
+        login: Some("junie login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "amp",
+        name: "Amp",
+        binary: "amp-acp",
+        acp_args: Some(&[]),
+        website: "https://github.com/tao12345666333/amp-acp",
+        min_version: None,
+        upgrade: None,
+        login: Some("amp login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "auggie",
+        name: "Auggie CLI",
+        binary: "auggie",
+        acp_args: Some(&["--acp"]),
+        website: "https://www.augmentcode.com/",
+        min_version: Some("0.36.0"),
+        upgrade: Some("npm i -g @augmentcode/auggie@latest"),
+        login: Some("auggie login"),
         adapter: None,
         adapter_binary: None,
         adapter_cli_env: None,
@@ -187,6 +309,97 @@ pub const AGENTS: &[ExternalAgent] = &[
         adapter_binary: None,
         adapter_cli_env: None,
     },
+    ExternalAgent {
+        id: "qwen-code",
+        name: "Qwen Code",
+        binary: "qwen",
+        acp_args: Some(&["--acp"]),
+        website: "https://github.com/QwenLM/qwen-code",
+        min_version: Some("0.6.1"),
+        upgrade: Some("npm i -g @qwen-code/qwen-code@latest"),
+        login: None,
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "copilot",
+        name: "GitHub Copilot CLI",
+        binary: "copilot",
+        acp_args: Some(&["--acp", "--stdio"]),
+        website: "https://docs.github.com/copilot/reference/copilot-cli-reference/acp-server",
+        min_version: None,
+        upgrade: Some("copilot update"),
+        login: Some("copilot login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "muse",
+        name: "Muse Code",
+        binary: "muse",
+        acp_args: None,
+        website: "https://dev.meta.ai/products/muse-code",
+        min_version: None,
+        upgrade: None,
+        login: Some("muse login"),
+        adapter: Some("@bex-co/muse-code-acp"),
+        adapter_binary: Some("muse-code-acp"),
+        adapter_cli_env: Some("MUSE_CODE_EXECUTABLE"),
+    },
+    ExternalAgent {
+        id: "minimax-code",
+        name: "MiniMax Code",
+        binary: "minimax-code",
+        acp_args: Some(&["acp"]),
+        website: "https://agent.minimax.io",
+        min_version: Some("0.2.7"),
+        upgrade: Some("npm i -g @minimax-ai/code@latest"),
+        login: None,
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "deepagents",
+        name: "DeepAgents",
+        binary: "deepagents-acp",
+        acp_args: Some(&[]),
+        website: "https://docs.langchain.com/oss/javascript/deepagents/overview",
+        min_version: Some("0.1.7"),
+        upgrade: Some("npm i -g deepagents-acp@latest"),
+        login: None,
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "factory-droid",
+        name: "Factory Droid",
+        binary: "droid",
+        acp_args: Some(&["exec", "--output-format", "acp-daemon"]),
+        website: "https://factory.ai/product/cli",
+        min_version: Some("0.249.0"),
+        upgrade: Some("npm update -g @factory/cli"),
+        login: Some("droid login"),
+        adapter: None,
+        adapter_binary: None,
+        adapter_cli_env: None,
+    },
+    ExternalAgent {
+        id: "pi-acp",
+        name: "Pi",
+        binary: "pi",
+        acp_args: None,
+        website: "https://github.com/svkozak/pi-acp",
+        min_version: None,
+        upgrade: None,
+        login: None,
+        adapter: Some("pi-acp"),
+        adapter_binary: Some("pi-acp"),
+        adapter_cli_env: None,
+    },
 ];
 
 const FIXTURE_AGENT: ExternalAgent = ExternalAgent {
@@ -203,11 +416,74 @@ const FIXTURE_AGENT: ExternalAgent = ExternalAgent {
     adapter_cli_env: None,
 };
 
+pub fn custom_agents() -> Vec<CustomExternalAgent> {
+    std::env::var(CUSTOM_AGENTS_ENV)
+        .ok()
+        .map_or_else(Vec::new, |raw| parse_custom_agents(&raw))
+}
+
+fn parse_custom_agents(raw: &str) -> Vec<CustomExternalAgent> {
+    if raw.len() > 64 * 1024 {
+        return Vec::new();
+    }
+    let Ok(parsed) = serde_json::from_str::<Vec<CustomExternalAgent>>(raw) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for builtin in AGENTS {
+        seen.insert(builtin.id.to_string());
+    }
+    seen.insert(FIXTURE_AGENT_ID.to_string());
+    parsed
+        .into_iter()
+        .filter(|entry| {
+            let id = entry.id.as_str();
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                && !entry.name.trim().is_empty()
+                && !entry.binary.trim().is_empty()
+                && !entry.name.chars().any(char::is_control)
+                && !entry.binary.chars().any(char::is_control)
+                && entry.args.iter().all(|arg| !arg.contains('\0'))
+                && (entry.website.is_empty()
+                    || url::Url::parse(&entry.website).is_ok_and(|url| {
+                        url.scheme() == "https"
+                            && url.has_host()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                    }))
+                && entry.env.iter().all(|(key, value)| {
+                    !key.is_empty()
+                        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        && !key.to_ascii_uppercase().starts_with("CODEWHALE_")
+                        && super::host::is_safe_env_key(key)
+                        && !value.contains('\0')
+                })
+                && seen.insert(id.to_string())
+        })
+        .take(32)
+        .collect()
+}
+
+pub fn find_custom(id: &str) -> Option<CustomExternalAgent> {
+    custom_agents().into_iter().find(|entry| entry.id == id)
+}
+
 pub fn find(id: &str) -> Option<&'static ExternalAgent> {
     if id == FIXTURE_AGENT_ID {
         return fixture_script().map(|_| &FIXTURE_AGENT);
     }
     AGENTS.iter().find(|agent| agent.id == id)
+}
+
+pub fn agent_meta(id: &str) -> Option<(String, Option<&'static str>)> {
+    if let Some(agent) = find(id) {
+        return Some((agent.name.to_string(), agent.login));
+    }
+    find_custom(id).map(|custom| (custom.name, None))
 }
 
 fn fixture_script() -> Option<PathBuf> {
@@ -221,6 +497,8 @@ const USER_BIN_DIRS: &[&str] = &[
     ".npm-global/bin",
     ".opencode/bin",
     ".kimi-code/bin",
+    ".cursor/bin",
+    ".devin/bin",
     ".bun/bin",
     ".cargo/bin",
 ];
@@ -313,6 +591,14 @@ pub async fn resolve(binary: &str) -> Option<PathBuf> {
     resolve_in(search_dirs(), binary, pathext.as_deref()).await
 }
 
+pub async fn resolve_custom_binary(binary: &str) -> Option<PathBuf> {
+    let path = Path::new(binary);
+    if path.is_absolute() {
+        return is_executable(path).await.then(|| path.to_path_buf());
+    }
+    resolve(binary).await
+}
+
 pub fn is_batch_shim(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
@@ -380,12 +666,18 @@ pub fn version_token(text: &str) -> Option<String> {
                 .take(MAX_VERSION_CHARS)
                 .collect::<String>()
                 .trim()
+                .trim_end_matches('.')
                 .to_string()
         })
 }
 
 pub async fn cli_version(path: &Path) -> Option<String> {
+    cli_version_with_env(path, &BTreeMap::new()).await
+}
+
+pub async fn cli_version_with_env(path: &Path, env: &BTreeMap<String, String>) -> Option<String> {
     let mut command = foreign_command(path, &["--version"]);
+    command.envs(env);
     let run = codewhale_runtime::process_tree::contained_output_with_input_bounded(
         &mut command,
         Vec::new(),
@@ -435,12 +727,27 @@ pub struct ExternalAgentLaunch {
 }
 
 pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable> {
-    let agent = find(id).ok_or_else(|| {
-        ExecutorUnavailable::new(
+    let Some(agent) = find(id) else {
+        if let Some(custom) = find_custom(id) {
+            let program = resolve_custom_binary(&custom.binary).await.ok_or_else(|| {
+                ExecutorUnavailable::new(
+                    ExecutorUnavailable::NOT_INSTALLED,
+                    format!("{} (`{}`) is not installed.", custom.name, custom.binary),
+                )
+            })?;
+            return Ok(ExternalAgentLaunch {
+                agent_id: custom.id,
+                agent_name: custom.name,
+                program,
+                args: custom.args,
+                env: custom.env,
+            });
+        }
+        return Err(ExecutorUnavailable::new(
             ExecutorUnavailable::UNKNOWN_AGENT,
             format!("No external agent is named `{id}`."),
-        )
-    })?;
+        ));
+    };
     if agent.id == FIXTURE_AGENT_ID {
         let script = fixture_script().ok_or_else(|| {
             ExecutorUnavailable::new(
@@ -465,8 +772,9 @@ pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable
     let cli = resolve(agent.binary)
         .await
         .ok_or_else(|| not_installed(agent))?;
+    let mut env = agent.process_env();
     if agent.min_version.is_some() {
-        let version = cli_version(&cli).await;
+        let version = cli_version_with_env(&cli, &env).await;
         if below_minimum(version.as_deref(), agent.min_version) {
             let update = agent
                 .upgrade
@@ -489,7 +797,7 @@ pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable
             agent_name: agent.name.to_string(),
             program: cli,
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
-            env: BTreeMap::new(),
+            env,
         }),
         (None, Some(adapter_binary)) => {
             let adapter = resolve(adapter_binary).await.ok_or_else(|| {
@@ -500,11 +808,9 @@ pub async fn launch(id: &str) -> Result<ExternalAgentLaunch, ExecutorUnavailable
                     agent.adapter.unwrap_or(adapter_binary),
                 ))
             })?;
-            let env = agent
-                .adapter_cli_env
-                .filter(|_| !is_batch_shim(&cli))
-                .map(|name| BTreeMap::from([(name.to_string(), cli.display().to_string())]))
-                .unwrap_or_default();
+            if let Some(key) = agent.adapter_cli_env.filter(|_| !is_batch_shim(&cli)) {
+                env.insert(key.to_string(), cli.display().to_string());
+            }
             Ok(ExternalAgentLaunch {
                 agent_id: agent.id.to_string(),
                 agent_name: agent.name.to_string(),
@@ -766,6 +1072,8 @@ mod tests {
             "echo \"agent v1.5.2 (build)\"; echo noise >&2",
         );
         assert_eq!(cli_version(&good).await.as_deref(), Some("1.5.2"));
+        let sentence = script(&dir, "sentence", "echo \"GitHub Copilot CLI 1.0.82.\"");
+        assert_eq!(cli_version(&sentence).await.as_deref(), Some("1.0.82"));
         let flood = script(
             &dir,
             "flood",
@@ -798,7 +1106,27 @@ mod tests {
     }
 
     #[test]
+    fn custom_registry_keeps_the_first_valid_id_and_reserves_builtins() {
+        let entries = serde_json::json!([
+            {"id":"opencode","name":"Replacement","binary":"replacement"},
+            {"id":"fixture","name":"Fixture","binary":"fixture"},
+            {"id":" trim ","name":"Whitespace","binary":"agent"},
+            {"id":"bad","name":"Bad link","binary":"agent","website":"file:///local"},
+            {"id":"bad","name":"Secret override","binary":"agent","env":{"API_TOKEN":"fixture"}},
+            {"id":"bad","name":"Internal override","binary":"agent","env":{"codewhale_home":"local"}},
+            {"id":"desk","name":"Desk","binary":"local-acp","args":["acp"],"env":{"AGENT_PROFILE":"desk"}},
+            {"id":"desk","name":"Duplicate","binary":"other"}
+        ]);
+        let parsed = parse_custom_agents(&entries.to_string());
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, "desk");
+        assert_eq!(parsed[0].args, ["acp"]);
+        assert_eq!(parsed[0].env["AGENT_PROFILE"], "desk");
+    }
+
+    #[test]
     fn registry_rows_are_unique_with_verified_commands() {
+        assert_eq!(AGENTS.len(), 24);
         let mut ids: Vec<&str> = AGENTS.iter().map(|agent| agent.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -816,10 +1144,55 @@ mod tests {
                 agent.id
             );
         }
+        for required in [
+            "claude",
+            "codex",
+            "dsh",
+            "antigravity",
+            "cursor",
+            "cline",
+            "devin",
+            "opencode",
+            "goose",
+            "junie",
+            "amp",
+            "auggie",
+            "kimi",
+            "mistral-vibe",
+            "qoder",
+            "codebuddy",
+            "grok",
+            "qwen-code",
+            "copilot",
+            "muse",
+            "minimax-code",
+            "deepagents",
+            "factory-droid",
+            "pi-acp",
+        ] {
+            assert!(find(required).is_some(), "missing {required}");
+        }
         let grok = find("grok").unwrap();
         assert_eq!(
             (grok.login, grok.upgrade),
             (Some("grok login"), Some("grok update"))
+        );
+        let muse = find("muse").unwrap();
+        assert_eq!(
+            (
+                muse.binary,
+                muse.adapter,
+                muse.adapter_binary,
+                muse.adapter_cli_env,
+                muse.login
+            ),
+            (
+                "muse",
+                Some("@bex-co/muse-code-acp"),
+                Some("muse-code-acp"),
+                Some("MUSE_CODE_EXECUTABLE"),
+                Some("muse login"),
+            )
         );
     }
 }

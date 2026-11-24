@@ -53,4 +53,9 @@ describe("renderMarkdown", () => {
     const { html } = renderMarkdown('```\nsay("hi")\n```');
     assert.ok(html.includes("say(&quot;hi&quot;)"));
   });
+  it("truncates a code title without splitting a surrogate pair", () => {
+    const { html } = renderMarkdown("```\n" + "a".repeat(79) + "😀tail\n```");
+    const title = /<code title="([^"]*)"/.exec(html)?.[1] ?? "";
+    assert.equal(title, "a".repeat(79) + "😀");
+  });
 });

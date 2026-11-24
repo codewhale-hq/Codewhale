@@ -43,6 +43,7 @@ end
 $roles$;
 
 \ir ../migrations/20260909000113_cloud_facts_publication.sql
+\ir ../migrations/20261117000114_registry_channel_publication.sql
 
 -- ---------------------------------------------------------------------------
 -- Fixture helpers (rolled back with everything else)
@@ -641,6 +642,83 @@ begin
   raise notice 'ok 7: grants, policies and the view surface match the delivery contract';
 end
 $surface$;
+
+do $registry_channel$
+declare
+  pub timestamptz := date_trunc('second', now() - interval '1 minute');
+  reg_payload jsonb;
+  large_reg_payload jsonb;
+  rows_seen int;
+  served_version bigint;
+  rejected boolean;
+begin
+  set local role service_role;
+  insert into public.facts_channel (scope, slug, visibility)
+    values ('global', 'registry', 'public');
+
+  reg_payload := jsonb_build_object(
+    'schema', 'codewhale.registry.v1',
+    'revision', 1,
+    'content_hash', 'sha256:' || repeat('a', 64),
+    'generated_at', public.tst_ts(pub),
+    'providers', '[]'::jsonb,
+    'models', '[]'::jsonb,
+    'offerings', '[]'::jsonb,
+    'dialects', '{}'::jsonb
+  );
+  perform public.tst_release('registry', 1, pub, null, '*', 'cwf-test-registry', reg_payload);
+
+  large_reg_payload := reg_payload || jsonb_build_object(
+    'revision', 2,
+    'engine_compat', jsonb_build_object('pad', repeat('x', 540000))
+  );
+  perform public.tst_release('registry', 2, pub, pub + interval '1 day', '*', 'cwf-test-registry',
+    large_reg_payload || jsonb_build_object('not_after', public.tst_ts(pub + interval '1 day')));
+
+  rejected := false;
+  begin
+    perform public.tst_release('stable', 99, pub, null, '*', 'cwf-test-registry',
+      reg_payload || jsonb_build_object('revision', 99));
+  exception when check_violation then
+    rejected := true;
+  end;
+  if not rejected then
+    raise exception 'stable channel accepted a codewhale.registry.v1 payload';
+  end if;
+
+  rejected := false;
+  begin
+    perform public.tst_release('registry', 3, pub, null, '*', 'cwf-test-registry',
+      public.tst_payload('registry', 3, pub));
+  exception when check_violation then
+    rejected := true;
+  end;
+  if not rejected then
+    raise exception 'registry channel accepted a non-registry facts payload';
+  end if;
+
+  rejected := false;
+  begin
+    perform public.tst_release('registry', 3, pub, null, '>=99.0.0', 'cwf-test-registry',
+      reg_payload || jsonb_build_object('revision', 3));
+  exception when check_violation then
+    rejected := true;
+  end;
+  if not rejected then
+    raise exception 'registry channel accepted tampered outer applies_to';
+  end if;
+  reset role;
+
+  set local role anon;
+  select count(*), max(f.facts_version) into rows_seen, served_version
+    from public.facts_current f where f.channel = 'registry' and f.scope = 'global';
+  reset role;
+  if rows_seen <> 1 or served_version <> 2 then
+    raise exception 'expected registry head v2 for anon, saw % row(s) at %', rows_seen, served_version;
+  end if;
+  raise notice 'ok 8: registry channel accepts >512 KiB codewhale.registry.v1 releases and isolates channel schemas';
+end
+$registry_channel$;
 
 select 'cloud facts storage: all assertions passed' as result;
 

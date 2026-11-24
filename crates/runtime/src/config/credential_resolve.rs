@@ -120,6 +120,22 @@ pub(crate) fn resolve_credential_source_with(
         return CredentialResolution::found(CredentialSource::AuthModeNone);
     }
 
+    if codewhale_config::credentials::auth_mode_is_claude_org(auth_mode.as_deref()) {
+        return if provider == ProviderKind::Anthropic
+            && !config.provider_uses_custom_endpoint(identity)
+        {
+            CredentialResolution::found(CredentialSource::ClaudeOrgLink)
+        } else {
+            CredentialResolution::missing(vec![CredentialProbe::with_fix(
+                "auth_mode = \"claude-org\" (anthropic official endpoint only)",
+                format!(
+                    "remove base_url or auth_mode from [providers.{}]",
+                    identity.key.as_str()
+                ),
+            )])
+        };
+    }
+
     // The public ChatGPT API accepts only Codewhale's own issued registration.
     // Environment tokens and consented Codex files belong to different clients.
     if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {

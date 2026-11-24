@@ -179,6 +179,7 @@ fn visible_message_window(world: &CoreCommandWorld) -> String {
             HistoryCell::Error { message, .. } => Some(message.clone()),
             HistoryCell::ArchivedContext { summary, .. } => Some(summary.clone()),
             HistoryCell::Automation(cell) => Some(cell.plain_summary()),
+            HistoryCell::ApprovalReceipt(cell) => Some(cell.plain_summary()),
             HistoryCell::Tool(_) | HistoryCell::SubAgent(_) => None,
         })
         .collect::<Vec<_>>()

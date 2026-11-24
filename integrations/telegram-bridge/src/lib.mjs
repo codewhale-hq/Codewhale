@@ -410,6 +410,11 @@ export function telegramSendRetryDelayMs(error, attempt = 0) {
   return null;
 }
 
+export function isPermanentTelegramError(error) {
+  const code = Number(error?.errorCode);
+  return code >= 400 && code < 500 && code !== 429;
+}
+
 export function looksLikePollingConflict(error) {
   const text = String(error?.description || error?.message || "").toLowerCase();
   return error?.errorCode === 409 || text.includes("terminated by other getupdates request");

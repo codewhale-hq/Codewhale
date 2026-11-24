@@ -66,6 +66,21 @@ known limitations and publication approval. These proofs are separate.
 - [ ] Run `scripts/release/check-feature-release-notes.sh vPREV HEAD`. Every
       issue-linked `feat` commit must leave a receipt in `CHANGELOG.md` or the
       archive; the Version drift CI gate runs the same check with full history.
+- [ ] Stamp `docs/features.toml`: every row with `since = "unreleased"` whose
+      feature is in this release's binary or tagged tree gets
+      `since = "X.Y.Z"`, decided row by row against the code and this
+      CHANGELOG entry. Leave `unreleased` only for rows the release does not
+      ship (for example website-only or Desktop-only surfaces). Then run
+      `node web/scripts/derive-facts.mjs` and
+      `cargo test -p codewhale-tui --test feature_registry`. The website labels
+      every `unreleased` row "In source, not yet released" even after the tag
+      is published; the tagged baseline does not override it.
+      `prepare-release.sh` lists the rows still unstamped.
+- [ ] Drop X.Y.Z from the milestone lists: `PROJECT_RELEASES` in
+      `web/lib/content/project.ts` (the `/contribute` page) and the Releases
+      table in `docs/ROADMAP.md`. Mark the next release in progress. The tag
+      redeploys the website from `main`, so a release left there is published
+      as unfinished.
 
 ## 2. Version pins are in sync
 
@@ -98,7 +113,10 @@ known limitations and publication approval. These proofs are separate.
       smallest local check or running-product observation that proves the
       change. After implementation and product review, freeze the candidate
       commit and run final validation once, including
-      `npm test && npm run check:web` from the repository root. Hosted CI owns
+      `npm ci --ignore-scripts && npm --prefix web ci && npm --prefix crates/engine/extension-host ci --ignore-scripts && npm test && npm run check:web`
+      from the repository root (root `npm test` also installs
+      `crates/engine/extension-host` with `npm ci --ignore-scripts` when
+      missing or stale). Hosted CI owns
       exhaustive workspace and platform coverage at that final step. Rerun
       only checks invalidated by a fix. Record actual results and failures in
       commit messages.
@@ -143,6 +161,9 @@ known limitations and publication approval. These proofs are separate.
 
 ## 4. Exact-SHA full CI and release candidate
 
+- [ ] If the frozen SHA already has a green `Nightly release candidate` run
+      of `release-candidate.yml`, that run is its RC receipt; do not dispatch
+      another.
 - [ ] Dispatch full CI and the build-only release candidate against frozen
       `main` with the same independent SHA guard:
       ```bash
@@ -150,10 +171,23 @@ known limitations and publication approval. These proofs are separate.
       gh workflow run ci.yml --ref main -f expected_sha="${candidate_sha}"
       gh workflow run release-candidate.yml --ref main -f expected_sha="${candidate_sha}"
       ```
+- [ ] The two macOS shipping builds run on the self-hosted `codewhale-mac`
+      runner only for a `v*` tag push or a dispatch in this repository, and
+      only with `-f macos_runner=self-hosted` (release candidate) or the
+      `CW_SELF_HOSTED_MAC` repository variable set to `true`; anything else,
+      including every pull request, builds on hosted `macos-latest`. There each
+      build installs a fresh rustup, toolchain and Cargo home under the job's
+      temp directory, starts from an empty `target/`, skips rust-cache, holds
+      the machine build lock and builds with six Cargo jobs. Set the variable
+      to `false` (or dispatch with `macos_runner=hosted`) to build on hosted
+      Macs again.
 - [ ] Both runs resolve to that SHA and all required jobs execute and succeed.
-      A green workflow badge alone is insufficient: ordinary main-push CI can
-      delegate Linux work to CNB and omit some smoke coverage. Manual full CI
-      forces the release gates on Linux, macOS and Windows.
+      A green workflow badge alone is insufficient: confirm that the required
+      jobs ran for the exact candidate SHA. `main-landing.yml` dispatches full
+      exact-SHA CI on every push to `main` unless that SHA already has a green
+      full `ci.yml` dispatch (for example from its `ci/*` branch), which is
+      then its full-CI receipt; a landing or pull-request CI receipt does not
+      replace release-candidate acceptance.
 - [ ] The candidate's Parity job succeeds, and its artifact jobs report all eight
       targets and the complete 38-file asset inventory, including Android
       arm64, Windows arm64, native HarmonyOS arm64, `codew`, the NSIS installer,
@@ -177,6 +211,21 @@ known limitations and publication approval. These proofs are separate.
       calls and customer acceptance need separate receipts; provider spend still
       requires authorization. Required unproven acceptance blocks release;
       disclose an explicitly accepted limitation as such.
+- [ ] A `ci/*` release-candidate run counts only when its SHA equals the tag SHA.
+- [ ] The `ci.yml` npm wrapper smoke on Windows runs with sccache off.
+- [ ] A real Windows Terminal check on the candidate build is recorded with who
+      ran it: Ctrl+V pastes text once each into the composer and the `/provider`
+      API key field, Ctrl+V pastes an image as one attachment, and Chinese
+      input works.
+- [ ] `codewhale update` upgrades the previous release installed in the
+      installer's default directory.
+- [ ] Count the release crate names new to crates.io (the sparse index answers
+      404); each one beyond the first five costs about ten minutes of rate limit.
+- [ ] The telemetry publication gate holds: the served ingest accepts the tagged
+      build's schema before publication.
+- [ ] Every security fix scheduled for this release has landed with two
+      independent reviews. Record confidential counts only in the private
+      release record; keep detail confidential until publication is approved.
 - [ ] If source changes or `main` moves before tagging, deliberately choose the
       new candidate and replace affected proofs. Tag only a SHA with its exact
       CI/RC evidence. Do not duplicate hosted exhaustive gates locally.
@@ -184,10 +233,10 @@ known limitations and publication approval. These proofs are separate.
 ## 5. Publication approval
 
 - [ ] Hunter explicitly approves the exact version/SHA and publication targets:
-      tag, GitHub Release, npm, GHCR, CNB release tag and legacy Homebrew
-      automation, plus Cargo or other downstream publication where intended.
-      Source readiness and build-only CI/RC do not authorize a tag, registry
-      write, deployment or public launch.
+      tag, GitHub Release, npm, website (`codewhale.net`), GHCR, CNB release
+      tag and legacy Homebrew automation, plus Cargo or other downstream
+      publication where intended. Source readiness and build-only CI/RC do not
+      authorize a tag, registry write, deployment or public launch.
 
 ## 5a. Prerelease checkpoints (`X.Y.Z-prerelease`)
 
@@ -211,8 +260,9 @@ authority.
       same RC receipt gates the tag, and §5 approval still applies.
 - [ ] Tag `vX.Y.Z-prerelease` from that `main` SHA as in §6. The Release
       workflow publishes a GitHub prerelease and the npm `next` tag, and skips
-      GHCR, CNB, GitCode, Homebrew, the web release record and Cargo. It does
-      not publish crates: publish crates only for the stable `X.Y.Z`.
+      GHCR, CNB, GitCode, Homebrew, the web release record, the website deploy
+      and Cargo. It does not publish crates: publish crates only for the stable
+      `X.Y.Z`.
 - [ ] Verify `npm view codewhale@X.Y.Z-prerelease version codewhaleBinaryVersion`
       and `npm view codewhale dist-tags.next`; `latest` must still name the last
       stable release.
@@ -237,7 +287,8 @@ authority.
 - [ ] The Release workflow succeeds: it repeats parity/build gates, verifies
       the draft asset inventory before GitHub publication, then runs dependent
       npm, GHCR, CNB and Homebrew publication. It requires an exact-SHA green
-      RC receipt and does not publish Cargo crates.
+      RC receipt. Its `crates` job waits for Hunter's `release` environment
+      approval before it publishes Cargo crates.
 - [ ] The public GitHub Release assets are proven to match the tag commit
       before publishing Cargo or npm:
       ```
@@ -253,13 +304,18 @@ authority.
       switch release lanes or force-fetch a conflicting tag. If `main` advanced,
       coordinate with Hunter for a new candidate or separately authorized
       recovery plan.
-- [ ] Publish Cargo manually within the approved scope with the
-      [runbook's step 5 block](RELEASE_RUNBOOK.md#rust-crates-release), which
-      runs `./scripts/release/publish-crates.sh publish` from a new, empty
-      `CARGO_HOME` and build directory with the token in `CARGO_REGISTRY_TOKEN`. It
-      verifies every package, skips already-published versions and waits for
-      each new dependency to appear. npm normally uses Trusted Publishing;
-      manual recovery keeps the same clean-source and public-asset guards.
+- [ ] Approve the `release` environment for the Release run's `crates` job
+      (**Review deployments**), within the approved scope. It runs after the
+      GitHub Release and npm jobs, verifies every package, skips
+      already-published versions, waits out crates.io rate limits and ends with
+      `check-published.sh`. If it fails or times out, re-run the failed job; it
+      resumes. If the `release` environment has no `CARGO_REGISTRY_TOKEN`
+      secret, the job fails naming it. Fallback: publish by hand with the
+      [runbook's step 5 block](RELEASE_RUNBOOK.md#rust-crates-release), never
+      while the job runs for the same tag. npm normally uses Trusted
+      Publishing; crates.io trusted publishing is the intended replacement for
+      the stored token (see the runbook) and is not set up. Manual recovery
+      keeps the same clean-source and public-asset guards.
 
 ## 7. Verify public results
 
@@ -278,8 +334,8 @@ authority.
       codewhale`, `curl .../install.sh | sh`); Homebrew is labeled as legacy
       compatibility; the shell installer uses codewhale-native names as documented
       in `docs/REBRAND.md#homebrew`.
-- [ ] Every release crate has the new version on crates.io; there is no
-      automated Cargo publish job. Partial publication is incomplete.
+- [ ] Every release crate has the new version on crates.io (`codewhale-ratatui`
+      has its own version); the `crates` job's final step checks this. Partial publication is incomplete.
 - [ ] `ghcr.io/codewhale-hq/codewhale:vX.Y.Z` and `:latest` are updated.
 - [ ] The CNB release tag and approved downstream results are verified
       separately; a successful GitHub Release does not prove them.
@@ -287,6 +343,15 @@ authority.
       ```
       ./scripts/release/check-published.sh X.Y.Z
       ```
+- [ ] Record every registry's verified result in the release packet: npm,
+      crates.io, GHCR, CNB and Homebrew, including any still missing.
+- [ ] Confirm `release.yml`'s `Deploy website` (`web_deploy`) job succeeded and
+      `https://codewhale.net/en` names the released version (`curl -fsSL https://codewhale.net/en | grep -F "Version X.Y.Z is released"`).
+      Manual fallback if `web_deploy` did not run or needs recovery after a fix
+      on `main`: `gh workflow run web.yml --repo codewhale-hq/Codewhale --ref main -f expected_sha="$(git rev-parse origin/main)"`,
+      then re-verify `https://codewhale.net/en`.
+- [ ] Re-record the site's terminal captures (`web/lib/terminal-captures/released`)
+      from the published binary; the live provider key step is Hunter's.
 - [ ] Published install/upgrade smoke has its own receipt; candidate installs
       do not prove public delivery. Deployment/customer acceptance remain
       separate gates where required.

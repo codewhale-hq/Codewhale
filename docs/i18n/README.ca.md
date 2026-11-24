@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ Això instal·la l’última versió a macOS o Linux, i no necessita cap compte.
 
 <sub>Aquesta traducció és un esborrany automàtic que encara no ha revisat cap parlant nadiu.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale en un terminal després d’una tasca de demostració. Informa que ha afegit una opció --json a export.py, que han passat les 3 proves locals i que una revisió delegada no ha trobat cap problema. La llista de tasques de sota mostra tres passos completats, i la línia d’estat mostra Full Access i el proveïdor local website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale en un terminal després d’una tasca real amb deepseek-flash. Ha executat python3 -m unittest -v test_ls.py, han passat 2 proves i explica que ha afegit l’opció --json a ls.py. La línia d’estat mostra accept edits i deepseek-flash.">
 
-<sub>Una compilació de desenvolupament de la 0.10.3, que encara no s’ha publicat, amb un model de prova amb guió, en Full Access dins d’un espai de treball d’un sol ús. L’edició, tres proves i una revisió d’un subagent es van executar de debò.</sub>
+<sub>Una sessió real amb una versió de desenvolupament de la 0.10.3: deepseek-flash, a través de l’API de DeepSeek, va escriure el canvi, i vas permetre una vegada l’execució de les proves.</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Porta més de 40 proveïdors integrats, entre ells Anthropic, OpenAI, DeepSeek, 
 
 `/goal` fixa un objectiu que continua d’un torn a l’altre. Codewhale pot repartir la feina entre [subagents](../SUBAGENTS.md), fer anar una [Fleet](../FLEET.md) d’agents amb rols i models propis, o seguir un [flux de treball](../WORKFLOW_AUTHORING.md) desat al repositori.
 
-### Extensions
+### Plugins
 
-Connecta [servidors MCP](../MCP.md), afegeix [skills](../SKILLS.md) i [connectors](../PLUGINS.md), i executa [hooks](../HOOKS.md) en esdeveniments de sessió i d’eines. El mode codi (experimental, activat per defecte) permet que el model escrigui un programa `execute_tools` que crida diverses eines MCP i de connectors; cada crida continua respectant les teves regles d’aprovació i en conserva el rebut. El connector Computer Use inclòs a v0.10.2 (experimental, només macOS) pot observar i fer servir altres aplicacions, i resta apagat fins que en revises l’accés i l’actives ([guia](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Arriba amb 0.10.3: el connector es publica [per separat](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Connecta [servidors MCP](../MCP.md), afegeix [skills](../SKILLS.md) i [connectors](../PLUGINS.md), i executa [hooks](../HOOKS.md) en esdeveniments de sessió i d’eines. El mode codi (experimental, activat per defecte) permet que el model escrigui un programa `execute_tools` que crida diverses eines MCP i de connectors; cada crida continua respectant les teves regles d’aprovació i en conserva el rebut. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) és un connector separat publicat pel seu compte (experimental, només macOS), i resta apagat fins que en revises l’accés i l’actives.
 
 ### Maneres d’executar-lo
 
@@ -96,11 +96,9 @@ L’aplicació de terminal, `exec`, `web` i la Runtime API comparteixen un sol m
 
 ## Com es manté segur
 
-Dos interruptors diuen quant pot fer Codewhale pel seu compte. Amb l’entrada buida, `Tab` canvia el mode: **Plan** llegeix i cerca però no canvia res, **Work** edita fitxers i executa ordres, i **Operate** té el mateix accés que Work i continua fins que l’objectiu queda verificat o et necessita. `Shift+Tab` canvia el permís. **Ask**, el predeterminat, aplica els canvis de fitxers del teu repositori sense preguntar i pregunta abans de les ordres de shell que no són només de lectura. **Auto-Review** deixa que regles i un model revisor aprovin les crides rutinàries i rebutja les d’alt risc; canvia a Ask per aprovar-les tu. **Full Access** no pregunta mai i desactiva el sandbox de Codewhale, tot i que les regles del repositori i la política gestionada continuen vigents. La [guia de v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md) té els detalls.
+Un sol selector diu quant pot fer Codewhale pel seu compte. `Shift+Tab` el fa avançar: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, el predeterminat, aplica els canvis de fitxers dins del repositori git sense preguntar i pregunta abans de les ordres. **Ask** pregunta abans de cada canvi de fitxer i de cada ordre. **Plan** llegeix i cerca però no canvia res. **Auto-Review** deixa que regles i un model revisor aprovin les crides rutinàries i rebutja les d’alt risc; canvia a Ask per aprovar-les tu. **Full Access** no pregunta mai i desactiva el sandbox de Codewhale, tot i que les regles del repositori i la política gestionada continuen vigents. `Tab` només completa i no canvia mai el mode, i Operate s’ha retirat. La [guia dels modes](../MODES.md) té els detalls.
 
-Arriba amb 0.10.3: `Shift+Tab` esdevé un únic selector que passa per Ask, Accept Edits, Plan, Auto-Review i Full Access, `Tab` deixa de canviar el mode i Operate es retira. Ask preguntarà també abans de cada canvi de fitxer, i el nou predeterminat, Accept Edits, aplicarà els canvis dins del repositori git i continuarà preguntant abans de les ordres. La [guia actual](../MODES.md) ho descriu.
-
-A Ask i Auto-Review, les ordres s’executen en un sandbox del sistema operatiu quan el sistema en té un: Seatbelt a macOS, i bubblewrap a Linux quan està instal·lat. Windows encara no té sandbox del sistema, i Full Access apaga el sandbox. Dins del sandbox, les ordres de shell i les sessions de terminal no poden llegir magatzems de credencials com `~/.ssh`, `~/.aws` i els fitxers `.env`. `/preview-request` mostra una previsualització censurada de la propera petició sense enviar-la.
+A Ask, Accept Edits i Auto-Review, les ordres s’executen en un sandbox del sistema operatiu quan el sistema en té un: Seatbelt a macOS, i bubblewrap a Linux quan està instal·lat. Windows encara no té sandbox del sistema, i Full Access apaga el sandbox. Dins del sandbox, les ordres de shell i les sessions de terminal no poden llegir magatzems de credencials com `~/.ssh`, `~/.aws` i els fitxers `.env`. `/preview-request` mostra una previsualització censurada de la propera petició sense enviar-la.
 
 No necessites cap compte, i les claus que afegeixes amb `/provider` es queden a la teva màquina. Amb la teva pròpia clau d’API pagues directament el proveïdor, i els models locals no necessiten clau. El peu de pàgina i `/cost` mostren quant ha costat una sessió quan se’n coneix el preu, i un preu desconegut es mostra com a desconegut, mai com a gratuït.
 

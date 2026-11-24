@@ -524,6 +524,133 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn first_fork_accepts_only_verified_checkpoint_migration() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        for missing_checkpoint in [false, true] {
+            for mutation in [
+                "none",
+                "length",
+                "hash",
+                "cursor",
+                "retained",
+                "timestamp",
+                "state",
+            ] {
+                let dir = tempfile::tempdir()?;
+                let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+                let manager = RuntimeThreadManager::open(
+                    config(),
+                    dir.path().to_path_buf(),
+                    test_manager_config(dir.path().join("runtime")),
+                )?;
+                let thread = manager
+                    .create_thread(CreateThreadRequest {
+                        workspace: Some(dir.path().to_path_buf()),
+                        ..Default::default()
+                    })
+                    .await?;
+                let messages = vec![
+                    msg(Role::User, "first"),
+                    msg(Role::Assistant, "first answer"),
+                    msg(Role::User, "second"),
+                    msg(Role::Assistant, "second answer"),
+                ];
+                manager
+                    .seed_thread_from_messages(&thread.id, &messages)
+                    .await?;
+                let sessions = crate::session_manager::SessionManager::new(
+                    manager.sessions_dir().to_path_buf(),
+                )?;
+                let document = crate::session_manager::create_saved_session_with_id_and_mode(
+                    Uuid::new_v4().to_string(),
+                    &messages,
+                    &thread.model,
+                    dir.path(),
+                    0,
+                    None,
+                    Some("agent"),
+                );
+                sessions.save_session(&document)?;
+                {
+                    let _admission = manager.session_checkpoint_guard().await;
+                    manager
+                        .set_thread_session_checkpoint(&thread.id, &document)
+                        .await?;
+                }
+                let mut legacy = manager.store.load_thread(&thread.id)?;
+                if missing_checkpoint {
+                    legacy.saved_session_checkpoint = None;
+                } else {
+                    legacy
+                        .saved_session_checkpoint
+                        .as_mut()
+                        .unwrap()
+                        .messages_len = None;
+                }
+                manager.store.save_thread(&legacy)?;
+                let turns = manager.store.list_turns_for_thread(&thread.id)?;
+                let prepared = manager
+                    .prepare_fork_dropping_user_turn_in_sessions_dir(
+                        &thread.id,
+                        &turns.last().unwrap().id,
+                        manager.sessions_dir(),
+                    )
+                    .await?;
+                let mut current = manager.store.load_thread(&thread.id)?;
+                let checkpoint = current.saved_session_checkpoint.as_mut().unwrap();
+                assert_eq!(checkpoint.messages_len, Some(4));
+                match mutation {
+                    "length" => checkpoint.messages_len = Some(3),
+                    "hash" => checkpoint.messages_sha256 = "changed".into(),
+                    "cursor" => checkpoint.covered_turn_id = None,
+                    "retained" => checkpoint.retained_messages = Some(1),
+                    "timestamp" => current.updated_at += chrono::Duration::seconds(1),
+                    "state" => current.latest_turn_id = Some("concurrent".into()),
+                    _ => {}
+                }
+                manager.store.save_thread(&current)?;
+                let result = manager.publish_prepared_fork_guarded(prepared).await;
+                if mutation == "none" {
+                    let (forked, original, _, _) = result?;
+                    assert_eq!(original.as_deref(), Some("second"));
+                    assert_eq!(manager.restore_thread_messages(&forked)?, messages[..2]);
+                    assert_ne!(forked.session_id, current.session_id);
+                } else {
+                    let error =
+                        result.expect_err("unverified source changes must reject publication");
+                    assert!(
+                        format!("{error:#}").contains("source thread changed while preparing fork"),
+                        "{error:#}"
+                    );
+                    assert_eq!(
+                        manager
+                            .list_threads(ThreadListFilter::IncludeArchived, None)
+                            .await?
+                            .len(),
+                        1
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(manager.store.load_thread(&thread.id)?)?,
+                    serde_json::to_value(&current)?
+                );
+                assert_eq!(
+                    serde_json::to_value(manager.store.list_turns_for_thread(&thread.id)?)?,
+                    serde_json::to_value(&turns)?
+                );
+                assert_eq!(
+                    sessions
+                        .resume_session(&document.metadata.id)?
+                        .session
+                        .messages,
+                    messages
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The legacy prefix search must agree with `serde_json`'s own encoding
     /// of a slice, for every prefix length.
     #[test]
@@ -1824,6 +1951,135 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn thread_deny_rules_persist_and_reach_the_engine_that_runs_the_thread() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir()?;
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+        let workspace = dir.path().join("workspace");
+        fs::create_dir(&workspace)?;
+        let manager = RuntimeThreadManager::open(
+            config(),
+            workspace,
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::simple_text_turn("open"),
+            canned::simple_text_turn("restricted"),
+        ]));
+        manager.set_test_model_client(mock.clone());
+        let rules = vec!["file".to_string()];
+        let tool_names = |request: &codewhale_models::MessageRequest| -> Vec<String> {
+            request
+                .tools
+                .iter()
+                .flatten()
+                .map(|tool| tool.name.clone())
+                .collect()
+        };
+
+        let open = manager
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let first = manager
+            .start_turn(
+                &open.id,
+                StartTurnRequest {
+                    prompt: "list".into(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        wait_for_terminal_turn(&manager, &first.id).await?;
+
+        let restricted: CreateThreadRequest =
+            serde_json::from_value(json!({ "disallowed_tools": ["file"] }))?;
+        let restricted = manager.create_thread(restricted).await?;
+        assert_eq!(
+            serde_json::to_value(manager.get_thread(&restricted.id).await?)?["disallowed_tools"],
+            json!(["file"])
+        );
+        let second = manager
+            .start_turn(
+                &restricted.id,
+                StartTurnRequest {
+                    prompt: "list".into(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        wait_for_terminal_turn(&manager, &second.id).await?;
+
+        let requests = mock.captured_requests();
+        assert_eq!(requests.len(), 2);
+        let denied = |names: &[String]| {
+            names
+                .iter()
+                .any(|name| codewhale_execpolicy::tool_rules::tool_denied(Some(&rules), name))
+        };
+        assert!(
+            denied(&tool_names(&requests[0])),
+            "the control thread must expose a tool the rule covers"
+        );
+        assert!(
+            !denied(&tool_names(&requests[1])),
+            "{:?}",
+            tool_names(&requests[1])
+        );
+        manager.shutdown_and_wait().await?;
+        drop(manager);
+
+        let open_disk: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            dir.path()
+                .join("runtime")
+                .join("threads")
+                .join(format!("{}.json", open.id)),
+        )?)?;
+        assert_eq!(open_disk["schema_version"], CURRENT_RUNTIME_SCHEMA_VERSION);
+        assert!(open_disk.get("disallowed_tools").is_none());
+
+        let restricted_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join(format!("{}.json", restricted.id));
+        let mut restricted_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restricted_path)?)?;
+        assert_eq!(
+            restricted_disk["schema_version"],
+            DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+        );
+        assert_eq!(restricted_disk["disallowed_tools"], json!(["file"]));
+
+        let reopened = RuntimeThreadManager::open(
+            config(),
+            dir.path().join("workspace"),
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let reloaded = reopened.get_thread(&restricted.id).await?;
+        assert_eq!(
+            reloaded.schema_version,
+            DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+        );
+        assert_eq!(reloaded.disallowed_tools, vec!["file"]);
+
+        restricted_disk["schema_version"] = json!(MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION + 1);
+        fs::write(
+            &restricted_path,
+            serde_json::to_string_pretty(&restricted_disk)?,
+        )?;
+        let err = reopened
+            .get_thread(&restricted.id)
+            .await
+            .expect_err("schema v8 must be rejected");
+        assert!(
+            format!("{err:#}").contains("newer than supported"),
+            "{err:#}"
+        );
+        reopened.shutdown_and_wait().await?;
+        Ok(())
+    }
+
     async fn control_case(interrupt: bool, follow_up: bool) -> Result<()> {
         let _env = crate::test_support::lock_test_env();
         let dir = tempfile::tempdir()?;
@@ -2267,7 +2523,7 @@ mod recovery {
 }
 
 fn test_runtime_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("deepseek-runtime-threads-{}", Uuid::new_v4()))
+    crate::test_support::test_scratch_dir("deepseek-runtime-threads")
 }
 
 const EVENT_PROCESS_ROLE_ENV: &str = "CODEWHALE_TEST_EVENT_PROCESS_ROLE";
@@ -2281,7 +2537,7 @@ const EVENT_PROCESS_COUNT_ENV: &str = "CODEWHALE_TEST_EVENT_PROCESS_COUNT";
 const EVENT_PROCESS_HELPER: &str = "runtime_threads::tests::runtime_event_process_child_helper";
 // Deadlock ceiling for monitor settlement in the 10k-test lib binary. This is
 // a test watchdog, not an expected runtime latency or a customer-facing SLO.
-const TURN_SETTLEMENT_DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const TURN_SETTLEMENT_DEADLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Durable record ids carry a full UUID: records live in flat per-kind
 /// directories and a save replaces by id, so a short suffix would let one
@@ -2359,11 +2615,10 @@ fn runtime_event_process_child_helper() {
                 .expect("event writer count must be numeric");
             std::fs::write(&signal, b"ready").expect("announce ready event writer");
             wait_for_runtime_event_test_file(&start, "writer start barrier");
-            // The same transaction `append_event` runs, with a lock budget
-            // sized for contention rather than the interactive 5 s default.
-            // The claim here is that sequences never collide across
-            // processes; four writers each fsyncing eight appends on a loaded
-            // CI runner have starved one polling writer past 5 s (macOS and
+            // The same transaction `append_event` runs. The claim here is
+            // that sequences never collide across processes; four writers
+            // each fsyncing eight appends on a loaded CI runner have starved
+            // one polling writer past a shorter lock budget (macOS and
             // Windows), which failed the run without any duplicate sequence.
             // 25 s stays inside the parent's 30 s wait, so a genuinely stuck
             // lock still fails here with its own message.
@@ -2669,6 +2924,7 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         executor: None,
         environment: None,
         agent_preset: None,
+        disallowed_tools: Vec::new(),
     }
 }
 
@@ -2719,6 +2975,7 @@ fn sample_turn(thread_id: &str, turn_id: &str, status: RuntimeTurnStatus) -> Tur
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     }
 }
 
@@ -6687,9 +6944,9 @@ fn runtime_usage_sink_survives_parent_terminal_and_restart_exactly_once() -> Res
     );
     manager.store.save_turn(&turn)?;
     manager.register_runtime_usage_sink(&turn.id);
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id)
-        .expect("active runtime owner lease");
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
+        .expect("registered runtime origin");
 
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
@@ -6699,56 +6956,46 @@ fn runtime_usage_sink_survives_parent_terminal_and_restart_exactly_once() -> Res
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         Utc::now(),
     );
-    crate::cost_status::report_effective_route_for_runtime(
-        crate::cost_status::scope_token(),
-        Some(&turn.id),
+    let record = crate::cost_status::RuntimeUsageRecord::legacy(
         "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
+        crate::cost_status::EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: Usage {
+                input_tokens: 17,
+                output_tokens: 3,
+                ..Usage::default()
+            },
         },
     );
-    crate::cost_status::report_effective_route_for_runtime(
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
-        "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
-        },
+        Some(&origin),
+        &record,
     );
-    drop(lease);
+    crate::cost_status::record_runtime_usage(
+        crate::cost_status::scope_token(),
+        Some(&origin),
+        &record,
+    );
+    drop(origin);
     drop(manager);
 
     let reopened = test_manager(data_dir.clone())?;
     reopened.register_runtime_usage_sink(&turn.id);
-    crate::cost_status::report_effective_route_for_runtime(
+    let reopened_origin = reopened
+        .accounting_origin_for_turn(&turn.id)
+        .expect("reopened runtime origin");
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
-        "compaction:response:test",
-        &route,
-        &Usage {
-            input_tokens: 17,
-            output_tokens: 3,
-            ..Usage::default()
-        },
+        Some(&reopened_origin),
+        &record,
     );
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    drop(reopened_origin);
     drop(reopened);
     let reopened = test_manager(data_dir)?;
     let persisted = reopened.store.load_turn(&turn.id)?;
     assert_eq!(persisted.routed_usage.len(), 1);
     assert_eq!(persisted.routed_usage[0].usage.input_tokens, 17);
-    assert!(
-        crate::cost_status::take_runtime_usage(&turn.id)
-            .records
-            .is_empty(),
-        "successful synchronous persistence must not duplicate into fallback"
-    );
     assert!(
         crate::cost_status::drain().is_empty(),
         "runtime-owned usage must not duplicate into the TUI pool"
@@ -6842,13 +7089,14 @@ async fn raw_metadata_missing_usage_deduplicates_direct_drop_and_legacy_totals()
         append_initial_routed_usage_to_turn(&mut turn, &batch);
         manager.store.save_turn(&turn)?;
         manager.register_runtime_usage_sink(&turn.id);
-        crate::cost_status::report_unreceipted_provider_success(
+        let origin = manager.accounting_origin_for_turn(&turn.id);
+        crate::cost_status::report_missing_runtime_usage(
             crate::cost_status::scope_token(),
-            Some(&turn.id),
+            origin.as_ref(),
             &format!("routed:{}", routed_usage_source_fingerprint(source_id)),
             &route,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
         );
-        crate::cost_status::finish_runtime_usage_owner(&turn.id);
         let persisted = manager.store.load_turn(&turn.id)?;
         assert!(persisted.routed_usage.is_empty());
         assert_eq!(persisted.routed_usage_drop_records.len(), 1);
@@ -7544,15 +7792,36 @@ fn event_reader_never_observes_cross_process_rollback_candidate() -> Result<()> 
     // Keep the candidate present until the real reader has attempted the
     // transaction. A relative sleep in the writer can expire before a loaded
     // parent is scheduled and never exercise a contended read at all.
-    let error = store
-        .events_since(thread_id, None)
-        .expect_err("reader must not expose a candidate while its writer holds the lock");
-    assert!(
-        error.downcast_ref::<RuntimeEventLockTimeout>().is_some(),
-        "reader failed for an unexpected reason: {error:#}"
-    );
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let reader_store = store.clone();
+    let reader = std::thread::spawn(move || {
+        let _ = result_tx.send(reader_store.events_since(thread_id, None));
+    });
+    let early = result_rx.recv_timeout(Duration::from_secs(2));
+    if let Ok(result) = &early {
+        match result {
+            Ok(events) => assert!(
+                events.is_empty(),
+                "reader exposed a candidate while its writer holds the lock"
+            ),
+            Err(error) => assert!(
+                error.downcast_ref::<RuntimeEventLockTimeout>().is_some(),
+                "reader failed for an unexpected reason: {error:#}"
+            ),
+        }
+    }
     std::fs::write(dir.join("process-writers.start"), b"rollback")?;
     child.wait_success("phantom rollback child");
+    if early.is_err() {
+        let events = result_rx
+            .recv()
+            .expect("reader returned a result after rollback")?;
+        assert!(
+            events.is_empty(),
+            "reader exposed a candidate while its writer holds the lock"
+        );
+    }
+    reader.join().expect("phantom reader thread panicked");
     assert!(store.events_since(thread_id, None)?.is_empty());
 
     std::fs::remove_dir_all(dir)?;
@@ -8334,6 +8603,8 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             engine: harness_a.handle,
             active_turn: Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_progress: None,
                 goal_id: None,
                 turn_id: "turn_a".to_string(),
@@ -8347,6 +8618,7 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             route_model: DEFAULT_TEXT_MODEL.to_string(),
             hook_executor: None,
             client_preflight_required: false,
+            plugin_creator_enabled: true,
         },
     );
     active.engines.insert(
@@ -8355,6 +8627,8 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             engine: harness_b.handle,
             active_turn: Some(ActiveTurnState {
                 narrowing: crate::core::engine::TurnNarrowing::Inherit,
+                run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+                owner_present: false,
                 goal_progress: None,
                 goal_id: None,
                 turn_id: "turn_b".to_string(),
@@ -8368,6 +8642,7 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             route_model: DEFAULT_TEXT_MODEL.to_string(),
             hook_executor: None,
             client_preflight_required: false,
+            plugin_creator_enabled: true,
         },
     );
     active.lru.push_back("thr_a".to_string());
@@ -9122,13 +9397,11 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
     let settlement_id = settle_unaccepted_routed_usage(&manager.store, &thread.id, &batch)?;
     assert!(manager.store.load_turn(&settlement_id)?.routing_settlement);
     manager.register_runtime_usage_sink(&accepted.id);
+    let origin = manager.accounting_origin_for_turn(&accepted.id);
     let native_source = crate::cost_status::NativeUsageSource::capture_with_origin(
         "native-fork-receipt",
         crate::cost_status::UsageSpendOwner::Primary,
-        Some(crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            &accepted.id,
-        )?),
+        origin.clone(),
     );
     let native_route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
@@ -9147,15 +9420,15 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
         },
         crate::llm_client::ProviderUsageCoverage::Reported,
         crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-    )?;
-    crate::cost_status::report_runtime_usage_record(
+    );
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&accepted.id),
+        origin.as_ref(),
         &native_record,
-    )?;
-    crate::cost_status::finish_runtime_usage_owner(&accepted.id);
+    );
     drop(native_record);
     drop(native_source);
+    drop(origin);
     drop(manager);
 
     let reopened = test_manager(runtime_dir)?;
@@ -9343,7 +9616,8 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
         harness.rx_op.recv().await,
         Some(Op::SendMessage(TurnSpec { .. }))
     ));
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id)
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
         .context("admitted turn installs a persistent sink")?;
     manager.register_pending_user_input(
         &thread.id,
@@ -9408,22 +9682,28 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         Utc::now(),
     );
-    crate::cost_status::report_effective_route_for_runtime(
-        crate::cost_status::scope_token(),
-        Some(&turn.id),
+    let late_record = crate::cost_status::RuntimeUsageRecord::legacy(
         "late-success-during-cleanup",
-        &route,
-        &Usage {
-            input_tokens: 27,
-            output_tokens: 4,
-            ..Usage::default()
+        crate::cost_status::EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: Usage {
+                input_tokens: 27,
+                output_tokens: 4,
+                ..Usage::default()
+            },
         },
     );
-    crate::cost_status::report_unreceipted_provider_success(
+    crate::cost_status::record_runtime_usage(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
+        Some(&origin),
+        &late_record,
+    );
+    crate::cost_status::report_missing_runtime_usage(
+        crate::cost_status::scope_token(),
+        Some(&origin),
         "late-missing-during-cleanup",
         &route,
+        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
     );
     let persisted_during_cleanup = manager.store.load_turn(&turn.id)?;
     assert_eq!(persisted_during_cleanup.routed_usage.len(), 1);
@@ -9456,7 +9736,7 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
     assert_eq!(totals.input_tokens, 35);
     assert_eq!(totals.output_tokens, 9);
     assert_eq!(totals.dropped_usage_records, 1);
-    drop(lease);
+    drop(origin);
     Ok(())
 }
 
@@ -9484,19 +9764,17 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
     ));
     let mut batch =
         classifier_settlement_batch("child-route", "child/model", "sink-and-metadata", 1);
+    let origin = manager.accounting_origin_for_turn(&turn.id);
     let source = crate::cost_status::NativeUsageSource::capture_with_origin(
         batch.records[0].source_id.clone(),
         crate::cost_status::UsageSpendOwner::Auxiliary,
-        Some(crate::cost_status::NativeUsageOrigin::runtime(
-            crate::cost_status::scope_token(),
-            &turn.id,
-        )?),
+        origin.clone(),
     );
     batch.records[0] =
-        source.reported(&batch.records[0].usage.route, &batch.records[0].usage.usage)?;
-    crate::cost_status::report_runtime_usage_batch(
+        source.reported(&batch.records[0].usage.route, &batch.records[0].usage.usage);
+    crate::cost_status::record_runtime_usage_batch(
         crate::cost_status::scope_token(),
-        Some(&turn.id),
+        origin.as_ref(),
         &batch,
     );
     batch
@@ -9710,6 +9988,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
                 server_tool_use: Some(codewhale_models::ServerToolUsage {
                     code_execution_requests: Some(2),
                     tool_search_requests: Some(3),
+                    ..Default::default()
                 }),
                 ..Usage::default()
             },
@@ -9720,6 +9999,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
                 server_tool_use: Some(codewhale_models::ServerToolUsage {
                     code_execution_requests: Some(2),
                     tool_search_requests: Some(3),
+                    ..Default::default()
                 }),
                 ..Usage::default()
             },
@@ -9777,6 +10057,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_
         Some(codewhale_models::ServerToolUsage {
             code_execution_requests: Some(2),
             tool_search_requests: Some(3),
+            ..Default::default()
         })
     );
 
@@ -11032,7 +11313,7 @@ async fn update_thread_workspace_rejects_empty_path() -> Result<()> {
 #[tokio::test]
 async fn workspace_restore_guard_rejects_overlapping_active_turns() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
-    let root = std::env::temp_dir().join(format!("codewhale-restore-guard-{}", Uuid::new_v4()));
+    let root = crate::test_support::test_scratch_dir("codewhale-restore-guard");
     let busy = root.join("busy");
     let nested = busy.join("nested");
     let idle = root.join("idle");
@@ -11057,6 +11338,8 @@ async fn workspace_restore_guard_rejects_overlapping_active_turns() -> Result<()
         let state = active.engines.get_mut(&thread.id).expect("mock engine");
         state.active_turn = Some(ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             goal_progress: None,
             goal_id: None,
             turn_id: "turn_live".to_string(),
@@ -11128,6 +11411,8 @@ async fn update_thread_workspace_rejects_active_turn() -> Result<()> {
         let state = active.engines.get_mut(&thread.id).expect("mock engine");
         state.active_turn = Some(ActiveTurnState {
             narrowing: crate::core::engine::TurnNarrowing::Inherit,
+            run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+            owner_present: false,
             goal_progress: None,
             goal_id: None,
             turn_id: "turn_live".to_string(),
@@ -11615,10 +11900,9 @@ async fn compact_thread_receipt_keeps_exact_named_custom_identity() -> Result<()
 
 #[tokio::test]
 async fn compact_thread_with_real_engine_reaches_terminal_status() -> Result<()> {
-    // A real engine takes the workspace coordination lock exclusively, and
     // nextest runs tests in parallel processes with this crate as their working
     // directory. A `"."` workspace would therefore be the crate directory
-    // itself, and two exclusive holders of it cannot both start.
+    // itself, shared by every test process.
     let workspace = tempfile::tempdir()?;
     let manager = RuntimeThreadManager::open(
         {
@@ -14005,7 +14289,7 @@ async fn user_input_tool_timeout_and_cancel_clear_snapshot_before_turn_end() -> 
                 },
             })
             .await?;
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
             loop {
                 if manager
                     .get_thread_detail(&thread.id)
@@ -15748,6 +16032,7 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
     const RESULT_SECRET: &str = "dynamic-result-secret";
     let executor = manager.clone();
     let executor_thread_id = thread.id.clone();
+    let mut events = manager.subscribe_events();
     let execution = tokio::spawn(async move {
         DynamicToolExecutor::execute_dynamic_tool(
             &executor,
@@ -15759,18 +16044,25 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
         .await
     });
 
-    let pending = tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
-            let detail = manager.get_thread_detail(&thread.id).await?;
-            if let Some(call) = detail.pending_dynamic_tool_calls.first() {
-                break Ok::<_, anyhow::Error>((detail.latest_seq, call.clone()));
+            let event = events.recv().await?;
+            if event.event == "tool_call.requested"
+                && event.thread_id == thread.id
+                && event.turn_id.as_deref() == Some(turn.id.as_str())
+            {
+                return Ok::<_, anyhow::Error>(());
             }
-            sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .context("dynamic tool call did not reach the canonical snapshot")??;
-    let (snapshot_seq, call) = pending;
+    .context("dynamic tool request event did not arrive")??;
+    let detail = manager.get_thread_detail(&thread.id).await?;
+    let snapshot_seq = detail.latest_seq;
+    let call = detail
+        .pending_dynamic_tool_calls
+        .first()
+        .context("durable dynamic tool request is missing from the canonical snapshot")?;
     assert_eq!(call.thread_id, thread.id);
     assert_eq!(call.turn_id, turn.id);
     assert_eq!(call.namespace.as_deref(), Some("bench"));
@@ -16968,7 +17260,7 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
             if !manager
                 .get_thread_detail(&thread.id)
@@ -17006,7 +17298,7 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
         .context("dynamic tool task panicked")?
         .expect_err("terminal turn unexpectedly resolved the dynamic tool");
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, async {
         loop {
             let detail = manager.get_thread_detail(&thread.id).await?;
             let canceled = manager
@@ -17984,7 +18276,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         })
         .await?;
 
-    let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
+    let decision = tokio::time::timeout(Duration::from_secs(10), harness.recv_approval_event())
         .await
         .context("Auto-Review hold should resolve without a modal")?;
     assert_eq!(
@@ -17993,7 +18285,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
             id: "tool_auto_hold".to_string(),
         })
     );
-    let decided = tokio::time::timeout(Duration::from_secs(2), async {
+    let decided = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if manager.pending_approvals_count() == 0
                 && let Some(event) =
@@ -19100,7 +19392,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
             .await
     });
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), rx_steer.recv())
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_steer.recv())
             .await?
             .map(|steer| steer.into_pending().commit()),
         Some("keep the accepted steer".to_string())
@@ -19114,7 +19406,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
     );
     drop(emit_guard);
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
     loop {
         let events = manager.events_since(&thread.id, None)?;
         let steered = events.iter().any(|event| event.event == "turn.steered");
@@ -19133,7 +19425,7 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
         if Instant::now() >= deadline {
             bail!("detached steer receipts were not persisted after caller cancellation");
         }
-        tokio::task::yield_now().await;
+        sleep(Duration::from_millis(10)).await;
     }
 
     let persisted_turn = manager.store.load_turn(&turn.id)?;
@@ -19625,6 +19917,7 @@ fn answer_session_snapshot(
             system_prompt: None,
             instruction_assembly: None,
             mode: String::new(),
+            agent_preset: None,
         });
     }
 }
@@ -19704,6 +19997,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                             system_prompt: None,
                             instruction_assembly: None,
                             mode: "agent".into(),
+                            agent_preset: None,
                         });
                         let (reply, received) = oneshot::channel();
                         let withdraw = CancellationToken::new();
@@ -19970,6 +20264,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         executor: None,
         environment: None,
         agent_preset: None,
+        disallowed_tools: Vec::new(),
     };
     manager.store.save_thread(&thread)?;
 
@@ -20064,6 +20359,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
     manager.store.save_turn(&TurnRecord {
         source_usage_origin_turn_id: None,
@@ -20110,6 +20406,7 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
     drop(manager);
 
@@ -20314,6 +20611,7 @@ fn seed_turns_with_user_messages(
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
+            delegated_writes: Vec::new(),
         })?;
         turn_ids.push(turn_id);
     }
@@ -20388,6 +20686,86 @@ async fn fork_at_user_message_depth_one_drops_two_turns() -> Result<()> {
         .map(|t| t.input_summary.as_str())
         .collect();
     assert_eq!(summaries, vec!["a", "b"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_undo_reads_turn_store_once_and_drops_anchor() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let turn_ids =
+        seed_turns_with_user_messages(&manager, &thread.id, &["first", "second", "third"])?;
+    let anchor = manager.store.load_turn(&turn_ids[1])?;
+    let compaction_at = anchor.created_at + chrono::Duration::microseconds(500);
+    let mut compaction_item = sample_item(
+        "turn_compaction_between",
+        "item_compaction_between",
+        TurnItemLifecycleStatus::Completed,
+    );
+    compaction_item.kind = TurnItemKind::ContextCompaction;
+    compaction_item.detail = Some("summary of first and second".to_string());
+    manager.store.save_item(&compaction_item)?;
+    let mut compaction_turn = anchor.clone();
+    compaction_turn.id = compaction_item.turn_id.clone();
+    compaction_turn.input_summary = "Context compacted".to_string();
+    compaction_turn.created_at = compaction_at;
+    compaction_turn.started_at = Some(compaction_at);
+    compaction_turn.ended_at = Some(compaction_at);
+    compaction_turn.item_ids = vec![compaction_item.id];
+    manager.store.save_turn(&compaction_turn)?;
+    let other_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    manager.store.save_turn(&sample_turn(
+        &other_thread.id,
+        "turn_other_thread",
+        RuntimeTurnStatus::Completed,
+    ))?;
+    let source_before = manager.get_thread(&thread.id).await?;
+    let turns_before = manager.store.list_turns_for_thread(&thread.id)?;
+
+    manager.reset_whole_store_scan_file_reads();
+    let prepared = manager
+        .prepare_fork_dropping_user_turn_in_sessions_dir(
+            &thread.id,
+            &turn_ids[1],
+            manager.sessions_dir(),
+        )
+        .await?;
+    assert_eq!(manager.whole_store_scan_file_reads().0, 5);
+    assert_eq!(
+        prepared.dropped_turn_id.as_deref(),
+        Some(turn_ids[1].as_str())
+    );
+    assert_eq!(prepared.depth_from_tail, 1);
+    assert_eq!(prepared.original_user_text.as_deref(), Some("second"));
+    assert_eq!(
+        prepared
+            .records
+            .iter()
+            .map(|(turn, _)| turn.input_summary.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first"]
+    );
+    assert_eq!(
+        prepared
+            .dropped_turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            turn_ids[1].as_str(),
+            compaction_turn.id.as_str(),
+            turn_ids[2].as_str()
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(manager.store.list_turns_for_thread(&thread.id)?)?,
+        serde_json::to_value(turns_before)?
+    );
+    assert_eq!(manager.get_thread(&thread.id).await?, source_before);
     Ok(())
 }
 
@@ -21079,6 +21457,7 @@ fn restart_rebuild_restores_tool_call_identity_from_persisted_items() -> Result<
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21372,6 +21751,7 @@ fn restart_rebuild_keeps_in_flight_tool_call_identity() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21480,6 +21860,7 @@ fn restart_rebuild_skips_steers_the_engine_never_delivered() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -21589,6 +21970,7 @@ fn restart_rebuild_skips_legacy_tool_items_without_identity() -> Result<()> {
         artifacts: Vec::new(),
         workspace: None,
         workspace_snapshots: Vec::new(),
+        delegated_writes: Vec::new(),
     })?;
 
     let turns = manager.store.list_turns_for_thread(&thread.id)?;
@@ -22037,6 +22419,7 @@ mod runtime_image_inputs {
                 model: stored_thread.model.clone(),
                 workspace: stored_thread.workspace.clone(),
                 mode: AppMode::Agent,
+                agent_preset: None,
             })
             .await?;
         let followup = reopened
@@ -22657,6 +23040,8 @@ async fn shell_opt_in_is_idle_only_and_preserves_ask() -> Result<()> {
         .unwrap()
         .active_turn = Some(ActiveTurnState {
         narrowing: crate::core::engine::TurnNarrowing::Inherit,
+        run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+        owner_present: false,
         goal_progress: None,
         goal_id: None,
         turn_id: "turn_shell_guard".into(),
@@ -22722,6 +23107,8 @@ async fn shell_opt_in_is_idle_only_and_preserves_ask() -> Result<()> {
         .unwrap()
         .active_turn = Some(ActiveTurnState {
         narrowing: crate::core::engine::TurnNarrowing::Inherit,
+        run_origin: crate::core::authority::auto_review::RunOrigin::Background,
+        owner_present: false,
         goal_progress: None,
         goal_id: None,
         turn_id: "turn_revoke".into(),
@@ -23336,6 +23723,400 @@ fn a_warmed_store_opens_a_thread_without_reading_the_items_directory() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The index is a cache, and a cache is worth having only if it outlives the
+/// process that built it.
+///
+/// Every new process — a restarted engine, a `codewhale receipts` run — used to
+/// pay the whole items-directory read again, because the only copy of the answer
+/// was in memory. On a store with tens of thousands of items that read is the
+/// first thread's entire open time (27ms to list the directory against 4.8s to
+/// open every record, measured against 55,572 items).
+#[test]
+fn the_item_index_survives_the_process_that_built_it() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for index in 0..4 {
+            store
+                .save_item(&sample_item(
+                    &format!("trn_{index}"),
+                    &format!("itm_{index}"),
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        assert!(
+            !store.item_index_path().expect("index path").exists(),
+            "saving an item does not read the directory, so nothing is cached yet"
+        );
+        store.cache_item_index().expect("build and cache the index");
+        assert!(
+            store.item_index_path().expect("index path").exists(),
+            "the index is written for the next process"
+        );
+    }
+
+    // A new process over the same store: the listing finds every id already
+    // accounted for, so not one item record is opened.
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_2".to_string()])
+        .expect("read a thread's items");
+    assert_eq!(items["trn_2"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a cached store must not re-read the item records it already knows"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Only the items the listing does not account for are opened: an item written
+/// while no process was running is learned on its own, not by re-reading the
+/// store.
+#[test]
+fn the_cache_learns_only_the_items_written_while_it_was_closed() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_known",
+                "itm_known",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    {
+        // The store is written again without anyone reading its directory, the
+        // shape a running turn leaves behind.
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_late",
+                "itm_late",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .item_dir_files_read
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let items = store
+        .list_items_for_turns_map(&["trn_known".to_string(), "trn_late".to_string()])
+        .expect("read both threads");
+    assert_eq!(items["trn_known"].len(), 1);
+    assert_eq!(items["trn_late"].len(), 1);
+    assert_eq!(
+        store
+            .item_dir_files_read
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the item the cache had never seen is opened"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An entry outlives its item, and the listing is what decides membership: a
+/// deleted item is not reported, and the file is rewritten without it.
+#[test]
+fn the_cache_forgets_an_item_that_is_gone() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        for id in ["itm_kept", "itm_removed"] {
+            store
+                .save_item(&sample_item(
+                    "trn_1",
+                    id,
+                    TurnItemLifecycleStatus::Completed,
+                ))
+                .expect("save item");
+        }
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let removed_path = dir.join("items").join("itm_removed.json");
+    std::fs::remove_file(&removed_path).expect("remove item");
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        items["trn_1"]
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["itm_kept"],
+        "an item the directory no longer holds is not part of a turn"
+    );
+
+    // The read above learned that one entry is gone; caching replaces the file
+    // with what the directory actually holds.
+    store.cache_item_index().expect("refresh the cache");
+    let cached = store.load_persisted_item_index();
+    assert_eq!(cached.get("itm_removed"), None);
+    assert_eq!(cached.get("itm_kept").map(String::as_str), Some("trn_1"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A cache is never trusted over the directory: anything unreadable costs the
+/// full read and nothing else.
+#[test]
+fn a_damaged_cache_falls_back_to_reading_the_directory() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("build and cache the index");
+    }
+    let cache_path = dir.join(ITEM_INDEX_CACHE_FILE);
+
+    // Truncated, foreign-schema and absent all have to answer the same way.
+    for damaged in [
+        "{ not json".to_string(),
+        serde_json::json!({ "schema_version": 99, "by_item": {} }).to_string(),
+    ] {
+        std::fs::write(&cache_path, damaged).expect("damage the cache");
+        let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+        store
+            .item_dir_files_read
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let items = store
+            .list_items_for_turns_map(&["trn_1".to_string()])
+            .expect("read the thread's items");
+        assert_eq!(items["trn_1"].len(), 1);
+        assert_eq!(
+            store
+                .item_dir_files_read
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "an unusable cache means the records are read"
+        );
+        // And caching replaces it, so the next process is spared the read.
+        store.cache_item_index().expect("replace the damaged cache");
+        assert_eq!(
+            store
+                .load_persisted_item_index()
+                .get("itm_1")
+                .map(String::as_str),
+            Some("trn_1")
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A read-only handle exists so that reading a thread never mutates a store
+/// another process owns, and a cache is a write.
+#[test]
+fn a_read_only_handle_never_writes_the_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+
+    let store = RuntimeThreadStore::open_read_only(dir.clone())
+        .expect("open store")
+        .expect("store exists");
+    store.cache_item_index().expect("build the index");
+    assert!(store.item_index.read().by_turn.is_some());
+    assert!(
+        !store.item_index_path().expect("index path").exists(),
+        "a read-only handle must not write to the store"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An item can be written again under an existing id with a different owner,
+/// and a cache that remembers the old owner then answers for the wrong turn.
+///
+/// The directory listing cannot see the difference — the filename is the item id
+/// either way — so ownership has to be re-established from the record whenever
+/// it may have changed. This is the case a persisted index must not get wrong.
+#[test]
+fn a_cached_index_never_reports_an_item_under_the_turn_that_lost_it() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_first",
+                "itm_moved",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("cache the index");
+        // The same record id, written again under another turn.
+        store
+            .save_item(&sample_item(
+                "trn_second",
+                "itm_moved",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("re-save the item under its new owner");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_first".to_string(), "trn_second".to_string()])
+        .expect("read both turns");
+    assert!(
+        !items
+            .get("trn_first")
+            .is_some_and(|items| !items.is_empty()),
+        "the turn that no longer owns the item must not list it"
+    );
+    assert_eq!(
+        items.get("trn_second").map(|items| items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>()),
+        Some(vec!["itm_moved"]),
+        "the turn that owns it now must find it"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An id that is deleted and later written again under another turn is the same
+/// hazard as an overwrite: the listing sees a name reappear and has no way to
+/// know the cached owner went with it.
+#[test]
+fn a_cached_index_never_reports_an_item_recreated_under_another_turn() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_first",
+                "itm_reborn",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+        store.cache_item_index().expect("cache the index");
+        store.remove_item("itm_reborn").expect("remove the item");
+        store
+            .save_item(&sample_item(
+                "trn_second",
+                "itm_reborn",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save the id under another turn");
+    }
+
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    let items = store
+        .list_items_for_turns_map(&["trn_first".to_string(), "trn_second".to_string()])
+        .expect("read both turns");
+    assert!(
+        !items
+            .get("trn_first")
+            .is_some_and(|items| !items.is_empty()),
+        "the first turn never got this id back"
+    );
+    assert_eq!(
+        items.get("trn_second").map(|items| items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>()),
+        Some(vec!["itm_reborn"]),
+        "the turn it was written under owns it"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Reading a store never writes to it.
+///
+/// The cache is a file the store did not have before, and the routes that answer
+/// a client are reads: a `GET` that left one behind would break the promise those
+/// routes make, and the tests that snapshot a store to prove a route is
+/// read-only would be right to fail. So building the index writes nothing;
+/// [`RuntimeThreadStore::cache_item_index`] is the only writer, and only the
+/// startup warm-up calls it.
+#[test]
+fn reading_a_store_never_writes_the_index_cache() {
+    let dir = test_runtime_dir();
+    {
+        let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
+        store
+            .save_item(&sample_item(
+                "trn_1",
+                "itm_1",
+                TurnItemLifecycleStatus::Completed,
+            ))
+            .expect("save item");
+    }
+    let snapshot = |label: &str| {
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("list store") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        assert!(
+            !files
+                .iter()
+                .any(|path| path.ends_with(ITEM_INDEX_CACHE_FILE)),
+            "{label}: no cache file yet"
+        );
+        files
+    };
+
+    let before = snapshot("before the read");
+    let store = RuntimeThreadStore::open(dir.clone()).expect("reopen store");
+    store
+        .list_items_for_turns_map(&["trn_1".to_string()])
+        .expect("read the thread's items");
+    assert_eq!(
+        snapshot("after the read"),
+        before,
+        "a read must leave the store exactly as it found it"
+    );
+
+    // The deliberate caller is what puts it there.
+    store.cache_item_index().expect("cache the index");
+    assert!(
+        dir.join(ITEM_INDEX_CACHE_FILE).exists(),
+        "the warm-up's own call is what writes the cache"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The index is exact, not a snapshot: an item the store holds is returned
 /// whether or not the turn ever registered it, and whether it was written
 /// before or after the index was built.
@@ -23835,6 +24616,7 @@ mod adoption_refusal {
             auto_approve: Some(false),
             delivery_mode: None,
             status: Some(AutomationStatus::Paused),
+            disallowed_tools: Vec::new(),
         })?;
         automations.edit_automation(&created.id, |record| {
             let mut record =
@@ -24344,6 +25126,155 @@ async fn canonical_sessions_root_is_resolved_off_the_ui_runtime_and_cached() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn runtime_thread_title_comes_from_the_first_prompt_only() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    for prompt in [
+        "The case-insensitivity test in tests/test_core.py fails. Fix tally/core.py so word counting ignores case.",
+        "Please try that again.",
+    ] {
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: prompt.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        assert!(matches!(
+            harness.rx_op.recv().await,
+            Some(Op::SendMessage(TurnSpec { .. }))
+        ));
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                previous_source: None,
+                turn_id: turn.id.clone(),
+                created_at: Utc::now(),
+                route: None,
+                submission_id: None,
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+                turn_id: None,
+                submission_id: None,
+                compaction_id: None,
+                usage: Usage::default(),
+                parent_route_usage: Usage::default(),
+                routed_usage_dropped_records: 0,
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+            })
+            .await?;
+        wait_for_terminal_turn(&manager, &turn.id).await?;
+    }
+    let title = manager.store.load_thread(&thread.id)?.title;
+    assert_eq!(
+        title.as_deref(),
+        Some("The case-insensitivity test in tests/test_core.py fails. ...")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_provider_last_check_reports_the_last_call_failure() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let config = manager.config.read().clone();
+    let identity = config.test_identity_for_kind(ProviderKind::Google);
+    let receipt = crate::route_receipt::TurnRouteReceipt::for_test_fixture(
+        &config,
+        ProviderKind::Google,
+        "gemini-4-hydrogen",
+    );
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            trust_mode: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "hello".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: turn.id.clone(),
+            created_at: Utc::now(),
+            route: Some(crate::core::events::TurnRoute {
+                provider: ProviderKind::Google,
+                provider_identity: identity.key.to_string(),
+                model: "gemini-4-hydrogen".to_string(),
+                auto_model: false,
+                receipt: Some(receipt),
+                billing: None,
+                base_url: config.base_url_for_route(&identity),
+                billing_product: crate::route_billing::RouteProduct::Unproven,
+            }),
+            submission_id: None,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::Error {
+            envelope: crate::llm_client::LlmError::Other(
+                "HTTP 402: RESOURCE_EXHAUSTED: Your prepayment credits are depleted".to_string(),
+            )
+            .into(),
+            recoverable: false,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Failed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    wait_for_terminal_turn(&manager, &turn.id).await?;
+    match manager.provider_last_check(&identity) {
+        Some(crate::provider_readiness::LastProviderCheck::Failed { category, message }) => {
+            assert_eq!(category, codewhale_error_taxonomy::ErrorCategory::RateLimit);
+            assert!(message.contains("402"), "{message}");
+        }
+        other => panic!("expected the 402 to be the provider's last check: {other:?}"),
+    }
+    Ok(())
+}
+
 /// B1: a credential a tool printed is masked in the durable tool item (and
 /// the event log built from it) on Runtime API threads, as it is in the
 /// engine transcript.
@@ -24438,9 +25369,17 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
             model_call: None,
             id: "tool-error".into(),
             name: "exec_command".into(),
-            result: Err(crate::tools::spec::ToolError::execution_failed(format!(
-                "failed with {EXACT}"
-            ))),
+            result: Err(
+                crate::tools::spec::ToolError::execution_failed_with_metadata(
+                    format!("failed with {EXACT}"),
+                    json!({
+                        "exit_code": 1,
+                        "status": "Failed",
+                        "stderr_summary": format!("failed with {EXACT}"),
+                        "execution_receipt": {"stdout_preview": "x"},
+                    }),
+                ),
+            ),
         })
         .await?;
     harness
@@ -24481,6 +25420,22 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
     assert_eq!(metadata["stdout_len"], 120, "ordinary metadata survives");
     assert_eq!(metadata["exit_code"], 0);
     assert_eq!(metadata["api_key"], codewhale_config::persistence::REDACTED);
+    let failed = items
+        .iter()
+        .find(|item| {
+            item.metadata
+                .as_ref()
+                .is_some_and(|meta| meta["tool_result_for"] == "tool-error")
+        })
+        .context("the failed call keeps its item")?;
+    let failed_meta = failed.metadata.as_ref().context("failed metadata kept")?;
+    assert_eq!(failed_meta["exit_code"], 1, "{failed_meta}");
+    assert_eq!(failed_meta["status"], "Failed");
+    assert_eq!(failed_meta["is_error"], true);
+    assert!(
+        failed_meta.get("execution_receipt").is_none(),
+        "{failed_meta}"
+    );
     let events = serde_json::to_string(&manager.events_since(&thread.id, None)?)?;
     assert!(!events.contains(TOKEN), "the event log holds no live token");
     assert!(
@@ -25860,21 +26815,22 @@ async fn decision_receipt_lease_persists_terminal_turn_and_replays_exactly_once(
     );
     manager.store.save_turn(&turn)?;
     manager.register_runtime_usage_sink(&turn.id);
-    let lease = crate::cost_status::acquire_runtime_usage_lease(&turn.id).expect("origin lease");
-    crate::cost_status::finish_runtime_usage_owner(&turn.id);
+    let origin = manager
+        .accounting_origin_for_turn(&turn.id)
+        .expect("origin");
     let receipt = crate::cost_status::decision_receipt_fixture("raw-runtime-decision-id");
     let batch = crate::cost_status::RuntimeUsageBatch {
         decisions: vec![receipt.clone()],
         ..Default::default()
     };
     for _ in 0..2 {
-        crate::cost_status::report_runtime_usage_batch(
+        crate::cost_status::record_runtime_usage_batch(
             crate::cost_status::scope_token(),
-            Some(&turn.id),
+            Some(&origin),
             &batch,
         );
     }
-    drop(lease);
+    drop(origin);
     drop(manager);
     let restarted = test_manager(directory)?;
     let reloaded = restarted.store.load_turn(&turn.id)?;
@@ -26146,4 +27102,2022 @@ async fn profile_constitution_runtime_admission_binds_the_complete_snapshot_to_r
         .await?;
     wait_for_terminal_turn(&manager, &turn.id).await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_coalesces_rapid_idle_subagent_completions() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        2,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let (sub_a, sub_b) = {
+        let mut guard = subagent_manager.write().await;
+        let sub_a = guard.insert_test_terminal_direct_child("sub_a", &thread.workspace);
+        guard.assign_test_session_owner(&sub_a, &thread.id);
+        let sub_b = guard.insert_test_terminal_direct_child("sub_b", &thread.workspace);
+        guard.assign_test_session_owner(&sub_b, &thread.id);
+        (sub_a, sub_b)
+    };
+
+    for (index, agent_id) in [sub_a, sub_b].into_iter().enumerate() {
+        if index > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tx_event
+            .send(EngineEvent::AgentComplete {
+                display_name: Some("worker".into()),
+                owner_session_id: thread.id.clone(),
+                id: agent_id,
+                result: "done".into(),
+                outcome: Some(SubAgentStatus::Completed),
+                parent_run_id: None,
+                spawn_depth: Some(1),
+                continuable: Some(false),
+                usage: None,
+            })
+            .await?;
+    }
+
+    let op = tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_op.recv())
+        .await
+        .context("expected coalesced wake turn")?;
+    let Some(Op::SendMessage(spec)) = op else {
+        bail!("expected Op::SendMessage wake operation");
+    };
+    assert_eq!(
+        spec.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert_eq!(spec.content, "[runtime] Background work finished");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_wake_coalesced".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "processed coalesced subagents".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let turns =
+        wait_for_terminal_turn_count(&manager, &thread.id, 1, TURN_SETTLEMENT_DEADLOCK_TIMEOUT)
+            .await?;
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
+    let items = manager.store.list_items_for_turn(&turns[0].id)?;
+    let input_item = items
+        .iter()
+        .find(|item| item.kind == TurnItemKind::UserMessage)
+        .context("missing wake input item")?;
+    assert_eq!(
+        input_item.detail.as_deref(),
+        Some("[runtime] Background work finished")
+    );
+    assert_eq!(
+        input_item
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str),
+        Some("async_completion_wake")
+    );
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_skips_cancelled_and_archived_threads() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let archived_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut archived_harness = mock_engine_handle();
+    let shared_subagents = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        archived_thread.workspace.clone(),
+        2,
+    )));
+    archived_harness
+        .handle
+        .set_subagent_manager(shared_subagents.clone());
+    manager
+        .install_test_engine(&archived_thread.id, archived_harness.handle.clone())
+        .await?;
+
+    let cancelled_thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut cancelled_harness = mock_engine_handle();
+    cancelled_harness
+        .handle
+        .set_subagent_manager(shared_subagents.clone());
+    manager
+        .install_test_engine(&cancelled_thread.id, cancelled_harness.handle.clone())
+        .await?;
+
+    let (sub_archived, sub_cancelled) = {
+        let mut guard = shared_subagents.write().await;
+        let a = guard.insert_test_terminal_direct_child("sub_arch", &archived_thread.workspace);
+        guard.assign_test_session_owner(&a, &archived_thread.id);
+        let b = guard.insert_test_terminal_direct_child("sub_canc", &cancelled_thread.workspace);
+        guard.assign_test_session_owner(&b, &cancelled_thread.id);
+        (a, b)
+    };
+
+    manager
+        .update_thread(
+            &archived_thread.id,
+            UpdateThreadRequest {
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
+    cancelled_harness
+        .handle
+        .cancel_with_reason(crate::core::engine::CancelReason::User);
+
+    archived_harness
+        .tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: archived_thread.id.clone(),
+            id: sub_archived,
+            result: "done".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    cancelled_harness
+        .tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: cancelled_thread.id.clone(),
+            id: sub_cancelled,
+            result: "done".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    assert!(archived_harness.rx_op.try_recv().is_err());
+    assert!(cancelled_harness.rx_op.try_recv().is_err());
+    assert!(
+        manager
+            .store
+            .list_turns_for_thread(&archived_thread.id)?
+            .is_empty()
+    );
+    assert!(
+        manager
+            .store
+            .list_turns_for_thread(&cancelled_thread.id)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_waits_for_busy_turn_settlement_and_wakes_once() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        1,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let first_turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "primary user turn".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let Some(Op::SendMessage(first_spec)) =
+        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?
+    else {
+        bail!("missing Turn 1 operation");
+    };
+    assert_eq!(first_spec.content, "primary user turn");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_busy_1".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+
+    let sub_busy = {
+        let mut guard = subagent_manager.write().await;
+        let id = guard.insert_test_terminal_direct_child("sub_busy", &thread.workspace);
+        guard.assign_test_session_owner(&id, &thread.id);
+        id
+    };
+    tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: thread.id.clone(),
+            id: sub_busy,
+            result: "done while busy".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    manager.spawn_async_completion_wake(thread.id.clone());
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "finished primary user turn".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let settled_first = wait_for_terminal_turn(&manager, &first_turn.id).await?;
+    assert_eq!(settled_first.status, RuntimeTurnStatus::Completed);
+
+    let Some(Op::SendMessage(wake_spec)) =
+        tokio::time::timeout(TURN_SETTLEMENT_DEADLOCK_TIMEOUT, rx_op.recv()).await?
+    else {
+        bail!("missing deferred wake operation");
+    };
+    assert_eq!(
+        wake_spec.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert_eq!(wake_spec.content, "[runtime] Background work finished");
+
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_busy_2".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "handled deferred wake".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let turns =
+        wait_for_terminal_turn_count(&manager, &thread.id, 2, TURN_SETTLEMENT_DEADLOCK_TIMEOUT)
+            .await?;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
+    let second_items = manager.store.list_items_for_turn(&turns[1].id)?;
+    assert!(second_items.iter().any(|item| {
+        item.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str)
+            == Some("async_completion_wake")
+    }));
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(rx_op.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_skips_turn_that_already_drained_subagent() -> Result<()> {
+    use crate::tools::subagent::{SubAgentManager, SubAgentStatus};
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = mock_engine_handle();
+    let subagent_manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        thread.workspace.clone(),
+        1,
+    )));
+    harness
+        .handle
+        .set_subagent_manager(subagent_manager.clone());
+    manager
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "draining turn".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), rx_op.recv()).await?,
+        Some(Op::SendMessage(_))
+    ));
+    tx_event
+        .send(EngineEvent::TurnStarted {
+            previous_source: None,
+            turn_id: "engine_drain_1".into(),
+            created_at: Utc::now(),
+            route: None,
+            submission_id: None,
+        })
+        .await?;
+
+    let sub_drained = {
+        let mut guard = subagent_manager.write().await;
+        let id = guard.insert_test_terminal_direct_child("sub_drained", &thread.workspace);
+        guard.assign_test_session_owner(&id, &thread.id);
+        id
+    };
+    tx_event
+        .send(EngineEvent::AgentComplete {
+            display_name: None,
+            owner_session_id: thread.id.clone(),
+            id: sub_drained,
+            result: "already absorbed".into(),
+            outcome: Some(SubAgentStatus::Completed),
+            parent_run_id: None,
+            spawn_depth: Some(1),
+            continuable: Some(false),
+            usage: None,
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::status(
+            "Resuming turn with 1 late sub-agent completion(s)",
+        ))
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "already consumed child completion".to_string(),
+        })
+        .await?;
+    tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let settled = wait_for_terminal_turn(&manager, &turn.id).await?;
+    assert_eq!(settled.status, RuntimeTurnStatus::Completed);
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    assert!(rx_op.try_recv().is_err());
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_completion_wake_monitors_background_shell_after_turn_settlement() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    let shell_manager = manager
+        .thread_shell_manager(&thread.id, true)
+        .await?
+        .context("expected thread shell manager")?;
+
+    {
+        let mut guard = shell_manager
+            .lock()
+            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        guard.execute_with_options_env_for_session(
+            "sleep 0.12",
+            None,
+            5_000,
+            true,
+            None,
+            false,
+            None,
+            HashMap::new(),
+            &thread.id,
+        )?;
+    }
+
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+    let thread_id = thread.id.clone();
+    let shell_mgr_for_mock = shell_manager.clone();
+    tokio::spawn(async move {
+        let mut index = 0usize;
+        while let Some(op) = rx_op.recv().await {
+            if let Op::SendMessage(spec) = op {
+                index += 1;
+                if index > 1 {
+                    assert_eq!(
+                        spec.provenance,
+                        crate::core::ops::UserInputProvenance::Runtime
+                    );
+                    if let Ok(mut guard) = shell_mgr_for_mock.lock() {
+                        let _ = guard.drain_finished_jobs_with_evidence_for_session(&thread_id);
+                    }
+                }
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        previous_source: None,
+                        turn_id: format!("engine_shell_{index}"),
+                        created_at: Utc::now(),
+                        route: None,
+                        submission_id: None,
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: format!("shell step {index}"),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageComplete { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+                        turn_id: None,
+                        submission_id: None,
+                        compaction_id: None,
+                        usage: Usage::default(),
+                        parent_route_usage: Usage::default(),
+                        routed_usage_dropped_records: 0,
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+            }
+        }
+    });
+
+    let first_turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "launch background shell".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let settled_first = wait_for_terminal_turn(&manager, &first_turn.id).await?;
+    assert_eq!(settled_first.status, RuntimeTurnStatus::Completed);
+
+    let wake_deadline = Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
+    let wake_turn_id = loop {
+        let turns = manager.store.list_turns_for_thread(&thread.id)?;
+        if let Some(wake_turn) = turns.iter().find(|turn| turn.id != first_turn.id) {
+            break wake_turn.id.clone();
+        }
+        if Instant::now() > wake_deadline {
+            anyhow::bail!(
+                "expected async completion wake turn after first turn settlement: {turns:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let settled_second = wait_for_terminal_turn(&manager, &wake_turn_id).await?;
+    assert_eq!(settled_second.status, RuntimeTurnStatus::Completed);
+
+    let turns = manager.store.list_turns_for_thread(&thread.id)?;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].status, RuntimeTurnStatus::Completed);
+    assert_eq!(turns[1].status, RuntimeTurnStatus::Completed);
+    let second_items = manager.store.list_items_for_turn(&turns[1].id)?;
+    assert!(second_items.iter().any(|item| {
+        item.metadata
+            .as_ref()
+            .and_then(|meta| meta.get("input_provenance"))
+            .and_then(Value::as_str)
+            == Some("async_completion_wake")
+    }));
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(manager.store.list_turns_for_thread(&thread.id)?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn subagent_mailbox_file_writes_are_attributed_for_turn_undo() -> Result<()> {
+    use crate::tools::subagent::MailboxMessage;
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+    let thread_id = thread.id.clone();
+
+    tokio::spawn(async move {
+        while let Some(op) = rx_op.recv().await {
+            if let Op::SendMessage(_) = op {
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        previous_source: None,
+                        turn_id: "engine_delegated_1".into(),
+                        created_at: Utc::now(),
+                        route: None,
+                        submission_id: None,
+                    })
+                    .await;
+                for (seq, agent_id, paths) in [
+                    (
+                        1u64,
+                        "agent_a",
+                        vec!["agent_a_1.txt".to_string(), "agent_a_2.txt".to_string()],
+                    ),
+                    (
+                        2u64,
+                        "agent_b",
+                        vec!["agent_b_1.txt".to_string(), "agent_b_2.txt".to_string()],
+                    ),
+                    (
+                        3u64,
+                        "agent_c",
+                        vec![
+                            "agent_c_1.txt".to_string(),
+                            "agent_c_2.txt".to_string(),
+                            "agent_a_1.txt".to_string(),
+                        ],
+                    ),
+                ] {
+                    let _ = tx_event
+                        .send(EngineEvent::SubAgentMailbox {
+                            owner_session_id: thread_id.clone(),
+                            turn_id: "engine_delegated_1".into(),
+                            seq,
+                            message: MailboxMessage::FileWrites {
+                                agent_id: agent_id.into(),
+                                turn_seq: 1,
+                                paths,
+                            },
+                        })
+                        .await;
+                }
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: "three workers edited six files".into(),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageComplete { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+                        turn_id: None,
+                        submission_id: None,
+                        compaction_id: None,
+                        usage: Usage::default(),
+                        parent_route_usage: Usage::default(),
+                        routed_usage_dropped_records: 0,
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                    })
+                    .await;
+                break;
+            }
+        }
+    });
+
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "fan out edits".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let settled = wait_for_terminal_turn(&manager, &turn.id).await?;
+    assert_eq!(settled.status, RuntimeTurnStatus::Completed);
+    let expected = vec![
+        "agent_a_1.txt".to_string(),
+        "agent_a_2.txt".to_string(),
+        "agent_b_1.txt".to_string(),
+        "agent_b_2.txt".to_string(),
+        "agent_c_1.txt".to_string(),
+        "agent_c_2.txt".to_string(),
+    ];
+    assert_eq!(settled.delegated_writes, expected);
+    assert_eq!(
+        manager.store.load_turn(&turn.id)?.delegated_writes,
+        expected
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_auto_review_blocks_approve_owner_only_and_paused_posture() -> Result<()> {
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::runtime_threads::manager::{ApprovalOwnerRequired, ApprovalResponder};
+    use codewhale_execpolicy::ApprovalMode;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let unattached = test_manager(tmp.path().join("unattached"))?;
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            permission_posture: Some("auto-review".to_string()),
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(thread.permission_posture.as_deref(), Some("auto_review"));
+
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+
+    let receipt_1 = owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "Bash",
+            &serde_json::json!({ "action": "run", "command": "rm -rf /tmp/x" }),
+            Some("guardian"),
+            "dangerous shell command",
+            "denied",
+            true,
+        )
+        .await?
+        .context("approvable block must allocate receipt id")?;
+    let receipt_2 = owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "MCPTool",
+            &serde_json::json!({ "server": "ext", "tool": "drop_table" }),
+            Some("guardian"),
+            "external tool blocked",
+            "denied",
+            false,
+        )
+        .await?;
+    assert!(receipt_2.is_none());
+
+    let blocks = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].receipt_id, receipt_1);
+    assert!(blocks[0].approvable);
+    assert!(!blocks[0].approved);
+    assert_eq!(blocks[1].receipt_id, "ar-2");
+    assert!(!blocks[1].approvable);
+    let non_approvable_digest = blocks[1].call_digest.clone();
+
+    let unattached_err = unattached
+        .approve_auto_review_retry(
+            &thread.id,
+            &receipt_1,
+            Some(ApprovalResponder::Desktop),
+            None,
+        )
+        .await
+        .expect_err("unattached manager must reject retry approval");
+    assert!(
+        unattached_err.is::<ApprovalOwnerRequired>(),
+        "{unattached_err:#}"
+    );
+
+    for responder in [
+        None,
+        Some(ApprovalResponder::Phone),
+        Some(ApprovalResponder::Acp),
+    ] {
+        let err = owner_mgr
+            .approve_auto_review_retry(&thread.id, &receipt_1, responder, None)
+            .await
+            .expect_err("non-owner responder must be rejected");
+        assert!(err.is::<ApprovalOwnerRequired>(), "{err:#}");
+    }
+
+    let non_approvable_err = owner_mgr
+        .approve_auto_review_retry(
+            &thread.id,
+            &non_approvable_digest,
+            Some(ApprovalResponder::Desktop),
+            None,
+        )
+        .await
+        .expect_err("non-approvable block must fail");
+    assert!(
+        matches!(
+            non_approvable_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{non_approvable_err:#}"
+    );
+
+    let grant = owner_mgr
+        .approve_auto_review_retry(&thread.id, &receipt_1, Some(ApprovalResponder::Tui), None)
+        .await?;
+    assert_eq!(grant.receipt_id, receipt_1);
+    assert_eq!(grant.tool_name, "Bash");
+    assert!(!grant.call_digest.is_empty());
+
+    let dup_err = owner_mgr
+        .approve_auto_review_retry(&thread.id, &receipt_1, Some(ApprovalResponder::Tui), None)
+        .await
+        .expect_err("duplicate retry approval must fail");
+    assert!(
+        matches!(
+            dup_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{dup_err:#}"
+    );
+
+    let after_approve = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert!(after_approve[0].approved);
+
+    let events_after_approve = owner_mgr.events_since(&thread.id, None)?;
+    assert!(
+        events_after_approve
+            .iter()
+            .any(|event| event.event == "auto_review.retry_approved"),
+        "expected auto_review.retry_approved event"
+    );
+
+    let pause_turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "trigger pause".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+    harness
+        .tx_event
+        .send(EngineEvent::AutoReviewPaused {
+            reason: "3 consecutive blocked actions".to_string(),
+            approval_mode: ApprovalMode::Suggest,
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "switched to ask".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let pause_terminal = wait_for_terminal_turn(&owner_mgr, &pause_turn.id).await?;
+    assert_eq!(pause_terminal.status, RuntimeTurnStatus::Completed);
+
+    let events = owner_mgr.events_since(&thread.id, None)?;
+    let paused_ev = events
+        .iter()
+        .find(|event| event.event == "auto_review.paused")
+        .context("expected auto_review.paused event after EngineEvent::AutoReviewPaused")?;
+    assert_eq!(paused_ev.payload["permission_posture"], "ask");
+    assert_eq!(paused_ev.payload["reason"], "3 consecutive blocked actions");
+
+    let refreshed = owner_mgr.get_thread(&thread.id).await?;
+    assert_eq!(refreshed.permission_posture.as_deref(), Some("ask"));
+    assert!(!refreshed.auto_approve);
+
+    let after_pause_err = owner_mgr
+        .approve_auto_review_retry(&thread.id, "ar-2", Some(ApprovalResponder::Tui), None)
+        .await
+        .expect_err("retry approval must be rejected after pause moves out of auto_review");
+    assert!(
+        matches!(
+            after_pause_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::NotInAutoReview)
+        ),
+        "{after_pause_err:#}"
+    );
+
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    unattached.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_threads_syncs_child_auto_review_blocks_without_retry_grant() -> Result<()> {
+    use crate::core::engine::AutoReviewRetryApprovalError;
+    use crate::runtime_threads::manager::ApprovalResponder;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("ws");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            permission_posture: Some("auto-review".to_string()),
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+    let turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "delegate task".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+    owner_mgr
+        .register_auto_review_block_for_test(
+            &thread.id,
+            "subagent_return",
+            &serde_json::json!({"agent_id": "agent_child_rt"}),
+            Some("subagent-return"),
+            "unexpected network script",
+            "denied",
+            false,
+        )
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::ToolGateDecision {
+            agent_id: Some("agent_child_rt".to_string()),
+            tool_id: "subagent-return:agent_child_rt".to_string(),
+            tool_name: "subagent_return".to_string(),
+            gate: crate::core::events::ToolGate::AutoReviewGuardian,
+            decision: crate::core::events::ToolGateVerdict::Denied,
+            risk: Some("high".to_string()),
+            reviewer_model: Some("mock".to_string()),
+            reason: "unexpected network script".to_string(),
+            rule: Some("subagent-return".to_string()),
+            receipt_id: None,
+            call_digest: None,
+            action_summary: Some("return review (1 actions)".to_string()),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let terminal = wait_for_terminal_turn(&owner_mgr, &turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+    let synced_blocks = owner_mgr
+        .auto_review_blocks
+        .lock()
+        .get(&thread.id)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(synced_blocks.len(), 1);
+    let blocks = owner_mgr.list_auto_review_blocks(&thread.id, None).await?;
+    assert_eq!(blocks.len(), 1);
+    assert!(!blocks[0].approvable);
+    let approve_err = owner_mgr
+        .approve_auto_review_retry(
+            &thread.id,
+            &blocks[0].receipt_id,
+            Some(ApprovalResponder::Tui),
+            None,
+        )
+        .await
+        .expect_err("child return block cannot be approved for parent retry");
+    assert!(
+        matches!(
+            approve_err.downcast_ref::<AutoReviewRetryApprovalError>(),
+            Some(AutoReviewRetryApprovalError::InvalidTarget(_))
+        ),
+        "{approve_err:#}"
+    );
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_runtime_thread_turn_finishes_when_an_inherited_usage_receipt_is_missing() -> Result<()> {
+    let _cost_scope = crate::cost_status::test_scope();
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut present_owner = sample_turn(
+        &thread.id,
+        "turn_present_owner",
+        RuntimeTurnStatus::Completed,
+    );
+    present_owner.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    manager.store.save_turn(&present_owner)?;
+
+    let mut inherited_from_present = sample_turn(
+        &thread.id,
+        "turn_missing_specific_receipt",
+        RuntimeTurnStatus::Completed,
+    );
+    inherited_from_present.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    inherited_from_present.source_usage_origin_turn_id = Some("turn_present_owner".to_string());
+    let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some("https://api.deepseek.com/v1"),
+        Utc::now(),
+    );
+    let record_b = crate::cost_status::NativeUsageSource::capture(
+        "runtime:missing-receipt-key",
+        crate::cost_status::UsageSpendOwner::Primary,
+    )
+    .reported(
+        &route,
+        &Usage {
+            input_tokens: 5,
+            output_tokens: 2,
+            ..Usage::default()
+        },
+    );
+    let key_b = routed_usage_source_fingerprint(&record_b.source_id);
+    inherited_from_present
+        .routed_usage_source_ids
+        .push(key_b.clone());
+    inherited_from_present
+        .source_usage_records
+        .insert(key_b, record_b.persisted());
+    inherited_from_present.source_accounting = true;
+    manager.store.save_turn(&inherited_from_present)?;
+
+    let mut inherited_turn = sample_turn(
+        &thread.id,
+        "turn_missing_original_receipt",
+        RuntimeTurnStatus::Completed,
+    );
+    inherited_turn.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+    inherited_turn.source_usage_origin_turn_id = Some("turn_missing_owner".to_string());
+    let record = crate::cost_status::NativeUsageSource::capture(
+        "runtime:missing-inherited-source",
+        crate::cost_status::UsageSpendOwner::Primary,
+    )
+    .reported(
+        &route,
+        &Usage {
+            input_tokens: 9,
+            output_tokens: 3,
+            ..Usage::default()
+        },
+    );
+    let key = routed_usage_source_fingerprint(&record.source_id);
+    inherited_turn.routed_usage_source_ids.push(key.clone());
+    inherited_turn
+        .source_usage_records
+        .insert(key, record.persisted());
+    inherited_turn.source_accounting = true;
+    manager.store.save_turn(&inherited_turn)?;
+
+    let summary = manager
+        .aggregate_usage(None, None, UsageGroupBy::Thread)
+        .await?;
+    assert_eq!(summary.totals.input_tokens, 14);
+    assert_eq!(summary.totals.output_tokens, 5);
+
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let live_turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "finish cleanly with missing inherited usage".to_string(),
+                ..StartTurnRequest::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage {
+                input_tokens: 4,
+                output_tokens: 2,
+                ..Usage::default()
+            },
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    let terminal = wait_for_terminal_turn(&manager, &live_turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+    drop(harness);
+    manager.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn plugin_changed_emits_status_item_and_thread_plugin_changed_event() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace));
+    let owner_mgr = RuntimeThreadManager::open_owner_host(
+        Config::default(),
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        plugins,
+        None,
+        None,
+    )?;
+
+    let thread = owner_mgr
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace),
+            ..Default::default()
+        })
+        .await?;
+
+    let mut harness = mock_engine_handle();
+    owner_mgr
+        .install_test_engine(&thread.id, harness.handle.clone())
+        .await?;
+
+    let turn = owner_mgr
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "install plugin".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), harness.rx_op.recv())
+        .await?
+        .context("expected SendMessage op")?;
+
+    harness
+        .tx_event
+        .send(EngineEvent::PluginChanged {
+            plugin: "alpha-tool".to_string(),
+            action: "installed".to_string(),
+            content_hash: Some("sha256:abc123".to_string()),
+            decided_by: Some("approved by you".to_string()),
+            services: vec!["network".to_string()],
+            tools_added: vec!["alpha_echo".to_string()],
+            tools_removed: Vec::new(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "done".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
+            usage: Usage::default(),
+            parent_route_usage: Usage::default(),
+            routed_usage_dropped_records: 0,
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let terminal = wait_for_terminal_turn(&owner_mgr, &turn.id).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+
+    let events = owner_mgr.events_since(&thread.id, None)?;
+    let plugin_ev = events
+        .iter()
+        .find(|event| event.event == "thread.plugin_changed")
+        .context("expected thread.plugin_changed runtime event")?;
+    assert_eq!(plugin_ev.payload["plugin"], "alpha-tool");
+    assert_eq!(plugin_ev.payload["action"], "installed");
+    assert_eq!(plugin_ev.payload["content_hash"], "sha256:abc123");
+    assert_eq!(plugin_ev.payload["decided_by"], "approved by you");
+    assert_eq!(plugin_ev.payload["services"], json!(["network"]));
+    assert_eq!(plugin_ev.payload["tools_added"], json!(["alpha_echo"]));
+    assert_eq!(plugin_ev.payload["tools_removed"], json!([]));
+
+    let status_ev = events
+        .iter()
+        .filter(|event| event.event == "item.completed")
+        .find_map(|event| {
+            let item: TurnItemRecord =
+                serde_json::from_value(event.payload.get("item")?.clone()).ok()?;
+            (item.kind == TurnItemKind::Status
+                && item
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("plugin_changed"))
+                    .is_some())
+            .then_some(item)
+        })
+        .context("expected completed status item for plugin_changed")?;
+    assert_eq!(status_ev.status, TurnItemLifecycleStatus::Completed);
+    assert_eq!(
+        status_ev.metadata.as_ref().unwrap()["plugin_changed"]["plugin"],
+        "alpha-tool"
+    );
+
+    drop(harness);
+    owner_mgr.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_remember_scope_saves_exact_repo_rule_and_live_threads_follow_it() -> Result<()> {
+    use crate::core::engine::{ToolAskRuleDecision, exec_shell_ask_rule_decision_for_policy};
+    use crate::runtime_threads::manager::{
+        ApprovalOwnerRequired, ApprovalResponder, PermissionRulesListing, StalePermissionToken,
+        StandingRuleIneligible,
+    };
+    use codewhale_execpolicy::ToolAskRule;
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home)?;
+    let mut config = Config::default();
+    config.loaded_config_path = Some(home.join("config.toml"));
+    let owner = RuntimeThreadManager::open_owner_host(
+        config,
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
+        None,
+        None,
+    )?;
+    let request = || CreateThreadRequest {
+        workspace: Some(workspace.clone()),
+        ..Default::default()
+    };
+    let thread_a = owner.create_thread(request()).await?;
+    let thread_b = owner.create_thread(request()).await?;
+    let mut harness = install_mock_engine(&owner, &thread_a.id).await;
+    let _harness_b = install_mock_engine(&owner, &thread_b.id).await;
+    owner
+        .active
+        .lock()
+        .await
+        .engines
+        .get_mut(&thread_b.id)
+        .context("thread b engine")?
+        .engine
+        .set_exec_policy(codewhale_execpolicy::ExecPolicyEngine::default());
+    let thread_workspace = owner.store.load_thread(&thread_a.id)?.workspace;
+    let cargo_test = json!({ "command": "cargo test" });
+    let live_decisions = |manager: &RuntimeThreadManager| {
+        let manager_engines = manager.active.try_lock().expect("active lock");
+        [&thread_a.id, &thread_b.id]
+            .into_iter()
+            .map(|id| {
+                exec_shell_ask_rule_decision_for_policy(
+                    manager_engines.engines[id].engine.exec_policy(),
+                    "exec_shell",
+                    &cargo_test,
+                    &thread_workspace,
+                    ApprovalMode::Suggest,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(live_decisions(&owner), vec![None, None]);
+
+    owner
+        .start_turn(
+            &thread_a.id,
+            StartTurnRequest {
+                prompt: "run the tests".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    let ask = |id: &str, tool_name: &str, input: serde_json::Value| EngineEvent::ApprovalRequired {
+        publication: None,
+        approval_key: crate::tools::approval_cache::build_approval_key(tool_name, &input).0,
+        approval_grouping_key: crate::tools::approval_cache::build_approval_grouping_key(
+            tool_name, &input,
+        )
+        .0,
+        id: id.to_string(),
+        tool_name: tool_name.to_string(),
+        description: "Run a shell command".to_string(),
+        input,
+        intent_summary: None,
+        approval_force_prompt: false,
+    };
+    let permissions_path = home.join("permissions.toml");
+
+    for (call, tool_name, input) in [
+        (
+            "call_unsafe",
+            "exec_shell",
+            json!({ "command": "rm -rf build" }),
+        ),
+        (
+            "call_web",
+            "web.run",
+            json!({ "search_query": [{ "q": "espresso" }] }),
+        ),
+    ] {
+        harness.tx_event.send(ask(call, tool_name, input)).await?;
+        let approval = await_approval_identity(&owner, &thread_a.id, call).await?;
+        let refused = owner
+            .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+            .await
+            .expect_err("ineligible request must not save a rule");
+        assert!(
+            refused.is::<StandingRuleIneligible>(),
+            "{call}: {refused:#}"
+        );
+        assert!(!permissions_path.exists(), "{call} wrote a rule");
+        assert!(
+            owner
+                .deliver_external_approval(
+                    &approval,
+                    ExternalApprovalDecision::Deny { remember: false }
+                )
+                .await?,
+            "{call} stays answerable after the refusal"
+        );
+        assert_eq!(
+            harness.recv_approval_event().await,
+            Some(MockApprovalEvent::Denied {
+                id: call.to_string()
+            })
+        );
+    }
+
+    harness
+        .tx_event
+        .send(ask("call_ok", "exec_shell", cargo_test.clone()))
+        .await?;
+    let approval = await_approval_identity(&owner, &thread_a.id, "call_ok").await?;
+    let not_owner = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Phone))
+        .await
+        .expect_err("a phone cannot save a standing rule");
+    assert!(not_owner.is::<ApprovalOwnerRequired>());
+    assert!(!permissions_path.exists());
+
+    let (delivered, rules) = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+        .await?
+        .context("approval was pending")?;
+    assert!(delivered);
+    let expected = vec![
+        ToolAskRule::exec_shell("cargo test").into_exact_workspace_allow(
+            codewhale_execpolicy::normalize_workspace_scope(&thread_workspace.to_string_lossy())
+                .context("workspace scope")?,
+        ),
+    ];
+    assert_eq!(rules, expected);
+    assert_eq!(
+        harness.recv_approval_event().await,
+        Some(MockApprovalEvent::Approved {
+            id: "call_ok".to_string()
+        })
+    );
+    let snapshot = codewhale_config::load_permissions_snapshot(Some(home.join("config.toml")))?;
+    assert_eq!(snapshot.rules(), expected.as_slice());
+    assert!(
+        owner
+            .get_thread_detail(&thread_a.id)
+            .await?
+            .approval_grants
+            .is_empty(),
+        "a workspace rule is not also a thread grant"
+    );
+    let decided = owner
+        .events_since(&thread_a.id, None)?
+        .into_iter()
+        .find(|event| {
+            event.event == "approval.decided" && event.payload["tool_call_id"] == "call_ok"
+        })
+        .context("approval.decided for call_ok")?;
+    assert_eq!(decided.payload["remember"], true);
+    assert_eq!(decided.payload["remember_scope"], "workspace");
+    assert_eq!(decided.payload["standing_rules"], json!(expected));
+    let events = owner.events_since(&thread_a.id, None)?;
+    let required = events
+        .iter()
+        .find(|event| {
+            event.event == "approval.required" && event.payload["tool_call_id"] == "call_ok"
+        })
+        .context("approval.required for call_ok")?;
+    assert_eq!(
+        required.payload["standing_rule_candidates"],
+        json!(expected),
+        "the prompt shows the exact rule a save would write"
+    );
+    let saved = events
+        .iter()
+        .find(|event| event.event == "permission.rules_saved")
+        .context("permission.rules_saved")?;
+    assert_eq!(saved.payload["approval_id"], json!(approval));
+    assert_eq!(saved.payload["standing_rules"], json!(expected));
+    assert_eq!(
+        live_decisions(&owner),
+        vec![
+            Some(ToolAskRuleDecision::Allow),
+            Some(ToolAskRuleDecision::Allow)
+        ],
+        "both live threads in the workspace allow the identical call"
+    );
+    assert_ne!(
+        exec_shell_ask_rule_decision_for_policy(
+            &owner.read_config().exec_policy_engine,
+            "exec_shell",
+            &json!({ "command": "cargo test --release" }),
+            &thread_workspace,
+            ApprovalMode::Suggest,
+        ),
+        Some(ToolAskRuleDecision::Allow),
+        "the rule is exact"
+    );
+
+    let PermissionRulesListing::Ok { exists, rules, .. } = owner.list_permission_rules().await
+    else {
+        panic!("permission rules should be readable");
+    };
+    assert!(exists);
+    assert_eq!(rules.len(), 1);
+    let token = rules[0].removal_token.clone();
+    let not_owner = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Phone))
+        .await
+        .expect_err("a phone cannot remove a rule");
+    assert!(not_owner.is::<ApprovalOwnerRequired>());
+    let removed = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Desktop))
+        .await?;
+    assert_eq!(removed, expected[0]);
+    let stale = owner
+        .remove_permission_rule_by_token(&token, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("a used token is stale");
+    assert!(stale.is::<StalePermissionToken>());
+    assert_eq!(
+        live_decisions(&owner),
+        vec![None, None],
+        "revoking takes effect on the next matching request in live threads"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn standing_rule_refuses_sub_agent_approvals_and_holds_other_answers_while_claimed()
+-> Result<()> {
+    use crate::runtime_threads::manager::{
+        ApprovalResponder, PermissionRulesUnavailable, StandingRuleIneligible,
+    };
+
+    let tmp = tempfile::tempdir()?;
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(home.join("permissions.toml"))?;
+    let mut config = Config::default();
+    config.loaded_config_path = Some(home.join("config.toml"));
+    let owner = RuntimeThreadManager::open_owner_host(
+        config,
+        workspace.clone(),
+        test_manager_config(tmp.path().join("owner")),
+        Arc::new(codewhale_plugins::PluginRegistry::empty(&workspace)),
+        None,
+        None,
+    )?;
+    let thread = owner
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let write = json!({ "path": "src/lib.rs", "content": "fn main() {}" });
+
+    let (child, _child_rx) = owner.register_pending_tool_call_approval_for_test(
+        &thread.id,
+        "agent:worker:approval:0b6c",
+        "write_file",
+        write.clone(),
+    );
+    let refused = owner
+        .deliver_approval_with_standing_rule(&child, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("a sub-agent approval must not save a rule");
+    assert!(refused.is::<StandingRuleIneligible>(), "{refused:#}");
+
+    let (approval, answer) = owner.register_pending_tool_call_approval_for_test(
+        &thread.id,
+        "call-write",
+        "write_file",
+        write,
+    );
+    owner.standing_rule_claimed_for_test(&approval, true);
+    for decision in [
+        ExternalApprovalDecision::Allow { remember: false },
+        ExternalApprovalDecision::Deny { remember: false },
+    ] {
+        let conflict = owner
+            .deliver_external_approval(&approval, decision)
+            .await
+            .expect_err("an answer during a standing-rule save must conflict, not join");
+        assert!(
+            conflict
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists),
+            "{conflict:#}"
+        );
+    }
+    owner.standing_rule_claimed_for_test(&approval, false);
+
+    let failed = owner
+        .deliver_approval_with_standing_rule(&approval, Some(ApprovalResponder::Desktop))
+        .await
+        .expect_err("an unreadable permissions file must refuse the save");
+    assert!(failed.is::<PermissionRulesUnavailable>(), "{failed:#}");
+    assert!(
+        owner
+            .deliver_external_approval(
+                &approval,
+                ExternalApprovalDecision::Allow { remember: false }
+            )
+            .await?,
+        "a failed save releases the claim, so allow-once still answers"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), answer).await??,
+        ExternalApprovalDecision::Allow { remember: false }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_fork_does_not_block_unrelated_thread_restore_guard() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let thread_b = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let (guard_b, record_b) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread_b.id),
+    )
+    .await
+    .expect("unrelated thread_restore_guard must not wait on another thread's fork preparation")?;
+    assert_eq!(record_b.id, thread_b.id);
+    drop(guard_b);
+
+    let _ = resume.send(());
+    let (forked, original_text, _, _) = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should complete")??;
+    assert_eq!(
+        forked.parent_thread_id.as_deref(),
+        Some(thread_a.id.as_str())
+    );
+    assert_eq!(original_text.as_deref(), Some("second"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn named_turn_fork_rejects_commit_when_source_thread_changes_mid_prepare() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread_a = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+
+    let mut turn_ids = Vec::new();
+    for (idx, prompt) in ["first", "second"].iter().enumerate() {
+        let mut turn = sample_turn(
+            &thread_a.id,
+            &format!("turn_cw8227_race_{idx}"),
+            RuntimeTurnStatus::Completed,
+        );
+        let item_id = format!("item_cw8227_race_{idx}");
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn.id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: (*prompt).to_string(),
+            detail: Some((*prompt).to_string()),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            artifacts: Vec::new(),
+            started_at: Some(turn.created_at),
+            ended_at: Some(turn.created_at),
+        };
+        turn.input_summary = (*prompt).to_string();
+        turn.item_ids = vec![item_id];
+        manager.store.save_item(&item)?;
+        manager.store.save_turn(&turn)?;
+        turn_ids.push(turn.id);
+    }
+    let mut updated_a = manager.store.load_thread(&thread_a.id)?;
+    updated_a.latest_turn_id = turn_ids.last().cloned();
+    manager.store.save_thread(&updated_a)?;
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+
+    let fork_manager = manager.clone();
+    let fork_thread_id = thread_a.id.clone();
+    let fork_turn_id = turn_ids[1].clone();
+    let fork_sessions_dir = manager.sessions_dir().to_path_buf();
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_dropping_user_turn_in_sessions_dir(
+                &fork_thread_id,
+                &fork_turn_id,
+                &fork_sessions_dir,
+            )
+            .await
+    });
+
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await
+        .expect("fork should reach preparation pause")
+        .expect("fork hook sender should remain open");
+
+    let mut mutated_a = manager.store.load_thread(&thread_a.id)?;
+    mutated_a.latest_turn_id = Some("turn_concurrent_mutation".to_string());
+    mutated_a.updated_at = Utc::now() + chrono::Duration::seconds(1);
+    manager.store.save_thread(&mutated_a)?;
+
+    let _ = resume.send(());
+    let err = tokio::time::timeout(Duration::from_secs(5), fork_task)
+        .await
+        .expect("fork task should settle")?
+        .expect_err("fork must fail closed when source thread changed during preparation");
+    assert!(
+        format!("{err:#}").contains("source thread changed while preparing fork"),
+        "{err:#}"
+    );
+    let threads = manager
+        .list_threads(ThreadListFilter::IncludeArchived, None)
+        .await?;
+    assert_eq!(threads.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retry_captures_admitted_prompt_and_images_and_rejects_changed_source() -> Result<()> {
+    use crate::image_attach::test_support::runtime_image_fixture;
+
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let image = runtime_image_fixture(17);
+    let messages: Vec<Message> = serde_json::from_value(json!([
+        {"role":"user","content":[{"type":"text","text":"retry this"},
+            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}", image.data_base64)}}]},
+        {"role":"assistant","content":[{"type":"text","text":"original answer"}]}
+    ]))?;
+    manager
+        .seed_thread_from_messages(&thread.id, &messages)
+        .await?;
+    let (admission, source) = manager.thread_restore_guard(&thread.id).await?;
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    *manager.fork_prepare_test_hook.lock() = Some(hook_tx);
+    let runtime = manager.clone();
+    let id = thread.id.clone();
+    let mut task = tokio::spawn(async move {
+        runtime
+            .prepare_retry_in_sessions_dir(&id, 0, runtime.sessions_dir())
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut task)
+            .await
+            .is_err()
+    );
+    assert!(hook_rx.try_recv().is_err());
+    drop(admission);
+    let resume = tokio::time::timeout(Duration::from_secs(5), hook_rx.recv())
+        .await?
+        .context("retry preparation hook closed")?;
+    let (admission, mut current) = tokio::time::timeout(
+        Duration::from_secs(1),
+        manager.thread_restore_guard(&thread.id),
+    )
+    .await??;
+    current.latest_turn_id = Some("turn_concurrently_completed".to_string());
+    current.updated_at = source.updated_at + chrono::Duration::seconds(1);
+    manager.store.save_thread(&current)?;
+    drop(admission);
+    let _ = resume.send(());
+    let prepared = tokio::time::timeout(Duration::from_secs(5), task).await???;
+    assert_eq!(prepared.dropped_turn_id, source.latest_turn_id);
+    assert_eq!(prepared.original_user_text(), Some("retry this"));
+    assert_eq!(prepared.original_images.len(), 1);
+    assert_eq!(prepared.original_images[0].data_base64, image.data_base64);
+    let error = manager
+        .publish_prepared_fork_guarded(prepared)
+        .await
+        .expect_err("retry must not publish after concurrent source completion");
+    assert!(
+        format!("{error:#}").contains("source thread changed while preparing fork"),
+        "{error:#}"
+    );
+    assert_eq!(
+        manager
+            .list_threads(ThreadListFilter::IncludeArchived, None)
+            .await?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+/// The whole-directory read, measured against a real store.
+///
+/// Ignored because it needs one: point `CODEWHALE_BENCH_STORE` at a runtime
+/// store root and run
+///
+/// ```text
+/// CODEWHALE_BENCH_STORE=/path/to/runtime \
+///   cargo test -p codewhale-engine --lib -- \
+///   runtime_threads::tests::bench_item_index_against_a_real_store --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+#[allow(clippy::print_stdout)]
+fn bench_item_index_against_a_real_store() {
+    let root = PathBuf::from(
+        std::env::var("CODEWHALE_BENCH_STORE").expect("CODEWHALE_BENCH_STORE names a store"),
+    );
+    let store = RuntimeThreadStore::open(root).expect("open store");
+    let started = Instant::now();
+    store.cache_item_index().expect("build the index");
+    let elapsed = started.elapsed();
+    let (items, turns) = {
+        let index = store.item_index.read();
+        let by_turn = index.by_turn.as_ref().expect("index published");
+        (by_turn.values().map(Vec::len).sum::<usize>(), by_turn.len())
+    };
+    println!("[bench] index={elapsed:?} items={items} turns={turns}");
+}
+
+#[test]
+fn sanitize_agent_mail_text_bounds_oversized_tokens_and_redacts_case_insensitively() {
+    let huge_ascii = "A".repeat(256 * 1024);
+    let capped = sanitize_agent_mail_text(&huge_ascii, 2048);
+    assert_eq!(capped.len(), 2048);
+    assert!(capped.bytes().all(|b| b == b'A'));
+
+    let huge_multibyte = "中".repeat(1024);
+    let capped_utf8 = sanitize_agent_mail_text(&huge_multibyte, 10);
+    assert_eq!(capped_utf8, "中中中");
+
+    assert!(agent_mail_token_is_credential("SK-123456"));
+    assert!(agent_mail_token_is_credential("(GitHub_Pat_abc)"));
+    assert!(agent_mail_token_is_credential("MY-API-KEY=secret"));
+    assert!(agent_mail_token_is_credential("Db-Passwd:hunter2"));
+    assert!(agent_mail_token_is_credential("auth_Token=xyz"));
+    assert!(!agent_mail_token_is_credential("hello=world"));
+    assert!(!agent_mail_token_is_credential("密钥=123"));
+
+    let redacted = sanitize_agent_mail_text(
+        "Use BEARER topsecret and Proxy-Authorization: nextval at https://example.com /etc/hosts",
+        2048,
+    );
+    assert_eq!(
+        redacted,
+        "Use [redacted-credential] [redacted-credential] and [redacted-credential] [redacted-credential] at [redacted-url] [redacted-path]"
+    );
+
+    assert!(agent_mail_looks_like_raw_transcript(
+        "prefix <TURN_META> body"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "{\"Role\": \"Assistant\"}"
+    ));
+    assert!(agent_mail_looks_like_raw_transcript(
+        "summary\n   TOOL_RESULT: ok"
+    ));
+    assert!(!agent_mail_looks_like_raw_transcript(
+        "Finished the bounded handoff cleanly."
+    ));
 }

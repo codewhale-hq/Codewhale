@@ -34,7 +34,6 @@ const PATH_PLACEHOLDER: &str = "<path>";
 /// Placeholder substituted for a removed secret-shaped token.
 const SECRET_PLACEHOLDER: &str = "<redacted>";
 
-/// Case-insensitive substrings that mark an identifier as secret-bearing.
 const SECRET_NAME_MARKERS: &[&str] = &[
     "api_key",
     "apikey",
@@ -48,26 +47,6 @@ const SECRET_NAME_MARKERS: &[&str] = &[
     "access_key",
     "private_key",
     "session_key",
-];
-
-/// Prefixes that are themselves a credential, whatever they are attached to.
-///
-/// Every entry here must be *unambiguously* a credential prefix. A prefix that
-/// is also an ordinary English word — `bearer`, `asia` — belongs nowhere near
-/// this list: it would redact prose and, worse, would report a `secret`
-/// redaction kind on a receipt that removed nothing but a word. The AWS key ids
-/// that motivated `asia`/`akia` are handled by
-/// [`looks_like_aws_access_key`], which requires the full shape.
-const SECRET_VALUE_PREFIXES: &[&str] = &[
-    "sk-",
-    "sk_",
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "github_pat_",
-    "xoxb-",
-    "xoxp-",
-    "xapp-",
 ];
 
 /// HTTP authorization scheme keywords, in their canonical HTTP capitalization.
@@ -98,15 +77,6 @@ const AUTH_SCHEMES: &[&str] = &["Bearer", "Basic", "Digest", "Token"];
 /// syntax by shape; ordinary prose says "bearer", and lowercase never arms on
 /// its own.
 const SELF_EVIDENT_AUTH_SCHEME: &str = "Bearer";
-
-/// AWS access-key-id prefixes. Matched case-sensitively and only against the
-/// full 20-character shape, so the word `Asia` is prose and `ASIA…` is a key.
-const AWS_KEY_ID_PREFIXES: &[&str] = &[
-    "AKIA", "ASIA", "AGPA", "AIDA", "AROA", "ANPA", "ANVA", "ASCA", "ABIA", "ACCA",
-];
-
-/// Minimum length of an AWS access key id (`AKIA` + 16).
-const AWS_KEY_ID_LEN: usize = 20;
 
 /// Minimum length before a bare token is treated as a credential value.
 const CREDENTIAL_VALUE_MIN_LEN: usize = 16;
@@ -208,6 +178,109 @@ impl TokenOutcome {
             arm: CredentialArm::None,
         }
     }
+
+    fn replace_and_arm(text: String, arm: CredentialArm) -> Self {
+        Self {
+            text: Some(text),
+            arm,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerMode {
+    Array,
+    Object,
+    TupleOrMap,
+}
+
+impl ContainerMode {
+    fn from_open(open: char) -> Option<Self> {
+        match open {
+            '[' => Some(Self::Array),
+            '{' => Some(Self::Object),
+            '(' => Some(Self::TupleOrMap),
+            _ => None,
+        }
+    }
+
+    const fn close(self) -> char {
+        match self {
+            Self::Array => ']',
+            Self::Object => '}',
+            Self::TupleOrMap => ')',
+        }
+    }
+
+    const fn accepts_object_keys(self) -> bool {
+        matches!(self, Self::Object | Self::TupleOrMap)
+    }
+
+    const fn expects_values(self) -> bool {
+        matches!(self, Self::Array | Self::TupleOrMap)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ArmedContainer {
+    mode: ContainerMode,
+    arm: CredentialArm,
+}
+
+const MAX_CONTAINER_DEPTH: usize = 64;
+const MAX_NESTED_ASSIGNMENT_DEPTH: u8 = 3;
+
+fn push_container_if_opening(
+    containers: &mut Vec<ArmedContainer>,
+    open: char,
+    arm: CredentialArm,
+) -> CredentialArm {
+    let Some(mode) = ContainerMode::from_open(open) else {
+        return arm;
+    };
+    if containers.len() < MAX_CONTAINER_DEPTH {
+        containers.push(ArmedContainer { mode, arm });
+        if mode.expects_values() {
+            arm
+        } else {
+            CredentialArm::None
+        }
+    } else {
+        arm
+    }
+}
+
+fn pop_containers_for(containers: &mut Vec<ArmedContainer>, text: &str) {
+    for ch in text.chars() {
+        if matches!(ch, ']' | '}' | ')')
+            && let Some(pos) = containers.iter().rposition(|c| c.mode.close() == ch)
+        {
+            containers.truncate(pos);
+        }
+    }
+}
+
+fn container_restore_arm(containers: &[ArmedContainer]) -> CredentialArm {
+    containers
+        .last()
+        .filter(|c| c.mode.expects_values())
+        .map_or(CredentialArm::None, |c| c.arm)
+}
+
+fn is_container_object_key(token: &str) -> bool {
+    let Some(key) = token.strip_suffix(':') else {
+        return false;
+    };
+    !key.is_empty()
+        && !key.ends_with("://")
+        && !key.contains(['=', ':'])
+        && !token.contains(STRUCTURAL_DELIMITERS)
+        && !codewhale_sanitize::redact::contains_bare_secret_token(key)
+}
+
+fn trailing_secret_suffix(token: &str) -> (&str, &str) {
+    let head = token.trim_end_matches([',', ']', '}', ')']);
+    (head, &token[head.len()..])
 }
 
 /// Redact absolute paths and secret-shaped tokens from `input`.
@@ -224,16 +297,108 @@ impl TokenOutcome {
 #[must_use]
 pub fn redact_for_disclosure(input: &str) -> Redaction {
     let mut kinds = BTreeSet::new();
-    let tokens: Vec<&str> = input.split(' ').collect();
+    let masked_keys = codewhale_sanitize::redact::mask_private_keys(input, SECRET_PLACEHOLDER);
+    if masked_keys.is_some() {
+        kinds.insert(REDACTION_SECRET.to_string());
+    }
+    let input = masked_keys.as_deref().unwrap_or(input);
+    let (tokens, seps) = split_whitespace_preserving(input);
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut arm = CredentialArm::None;
+    let mut containers: Vec<ArmedContainer> = Vec::new();
+    let mut pending_name: Option<(&str, CredentialArm)> = None;
+    let mut index = 0;
 
-    for (index, token) in tokens.iter().enumerate() {
-        if token.is_empty() {
-            out.push(String::new());
-            continue;
+    while index < tokens.len() {
+        let mut token = tokens[index];
+        if seps[index].contains(['\n', '\r']) {
+            pending_name = None;
+        }
+        let name = pending_name.take();
+        if !arm.is_armed()
+            && let Some(container) = containers.last().copied()
+        {
+            if token
+                .chars()
+                .all(|c| matches!(c, ']' | '}' | ')' | ',' | ';' | '"' | '\''))
+            {
+                pop_containers_for(&mut containers, token);
+                arm = container_restore_arm(&containers);
+                out.push(token.to_string());
+                index += 1;
+                continue;
+            }
+            if container.mode.accepts_object_keys() && is_container_object_key(token) {
+                arm = container.arm;
+                out.push(token.to_string());
+                index += 1;
+                continue;
+            }
         }
         if arm.is_armed() {
+            let lead_end = token
+                .find(|c: char| !matches!(c, '[' | '{' | '('))
+                .unwrap_or(token.len());
+            let (lead_brackets, rest_token) = token.split_at(lead_end);
+            let mut pushed_prefix = "";
+            if !lead_brackets.is_empty()
+                && rest_token
+                    .chars()
+                    .all(|c| matches!(c, '[' | '{' | '(' | '"' | '\''))
+            {
+                for ch in lead_brackets.chars() {
+                    if ContainerMode::from_open(ch).is_some() {
+                        arm = push_container_if_opening(&mut containers, ch, arm);
+                    }
+                }
+                out.push(token.to_string());
+                index += 1;
+                continue;
+            }
+            if let Some(last_open) = lead_brackets
+                .chars()
+                .rev()
+                .find_map(ContainerMode::from_open)
+            {
+                let close = last_open.close();
+                if !rest_token.contains(close) {
+                    for ch in lead_brackets.chars() {
+                        if ContainerMode::from_open(ch).is_some() {
+                            arm = push_container_if_opening(&mut containers, ch, arm);
+                        }
+                    }
+                    pushed_prefix = lead_brackets;
+                    token = rest_token;
+                    if let Some(container) = containers.last().copied()
+                        && container.mode.accepts_object_keys()
+                        && is_container_object_key(token)
+                    {
+                        arm = container.arm;
+                        out.push(format!("{pushed_prefix}{token}"));
+                        index += 1;
+                        continue;
+                    }
+                }
+            }
+            if token
+                .chars()
+                .all(|c| matches!(c, ']' | '}' | ')' | ',' | ';' | '"' | '\''))
+            {
+                pop_containers_for(&mut containers, token);
+                arm = container_restore_arm(&containers);
+                out.push(format!("{pushed_prefix}{token}"));
+                index += 1;
+                continue;
+            }
+            if let Some(container) = containers.last().copied()
+                && container.mode.accepts_object_keys()
+                && is_container_object_key(token)
+            {
+                arm = container.arm;
+                out.push(format!("{pushed_prefix}{token}"));
+                index += 1;
+                continue;
+            }
             // `Authorization: Bearer <token>` — the scheme keyword is not the
             // secret, so it survives and the arming carries past it. A
             // canonically capitalized keyword also *upgrades* the arming: the
@@ -243,7 +408,8 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
                 if is_canonical_auth_scheme(token) {
                     arm = CredentialArm::Certain;
                 }
-                out.push((*token).to_string());
+                out.push(format!("{pushed_prefix}{token}"));
+                index += 1;
                 continue;
             }
             // Weak arming still defers to shape, so an `authorization:` that
@@ -251,49 +417,275 @@ pub fn redact_for_disclosure(input: &str) -> Redaction {
             // intact — and leaves the receipt honest about having removed
             // nothing.
             if arm == CredentialArm::Certain || looks_like_credential_value(token) {
-                kinds.insert(REDACTION_SECRET.to_string());
-                out.push(SECRET_PLACEHOLDER.to_string());
-                arm = CredentialArm::None;
-                continue;
+                let (value_part, suffix) = trailing_secret_suffix(token);
+                if !value_part.is_empty() {
+                    kinds.insert(REDACTION_SECRET.to_string());
+                    pop_containers_for(&mut containers, suffix);
+                    arm = container_restore_arm(&containers);
+                    out.push(format!("{pushed_prefix}{SECRET_PLACEHOLDER}{suffix}"));
+                    index += 1;
+                    continue;
+                }
             }
             // Fall through: the token is judged on its own merits, and the
             // arming state is replaced wholesale by `redact_token` below.
         }
 
-        let next = tokens[index + 1..]
-            .iter()
-            .copied()
-            .find(|candidate| !candidate.is_empty());
-        let outcome = redact_token(token, next, &mut kinds);
+        if let Some((name, sensitivity)) = name
+            && name.starts_with('-')
+            && !token.starts_with(['-', '=', ':'])
+            && (sensitivity == CredentialArm::Certain || looks_like_credential_value(token))
+        {
+            kinds.insert(REDACTION_SECRET.to_string());
+            out.push(SECRET_PLACEHOLDER.to_string());
+            index += 1;
+            continue;
+        }
+
+        if let Some((name, sensitivity)) = name
+            && let Some(rest) = token
+                .strip_prefix([':', '='])
+                .map(|rest| rest.trim_start_matches(['=', '>']))
+        {
+            let separator = &token[..token.len() - rest.len()];
+            let weak = sensitivity == CredentialArm::IfShaped
+                || name.eq_ignore_ascii_case("authorization");
+            if rest.is_empty() {
+                arm = if weak {
+                    CredentialArm::IfShaped
+                } else {
+                    CredentialArm::Certain
+                };
+                out.push(token.to_string());
+            } else if is_auth_scheme(rest) {
+                arm = if is_canonical_auth_scheme(rest) {
+                    CredentialArm::Certain
+                } else {
+                    CredentialArm::IfShaped
+                };
+                out.push(token.to_string());
+            } else if !weak || looks_like_credential_value(rest) {
+                kinds.insert(REDACTION_SECRET.to_string());
+                arm = CredentialArm::None;
+                out.push(format!("{separator}{SECRET_PLACEHOLDER}"));
+            } else {
+                arm = CredentialArm::None;
+                out.push(token.to_string());
+            }
+            index += 1;
+            continue;
+        }
+
+        let next = tokens.get(index + 1).copied();
+        let outcome = redact_token(token, next, &mut kinds, &mut containers);
         arm = outcome.arm;
-        out.push(outcome.text.unwrap_or_else(|| (*token).to_string()));
+        if outcome.text.is_none() && !arm.is_armed() {
+            let chunk = codewhale_sanitize::redact::last_escaped_chunk(token);
+            let candidate = unwrap_token(chunk);
+            if !candidate.contains(['=', ':']) {
+                let sensitivity = name_sensitivity(candidate);
+                if sensitivity.is_armed() {
+                    pending_name = Some((candidate, sensitivity));
+                }
+            }
+        }
+        out.push(outcome.text.unwrap_or_else(|| token.to_string()));
+        index += 1;
     }
 
-    Redaction {
-        text: out.join(" "),
-        kinds,
+    let mut text = String::with_capacity(input.len());
+    text.push_str(seps[0]);
+    for (idx, piece) in out.iter().enumerate() {
+        text.push_str(piece);
+        text.push_str(seps[idx + 1]);
+    }
+    Redaction { text, kinds }
+}
+
+fn split_whitespace_preserving(input: &str) -> (Vec<&str>, Vec<&str>) {
+    let mut tokens = Vec::new();
+    let mut seps = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ws_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        seps.push(&input[ws_start..i]);
+        if i == bytes.len() {
+            return (tokens, seps);
+        }
+        let tok_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tokens.push(&input[tok_start..i]);
+    }
+    seps.push("");
+    (tokens, seps)
+}
+
+fn name_sensitivity(name: &str) -> CredentialArm {
+    match codewhale_sanitize::redact::key_sensitivity(name) {
+        codewhale_sanitize::redact::KeySensitivity::Certain => return CredentialArm::Certain,
+        codewhale_sanitize::redact::KeySensitivity::IfShaped => return CredentialArm::IfShaped,
+        codewhale_sanitize::redact::KeySensitivity::None => {}
+    }
+    let norm = codewhale_sanitize::redact::normalize_sensitive_key(name);
+    if SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| *marker != "token" && norm.contains(marker))
+    {
+        return CredentialArm::Certain;
+    }
+    CredentialArm::None
+}
+
+const STRUCTURAL_DELIMITERS: [char; 9] = [',', '(', ')', '[', ']', '{', '}', '&', '?'];
+
+fn redact_backslash_chunk_workflow(
+    chunk: &str,
+    chunk_next: Option<&str>,
+    pending_arm: &mut CredentialArm,
+    kinds: &mut BTreeSet<String>,
+    depth: u8,
+) -> Option<String> {
+    if pending_arm.is_armed() {
+        let (core, lead_quote, trail_quote) = codewhale_sanitize::redact::split_value_quotes(chunk);
+        if !core.is_empty()
+            && (*pending_arm == CredentialArm::Certain || looks_like_credential_value(core))
+        {
+            *pending_arm = CredentialArm::None;
+            kinds.insert(REDACTION_SECRET.to_string());
+            return Some(format!("{lead_quote}{SECRET_PLACEHOLDER}{trail_quote}"));
+        }
+        *pending_arm = CredentialArm::None;
+    }
+    let outcome =
+        redact_assignment_segment_at(chunk, chunk_next, kinds, CredentialArm::None, depth);
+    *pending_arm = outcome.arm;
+    outcome.text
+}
+
+fn next_escaped_chunk_slice(rest: &str) -> &str {
+    let mut cursor = 0;
+    while let Some(rel) = rest[cursor..].find('\\') {
+        let idx = cursor + rel;
+        if codewhale_sanitize::redact::escape_delimiter_end(rest, idx).is_some() {
+            return &rest[..idx];
+        }
+        if rest[idx + 1..].starts_with('\\') {
+            cursor = idx + 2;
+        } else {
+            cursor = idx + 1;
+        }
+    }
+    rest
+}
+
+fn redact_workflow_backslash_assignments(
+    text: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    depth: u8,
+) -> TokenOutcome {
+    let mut out = String::new();
+    let mut changed = false;
+    let mut pending_arm = CredentialArm::None;
+    let mut chunk_start = 0;
+    let mut cursor = 0;
+    while let Some(rel) = text[cursor..].find('\\') {
+        let idx = cursor + rel;
+        if let Some(delim_end) = codewhale_sanitize::redact::escape_delimiter_end(text, idx) {
+            let chunk = &text[chunk_start..idx];
+            let chunk_next = Some(next_escaped_chunk_slice(&text[delim_end..]));
+            if !changed {
+                if let Some(redacted) = redact_backslash_chunk_workflow(
+                    chunk,
+                    chunk_next,
+                    &mut pending_arm,
+                    kinds,
+                    depth,
+                ) {
+                    out.reserve(text.len());
+                    out.push_str(&text[..chunk_start]);
+                    out.push_str(&redacted);
+                    out.push_str(&text[idx..delim_end]);
+                    changed = true;
+                }
+            } else {
+                if let Some(redacted) = redact_backslash_chunk_workflow(
+                    chunk,
+                    chunk_next,
+                    &mut pending_arm,
+                    kinds,
+                    depth,
+                ) {
+                    out.push_str(&redacted);
+                } else {
+                    out.push_str(chunk);
+                }
+                out.push_str(&text[idx..delim_end]);
+            }
+            chunk_start = delim_end;
+            cursor = delim_end;
+        } else if text[idx + 1..].starts_with('\\') {
+            cursor = idx + 2;
+        } else {
+            cursor = idx + 1;
+        }
+    }
+    if chunk_start == 0 {
+        return TokenOutcome::keep();
+    }
+    let tail = &text[chunk_start..];
+    if let Some(redacted) =
+        redact_backslash_chunk_workflow(tail, next, &mut pending_arm, kinds, depth)
+    {
+        if !changed {
+            out.reserve(text.len());
+            out.push_str(&text[..chunk_start]);
+        }
+        out.push_str(&redacted);
+        changed = true;
+    } else if changed {
+        out.push_str(tail);
+    }
+    if changed {
+        TokenOutcome::replace_and_arm(out, pending_arm)
+    } else if pending_arm.is_armed() {
+        TokenOutcome::keep_and_arm(pending_arm)
+    } else {
+        TokenOutcome::keep()
     }
 }
 
-/// Redact one whitespace-free token, recording what was removed.
-///
-/// `next` is the following non-empty token, used only to decide whether a bare
-/// authorization scheme keyword is introducing a credential or is just a word.
-fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -> TokenOutcome {
-    // `NAME=value` / `NAME:value` — a secret-bearing name redacts its value and
-    // keeps the name, which is the useful half.
+fn redact_assignment_segment(
+    segment: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    container_arm: CredentialArm,
+) -> TokenOutcome {
+    redact_assignment_segment_at(segment, next, kinds, container_arm, 0)
+}
+
+fn redact_assignment_segment_at(
+    segment: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    container_arm: CredentialArm,
+    depth: u8,
+) -> TokenOutcome {
     for separator in ['=', ':'] {
-        let Some((name, value)) = token.split_once(separator) else {
+        let Some((name, value)) = segment.split_once(separator) else {
             continue;
         };
-        let lowered = name.to_ascii_lowercase();
-        let secret_name = SECRET_NAME_MARKERS
-            .iter()
-            .any(|marker| lowered.contains(marker));
-        if secret_name {
-            // `Authorization:Bearer` carries no secret of its own; the
-            // credential is the next token. Canonical capitalization on the
-            // scheme makes that certain; `authorization:bearer` does not.
+        let sensitivity = match name_sensitivity(name) {
+            CredentialArm::None => container_arm,
+            s => s,
+        };
+        if sensitivity.is_armed() {
             if is_auth_scheme(value) {
                 return TokenOutcome::keep_and_arm(if is_canonical_auth_scheme(value) {
                     CredentialArm::Certain
@@ -301,29 +693,197 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
                     CredentialArm::IfShaped
                 });
             }
-            // A bare `Authorization:` only introduces a credential when one
-            // actually follows. `authorization: needed before merge` is a
-            // sentence, and redacting `needed` would report a secret that was
-            // never there. The arming stays weak here even when a scheme word
-            // follows — the scheme token itself decides, on the next pass,
-            // whether its capitalization upgrades it.
             if value.is_empty() {
-                return if next
-                    .is_some_and(|next| is_auth_scheme(next) || looks_like_credential_value(next))
-                {
-                    TokenOutcome::keep_and_arm(CredentialArm::IfShaped)
+                let weak = sensitivity == CredentialArm::IfShaped
+                    || name.eq_ignore_ascii_case("authorization");
+                return if weak {
+                    if next.is_some_and(|next| {
+                        is_auth_scheme(next)
+                            || looks_like_credential_value(next)
+                            || next.starts_with(['[', '{', '('])
+                    }) {
+                        TokenOutcome::keep_and_arm(CredentialArm::IfShaped)
+                    } else {
+                        TokenOutcome::keep()
+                    }
+                } else if next.is_some() {
+                    TokenOutcome::keep_and_arm(CredentialArm::Certain)
                 } else {
                     TokenOutcome::keep()
                 };
             }
-            kinds.insert(REDACTION_SECRET.to_string());
-            return TokenOutcome::replace(format!("{name}{separator}{SECRET_PLACEHOLDER}"));
+            if sensitivity == CredentialArm::Certain || looks_like_credential_value(value) {
+                kinds.insert(REDACTION_SECRET.to_string());
+                return TokenOutcome::replace(format!("{name}{separator}{SECRET_PLACEHOLDER}"));
+            }
         }
-        // A path assigned to a variable is still a path.
         if let Some(kind) = classify_path(value) {
             kinds.insert(kind.to_string());
             return TokenOutcome::replace(format!("{name}{separator}{PATH_PLACEHOLDER}"));
         }
+        if depth < MAX_NESTED_ASSIGNMENT_DEPTH && !value.starts_with("//") {
+            let (core, lead_quote, trail_quote) =
+                codewhale_sanitize::redact::split_value_quotes(value);
+            if core.contains('\\') {
+                let nested = redact_workflow_backslash_assignments(core, next, kinds, depth + 1);
+                if let Some(replaced) = nested.text {
+                    return TokenOutcome::replace_and_arm(
+                        format!("{name}{separator}{lead_quote}{replaced}{trail_quote}"),
+                        nested.arm,
+                    );
+                }
+                if nested.arm.is_armed() {
+                    return TokenOutcome::keep_and_arm(nested.arm);
+                }
+            }
+            if !core.contains("://") && core.contains(['=', ':']) {
+                let nested =
+                    redact_assignment_segment_at(core, next, kinds, CredentialArm::None, depth + 1);
+                if let Some(replaced) = nested.text {
+                    return TokenOutcome::replace_and_arm(
+                        format!("{name}{separator}{lead_quote}{replaced}{trail_quote}"),
+                        nested.arm,
+                    );
+                }
+                if nested.arm.is_armed() {
+                    return TokenOutcome::keep_and_arm(nested.arm);
+                }
+            }
+        }
+    }
+    TokenOutcome::keep()
+}
+
+fn redact_structured_token(
+    token: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    containers: &mut Vec<ArmedContainer>,
+) -> Option<TokenOutcome> {
+    if !token.contains(STRUCTURAL_DELIMITERS) || !token.contains(['=', ':']) {
+        return None;
+    }
+    let parts: Vec<(&str, &str)> = token
+        .split_inclusive(STRUCTURAL_DELIMITERS)
+        .map(|piece| match piece.chars().next_back() {
+            Some(last) if STRUCTURAL_DELIMITERS.contains(&last) => {
+                piece.split_at(piece.len() - last.len_utf8())
+            }
+            _ => (piece, ""),
+        })
+        .collect();
+    let mut out = String::with_capacity(token.len());
+    let mut changed = false;
+    let mut seg_arm = CredentialArm::None;
+    for (idx, &(segment, delim)) in parts.iter().enumerate() {
+        let mut delim_handled = false;
+        if !segment.is_empty() {
+            if seg_arm.is_armed() {
+                if is_auth_scheme(segment) {
+                    if is_canonical_auth_scheme(segment) {
+                        seg_arm = CredentialArm::Certain;
+                    }
+                    out.push_str(segment);
+                } else if seg_arm == CredentialArm::Certain || looks_like_credential_value(segment)
+                {
+                    kinds.insert(REDACTION_SECRET.to_string());
+                    out.push_str(SECRET_PLACEHOLDER);
+                    changed = true;
+                    seg_arm = CredentialArm::None;
+                } else {
+                    out.push_str(segment);
+                    seg_arm = CredentialArm::None;
+                }
+            } else {
+                let seg_next = parts[idx + 1..]
+                    .iter()
+                    .map(|&(seg, _)| seg)
+                    .find(|seg| !seg.is_empty())
+                    .or(next);
+                let container_arm = containers
+                    .last()
+                    .filter(|c| c.mode.accepts_object_keys())
+                    .map_or(CredentialArm::None, |c| c.arm);
+                let outcome = redact_assignment_segment(segment, seg_next, kinds, container_arm);
+                if let Some(replaced) = outcome.text {
+                    out.push_str(&replaced);
+                    changed = true;
+                } else {
+                    out.push_str(segment);
+                }
+                if outcome.arm.is_armed() {
+                    seg_arm = outcome.arm;
+                }
+            }
+        }
+        if let Some(delim_char) = delim.chars().next() {
+            if ContainerMode::from_open(delim_char).is_some()
+                && (seg_arm.is_armed() || !containers.is_empty())
+            {
+                let push_arm = if seg_arm.is_armed() {
+                    seg_arm
+                } else {
+                    containers.last().map_or(CredentialArm::None, |c| c.arm)
+                };
+                if push_arm.is_armed() {
+                    seg_arm = push_container_if_opening(containers, delim_char, push_arm);
+                    delim_handled = true;
+                }
+            } else if matches!(delim_char, ']' | '}' | ')') {
+                pop_containers_for(containers, delim);
+                seg_arm = container_restore_arm(containers);
+                delim_handled = true;
+            } else if delim_char == ',' && !seg_arm.is_armed() {
+                seg_arm = container_restore_arm(containers);
+                delim_handled = true;
+            }
+        }
+        let _ = delim_handled;
+        out.push_str(delim);
+    }
+    if changed {
+        if let Some(masked) =
+            codewhale_sanitize::redact::mask_bare_secret_tokens(&out, SECRET_PLACEHOLDER)
+        {
+            kinds.insert(REDACTION_SECRET.to_string());
+            return Some(TokenOutcome {
+                text: Some(masked),
+                arm: seg_arm,
+            });
+        }
+        return Some(TokenOutcome {
+            text: Some(out),
+            arm: seg_arm,
+        });
+    }
+    if seg_arm.is_armed() {
+        return Some(TokenOutcome::keep_and_arm(seg_arm));
+    }
+    None
+}
+
+/// Redact one whitespace-free token, recording what was removed.
+///
+/// `next` is the following non-empty token, used only to decide whether a bare
+/// authorization scheme keyword is introducing a credential or is just a word.
+fn redact_token(
+    token: &str,
+    next: Option<&str>,
+    kinds: &mut BTreeSet<String>,
+    containers: &mut Vec<ArmedContainer>,
+) -> TokenOutcome {
+    if let Some(outcome) = redact_structured_token(token, next, kinds, containers) {
+        return outcome;
+    }
+    // `NAME=value` / `NAME:value` — a secret-bearing name redacts its value and
+    // keeps the name, which is the useful half.
+    let container_arm = containers
+        .last()
+        .filter(|c| c.mode.accepts_object_keys())
+        .map_or(CredentialArm::None, |c| c.arm);
+    let outcome = redact_assignment_segment(token, next, kinds, container_arm);
+    if outcome.text.is_some() || outcome.arm.is_armed() {
+        return outcome;
     }
 
     // A bare `Bearer` in canonical HTTP capitalization introduces a credential
@@ -338,19 +898,19 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
         return TokenOutcome::keep_and_arm(CredentialArm::IfShaped);
     }
 
-    let lowered = token.to_ascii_lowercase();
-    if SECRET_VALUE_PREFIXES
-        .iter()
-        .any(|prefix| lowered.starts_with(prefix))
-        || looks_like_aws_access_key(token)
-    {
-        kinds.insert(REDACTION_SECRET.to_string());
-        return TokenOutcome::replace(SECRET_PLACEHOLDER.to_string());
-    }
+    let secret = codewhale_sanitize::redact::mask_bare_secret_tokens(token, SECRET_PLACEHOLDER);
 
     if let Some(kind) = classify_path(token) {
         kinds.insert(kind.to_string());
+        if secret.is_some() {
+            kinds.insert(REDACTION_SECRET.to_string());
+        }
         return TokenOutcome::replace(PATH_PLACEHOLDER.to_string());
+    }
+
+    if let Some(masked) = secret {
+        kinds.insert(REDACTION_SECRET.to_string());
+        return TokenOutcome::replace(masked);
     }
 
     TokenOutcome::keep()
@@ -359,8 +919,8 @@ fn redact_token(token: &str, next: Option<&str>, kinds: &mut BTreeSet<String>) -
 /// Strip the punctuation a token picks up from surrounding prose.
 fn unwrap_token(token: &str) -> &str {
     token
-        .trim_start_matches(['(', '[', '"', '\'', '<'])
-        .trim_end_matches([',', '.', ';', ':', ')', ']', '"', '\'', '>', '!', '?'])
+        .trim_start_matches(['(', '[', '{', '"', '\'', '<'])
+        .trim_end_matches([',', '.', ';', ':', ')', ']', '}', '"', '\'', '>', '!', '?'])
 }
 
 /// Whether a token is an HTTP authorization scheme keyword (and nothing else),
@@ -391,7 +951,10 @@ fn is_canonical_auth_scheme(token: &str) -> bool {
 /// with digits. Ordinary words — however long — never qualify, which is what
 /// keeps `bearer of responsibility` out of the redactor.
 fn looks_like_credential_value(token: &str) -> bool {
-    let value = unwrap_token(token);
+    let (value, _, _) = codewhale_sanitize::redact::split_value_quotes(unwrap_token(token));
+    if codewhale_sanitize::redact::contains_bare_secret_token(value) {
+        return true;
+    }
     if value.chars().count() < CREDENTIAL_VALUE_MIN_LEN {
         return false;
     }
@@ -407,27 +970,6 @@ fn looks_like_credential_value(token: &str) -> bool {
         }
     }
     has_digit && has_alpha
-}
-
-/// Whether a token is an AWS access key id.
-///
-/// Requires the exact uppercase prefix *and* the full length, so `Asia` and
-/// `ASIA` (the continent, in prose or in a shouted heading) are left alone
-/// while `ASIA` + 16 key characters is removed.
-fn looks_like_aws_access_key(token: &str) -> bool {
-    let value = unwrap_token(token);
-    if value.len() < AWS_KEY_ID_LEN {
-        return false;
-    }
-    if !AWS_KEY_ID_PREFIXES
-        .iter()
-        .any(|prefix| value.starts_with(prefix))
-    {
-        return false;
-    }
-    value
-        .chars()
-        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
 /// Whether a token is an absolute or home-relative filesystem path.
@@ -916,6 +1458,286 @@ mod tests {
     fn an_extension_less_directory_is_the_known_residual() {
         let redaction = redact_for_disclosure("look in crates/tui/src");
         assert!(!redaction.redacted());
+    }
+
+    const BODY: &str = "Z7qX4mNb2Vc9Lk3PwR8t";
+    const HEX: &str = "3f9a8c1d2e4b5a6f7c8d9e0a1b2c3d4e5f6a7b8c";
+
+    fn reported_credential_rows() -> Vec<(String, String)> {
+        let jwt = ["eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiIxIn0", ".c2lnbmF0dXJl"].concat();
+        let pem = "-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqhkiG9w0BAQEFAASC -----END PRIVATE KEY-----";
+        vec![
+            (format!("OPENAI_KEY=sk-proj-{BODY}"), BODY.to_string()),
+            (format!("GITHUB_PAT=ghp_{BODY}"), BODY.to_string()),
+            (format!("key=sk-live-{BODY}"), BODY.to_string()),
+            (format!("(ghp_{BODY})"), BODY.to_string()),
+            (format!("'sk-live-{BODY}'"), BODY.to_string()),
+            (format!("--api-key={BODY}A"), BODY.to_string()),
+            (format!("X-Api-Key: {BODY}AB"), BODY.to_string()),
+            (format!("use {jwt} now"), jwt.clone()),
+            (format!("glpat-{BODY}"), BODY.to_string()),
+            (format!("hf_{BODY}"), BODY.to_string()),
+            (format!("AIzaSy{BODY}"), BODY.to_string()),
+            (
+                "ZAI_API_KEY = zk8Q2mX7vB4nL9pR3tYc".to_string(),
+                "zk8Q2mX7vB4nL9pR3tYc".to_string(),
+            ),
+            ("password: hunter2".to_string(), "hunter2".to_string()),
+            (format!("xai-{BODY}"), BODY.to_string()),
+            (pem.to_string(), "MIIEvQIBADANBgkq".to_string()),
+            (
+                format!("{{\"token_value\":\"ghp_{BODY}\"}}"),
+                BODY.to_string(),
+            ),
+            (format!("密钥：sk-live-{BODY}"), BODY.to_string()),
+            (format!("use ghs_{BODY}@github.com"), BODY.to_string()),
+            (
+                format!("https://x-access-token:ghs_{BODY}@github.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("https://ghp_{BODY}@github.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("https://oauth2:glpat-{BODY}@gitlab.com/o/r.git"),
+                BODY.to_string(),
+            ),
+            (
+                format!("x=-----BEGIN PRIVATE KEY-----y{BODY}-----END x OPENAI_API_KEY=sk-proj-{BODY}"),
+                BODY.to_string(),
+            ),
+            (
+                "SSH_KEY=-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAAB -----END OPENSSH PRIVATE KEY-----".to_string(),
+                "b3BlbnNzaC1rZXktdjEAAAAAB".to_string(),
+            ),
+            (
+                "key=\"-----BEGIN PRIVATE KEY----- MIIEvQIBADANBgkqB -----END PRIVATE KEY-----\"".to_string(),
+                "MIIEvQIBADANBgkqB".to_string(),
+            ),
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK----- lQOYBFBxyzB -----END PGP PRIVATE KEY BLOCK-----".to_string(),
+                "lQOYBFBxyzB".to_string(),
+            ),
+            (
+                "(\"k\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqB\\n-----END PRIVATE KEY-----\\n\")".to_string(),
+                "MIIEvQIBADANBgkqB".to_string(),
+            ),
+            (format!("SLACKTOKEN={HEX}"), HEX.to_string()),
+            (format!("GHTOKEN={HEX}"), HEX.to_string()),
+            (format!("apitoken={HEX}"), HEX.to_string()),
+            (format!("authtoken={HEX}"), HEX.to_string()),
+            (format!("mytoken: {HEX}"), HEX.to_string()),
+            (format!("OPENAIAPIKEY={HEX}"), HEX.to_string()),
+            (format!("SECRETKEY={HEX}"), HEX.to_string()),
+            (format!("apiKey := {HEX}"), HEX.to_string()),
+            (format!("'api_key' => {HEX}"), HEX.to_string()),
+            (format!("password == {HEX}"), HEX.to_string()),
+            ("password := Hunter2Xyzzy99".to_string(), "Hunter2Xyzzy99".to_string()),
+            (format!("run codewhale login --api-key {HEX} first"), HEX.to_string()),
+            ("mysql -u root --password Hunter2Xyzzy99".to_string(), "Hunter2Xyzzy99".to_string()),
+            (format!("deploy --token {HEX}"), HEX.to_string()),
+            (format!("access_tokens={HEX}"), HEX.to_string()),
+            (format!("GITHUB_TOKENS={HEX}"), HEX.to_string()),
+            (format!("SESSION_TOKENS={HEX}"), HEX.to_string()),
+            (format!("api_tokens: {HEX}"), HEX.to_string()),
+            (format!("\"refresh_tokens\": [\"{HEX}\"]"), HEX.to_string()),
+            (format!("API_TOKENS={HEX}"), HEX.to_string()),
+            (format!("SLACK_BOT_TOKENS={HEX}"), HEX.to_string()),
+            (format!("{{\"model\":\"gpt\",\"api_key\":\"{HEX}\"}}"), HEX.to_string()),
+            ("{\"user\":\"app\",\"password\":\"Hunter2Xyzzy99\"}".to_string(), "Hunter2Xyzzy99".to_string()),
+            (format!("{{\"id\":1,\"access_token\":\"{HEX}\"}}"), HEX.to_string()),
+            (format!("curl https://api.example.test/v1?x=1&api_key={HEX}"), HEX.to_string()),
+            (format!("{{\"stdout\":\"ok\\nsk-proj-{BODY}\\n\"}}"), BODY.to_string()),
+            (format!("{{\"line\":\"name\\tghp_{BODY}\"}}"), BODY.to_string()),
+            (format!("{{\"html\":\"\\u003cghs_{BODY}\\u003e\"}}"), BODY.to_string()),
+            (format!("{{\"log\":\"key\\nsk-ant-api03-{BODY}\"}}"), BODY.to_string()),
+            (format!("printf 'a\\nsk-live-{BODY}'"), BODY.to_string()),
+            ("API_TOKENS=hunter2".to_string(), "hunter2".to_string()),
+            (
+                "ACCESS_TOKENS=my_short_secret".to_string(),
+                "my_short_secret".to_string(),
+            ),
+            (
+                "ACCESS_TOKENS=secret_token_without_digits".to_string(),
+                "secret_token_without_digits".to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": \"{HEX}\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": [ \"{HEX}\" ]}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": {{ \"prod\": \"{HEX}\" }}}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\": [ \"{HEX}\", \"9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b\" ]}}"),
+                "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b".to_string(),
+            ),
+            (
+                format!("{{\"api_tokens\":[\"{HEX}\",\"9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b\"]}}"),
+                "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b".to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\n\\\"api_key\\\": \\\"{HEX}\\\"\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\n\\\"api_key\\\":\\\"{HEX}\\\"\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\napi_key: {HEX}\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                "{\"stdout\":\"ok\\npassword: Hunter2Xyzzy99\"}".to_string(),
+                "Hunter2Xyzzy99".to_string(),
+            ),
+            (
+                "{\"stdout\":\"ok\\n\\\"api_key\\\":\\\"short_secret\\\"\"}".to_string(),
+                "short_secret".to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\n\\\"api_key\\\":\\n\\\"{HEX}\\\"\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"API_KEY={HEX}\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("{{\"stdout\":\"ok\\u003cAPI_KEY={HEX}\\u003e\"}}"),
+                HEX.to_string(),
+            ),
+            (
+                format!("\\\\\\\"api_key\\\\\\\":\\\\\\\"{HEX}\\\\\\\""),
+                HEX.to_string(),
+            ),
+            (
+                "{\"authorization\":\"basic dXNlcjpIdW50ZXIyWHl6enk5OQ==\"}".to_string(),
+                "dXNlcjpIdW50ZXIyWHl6enk5OQ==".to_string(),
+            ),
+            (
+                "{\"b\":\"Authorization: Basic dXNlcjpIdW50ZXIyWHl6enk5OQ==\"}".to_string(),
+                "dXNlcjpIdW50ZXIyWHl6enk5OQ==".to_string(),
+            ),
+            (
+                format!("FOO=\"bar\nbaz\"\nAPI_KEY={HEX}"),
+                HEX.to_string(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn credentials_in_every_reported_spelling_are_removed_and_disclosed() {
+        for (input, leaked) in reported_credential_rows() {
+            let redaction = redact_for_disclosure(&input);
+            assert!(
+                !redaction.text().contains(&leaked),
+                "{input} leaked: {}",
+                redaction.text()
+            );
+            assert_eq!(
+                redaction.kinds(),
+                vec![REDACTION_SECRET.to_string()],
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn operators_and_flags_are_kept_and_only_the_value_is_removed() {
+        for (input, expected) in [
+            (
+                format!("set apiKey := \"{HEX}\" in main.go"),
+                "set apiKey := <redacted> in main.go",
+            ),
+            (
+                format!("set 'api_key' => '{HEX}' in config"),
+                "set 'api_key' => <redacted> in config",
+            ),
+            (
+                format!("check password == {HEX}"),
+                "check password == <redacted>",
+            ),
+            (
+                "set password := Hunter2Xyzzy99 now".to_string(),
+                "set password := <redacted> now",
+            ),
+            (
+                format!("run codewhale login --api-key {HEX} first"),
+                "run codewhale login --api-key <redacted> first",
+            ),
+            (format!("deploy --token {HEX}"), "deploy --token <redacted>"),
+            (format!("SLACKTOKEN={HEX}"), "SLACKTOKEN=<redacted>"),
+            (format!("mytoken: {HEX}"), "mytoken: <redacted>"),
+        ] {
+            let redaction = redact_for_disclosure(&input);
+            assert_eq!(redaction.text(), expected, "{input}");
+            assert_eq!(redaction.kinds(), vec![REDACTION_SECRET.to_string()]);
+        }
+    }
+
+    #[test]
+    fn token_counts_are_not_secrets() {
+        for text in [
+            "max_tokens=8192",
+            "tokens=5",
+            "completion_tokens: 50",
+            "tokenBudget: 9",
+            "--token-limit 5",
+            "TOKEN_LIMIT=4096",
+            "tokenizer=bpe",
+            "tokenizer=sentencepiece-v2",
+            "output_tokens=512",
+            "set --max-tokens 4096 --token-limit 5",
+            "run --max-tokens=8192 claude-3-5-sonnet-20241022",
+            "eval --tokens=5 deadbeef12345678",
+            "{\"tokens\": { \"input\": 100, \"output\": 200 }}",
+        ] {
+            let redaction = redact_for_disclosure(text);
+            assert_eq!(redaction.text(), text);
+            assert!(redaction.kinds().is_empty(), "{text}");
+        }
+
+        let nested_obj =
+            redact_for_disclosure(&format!("{{\"api_tokens\": {{ \"prod\": \"{HEX}\" }}}}"));
+        assert!(
+            nested_obj.text().contains("\"prod\":"),
+            "{}",
+            nested_obj.text()
+        );
+        assert!(!nested_obj.text().contains(HEX), "{}", nested_obj.text());
+
+        let rel = redact_for_disclosure("set --tokenizer=bpe crates/engine/src/v2.rs");
+        assert_eq!(rel.text(), "set --tokenizer=bpe <path>");
+        assert_eq!(rel.kinds(), vec![REDACTION_RELATIVE_PATH.to_string()]);
+
+        let abs = redact_for_disclosure("run --token-limit=4096 /Users/alice/src/v2");
+        assert_eq!(abs.text(), "run --token-limit=4096 <path>");
+        assert_eq!(abs.kinds(), vec![REDACTION_ABSOLUTE_PATH.to_string()]);
+    }
+
+    #[test]
+    fn the_routing_payload_carries_none_of_the_reported_credentials() {
+        for (input, leaked) in reported_credential_rows() {
+            let payload = crate::fleet_reasoning::bounded_routing_payload(&format!(
+                "fix the deploy script\n{input}\nthen rerun"
+            ));
+            assert!(
+                !payload.text().contains(&leaked),
+                "{input} reached the router: {}",
+                payload.text()
+            );
+            assert!(payload.disclosure().redacted, "{input}");
+            assert!(payload.text().starts_with("fix the deploy script"));
+            assert!(payload.text().ends_with("then rerun"), "{}", payload.text());
+        }
     }
 
     #[test]

@@ -1,25 +1,27 @@
-// Generated from Codewhale design 5.3.0; sha256 0d9acc771562a7b50fc9473e23ebccbff7cbc56962639277943a0cb0131ea83e. Do not edit.
+// Generated from Codewhale design 5.4.0; sha256 deef1a3948e0c8b58851ae1b9920ce3afcdd8ada90ca0b3aa7fcaeedf25a25a8. Do not edit.
 export const tokens = {
-  "version": "5.3.0",
+  "version": "5.4.0",
   "colors": {
     "dark": {
       "background": "030508",
       "foreground": "e8edf2",
       "surface": "04070c",
-      "muted_foreground": "a8b6c3",
-      "disabled": "848583",
-      "border": "3b3c3f",
+      "muted_foreground": "aebcc9",
+      "subagent": "b8c7d6",
+      "disabled": "7f8c9a",
+      "border": "2a3648",
       "sidebar": "0d121b",
       "primary": "0b48bb",
       "primary_foreground": "ffffff",
       "accent": "8fbdff",
-      "hover": "303134",
-      "selected": "17191c",
+      "hover": "253244",
+      "selected": "182232",
       "attention": "eab982",
-      "live": "9ecbbd",
+      "live": "86d3be",
+      "live_peak": "dff7f0",
       "danger": "eea59d",
-      "border_strong": "828386",
-      "ocean_depth": "202123",
+      "border_strong": "8a98a6",
+      "ocean_depth": "0d1624",
       "diff_add": "22392f",
       "diff_remove": "45302f"
     },
@@ -27,19 +29,21 @@ export const tokens = {
       "background": "f1f5f9",
       "foreground": "1b2a35",
       "surface": "fbfcfd",
-      "muted_foreground": "4a545d",
+      "muted_foreground": "47515a",
+      "subagent": "3b4a56",
       "disabled": "6f7780",
       "border": "d5dce3",
       "sidebar": "f9fafc",
       "primary": "0b48bb",
       "primary_foreground": "ffffff",
-      "accent": "245bc7",
-      "hover": "e3e9ef",
-      "selected": "d8e0e8",
-      "attention": "84530d",
-      "live": "396554",
-      "danger": "9e3f36",
-      "border_strong": "737d88",
+      "accent": "2056c2",
+      "hover": "dde6f0",
+      "selected": "d2dde9",
+      "attention": "7d4e08",
+      "live": "1b695a",
+      "live_peak": "0d4035",
+      "danger": "a32934",
+      "border_strong": "6e7883",
       "ocean_depth": "f6f9fc",
       "diff_add": "d2eadd",
       "diff_remove": "f8e1dd"
@@ -173,8 +177,8 @@ export const tokens = {
     },
     "light": {
       "border": {
-        "hex": "ffffff",
-        "alpha": 0.75
+        "hex": "1f3340",
+        "alpha": 0.12
       },
       "highlight": {
         "hex": "ffffff",
@@ -247,6 +251,80 @@ export const tokens = {
       }
     }
   },
+  "change_bar": {
+    "dark": {
+      "fill": {
+        "hex": "ffffff",
+        "alpha": 0.04
+      },
+      "border": {
+        "hex": "ffffff",
+        "alpha": 0.09
+      }
+    },
+    "light": {
+      "fill": {
+        "hex": "1b2a35",
+        "alpha": 0.035
+      },
+      "border": {
+        "hex": "1f3340",
+        "alpha": 0.11
+      }
+    }
+  },
+  "subagent_tag": {
+    "dark": {
+      "fill": {
+        "hex": "8fbdff",
+        "alpha": 0.08
+      },
+      "border": {
+        "hex": "8fbdff",
+        "alpha": 0.2
+      }
+    },
+    "light": {
+      "fill": {
+        "hex": "1b2a35",
+        "alpha": 0.055
+      },
+      "border": {
+        "hex": "1f3340",
+        "alpha": 0.14
+      }
+    }
+  },
+  "workbar": {
+    "dark": {
+      "fill": {
+        "hex": "0b121d",
+        "alpha": 0.68
+      },
+      "border": {
+        "hex": "ffffff",
+        "alpha": 0.08
+      },
+      "track": {
+        "hex": "ffffff",
+        "alpha": 0.12
+      }
+    },
+    "light": {
+      "fill": {
+        "hex": "eef3f8",
+        "alpha": 0.78
+      },
+      "border": {
+        "hex": "1f3340",
+        "alpha": 0.1
+      },
+      "track": {
+        "hex": "1b2a35",
+        "alpha": 0.11
+      }
+    }
+  },
   "typography": {
     "family": "Geist Sans",
     "mono_family": "Geist Mono",
@@ -273,6 +351,7 @@ export const tokens = {
     "control": 8,
     "snug": 10,
     "group": 12,
+    "prose": 14,
     "section": 16,
     "large": 24,
     "page": 32
@@ -307,11 +386,21 @@ export const tokens = {
     "duration_exit_ms": 120,
     "duration_panel_ms": 340,
     "duration_linger_ms": 1200,
+    "duration_flash_in_ms": 90,
     "arrive_rise_px": 4,
     "loop_beat_ms": 1200,
     "loop_breathe_ms": 2400,
     "loop_spin_ms": 1000,
-    "loop_fps_cap": 15
+    "loop_fps_cap": 15,
+    "sweep_active_ms": 1800,
+    "sweep_rest_ms": 600,
+    "sweep_delay_ms": 400,
+    "sweep_width_cells": 9,
+    "sweep_strength": 0.78,
+    "breathe_min_alpha": 0.18,
+    "breathe_max_alpha": 0.55,
+    "flash_earn_ms": 1000,
+    "stall_quiet_ms": 30000
   },
   "easing": {
     "out": [
@@ -330,6 +419,12 @@ export const tokens = {
       0.2,
       0.1,
       0.16,
+      1
+    ],
+    "sine": [
+      0.37,
+      0,
+      0.63,
       1
     ]
   },
@@ -361,10 +456,15 @@ export const tokens = {
     "dialog_alpha_light": 0.2
   },
   "tint": {
-    "accent_fill": 0.16,
+    "accent_fill": 0.12,
     "accent_border": 0.35,
-    "count_fill": 0.1,
+    "live_fill": 0.1,
+    "live_border": 0.42,
+    "attention_fill": 0.1,
+    "attention_border": 0.42,
+    "danger_fill": 0.1,
     "danger_border": 0.45,
+    "count_fill": 0.08,
     "scrim": 0.45,
     "on_primary_border": 0.45
   },
@@ -383,7 +483,7 @@ export const tokens = {
     },
     "control": {
       "size_px": 13,
-      "line_px": 18,
+      "line_px": 20,
       "weight": 400
     },
     "body": {
@@ -391,14 +491,24 @@ export const tokens = {
       "line_px": 22,
       "weight": 400
     },
+    "reading": {
+      "size_px": 15,
+      "line_px": 25,
+      "weight": 400
+    },
     "prose": {
       "size_px": 16,
-      "line_px": 26,
+      "line_px": 27,
       "weight": 400
     },
     "heading": {
       "size_px": 15,
-      "line_px": 24,
+      "line_px": 22,
+      "weight": 550
+    },
+    "subheading": {
+      "size_px": 17,
+      "line_px": 26,
       "weight": 550
     },
     "title": {
@@ -420,11 +530,17 @@ export const tokens = {
   "size": {
     "control_px": 28,
     "row_px": 30,
+    "session_row_px": 44,
+    "turn_line_px": 28,
+    "change_bar_px": 36,
     "touch_target_px": 44,
     "icon_px": 16,
     "icon_large_px": 20,
-    "sidebar_px": 272,
-    "panel_px": 300
+    "sidebar_px": 268,
+    "reading_px": 680,
+    "composer_px": 720,
+    "panel_px": 320,
+    "panel_wide_px": 560
   },
   "breakpoints": {
     "compact_px": 720,

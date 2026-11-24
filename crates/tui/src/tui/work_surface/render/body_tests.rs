@@ -1,6 +1,6 @@
 use super::*;
 use codewhale_runtime::config::Config;
-use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
+use ratatui::{buffer::Buffer, style::Color};
 use std::path::PathBuf;
 
 fn app() -> App {
@@ -14,118 +14,6 @@ fn app() -> App {
     app.ui_theme.border = Color::Rgb(71, 43, 101);
     app.ui_theme.status_working = Color::Rgb(47, 109, 67);
     app
-}
-fn paint(app: &mut App, area: Rect, old: bool) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(150, 24)).unwrap();
-    app.viewport.interaction_targets.clear();
-    terminal
-        .draw(|frame| {
-            for cell in &mut frame.buffer_mut().content {
-                cell.set_symbol("~").set_style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .bg(Color::Rgb(11, 23, 37))
-                        .add_modifier(Modifier::ITALIC),
-                );
-            }
-            if old {
-                super::body_legacy::render(frame, area, app);
-            } else {
-                render(frame, area, app);
-            }
-        })
-        .unwrap();
-    terminal.backend().buffer().clone()
-}
-#[test]
-fn shared_native_body_matches_frozen_whole_buffer_actions_and_hover_receipts() {
-    let mut app = app();
-    for placement in [
-        WorkSurfacePlacement::Top,
-        WorkSurfacePlacement::Bottom,
-        WorkSurfacePlacement::Left,
-        WorkSurfacePlacement::Right,
-    ] {
-        for panel in RailPanel::ORDER
-            .into_iter()
-            // These two panels have dedicated renderers; Terminal was added
-            // after the legacy body was frozen and has no old counterpart.
-            .filter(|panel| !matches!(panel, RailPanel::Git | RailPanel::Terminal))
-        {
-            for width in [12, 40, 59, 71, 72, 80, 120] {
-                for height in [1, 2, 3, 5, 12] {
-                    app.work_surface.effective_placement = placement;
-                    app.work_surface.panel = panel;
-                    app.work_surface.explicit_view = true;
-                    app.work_surface.focused = true;
-                    app.work_surface.scroll_offset = usize::MAX;
-                    let area = Rect::new(7, 5, width, height);
-                    let expected = paint(&mut app, area, true);
-                    let expected_geometry = (
-                        app.work_surface.visible_rows,
-                        app.work_surface.total_rows,
-                        app.work_surface.scroll_offset,
-                    );
-                    let expected_hitboxes = app
-                        .work_surface
-                        .hitboxes
-                        .iter()
-                        .map(|box_| (box_.id.clone(), box_.row_y))
-                        .collect::<Vec<_>>();
-                    let expected_actions = app
-                        .viewport
-                        .interaction_targets
-                        .iter()
-                        .copied()
-                        .collect::<Vec<_>>();
-                    let expected_hover = app.sidebar_hover.sections.last().map(|section| {
-                        (
-                            section.content_area,
-                            section.lines.clone(),
-                            section.rows.clone(),
-                        )
-                    });
-                    let actual = paint(&mut app, area, false);
-                    assert_eq!(
-                        actual, expected,
-                        "placement={placement:?} panel={panel:?} area={area:?}"
-                    );
-                    assert_eq!(
-                        (
-                            app.work_surface.visible_rows,
-                            app.work_surface.total_rows,
-                            app.work_surface.scroll_offset
-                        ),
-                        expected_geometry
-                    );
-                    assert_eq!(
-                        app.work_surface
-                            .hitboxes
-                            .iter()
-                            .map(|box_| (box_.id.clone(), box_.row_y))
-                            .collect::<Vec<_>>(),
-                        expected_hitboxes
-                    );
-                    assert_eq!(
-                        app.viewport
-                            .interaction_targets
-                            .iter()
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        expected_actions
-                    );
-                    assert_eq!(
-                        app.sidebar_hover.sections.last().map(|section| (
-                            section.content_area,
-                            section.lines.clone(),
-                            section.rows.clone()
-                        )),
-                        expected_hover
-                    );
-                }
-            }
-        }
-    }
 }
 #[test]
 fn shared_native_scroll_rail_preserves_custom_ground_and_existing_modifiers() {

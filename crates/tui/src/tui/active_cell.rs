@@ -267,6 +267,7 @@ mod tests {
         HistoryCell::Tool(ToolCell::Exploring(ExploringCell {
             entries: vec![ExploringEntry {
                 label: label.to_string(),
+                search: false,
                 status: ToolStatus::Running,
                 error: None,
             }],

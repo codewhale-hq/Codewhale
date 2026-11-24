@@ -107,6 +107,8 @@ pub struct RuntimeCapabilities {
     #[serde(default)]
     pub thread_create_idempotency: bool,
     #[serde(default)]
+    pub exact_route_thread_create: bool,
+    #[serde(default)]
     pub thread_idle_precondition: bool,
     #[serde(default)]
     pub thread_patch_undo_turn_id: bool,
@@ -134,6 +136,8 @@ pub struct RuntimeCapabilities {
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
     pub thread_shell_consent: bool,
+    #[serde(default)]
+    pub thread_standing_context: bool,
     pub turns: bool,
     /// `POST /v1/threads/{id}/turns` accepts a durable, thread-scoped
     /// `operation_key` and returns the original turn for exact retries.
@@ -224,6 +228,19 @@ pub struct RuntimeCapabilities {
     /// browser `EventSource` reconnects without a cursor in the query string.
     #[serde(default)]
     pub event_stream_resume: bool,
+    /// `GET /v1/permissions/rules` lists the user `permissions.toml` rules
+    /// with per-rule removal tokens, and `POST /v1/permissions/rules/remove`
+    /// removes one for an owner caller.
+    #[serde(default)]
+    pub permission_rules: bool,
+    /// `POST /v1/approvals/{id}` accepts `remember_scope: "workspace"`, which
+    /// saves the exact repo-scoped allow rule to `permissions.toml`.
+    #[serde(default)]
+    pub approval_remember_workspace: bool,
+    /// `GET /v1/approval-grants` lists active and suspended grants across
+    /// threads.
+    #[serde(default)]
+    pub approval_grants_list: bool,
 }
 
 /// Experimental opt-in flags advertised by `GET /v1/runtime/info`.
@@ -529,6 +546,7 @@ mod tests {
             session_provider_keys: false,
             threads: true,
             thread_create_idempotency: true,
+            exact_route_thread_create: true,
             thread_idle_precondition: true,
             thread_patch_undo_turn_id: true,
             thread_scoped_reads: true,
@@ -538,6 +556,7 @@ mod tests {
             worktrees: true,
             job_operations: true,
             thread_shell_consent: true,
+            thread_standing_context: true,
             turns: true,
             turn_operation_idempotency: true,
             turn_operation_lookup: true,
@@ -567,6 +586,9 @@ mod tests {
             plugin_management: false,
             agent_mail: true,
             event_stream_resume: true,
+            permission_rules: true,
+            approval_remember_workspace: true,
+            approval_grants_list: true,
         };
         let value = serde_json::to_value(&caps).unwrap();
         let obj = value.as_object().unwrap();
@@ -668,4 +690,226 @@ mod tests {
             RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION
         );
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeEmpty {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeThreadList {
+    pub include_archived: Option<bool>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeThreadId {
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCreateThread {
+    pub body: NativeCreateThreadBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCreateThreadBody {
+    pub operation_key: String,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_provider_id: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub mode: Option<NativeThreadMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeUpdateThread {
+    pub thread_id: String,
+    pub body: NativeUpdateThreadBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeUpdateThreadBody {
+    pub title: Option<String>,
+    pub archived: Option<bool>,
+    pub expected_idle: Option<bool>,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProviderModels {
+    pub provider: String,
+    pub provider_id: Option<String>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeStartTurn {
+    pub thread_id: String,
+    pub body: NativeStartTurnBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeStartTurnBody {
+    pub operation_key: String,
+    pub prompt: String,
+    pub images: Option<Vec<RuntimeImageInput>>,
+    pub allowed_tools: Option<Vec<String>>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeInterruptTurn {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeApproval {
+    pub approval_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub tool_call_id: Option<String>,
+    pub decision: NativeApprovalDecision,
+    pub remember: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSubscribe {
+    pub thread_id: String,
+    pub since_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeUnsubscribe {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCreateAutomation {
+    pub operation_key: String,
+    pub body: NativeCreateAutomationBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCreateAutomationBody {
+    pub name: String,
+    pub prompt: String,
+    pub rrule: String,
+    pub destination_thread_id: String,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_provider_id: Option<String>,
+    pub status: Option<NativeAutomationStatus>,
+    pub auto_approve: Option<bool>,
+    pub trust_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAutomationAction {
+    pub automation_id: String,
+    pub expected_revision: u64,
+    pub operation_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeApprovalDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeAutomationStatus {
+    Active,
+    Paused,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeThreadMode {
+    Plan,
+    Agent,
+}
+
+pub const NATIVE_RUNTIME_CAPABILITY: &str = "native_runtime_v1";
+pub const NATIVE_RUNTIME_METHODS: &[&str] = &[
+    "runtime/capabilities",
+    "runtime/threads/list",
+    "runtime/thread/read",
+    "runtime/thread/create",
+    "runtime/thread/update",
+    "runtime/providers/list",
+    "runtime/provider/models",
+    "runtime/turn/start",
+    "runtime/turn/interrupt",
+    "runtime/approval/decide",
+    "runtime/events/subscribe",
+    "runtime/events/unsubscribe",
+    "runtime/account/status",
+    "runtime/automations/list",
+    "runtime/automation/create",
+    "runtime/automation/pause",
+    "runtime/automation/resume",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params", deny_unknown_fields)]
+pub enum NativeRuntimeRequest {
+    #[serde(rename = "runtime/capabilities")]
+    Capabilities(NativeEmpty),
+    #[serde(rename = "runtime/threads/list")]
+    ListThreads(NativeThreadList),
+    #[serde(rename = "runtime/thread/read")]
+    ReadThread(NativeThreadId),
+    #[serde(rename = "runtime/thread/create")]
+    CreateThread(NativeCreateThread),
+    #[serde(rename = "runtime/thread/update")]
+    UpdateThread(NativeUpdateThread),
+    #[serde(rename = "runtime/providers/list")]
+    Providers(NativeEmpty),
+    #[serde(rename = "runtime/provider/models")]
+    ProviderModels(NativeProviderModels),
+    #[serde(rename = "runtime/turn/start")]
+    StartTurn(NativeStartTurn),
+    #[serde(rename = "runtime/turn/interrupt")]
+    InterruptTurn(NativeInterruptTurn),
+    #[serde(rename = "runtime/approval/decide")]
+    DecideApproval(NativeApproval),
+    #[serde(rename = "runtime/events/subscribe")]
+    Subscribe(NativeSubscribe),
+    #[serde(rename = "runtime/events/unsubscribe")]
+    Unsubscribe(NativeUnsubscribe),
+    #[serde(rename = "runtime/account/status")]
+    AccountStatus(NativeEmpty),
+    #[serde(rename = "runtime/automations/list")]
+    ListAutomations(NativeEmpty),
+    #[serde(rename = "runtime/automation/create")]
+    CreateAutomation(NativeCreateAutomation),
+    #[serde(rename = "runtime/automation/pause")]
+    PauseAutomation(NativeAutomationAction),
+    #[serde(rename = "runtime/automation/resume")]
+    ResumeAutomation(NativeAutomationAction),
 }

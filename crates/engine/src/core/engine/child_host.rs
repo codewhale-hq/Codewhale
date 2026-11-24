@@ -1,5 +1,6 @@
 //! Private captured child configuration for the canonical Engine.
 use super::*;
+use crate::core::ops::TurnInputAuthorship;
 use crate::tools::subagent::engine::ChildAuthority;
 use anyhow::anyhow;
 
@@ -36,6 +37,18 @@ impl From<ChildHostSetup> for ChildHostState {
             job: None,
             handle: None,
         }
+    }
+}
+impl ChildHostState {
+    pub(super) fn record_executed_action(&self, tool_name: &str, tool_input: &Value) {
+        let action = crate::core::authority::auto_review::AutoReviewChildAction::from_tool_call(
+            tool_name, tool_input,
+        );
+        self.authority
+            .executed_actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(action);
     }
 }
 impl Engine {
@@ -130,6 +143,9 @@ impl Engine {
         let system = state.system_prompt.clone();
         state.job = Some(job);
         self.restore_session_history(seed, Some(system), true);
+        if let Some(state) = self.child_host.as_ref() {
+            Self::apply_child_parent_intent(&mut self.session, &state.authority.runtime);
+        }
         Ok(())
     }
 
@@ -170,6 +186,7 @@ impl Engine {
             hook_executor: self.config.hook_executor.clone(),
             verbosity: None,
             provenance: UserInputProvenance::Runtime,
+            input_authorship: TurnInputAuthorship::NotPerson,
             submission_id: state
                 .job
                 .as_ref()
@@ -594,7 +611,14 @@ impl Engine {
                             approval_deliveries.push(Box::pin(async move {
                                 match decision {
                                     Ok(reply) => handle.accept_child_approval(id, reply).await,
-                                    Err(_) => handle.deny_tool_call_unavailable(id).await,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            %id,
+                                            "child approval decision failed; denying as unavailable"
+                                        );
+                                        handle.deny_tool_call_unavailable(id).await
+                                    }
                                 }
                             }));
                         }
@@ -747,8 +771,16 @@ impl Engine {
                     &serde_json::json!({}),
                 )
                 .is_ok();
+        let admitted_mcp: HashSet<_> = authority
+            .tools_for_model(&surface.registry, &authority.agent_type)
+            .into_iter()
+            .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
+            .map(|tool| tool.name)
+            .collect();
         surface.catalog.retain(|tool| {
-            surface.registry.contains(&tool.name)
+            (surface.registry.contains(&tool.name)
+                && (!crate::mcp::McpPool::is_mcp_tool(&tool.name)
+                    || admitted_mcp.contains(&tool.name)))
                 || (discoverable && codewhale_tools::names::is_tool_search_tool(&tool.name))
                 || (code_mode && tool.name == tool_catalog::EXECUTE_TOOLS_TOOL_NAME)
         });

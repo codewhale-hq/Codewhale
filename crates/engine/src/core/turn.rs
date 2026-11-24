@@ -124,50 +124,13 @@ pub struct TurnContext {
     /// request (capability, auth, unreachable). The turn then fails on that
     /// cause, not on the context budget the recovery was trying to fix.
     pub context_recovery_rejection: Option<anyhow::Error>,
-
-    pub auto_review_denials: AutoReviewDenials,
+    pub recent_actions: Vec<RecentReviewAction>,
 }
 
-#[derive(Debug, Default)]
-pub struct AutoReviewDenials {
-    consecutive: usize,
-    recent: std::collections::VecDeque<bool>,
-    stop: Option<String>,
-}
-
-impl AutoReviewDenials {
-    const CONSECUTIVE: usize = 3;
-    const WINDOW: usize = 50;
-    const WINDOW_DENIALS: usize = 10;
-
-    pub fn record(&mut self, denied: bool) {
-        if self.stop.is_some() {
-            return;
-        }
-        self.consecutive = if denied { self.consecutive + 1 } else { 0 };
-        if self.recent.len() == Self::WINDOW {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(denied);
-        let denials = self.recent.iter().filter(|denied| **denied).count();
-        let summary = if self.consecutive >= Self::CONSECUTIVE {
-            format!("Auto-Review denied {} actions in a row", self.consecutive)
-        } else if denials >= Self::WINDOW_DENIALS {
-            format!(
-                "Auto-Review denied {denials} of the last {} actions",
-                self.recent.len()
-            )
-        } else {
-            return;
-        };
-        self.stop = Some(format!(
-            "{summary}, so the turn was stopped. Change the request, or switch to Ask."
-        ));
-    }
-
-    pub fn stop(&self) -> Option<&str> {
-        self.stop.as_deref()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentReviewAction {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 impl TurnContext {
@@ -207,7 +170,7 @@ impl TurnContext {
             compaction_refusal_notified: false,
             pending_route: None,
             context_recovery_rejection: None,
-            auto_review_denials: AutoReviewDenials::default(),
+            recent_actions: Vec::new(),
         }
     }
 
@@ -326,6 +289,7 @@ pub fn add_usage_to(total: &mut Usage, delta: &Usage) {
         add_optional_usage(total.output_audio_tokens, delta.output_audio_tokens);
     total.reasoning_replay_tokens =
         add_optional_usage(total.reasoning_replay_tokens, delta.reasoning_replay_tokens);
+    total.safety_tokens = add_optional_usage(total.safety_tokens, delta.safety_tokens);
     if let Some(delta) = delta.server_tool_use.as_ref() {
         let server_total = total.server_tool_use.get_or_insert_default();
         server_total.code_execution_requests = add_optional_usage(
@@ -336,6 +300,14 @@ pub fn add_usage_to(total: &mut Usage, delta: &Usage) {
             server_total.tool_search_requests,
             delta.tool_search_requests,
         );
+        server_total.web_search_requests =
+            add_optional_usage(server_total.web_search_requests, delta.web_search_requests);
+        server_total.web_fetch_requests =
+            add_optional_usage(server_total.web_fetch_requests, delta.web_fetch_requests);
+        server_total.tool_search = add_optional_usage(server_total.tool_search, delta.tool_search);
+        server_total.tool_fetch = add_optional_usage(server_total.tool_fetch, delta.tool_fetch);
+        server_total.tool_image_search =
+            add_optional_usage(server_total.tool_image_search, delta.tool_image_search);
     }
 }
 
@@ -448,6 +420,7 @@ mod usage_tests {
             server_tool_use: Some(ServerToolUsage {
                 code_execution_requests: Some(u32::MAX),
                 tool_search_requests: Some(2),
+                ..Default::default()
             }),
             ..Usage::default()
         });
@@ -456,6 +429,7 @@ mod usage_tests {
             server_tool_use: Some(ServerToolUsage {
                 code_execution_requests: Some(1),
                 tool_search_requests: Some(3),
+                ..Default::default()
             }),
             ..Usage::default()
         });
@@ -934,8 +908,10 @@ type SnapshotNoticeKey = (std::path::PathBuf, Option<String>);
 
 #[derive(Default)]
 struct SnapshotNoticeState {
-    warned: bool,
+    announced: Option<SnapshotsDisabledScope>,
+    announced_scopes: Vec<SnapshotsDisabledScope>,
     pending: bool,
+    resumed: bool,
     disabled: Option<SnapshotsDisabledNotice>,
 }
 
@@ -988,15 +964,29 @@ fn clear_snapshots_disabled_status(workspace: &Path, session_id: Option<&str>) {
         .get_mut(&snapshot_notice_key(workspace, session_id))
     {
         state.disabled = None;
+        if let Some(scope) = state.announced.take() {
+            state.resumed = !state.pending && scope != SnapshotsDisabledScope::HistoryRepaired;
+            if state.pending {
+                state.announced_scopes.retain(|seen| *seen != scope);
+            }
+        }
         state.pending = false;
     }
 }
 
-// Keep stderr for headless sessions. The TUI receives the same notice via the
-// existing Engine event, and `/status` reads the retained observation.
-// Production snapshot callers always supply the current Engine session id;
-// callers without one retain the legacy workspace scope.
-#[allow(clippy::print_stderr)]
+pub fn take_snapshots_resumed_notice(workspace: &Path, session_id: Option<&str>) -> bool {
+    snapshot_notices()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_mut(&snapshot_notice_key(workspace, session_id))
+        .is_some_and(|state| std::mem::take(&mut state.resumed))
+}
+
+pub fn snapshots_resumed_line(workspace: &Path, locale: codewhale_localization::Locale) -> String {
+    codewhale_localization::tr(locale, codewhale_localization::MessageId::SnapshotsResumed)
+        .replace("{workspace}", &workspace.to_string_lossy())
+}
+
 fn maybe_notify_snapshots_disabled_once(
     workspace: &Path,
     session_id: Option<&str>,
@@ -1045,10 +1035,8 @@ fn snapshot_failure_detail(error: &std::io::Error) -> String {
     }
 }
 
-/// Record the session's snapshot availability and, the first time in this
-/// session, queue its notice for the TUI and print it for headless runs.
-/// Returns whether this call delivered the notice.
-#[allow(clippy::print_stderr)]
+/// Record the session's snapshot availability and queue one notice per scope
+/// per session for the host. Returns whether this call queued it.
 fn record_snapshot_notice(
     workspace: &Path,
     session_id: Option<&str>,
@@ -1066,18 +1054,14 @@ fn record_snapshot_notice(
     let state = states
         .entry(snapshot_notice_key(workspace, session_id))
         .or_default();
-    state.disabled = Some(notice.clone());
-    if std::mem::replace(&mut state.warned, true) {
+    state.disabled = Some(notice);
+    state.resumed = false;
+    if state.announced_scopes.contains(&scope) {
         return false;
     }
+    state.announced_scopes.push(scope);
+    state.announced = Some(scope);
     state.pending = true;
-    drop(states);
-    // Headless stderr has no session locale to resolve; English is the pack
-    // this path has always printed. The TUI and `/status` localize properly.
-    eprintln!(
-        "warning: {}",
-        notice.localize(codewhale_localization::Locale::En)
-    );
     true
 }
 
@@ -1195,6 +1179,104 @@ mod snapshot_notice_tests {
         assert!(pre_turn_snapshot(&workspace, 2, 0, None, Some("session")).is_some());
         assert!(snapshots_disabled_status(&workspace, Some("session")).is_none());
         assert!(take_snapshots_disabled_notices(&workspace, Some("session")).is_empty());
+    }
+
+    #[test]
+    fn gate_is_announced_once_then_again_only_when_its_state_changes() {
+        let _env = crate::test_support::lock_test_env();
+        let root = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+        let _user_home = crate::test_support::EnvVarGuard::set("HOME", root.path());
+        let _user_profile = crate::test_support::EnvVarGuard::set("USERPROFILE", root.path());
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("large.txt"), vec![b'x'; 4096]).unwrap();
+        let mut delivered = 0;
+        for turn in 1..=10 {
+            assert!(pre_turn_snapshot(&workspace, turn, 1024, None, Some("s")).is_none());
+            assert!(post_turn_snapshot(&workspace, turn, 1024, None, Some("s")).is_none());
+            delivered += take_snapshots_disabled_notices(&workspace, Some("s")).len();
+            assert!(!take_snapshots_resumed_notice(&workspace, Some("s")));
+        }
+        assert_eq!(delivered, 1, "ten gated turns announce the gate once");
+        assert!(snapshots_disabled_status(&workspace, Some("s")).is_some());
+
+        for turn in 11..=13 {
+            assert!(pre_turn_snapshot(&workspace, turn, 0, None, Some("s")).is_some());
+        }
+        assert!(take_snapshots_resumed_notice(&workspace, Some("s")));
+        assert!(!take_snapshots_resumed_notice(&workspace, Some("s")));
+        assert!(snapshots_disabled_status(&workspace, Some("s")).is_none());
+        assert!(
+            snapshots_resumed_line(&workspace, codewhale_localization::Locale::En)
+                .contains("back on")
+        );
+
+        let gate = std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{}: over x bytes in y",
+                codewhale_snapshot::GATE_TOO_LARGE_MARKER
+            ),
+        );
+        assert!(
+            !maybe_notify_snapshots_disabled_once(&workspace, Some("s"), 1024, &gate),
+            "the same scope stays silent if it flaps back in the same session"
+        );
+        assert!(take_snapshots_disabled_notices(&workspace, Some("s")).is_empty());
+        assert!(snapshots_disabled_status(&workspace, Some("s")).is_some());
+        assert!(pre_turn_snapshot(&workspace, 14, 0, None, Some("s")).is_some());
+        assert!(!take_snapshots_resumed_notice(&workspace, Some("s")));
+
+        let files_gate = std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{}: over 2 bytes in y",
+                codewhale_snapshot::GATE_TOO_MANY_ENTRIES_MARKER
+            ),
+        );
+        assert!(
+            maybe_notify_snapshots_disabled_once(&workspace, Some("s"), 1024, &files_gate),
+            "a distinct scope is still announced once in the session"
+        );
+        assert_eq!(
+            take_snapshots_disabled_notices(&workspace, Some("s")).len(),
+            1
+        );
+        assert!(pre_turn_snapshot(&workspace, 15, 0, None, Some("s")).is_some());
+        assert!(take_snapshots_resumed_notice(&workspace, Some("s")));
+    }
+
+    #[test]
+    fn transient_snapshot_failure_cleared_before_delivery_never_emits_back_on() {
+        let workspace = tempfile::tempdir().unwrap();
+        let error = std::io::Error::other("transient io error");
+        assert!(maybe_notify_snapshots_disabled_once(
+            workspace.path(),
+            Some("s"),
+            1024,
+            &error
+        ));
+        clear_snapshots_disabled_status(workspace.path(), Some("s"));
+        assert!(take_snapshots_disabled_notices(workspace.path(), Some("s")).is_empty());
+        assert!(
+            !take_snapshots_resumed_notice(workspace.path(), Some("s")),
+            "back on must not appear without a delivered off notice"
+        );
+
+        assert!(maybe_notify_snapshots_disabled_once(
+            workspace.path(),
+            Some("s"),
+            1024,
+            &error
+        ));
+        assert_eq!(
+            take_snapshots_disabled_notices(workspace.path(), Some("s")).len(),
+            1
+        );
+        clear_snapshots_disabled_status(workspace.path(), Some("s"));
+        assert!(take_snapshots_resumed_notice(workspace.path(), Some("s")));
+        assert!(!take_snapshots_resumed_notice(workspace.path(), Some("s")));
     }
 
     /// A real error is not a gate: the user is told snapshots are failing

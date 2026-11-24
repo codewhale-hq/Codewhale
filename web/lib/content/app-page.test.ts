@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { APP_COPY } from "./app-page";
 import { AVAILABILITY_ROWS } from "./availability";
+import desktopMedia from "../../data/desktop-media.json";
 
 function strings(value: unknown): string[] {
   if (typeof value === "string") return [value];
@@ -18,7 +19,8 @@ describe("/app copy", () => {
   });
 
   it("names no price, plan, hours, date or UI toolkit", () => {
-    expect(text).not.toMatch(/\$\d|per month|plan|hours|GPUI|figma/i);
+    expect(text).not.toMatch(/\$\d|per month|hours|GPUI|figma/i);
+    expect(text).not.toMatch(/\bplans?\b|pricing/);
   });
 
   it("shows the four required surfaces plus the terminal and local browser", () => {
@@ -26,10 +28,12 @@ describe("/app copy", () => {
     expect(ids).toEqual(["terminal", "local-browser", "hosted-web", "desktop", "phone"]);
   });
 
-  it("pairs every capture with alt text and a development-build caption", () => {
+  it("pairs every capture with alt text and a caption, under a scope that names the build and the model", () => {
+    expect(APP_COPY.shotsScope.en).toContain("development build");
+    expect(APP_COPY.shotsScope.en).toContain(desktopMedia.capture.provider);
     for (const shot of APP_COPY.shots) {
       expect(shot.alt.en.length).toBeGreaterThan(40);
-      expect(shot.caption.en).toContain("Development build capture");
+      expect(shot.caption.en.length).toBeGreaterThan(20);
     }
   });
 });

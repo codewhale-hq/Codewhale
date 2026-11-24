@@ -909,7 +909,7 @@ impl App {
     #[cfg(test)]
     pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
         match self.paste_burst.flush_if_due(now) {
-            FlushResult::Paste(text) => {
+            FlushResult::Paste(text) | FlushResult::TextContinuation(text) => {
                 self.insert_str(&text);
                 true
             }
@@ -950,64 +950,17 @@ impl App {
     }
 
     /// True when this paste is the other edge of the key press that just
-    /// pasted. Shared by the composer and the modal paste route so one key
-    /// press cannot paste twice across the two.
+    /// pasted, so one key press cannot paste twice.
     pub(crate) fn clipboard_paste_within_dedupe_window(&self) -> bool {
         self.last_clipboard_paste
             .is_some_and(|last| last.elapsed() < Duration::from_millis(600))
     }
 
     /// Stamp a finished clipboard paste. Measured after the read, not before
-    /// it: `ensure_clipboard` can block for up to two seconds, and a stamp
-    /// taken before the read would let the second edge of the same key press
-    /// fall outside the window and paste again.
+    /// it: a read can take seconds, and a stamp taken before it would let the
+    /// second edge of the same key press fall outside the window.
     pub(crate) fn note_clipboard_paste(&mut self) {
         self.last_clipboard_paste = Some(Instant::now());
-    }
-
-    /// Paste from clipboard into input.
-    ///
-    /// Returns whether content was inserted. In SSH sessions without a
-    /// forwarded graphical display, the terminal client owns paste, so direct
-    /// clipboard shortcuts surface the local terminal-paste instruction while
-    /// `Event::Paste` remains the data path.
-    pub fn paste_from_clipboard(&mut self) -> bool {
-        // A terminal may forward both edges of Ctrl+V: Windows Terminal
-        // consumes the press for its own paste action and forwards only the
-        // release, while a terminal that does not own the chord forwards both.
-        // The window is measured from the end of the previous read (see
-        // `note_clipboard_paste`), so a slow clipboard open cannot push the
-        // second edge outside it.
-        if self.clipboard_paste_within_dedupe_window() {
-            return false;
-        }
-        if self.clipboard.requires_terminal_paste() {
-            self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
-            return false;
-        }
-        let content = self.clipboard.read_markdown(self.workspace.as_path());
-        self.note_clipboard_paste();
-        if let Some(content) = content {
-            self.apply_clipboard_content(content);
-            return true;
-        }
-        // The read cannot tell an empty clipboard from an unreadable one;
-        // either way the user asked to paste and nothing happened.
-        self.status_message = Some(self.tr(MessageId::ClipboardNothingToPaste).into_owned());
-        false
-    }
-
-    pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
-        match content {
-            ClipboardContent::Text(text) => {
-                self.insert_paste_text(&text);
-            }
-            ClipboardContent::Image(pasted) => {
-                let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
-                self.insert_media_attachment("image", &pasted.path, Some(&description));
-                self.status_message = Some(format!("Attached image: {description}"));
-            }
-        }
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -1998,19 +1951,27 @@ impl App {
     ///
     /// Outside both cases the call falls through to [`Self::submit_input`]
     /// unchanged so normal Enter-to-send behaviour is preserved.
-    pub fn handle_composer_enter(&mut self, protect_paste: bool) -> Option<String> {
-        if protect_paste && self.use_paste_burst_detection {
-            let now = Instant::now();
-            if self
+    ///
+    /// `now` must be the Enter event's observed timestamp, not a fresh
+    /// `Instant::now()`: `PasteBurst` records char times in event-observed
+    /// time, so a processing-time probe measures staleness as arrival gap
+    /// *plus* whatever input backlog the loop is carrying. On a loaded
+    /// runner that lag alone can exceed the stream window mid-paste, which
+    /// turns a pasted newline into a submit — the failure the real
+    /// Windows Terminal clipboard harness showed (24 lines joined, or a
+    /// mid-paste modal eating the next lines).
+    pub fn handle_composer_enter(&mut self, protect_paste: bool, now: Instant) -> Option<String> {
+        if protect_paste
+            && self.use_paste_burst_detection
+            && self
                 .paste_burst
                 .newline_should_insert_instead_of_submit(now)
-            {
-                if !self.paste_burst.append_newline_if_active(now) {
-                    self.insert_char('\n');
-                }
-                self.needs_redraw = true;
-                return None;
+        {
+            if !self.paste_burst.append_newline_if_active(now) {
+                self.insert_char('\n');
             }
+            self.needs_redraw = true;
+            return None;
         }
         self.submit_input()
     }
@@ -2023,12 +1984,12 @@ impl App {
     /// same two predicates `handle_composer_enter` acts on — the burst
     /// window and the trimmed-empty buffer — without mutating anything.
     #[must_use]
-    pub fn composer_enter_would_submit(&self, protect_paste: bool) -> bool {
+    pub fn composer_enter_would_submit(&self, protect_paste: bool, now: Instant) -> bool {
         if protect_paste
             && self.use_paste_burst_detection
             && self
                 .paste_burst
-                .newline_should_insert_instead_of_submit(Instant::now())
+                .newline_should_insert_instead_of_submit(now)
         {
             return false;
         }

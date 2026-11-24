@@ -1,24 +1,24 @@
                                                                                 
-   Settings  ────────────────────────────────────────────────────────────────── 
-                                                                                
-   Appearance   Models & providers   Work   Tools & MCP   Trust   Motion     ›  
-   Search: type to filter  (18/72)                                              
-    Display                                                                  █  
-  ❯Theme                              terminal                  ‹ ›  SAVED   █  
-   Language                           auto                      ‹ ›  SAVED   █  
-   Background                         (default)                 ✎    SAVED   █  
-   Pet mode                           Off                       [ ]  SAVED   █  
-   Quiet transcript                   On                        [x]  SAVED   █  
-   Model reasoning in chat            Off                       [ ]  SAVED   █  
-   Thinking Default Expanded          Off                       [ ]  SAVED   █  
-   Thinking Preview Lines             2                         ✎    SAVED   │  
-   Thinking background highlight      On                        [x]  SAVED   │  
-   Help Expand Groups                 Off                       [ ]  SAVED   │  
-   Contextual tips                    On                        [x]  SAVED   │  
-  system | terminal | shoreline | shoreline-light | underwater |…               
-  Enter or click again: Enter opens choices · Theme: current terminal · saved   
-  terminal · applies on save                                                    
-  Preview:  ● accept edits                                                      
-  type=filter, Up/Down=select, Enter=edit, PgUp/PgDn=scroll, Esc=close          
- ────────────────────────────────────────────────────────────────────────────── 
+ ╭ Settings ────────────────────────────────────────────── Appearance · 18/72 ╮ 
+ │  Appearance   Models & providers   Work   Tools & MCP   Trust   Motion   › │ 
+ │  Search: type to filter  (18/72)                                           │ 
+ │ ────────────────────────────────────────────────────────────────────────── │ 
+ │   Display                                                                █ │ 
+ │ ▸ Theme                              terminal                ‹ ›  SAVED  █ │ 
+ │   Language                           auto                    ‹ ›  SAVED  █ │ 
+ │   Background                         (default)               ✎    SAVED  █ │ 
+ │   Pet mode                           ○ Off                        SAVED  █ │ 
+ │   Quiet transcript                   ● On                         SAVED  █ │ 
+ │   Model reasoning in chat            ● On                         SAVED  █ │ 
+ │   Thinking Default Expanded          ○ Off                        SAVED  █ │ 
+ │   Thinking Preview Lines             2                       ✎    SAVED  │ │ 
+ │   Thinking background highlight      ● On                         SAVED  │ │ 
+ │   Help Expand Groups                 ○ Off                        SAVED  │ │ 
+ │   Contextual tips                    ● On                         SAVED  │ │ 
+ │ system | terminal | shoreline | shoreline-light | underwater |…            │ 
+ │ Enter or click again: Enter opens choices · Theme: current terminal ·      │ 
+ │ saved terminal · applies on save                                           │ 
+ │ Preview:  ● accept edits                                                   │ 
+ │ ↑↓ move · Enter Enter edits · Tab switch · Esc close                       │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
                                                                                 

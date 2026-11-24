@@ -11,10 +11,11 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::tui::views::rounded::{pad_selected_line, render_rounded_surface, rounded_titled_block};
 use codewhale_engine::automation_manager::{
     AutomationManager, AutomationRecord, AutomationSchedule, AutomationStatus,
     CreateAutomationRequest, UpdateAutomationRequest,
@@ -22,6 +23,7 @@ use codewhale_engine::automation_manager::{
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 use codewhale_tui_kit::ui_text::{grapheme_display_width, text_display_width};
 
 const DAYS: [Weekday; 7] = [
@@ -701,6 +703,7 @@ impl AutomationEditor {
                 trust_mode: None,
                 auto_approve: None,
                 delivery_mode: None,
+                disallowed_tools: Vec::new(),
             })
         }
     }
@@ -962,9 +965,6 @@ impl AutomationEditor {
         } else {
             MessageId::AutomationEditorNew
         };
-        Paragraph::new(tr(self.locale, title).into_owned())
-            .style(Style::default().fg(palette::WHALE_ACTION).bold())
-            .render(Rect::new(area.x, area.y, area.width, 1), buf);
         let subtitle = if self.picking_model {
             tr(self.locale, MessageId::AutomationEditorProvider)
                 .replace("{provider}", &self.provider)
@@ -972,10 +972,26 @@ impl AutomationEditor {
             tr(self.locale, MessageId::AutomationEditorLocalTime)
                 .replace("{zone}", &Local::now().format("%:z").to_string())
         };
-        Paragraph::new(subtitle)
-            .style(Style::default().fg(palette::TEXT_MUTED))
-            .render(Rect::new(area.x, area.y + 1, area.width, 1), buf);
-        let content = Rect::new(area.x, area.y + 2, area.width, area.height - 5);
+        let (body, content) = if area.width >= 50 && area.height >= 16 {
+            let inner =
+                render_rounded_surface(area, buf, tr(self.locale, title), Some(subtitle), true);
+            let content = Rect::new(
+                inner.x,
+                inner.y,
+                inner.width,
+                inner.height.saturating_sub(3),
+            );
+            (inner, content)
+        } else {
+            Paragraph::new(tr(self.locale, title).into_owned())
+                .style(Style::default().fg(palette::WHALE_ACTION).bold())
+                .render(Rect::new(area.x, area.y, area.width, 1), buf);
+            Paragraph::new(subtitle)
+                .style(Style::default().fg(palette::TEXT_MUTED))
+                .render(Rect::new(area.x, area.y + 1, area.width, 1), buf);
+            let content = Rect::new(area.x, area.y + 2, area.width, area.height - 5);
+            (area, content)
+        };
         if self.picking_model {
             self.render_models(content, buf);
         } else {
@@ -994,7 +1010,7 @@ impl AutomationEditor {
             } else {
                 palette::TEXT_MUTED
             }))
-            .render(Rect::new(area.x, area.bottom() - 3, area.width, 1), buf);
+            .render(Rect::new(body.x, body.bottom() - 3, body.width, 1), buf);
         let controls = if self.picking_model {
             MessageId::AutomationEditorModelControls
         } else if self.focus == Field::Prompt {
@@ -1003,10 +1019,10 @@ impl AutomationEditor {
             MessageId::AutomationEditorControls
         };
         Paragraph::new(tr(self.locale, controls).into_owned())
-            .style(Style::default().fg(palette::TEXT_DIM))
-            .render(Rect::new(area.x, area.bottom() - 2, area.width, 1), buf);
+            .style(Style::default().fg(palette::TEXT_MUTED))
+            .render(Rect::new(body.x, body.bottom() - 2, body.width, 1), buf);
         {
-            let mut x = area.x;
+            let mut x = body.x;
             for (field, key, label) in [
                 (Field::Save, "Ctrl+S", MessageId::StatusPickerActionSave),
                 (Field::Cancel, "Esc", MessageId::StatusPickerActionCancel),
@@ -1017,8 +1033,8 @@ impl AutomationEditor {
                 let text = format!("[{} {key}] ", tr(self.locale, label).trim());
                 let width = u16::try_from(text_display_width(&text))
                     .unwrap_or(u16::MAX)
-                    .min(area.right().saturating_sub(x));
-                let rect = Rect::new(x, area.bottom() - 1, width, 1);
+                    .min(body.right().saturating_sub(x));
+                let rect = Rect::new(x, body.bottom() - 1, width, 1);
                 Paragraph::new(text)
                     .style(self.style(self.focus == field))
                     .render(rect, buf);
@@ -1096,10 +1112,7 @@ impl AutomationEditor {
         };
         let focused = field == self.focus;
         let title = tr(self.locale, label).into_owned();
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(self.style(focused));
+        let block = rounded_titled_block(&title, None, focused, palette::COMPOSER_BG, area.width);
         let inner = block.inner(area);
         block.render(area, buf);
         self.hits.borrow_mut().push((area, Hit::Field(field)));
@@ -1132,7 +1145,9 @@ impl AutomationEditor {
         }
         match field {
             Field::Schedule => {
-                Paragraph::new(format!("‹ {} ›", tr(self.locale, self.preset.label())))
+                let ascii = crate::tui::color_compat::ascii_safe_enabled();
+                let (l, r) = if ascii { ("<", ">") } else { ("‹", "›") };
+                Paragraph::new(format!("{l} {} {r}", tr(self.locale, self.preset.label())))
                     .style(self.style(focused))
                     .render(inner, buf);
             }
@@ -1142,19 +1157,32 @@ impl AutomationEditor {
                     .render(inner, buf);
             }
             Field::Enabled => {
-                Paragraph::new(format!(
-                    "{} {}",
-                    if self.enabled { "[x]" } else { "[ ]" },
-                    tr(
-                        self.locale,
-                        if self.enabled {
-                            MessageId::AutomationStatusActive
+                let badge_style = if self.enabled {
+                    Style::default()
+                        .fg(palette::STATUS_SUCCESS)
+                        .add_modifier(if focused {
+                            Modifier::BOLD
                         } else {
-                            MessageId::AutomationStatusPaused
-                        }
-                    )
-                ))
-                .style(self.style(focused))
+                            Modifier::empty()
+                        })
+                } else {
+                    self.style(focused)
+                };
+                Paragraph::new(Line::from(vec![
+                    Span::styled(if self.enabled { "[x] " } else { "[ ] " }, badge_style),
+                    Span::styled(
+                        tr(
+                            self.locale,
+                            if self.enabled {
+                                MessageId::AutomationStatusActive
+                            } else {
+                                MessageId::AutomationStatusPaused
+                            },
+                        )
+                        .into_owned(),
+                        badge_style,
+                    ),
+                ]))
                 .render(inner, buf);
             }
             Field::Days => {
@@ -1199,25 +1227,30 @@ impl AutomationEditor {
 
     fn render_models(&self, area: Rect, buf: &mut Buffer) {
         let search = Rect::new(area.x, area.y, area.width, area.height.min(3));
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(tr(self.locale, MessageId::ConfigSearchLabel).into_owned())
-            .border_style(self.style(true));
+        let block = rounded_titled_block(
+            &tr(self.locale, MessageId::ConfigSearchLabel),
+            None,
+            true,
+            palette::COMPOSER_BG,
+            search.width,
+        );
         let inner = block.inner(search);
         block.render(search, buf);
         self.model_query.render(inner, buf, true);
         let rows = usize::from(area.height.saturating_sub(3));
         let models = self.filtered_models();
         if models.is_empty() {
-            Paragraph::new(tr(self.locale, MessageId::HistoryNoMatches).into_owned()).render(
-                Rect::new(
-                    area.x,
-                    search.bottom(),
-                    area.width,
-                    area.height.saturating_sub(3),
-                ),
-                buf,
-            );
+            Paragraph::new(tr(self.locale, MessageId::HistoryNoMatches).into_owned())
+                .style(Style::default().fg(palette::TEXT_MUTED))
+                .render(
+                    Rect::new(
+                        area.x,
+                        search.bottom(),
+                        area.width,
+                        area.height.saturating_sub(3),
+                    ),
+                    buf,
+                );
         }
         let start = self.model_row.saturating_sub(rows.saturating_sub(1));
         for (row, index) in models.into_iter().enumerate().skip(start).take(rows) {
@@ -1227,13 +1260,25 @@ impl AutomationEditor {
                 area.width,
                 1,
             );
-            Paragraph::new(format!(
+            let selected = row == self.model_row;
+            let text = format!(
                 "{} {}",
-                if row == self.model_row { "▸" } else { " " },
+                codewhale_tui_kit::glyphs::selection_marker(selected),
                 super::display_text(&self.model_label(index))
-            ))
-            .style(self.style(row == self.model_row))
-            .render(rect, buf);
+            );
+            if selected {
+                let sel = menu_style::selected_row_style();
+                let line = pad_selected_line(
+                    Line::from(Span::styled(text, sel)),
+                    usize::from(rect.width),
+                    sel,
+                );
+                Paragraph::new(line).render(rect, buf);
+            } else {
+                Paragraph::new(text)
+                    .style(Style::default().fg(palette::TEXT_PRIMARY))
+                    .render(rect, buf);
+            }
             self.hits.borrow_mut().push((rect, Hit::Model(index)));
         }
     }

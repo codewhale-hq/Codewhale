@@ -25,7 +25,7 @@ there.
 
 Install commands that use `latest` resolve to the latest **published** GitHub
 Release or package. Between releases, `main` may already describe the next
-version (for example a v0.10.3 source candidate before its tag). A
+version (for example a v0.10.4 source candidate before its tag). A
 prebuilt candidate is available through the official installer only after its
 tag, checksums and release assets exist. Contributors can build `main` now.
 
@@ -49,8 +49,8 @@ cargo build --release --locked -p codewhale-cli
 target/release/codewhale --version
 ```
 
-See the Cargo section for build prerequisites; use the repository's stable Rust
-selection (declared minimum 1.89). Windows uses `target/release/codewhale.exe`
+See the Cargo section for build prerequisites; use the repository's pinned Rust
+1.100.0 (declared minimum 1.89). Windows uses `target/release/codewhale.exe`
 and needs MSVC. A development build is separate from a signed release package.
 For mainland-China downloads and source validation, see [CNB mirror](CNB_MIRROR.md).
 The [Tencent Lighthouse bootstrap](../scripts/tencent-lighthouse/README.md) is
@@ -172,10 +172,10 @@ What it does (verified):
   otherwise it downloads and verifies `codew-<platform>` separately. If either
   entry doesn't match, it stops before installing anything (`codewhale install:
   checksum mismatch for …`).
-* It installs `~/.local/bin/codewhale` and `~/.local/bin/codew` from the
-  verified release bytes as two separately managed files. When both manifest
-  entries match, the download staging step uses a hard link when possible and
-  a temporary copy otherwise.
+* It installs `~/.local/bin/codewhale` first, then installs
+  `~/.local/bin/codew` as a hard link to `~/.local/bin/codewhale` when the
+  bytes match and the filesystem supports linking (falling back to a separate
+  copy otherwise), so updates never leave the two on different versions.
 * It **never uses sudo.** When the install directory is not on `PATH`, it appends one
   marked three-line block to your shell profile (see [Put it on your
   PATH](#put-it-on-your-path)), prints exactly what it added, and skips this with
@@ -231,10 +231,8 @@ Re-checked on macOS 26.1, Apple silicon (`macos-arm64`), with a fresh `HOME`:
   checksums with the system tools, and installed `codewhale` and `codew`
   (64 MiB each, Mach-O arm64) in 4.3 s. Both report
   `codewhale 0.10.0 (1be1a703b975)`. They ran without a Gatekeeper prompt.
-* When Node isn't on `PATH`, it also prints `Computer Use is included and needs
-  Node.js 20 or newer on PATH.` The core TUI works without Node, but Computer Use
-  and the JavaScript execution tool (`js_execution`) stay unavailable until Node
-  is on `PATH`.
+* The core TUI works without Node; the JavaScript execution tool
+  (`js_execution`) needs Node on `PATH`.
 * `codewhale doctor` behaves as on Linux (exit 0, `All checks complete!` with no
   key, file-based secret store under `~/.codewhale/secrets/`), except that it
   reports `✓ sandbox available: macos-seatbelt`.
@@ -414,8 +412,9 @@ options and only prints an `export` line for the current shell, so add the block
 
 ## 4. npm
 
-**Prerequisites:** Node.js 18+ and npm, with a **global prefix you can write
-to**. npm installs the registry's latest published version, never an
+**Prerequisites:** Node.js 22+ and npm, with a **global prefix you can write
+to**. On Node.js 18 or 20 the install stops and asks you to upgrade Node.js.
+npm installs the registry's latest published version, never an
 unpublished source candidate.
 
 ```bash
@@ -543,25 +542,25 @@ cargo install --path crates/cli --locked      # installs ~/.cargo/bin/codewhale
 
 Things to know (observed):
 
-* The repo contains `rust-toolchain.toml` (`channel = "stable"`). The first
-  `cargo` command inside the checkout **silently downloads the latest stable
-  toolchain** (about 250 MB), whatever your default is.
-* The workspace treats every compiler warning as an error. With Rust 1.89
-  the build **fails** after about 11 minutes with 8
-  `error: this lint expectation is unfulfilled` errors in `codewhale-tui`. Use
-  the stable toolchain the repo selects. Don't pass an older `+toolchain`.
+* The repo contains `rust-toolchain.toml` (`channel = "1.100.0"`). With rustup,
+  the first `cargo` command inside the checkout **silently downloads Rust
+  1.100.0** (about 250 MB) if you do not have it, whatever your default is.
+* The workspace treats every compiler warning as an error. The declared
+  minimum is Rust 1.89, which CI's MSRV job checks, but release binaries and
+  the repository's own checks use 1.100.0. Without rustup, use rustc 1.89 or
+  newer.
 * The workspace release profile uses thin LTO. On a 4-vCPU / 15 GB VM, the
   `codewhale-tui` crate alone compiled for more than an hour, peaking at
   6–8 GB of RAM. Budget 16 GB or more, and expect this to be the slowest install
   path by far. `target/` grew past 1.2 GB.
 
-Tested result: **works** on the repo-selected stable Rust (1.98.1).
+Tested result: **works** on Rust 1.98.1, the version the repository selected when this was measured.
 * `Finished release profile … in 83m 12s`. A Nix build competed for CPU and
   memory for most of that time, so treat it as an upper bound.
 * `target/` ended at **3.1 GB**. Delete it afterwards with `cargo clean`.
 * The binary reports `codewhale 0.10.0 (dev)`, and `exec` worked.
 * Cargo prints `warning: default toolchain implicitly overridden with
-  stable-x86_64-unknown-linux-gnu by rustup toolchain file`, which is harmless.
+  1.100.0-x86_64-unknown-linux-gnu by rustup toolchain file`, which is harmless.
 * **Cargo builds provide no `codew`.**
 
 **Upgrade:** re-run the same `cargo install … --force` (for crates.io, you can
@@ -602,8 +601,8 @@ Tested with Homebrew 7.0.6 against the v0.10.0 tap formula: the install took
 release binaries, so there's no compile. It provides **both** `codewhale` and
 `codew`. The `Hmbown/deepseek-tui` tap formula also depends on `node`, which
 pulled in 31 bottles (~560 MB) on Linux. That `node` dependency belongs to
-this tap formula only. The core TUI runs without Node; Computer Use and the JS
-execution tool use it when it is on PATH.
+this tap formula only. The core TUI runs without Node; the JS execution tool
+uses it when it is on PATH.
 
 * **Upgrade:** `brew upgrade codewhale`. (`codewhale update` refuses, and
   suggests migrating.)
@@ -665,7 +664,12 @@ Release-binary installs update themselves:
 3. The next time you start `codewhale`, before any session opens, the staged
    binary replaces the installed one. A running session is never touched.
    You see one line:
-   `Updated to v0.10.4 · What's new: https://codewhale.net/en/changelog/0.10.4 · Undo: codewhale update --rollback`.
+   `Updated to v0.10.5 · What's new: https://codewhale.net/en/changelog/0.10.5 · Undo: codewhale update --rollback (back to v0.10.4)`.
+   The Undo part appears only when the kept version can be rolled back to.
+   v0.10.3 and later refuse to roll back to v0.10.3 or earlier, because
+   workspace state they migrated cannot be checked against those releases;
+   the line then says `No rollback: …` instead, and `codewhale doctor` says
+   the same.
 
 **Until releases are signed, an update waits for your OK.** The download is
 checksum-verified, but the checksum comes from the same place as the binary, so
@@ -748,7 +752,7 @@ Every update, automatic or manual, keeps the version it replaced in
 
 ```bash
 codewhale update --rollback
-#   Rolled back to v0.10.3. v0.10.4 will not be installed automatically again; the next newer release will.
+#   Rolled back to v0.10.4. v0.10.5 will not be installed automatically again; the next newer release will.
 ```
 
 Run it again to swap forward. `codewhale update` never downgrades, and
@@ -1101,7 +1105,7 @@ The `uninstall` command exists in Codewhale 0.10.3 and later. On 0.10.2 or earli
 
 Not sure which one you have? Run `codewhale doctor --installs`: it lists every copy, who owns it and the exact command that removes it, without running or changing anything. `codewhale uninstall` (no `--yes`) shows the same classified list after its own plan.
 
-The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
+The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular files whose bytes match that receipt and, on Unix, whose hard links all belong to the receipted commands in that directory (non-command files, the receipt itself, legacy unreceipted installs, and Windows binaries must remain single-link). On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, external hard links, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
 
 The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces and services. For a receipted release copy it also removes this install's exact three-line `# >>> codewhale PATH >>>` block from your shell profiles, and the Codewhale-generated completion files at the documented paths (`~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish`, honouring `XDG_DATA_HOME` and `XDG_CONFIG_HOME`). Nothing else in a profile is touched, a symlinked or unreadable profile is left for you to edit by hand, and the completion files are kept while another Codewhale copy remains on PATH. If any of that cleanup fails, the command says so and exits non-zero even though the program is already gone. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
 
@@ -1669,8 +1673,8 @@ The `rquickjs` FreeBSD bindings are generated at build time via `bindgen` (see
 `1582ba965`/`5eb0385e8`). No separate `pkg install codewhale` port exists yet —
 a native port is tracked as the follow-up to #1097 under `packaging/freebsd/`
 (contributions welcome). Validate with `cargo check --target x86_64-unknown-freebsd -p codewhale-cli --locked`
-on the release branch; the 7×1 release matrix (Linux musl x64/arm64,
-Android arm64, macOS x64/arm64, Windows x64/arm64) stays 7 targets — FreeBSD is a
+on the release branch; the 8×1 release matrix (Linux musl x64/arm64,
+Android arm64, macOS x64/arm64, Windows x64/arm64, OpenHarmony arm64) stays 8 targets — FreeBSD is a
 source-build target, not a prebuilt asset.
 
 #### Cross-compiling from x64 to ARM64 Linux

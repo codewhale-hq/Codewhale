@@ -491,3 +491,15 @@ a.road-name:hover { text-decoration-color: currentColor; }
   .home-promo-bar-inner { gap: var(--space-2) var(--space-3); padding-block: var(--space-2); }
   .home-promo-bar p { flex-basis: 100%; }
 }
+
+/* ---------- several agents ---------- */
+.home-more { margin-top: var(--space-4); }
+.home-roles { margin-bottom: 0; border-top: 1px solid var(--line); }
+.home-roles > div { display: grid; gap: var(--space-1); padding-block: var(--space-3); border-bottom: 1px solid var(--line); }
+.home-roles dt code { color: var(--text); font-family: var(--font-mono); font-size: var(--text-mono); font-weight: 600; }
+.home-roles dd { margin: 0; color: var(--muted); font-size: 1rem; line-height: 1.5; }
+
+/* ---------- the desktop app beneath the map ---------- */
+.home-desktop { width: var(--container); max-width: 64rem; margin: clamp(2.5rem, 5vw, 3.5rem) auto 0; display: grid; gap: var(--space-3); }
+.home-desktop-caption { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+.home-desktop-caption .home-caption { flex: 1 1 24rem; margin: 0; }

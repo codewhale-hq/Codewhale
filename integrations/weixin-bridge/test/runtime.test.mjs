@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const entry = fileURLToPath(new URL("../src/index.mjs", import.meta.url));
+const WEIXIN_PROMPT = "You are being controlled from WeChat on a phone through iLink Bot. Keep answers short and plain: no wide tables, and long code only when asked. Ask for tool approvals when needed; do not assume mobile messages imply blanket approval.";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, message, timeout = 8000) {
   const deadline = Date.now() + timeout;
@@ -19,7 +20,7 @@ function incoming(id, text, user = "alice", contextToken = "context-fixture") {
 }
 async function fixture(t, options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "weixin-runtime-"));
-  const state = { polls: 0, batches: [], posts: [], sent: [], summaryQueries: [], lookups: 0, threadCreates: 0, threadReads: [], streams: new Set(), turns: [], items: [], seq: 0, approvals: [], decisions: [], logs: "" };
+  const state = { polls: 0, batches: [], posts: [], sent: [], summaryQueries: [], lookups: 0, threadCreates: 0, compacts: 0, threadReads: [], streams: new Set(), turns: [], items: [], seq: 0, approvals: [], decisions: [], logs: "" };
   const json = (response, body, status = 200) => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(JSON.stringify(body)); };
   const server = http.createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
@@ -47,8 +48,12 @@ async function fixture(t, options = {}) {
     if (url.pathname === "/v1/threads/summary") { state.summaryQueries.push((url.searchParams.get("thread_ids") || "").split(",").filter(Boolean)); return json(res, options.summaries || []); }
     if (/^\/v1\/threads\/[^/]+$/.test(url.pathname)) {
       state.threadReads.push(url.pathname);
-      return json(res, { id: url.pathname.split("/").at(-1), latest_seq: state.seq, turns: state.turns, items: state.items, pending_approvals: state.approvals });
+      if (options.failDetailUntil && Date.now() < options.failDetailUntil) return json(res, { error: "unavailable" }, 503);
+      const id = url.pathname.split("/").at(-1);
+      const foreign = options.foreignThreads?.includes(id);
+      return json(res, { id, thread: { id, workspace: foreign ? "/other/project" : dir, system_prompt: foreign ? null : WEIXIN_PROMPT }, latest_seq: state.seq, turns: state.turns, items: state.items, pending_approvals: state.approvals });
     }
+    if (url.pathname.endsWith("/compact")) { state.compacts++; return json(res, { turn: { id: "turn-compact" } }); }
     if (url.pathname === "/v1/threads/thread-1/turns") {
       state.posts.push(body);
       const turn = { id: "turn-1", thread_id: "thread-1", status: "in_progress" };
@@ -250,7 +255,7 @@ test("replacement account explicitly starts fresh while retaining the old uncert
   assert.deepEqual(retained[0].turnDelivery, old.turnDelivery); assert.equal(retained[0].activeTurnId, "old-turn");
   assert.equal(retained[0].contextToken, "old-context");
   assert.equal(f.sent.find((msg) => msg.item_list[0].text_item.text === "Created thread thread-1").context_token, "bot-B-context");
-  await delay(1100); assert.equal(f.posts.length, 0); assert.equal(f.threadReads.length, 0);
+  await delay(1100); assert.equal(f.posts.length, 0); assert.deepEqual(f.threadReads, ["/v1/threads/old-thread"], "only the startup confirmation reads it");
   assert.equal(f.sent.some((msg) => msg.item_list[0].text_item.text.includes("old private answer")), false);
 });
 
@@ -352,7 +357,7 @@ test("replacement account cannot resume the retired account's owned thread", asy
   await fs.writeFile(path.join(f.dir, "account.json"), JSON.stringify({ ...f.account, accountId: "bot-B" }));
   f.batches.push([incoming(1, "/resume thread-1")]); f.start();
   await until(() => f.sent.some((msg) => msg.item_list[0].text_item.text.includes("not owned by this account and chat")), "foreign account resumed a private conversation");
-  assert.equal(f.threadReads.length, 0); assert.equal((await f.disk()).chats.alice.bindingAccountId, "bot-A");
+  assert.deepEqual(f.threadReads, ["/v1/threads/thread-1"], "only the startup confirmation reads it"); assert.equal((await f.disk()).chats.alice.bindingAccountId, "bot-A");
 });
 
 test("restart between durable thread binding and admission update keeps the frozen prompt", async (t) => {
@@ -368,4 +373,73 @@ test("restart between durable thread binding and admission update keeps the froz
   await until(() => f.streams.size, "durable thread binding lost its pending prompt on restart");
   assert.equal(f.threadCreates, 0); assert.equal(f.posts.length, 1); assert.deepEqual(f.posts[0], request);
   assert.equal((await f.disk()).chats.alice.turnDelivery.messageKey, key);
+});
+
+const NOT_OWNED = "This chat can only use threads it started. Send /new to start a new thread.";
+const sharedMap = (extra = {}) => JSON.stringify({ chats: {
+  alice: { threadId: "thread-1", bindingAccountId: "bot-A" },
+  bob: { threadId: "thread-1", bindingAccountId: "bot-A", ...extra },
+}, messages: [], inflight: {} });
+
+test("a chat on a thread shared in an existing thread map cannot compact it", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), sharedMap());
+  f.batches.push([incoming(1, "/compact", "bob")]); f.start();
+  await until(() => f.sent.length === 1, "the compact request was not answered");
+  assert.equal(f.sent[0].item_list[0].text_item.text, NOT_OWNED);
+  assert.equal(f.compacts, 0, "compaction never reaches the shared thread");
+});
+
+test("an unsent admission aimed at a thread the chat does not own is dropped", async (t) => {
+  const f = await fixture(t); const key = JSON.stringify(["bot-A", "bob", "1"]);
+  const request = { prompt: "queued", input_summary: "queued", model: "m", mode: "agent", allow_shell: false, trust_mode: false, auto_approve: false, operation_key: "queued-operation" };
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), sharedMap({ pendingAdmission: {
+    accountId: "bot-A", actorId: "weixin-account:bot-A:user:bob", messageKey: key, request,
+    operationKey: request.operation_key, threadId: "thread-1", submitted: false, sinceSeq: null,
+  } }));
+  f.start();
+  await until(() => f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), "the admission was neither sent nor dropped");
+  assert.equal(f.posts.length, 0, "no turn reaches the shared thread");
+  assert.equal((await f.disk()).chats.bob.pendingAdmission, null);
+});
+
+test("a chat bound at upgrade to a thread the bridge did not start cannot use it", async (t) => {
+  const f = await fixture(t, { foreignThreads: ["thread-desktop"] });
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), JSON.stringify({ chats: { bob: { threadId: "thread-desktop", bindingAccountId: "bot-A" } }, messages: [], inflight: {} }));
+  f.batches.push([incoming(1, "/compact", "bob")]); f.start();
+  await until(() => f.sent.length === 1, "the compact request was not answered");
+  assert.equal(f.sent[0].item_list[0].text_item.text, NOT_OWNED);
+  f.batches.push([incoming(2, "continue the desktop work", "bob")]);
+  await until(() => f.sent.length === 2, "the prompt was not answered");
+  assert.equal(f.sent[1].item_list[0].text_item.text, NOT_OWNED);
+  assert.equal(f.compacts, 0); assert.equal(f.posts.length, 0, "nothing reaches the thread");
+  assert.equal((await f.disk()).threadOwners.some((entry) => entry.threadId === "thread-desktop"), false);
+});
+
+test("a chat on a thread shared in an existing thread map cannot decide an approval on it", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), sharedMap({ turnOrigins: [{ threadId: "thread-1", turnId: "turn-1", actorId: "weixin-account:bot-A:user:bob" }] }));
+  f.approvals = [{ id: "approval-1", turn_id: "turn-1", tool_name: "fixture-tool" }];
+  f.batches.push([incoming(1, "/allow approval-1", "bob")]); f.start();
+  await until(() => f.sent.length === 1, "the approval was not answered");
+  assert.equal(f.sent[0].item_list[0].text_item.text, NOT_OWNED);
+  assert.deepEqual(f.decisions, [], "the decision never reaches the Runtime");
+});
+
+test("an unsent admission on a pending-ownership thread is preserved when Runtime thread reads return 503 at startup", async (t) => {
+  const f = await fixture(t, { failDetailUntil: Date.now() + 3000 });
+  const key = JSON.stringify(["bot-A", "alice", "1"]);
+  const request = { prompt: "retained", input_summary: "retained", model: "m", mode: "agent", allow_shell: false, trust_mode: false, auto_approve: false, operation_key: "retained-operation" };
+  await fs.writeFile(path.join(f.dir, "thread-map.json"), JSON.stringify({ chats: { alice: {
+    threadId: "thread-1", bindingAccountId: "bot-A",
+    pendingAdmission: {
+      accountId: "bot-A", actorId: "weixin-account:bot-A:user:alice", messageKey: key, request,
+      operationKey: request.operation_key, threadId: "thread-1", submitted: false, sinceSeq: null,
+    },
+  } }, messages: [], inflight: {} }));
+  f.start();
+  await until(() => f.posts.length === 1 || f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), "admission neither posted nor dropped", 40000);
+  assert.equal(f.sent.some((msg) => msg.item_list[0].text_item.text === NOT_OWNED), false, "must not drop pending admission as unowned");
+  assert.equal(f.posts.length, 1, "retained admission posts after ownership confirms");
+  assert.equal(f.posts[0].prompt, "retained");
 });

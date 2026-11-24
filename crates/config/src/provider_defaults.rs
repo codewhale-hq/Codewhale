@@ -2,6 +2,7 @@
 //! Provider default seeds are generated from the shared descriptor owner;
 //! model aliases and completion rosters are generated from the same reviewed catalog.
 
+#[cfg(test)]
 pub(crate) use crate::catalog::reviewed::constants::*;
 pub(crate) use crate::descriptors::defaults::*;
 

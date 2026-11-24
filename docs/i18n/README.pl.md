@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fd76d718e3a2 -->
+<!-- source: README.md sha256:8f9ce64ce19c -->
 <div align="center">
 
 <picture>
@@ -27,9 +27,9 @@ To polecenie instaluje najnowsze wydanie w systemie macOS lub Linux i nie wymaga
 
 <sub>To tłumaczenie jest roboczym tekstem maszynowym i nie zostało jeszcze sprawdzone przez osobę, dla której polski jest językiem ojczystym.</sub>
 
-<img src="../../web/public/codewhale-tui-0102-demo.png" width="760" alt="Codewhale w terminalu po zadaniu demonstracyjnym. Informuje, że dodał flagę --json do export.py, że wszystkie 3 lokalne testy przeszły i że delegowany przegląd nie znalazł problemów. Lista zadań poniżej pokazuje trzy ukończone kroki, a wiersz stanu pokazuje Full Access i lokalnego dostawcę website-demo.">
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale w terminalu po prawdziwym zadaniu z deepseek-flash. Uruchomił python3 -m unittest -v test_ls.py, 2 testy przeszły, a on zgłasza, że dodał do ls.py opcję --json. Wiersz stanu pokazuje accept edits i deepseek-flash.">
 
-<sub>Kompilacja deweloperska wersji 0.10.3, jeszcze niewydanej, ze skryptowanym modelem testowym, w trybie Full Access w jednorazowym obszarze roboczym. Edycja, trzy testy i przegląd przez podagenta zostały naprawdę wykonane.</sub>
+<sub>Prawdziwa sesja na wersji deweloperskiej 0.10.3: deepseek-flash przez API DeepSeek napisał zmianę, a ty raz zezwoliłeś na uruchomienie testów.</sub>
 
 </div>
 
@@ -77,9 +77,9 @@ Wbudowano ponad 40 dostawców, w tym Anthropic, OpenAI, DeepSeek, Google, Mistra
 
 `/goal` ustawia cel, który trwa przez kolejne tury. Codewhale może podzielić pracę między [podagentów](../SUBAGENTS.md), uruchomić [Fleet](../FLEET.md) agentów z własnymi rolami i modelami albo wykonać [przepływ pracy](../WORKFLOW_AUTHORING.md) zapisany w repozytorium.
 
-### Rozszerzenia
+### Wtyczki
 
-Podłączaj [serwery MCP](../MCP.md), dodawaj [umiejętności](../SKILLS.md) i [wtyczki](../PLUGINS.md) oraz uruchamiaj [hooki](../HOOKS.md) przy zdarzeniach sesji i narzędzi. Tryb kodu (eksperymentalny, domyślnie włączony) pozwala modelowi napisać jeden program `execute_tools`, który wywołuje kilka narzędzi MCP i wtyczek; każde wywołanie nadal podlega twoim regułom zatwierdzania i zachowuje potwierdzenie. Wtyczka Computer Use dołączona do v0.10.2 (eksperymentalna, tylko macOS) może obserwować inne aplikacje i nimi sterować; pozostaje wyłączona, dopóki nie sprawdzisz jej dostępu i jej nie włączysz ([przewodnik](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/crates/tui/plugins/computer-use/README.md)). Nadchodzi w 0.10.3: wtyczka będzie wydawana [osobno](https://github.com/codewhale-hq/codewhale-cu-plugin).
+Podłączaj [serwery MCP](../MCP.md), dodawaj [umiejętności](../SKILLS.md) i [wtyczki](../PLUGINS.md) oraz uruchamiaj [hooki](../HOOKS.md) przy zdarzeniach sesji i narzędzi. Tryb kodu (eksperymentalny, domyślnie włączony) pozwala modelowi napisać jeden program `execute_tools`, który wywołuje kilka narzędzi MCP i wtyczek; każde wywołanie nadal podlega twoim regułom zatwierdzania i zachowuje potwierdzenie. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) to osobna wtyczka wydawana niezależnie (eksperymentalna, tylko macOS) i pozostaje wyłączona, dopóki nie sprawdzisz jej dostępu i jej nie włączysz.
 
 ### Sposoby uruchamiania
 
@@ -96,11 +96,9 @@ Aplikacja terminalowa, `exec`, `web` i Runtime API korzystają z jednego silnika
 
 ## Jak dba o bezpieczeństwo
 
-Dwa przełączniki określają, ile Codewhale może zrobić sam. Gdy pole wpisywania jest puste, `Tab` zmienia tryb: **Plan** czyta i szuka, ale niczego nie zmienia, **Work** edytuje pliki i uruchamia polecenia, a **Operate** ma te same uprawnienia co Work i działa, dopóki cel nie zostanie zweryfikowany albo nie będzie potrzebować ciebie. `Shift+Tab` zmienia uprawnienie. **Ask**, domyślne, stosuje zmiany plików w twoim repozytorium bez pytania i pyta przed poleceniami powłoki, które nie tylko czytają. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. Szczegóły są w [przewodniku dla v0.10.2](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MODES.md).
+Jedno pokrętło określa, ile Codewhale może zrobić sam. `Shift+Tab` przestawia je po kolei: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**, domyślne, stosuje zmiany plików wewnątrz repozytorium git bez pytania i pyta przed poleceniami. **Ask** pyta przed każdą zmianą pliku i każdym poleceniem. **Plan** czyta i szuka, ale niczego nie zmienia. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania i odrzuca te wysokiego ryzyka; przełącz na Ask, aby zatwierdzić je samodzielnie. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale, choć reguły repozytorium i zarządzane zasady nadal obowiązują. `Tab` służy tylko do uzupełniania i nigdy nie zmienia trybu, a Operate wycofano. Szczegóły są w [przewodniku po trybach](../MODES.md).
 
-Nadchodzi w 0.10.3: `Shift+Tab` stanie się jednym pokrętłem przez Ask, Accept Edits, Plan, Auto-Review i Full Access, `Tab` przestanie zmieniać tryb, a Operate zostanie wycofany. Ask będzie pytać także przed każdą zmianą pliku, a nowe ustawienie domyślne, Accept Edits, będzie stosować zmiany wewnątrz repozytorium git i nadal pytać przed poleceniami. Opisuje to [aktualny przewodnik](../MODES.md).
-
-W Ask i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
+W Ask, Accept Edits i Auto-Review polecenia działają w piaskownicy systemu operacyjnego, jeśli system ją ma: Seatbelt w macOS i bubblewrap w systemie Linux, gdy jest zainstalowany. Windows nie ma jeszcze piaskownicy systemowej, a Full Access wyłącza piaskownicę. W piaskownicy polecenia powłoki i sesje terminala nie mogą czytać magazynów poświadczeń, takich jak `~/.ssh`, `~/.aws` i pliki `.env`. `/preview-request` pokazuje następne żądanie z ukrytymi danymi, nie wysyłając go.
 
 Nie potrzebujesz konta, a klucze dodane przez `/provider` zostają na twoim komputerze. Z własnym kluczem API płacisz dostawcy bezpośrednio, a modele lokalne nie potrzebują klucza. Stopka i `/cost` pokazują koszt sesji, gdy cena jest znana; nieznana cena jest pokazywana jako nieznana, nigdy jako darmowa.
 

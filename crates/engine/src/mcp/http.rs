@@ -12,7 +12,7 @@ use super::McpTransport;
 use super::http_client::McpHttpClient;
 use super::sse::SseTransport;
 use super::streamable_http::{StreamableHttpTransport, StreamableSendError};
-use super::wire::McpSessionRejected;
+use super::wire::{McpServerReplyUnsupported, McpSessionRejected};
 pub(super) struct HttpTransport {
     mode: HttpTransportMode,
     client: McpHttpClient,
@@ -134,6 +134,22 @@ impl HttpTransport {
 
         Ok(())
     }
+
+    fn stale_session_error(
+        transport: &mut StreamableHttpTransport,
+        detail: String,
+    ) -> anyhow::Error {
+        tracing::debug!(
+            target: "mcp",
+            error = %detail,
+            "MCP Streamable HTTP session expired; clearing cached session ID"
+        );
+        transport.session_id = None;
+        McpSessionRejected(format!(
+            "MCP Streamable HTTP session expired; retry with a new session required ({detail})"
+        ))
+        .into()
+    }
 }
 
 #[async_trait::async_trait]
@@ -158,18 +174,24 @@ impl McpTransport for HttpTransport {
                     self.switch_to_sse_and_send(msg).await
                 }
                 Err(StreamableSendError::StaleSession(detail)) => {
-                    if let HttpTransportMode::Streamable(transport) = &mut self.mode {
-                        tracing::debug!(
-                            target: "mcp",
-                            error = %detail,
-                            "MCP Streamable HTTP session expired; clearing cached session ID"
-                        );
-                        transport.session_id = None;
-                    }
-                    Err(McpSessionRejected(format!(
-                        "MCP Streamable HTTP session expired; retry with a new session required ({detail})"
-                    ))
-                    .into())
+                    Err(Self::stale_session_error(transport, detail))
+                }
+                Err(StreamableSendError::Other(err)) => Err(err),
+            },
+            HttpTransportMode::Sse(transport) => transport.send(msg).await,
+        }
+    }
+
+    async fn send_reply(&mut self, msg: Vec<u8>) -> Result<()> {
+        match &mut self.mode {
+            HttpTransportMode::Streamable(transport) => match transport.send(msg).await {
+                Ok(()) => Ok(()),
+                Err(StreamableSendError::Incompatible(detail)) => Err(McpServerReplyUnsupported(
+                    format!("MCP Streamable HTTP refused a reply to a server request: {detail}"),
+                )
+                .into()),
+                Err(StreamableSendError::StaleSession(detail)) => {
+                    Err(Self::stale_session_error(transport, detail))
                 }
                 Err(StreamableSendError::Other(err)) => Err(err),
             },

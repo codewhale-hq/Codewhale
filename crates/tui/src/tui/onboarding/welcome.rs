@@ -15,7 +15,7 @@ use codewhale_palette as palette;
 pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     headline(&mut out, app, MessageId::OnboardWelcomeTitle, width);
-    out.push(Line::from(""));
+    accent_rule(&mut out, app, width);
     body(&mut out, app, MessageId::OnboardWelcomeLead, width);
     out
 }
@@ -23,47 +23,58 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
 pub fn ready_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     headline(&mut out, app, MessageId::OnboardReadyTitle, width);
-    out.push(Line::from(""));
+    accent_rule(&mut out, app, width);
     body(&mut out, app, MessageId::OnboardReadyLead, width);
-    // The offline-explore notice is durable onboarding state, not a toast:
-    // trust decisions are allowed to replace status_message without hiding
-    // that no provider route is connected.
     let notice = if app.onboarding_explore_offline {
         Some(app.tr(MessageId::OnboardOfflineNotice).into_owned())
     } else {
         app.status_message.clone()
     };
     if let Some(message) = notice {
+        let warn_fg = super::theme_or(app.ui_theme.warning, palette::STATUS_WARNING);
         out.push(Line::from(""));
-        out.push(Line::from(Span::styled(
-            message,
-            Style::default().fg(palette::STATUS_WARNING),
-        )));
+        for segment in super::wrap_words(&message, width) {
+            out.push(Line::from(Span::styled(
+                segment,
+                Style::default().fg(warn_fg),
+            )));
+        }
     }
     out
 }
 
-/// A headline is a whole sentence in several locales, so it wraps like the
-/// body it sits above. Returning a single unwrapped `Line` left the very first
-/// screen of first run reading "Codewhale arbeitet mit dir in diesem O" at 40
-/// columns — cut mid-word, on the screen that introduces the product.
+fn accent_rule(out: &mut Vec<Line<'static>>, app: &App, width: usize) {
+    let rule_width = 6.min(width);
+    if rule_width == 0 {
+        out.push(Line::from(""));
+        return;
+    }
+    let ch = if crate::tui::color_compat::ascii_safe_enabled() {
+        "-"
+    } else {
+        "─"
+    };
+    let color = super::theme_or(app.ui_theme.border, palette::BORDER_COLOR);
+    out.push(Line::from(Span::styled(
+        ch.repeat(rule_width),
+        Style::default().fg(color),
+    )));
+}
+
 fn headline(out: &mut Vec<Line<'static>>, app: &App, id: MessageId, width: usize) {
+    let fg = super::theme_or(app.ui_theme.accent_action, palette::WHALE_HUMAN);
     for segment in super::wrap_words(&app.tr(id), width) {
         out.push(Line::from(Span::styled(
             segment,
-            Style::default()
-                .fg(palette::WHALE_HUMAN)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
         )));
     }
 }
 
 fn body(out: &mut Vec<Line<'static>>, app: &App, id: MessageId, width: usize) {
+    let fg = super::theme_or(app.ui_theme.text_body, palette::TEXT_PRIMARY);
     for segment in super::wrap_words(&app.tr(id), width) {
-        out.push(Line::from(Span::styled(
-            segment,
-            Style::default().fg(palette::TEXT_PRIMARY),
-        )));
+        out.push(Line::from(Span::styled(segment, Style::default().fg(fg))));
     }
 }
 

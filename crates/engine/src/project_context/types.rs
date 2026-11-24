@@ -90,6 +90,7 @@ pub struct ProjectContext {
     pub constitution_block: Option<String>,
     /// Path to the repo constitution file that produced `constitution_block`.
     pub constitution_source_path: Option<PathBuf>,
+    pub loaded_rule_paths: Vec<PathBuf>,
     /// Project root directory
     pub project_root: PathBuf,
     /// Whether this is a trusted project
@@ -108,6 +109,7 @@ impl ProjectContext {
             warnings: Vec::new(),
             constitution_block: None,
             constitution_source_path: None,
+            loaded_rule_paths: Vec::new(),
             project_root,
             is_trusted: false,
         }
@@ -206,4 +208,90 @@ pub fn repo_relative_source_label(path: &Path, root: Option<&Path>) -> String {
         return relative.to_string_lossy().replace('\\', "/");
     }
     path.display().to_string()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PinnedProjectInstructions {
+    pub user_level: Option<String>,
+    pub user_sha256: Option<String>,
+    pub repository_level: Option<String>,
+    pub repository_sha256: Option<String>,
+    pub loaded_paths: Vec<PathBuf>,
+}
+
+impl PinnedProjectInstructions {
+    pub fn from_project_context(ctx: &ProjectContext) -> Self {
+        let user_level = super::render_instruction_scope(
+            &ctx.instruction_segments,
+            super::InstructionScope::Global,
+        )
+        .filter(|text| !text.trim().is_empty());
+
+        let repo_segments: Vec<super::InstructionSegment> = ctx
+            .instruction_segments
+            .iter()
+            .filter(|segment| {
+                segment.scope == super::InstructionScope::Project && segment.path.is_some()
+            })
+            .cloned()
+            .collect();
+        let mut repo_parts = Vec::new();
+        if let Some(rendered) =
+            super::render_instruction_scope(&repo_segments, super::InstructionScope::Project)
+            && !rendered.trim().is_empty()
+        {
+            repo_parts.push(rendered);
+        }
+        if let Some(rules) = ctx.rules_block.as_deref()
+            && !rules.trim().is_empty()
+        {
+            repo_parts.push(rules.to_string());
+        }
+        if let Some(constitution) = ctx.constitution_block.as_deref()
+            && !constitution.trim().is_empty()
+        {
+            repo_parts.push(constitution.to_string());
+        }
+        let repository_level = if repo_parts.is_empty() {
+            None
+        } else {
+            Some(repo_parts.join("\n\n"))
+        };
+
+        let user_sha256 = user_level
+            .as_deref()
+            .map(|text| codewhale_runtime::hashing::sha256_hex(text.as_bytes()));
+        let repository_sha256 = repository_level
+            .as_deref()
+            .map(|text| codewhale_runtime::hashing::sha256_hex(text.as_bytes()));
+
+        let mut loaded_paths = Vec::new();
+        let mut push_unique = |path: &PathBuf| {
+            if !loaded_paths.contains(path) {
+                loaded_paths.push(path.clone());
+            }
+        };
+        for segment in &ctx.instruction_segments {
+            if let Some(path) = segment.path.as_ref() {
+                push_unique(path);
+            }
+            if let Some(canonical) = segment.canonical_path.as_ref() {
+                push_unique(canonical);
+            }
+        }
+        for path in &ctx.loaded_rule_paths {
+            push_unique(path);
+        }
+        if let Some(path) = ctx.constitution_source_path.as_ref() {
+            push_unique(path);
+        }
+
+        Self {
+            user_level,
+            user_sha256,
+            repository_level,
+            repository_sha256,
+            loaded_paths,
+        }
+    }
 }

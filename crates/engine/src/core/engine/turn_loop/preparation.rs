@@ -69,13 +69,18 @@ impl Engine {
                 // Nothing to deliver; dropping `pending` settles it.
                 continue;
             }
-            let steer = pending.commit().trim().to_string();
+            let (raw_steer, person_text) = self.commit_pending_steer_with_intent(pending);
+            let steer = raw_steer.trim().to_string();
             accepted_steer = true;
             self.session
                 .working_set
                 .observe_user_message(&steer, &self.session.workspace);
             self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
                 .await;
+            if let Some(person_text) = person_text {
+                let index = self.session.messages.len().saturating_sub(1);
+                self.session.record_person_message(person_text, Some(index));
+            }
             let _ = self
                 .send_event(Event::status(format!(
                     "Steer input accepted: {}",
@@ -446,15 +451,47 @@ impl Engine {
         if prefix_check.get("tools_changed").and_then(Value::as_bool) == Some(true)
             || (self.session.prefix_stability.is_none() && declared_change.is_some())
         {
-            let snapshot = json!({
-                "type": "current_deferred_toolbox",
-                "active_deferred_tools": active_tools.iter().flatten().filter(|tool| tool.defer_loading.unwrap_or(false)).map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
-                "authority": "This current deferred toolbox supersedes earlier activation, eviction and unavailable notices. Tools loaded eagerly remain available. Every execution still requires current permission.",
-            });
-            self.add_session_message(self.runtime_text_message_with_turn_metadata(
-                snapshot.to_string(),
-                UserInputProvenance::Runtime,
-            ))
+            let active_deferred_tools: Vec<&str> = active_tools
+                .iter()
+                .flatten()
+                .filter(|tool| {
+                    tool.defer_loading.unwrap_or(false)
+                        && self
+                            .session
+                            .tool_activation_cache
+                            .names()
+                            .any(|cached| cached == tool.name)
+                })
+                .map(|tool| tool.name.as_str())
+                .collect();
+            let previous_deferred = self
+                .session
+                .messages
+                .iter()
+                .rev()
+                .find_map(crate::runtime_handoff::deferred_toolbox_tools);
+            let deferred_changed = match previous_deferred.as_deref() {
+                None => !active_deferred_tools.is_empty(),
+                Some(previous) => {
+                    previous.len() != active_deferred_tools.len()
+                        || previous
+                            .iter()
+                            .zip(active_deferred_tools.iter())
+                            .any(|(left, right)| left != right)
+                }
+            };
+            if deferred_changed {
+                self.add_session_message(crate::runtime_handoff::deferred_toolbox_runtime_message(
+                    &active_deferred_tools,
+                ))
+                .await;
+            }
+        }
+
+        for notice in self.take_auto_review_retry_notices() {
+            self.add_session_message(
+                self.runtime_text_message_with_turn_metadata(notice, UserInputProvenance::Runtime),
+            )
             .await;
         }
 
@@ -663,12 +700,10 @@ impl Engine {
         // Fired only on the first model request of the turn, where the raw
         // user message decides intent. See `crate::superfast`.
         if turn.step == 0 {
-            // Detached on purpose: dropping the handle does not cancel it.
             drop(crate::superfast::spawn_shadow_gate(
                 &self.api_config,
                 &stream_request.messages,
-                self.config.compaction.runtime_cost_owner.as_deref(),
-                self.config.runtime_services.accounting_origin.clone(),
+                self.turn_accounting_origin(),
                 &self.cancel_token,
             ));
         }

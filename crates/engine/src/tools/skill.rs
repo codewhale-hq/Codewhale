@@ -1,9 +1,10 @@
 //! `load_skill` tool — fetch a `SKILL.md` body and its companion-file
 //! list into the model's context (#434).
 //!
-//! Skills are discovered through this tool, not a prompt index: the full
-//! catalogue is available through `name="list"`, search through `query`,
-//! and each full body is loaded only by exact name.
+//! Skills are discovered through this tool, not a prompt index: `name="list"`
+//! lists project and Codewhale-native skills with a compact summary of
+//! external-harness roots, `query` searches across all skills, and each full
+//! body is loaded only by exact name.
 //!
 //! `load_skill name=<id>` is the canonical progressive-disclosure path. It
 //! performs a name-based host lookup, so native global skills work without
@@ -12,17 +13,24 @@
 //! only through this tool's content-bound in-memory snapshot; their mutable
 //! source paths and companion files are deliberately not returned.
 
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashSet};
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use codewhale_skills::{
-    Skill, SkillDiscoveryMode, SkillSource, discover_for_workspace,
-    skill_directories_for_workspace_and_dir, skills_directories_for_mode,
+    DEFAULT_SKILL_DESCRIPTION_CHARS, Skill, SkillCatalogGroup, SkillDiscoveryMode,
+    SkillRootCatalog, SkillSource, discover_for_workspace, skill_directories_for_workspace_and_dir,
+    skill_root_catalog_for_workspace, skills_directories_for_mode,
 };
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
+
+const MAX_QUERY_RESULTS: usize = 25;
+const MAX_UNKNOWN_SKILL_HINTS: usize = 20;
 
 pub struct LoadSkillTool;
 
@@ -34,8 +42,9 @@ impl ToolSpec for LoadSkillTool {
 
     fn description(&self) -> &'static str {
         "Load a named skill's SKILL.md body and companion file list into this turn. There is \
-         no skills index in the prompt: pass query=\"...\" to search names and descriptions, \
-         or name=\"list\" for the whole catalogue, then load the matching skill by name before \
+         no skills index in the prompt: pass query=\"...\" to search names, aliases, and descriptions, \
+         or name=\"list\" for project and Codewhale skills. Use include_external=true to list \
+         global compatible skills too. Load the matching skill by name before \
          starting that work. Resolves global and plugin skills that `read` cannot reach."
     }
 
@@ -45,11 +54,15 @@ impl ToolSpec for LoadSkillTool {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Skill id to load. Omit or pass \"list\" to see all available skills."
+                    "description": "Skill id to load. Omit or pass \"list\" for the compact catalogue, or \"list-all\" to include global compatible skills."
                 },
                 "query": {
                     "type": "string",
-                    "description": "Search term matched against skill names and descriptions. Use when no exact name is known."
+                    "description": "Words matched against skill names, aliases, and descriptions, including global compatible skills."
+                },
+                "include_external": {
+                    "type": "boolean",
+                    "description": "Include individual global compatible skills in the list instead of only their counts."
                 }
             },
             "additionalProperties": false
@@ -69,19 +82,33 @@ impl ToolSpec for LoadSkillTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let context = context.clone();
+        let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+        #[cfg(any(test, feature = "test-support"))]
+        let env_ticket = crate::test_support::env_scope_ticket();
+        #[cfg(any(test, feature = "test-support"))]
+        let test_manager = crate::extension_host::TestManagerGuard::current();
+        tokio::task::spawn_blocking(move || {
+            let _policy_scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = crate::test_support::join_env_scope(env_ticket);
+            #[cfg(any(test, feature = "test-support"))]
+            let _test_manager = test_manager.map(crate::extension_host::TestManagerGuard::install);
+            Self::execute_sync(input, &context)
+        })
+        .await
+        .map_err(|error| ToolError::execution_failed(format!("load skill task failed: {error}")))?
+    }
+}
+
+impl LoadSkillTool {
+    fn execute_sync(input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let name = input
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
 
-        // #432: walk every candidate skill directory (workspace
-        // .agents/skills, skills, .opencode/skills, .claude/skills,
-        // .cursor/skills, ~/.agents/skills, global default), merging with
-        // first-wins precedence. The
-        // tool's lookup mirrors what the system-prompt skills block
-        // already lists, so the model never asks for a name it
-        // can't find.
         let discovery_mode =
             codewhale_skills::SkillDiscoveryMode::from_config(&context.skills_config);
         let registry = discover_for_workspace(
@@ -92,55 +119,57 @@ impl ToolSpec for LoadSkillTool {
         )
         .into_enabled();
 
-        // Listing mode: empty name, "*", or "list" returns the full registry (#4651).
-        // A `query` filters that listing over the same routing metadata the
-        // ambient index carries, so a truncated index does not force the model
-        // to pull every skill to find one.
-        let query = input
+        let raw_query = input
             .get("query")
             .and_then(Value::as_str)
             .unwrap_or("")
-            .trim()
-            .to_lowercase();
-        if !query.is_empty() || name.is_empty() || name == "*" || name == "list" {
-            let all = registry.list();
-            let skills: Vec<&_> = all
+            .trim();
+        let include_external = input
+            .get("include_external")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let list_all_alias = name.eq_ignore_ascii_case("list-all") && registry.get(name).is_none();
+        let is_list_request = name.is_empty() || name == "*" || name == "list" || list_all_alias;
+
+        if !raw_query.is_empty() || is_list_request {
+            let (catalog, home) = skill_root_catalog_for_workspace(
+                &context.workspace,
+                context.skills_dir.as_deref(),
+                &context.skills_config,
+            );
+            let all: Vec<&Skill> = registry
+                .list()
                 .iter()
                 .filter(|skill| skill.invocation.model_invocable())
-                .filter(|skill| {
-                    query.is_empty()
-                        || skill.name.to_lowercase().contains(&query)
-                        || skill.description.to_lowercase().contains(&query)
-                })
                 .collect();
-            if skills.is_empty() {
-                return Ok(ToolResult::success(if query.is_empty() {
-                    "No skills installed.".to_string()
-                } else {
-                    format!("No skill matches {query:?}. Pass name=\"list\" for the catalogue.")
-                }));
+            if !raw_query.is_empty() {
+                return Ok(ToolResult::success(render_query_results(
+                    raw_query,
+                    &all,
+                    &catalog,
+                    &context.workspace,
+                    home.as_deref(),
+                )));
             }
-            let mut listing = if query.is_empty() {
-                format!("Available skills ({}):\n", skills.len())
-            } else {
-                format!("Skills matching {:?} ({}):\n", query, skills.len())
-            };
-            for skill in skills {
-                if skill.description.trim().is_empty() {
-                    listing.push_str(&format!("  - {}\n", skill.name));
-                } else {
-                    listing.push_str(&format!("  - {} — {}\n", skill.name, skill.description));
-                }
-            }
-            return Ok(ToolResult::success(listing));
+            return Ok(ToolResult::success(render_skill_listing(
+                &all,
+                &catalog,
+                &context.workspace,
+                home.as_deref(),
+                include_external || list_all_alias,
+            )));
         }
 
         let Some(skill) = registry.get(name) else {
-            let available: Vec<&str> = registry
+            let (catalog, home) = skill_root_catalog_for_workspace(
+                &context.workspace,
+                context.skills_dir.as_deref(),
+                &context.skills_config,
+            );
+            let available: Vec<&Skill> = registry
                 .list()
                 .iter()
                 .filter(|s| s.invocation.model_invocable())
-                .map(|s| s.name.as_str())
                 .collect();
             let hint = if available.is_empty() {
                 let dirs: Vec<String> = context
@@ -160,22 +189,23 @@ impl ToolSpec for LoadSkillTool {
                     .map(|p| p.display().to_string())
                     .collect();
                 if dirs.is_empty() {
-                    if codewhale_skills::SkillDiscoveryMode::from_config(&context.skills_config)
-                        == SkillDiscoveryMode::CodeWhaleOnly
-                    {
+                    if discovery_mode == SkillDiscoveryMode::CodeWhaleOnly {
                         "no skills directories found; install skills under `<workspace>/.codewhale/skills/<name>/SKILL.md` or `~/.codewhale/skills/<name>/SKILL.md`"
-                            .to_string()
+                                .to_string()
                     } else {
                         "no skills directories found; install skills under `<workspace>/.agents/skills/<name>/SKILL.md`, `~/.codewhale/skills/<name>/SKILL.md`, or `~/.deepseek/skills/<name>/SKILL.md`"
-                            .to_string()
+                                .to_string()
                     }
                 } else {
                     format!("no skills installed. Searched: {}", dirs.join(", "))
                 }
             } else {
-                format!(
-                    "skill `{name}` not found. Available: {}",
-                    available.join(", ")
+                format_unknown_skill_hint(
+                    name,
+                    &available,
+                    &catalog,
+                    &context.workspace,
+                    home.as_deref(),
                 )
             };
             return Err(ToolError::execution_failed(hint));
@@ -214,6 +244,283 @@ impl ToolSpec for LoadSkillTool {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<String>>(),
         })))
+    }
+}
+
+fn compact_skill_description(description: &str) -> String {
+    let single_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= DEFAULT_SKILL_DESCRIPTION_CHARS {
+        return single_line;
+    }
+    let mut out: String = single_line
+        .chars()
+        .take(DEFAULT_SKILL_DESCRIPTION_CHARS.saturating_sub(1))
+        .collect();
+    let trimmed = out.trim_end().len();
+    out.truncate(trimmed);
+    out.push('…');
+    out
+}
+
+fn format_skill_list_line(skill: &Skill, external_source: Option<&str>) -> String {
+    let description = compact_skill_description(&skill.description);
+    match (description.is_empty(), external_source) {
+        (true, None) => format!("  - {}\n", skill.name),
+        (true, Some(source)) => format!("  - {} ({source})\n", skill.name),
+        (false, None) => format!("  - {} — {description}\n", skill.name),
+        (false, Some(source)) => format!("  - {} — {description} ({source})\n", skill.name),
+    }
+}
+
+fn render_skill_listing(
+    skills: &[&Skill],
+    catalog: &SkillRootCatalog,
+    workspace: &std::path::Path,
+    home_dir: Option<&std::path::Path>,
+    include_external: bool,
+) -> String {
+    if skills.is_empty() {
+        return "No skills installed.".to_string();
+    }
+    let mut primary: Vec<&Skill> = Vec::new();
+    let mut external: Vec<(&Skill, String)> = Vec::new();
+    for skill in skills {
+        match catalog.classify_skill(skill, workspace, home_dir) {
+            SkillCatalogGroup::Primary => primary.push(skill),
+            SkillCatalogGroup::External { source_label } => external.push((skill, source_label)),
+        }
+    }
+
+    let mut listing = String::new();
+    if !primary.is_empty() {
+        listing.push_str(&format!("Available skills ({}):\n", primary.len()));
+        for skill in &primary {
+            listing.push_str(&format_skill_list_line(skill, None));
+        }
+    } else if !include_external {
+        listing.push_str("No project or Codewhale-native skills installed.\n");
+    }
+
+    if !external.is_empty() {
+        if !listing.is_empty() {
+            listing.push('\n');
+        }
+        if include_external {
+            listing.push_str(&format!("External harness skills ({}):\n", external.len()));
+            for (skill, source_label) in &external {
+                listing.push_str(&format_skill_list_line(skill, Some(source_label)));
+            }
+        } else {
+            let mut by_source: BTreeMap<&str, usize> = BTreeMap::new();
+            for (_, source_label) in &external {
+                *by_source.entry(source_label.as_str()).or_insert(0) += 1;
+            }
+            let summary = by_source
+                .into_iter()
+                .map(|(source, count)| format!("{source} ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            listing.push_str(&format!(
+                "External harness skills ({} omitted from default list: {summary}).\n\
+                 Use `load_skill` with `query=\"...\"` to search all skills, `name=\"list-all\"` (or `include_external=true`) to list external skills, or `name=\"<skill>\"` to load any skill directly.\n",
+                external.len()
+            ));
+        }
+    }
+
+    listing
+}
+
+fn tokenize_search_terms(text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut tokens = Vec::new();
+    for part in text.split(|ch: char| !ch.is_alphanumeric()) {
+        if part.is_empty() {
+            continue;
+        }
+        let lower = part.to_lowercase();
+        if seen.insert(lower.clone()) {
+            tokens.push(lower);
+        }
+    }
+    if tokens.is_empty() {
+        let trimmed = text.trim().to_lowercase();
+        if !trimmed.is_empty() {
+            tokens.push(trimmed);
+        }
+    }
+    tokens
+}
+
+fn score_skill_query(
+    skill: &Skill,
+    query_lower: &str,
+    query_tokens: &[String],
+) -> Option<(usize, u32)> {
+    let name_lower = skill.name.to_lowercase();
+    let name_tokens: HashSet<String> = tokenize_search_terms(&name_lower).into_iter().collect();
+    let aliases_lower: Vec<String> = skill.aliases.iter().map(|a| a.to_lowercase()).collect();
+    let alias_tokens: HashSet<String> = aliases_lower
+        .iter()
+        .flat_map(|alias| tokenize_search_terms(alias))
+        .collect();
+    let desc_lower = skill.description.to_lowercase();
+    let localized_lower: Vec<String> = skill
+        .localized_descriptions
+        .values()
+        .map(|value| value.to_lowercase())
+        .collect();
+    let mut desc_tokens: HashSet<String> = tokenize_search_terms(&desc_lower).into_iter().collect();
+    for localized in &localized_lower {
+        desc_tokens.extend(tokenize_search_terms(localized));
+    }
+
+    let mut matched_tokens = 0usize;
+    let mut score = 0u32;
+    for token in query_tokens {
+        let token_score = if name_lower == *token {
+            100
+        } else if name_tokens.contains(token) {
+            60
+        } else if alias_tokens.contains(token) {
+            50
+        } else if name_lower.contains(token) {
+            40
+        } else if aliases_lower.iter().any(|alias| alias.contains(token)) {
+            30
+        } else if desc_tokens.contains(token) {
+            20
+        } else if desc_lower.contains(token)
+            || localized_lower.iter().any(|text| text.contains(token))
+        {
+            10
+        } else {
+            0
+        };
+        if token_score > 0 {
+            matched_tokens += 1;
+            score += token_score;
+        }
+    }
+    if matched_tokens == 0 {
+        return None;
+    }
+    if name_lower == query_lower {
+        score += 200;
+    } else if aliases_lower.iter().any(|alias| alias == query_lower) {
+        score += 150;
+    }
+    Some((matched_tokens, score))
+}
+
+fn render_query_results(
+    raw_query: &str,
+    skills: &[&Skill],
+    catalog: &SkillRootCatalog,
+    workspace: &std::path::Path,
+    home_dir: Option<&std::path::Path>,
+) -> String {
+    let query_lower = raw_query.to_lowercase();
+    let query_tokens = tokenize_search_terms(raw_query);
+
+    let mut ranked: Vec<_> = skills
+        .iter()
+        .filter_map(|skill| {
+            let score = score_skill_query(skill, &query_lower, &query_tokens)?;
+            let (is_primary, external_source) =
+                match catalog.classify_skill(skill, workspace, home_dir) {
+                    SkillCatalogGroup::Primary => (true, None),
+                    SkillCatalogGroup::External { source_label } => (false, Some(source_label)),
+                };
+            Some((score, is_primary, *skill, external_source))
+        })
+        .collect();
+
+    if ranked.is_empty() {
+        return format!(
+            "No skill matches {query_lower:?}. Pass name=\"list\" for project/Codewhale skills or refine your query."
+        );
+    }
+
+    ranked.sort_by_key(|(score, primary, skill, _)| {
+        (Reverse(*score), Reverse(*primary), &skill.name)
+    });
+
+    let total_matches = ranked.len();
+    let shown = ranked
+        .into_iter()
+        .take(MAX_QUERY_RESULTS)
+        .collect::<Vec<_>>();
+    let mut listing = if total_matches > shown.len() {
+        format!(
+            "Skills matching {query_lower:?} (showing {} of {total_matches}):\n",
+            shown.len()
+        )
+    } else {
+        format!("Skills matching {query_lower:?} ({}):\n", shown.len())
+    };
+    for (_, _, skill, external_source) in &shown {
+        listing.push_str(&format_skill_list_line(skill, external_source.as_deref()));
+    }
+    if total_matches > shown.len() {
+        listing.push_str(&format!(
+            "  ... {} more match(es); refine `query` to narrow results.\n",
+            total_matches - shown.len()
+        ));
+    }
+    listing
+}
+
+fn format_unknown_skill_hint(
+    name: &str,
+    available: &[&Skill],
+    catalog: &SkillRootCatalog,
+    workspace: &std::path::Path,
+    home_dir: Option<&std::path::Path>,
+) -> String {
+    let mut primary: Vec<&str> = Vec::new();
+    let mut external: Vec<&str> = Vec::new();
+    for skill in available {
+        match catalog.classify_skill(skill, workspace, home_dir) {
+            SkillCatalogGroup::Primary => primary.push(skill.name.as_str()),
+            SkillCatalogGroup::External { .. } => external.push(skill.name.as_str()),
+        }
+    }
+    if !primary.is_empty() {
+        let mut shown = primary
+            .iter()
+            .take(MAX_UNKNOWN_SKILL_HINTS)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if primary.len() > MAX_UNKNOWN_SKILL_HINTS {
+            shown.push_str(&format!(
+                " (+{} more)",
+                primary.len() - MAX_UNKNOWN_SKILL_HINTS
+            ));
+        }
+        if external.is_empty() {
+            format!("skill `{name}` not found. Available: {shown}")
+        } else {
+            format!(
+                "skill `{name}` not found. Available: {shown} (plus {} external harness skill(s); use `load_skill` with `query=\"...\"` to search)",
+                external.len()
+            )
+        }
+    } else {
+        let mut shown = external
+            .iter()
+            .take(MAX_UNKNOWN_SKILL_HINTS)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if external.len() > MAX_UNKNOWN_SKILL_HINTS {
+            shown.push_str(&format!(
+                " (+{} more; use `load_skill` with `query=\"...\"`)",
+                external.len() - MAX_UNKNOWN_SKILL_HINTS
+            ));
+        }
+        format!("skill `{name}` not found. Available: {shown}")
     }
 }
 
@@ -261,7 +568,7 @@ fn ensure_reviewed_plugin_skill_is_current_for(
 /// cross-reference the system-prompt catalogue. Companion-file paths
 /// land at the bottom under a clearly-named heading so the model can
 /// open them with `read_file` if they're relevant to the task.
-fn format_skill_body(skill: &Skill) -> String {
+pub(crate) fn format_skill_body(skill: &Skill) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
     if !skill.description.trim().is_empty() {
@@ -317,6 +624,10 @@ fn format_skill_body(skill: &Skill) -> String {
         }
     }
     out
+}
+
+pub(crate) fn bundled_creator_skill_body(name: &str) -> Option<String> {
+    codewhale_skills::bundled_creator_skill(name).map(|skill| format_skill_body(&skill))
 }
 
 /// List sibling files of `SKILL.md` in the skill's own directory.
@@ -681,6 +992,7 @@ mod tests {
     #[tokio::test]
     async fn execute_finds_skills_in_opencode_dir_via_workspace_discovery() {
         let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(&tmp.path().join("home"));
         let workspace = tmp.path().to_path_buf();
         crate::test_support::trust_workspace(&workspace);
         // Skill installed under workspace `.opencode/skills` (#432).
@@ -693,11 +1005,7 @@ mod tests {
             "Body content marker.",
         );
 
-        let mut context = ToolContext::new(workspace);
-        // The skill tool reads $HOME for the global default; pin it to a
-        // tempdir so the test is hermetic regardless of the host's
-        // ~/.deepseek/skills.
-        context.workspace = tmp.path().to_path_buf();
+        let context = ToolContext::new(workspace);
 
         let tool = LoadSkillTool;
         let result = tool
@@ -732,6 +1040,7 @@ mod tests {
     #[tokio::test]
     async fn execute_respects_codewhale_only_skill_discovery() {
         let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(&tmp.path().join("home"));
         let workspace = tmp.path().to_path_buf();
         crate::test_support::trust_workspace(&workspace);
         write_skill(
@@ -818,6 +1127,7 @@ mod tests {
     #[tokio::test]
     async fn execute_returns_helpful_error_for_unknown_skill() {
         let tmp = tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(&tmp.path().join("home"));
         let workspace = tmp.path().to_path_buf();
         crate::test_support::trust_workspace(&workspace);
         // One real skill so the available list is non-empty.
@@ -843,6 +1153,7 @@ mod tests {
     #[tokio::test]
     async fn model_load_and_listing_obey_independent_invocation_gates() {
         let tmp = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::SealedHome::at(&tmp.path().join("home"));
         let workspace = tmp.path().join("workspace");
         crate::test_support::trust_workspace(&workspace);
         let root = workspace.join(".codewhale/skills");
@@ -925,5 +1236,192 @@ mod tests {
         let plain = format_skill_body(plain);
         assert!(plain.contains("Base directory for this skill"));
         assert!(!plain.contains("Host notes"));
+    }
+
+    #[tokio::test]
+    async fn execute_list_omits_external_harness_skills_by_default_and_allows_direct_load() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cw_home = tmp.path().join("cw-home");
+        let workspace = tmp.path().join("workspace");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _cw_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &cw_home);
+        fs::create_dir_all(&workspace).unwrap();
+        crate::test_support::trust_workspace(&workspace);
+
+        let long_description = format!(
+            "Deploy project release artifacts safely. {}",
+            "Extra verbose detail. ".repeat(10)
+        );
+        write_skill(
+            &workspace.join(".codewhale").join("skills"),
+            "proj-deploy",
+            &long_description,
+            "Project body.",
+        );
+        write_skill(
+            &cw_home.join("skills"),
+            "cw-helper",
+            "Codewhale native helper",
+            "Native body.",
+        );
+        write_skill(
+            &home.join(".claude").join("skills"),
+            "claude-figma",
+            "External Claude skill",
+            "Claude external body.",
+        );
+        write_skill(
+            &home.join(".agents").join("skills"),
+            "agents-social",
+            "External Agents skill",
+            "Agents external body.",
+        );
+
+        let context = ToolContext::new(workspace);
+        let tool = LoadSkillTool;
+        assert_eq!(
+            tool.input_schema()["properties"]["include_external"]["type"],
+            "boolean"
+        );
+
+        let default_list = tool
+            .execute(json!({"name": "list"}), &context)
+            .await
+            .expect("default list");
+        assert!(default_list.success);
+        assert!(default_list.content.contains("Available skills (2)"));
+        assert!(default_list.content.contains("proj-deploy —"));
+        assert!(
+            default_list
+                .content
+                .contains("cw-helper — Codewhale native helper")
+        );
+        assert!(!default_list.content.contains("  - claude-figma"));
+        assert!(!default_list.content.contains("  - agents-social"));
+        assert!(
+            default_list
+                .content
+                .contains("External harness skills (2 omitted")
+        );
+        assert!(default_list.content.contains("~/.claude/skills (1)"));
+        assert!(default_list.content.contains("~/.agents/skills (1)"));
+        assert!(default_list.content.contains("query="));
+        assert!(default_list.content.contains("include_external=true"));
+        let proj_line = default_list
+            .content
+            .lines()
+            .find(|line| line.contains("proj-deploy"))
+            .expect("proj-deploy line");
+        assert!(proj_line.ends_with('…'), "{proj_line}");
+
+        let with_external = tool
+            .execute(json!({"name": "list", "include_external": true}), &context)
+            .await
+            .expect("list with include_external");
+        assert!(with_external.content.contains("  - claude-figma"));
+        assert!(with_external.content.contains("  - agents-social"));
+
+        let list_all = tool
+            .execute(json!({"name": "list-all"}), &context)
+            .await
+            .expect("list-all");
+        assert!(list_all.content.contains("  - claude-figma"));
+        assert!(list_all.content.contains("  - agents-social"));
+
+        let direct = tool
+            .execute(json!({"name": "claude-figma"}), &context)
+            .await
+            .expect("direct load of external skill must still work");
+        assert!(direct.content.contains("Claude external body."));
+    }
+
+    #[tokio::test]
+    async fn execute_query_ranks_multi_word_tokenized_matches() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cw_home = tmp.path().join("cw-home");
+        let workspace = tmp.path().join("workspace");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _cw_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &cw_home);
+        fs::create_dir_all(&workspace).unwrap();
+        crate::test_support::trust_workspace(&workspace);
+
+        let project_skills = workspace.join(".codewhale").join("skills");
+        let gates_dir = project_skills.join("cw-gates");
+        fs::create_dir_all(&gates_dir).unwrap();
+        fs::write(
+            gates_dir.join("SKILL.md"),
+            "---\nname: cw-gates\ndescription: Verify Rust compilation, clippy, and test gates.\naliases-for: [build-checks]\n---\nGate steps.\n",
+        )
+        .unwrap();
+        write_skill(
+            &project_skills,
+            "release-gates",
+            "Final release build checklists and gates",
+            "Release body.",
+        );
+        write_skill(
+            &project_skills,
+            "rust-tips",
+            "General Rust ownership notes",
+            "Tips body.",
+        );
+        write_skill(
+            &project_skills,
+            "moda-video",
+            "Generate marketing videos",
+            "Video body.",
+        );
+        write_skill(
+            &home.join(".claude").join("skills"),
+            "rust-build-runner",
+            "Run rust build and gates in external harness",
+            "External runner.",
+        );
+
+        let context = ToolContext::new(workspace);
+        let result = LoadSkillTool
+            .execute(json!({"query": "rust build gates"}), &context)
+            .await
+            .expect("multi-word query");
+        assert!(result.success);
+        let content = &result.content;
+        let gates_pos = content.find("  - cw-gates").expect("cw-gates matched");
+        let ext_pos = content
+            .find("  - rust-build-runner")
+            .expect("external skill searchable via query");
+        let partial_two_pos = content
+            .find("  - release-gates")
+            .expect("2-of-3 partial match included");
+        let partial_one_pos = content
+            .find("  - rust-tips")
+            .expect("1-of-3 partial match included");
+        assert!(gates_pos < partial_two_pos, "{content}");
+        assert!(ext_pos < partial_two_pos, "{content}");
+        assert!(partial_two_pos < partial_one_pos, "{content}");
+        assert!(content.contains("(~/.claude/skills)"), "{content}");
+        assert!(!content.contains("moda-video"), "{content}");
+
+        let punctuated = LoadSkillTool
+            .execute(json!({"query": "rust/build, gates!"}), &context)
+            .await
+            .expect("punctuated multi-word query");
+        assert!(punctuated.content.contains("  - cw-gates"));
+
+        let alias = LoadSkillTool
+            .execute(json!({"query": "build-checks"}), &context)
+            .await
+            .expect("alias query");
+        assert!(
+            alias
+                .content
+                .lines()
+                .nth(1)
+                .unwrap()
+                .contains("  - cw-gates")
+        );
     }
 }

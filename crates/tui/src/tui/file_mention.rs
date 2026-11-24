@@ -32,6 +32,7 @@ use codewhale_core::{
     ContextReference, ContextReferenceKind, ContextReferenceSource, MediaAttachmentReference,
     media_attachment_references,
 };
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_runtime::working_set::Workspace;
 
 /// Maximum number of `@`-mentions whose contents are inlined into one user
@@ -334,7 +335,8 @@ pub fn apply_mention_menu_selection(app: &mut App, entries: &[String]) -> bool {
     super::file_frecency::record_mention(&app.workspace, replacement);
     replace_file_mention(app, byte_start, &partial, &file_mention_body(replacement));
     app.mention_menu_hidden = false;
-    app.status_message = Some(format!("Attached @{replacement}"));
+    app.status_message =
+        Some(tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", replacement));
     true
 }
 
@@ -355,6 +357,7 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
     }
     if candidates.is_empty() {
         app.status_message = Some(no_file_mention_matches_status(
+            app.ui_locale,
             &partial,
             app.mention_walk_depth,
         ));
@@ -369,7 +372,8 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
             &partial,
             &file_mention_body(&candidates[0]),
         );
-        app.status_message = Some(format!("Attached @{}", candidates[0]));
+        app.status_message =
+            Some(tr(app.ui_locale, MessageId::MentionAttached).replace("{path}", &candidates[0]));
         return true;
     }
     let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
@@ -392,18 +396,20 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
         .map(|c| format!("@{c}"))
         .collect::<Vec<_>>()
         .join(", ");
-    app.status_message = Some(format!("Matches: {preview}"));
+    app.status_message =
+        Some(tr(app.ui_locale, MessageId::MentionMatches).replace("{preview}", &preview));
     true
 }
 
-fn no_file_mention_matches_status(partial: &str, walk_depth: usize) -> String {
-    if path_partial_reaches_walk_depth(partial, walk_depth) {
-        format!(
-            "No files match @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 to search deeper)"
-        )
+fn no_file_mention_matches_status(locale: Locale, partial: &str, walk_depth: usize) -> String {
+    let id = if path_partial_reaches_walk_depth(partial, walk_depth) {
+        MessageId::MentionNoMatchesDepth
     } else {
-        format!("No files match @{partial}")
-    }
+        MessageId::MentionNoMatches
+    };
+    tr(locale, id)
+        .replace("{partial}", partial)
+        .replace("{walk_depth}", &walk_depth.to_string())
 }
 
 fn path_partial_reaches_walk_depth(partial: &str, walk_depth: usize) -> bool {
@@ -514,9 +520,10 @@ pub fn user_request_with_file_mentions_cached(
 }
 
 #[must_use]
-pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
+pub fn pending_context_previews(input: &str, locale: Locale) -> Vec<FileMentionPreview> {
     let mut previews = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let resolved_on_send = tr(locale, MessageId::ComposerContextResolvedOnSend);
     for mention in extract_file_mentions(input)
         .into_iter()
         .take(MAX_FILE_MENTIONS_PER_MESSAGE)
@@ -531,7 +538,7 @@ pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
             previews.push(FileMentionPreview {
                 kind: "git".to_string(),
                 label: kind.label().to_string(),
-                detail: Some("resolved on send".to_string()),
+                detail: Some(resolved_on_send.to_string()),
                 included: false,
                 removable: false,
             });
@@ -544,7 +551,7 @@ pub fn pending_context_previews(input: &str) -> Vec<FileMentionPreview> {
             detail: Some(if media {
                 "use /attach for media bytes".to_string()
             } else {
-                "resolved on send".to_string()
+                resolved_on_send.to_string()
             }),
             // Lexical preview deliberately does not stat the path while the
             // user types. Exact inclusion/missing metadata is resolved once,
@@ -830,15 +837,34 @@ fn stabilize_screencapture_file(path: &Path, artifact_dir: &Path) -> Option<Path
     } else {
         codewhale_util::files::WorkspaceFile::open
     };
-    let target = open(root, &relative, true).ok()?;
+    let target = match open(root, &relative, true) {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(%error, "screenshot stabilization target unavailable");
+            return None;
+        }
+    };
     // An existing regular destination is reused; a link there fails to open.
     if target.open_file().is_ok() {
         return Some(dest);
     }
-    if std::fs::metadata(path).ok()?.len() > MAX_STABLE_ATTACHMENT_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > MAX_STABLE_ATTACHMENT_BYTES => {
+            tracing::warn!(path = %path.display(), "screenshot too large to stabilize");
+            return None;
+        }
+        Ok(_) => match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "screenshot read failed");
+                return None;
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "screenshot metadata failed");
+            return None;
+        }
+    };
     match target.publish(&bytes) {
         Ok(()) => Some(dest),
         // Lost a race to another writer of the same name: reuse only if what
@@ -848,7 +874,10 @@ fn stabilize_screencapture_file(path: &Path, artifact_dir: &Path) -> Option<Path
         {
             Some(dest)
         }
-        Err(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "screenshot stabilization publish failed");
+            None
+        }
     }
 }
 
@@ -1838,7 +1867,7 @@ mod tests {
 
     #[test]
     fn pending_context_preview_is_lexical_and_does_not_probe_paths() {
-        let previews = pending_context_previews("read @guide.md and @missing.md");
+        let previews = pending_context_previews("read @guide.md and @missing.md", Locale::En);
 
         assert_eq!(previews.len(), 2);
         assert_eq!(previews[0].kind, "mention");
@@ -1858,7 +1887,7 @@ mod tests {
         let attached = tmp.path().join("photo.png").display().to_string();
         let input = format!("inspect @photo.png\n[Attached image: {attached}]");
 
-        let previews = pending_context_previews(&input);
+        let previews = pending_context_previews(&input, Locale::En);
 
         assert!(
             previews
@@ -2459,10 +2488,17 @@ mod tests {
 
     #[test]
     fn composer_preview_lists_git_mentions_without_running_git() {
-        let previews = pending_context_previews("@git @diff");
+        let previews = pending_context_previews("@git @diff", Locale::En);
         let kinds: Vec<&str> = previews.iter().map(|p| p.kind.as_str()).collect();
         assert_eq!(kinds, vec!["git", "git"]);
         assert!(previews.iter().all(|p| !p.included));
+        let localized = pending_context_previews("@git @notes.md", Locale::ZhHans);
+        assert!(
+            localized
+                .iter()
+                .all(|p| p.detail.as_deref() == Some("发送时解析")),
+            "{localized:?}"
+        );
     }
 
     /// #4067 review follow-up: `mention_menu_limit = 0` is a documented way to

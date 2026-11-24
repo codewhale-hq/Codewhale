@@ -37,6 +37,8 @@ pub(super) fn end_turn_scoped_denials(app: &mut App) {
 pub(super) fn reset_approval_scope_for_new_conversation(app: &mut App) {
     app.approval_session_denied.clear();
     app.approval_session_approved.clear();
+    app.auto_review_blocked_receipts.clear();
+    app.pending_auto_review_retry = None;
     crate::tui::pending_requests::clear_all(app);
 }
 
@@ -113,7 +115,7 @@ pub(super) fn app_auto_approve_enabled(app: &App) -> bool {
 /// Shell/trust bits do not affect disposition; mode + approval_mode + the
 /// full-access shape (Bypass) are what the shared resolver consults.
 fn app_turn_authority_for_approvals(app: &App) -> codewhale_engine::core::authority::TurnAuthority {
-    codewhale_engine::core::authority::TurnAuthority::from_effective_fields(
+    codewhale_engine::core::authority::TurnAuthority::for_tui_surface(
         app.mode,
         true,
         false,
@@ -134,7 +136,7 @@ pub(super) fn auto_approval_decider(
         false,
         false,
         approval_force_prompt,
-        false,
+        "",
     ) {
         ApprovalRequestDisposition::AutoApprove => {
             codewhale_engine::approval_log::ApprovalDecider::Posture
@@ -155,8 +157,7 @@ pub(super) fn resolve_ui_approval_disposition(
         is_session_approved_for_tool(app, tool_name, grouping_key),
         is_session_denied_for_key(app, approval_key),
         approval_force_prompt,
-        // This namespace is minted by the Engine, not by plugin card text.
-        approval_key.starts_with("extcall:ext:"),
+        approval_key,
     );
     // Full Access holds a required prompt only because a programme with no
     // person at the card must not be stranded by one. This surface always has
@@ -201,7 +202,9 @@ pub(super) async fn resolve_stale_parent_request(
                 "session_id": app.current_session_id,
             }),
         );
-        let _ = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+        if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
+            tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+        }
         return true;
     }
     if !(app.suppress_stream_events_until_turn_complete || !app.is_loading) {
@@ -218,7 +221,9 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle.deny_tool_call_unavailable(id.clone()).await;
+            if let Err(error) = engine_handle.deny_tool_call_unavailable(id.clone()).await {
+                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+            }
             true
         }
         Event::ElevationRequired {
@@ -231,9 +236,12 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle
+            if let Err(error) = engine_handle
                 .deny_tool_call_unavailable(tool_id.clone())
-                .await;
+                .await
+            {
+                tracing::warn!(%error, tool_id = %tool_id, "stale-request resolution op rejected");
+            }
             true
         }
         Event::UserInputRequired { id, .. }
@@ -246,7 +254,9 @@ pub(super) async fn resolve_stale_parent_request(
                     "session_id": app.current_session_id,
                 }),
             );
-            let _ = engine_handle.cancel_user_input(id.clone()).await;
+            if let Err(error) = engine_handle.cancel_user_input(id.clone()).await {
+                tracing::warn!(%error, tool_id = %id, "stale-request resolution op rejected");
+            }
             true
         }
         _ => false,

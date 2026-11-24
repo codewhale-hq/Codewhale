@@ -3,6 +3,10 @@
 > 英文原文：[HOOKS.md](../HOOKS.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-09-29。
 
+你添加到 Codewhale 的一切都叫插件。`config.toml` 或项目 `hooks.toml` 里的 hook 是 **Hook** 类插件；插件包也可以携带 hook。
+hook 仍在终端的 Plugins → Hooks 和桌面端的 Customize › Hooks 管理；把所有种类放在一个插件列表里是
+0.10.3 的计划，当前版本尚无。配置和 `/hooks` 命令都不变。
+
 Hooks 会在 Codewhale **TUI** 到达生命周期节点时运行一条 shell 命令。它们是普通进程：通过环境变量接收上下文，其中一些会在 stdin 上收到 JSON 载荷，还有三个可以引导 Codewhale 接下来做什么。
 
 本页是当前已实现内容的权威参考。与 `config.toml` 其余部分重叠的配置语法见 [CONFIGURATION.md](CONFIGURATION.md)；本文件是逐事件的约定说明。
@@ -217,7 +221,7 @@ stdin 载荷不会改变上述环境变量中的回执。`completion` 表示观�
 
 只有带有有效且已落定回执的原生 shell 调用才会生成这份 stdin 文档。不支持或未观察到结果的路径不会生成文档；缺失仍表示未知。hook 仍然只观察结果：其 stdout 不能允许、拒绝或改写已完成的调用，后台 hook 也不会被等待。`on_error` 继续只接收环境变量中的回执。
 
-**模式拼写说明。** UI 触发的事件（`session_start`、`session_end`、`message_submit`、`tool_call_after`、`mode_change`、`on_error`、`turn_end`、`subagent_*`、`session_busy`、`session_idle`、`session_error`、`waiting_for_user`）会将 `DEEPSEEK_MODE` 设为 UI 标签——`ACT`、`PLAN`、`OPERATE`。`tool_call_before` 在引擎内部触发，并使用引擎自己的模式拼写（`Agent`、`Plan`、`Operate`）。`mode` 条件不区分大小写比较，因此 `{ type = "mode", mode = "plan" }` 两者都能匹配，但精确字符串匹配 `$DEEPSEEK_MODE` 的 hook 应同时接受两种拼写。
+**模式拼写说明。** UI 触发的事件（`session_start`、`session_end`、`message_submit`、`tool_call_after`、`mode_change`、`on_error`、`turn_end`、`subagent_*`、`session_busy`、`session_idle`、`session_error`、`waiting_for_user`）会将 `DEEPSEEK_MODE` 设为 hook 标签：Work 模式为 `ACT`，Plan 模式为 `PLAN`。`tool_call_before` 在引擎内部触发，并使用引擎自己的模式拼写（Work 模式为 `Agent`，另一种为 `Plan`）。`mode` 条件不区分大小写比较，因此 `{ type = "mode", mode = "plan" }` 两者都能匹配，但精确字符串匹配 `$DEEPSEEK_MODE` 的 hook 应同时接受两种拼写。`ACT` 和 `Agent` 是 Work 模式改名之前的名称，保留它们是为了让已有的 hook 继续匹配。已退役的 Operate 模式不再以 `OPERATE` 或 `Operate` 发送；原本使用它的会话会报告 Work 模式。
 
 **`shell_env` 是受限的那个。** 它只接收 `DEEPSEEK_TOOL_NAME` 和 `DEEPSEEK_TOOL_ARGS`——没有会话 id、工作区、模型或模式。因此，`shell_env` hook 上的 `{ type = "mode", … }` 条件会在加载时被拒绝；请改用 `tool_name` 或 `tool_category` 来限定作用域。
 

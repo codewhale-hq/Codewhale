@@ -32,12 +32,16 @@ export interface Harness {
   env: Env;
   written: DataPoint[];
   limited: string[];
+  ingestLimited: string[];
 }
 
 /** An `Env` whose bindings record instead of calling Cloudflare. */
-export function harness(options: { rateLimit?: boolean } = {}): Harness {
+export function harness(
+  options: { rateLimit?: boolean; ingestRateLimit?: boolean | number } = {},
+): Harness {
   const written: DataPoint[] = [];
   const limited: string[] = [];
+  const ingestLimited: string[] = [];
   const env: Env = {
     TELEMETRY: {
       writeDataPoint(point) {
@@ -57,7 +61,22 @@ export function harness(options: { rateLimit?: boolean } = {}): Harness {
       },
     };
   }
-  return { env, written, limited };
+  if (options.ingestRateLimit !== undefined) {
+    const ingestRateLimit = options.ingestRateLimit;
+    const counts = new Map<string, number>();
+    env.INGEST_RATE_LIMITER = {
+      async limit({ key }) {
+        ingestLimited.push(key);
+        if (typeof ingestRateLimit === "boolean") {
+          return { success: ingestRateLimit };
+        }
+        const next = (counts.get(key) ?? 0) + 1;
+        counts.set(key, next);
+        return { success: next <= ingestRateLimit };
+      },
+    };
+  }
+  return { env, written, limited, ingestLimited };
 }
 
 const ORIGIN = "https://telemetry.invalid";

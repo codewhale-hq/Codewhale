@@ -613,10 +613,10 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let style = Style::default()
         .fg(app.ui_theme.text_body)
-        .bg(app.ui_theme.panel_bg);
+        .bg(app.ui_theme.composer_bg);
     let muted = Style::default()
         .fg(app.ui_theme.text_muted)
-        .bg(app.ui_theme.panel_bg);
+        .bg(app.ui_theme.composer_bg);
     let mut lines = Vec::new();
     #[cfg(all(unix, not(target_env = "ohos")))]
     {
@@ -724,8 +724,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                     _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
                 };
-                let command: String = job.command.chars().take(32).collect();
-                let ellipsis = if job.command.chars().count() > 32 {
+                let mut graphemes = unicode_segmentation::UnicodeSegmentation::graphemes(
+                    job.command.as_str(),
+                    true,
+                );
+                let command: String = graphemes.by_ref().take(32).collect();
+                let ellipsis = if graphemes.next().is_some() {
                     "…"
                 } else {
                     ""
@@ -772,7 +776,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
         let mut safe = String::new();
-        codewhale_tui_kit::osc8::strip_ansi_keep_sgr_into(
+        codewhale_sanitize::sanitize::strip_ansi_keep_sgr_into(
             &String::from_utf8_lossy(&dock.output),
             &mut safe,
         );

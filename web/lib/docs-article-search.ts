@@ -4,7 +4,7 @@ import {
   getDocsAuth, getDocsClaudeCode, getDocsConfiguration, getDocsFleet,
   getDocsHooks, getDocsMcp, getDocsModes, getDocsPet, getDocsReview,
   getDocsRuntimeApi, getDocsSandbox, getDocsSkills, getDocsSubagents,
-  getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork,
+  getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork, getDocsFirstTime,
   getDocsGuide, getDocsVocabulary, getConstitution, getChrome, getHome, fill, pickText,
 } from "./i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "./i18n/dictionaries/types";
@@ -12,7 +12,7 @@ import { GETTING_STARTED_STEPS } from "./content/getting-started";
 import { INSTALL_COPY, INSTALL_COMMANDS, INSTALL_PAGE_COMMANDS } from "./content/install";
 import { FACTS } from "./facts.generated";
 import { MODELS_COPY, formatModelTokens, formatModelDate } from "./content/models";
-import { PLUGINS_COPY, PLUGIN_KINDS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "./content/plugins";
+import { PLUGINS_COPY, PLUGINS_COMING, pluginsComingApplies, PLUGIN_KINDS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "./content/plugins";
 import { CONNECTORS } from "./content/connectors.generated";
 import { CONSTITUTION_LAYERS, CONSTITUTION_SCENES } from "./content/constitution";
 import { getDocsAccount } from "./content/docs-account";
@@ -31,7 +31,7 @@ const ARTICLES: Record<string, (locale: string) => DocsPageDict> = {
   pet: getDocsPet, review: getDocsReview, "runtime-api": getDocsRuntimeApi,
   sandbox: getDocsSandbox, skills: getDocsSkills, subagents: getDocsSubagents,
   troubleshooting: getDocsTroubleshooting, trust: getDocsTrust, web: getDocsWeb,
-  work: getDocsWork,
+  work: getDocsWork, "first-time": getDocsFirstTime,
 };
 
 function blockText(block: DocsBlock): string {
@@ -146,6 +146,9 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
       ...PLUGIN_KINDS.flatMap(kind => [t(kind.title), t(kind.detail)]),
       t(PLUGINS_COPY.originBefore) + t(PLUGINS_COPY.originName) + t(PLUGINS_COPY.originAfter), t(PLUGINS_COPY.dshStatus), t(PLUGINS_COPY.dshLink),
     ]),
+    ...(pluginsComingApplies(runtimeCapabilityContext(BUILD_FACTS).release) ? [section("/plugins", "coming-title", pluginTitle, t(PLUGINS_COPY.comingTitle), [
+      t(PLUGINS_COPY.comingLead), ...PLUGINS_COMING.flatMap(item => [t(item.title), t(item.detail)]),
+    ])] : []),
     section("/plugins", "connectors-title", pluginTitle, t(PLUGINS_COPY.connectorsTitle), [
       t(PLUGINS_COPY.connectorsLead), ...CONNECTORS.map(connector => connector.name), t(PLUGINS_COPY.connectorsNote),
       t(PLUGINS_COPY.connectorsGoogle), t(PLUGINS_COPY.connectorsLink),

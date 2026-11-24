@@ -134,6 +134,13 @@ pub struct PluginSkillSnapshot {
     pub source_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginReviewEntry {
+    pub reviewed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<super::host_services::PluginApprover>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub id: PluginId,
@@ -158,6 +165,9 @@ pub struct LoadedPlugin {
     pub enabled_by: Option<super::host_services::PluginApprover>,
     pub host_services: Vec<super::host_services::HostService>,
     pub outside_reach: bool,
+    pub reviewed_at: Option<String>,
+    pub review_history: Vec<PluginReviewEntry>,
+    pub install_nonce: Option<String>,
     pub skill_snapshots: Vec<PluginSkillSnapshot>,
     pub diagnostics: Vec<PluginDiagnostic>,
 }
@@ -253,6 +263,21 @@ impl LoadedPlugin {
             "unsupported"
         } else {
             "inactive"
+        }
+    }
+
+    #[must_use]
+    pub fn earlier_review_history(&self) -> &[PluginReviewEntry] {
+        if !self.trusted() {
+            return &self.review_history;
+        }
+        match (self.review_history.first(), self.reviewed_at.as_deref()) {
+            (Some(first), Some(current))
+                if first.reviewed_at == current && first.approved_by == self.approved_by =>
+            {
+                &self.review_history[1..]
+            }
+            _ => &self.review_history,
         }
     }
 }

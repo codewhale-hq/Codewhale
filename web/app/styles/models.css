@@ -33,3 +33,5 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
 }
+
+.models-picker { display: grid; gap: var(--space-5); }

@@ -17,10 +17,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use codewhale_release::install::GITHUB_MIGRATION_HELP;
 use codewhale_release::{
     CHECKSUM_MANIFEST_ASSET, InstallMethod, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
-    cnb_mirror_override_active, cnb_mirror_supports_target, cnb_release_base_url,
-    compare_release_versions, is_beta_tag, mirror_asset_url, parse_release_json,
-    read_release_metadata, read_update_response, resolve_release_query, update_is_needed,
-    update_network_fallback_hint,
+    UpdateTransportPolicy, cnb_mirror_override_active, cnb_mirror_supports_target,
+    cnb_release_base_url, compare_release_versions, is_beta_tag, mirror_asset_url,
+    parse_checksum_manifest, parse_release_json, read_release_metadata, read_update_response,
+    redact_url, redact_url_str, resolve_release_query, update_is_needed,
+    update_network_fallback_hint, update_redirect_policy,
 };
 use reqwest::Proxy;
 use std::io::Write;
@@ -61,7 +62,6 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     let executable_identity = update_executable_identity()?;
     let current_exe = executable_identity.path.clone();
     let install_method = InstallMethod::detect(&current_exe);
-    let protected_location = protected_update_path(&current_exe);
     let legacy_binary = is_legacy_binary(&current_exe);
     ensure_supported_release_target(std::env::consts::OS, std::env::consts::ARCH)?;
 
@@ -82,19 +82,11 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         println!();
         println!("{}", legacy_binary_message(&current_exe));
     }
-    if let Some(warning) = managed_install_warning(install_method) {
+    if !install_method.supports_self_update() {
         println!();
-        println!("{warning}");
+        println!("{}", installs::update_answer(install_method, &current_exe));
         if !check_only {
             bail!("The package-managed executable was not changed.");
-        }
-    }
-    if protected_location {
-        println!(
-            "System/package directory: in-place self-update is disabled.\n\n{GITHUB_MIGRATION_HELP}"
-        );
-        if !check_only {
-            bail!("The system/package executable was not changed.");
         }
     }
 
@@ -111,18 +103,13 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
                     "This build is not a published release ({build_version}); the {latest_tag} release artifact replaces it."
                 );
             }
-            if install_method.supports_self_update() && !protected_location {
+            if install_method.supports_self_update() {
                 println!(
                     "Update available. Run `{} update` to install {latest_tag}.",
                     current_exe.display()
                 );
-            } else if !install_method.supports_self_update() {
-                println!(
-                    "Update available. Use the GitHub installation instructions above, or `{}` for this package-managed copy.",
-                    install_method.update_command()
-                );
             } else {
-                println!("Update available. Use the GitHub installation instructions above.");
+                println!("Update available: {latest_tag}, through the owner named above.");
             }
             println!(
                 "Release source: {}",
@@ -217,13 +204,17 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             }
             Ok(())
         });
-    if let Err(error) = replaced {
-        if let Some(host) = &mut host_update {
-            host.rollback()
-                .context("compiled-host rollback failed; retained backup path is reported below")?;
+    let kept_previous = match replaced {
+        Ok(kept) => kept,
+        Err(error) => {
+            if let Some(host) = &mut host_update {
+                host.rollback().context(
+                    "compiled-host rollback failed; retained backup path is reported below",
+                )?;
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
+    };
     if let Some(host) = &host_update {
         println!(
             "Updated the qualified compiled image, notices and relink source beside this CLI; Node remains default."
@@ -234,6 +225,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     }
     if let Ok(home) = codewhale_config::codewhale_home() {
         autoupdate::discard_staged(&home);
+        autoupdate::record_failure(&home, None);
         let mut state = autoupdate::load_state(&home);
         if state.skip_version.take().is_some() {
             let _ = autoupdate::store_state(&home, &state);
@@ -247,7 +239,8 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
          \n\
          Restart the application to use the new version.\n\
          What's new: {notes}\n\
-         Undo: codewhale update --rollback",
+         {undo}",
+        undo = undo_hint(kept_previous, latest_tag),
         source = download.source.describe(),
         notes = autoupdate::changelog_url(latest_tag),
         targets = plan
@@ -300,7 +293,6 @@ fn divergent_aliases(plan: &UpdatePlan, identity: &UpdateExecutableIdentity) -> 
             meta.is_file()
                 && same_owner(&meta, &identity.path)
                 && InstallMethod::from_path(target).supports_self_update()
-                && !protected_update_path(target)
                 && std::fs::read(target).is_ok_and(|bytes| sha256_hex(&bytes) != identity.file_hash)
                 && installs::is_codewhale_binary(target)
         })
@@ -341,7 +333,7 @@ fn replace_command_paths(
     bytes: &[u8],
     divergent: &[PathBuf],
     before_replace: &mut dyn FnMut() -> Result<()>,
-) -> Result<()> {
+) -> Result<bool> {
     let home = codewhale_config::codewhale_home().ok();
     #[cfg(unix)]
     let mut command_receipt = uninstall::CommandReceipt::capture(&identity.path)?;
@@ -349,11 +341,14 @@ fn replace_command_paths(
     let had_receipt = command_receipt.is_some();
     #[cfg(windows)]
     let had_receipt = uninstall::CommandReceipt::capture(&identity.path)?.is_some();
-    match &home {
-        Some(home) => save_previous(home, identity)
-            .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?,
-        None => println!("Codewhale home is unavailable; `codewhale update --rollback` will not have this version."),
-    }
+    let kept_previous = match &home {
+        Some(home) => {
+            save_previous(home, identity)
+                .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?;
+            true
+        }
+        None => false,
+    };
     if !divergent.is_empty() {
         let home = home
             .as_deref()
@@ -412,7 +407,7 @@ fn replace_command_paths(
     if !had_receipt {
         adopt_receipt_for(&identity.path, bytes);
     }
-    Ok(())
+    Ok(kept_previous)
 }
 
 #[cfg(any(unix, windows))]
@@ -445,9 +440,23 @@ fn adopt_receipt_for(executable: &Path, bytes: &[u8]) {
 }
 
 pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
+    let result = stage_release(beta, proxy_arg);
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        autoupdate::record_failure(
+            &home,
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("the background download failed: {error:#}")),
+        );
+    }
+    result
+}
+
+fn stage_release(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     let identity = update_executable_identity()?;
     let exe = identity.path.clone();
-    if !InstallMethod::detect(&exe).supports_self_update() || protected_update_path(&exe) {
+    if !InstallMethod::detect(&exe).supports_self_update() {
         bail!("This copy is not a release-binary install; nothing was staged.");
     }
     if compiled_host::required_for(&exe)? {
@@ -538,6 +547,22 @@ pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     Ok(())
 }
 
+fn record_declined_update(
+    home: &Path,
+    staged: &mut autoupdate::StagedUpdate,
+    current: &str,
+    version: &str,
+) -> String {
+    staged.declined = true;
+    if let Err(error) = autoupdate::store_staged(home, staged) {
+        tracing::warn!(error = %format!("{error:#}"), "could not record declined update");
+        return format!(
+            "Kept v{current}, but the decision was not saved ({error:#}); you will be asked again."
+        );
+    }
+    format!("Kept v{current}. Run `codewhale update` whenever you want v{version}.")
+}
+
 pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     use std::io::IsTerminal;
     let Ok(home) = codewhale_config::codewhale_home() else {
@@ -560,7 +585,6 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         return;
     };
     if !InstallMethod::detect(&identity.path).supports_self_update()
-        || protected_update_path(&identity.path)
         || identity
             .path
             .parent()
@@ -572,6 +596,12 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     }
     let version = staged.version.clone();
     let fail = |reason: String| {
+        autoupdate::record_failure(
+            &home,
+            Some(format!(
+                "v{version} could not be applied at start: {reason}"
+            )),
+        );
         eprintln!(
             "Couldn't apply v{version} ({reason}). Still on v{current}. Details: codewhale doctor"
         );
@@ -623,9 +653,10 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         let accepted = std::io::stdin().read_line(&mut answer).is_ok()
             && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
         if !accepted {
-            staged.declined = true;
-            let _ = autoupdate::store_staged(&home, &staged);
-            eprintln!("Kept v{current}. Run `codewhale update` whenever you want v{version}.");
+            eprintln!(
+                "{}",
+                record_declined_update(&home, &mut staged, current, &version)
+            );
             return;
         }
     }
@@ -639,13 +670,16 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         }
         replace_command_paths(&identity, &plan, &bytes, &divergent, &mut || Ok(()))
     })();
-    if let Err(error) = applied {
-        return fail(format!("{error:#}"));
-    }
+    let kept_previous = match applied {
+        Ok(kept) => kept,
+        Err(error) => return fail(format!("{error:#}")),
+    };
     autoupdate::discard_staged(&home);
+    autoupdate::record_failure(&home, None);
     eprintln!(
-        "Updated to v{version} · What's new: {} · Undo: codewhale update --rollback",
-        autoupdate::changelog_url(&version)
+        "Updated to v{version} · What's new: {} · {}",
+        autoupdate::changelog_url(&version),
+        undo_hint(kept_previous, &version)
     );
     #[cfg(unix)]
     {
@@ -666,12 +700,11 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
 pub fn run_rollback() -> Result<()> {
     let identity = update_executable_identity()?;
     let method = InstallMethod::detect(&identity.path);
-    if let Some(warning) = managed_install_warning(method) {
-        println!("{warning}");
-        bail!("The package-managed executable was not changed.");
-    }
-    if protected_update_path(&identity.path) {
-        bail!("System/package directory: rollback is disabled here.");
+    if !method.supports_self_update() {
+        bail!(
+            "This copy belongs to {label}, so `codewhale update --rollback` did not change it; install the version you want with {label}.",
+            label = method.label()
+        );
     }
     let home = codewhale_config::codewhale_home()?;
     let previous = autoupdate::load_previous(&home)
@@ -688,26 +721,10 @@ pub fn run_rollback() -> Result<()> {
         return Ok(());
     }
     let current = env!("CARGO_PKG_VERSION");
-    let current_version = codewhale_release::parse_release_version(current).context(
-        "Cannot determine the running version; rollback did not replace the executable.",
-    )?;
-    let previous_version = codewhale_release::parse_release_version(&previous.version).context(
-        "Cannot determine the previous version; rollback did not replace the executable.",
-    )?;
-    if (
-        current_version.major,
-        current_version.minor,
-        current_version.patch,
-    ) >= (0, 10, 3)
-        && (
-            previous_version.major,
-            previous_version.minor,
-            previous_version.patch,
-        ) <= (0, 10, 3)
-    {
+    if let Some(blocker) = autoupdate::rollback_blocker(&previous.version, current) {
         bail!(
-            "Rollback to v{} is disabled because its compatibility with migrated workspace state cannot be verified. Rollback did not replace the executable or change workspace state. Continue using v{current} and keep your workspace data.",
-            previous.version
+            "{}. Rollback did not replace the executable or change workspace state. Continue using v{current} and keep your workspace data.",
+            capitalized(&blocker)
         );
     }
     preflight_downloaded_binary(&autoupdate::binary_name(), &bytes)?;
@@ -720,14 +737,15 @@ pub fn run_rollback() -> Result<()> {
         identity.path.display(),
         previous.version
     );
-    replace_command_paths(&identity, &plan, &bytes, &[], &mut || Ok(()))?;
+    let kept_previous = replace_command_paths(&identity, &plan, &bytes, &[], &mut || Ok(()))?;
     let mut state = autoupdate::load_state(&home);
     state.skip_version = Some(current.to_string());
     autoupdate::store_state(&home, &state)?;
     autoupdate::discard_staged(&home);
     println!(
-        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. Undo: codewhale update --rollback",
-        previous.version
+        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. {}",
+        previous.version,
+        undo_hint(kept_previous, &previous.version)
     );
     Ok(())
 }
@@ -757,21 +775,34 @@ fn verify_manifest_asset(download: &DownloadPlan, name: &str, bytes: &[u8]) -> R
     Ok(())
 }
 
-/// Explain how to move to GitHub releases without overwriting managed files.
-fn managed_install_warning(method: InstallMethod) -> Option<String> {
-    if method.supports_self_update() {
-        return None;
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The undo hint after replacing the running executable with `installed`,
+/// only when a kept previous version exists and `--rollback` would accept it.
+fn undo_hint(kept_previous: bool, installed: &str) -> String {
+    let previous = kept_previous
+        .then(codewhale_config::codewhale_home)
+        .and_then(Result::ok)
+        .and_then(|home| autoupdate::load_previous(&home));
+    undo_hint_for(previous.as_ref().map(|p| p.version.as_str()), installed)
+}
+
+/// `--rollback` runs from the installed binary, so the blocker is judged
+/// against `installed`, not the version printing the hint.
+fn undo_hint_for(previous: Option<&str>, installed: &str) -> String {
+    let Some(previous) = previous else {
+        return "No rollback: the previous version was not kept.".to_string();
+    };
+    match autoupdate::rollback_blocker(previous, installed) {
+        Some(blocker) => format!("No rollback: {blocker}."),
+        None => format!("Undo: codewhale update --rollback (back to v{previous})"),
     }
-    if method == InstallMethod::DesktopApp {
-        return Some(codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string());
-    }
-    Some(format!(
-        "This executable is managed by {label}; in-place self-update is disabled.\n\n\
-         {GITHUB_MIGRATION_HELP}\n\n\
-         To retain this secondary {label} installation, run `{command}`.",
-        label = method.label(),
-        command = method.update_command()
-    ))
 }
 
 /// Resolve the executable that the updater is allowed to replace.
@@ -1095,7 +1126,7 @@ fn validate_primary_update_identity(identity: &UpdateExecutableIdentity) -> Resu
 /// Only the running binary and copies of those exact bytes are ours to update.
 /// Command names alone do not establish ownership of an existing sibling.
 fn validate_update_target(target: &Path, identity: &UpdateExecutableIdentity) -> Result<()> {
-    if !InstallMethod::from_path(target).supports_self_update() || protected_update_path(target) {
+    if !InstallMethod::from_path(target).supports_self_update() {
         bail!(
             "Refusing to replace managed/system path {}.\n\n{GITHUB_MIGRATION_HELP}",
             target.display()
@@ -1128,25 +1159,11 @@ fn validate_update_target(target: &Path, identity: &UpdateExecutableIdentity) ->
     Ok(())
 }
 
-fn protected_update_path(path: &Path) -> bool {
-    [
-        "/usr/bin",
-        "/usr/sbin",
-        "/bin",
-        "/sbin",
-        "/nix/store",
-        "/gnu/store",
-    ]
-    .iter()
-    .any(|prefix| path.starts_with(prefix))
-        || path.components().any(|component| {
-            component.as_os_str().to_str().is_some_and(|name| {
-                name.eq_ignore_ascii_case("Windows")
-                    || name.eq_ignore_ascii_case("WindowsApps")
-                    || name.eq_ignore_ascii_case("scoop")
-                    || name.eq_ignore_ascii_case("chocolatey")
-            })
-        })
+fn replacement_parent(target: &Path) -> &Path {
+    target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn replace_verified_downloads<F>(
@@ -1162,14 +1179,27 @@ where
     for path in target_paths {
         validate_target(path)?;
     }
+    #[cfg(unix)]
+    let mut replaced_by_parent: Vec<PathBuf> = Vec::new();
     for path in target_paths.iter().rev() {
-        replace_binary_with_validation(path, verified_bytes, || {
+        #[cfg(unix)]
+        let linked_from = replaced_by_parent
+            .iter()
+            .find(|existing| replacement_parent(existing) == replacement_parent(path))
+            .map(PathBuf::as_path);
+        #[cfg(not(unix))]
+        let linked_from: Option<&Path> = None;
+        replace_binary_with_validation_and_link_source(path, verified_bytes, linked_from, || {
             // Re-check after each temp file is fully staged and immediately
             // before every destructive rename. The running command is first
             // in the plan and therefore replaced last, after its colocated
             // compatibility names have received the same verified bytes.
             validate_target(path)
         })?;
+        #[cfg(unix)]
+        if linked_from.is_none() {
+            replaced_by_parent.push(path.clone());
+        }
     }
     Ok(())
 }
@@ -1256,7 +1286,7 @@ impl UpdateReleaseSource {
     /// without rerunning the updater.
     fn describe(&self) -> String {
         match self.base_url() {
-            Some(base_url) => format!("{} ({base_url})", self.label()),
+            Some(base_url) => format!("{} ({})", self.label(), redact_url_str(base_url)),
             None => self.label().to_string(),
         }
     }
@@ -1604,16 +1634,16 @@ fn probe_release_source(
     candidate: &ReleaseSourceCandidate,
     fetch_manifest: &ManifestFetcher,
 ) -> Result<(HashMap<String, String>, Vec<u8>)> {
+    let safe_manifest_url = redact_url_str(&candidate.manifest_url);
     let bytes = fetch_manifest(candidate)
-        .with_context(|| format!("failed to fetch {}", candidate.manifest_url))?;
+        .with_context(|| format!("failed to fetch {safe_manifest_url}"))?;
     let text = std::str::from_utf8(&bytes)
-        .with_context(|| format!("{} is not valid UTF-8", candidate.manifest_url))?;
+        .with_context(|| format!("{safe_manifest_url} is not valid UTF-8"))?;
     let checksums = parse_checksum_manifest(text)
-        .with_context(|| format!("failed to parse {}", candidate.manifest_url))?;
+        .with_context(|| format!("failed to parse {safe_manifest_url}"))?;
     if !checksums.contains_key(&candidate.binary_name) {
         bail!(
-            "{} does not list {}",
-            candidate.manifest_url,
+            "{safe_manifest_url} does not list {}",
             candidate.binary_name
         );
     }
@@ -1808,44 +1838,6 @@ fn select_checksum_manifest_asset(release: &Release) -> Option<&Asset> {
         .find(|asset| asset.name == CHECKSUM_MANIFEST_ASSET)
 }
 
-fn parse_checksum_manifest(text: &str) -> Result<HashMap<String, String>> {
-    let mut checksums = HashMap::new();
-
-    for (index, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.len() < 66 {
-            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
-        }
-
-        let (hash, rest) = trimmed
-            .get(..64)
-            .zip(trimmed.get(64..))
-            .with_context(|| format!("invalid SHA256 manifest line {}: {trimmed}", index + 1))?;
-        if !hash.chars().all(|ch| ch.is_ascii_hexdigit())
-            || rest.is_empty()
-            || !rest.chars().next().is_some_and(char::is_whitespace)
-        {
-            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
-        }
-
-        let mut asset_name = rest.trim_start();
-        if let Some(stripped) = asset_name.strip_prefix('*') {
-            asset_name = stripped;
-        }
-        if asset_name.is_empty() {
-            bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
-        }
-
-        checksums.insert(asset_name.to_string(), hash.to_ascii_lowercase());
-    }
-
-    Ok(checksums)
-}
-
 #[cfg(test)]
 fn expected_sha256_from_manifest(text: &str, asset_name: &str) -> Result<String> {
     let checksums = parse_checksum_manifest(text)?;
@@ -1875,8 +1867,9 @@ struct Asset {
 pub(crate) fn validate_and_build_proxy(proxy_str: &str) -> Result<Proxy> {
     let proxy_url = reqwest::Url::parse(proxy_str).with_context(|| {
         format!(
-            "invalid proxy URL: {proxy_str}\n\
-             Expected format: http://host:port, https://host:port, or socks5://host:port"
+            "invalid proxy URL: {}\n\
+             Expected format: http://host:port, https://host:port, or socks5://host:port",
+            redact_url_str(proxy_str)
         )
     })?;
     Proxy::all(proxy_url).context("failed to configure update proxy")
@@ -1899,153 +1892,35 @@ fn update_http_client_with_policy(
         .context("failed to build update HTTP client")
 }
 
-/// Most redirects an update request follows.
-const UPDATE_MAX_REDIRECTS: usize = 10;
-
 /// Largest update response held in memory. Release archives are tens of
 /// megabytes; a server that keeps sending is cut off instead of exhausting
 /// memory before the checksum is ever compared.
 const UPDATE_MAX_RESPONSE_BYTES: usize = 512 * 1024 * 1024;
 
-/// Hosts an update may contact without any operator configuration: GitHub's
-/// API and release pages, and the three hosts GitHub has served release
-/// assets from.
-const UPDATE_GITHUB_HOSTS: &[&str] = &[
-    "github.com",
-    "api.github.com",
-    "objects.githubusercontent.com",
-    "release-assets.githubusercontent.com",
-    "github-releases.githubusercontent.com",
-];
-
-/// The first-party CNB mirror, which `CODEWHALE_USE_CNB_MIRROR=1` and the
-/// proactive Linux x64 probe select.
-const UPDATE_CNB_HOST: &str = "cnb.cool";
-
-/// Extra hosts the operator trusts for updates, comma separated. A mirror set
-/// with `CODEWHALE_RELEASE_BASE_URL` already allows its own host; this is for
-/// a mirror that redirects asset downloads to a separate download host.
-const UPDATE_ALLOWED_HOSTS_ENV: &str = "CODEWHALE_UPDATE_ALLOWED_HOSTS";
-
-/// Where an update request may go. Every request and every redirect hop must
-/// be HTTPS and must name an allowed host, so a redirect or a poisoned asset
-/// URL cannot move a download to a host nobody chose.
-#[derive(Debug, Clone)]
-struct UpdateTransportPolicy {
-    extra_hosts: Vec<String>,
-    /// Unit tests serve fixtures from loopback over plain HTTP; the tests that
-    /// prove the policy build `strict()` and never set this.
-    #[cfg(test)]
-    allow_loopback_http: bool,
-}
-
-impl UpdateTransportPolicy {
-    /// The built-in hosts plus what the operator configured: the host of an
-    /// explicit release mirror, and `CODEWHALE_UPDATE_ALLOWED_HOSTS`.
-    fn from_env() -> Self {
-        let mut policy = Self::strict();
-        if let Some(base_url) = codewhale_release::explicit_release_base_url_from_env()
-            && let Ok(url) = reqwest::Url::parse(&base_url)
-            && let Some(host) = url.host_str()
-        {
-            policy.extra_hosts.push(host.to_ascii_lowercase());
-        }
-        if let Ok(hosts) = std::env::var(UPDATE_ALLOWED_HOSTS_ENV) {
-            policy.extra_hosts.extend(
-                hosts
-                    .split(',')
-                    .map(|host| host.trim().to_ascii_lowercase())
-                    .filter(|host| !host.is_empty()),
-            );
-        }
-        #[cfg(test)]
-        {
-            policy.allow_loopback_http = true;
-        }
+fn update_transport_policy() -> UpdateTransportPolicy {
+    let policy = UpdateTransportPolicy::from_env();
+    #[cfg(all(test, debug_assertions))]
+    {
+        policy.with_loopback_http(true)
+    }
+    #[cfg(not(all(test, debug_assertions)))]
+    {
         policy
     }
-
-    fn strict() -> Self {
-        Self {
-            extra_hosts: Vec::new(),
-            #[cfg(test)]
-            allow_loopback_http: false,
-        }
-    }
-
-    fn host_is_allowed(&self, host: &str) -> bool {
-        let host = host.to_ascii_lowercase();
-        UPDATE_GITHUB_HOSTS.contains(&host.as_str())
-            || host == UPDATE_CNB_HOST
-            || host
-                .strip_suffix(UPDATE_CNB_HOST)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-            || self.extra_hosts.contains(&host)
-    }
-
-    /// Refuse anything that is not HTTPS to an allowed host.
-    fn check_url(&self, url: &reqwest::Url) -> std::result::Result<(), String> {
-        if cfg!(debug_assertions)
-            && std::env::var_os("CODEWHALE_UPDATE_ALLOW_LOOPBACK_HTTP").is_some()
-            && url.scheme() == "http"
-            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        {
-            return Ok(());
-        }
-        #[cfg(test)]
-        if self.allow_loopback_http
-            && url.scheme() == "http"
-            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        {
-            return Ok(());
-        }
-        if url.scheme() != "https" {
-            return Err(format!(
-                "update URL must use HTTPS, not {}: {url}",
-                url.scheme()
-            ));
-        }
-        let host = url.host_str().unwrap_or_default();
-        if !self.host_is_allowed(host) {
-            return Err(format!(
-                "update host {host:?} is not an allowed release host. A private mirror's host \
-                 is allowed when it is the {} HTTPS base URL; any other host can be added with \
-                 {UPDATE_ALLOWED_HOSTS_ENV}=host1,host2",
-                codewhale_release::RELEASE_BASE_URL_ENV
-            ));
-        }
-        Ok(())
-    }
-
-    fn check_str(&self, url: &str) -> Result<()> {
-        let parsed =
-            reqwest::Url::parse(url).with_context(|| format!("invalid update URL {url}"))?;
-        self.check_url(&parsed).map_err(|message| anyhow!(message))
-    }
-}
-
-/// Follow redirects, but only over HTTPS and only to an allowed host: a
-/// request that started encrypted must not finish over a channel anyone on the
-/// path can rewrite, or on a host nobody chose.
-fn update_redirect_policy(policy: UpdateTransportPolicy) -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(move |attempt| {
-        if attempt.previous().len() > UPDATE_MAX_REDIRECTS {
-            return attempt.error("too many redirects");
-        }
-        match policy.check_url(attempt.url()) {
-            Ok(()) => attempt.follow(),
-            Err(message) => attempt.error(format!("update redirect refused: {message}")),
-        }
-    })
 }
 
 /// Fetch the latest release metadata from GitHub.
 fn fetch_latest_release(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Result<FetchedRelease> {
     match resolve_release_query(channel) {
         ReleaseQuery::Mirror { base_url, version } => {
-            UpdateTransportPolicy::from_env()
+            update_transport_policy()
                 .check_str(&base_url)
-                .with_context(|| format!("release mirror {base_url} cannot be used"))?;
+                .with_context(|| {
+                    format!(
+                        "release mirror {} cannot be used",
+                        redact_url_str(&base_url)
+                    )
+                })?;
             Ok(FetchedRelease {
                 release: release_from_mirror_base_url(
                     &base_url,
@@ -2138,28 +2013,31 @@ fn fetch_release_json_once(
     description: &str,
     proxy: Option<&Proxy>,
 ) -> Result<(reqwest::StatusCode, String)> {
-    let policy = UpdateTransportPolicy::from_env();
+    let safe_url = redact_url_str(url);
+    let policy = update_transport_policy();
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, UPDATE_DOWNLOAD_TIMEOUT, &policy)?;
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
-        .with_context(|| format!("failed to fetch {description} from {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to fetch {description} from {safe_url}"))?;
     let status = response.status();
     let body = read_release_metadata(response)
-        .with_context(|| format!("failed to read {description} response body from {url}"))?;
+        .with_context(|| format!("failed to read {description} response body from {safe_url}"))?;
     Ok((status, body))
 }
 
 fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Result<String> {
+    let safe_url = redact_url_str(url);
     let mut last_error = None;
     for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
         match fetch_release_json_once(url, description, proxy) {
             Ok((status, body)) if status.is_success() => return Ok(body),
             Ok((status, body)) => {
                 let error =
-                    anyhow!("failed to fetch {description} from {url}: HTTP {status}\n{body}");
+                    anyhow!("failed to fetch {description} from {safe_url}: HTTP {status}\n{body}");
                 if should_retry_http_status(status) && attempt < UPDATE_HTTP_ATTEMPTS {
                     last_error = Some(error);
                     sleep_before_update_retry(attempt);
@@ -2174,7 +2052,7 @@ fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Re
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to fetch {description} from {url}")))
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to fetch {description} from {safe_url}")))
 }
 
 fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
@@ -2205,7 +2083,8 @@ fn fetch_latest_stable_release_from_redirect(proxy: Option<&Proxy>) -> Result<Re
 }
 
 fn fetch_latest_stable_tag_from_redirect_url(url: &str, proxy: Option<&Proxy>) -> Result<String> {
-    let policy = UpdateTransportPolicy::from_env();
+    let safe_url = redact_url_str(url);
+    let policy = update_transport_policy();
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, UPDATE_DOWNLOAD_TIMEOUT, &policy)?;
     let mut last_error = None;
@@ -2219,7 +2098,8 @@ fn fetch_latest_stable_tag_from_redirect_url(url: &str, proxy: Option<&Proxy>) -
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to resolve latest stable release from {url}")))
+    Err(last_error
+        .unwrap_or_else(|| anyhow!("failed to resolve latest stable release from {safe_url}")))
 }
 
 fn fetch_latest_stable_tag_from_redirect_url_once(
@@ -2227,10 +2107,12 @@ fn fetch_latest_stable_tag_from_redirect_url_once(
     policy: &UpdateTransportPolicy,
     url: &str,
 ) -> Result<String> {
+    let safe_url = redact_url_str(url);
     let response = client
         .get(url)
         .send()
-        .with_context(|| format!("failed to fetch release redirect from {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to fetch release redirect from {safe_url}"))?;
     let status = response.status();
     let final_url = response.url().clone();
     // Every hop was already checked; the page that names the tag must still be
@@ -2244,12 +2126,16 @@ fn fetch_latest_stable_tag_from_redirect_url_once(
         return Ok(tag_name);
     }
     let body = read_release_metadata(response)
-        .with_context(|| format!("failed to read release redirect response from {url}"))?;
+        .with_context(|| format!("failed to read release redirect response from {safe_url}"))?;
     if !status.is_success() {
-        bail!("failed to fetch release redirect from {url}: HTTP {status}\n{body}");
+        bail!("failed to fetch release redirect from {safe_url}: HTTP {status}\n{body}");
     }
-    release_tag_from_github_release_html(&body)
-        .with_context(|| format!("release redirect did not resolve to a tag URL: {final_url}"))
+    release_tag_from_github_release_html(&body).with_context(|| {
+        format!(
+            "release redirect did not resolve to a tag URL: {}",
+            redact_url(&final_url)
+        )
+    })
 }
 
 fn release_tag_from_github_release_url(url: &reqwest::Url) -> Option<String> {
@@ -2313,6 +2199,7 @@ fn download_url_with_timeout(
     proxy: Option<&Proxy>,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    let safe_url = redact_url_str(url);
     let mut last_error = None;
     for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
         match download_url_once(url, proxy, timeout) {
@@ -2334,7 +2221,7 @@ fn download_url_with_timeout(
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("failed to download {url}")))
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to download {safe_url}")))
 }
 
 fn download_url_once(
@@ -2343,7 +2230,7 @@ fn download_url_once(
     timeout: Duration,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     download_url_once_with(
-        &UpdateTransportPolicy::from_env(),
+        &update_transport_policy(),
         UPDATE_MAX_RESPONSE_BYTES,
         url,
         proxy,
@@ -2358,15 +2245,17 @@ fn download_url_once_with(
     proxy: Option<&Proxy>,
     timeout: Duration,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+    let safe_url = redact_url_str(url);
     policy.check_str(url)?;
     let client = update_http_client_with_policy(proxy, timeout, policy)?;
     let response = client
         .get(url)
         .send()
-        .with_context(|| format!("failed to download {url}"))?;
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("failed to download {safe_url}"))?;
     let status = response.status();
     let bytes = read_update_response(response, max_bytes)
-        .with_context(|| format!("failed to read response body from {url}"))?;
+        .with_context(|| format!("failed to read response body from {safe_url}"))?;
     Ok((status, bytes))
 }
 
@@ -2539,6 +2428,109 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
     replace_binary_with_validation(target, new_bytes, || Ok(()))
 }
 
+#[cfg(unix)]
+struct LinkedTempPath(Option<PathBuf>);
+
+#[cfg(unix)]
+impl LinkedTempPath {
+    fn path(&self) -> &Path {
+        self.0.as_deref().expect("staged hard-link path")
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LinkedTempPath {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+enum StagedReplacement {
+    Written(tempfile::NamedTempFile),
+    #[cfg(unix)]
+    Linked(LinkedTempPath),
+}
+
+impl StagedReplacement {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Written(file) => file.path(),
+            #[cfg(unix)]
+            Self::Linked(file) => file.path(),
+        }
+    }
+
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        match self {
+            Self::Written(file) => file.as_file().metadata(),
+            #[cfg(unix)]
+            Self::Linked(file) => std::fs::metadata(file.path()),
+        }
+    }
+
+    fn is_linked(&self) -> bool {
+        match self {
+            Self::Written(_) => false,
+            #[cfg(unix)]
+            Self::Linked(_) => true,
+        }
+    }
+
+    fn sync_written(&self) -> std::io::Result<()> {
+        match self {
+            Self::Written(file) => file.as_file().sync_all(),
+            #[cfg(unix)]
+            Self::Linked(_) => Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn try_stage_hard_link(source: &Path, parent: &Path) -> Option<LinkedTempPath> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LINK_SEQ: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..8 {
+        let seq = LINK_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".codewhale-update-link-{}-{seq}",
+            std::process::id()
+        ));
+        if std::fs::hard_link(source, &candidate).is_ok() {
+            return Some(LinkedTempPath(Some(candidate)));
+        }
+    }
+    None
+}
+
+fn stage_replacement_binary(
+    parent: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+) -> Result<StagedReplacement> {
+    #[cfg(unix)]
+    if let Some(source) = link_source
+        && let Some(linked) = try_stage_hard_link(source, parent)
+    {
+        return Ok(StagedReplacement::Linked(linked));
+    }
+    #[cfg(not(unix))]
+    let _ = link_source;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".codewhale-update-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    tmp.write_all(new_bytes)
+        .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
+    Ok(StagedReplacement::Written(tmp))
+}
+
+#[cfg(test)]
 fn replace_binary_with_validation<F>(
     target: &Path,
     new_bytes: &[u8],
@@ -2547,9 +2539,22 @@ fn replace_binary_with_validation<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    replace_binary_with_validation_and_permission_setter(
+    replace_binary_with_validation_and_link_source(target, new_bytes, None, validate_before_replace)
+}
+
+fn replace_binary_with_validation_and_link_source<F>(
+    target: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+    validate_before_replace: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    replace_binary_with_validation_and_link_permission_setter(
         target,
         new_bytes,
+        link_source,
         validate_before_replace,
         |path, permissions| std::fs::set_permissions(path, permissions),
     )
@@ -2557,6 +2562,7 @@ where
 
 /// `apply_permissions` is a seam for `std::fs::set_permissions` so tests can
 /// exercise permission-setup failures without host-specific filesystem state.
+#[cfg(test)]
 fn replace_binary_with_validation_and_permission_setter<F, P>(
     target: &Path,
     new_bytes: &[u8],
@@ -2567,17 +2573,28 @@ where
     F: FnOnce() -> Result<()>,
     P: Fn(&Path, std::fs::Permissions) -> std::io::Result<()>,
 {
-    let parent = target
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    replace_binary_with_validation_and_link_permission_setter(
+        target,
+        new_bytes,
+        None,
+        validate_before_replace,
+        apply_permissions,
+    )
+}
 
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".codewhale-update-")
-        .tempfile_in(parent)
-        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
-    tmp.write_all(new_bytes)
-        .with_context(|| format!("failed to write temp file at {}", tmp.path().display()))?;
+fn replace_binary_with_validation_and_link_permission_setter<F, P>(
+    target: &Path,
+    new_bytes: &[u8],
+    link_source: Option<&Path>,
+    validate_before_replace: F,
+    apply_permissions: P,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+    P: Fn(&Path, std::fs::Permissions) -> std::io::Result<()>,
+{
+    let parent = replacement_parent(target);
+    let staged = stage_replacement_binary(parent, new_bytes, link_source)?;
 
     // Permission setup is part of pre-replacement validation: a staged binary
     // that cannot receive correct permissions must never replace a working
@@ -2590,26 +2607,39 @@ where
                 target.display()
             )
         })?;
-        apply_permissions(tmp.path(), meta.permissions()).with_context(|| {
-            format!(
-                "failed to set permissions on staged update {} before replacing {}",
-                tmp.path().display(),
-                target.display()
-            )
-        })?;
+        let needs_apply = !staged.is_linked()
+            || staged
+                .metadata()
+                .map(|current| current.permissions() != meta.permissions())
+                .unwrap_or(true);
+        if needs_apply {
+            apply_permissions(staged.path(), meta.permissions()).with_context(|| {
+                format!(
+                    "failed to set permissions on staged update {} before replacing {}",
+                    staged.path().display(),
+                    target.display()
+                )
+            })?;
+        }
     } else {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            apply_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).with_context(
-                || {
-                    format!(
-                        "failed to set permissions on staged update {} before installing {}",
-                        tmp.path().display(),
-                        target.display()
-                    )
-                },
-            )?;
+            let needs_apply = !staged.is_linked()
+                || staged
+                    .metadata()
+                    .map(|current| current.permissions().mode() & 0o7777 != 0o755)
+                    .unwrap_or(true);
+            if needs_apply {
+                apply_permissions(staged.path(), std::fs::Permissions::from_mode(0o755))
+                    .with_context(|| {
+                        format!(
+                            "failed to set permissions on staged update {} before installing {}",
+                            staged.path().display(),
+                            target.display()
+                        )
+                    })?;
+            }
         }
     }
 
@@ -2619,13 +2649,12 @@ where
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let staged_mode = tmp
-            .as_file()
+        let staged_mode = staged
             .metadata()
             .with_context(|| {
                 format!(
                     "failed to inspect staged update at {}",
-                    tmp.path().display()
+                    staged.path().display()
                 )
             })?
             .permissions()
@@ -2633,21 +2662,25 @@ where
         if staged_mode & 0o111 == 0 {
             bail!(
                 "staged update {} is not executable (mode {:03o}); refusing to replace {}",
-                tmp.path().display(),
+                staged.path().display(),
                 staged_mode & 0o7777,
                 target.display()
             );
         }
     }
 
-    tmp.as_file()
-        .sync_all()
-        .with_context(|| format!("failed to sync staged update at {}", tmp.path().display()))?;
+    staged.sync_written().with_context(|| {
+        format!(
+            "failed to sync staged update at {}",
+            staged.path().display()
+        )
+    })?;
 
     validate_before_replace()?;
 
     #[cfg(windows)]
     {
+        let StagedReplacement::Written(tmp) = staged;
         let tmp = match tmp.persist(target) {
             Ok(_) => return Ok(()),
             Err(error) if !target.exists() => bail!(
@@ -2688,9 +2721,22 @@ where
 
     #[cfg(not(windows))]
     {
-        tmp.persist(target)
-            .map_err(|err| err.error)
-            .with_context(|| format!("failed to rename temp file to {}", target.display()))?;
+        match staged {
+            StagedReplacement::Written(tmp) => {
+                tmp.persist(target)
+                    .map_err(|err| err.error)
+                    .with_context(|| {
+                        format!("failed to rename temp file to {}", target.display())
+                    })?;
+            }
+            #[cfg(unix)]
+            StagedReplacement::Linked(mut linked) => {
+                std::fs::rename(linked.path(), target).with_context(|| {
+                    format!("failed to rename temp file to {}", target.display())
+                })?;
+                linked.disarm();
+            }
+        }
     }
 
     Ok(())
@@ -2717,6 +2763,7 @@ fn backup_path_for(target: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_release::UPDATE_ALLOWED_HOSTS_ENV;
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -2727,6 +2774,21 @@ mod tests {
     /// Release-source environment variables are process-wide, so the tests that
     /// exercise override precedence take this lock and restore what they found.
     static UPDATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn undo_hint_is_judged_against_the_installed_version() {
+        // 0.10.3 -> 0.10.4: the installed v0.10.4 refuses to roll back to v0.10.3.
+        let hint = undo_hint_for(Some("0.10.3"), "v0.10.4");
+        assert!(hint.starts_with("No rollback:"), "{hint}");
+        // An updater older than v0.10.3 must not offer an undo the new binary refuses.
+        assert!(undo_hint_for(Some("0.10.2"), "0.10.4").starts_with("No rollback:"));
+        assert_eq!(
+            undo_hint_for(Some("0.10.4"), "0.10.5"),
+            "Undo: codewhale update --rollback (back to v0.10.4)"
+        );
+        assert!(undo_hint_for(None, "0.10.5").starts_with("No rollback:"));
+    }
+
     const UPDATE_ENV_VARS: &[&str] = &[
         codewhale_release::RELEASE_BASE_URL_ENV,
         codewhale_release::LEGACY_RELEASE_BASE_URL_ENV,
@@ -3290,25 +3352,43 @@ mod tests {
     }
 
     #[test]
-    fn managed_installs_offer_github_migration_and_secondary_manager_command() {
-        let npm = managed_install_warning(InstallMethod::Npm).expect("npm is package-managed");
-        assert!(npm.contains("npm install -g codewhale@latest"));
-        assert!(npm.contains("in-place self-update is disabled"));
-        assert!(npm.contains("https://codewhale.net/install.sh"));
-        assert!(npm.contains("command -v codewhale codew"));
-
-        let brew =
-            managed_install_warning(InstallMethod::Homebrew).expect("brew is package-managed");
-        assert!(brew.contains("brew upgrade codewhale"));
-
-        assert!(managed_install_warning(InstallMethod::Cargo).is_some());
-
-        let omarchy =
-            managed_install_warning(InstallMethod::Omarchy).expect("Omarchy is package-managed");
-        assert!(omarchy.contains("omarchy update"));
-
-        // A plain release binary is exactly what this updater is for.
-        assert!(managed_install_warning(InstallMethod::Binary).is_none());
+    fn package_managed_answers_name_their_owner_in_one_line() {
+        for (method, exe, command) in [
+            (
+                InstallMethod::Npm,
+                "/usr/local/lib/node_modules/codewhale/bin/codewhale",
+                "npm install -g codewhale@latest",
+            ),
+            (
+                InstallMethod::Homebrew,
+                "/opt/homebrew/Cellar/codewhale/0.10.4/bin/codewhale",
+                "brew upgrade codewhale",
+            ),
+            (
+                InstallMethod::Cargo,
+                "/home/u/.cargo/bin/codewhale",
+                "cargo install codewhale-cli --locked --force",
+            ),
+            (
+                InstallMethod::Omarchy,
+                "/usr/bin/codewhale",
+                "omarchy update",
+            ),
+        ] {
+            let answer = installs::update_answer(method, Path::new(exe));
+            let exact = installs::manager_update_command(method, Path::new(exe));
+            assert!(exact.starts_with(command), "{exact}");
+            assert!(answer.contains(&format!("`{exact}`")), "{answer}");
+            assert!(answer.contains("cannot update itself"), "{answer}");
+            assert!(!answer.contains('\n'), "{answer}");
+        }
+        assert!(
+            installs::update_answer(
+                InstallMethod::Binary,
+                Path::new("/home/u/.local/bin/codewhale")
+            )
+            .contains("updates itself")
+        );
     }
 
     #[test]
@@ -3341,28 +3421,6 @@ mod tests {
         for beta in [false, true] {
             run_update(beta, false, None)
                 .expect("an older pinned version must return before any download");
-        }
-    }
-
-    #[test]
-    fn system_paths_are_protected_but_user_release_paths_are_allowed() {
-        for path in [
-            "/usr/bin/codewhale",
-            "/usr/sbin/codewhale",
-            "/bin/codewhale",
-            "/nix/store/pkg/bin/codewhale",
-            "/gnu/store/pkg/bin/codewhale",
-            "/Users/u/scoop/apps/codewhale/codewhale.exe",
-            "/Windows/System32/codewhale.exe",
-        ] {
-            assert!(protected_update_path(Path::new(path)), "{path}");
-        }
-        for path in [
-            "/usr/local/bin/codewhale",
-            "/home/u/.local/bin/codewhale",
-            "/data/data/com.termux/files/usr/bin/codewhale",
-        ] {
-            assert!(!protected_update_path(Path::new(path)), "{path}");
         }
     }
 
@@ -3962,6 +4020,143 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             "the working binary must survive a non-executable staged update"
         );
         assert_no_staged_temp_files(dir.path());
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn replace_verified_downloads_hard_links_same_directory_targets() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        let other_dir = dir.path().join("other");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::create_dir(&other_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&other_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let old_bytes = b"old-release-bytes";
+        let new_bytes = b"new-release-bytes";
+        let primary = bin_dir.join("codewhale");
+        let sibling = bin_dir.join("codew");
+        let alias = bin_dir.join("codewhale-tui");
+        let outside = other_dir.join("codewhale");
+        for path in [&primary, &sibling, &alias, &outside] {
+            write_installed_binary(path, old_bytes);
+        }
+
+        replace_verified_downloads(
+            &[
+                primary.clone(),
+                sibling.clone(),
+                alias.clone(),
+                outside.clone(),
+            ],
+            new_bytes,
+            |path| {
+                let bytes = std::fs::read(path)?;
+                anyhow::ensure!(bytes == old_bytes);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let primary_meta = std::fs::metadata(&primary).unwrap();
+        let sibling_meta = std::fs::metadata(&sibling).unwrap();
+        let alias_meta = std::fs::metadata(&alias).unwrap();
+        let outside_meta = std::fs::metadata(&outside).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&alias).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&outside).unwrap(), new_bytes);
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (sibling_meta.dev(), sibling_meta.ino())
+        );
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (alias_meta.dev(), alias_meta.ino())
+        );
+        assert_eq!(primary_meta.nlink(), 3);
+        assert_ne!(
+            (outside_meta.dev(), outside_meta.ino()),
+            (primary_meta.dev(), primary_meta.ino())
+        );
+        assert_eq!(outside_meta.nlink(), 1);
+        assert_no_staged_temp_files(&bin_dir);
+        assert_no_staged_temp_files(&other_dir);
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn hard_linked_receipted_install_updates_and_renews_and_rejects_external_link() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let old_bytes = b"old-receipted-binary";
+        let new_bytes = b"new-receipted-binary";
+        let old_hash = crate::hashing::sha256_hex(old_bytes);
+        let new_hash = crate::hashing::sha256_hex(new_bytes);
+        let primary = bin_dir.join("codewhale");
+        let sibling = bin_dir.join("codew");
+        write_installed_binary(&primary, old_bytes);
+        std::fs::hard_link(&primary, &sibling).unwrap();
+        let receipt_path = bin_dir.join(codewhale_release::installs::RECEIPT_FILE);
+        std::fs::write(
+            &receipt_path,
+            format!("{old_hash}  codewhale\n{old_hash}  codew\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let old_inode = (
+            std::fs::metadata(&primary).unwrap().dev(),
+            std::fs::metadata(&primary).unwrap().ino(),
+        );
+        let mut receipt = uninstall::CommandReceipt::capture(&primary)
+            .unwrap()
+            .expect("receipted hard-linked pair should capture");
+        replace_verified_downloads(&[primary.clone(), sibling.clone()], new_bytes, |path| {
+            let bytes = std::fs::read(path)?;
+            anyhow::ensure!(crate::hashing::sha256_hex(&bytes) == old_hash);
+            Ok(())
+        })
+        .unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        receipt.renew_in(new_bytes, Ok(home.clone())).unwrap();
+        assert!(home.join("recovery").is_dir());
+
+        let primary_meta = std::fs::metadata(&primary).unwrap();
+        let sibling_meta = std::fs::metadata(&sibling).unwrap();
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
+        assert_eq!(
+            (primary_meta.dev(), primary_meta.ino()),
+            (sibling_meta.dev(), sibling_meta.ino())
+        );
+        assert_ne!((primary_meta.dev(), primary_meta.ino()), old_inode);
+        assert_eq!(primary_meta.nlink(), 2);
+        let renewed_receipt = std::fs::read_to_string(&receipt_path).unwrap();
+        assert_eq!(
+            renewed_receipt,
+            format!("{new_hash}  codew\n{new_hash}  codewhale\n")
+        );
+        assert!(
+            uninstall::CommandReceipt::capture(&primary)
+                .unwrap()
+                .is_some()
+        );
+
+        let foreign = dir.path().join("foreign-link");
+        std::fs::hard_link(&primary, &foreign).unwrap();
+        assert!(uninstall::CommandReceipt::capture(&primary).is_err());
+        assert_eq!(std::fs::read(&primary).unwrap(), new_bytes);
+        assert_eq!(std::fs::read(&sibling).unwrap(), new_bytes);
     }
 
     /// Mocked GitHub release payload covering the sole implementation binary
@@ -5197,8 +5392,7 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
 
     #[test]
     fn a_response_past_the_size_cap_is_refused_and_one_at_the_cap_is_kept() {
-        let mut policy = UpdateTransportPolicy::strict();
-        policy.allow_loopback_http = true;
+        let policy = UpdateTransportPolicy::strict().with_loopback_http(true);
         let (url, _rx, handle) = serve_http_once("200 OK", "application/octet-stream", &[7_u8; 64]);
         let error = download_url_once_with(&policy, 63, &url, None, Duration::from_secs(5))
             .expect_err("one byte over the cap is refused");
@@ -5210,6 +5404,52 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             .expect("a body exactly at the cap is kept");
         assert_eq!(bytes.len(), 64);
         handle.join().expect("fixture thread");
+    }
+
+    #[test]
+    fn release_errors_and_sources_redact_url_userinfo() {
+        let _guard = UpdateEnvGuard::clear();
+        set_update_env(
+            codewhale_release::RELEASE_BASE_URL_ENV,
+            "http://user:secret@mirror.example/assets",
+        );
+        let mirror_err = fetch_latest_release(ReleaseChannel::Stable, None)
+            .expect_err("HTTP mirror with userinfo must fail");
+        let mirror_text = format!("{mirror_err:#}");
+        assert!(mirror_text.contains("HTTPS"), "{mirror_text}");
+        assert!(!mirror_text.contains("secret"), "{mirror_text}");
+        assert!(!mirror_text.contains("user:"), "{mirror_text}");
+
+        let mirror_desc = UpdateReleaseSource::Mirror {
+            base_url: "https://user:secret@mirror.example/assets".to_string(),
+        }
+        .describe();
+        assert!(
+            mirror_desc.contains("https://mirror.example/assets"),
+            "{mirror_desc}"
+        );
+        assert!(!mirror_desc.contains("secret"), "{mirror_desc}");
+        assert!(!mirror_desc.contains("user:"), "{mirror_desc}");
+
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed_addr = closed.local_addr().expect("addr");
+        drop(closed);
+        set_update_env(UPDATE_ALLOWED_HOSTS_ENV, "127.0.0.1");
+        let download_err = download_url_once_with(
+            &UpdateTransportPolicy::from_env(),
+            UPDATE_MAX_RESPONSE_BYTES,
+            &format!("https://user:secret@{closed_addr}/codewhale"),
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("closed loopback HTTPS must fail without leaking userinfo");
+        let download_text = format!("{download_err:#}");
+        assert!(
+            download_text.contains("failed to download"),
+            "{download_text}"
+        );
+        assert!(!download_text.contains("secret"), "{download_text}");
+        assert!(!download_text.contains("user:"), "{download_text}");
     }
 
     #[test]
@@ -5232,5 +5472,34 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *codewhale-win
             release_tag_from_github_release_html("<a href=\"/releases/tag/a%2Fb\">"),
             None
         );
+    }
+
+    #[test]
+    fn record_declined_update_warns_when_persist_fails_and_saves_on_success() {
+        let sample = |target_dir: PathBuf| autoupdate::StagedUpdate {
+            version: "0.10.5".to_string(),
+            sha256: "a".repeat(64),
+            signed: false,
+            source: "https://example.invalid/codewhale".to_string(),
+            target_dir,
+            declined: false,
+            staged_at_unix: 1,
+        };
+
+        let unwritable_home = tempfile::tempdir().unwrap();
+        // Blocking `updates` with a regular file forces `store_staged` to fail portably.
+        std::fs::write(unwritable_home.path().join("updates"), b"not-a-dir").unwrap();
+        let mut staged = sample(unwritable_home.path().to_path_buf());
+        let warning =
+            record_declined_update(unwritable_home.path(), &mut staged, "0.10.4", "0.10.5");
+        assert!(warning.contains("not saved"), "{warning}");
+        assert!(warning.contains("you will be asked again"), "{warning}");
+        assert!(!warning.contains("whenever you want"), "{warning}");
+
+        let ok_home = tempfile::tempdir().unwrap();
+        let mut staged = sample(ok_home.path().to_path_buf());
+        let ok_msg = record_declined_update(ok_home.path(), &mut staged, "0.10.4", "0.10.5");
+        assert!(ok_msg.contains("whenever you want v0.10.5"), "{ok_msg}");
+        assert!(autoupdate::load_staged(ok_home.path()).unwrap().declined);
     }
 }

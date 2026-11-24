@@ -4,7 +4,7 @@
 use super::ManagerShared;
 use super::protocol::{RegisterParams, RegisterResult};
 use super::supervisor::HostRequestContext;
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use codewhale_config::PluginAuthority;
 use codewhale_config::{EntryRef, OwnerRef};
@@ -105,14 +105,14 @@ fn snapshot(authority: &PluginAuthority, relative: &Path) -> Result<(Pack, Vec<V
 
 pub(super) async fn admit(
     shared: &Arc<ManagerShared>,
-    tier: HostTier,
+    cohort: &HostCohort,
     host_generation: u64,
     params: RegisterParams,
     cx: &HostRequestContext,
 ) -> RegisterResult {
     let result = async {
         params.check_spec()?;
-        if tier != HostTier::Plugin || !params.spec.description.is_empty() {
+        if cohort.tier() != HostTier::Plugin || !params.spec.description.is_empty() {
             return Err("avatar packs require a reviewed Native bundle and a manifest path".into());
         }
         if !codewhale_protocol::avatar::relative_asset(&params.spec.name)
@@ -121,7 +121,7 @@ pub(super) async fn admit(
             return Err("avatar manifest must be a bounded bundle-relative JSON path".into());
         }
         let authority = shared
-            .live_owner_authority(tier, |registry| {
+            .live_owner_authority(cohort, |registry| {
                 registry
                     .authority_for(&params.owner)
                     .ok_or("stale avatar owner")?;
@@ -135,8 +135,10 @@ pub(super) async fn admit(
             move || snapshot(&authority, &relative),
         )
         .await?;
-        shared.ready_host(tier).map_err(|s| s.to_string())?;
-        let runtime = shared.tier_runtime(tier);
+        shared.ready_host(cohort).map_err(|s| s.to_string())?;
+        let runtime = shared
+            .cohort_runtime(cohort)
+            .ok_or_else(|| "cohort runtime gone".to_string())?;
         let _slot = runtime.host.lock().expect("host lock");
         if runtime.host_generation.load(Ordering::SeqCst) != host_generation
             || cx.cancel.is_cancelled()
@@ -199,7 +201,15 @@ async fn live(workspace: std::path::PathBuf) -> Vec<AvatarRegistration> {
                 {
                     continue;
                 }
-                let Ok(host) = shared.ready_host(HostTier::Plugin) else {
+                let cohort = shared
+                    .registry
+                    .lock()
+                    .expect("registry lock")
+                    .cohort_of(&entry.owner);
+                let Some(cohort) = cohort else {
+                    continue;
+                };
+                let Ok(host) = shared.ready_host(&cohort) else {
                     continue;
                 };
                 if host.generation != entry.host_generation {
@@ -278,7 +288,7 @@ mod tests {
         let mut registry = OwnerRegistry::new();
         let a = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "a",
                 "a",
                 Some(fake_authority("a")),
@@ -287,7 +297,7 @@ mod tests {
             .unwrap();
         let b = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "b",
                 "b",
                 Some(fake_authority("b")),
@@ -336,7 +346,7 @@ mod tests {
         assert!(registry.live_avatars().is_empty());
         let replacement = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "a",
                 "a",
                 Some(fake_authority("a")),

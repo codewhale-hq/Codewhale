@@ -156,9 +156,14 @@ pub fn create_seatbelt_args(
     policy: &SandboxPolicy,
     sandbox_cwd: &Path,
     denied_read_subpaths: &[std::path::PathBuf],
+    scratch: Option<&Path>,
 ) -> Vec<String> {
-    let full_policy = generate_policy(policy, sandbox_cwd, denied_read_subpaths);
-    let params = generate_params(policy, sandbox_cwd);
+    let full_policy =
+        generate_policy_with_scratch(policy, sandbox_cwd, denied_read_subpaths, scratch.is_some());
+    let mut params = generate_params(policy, sandbox_cwd);
+    if let Some(scratch) = scratch {
+        params.push(("PRIVATE_TMPDIR".to_string(), scratch.to_path_buf()));
+    }
 
     let mut args = vec!["-p".to_string(), full_policy];
 
@@ -220,11 +225,20 @@ pub(crate) fn create_restricted_seatbelt_args(
     args
 }
 
-/// Generate the complete Seatbelt policy string for the given policy.
+#[cfg(test)]
 fn generate_policy(
     policy: &SandboxPolicy,
     cwd: &Path,
     denied_read_subpaths: &[std::path::PathBuf],
+) -> String {
+    generate_policy_with_scratch(policy, cwd, denied_read_subpaths, false)
+}
+
+fn generate_policy_with_scratch(
+    policy: &SandboxPolicy,
+    cwd: &Path,
+    denied_read_subpaths: &[std::path::PathBuf],
+    has_scratch: bool,
 ) -> String {
     let mut full_policy = SEATBELT_BASE_POLICY.to_string();
 
@@ -240,6 +254,11 @@ fn generate_policy(
     if !file_write_policy.is_empty() {
         full_policy.push_str("\n\n; Write access policy\n");
         full_policy.push_str(&file_write_policy);
+    }
+    if has_scratch {
+        full_policy.push_str(
+            "\n\n; Private per-command TMPDIR, removed after the command\n(allow file-write* (subpath (param \"PRIVATE_TMPDIR\")))\n(deny file-write-unlink (literal (param \"PRIVATE_TMPDIR\")))\n",
+        );
     }
 
     // Add network policy if enabled
@@ -537,36 +556,41 @@ fn generate_params(policy: &SandboxPolicy, cwd: &Path) -> Vec<(String, PathBuf)>
     params
 }
 
-/// Get the Darwin user cache directory using confstr.
-///
-/// This returns the per-user cache directory that macOS assigns,
-/// typically something like /var/folders/xx/xxx.../C/
-fn get_darwin_user_cache_dir() -> Option<PathBuf> {
-    // Use libc to call confstr for _CS_DARWIN_USER_CACHE_DIR
+fn get_darwin_confstr_dir(name: libc::c_int) -> Option<PathBuf> {
     let mut buf = vec![0i8; (libc::PATH_MAX as usize) + 1];
 
     // Safety: `buf` is a writable buffer sized to PATH_MAX + 1 for confstr.
-    let len =
-        unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr(), buf.len()) };
+    let len = unsafe { libc::confstr(name, buf.as_mut_ptr(), buf.len()) };
 
     if len == 0 {
         return None;
     }
 
-    // Convert the C string to a Rust PathBuf
     // Safety: confstr guarantees a NUL-terminated string in `buf` when len > 0.
     let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
     let path_str = cstr.to_str().ok()?;
     let path = PathBuf::from(path_str);
 
-    // Try to canonicalize, but return the raw path if that fails
     path.canonicalize().ok().or(Some(path))
 }
 
-/// Detect sandbox denial from command output.
+/// Get the Darwin user cache directory using confstr.
 ///
-/// Returns true if the output suggests the sandbox blocked an operation.
-pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
+/// This returns the per-user cache directory that macOS assigns,
+/// typically something like /var/folders/xx/xxx.../C/
+fn get_darwin_user_cache_dir() -> Option<PathBuf> {
+    get_darwin_confstr_dir(libc::_CS_DARWIN_USER_CACHE_DIR)
+}
+
+pub(crate) fn darwin_user_temp_dir() -> Option<PathBuf> {
+    get_darwin_confstr_dir(libc::_CS_DARWIN_USER_TEMP_DIR)
+}
+
+fn detect_denial_with_localized(
+    exit_code: i32,
+    stderr: &str,
+    localized_eperm: Option<&str>,
+) -> bool {
     if exit_code == 0 {
         return false;
     }
@@ -580,6 +604,15 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     ];
 
     denial_patterns.iter().any(|p| stderr.contains(p))
+        || localized_eperm.is_some_and(|msg| !msg.is_empty() && stderr.contains(msg))
+}
+
+/// Detect sandbox denial from command output.
+///
+/// Returns true if the output suggests the sandbox blocked an operation.
+pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
+    let localized = super::localized_errno_message(libc::EPERM);
+    detect_denial_with_localized(exit_code, stderr, localized.as_deref())
 }
 
 #[cfg(test)]
@@ -896,7 +929,7 @@ mod existing_tests {
         let cwd = Path::new("/tmp/test");
         let command = vec!["echo".to_string(), "hello".to_string()];
 
-        let args = create_seatbelt_args(command, &policy, cwd, &[]);
+        let args = create_seatbelt_args(command, &policy, cwd, &[], None);
 
         // Should start with -p and the policy
         assert_eq!(args[0], "-p");
@@ -984,6 +1017,7 @@ mod existing_tests {
             &SandboxPolicy::DangerFullAccess,
             &cwd,
             &[],
+            None,
         );
         let output = Command::new(SANDBOX_EXEC_PATH)
             .args(args)
@@ -1003,5 +1037,22 @@ mod existing_tests {
         assert!(detect_denial(1, "Sandbox: ls denied file-write*"));
         assert!(!detect_denial(0, "Operation not permitted"));
         assert!(!detect_denial(1, "File not found"));
+    }
+
+    #[test]
+    fn test_detect_denial_matches_localized_eperm() {
+        let localized = "Операция запрещена";
+        assert!(detect_denial_with_localized(
+            1,
+            &format!("rm: /protected: {localized}"),
+            Some(localized),
+        ));
+        assert!(!detect_denial_with_localized(0, localized, Some(localized),));
+        assert!(!detect_denial_with_localized(
+            1,
+            "File not found",
+            Some(localized),
+        ));
+        assert!(super::super::localized_errno_message(libc::EPERM).is_some());
     }
 }

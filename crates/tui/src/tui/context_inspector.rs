@@ -15,10 +15,10 @@ use ratatui::{
 };
 
 use crate::tui::app::{App, ToolDetailRecord};
-use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-    render_underwater_surface,
+use crate::tui::views::rounded::{
+    pad_selected_line, render_rounded_footer, render_rounded_surface,
 };
+use crate::tui::views::{ActionHint, ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_core::ContextReferenceSource;
 use codewhale_engine::compaction::{
     CompactionPath, estimate_input_tokens_for_pressure, inspect_compaction_keep,
@@ -569,19 +569,26 @@ fn push_references(out: &mut String, references: &[SessionContextReference], loc
     let _ = writeln!(out, "{}", tr(locale, MessageId::CtxInspReferences));
     let _ = writeln!(out, "----------");
 
+    let reference_key = |reference: &codewhale_core::ContextReference| {
+        format!(
+            "{:?}:{:?}:{}:{}",
+            reference.source, reference.kind, reference.target, reference.label
+        )
+    };
+    let unique_total = references
+        .iter()
+        .map(|record| reference_key(&record.reference))
+        .collect::<HashSet<_>>()
+        .len();
     let mut seen = HashSet::new();
     let mut rendered = 0usize;
     for record in references {
         let reference = &record.reference;
-        let key = format!(
-            "{:?}:{:?}:{}:{}",
-            reference.source, reference.kind, reference.target, reference.label
-        );
-        if !seen.insert(key) {
+        if !seen.insert(reference_key(reference)) {
             continue;
         }
         if rendered >= MAX_REFERENCE_ROWS {
-            let remaining = references.len().saturating_sub(rendered);
+            let remaining = unique_total.saturating_sub(rendered);
             if remaining > 0 {
                 let _ = writeln!(
                     out,
@@ -641,7 +648,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
         push_tool_row(out, locale, &location, detail);
         rendered += 1;
         if rendered >= MAX_TOOL_ROWS {
-            return;
+            break;
         }
     }
     for (cell_idx, detail) in rows
@@ -962,9 +969,14 @@ impl ModalView for ContextInspectorView {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let inner =
-            render_underwater_surface(area, buf, tr(self.locale, MessageId::CtxInspSurfaceTitle));
-        let content = render_modal_footer(
+        let inner = render_rounded_surface(
+            area,
+            buf,
+            tr(self.locale, MessageId::CtxInspSurfaceTitle),
+            Some(format!("{:.1}%", self.percent)),
+            false,
+        );
+        let content = render_rounded_footer(
             inner,
             buf,
             &[
@@ -974,6 +986,7 @@ impl ModalView for ContextInspectorView {
             ],
         );
         let width = usize::from(content.width);
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(
@@ -991,7 +1004,7 @@ impl ModalView for ContextInspectorView {
             ]),
             Line::from(Span::styled(
                 crate::tui::workspace_context::truncate_left(&self.workspace, width),
-                Style::default().fg(palette::TEXT_DIM),
+                Style::default().fg(palette::TEXT_MUTED),
             )),
             Line::from(Span::styled(
                 self.restored_window.as_deref().unwrap_or_default(),
@@ -1006,18 +1019,23 @@ impl ModalView for ContextInspectorView {
             let system_cells = system_cells.min(cells);
             let message_cells = message_cells.min(cells.saturating_sub(system_cells));
             let free_cells = cells.saturating_sub(system_cells + message_cells);
+            let (sys_ch, msg_ch, free_ch) = if ascii {
+                ("#", "=", ".")
+            } else {
+                ("█", "▓", "░")
+            };
             lines.push(Line::from(vec![
                 Span::styled(
-                    "#".repeat(system_cells),
+                    sys_ch.repeat(system_cells),
                     Style::default().fg(palette::WHALE_ACTION),
                 ),
                 Span::styled(
-                    "=".repeat(message_cells),
-                    Style::default().fg(palette::TEXT_PRIMARY),
+                    msg_ch.repeat(message_cells),
+                    Style::default().fg(palette::WHALE_LIVE),
                 ),
                 Span::styled(
-                    ".".repeat(free_cells),
-                    Style::default().fg(palette::TEXT_DIM),
+                    free_ch.repeat(free_cells),
+                    Style::default().fg(palette::BORDER_COLOR),
                 ),
             ]));
             lines.push(Line::from(Span::styled(
@@ -1031,25 +1049,21 @@ impl ModalView for ContextInspectorView {
                         tr(self.locale, MessageId::SubagentsValueOff),
                     )
                 },
-                Style::default().fg(palette::TEXT_HINT),
+                Style::default().fg(palette::TEXT_MUTED),
             )));
-            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                if ascii { "-" } else { "─" }.repeat(width),
+                Style::default().fg(palette::BORDER_COLOR),
+            )));
         }
 
         self.hitboxes.borrow_mut().clear();
         for (idx, row) in self.rows.iter().enumerate() {
             let selected = idx == self.selected;
             let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
-            let style = if selected {
-                menu_style::selected_row_style()
-            } else {
-                Style::default().fg(palette::TEXT_PRIMARY)
-            };
             let value = tr(self.locale, MessageId::CtxInspRowTokens)
                 .replace("{tokens}", &row.tokens.to_string())
                 .replace("{percent}", &format!("{:.1}", row.percent));
-            // Display cells, not bytes: a CJK or localized row measured in
-            // bytes padded short and pushed the value off the row (U04-m5).
             let value_width = codewhale_tui_kit::ui_text::text_display_width(&value);
             let label_width = width.saturating_sub(value_width + 5);
             let label = codewhale_tui_kit::ui_text::semantic_truncate(&row.label, label_width);
@@ -1060,10 +1074,26 @@ impl ModalView for ContextInspectorView {
                 .y
                 .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
             self.hitboxes.borrow_mut().push((y, idx));
-            lines.push(Line::from(Span::styled(
-                format!("{marker} {label}{}{value}", " ".repeat(gap)),
-                style,
-            )));
+            if selected {
+                let sel = menu_style::selected_row_style();
+                lines.push(pad_selected_line(
+                    Line::from(Span::styled(
+                        format!("{marker} {label}{}{value}", " ".repeat(gap)),
+                        sel,
+                    )),
+                    width,
+                    sel,
+                ));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{marker} {label}"),
+                        Style::default().fg(palette::TEXT_PRIMARY),
+                    ),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(value, Style::default().fg(palette::TEXT_MUTED)),
+                ]));
+            }
         }
         Paragraph::new(lines).render(content, buf);
     }
@@ -1095,6 +1125,30 @@ mod tests {
     use std::path::PathBuf;
 
     use codewhale_localization::Locale;
+
+    #[test]
+    fn reference_overflow_counts_only_distinct_references() {
+        let reference = |label: String| SessionContextReference {
+            message_index: 0,
+            reference: ContextReference {
+                kind: ContextReferenceKind::File,
+                source: ContextReferenceSource::AtMention,
+                badge: "file".to_string(),
+                target: format!("/tmp/project/{label}"),
+                label,
+                included: true,
+                expanded: true,
+                detail: None,
+            },
+        };
+        let mut references: Vec<_> = (0..MAX_REFERENCE_ROWS + 1)
+            .map(|index| reference(format!("f{index}.rs")))
+            .collect();
+        references.insert(1, reference("f0.rs".to_string()));
+        let mut out = String::new();
+        push_references(&mut out, &references, Locale::En);
+        assert!(out.contains("- ... 1 "), "{out}");
+    }
 
     fn test_app() -> App {
         let mut app = App::new(
@@ -1578,5 +1632,33 @@ mod tests {
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(rendered.contains("Auto compact: off"), "{rendered}");
         assert!(!rendered.contains("makes room at"), "{rendered}");
+    }
+
+    #[test]
+    fn push_tools_keeps_details_hint_when_active_tools_fill_cap() {
+        let mut app = test_app();
+        for index in 0..=MAX_TOOL_ROWS {
+            let tool_id = format!("tool-{index}");
+            app.active_tool_details.insert(
+                tool_id.clone(),
+                ToolDetailRecord {
+                    tool_id,
+                    tool_name: format!("read_file_{index}"),
+                    input: serde_json::json!({}),
+                    output: None,
+                },
+            );
+        }
+        let mut out = String::new();
+        push_tools(&mut out, &app, Locale::En);
+        let details = crate::tui::shell_key_routing::display_chord(
+            crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::ToolDetails,
+            )
+            .footer_chord,
+        );
+        let expected_hint =
+            tr(Locale::En, MessageId::CtxInspVHint).replace("{details}", details.as_ref());
+        assert!(out.contains(&expected_hint), "{out}");
     }
 }

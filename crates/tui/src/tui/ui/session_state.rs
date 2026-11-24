@@ -20,6 +20,7 @@ pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
     app.add_message(crate::tui::history::HistoryCell::Error {
         message: message.clone(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.status_message = Some(message);
 }
@@ -527,6 +528,9 @@ pub(crate) fn reconcile_turn_liveness_with(
 /// written to disk, so `--continue` loads the *previous* save — effectively
 /// losing the entire in-progress turn.
 pub(crate) fn persist_recovery_snapshot(app: &mut App) {
+    if app.dispatch_in_flight {
+        return;
+    }
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(mut session) = build_session_snapshot(app, &manager)
     {
@@ -558,9 +562,22 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
             PersistRequest::SaveCheckpoint { session },
             &projection,
         ) {
-            app.status_message = Some(format!(
-                "To-do list update pending while saving recovery snapshot ({err})"
-            ));
+            tracing::error!(%err, "recovery snapshot save failed; in-progress turn not durably persisted");
+            let id = app
+                .current_session_id
+                .as_deref()
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—");
+            let message = app
+                .tr(MessageId::SessionSaveFailed)
+                .replace("{id}", id)
+                .replace("{error}", &err.to_string());
+            app.add_message(HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
+            });
+            app.set_sticky_status(message, StatusToastLevel::Error, None);
         }
     }
 }
@@ -584,6 +601,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
             app.add_message(crate::tui::history::HistoryCell::Error {
                 message: message.clone(),
                 severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+                code: None,
             });
             app.status_message = Some(message);
             return;
@@ -607,7 +625,9 @@ pub(crate) fn maybe_throttled_recovery_snapshot(
     now: Instant,
     last_snapshot_at: &mut Option<Instant>,
 ) {
-    if !app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
+    if app.dispatch_in_flight
+        || (!app.is_loading && !matches!(app.runtime_turn_status.as_deref(), Some("in_progress")))
+    {
         return;
     }
     if last_snapshot_at
@@ -751,6 +771,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
         message: "Engine stopped before completing the turn. Check ~/.codewhale/crashes and retry."
             .to_string(),
         severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+        code: None,
     });
     app.push_status_toast(
         "Engine stopped before completing the turn.",
@@ -1064,27 +1085,6 @@ pub(crate) fn resume_launch_session(app: &mut App, session_id: &str) -> commands
     commands::CommandResult::action(AppAction::LoadSession(path))
 }
 
-/// `LaunchAction::McpRemedy` (#6085): type the remedy the problems row
-/// prints into the composer — `/mcp login <name>` or `/mcp`. Typing beats
-/// copying (no clipboard dependency over SSH), and the user reads the
-/// command before a second Enter sends it.
-pub(crate) fn type_launch_mcp_remedy(app: &mut App) {
-    let Some(command) = crate::tui::underwater::mcp_remedy_command(app) else {
-        return;
-    };
-    // Home can be revisited with an unsent draft. The manager exposes the
-    // same remedy without replacing user-authored composer content.
-    if !app.input.is_empty() {
-        app.launch.dissolve_card(app.ambient_clock_ms);
-        open_mcp_extensions(app);
-        return;
-    }
-    app.input = command;
-    app.cursor_position = app.input.chars().count();
-    app.launch.menu_selected = None;
-    app.launch.status = None;
-}
-
 pub(crate) fn begin_launch_session(
     app: &mut App,
     workspace: Option<PathBuf>,
@@ -1116,20 +1116,24 @@ pub(crate) fn begin_launch_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset: app.agent_preset(),
     })
 }
 
-pub(crate) async fn sync_runtime_workspace_state(
-    task_manager: &SharedTaskManager,
-    workspace: PathBuf,
-) {
-    task_manager.set_default_workspace(workspace).await;
+/// Point the manager the App currently owns at `workspace`.
+///
+/// Reads through the slot rather than a captured handle: a session switch can
+/// replace the manager, and a stale handle would update a store this host no
+/// longer holds.
+pub(crate) async fn sync_runtime_workspace_state(app: &App, workspace: PathBuf) {
+    if let Some(current) = app.runtime_services.task_manager.as_ref() {
+        current.set_default_workspace(workspace).await;
+    }
 }
 
 pub(crate) async fn switch_workspace(
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &Config,
     workspace: PathBuf,
 ) {
@@ -1150,7 +1154,7 @@ pub(crate) async fn switch_workspace(
     }
 
     apply_workspace_runtime_state(app, config, workspace.clone());
-    sync_runtime_workspace_state(task_manager, workspace.clone()).await;
+    sync_runtime_workspace_state(app, workspace.clone()).await;
 
     replace_tui_engine(app, config, engine_handle).await;
     if !app.api_messages.is_empty() {
@@ -1165,6 +1169,7 @@ pub(crate) async fn switch_workspace(
                 model: app.model.clone(),
                 workspace: workspace.clone(),
                 mode: app.mode,
+                agent_preset: app.agent_preset(),
             })
             .await;
     }
@@ -1320,7 +1325,7 @@ pub(crate) fn persist_rules_from_approval(
     app: &mut App,
     config: &mut Config,
     rules: &[codewhale_config::ToolAskRule],
-) {
+) -> bool {
     let action = rules.first().map(|rule| rule.action);
     match codewhale_config::ConfigStore::load(app.config_path.clone()).and_then(|mut store| {
         let added = match action {
@@ -1348,6 +1353,7 @@ pub(crate) fn persist_rules_from_approval(
                 "Saved {added} {action} permission rule(s) to {}",
                 path.display()
             ));
+            true
         }
         Ok((_added, path)) => {
             let action = match action {
@@ -1358,9 +1364,11 @@ pub(crate) fn persist_rules_from_approval(
                 "{action} permission rule already saved in {}",
                 path.display()
             ));
+            true
         }
         Err(err) => {
             app.status_message = Some(format!("Failed to save permission rule: {err:#}"));
+            false
         }
     }
 }
@@ -1873,6 +1881,7 @@ pub(crate) struct PendingFreshSession {
     model: String,
     workspace: PathBuf,
     mode: AppMode,
+    agent_preset: Option<String>,
     queue_transition: Option<OfflineQueueTransition>,
     write_receipt: codewhale_engine::session_manager::SessionWriteReceipt,
     input: String,
@@ -1883,6 +1892,7 @@ pub(crate) struct PendingFreshSession {
     skill_provenance: Option<codewhale_skills::SkillProvenance>,
     queued: VecDeque<QueuedMessage>,
     queued_draft: Option<QueuedMessage>,
+    pub(crate) draft: Option<String>,
     phase: FreshSessionPhase,
     started: Instant,
     deadline_reported: bool,
@@ -1893,6 +1903,7 @@ pub(crate) fn begin_fresh_session(
     engine: &EngineHandle,
     sync: codewhale_command_contract::facets::SessionSyncPayload,
     force: bool,
+    draft: Option<String>,
 ) -> Result<(), String> {
     if app.session_transition_blocked() || app.remote_control.runtime_chat_blocks_local_dispatch() {
         return Err("Cannot start a new session while the current session is busy.".to_string());
@@ -1907,6 +1918,7 @@ pub(crate) fn begin_fresh_session(
                 .to_string(),
         );
     }
+    let agent_preset = sync.agent_preset.clone();
     let id = sync
         .session_id
         .filter(|id| !id.is_empty())
@@ -1940,6 +1952,7 @@ pub(crate) fn begin_fresh_session(
         model: app.model.clone(),
         workspace: app.workspace.clone(),
         mode: app.mode,
+        agent_preset,
         queue_transition,
         write_receipt,
         input: app.input.clone(),
@@ -1950,6 +1963,7 @@ pub(crate) fn begin_fresh_session(
         skill_provenance: app.active_skill_provenance.clone(),
         queued: app.queued_messages.clone(),
         queued_draft: app.queued_draft.clone(),
+        draft,
         phase: FreshSessionPhase::Inspecting(rx),
         started: Instant::now(),
         deadline_reported: false,
@@ -2025,6 +2039,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                     model: pending.model.clone(),
                     workspace: pending.workspace.clone(),
                     mode: pending.mode,
+                    agent_preset: pending.agent_preset.clone(),
                 },
             );
             engine.send_reserved_op(
@@ -2060,6 +2075,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                 return false;
             }
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
             surface_session_load_failure(app, "New session acknowledgement did not match the requested Engine transition; input is preserved and sending remains blocked.".to_string());
         }
         Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
@@ -2068,6 +2084,7 @@ pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
                 return false;
             }
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
             surface_session_load_failure(app, "The Engine dropped the new-session acknowledgement; input is preserved and the transition remains unresolved.".to_string());
         }
         Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
@@ -2121,6 +2138,7 @@ pub(crate) fn acknowledge_fresh_session(
     }) {
         if let Some(pending) = app.pending_fresh_session.as_mut() {
             pending.phase = FreshSessionPhase::Uncertain;
+            pending.draft = None;
         }
         surface_session_load_failure(app, "Another Engine session update superseded the confirmed transition; input is preserved and sending remains blocked.".to_string());
         return false;
@@ -2148,6 +2166,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
         || app.admitted_provider_identity().ok() != Some(&pending.provider_identity)
     {
         pending.phase = FreshSessionPhase::Uncertain;
+        pending.draft = None;
         surface_session_load_failure(app, "The UI changed while the Engine confirmed a new session; input is preserved and the transition remains unresolved.".to_string());
         app.pending_fresh_session = Some(pending);
         return false;
@@ -2188,6 +2207,12 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
     app.session_context_references.clear();
     app.tool_evidence.clear();
     app.set_current_session_id(Some(pending.id.clone()));
+    app.install_conversation_mode(pending.agent_preset.clone(), None);
+    if let Some(draft) = pending.draft.take().filter(|_| !preserve_input) {
+        app.input = draft;
+        app.cursor_position = app.input.chars().count();
+        app.line_began_with_slash = false;
+    }
     app.session_write_receipt = Some(pending.write_receipt);
     app.session_write_owner =
         Some(codewhale_engine::session_manager::SessionWriteOwner::Control(pending.control));
@@ -2204,6 +2229,7 @@ fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool
         content: message.clone(),
     });
     app.status_message = Some(message);
+    app.refresh_agent_approved_plugins_notice();
     app.needs_redraw = true;
     true
 }

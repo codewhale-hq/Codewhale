@@ -15,9 +15,11 @@ use super::{HistoryCell, TRANSCRIPT_RAIL};
 pub(super) fn parse_archived_context(text: &str) -> Option<HistoryCell> {
     let (tag, summary) = codewhale_engine::runtime_handoff::archived_context_parts(text)?;
 
-    let level = archived_context_attr(tag, "level")
-        .and_then(|v| v.parse::<u8>().ok())
-        .unwrap_or(0);
+    let raw_level = archived_context_attr(tag, "level");
+    let Some(level) = raw_level.as_deref().and_then(|v| v.parse::<u8>().ok()) else {
+        tracing::debug!(level = ?raw_level, "archived_context tag has no valid level");
+        return None;
+    };
 
     let range = archived_context_attr(tag, "range").unwrap_or_default();
 

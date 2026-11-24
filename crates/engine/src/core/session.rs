@@ -2,7 +2,22 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
-use crate::project_context::ProjectContext;
+use crate::project_context::{PinnedProjectInstructions, ProjectContext};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageAuthorship {
+    Person,
+    ApprovedPlan,
+    #[default]
+    NotPerson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedIntentMessage {
+    pub authorship: MessageAuthorship,
+    pub text: String,
+    pub message_index: Option<usize>,
+}
 use codewhale_core::prefix_cache::PrefixStabilityManager;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{Message, SystemPrompt, Usage};
@@ -13,13 +28,14 @@ use std::path::PathBuf;
 
 /// Number of deferred schemas a conversation keeps in its active toolbox
 /// before another admission evicts one. Tools used in the current or previous
-/// turn are never evicted, so they can hold the toolbox above this bound. The
-/// permanent `read`/`write`/`edit`/`bash`/`agent`/`tool_search` router surface
-/// is not counted here.
-pub const TOOL_ACTIVATION_CACHE_MAX_NAMES: usize = 8;
+/// turn are never evicted, so they can hold the toolbox above this bound, and
+/// MCP tools are evicted before first-party tools. The permanent
+/// `read`/`write`/`edit`/`bash`/`agent`/`tool_search` router surface is not
+/// counted here.
+pub const TOOL_ACTIVATION_CACHE_MAX_NAMES: usize = 16;
 /// Added provider-wire schema bytes, under the same soft eviction rule
 /// as the name bound. Unknown adapter measurements remain unknown.
-pub const TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES: usize = 16 * 1024;
+pub const TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES: usize = 32 * 1024;
 
 /// Bounded, process-local conversation cache for tools activated by
 /// `tool_search`.
@@ -129,7 +145,13 @@ impl ToolActivationCache {
             .iter()
             .enumerate()
             .filter(|&(_, name)| !keep.contains(name) && !self.pinned(name))
-            .min_by_key(|&(index, name)| (self.last_use.get(name).copied(), index))
+            .min_by_key(|&(index, name)| {
+                (
+                    !crate::mcp::McpPool::is_mcp_tool(name),
+                    self.last_use.get(name).copied(),
+                    index,
+                )
+            })
             .map(|(index, _)| index)
     }
 
@@ -154,6 +176,14 @@ impl ToolActivationCache {
         }
         *self = next;
         Ok(evicted)
+    }
+
+    pub fn remove_names(&mut self, removed: &std::collections::HashSet<String>) {
+        if removed.is_empty() {
+            return;
+        }
+        self.names.retain(|name| !removed.contains(name));
+        self.last_use.retain(|name, _| !removed.contains(name));
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -196,7 +226,8 @@ impl ToolActivationCache {
     }
 
     /// Admit requested deferred tools in search-result priority order. An
-    /// oversized schema is rejected. Room comes from entries never used
+    /// oversized schema is rejected. Room comes from MCP tools before
+    /// first-party tools, and within each group from entries never used
     /// (oldest admission first), then from the least recently used; tools
     /// used in the current or previous turn are never evicted. When they
     /// leave no room, the best match is admitted over the bounds and the rest
@@ -232,14 +263,12 @@ impl ToolActivationCache {
                 delta.rejected.push(name.clone());
                 continue;
             }
-            if self.names.contains(name) {
-                batch.push(name.clone());
-                continue;
-            }
             let protected = self
                 .names
                 .iter()
-                .filter(|cached| batch.contains(*cached) || self.pinned(cached))
+                .filter(|cached| {
+                    *cached != name && (batch.contains(*cached) || self.pinned(cached))
+                })
                 .chain(std::iter::once(name))
                 .cloned()
                 .collect::<Vec<_>>();
@@ -248,6 +277,9 @@ impl ToolActivationCache {
                 continue;
             }
             batch.push(name.clone());
+            if self.names.contains(name) {
+                continue;
+            }
             self.names.push_back(name.clone());
             while Self::exceeds_budget(&self.names.iter().cloned().collect::<Vec<_>>(), measure)? {
                 let Some(index) = self.eviction_candidate(&batch) else {
@@ -273,6 +305,8 @@ impl ToolActivationCache {
             .filter(|name| retained.contains(name))
             .cloned()
             .collect();
+        delta.evicted.retain(|name| !retained.contains(name));
+        delta.held.retain(|name| !retained.contains(name));
         delta.evicted.sort();
         delta.evicted.dedup();
         delta.rejected.sort();
@@ -377,6 +411,8 @@ pub struct Session {
 
     /// Project context loaded from AGENTS.md, etc.
     pub project_context: Option<ProjectContext>,
+    pub pinned_project_instructions: PinnedProjectInstructions,
+    pub recorded_intents: Vec<RecordedIntentMessage>,
 
     /// Repo-aware working set for context management.
     pub working_set: WorkingSet,
@@ -408,6 +444,8 @@ pub struct Session {
     /// boundaries so the next send can compact on last-turn pressure
     /// (#5577). Cleared when history is rewritten (compaction, restore).
     pub latest_parent_input_tokens: Option<u32>,
+
+    pub agent_preset: Option<String>,
 }
 
 /// Cumulative usage statistics for a session.
@@ -471,6 +509,8 @@ impl Session {
             snapshot_source: None,
             id: uuid::Uuid::new_v4().to_string(),
             project_context: None,
+            pinned_project_instructions: PinnedProjectInstructions::default(),
+            recorded_intents: Vec::new(),
             last_system_prompt_hash: None,
             pending_prefix_change_reason: None,
             pinned_prompt_context: None,
@@ -481,6 +521,7 @@ impl Session {
             tool_activation_cache: ToolActivationCache::default(),
             messages_revision: 0,
             latest_parent_input_tokens: None,
+            agent_preset: None,
         }
     }
 
@@ -496,8 +537,60 @@ impl Session {
     /// atomically.
     pub fn replace_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages.into();
+        for intent in &mut self.recorded_intents {
+            intent.message_index = None;
+        }
         self.messages_revision = self.messages_revision.saturating_add(1);
         self.latest_parent_input_tokens = None;
+    }
+
+    pub fn record_person_message(&mut self, text: impl Into<String>, message_index: Option<usize>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.recorded_intents.push(RecordedIntentMessage {
+            authorship: MessageAuthorship::Person,
+            text,
+            message_index,
+        });
+    }
+
+    pub fn record_approved_plan(&mut self, text: impl Into<String>, message_index: Option<usize>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        self.recorded_intents.push(RecordedIntentMessage {
+            authorship: MessageAuthorship::ApprovedPlan,
+            text,
+            message_index,
+        });
+    }
+
+    pub fn person_messages(&self) -> Vec<String> {
+        self.recorded_intents
+            .iter()
+            .filter(|intent| intent.authorship == MessageAuthorship::Person)
+            .map(|intent| intent.text.clone())
+            .collect()
+    }
+
+    pub fn approved_plan(&self) -> Option<&str> {
+        self.recorded_intents
+            .iter()
+            .rev()
+            .find(|intent| intent.authorship == MessageAuthorship::ApprovedPlan)
+            .map(|intent| intent.text.as_str())
+    }
+
+    pub fn truncate_intents_to(&mut self, message_len: usize) {
+        self.recorded_intents
+            .retain(|intent| intent.message_index.is_none_or(|index| index < message_len));
+    }
+
+    pub fn clear_recorded_intents(&mut self) {
+        self.recorded_intents.clear();
     }
 
     /// Bump `messages_revision` without otherwise mutating the message list.
@@ -559,6 +652,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert!(usage.cache_creation_input_tokens.is_none());
@@ -582,6 +676,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         assert_eq!(usage.cache_read_input_tokens, Some(30));
@@ -608,6 +703,7 @@ mod tests {
             output_audio_tokens: None,
 
             request_usages: Vec::new(),
+            safety_tokens: None,
         };
         usage.add(&api_usage);
         // 0 is a valid observed value, must NOT be converted to None
@@ -617,7 +713,7 @@ mod tests {
 
     #[test]
     fn tool_activation_cache_retains_best_matches_on_count_overflow() {
-        let catalog = (0..10)
+        let catalog = (0..TOOL_ACTIVATION_CACHE_MAX_NAMES + 2)
             .map(|index| deferred_tool(&format!("tool_{index}"), 8))
             .collect::<Vec<_>>();
         let requested = catalog
@@ -628,28 +724,31 @@ mod tests {
         let delta = cache.activate(&catalog, &requested);
 
         assert_eq!(cache.names().count(), TOOL_ACTIVATION_CACHE_MAX_NAMES);
-        assert_eq!(
-            cache.names().collect::<Vec<_>>(),
-            vec![
-                "tool_7", "tool_6", "tool_5", "tool_4", "tool_3", "tool_2", "tool_1", "tool_0"
-            ]
-        );
+        let mut expected = requested[..TOOL_ACTIVATION_CACHE_MAX_NAMES].to_vec();
+        expected.reverse();
+        assert_eq!(cache.names().collect::<Vec<_>>(), expected);
         assert_eq!(delta.admitted, requested[..TOOL_ACTIVATION_CACHE_MAX_NAMES]);
-        assert_eq!(delta.held, vec!["tool_8", "tool_9"]);
+        assert_eq!(delta.held, requested[TOOL_ACTIVATION_CACHE_MAX_NAMES..]);
     }
 
     #[test]
     fn best_match_survives_byte_overflow_eviction() {
-        let mut catalog = vec![deferred_tool("big_best", 12_000)];
+        let mut catalog = vec![deferred_tool(
+            "big_best",
+            TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES * 3 / 4,
+        )];
         for index in 0..4 {
-            catalog.push(deferred_tool(&format!("small_{index}"), 1_500));
+            catalog.push(deferred_tool(
+                &format!("small_{index}"),
+                TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 10,
+            ));
         }
         let requested = catalog
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
         // Isolate byte overflow: every schema fits alone and the name count
-        // fits, but the combined batch exceeds the current 16 KiB limit.
+        // fits, but the combined batch exceeds the byte limit.
         assert!(catalog.iter().all(|tool| {
             ToolActivationCache::serialized_bytes(tool) <= TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES
         }));
@@ -675,7 +774,7 @@ mod tests {
 
     #[test]
     fn duplicate_does_not_lower_first_match_priority() {
-        let catalog = (0..10)
+        let catalog = (0..TOOL_ACTIVATION_CACHE_MAX_NAMES + 2)
             .map(|index| deferred_tool(&format!("tool_{index}"), 8))
             .collect::<Vec<_>>();
         let mut requested = catalog
@@ -689,11 +788,11 @@ mod tests {
         assert_eq!(cache.names().count(), TOOL_ACTIVATION_CACHE_MAX_NAMES);
         assert_eq!(cache.names().filter(|name| *name == "tool_0").count(), 1);
         assert!(cache.names().any(|name| name == "tool_0"));
-        assert!(
-            !cache
-                .names()
-                .any(|name| name == "tool_8" || name == "tool_9")
-        );
+        assert!(!cache.names().any(|name| {
+            catalog[TOOL_ACTIVATION_CACHE_MAX_NAMES..]
+                .iter()
+                .any(|held| held.name == name)
+        }));
         // Admission reporting keeps the caller's order, including duplicates,
         // while the cache itself retains each name only once.
         let mut expected = requested[..TOOL_ACTIVATION_CACHE_MAX_NAMES].to_vec();
@@ -703,24 +802,81 @@ mod tests {
 
     #[test]
     fn touching_a_cached_tool_makes_it_most_recent() {
-        let catalog = (0..9)
+        let max = TOOL_ACTIVATION_CACHE_MAX_NAMES;
+        let catalog = (0..=max)
             .map(|index| deferred_tool(&format!("tool_{index}"), 8))
             .collect::<Vec<_>>();
-        let first_eight = catalog[..8]
+        let first_batch = catalog[..max]
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<Vec<_>>();
         let mut cache = ToolActivationCache::default();
-        cache.activate(&catalog, &first_eight);
+        cache.activate(&catalog, &first_batch);
         // The initial batch puts its lowest-ranked match at the LRU front.
         // A later touch must protect it from the following batch's eviction.
-        cache.activate(&catalog, &["tool_7".to_string()]);
-        cache.activate(&catalog, &["tool_8".to_string()]);
+        let lowest = format!("tool_{}", max - 1);
+        let next_lowest = format!("tool_{}", max - 2);
+        let newest = format!("tool_{max}");
+        cache.activate(&catalog, std::slice::from_ref(&lowest));
+        cache.activate(&catalog, std::slice::from_ref(&newest));
 
         let names = cache.names().collect::<Vec<_>>();
-        assert!(names.contains(&"tool_7"));
-        assert!(!names.contains(&"tool_6"));
-        assert_eq!(names.last().copied(), Some("tool_8"));
+        assert!(names.contains(&lowest.as_str()));
+        assert!(!names.contains(&next_lowest.as_str()));
+        assert_eq!(names.last().copied(), Some(newest.as_str()));
+    }
+
+    #[test]
+    fn mcp_tools_evict_before_first_party_tools() {
+        let max = TOOL_ACTIVATION_CACHE_MAX_NAMES;
+        let mut catalog = vec![deferred_tool("Web", 8), deferred_tool("lsp", 8)];
+        catalog.extend((0..max).map(|index| deferred_tool(&format!("mcp_github_{index}"), 8)));
+        let mut cache = ToolActivationCache::default();
+        cache.activate(&catalog, &["Web".to_string(), "lsp".to_string()]);
+        cache.begin_turn();
+        cache.begin_turn();
+        let mcp = catalog[2..]
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        let first = cache.activate(&catalog, &mcp[..max - 2]);
+        assert!(first.evicted.is_empty());
+        cache.begin_turn();
+        cache.begin_turn();
+        let delta = cache.activate(&catalog, &mcp[max - 2..]);
+
+        let names = cache.names().collect::<Vec<_>>();
+        assert!(names.contains(&"Web") && names.contains(&"lsp"));
+        assert_eq!(delta.evicted.len(), 2);
+        assert!(delta.evicted.iter().all(|name| name.starts_with("mcp_")));
+    }
+
+    #[test]
+    fn readmitted_tool_is_not_reported_evicted() {
+        let max = TOOL_ACTIVATION_CACHE_MAX_NAMES;
+        let catalog = (0..=max)
+            .map(|index| deferred_tool(&format!("tool_{index}"), 8))
+            .collect::<Vec<_>>();
+        let names = catalog
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        let mut cache = ToolActivationCache::default();
+        cache.activate(&catalog, &names[..max]);
+        cache.begin_turn();
+        cache.begin_turn();
+        let requested = vec![names[max].clone(), names[max - 1].clone()];
+        let delta = cache.activate(&catalog, &requested);
+
+        let active = cache.names().collect::<Vec<_>>();
+        assert!(active.contains(&names[max - 1].as_str()));
+        assert!(
+            delta
+                .evicted
+                .iter()
+                .all(|name| !active.contains(&name.as_str()))
+        );
+        assert!(!delta.evicted.contains(&names[max - 1]));
     }
 
     #[test]
@@ -758,5 +914,52 @@ mod tests {
         cache.clear();
 
         assert_eq!(cache.names().count(), 0);
+    }
+
+    #[test]
+    fn cached_tools_obey_budget_and_pinned_cached_tools_are_not_double_counted() {
+        let big = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES * 5 / 8;
+        let catalog = vec![
+            deferred_tool("cached_big", big),
+            deferred_tool("new_big", big),
+        ];
+        let mut cache = ToolActivationCache::default();
+        cache.activate(&catalog, &["cached_big".to_string()]);
+        cache.begin_turn();
+        cache.begin_turn();
+
+        let delta = cache.activate(&catalog, &["new_big".to_string(), "cached_big".to_string()]);
+
+        assert_eq!(delta.admitted, vec!["new_big"]);
+        assert_eq!(delta.evicted, vec!["cached_big"]);
+        assert_eq!(delta.held, vec!["cached_big"]);
+        assert!(cache.total_serialized_bytes(&catalog) <= TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES);
+
+        let med = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES * 5 / 16;
+        let small = TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 4;
+        let pinned_catalog = vec![
+            deferred_tool("pinned_a", med),
+            deferred_tool("pinned_b", med),
+            deferred_tool("new_small", small),
+        ];
+        let mut pinned_cache = ToolActivationCache::default();
+        pinned_cache.activate(
+            &pinned_catalog,
+            &["pinned_a".to_string(), "pinned_b".to_string()],
+        );
+        assert!(pinned_cache.record_use("pinned_a"));
+        assert!(pinned_cache.record_use("pinned_b"));
+
+        let pinned_delta = pinned_cache.activate(
+            &pinned_catalog,
+            &["new_small".to_string(), "pinned_b".to_string()],
+        );
+
+        assert_eq!(pinned_delta.admitted, vec!["new_small", "pinned_b"]);
+        assert!(pinned_delta.held.is_empty());
+        assert_eq!(
+            pinned_cache.names().collect::<Vec<_>>(),
+            vec!["pinned_a", "pinned_b", "new_small"]
+        );
     }
 }

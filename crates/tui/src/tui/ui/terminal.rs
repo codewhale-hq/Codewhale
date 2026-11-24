@@ -211,6 +211,36 @@ pub(crate) fn live_alt_screen() -> bool {
     LIVE_ALT_SCREEN.load(Ordering::Acquire)
 }
 
+static RESTORED_BY_PANIC: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_terminal_restored_by_panic() {
+    RESTORED_BY_PANIC.store(true, Ordering::Release);
+}
+
+pub(crate) fn take_terminal_restored_by_panic() -> bool {
+    RESTORED_BY_PANIC.swap(false, Ordering::AcqRel)
+}
+
+pub(crate) fn rearm_terminal_if_restored_by_panic<O, F>(
+    events_paused: bool,
+    owns_foreground_terminal: O,
+    rearm: F,
+) -> Result<bool>
+where
+    O: FnOnce() -> bool,
+    F: FnOnce() -> Result<()>,
+{
+    if !RESTORED_BY_PANIC.load(Ordering::Acquire)
+        || events_paused
+        || !owns_foreground_terminal()
+        || !take_terminal_restored_by_panic()
+    {
+        return Ok(false);
+    }
+    rearm()?;
+    Ok(true)
+}
+
 /// Enter the alternate screen and, only once the escape went out, record it
 /// as live. Every alternate-screen entry in the crate goes through here so
 /// `live_alt_screen()` never says a screen the terminal is not on.
@@ -487,6 +517,7 @@ pub(crate) fn resume_terminal(
     // No trustworthy focus transition exists while reporting is disabled.
     // Resume from the quiet/focused state and wait for a real FocusLost.
     crate::tui::notifications::set_terminal_focused(true);
+    let _ = take_terminal_restored_by_panic();
     enable_raw_mode()?;
     if use_alt_screen {
         enter_alt_screen(terminal.backend_mut())?;
@@ -831,6 +862,13 @@ pub(crate) struct IdleFacts {
     pub(crate) pending_engine_op: bool,
 }
 
+pub(crate) fn has_live_durable_tasks(app: &App) -> bool {
+    app.task_panel.iter().any(|task| {
+        task.kind == crate::tui::app::TaskPanelEntryKind::Background
+            && matches!(task.status.as_str(), "queued" | "running" | "waiting")
+    })
+}
+
 /// Whether the UI has nothing to do *right now*: no turn, no live work, no
 /// animation, no pending redraw, no toast about to expire, no modal ticking.
 /// Pure on purpose. A state that is not listed here keeps the 48 ms poll, so
@@ -887,6 +925,77 @@ pub(crate) fn idle_poll_duration(
     }
 }
 
+/// The event loop's idle clocks (#6728). `last_ui_activity` is the last
+/// moment anything happened that wanted a prompt reaction: a terminal event,
+/// an engine event, or any non-quiescent UI state. The idle poll and the
+/// automation scan back off from it. The git probe backs off from
+/// `last_input_or_engine_event` instead, which a ticking label or an open
+/// card does not move.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdleClock {
+    last_ui_activity: Instant,
+    last_input_or_engine_event: Instant,
+    elapsed_redraw_pending: bool,
+    ui_quiet: bool,
+}
+
+impl IdleClock {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            last_ui_activity: now,
+            last_input_or_engine_event: now,
+            elapsed_redraw_pending: false,
+            ui_quiet: false,
+        }
+    }
+
+    pub(crate) fn ui_quiet(&self) -> bool {
+        self.ui_quiet
+    }
+
+    pub(crate) fn note_input(&mut self, now: Instant) {
+        self.last_ui_activity = now;
+        self.last_input_or_engine_event = now;
+    }
+
+    pub(crate) fn note_elapsed_only_change(&mut self) {
+        self.elapsed_redraw_pending = true;
+    }
+
+    pub(crate) fn settle(
+        &mut self,
+        app: &mut App,
+        facts: &IdleFacts,
+        now: Instant,
+        engine_event_seen: bool,
+        status_tick_repaints: bool,
+    ) {
+        if engine_event_seen {
+            self.last_input_or_engine_event = now;
+        }
+        let quiescent = ui_state_is_quiescent(app, facts, now);
+        if engine_event_seen || !quiescent {
+            self.last_ui_activity = now;
+        }
+        self.ui_quiet = quiescent && self.ui_quiet_for(now) >= UI_QUIESCENT_AFTER;
+        if std::mem::take(&mut self.elapsed_redraw_pending) && !status_tick_repaints {
+            app.needs_redraw = true;
+        }
+    }
+
+    pub(crate) fn ui_quiet_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_ui_activity)
+    }
+
+    pub(crate) fn input_quiet_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_input_or_engine_event)
+    }
+
+    pub(crate) fn poll(&self, app: &App, facts: &IdleFacts, now: Instant) -> Duration {
+        idle_poll_duration(app, facts, now, self.ui_quiet_for(now))
+    }
+}
+
 #[cfg(test)]
 mod idle_poll_tests {
     use super::*;
@@ -909,6 +1018,34 @@ mod idle_poll_tests {
 
     const FAST: Duration = Duration::from_millis(UI_IDLE_POLL_MS);
     const SLOW: Duration = Duration::from_millis(UI_QUIESCENT_POLL_MS);
+
+    #[test]
+    fn a_running_background_shell_job_does_not_hold_the_ambient_scene_awake() {
+        let mut app = quiet_app();
+        let shell = crate::tui::app::TaskPanelEntry {
+            exit_code: None,
+            id: "shell-live".to_string(),
+            status: "running".to_string(),
+            prompt_summary: "shell: sleep 900".to_string(),
+            duration_ms: Some(60_000),
+            kind: crate::tui::app::TaskPanelEntryKind::Shell,
+            stale: false,
+            elapsed_since_output_ms: None,
+            owner_agent_id: None,
+            owner_agent_name: None,
+            current_tool: None,
+            role: None,
+            files_touched: 0,
+        };
+        app.task_panel.push(shell.clone());
+        assert!(!has_live_durable_tasks(&app));
+
+        app.task_panel.push(crate::tui::app::TaskPanelEntry {
+            kind: crate::tui::app::TaskPanelEntryKind::Background,
+            ..shell
+        });
+        assert!(has_live_durable_tasks(&app));
+    }
 
     #[test]
     fn a_settled_ui_relaxes_only_after_the_quiet_period() {
@@ -1110,7 +1247,7 @@ mod screen_mode_tests {
                         viewport: ratatui::Viewport::Inline(3),
                     },
                 )
-                .map_err(|err| io::Error::other(err.to_string()))
+                .map_err(|err| match err {})
             },
         )
         .expect("a successful probe must switch");
@@ -1285,6 +1422,89 @@ mod screen_mode_tests {
         let mut backend = backend;
         backend.set_terminal_size(Size::new(80, 24));
         assert_eq!(inline_viewport_rows(&backend), 24);
+    }
+
+    #[test]
+    fn caught_panic_rearms_terminal_once_foreground_and_unpaused() {
+        let _lock = crate::test_support::lock_test_env();
+        let _ = take_terminal_restored_by_panic();
+
+        let mut foreground_checks = 0usize;
+        let mut rearms = 0usize;
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || {
+                    foreground_checks += 1;
+                    true
+                },
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("no-op when no panic restore occurred")
+        );
+        assert_eq!(foreground_checks, 0);
+        assert_eq!(rearms, 0);
+
+        let caught = std::panic::catch_unwind(|| {
+            mark_terminal_restored_by_panic();
+            panic!("simulated caught panic");
+        });
+        assert!(caught.is_err());
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                true,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("paused terminal defers re-arm")
+        );
+        assert_eq!(rearms, 0);
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || false,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("background process group defers re-arm")
+        );
+        assert_eq!(rearms, 0);
+
+        assert!(
+            rearm_terminal_if_restored_by_panic(
+                false,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("foreground unpaused loop re-arms once")
+        );
+        assert_eq!(rearms, 1);
+
+        assert!(
+            !rearm_terminal_if_restored_by_panic(
+                false,
+                || true,
+                || {
+                    rearms += 1;
+                    Ok(())
+                },
+            )
+            .expect("re-arm flag stays cleared after recovery")
+        );
+        assert_eq!(rearms, 1);
     }
 }
 

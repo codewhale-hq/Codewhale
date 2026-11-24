@@ -28,13 +28,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use codewhale_command_contract::facets::{
-    CommandPluginContext, CommandPresentationContext, PluginDetail, PluginDiagnosticLevel,
-    PluginMutationOutcome, PluginMutationReceipt,
+    CommandPluginContext, CommandPresentationContext, CommandSessionLifecycleContext, PluginDetail,
+    PluginDiagnosticLevel, PluginMutationOutcome, PluginMutationReceipt,
 };
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 
 use crate::commands::CommandResult;
+use crate::commands::groups::session::transition_blocked_message;
 use crate::commands::traits::{CommandGroup, ContextualCommand};
 #[cfg(test)]
 use crate::tui::app::App;
@@ -68,7 +69,7 @@ impl CommandGroup for PluginsCommands {
 pub(in crate::commands) const PLUGINS_INFO: CommandInfo = CommandInfo {
     name: "plugin",
     aliases: &["plugins", "extensions"],
-    usage: "/plugin [list|status|show|suggest|validate|export|install|import|update|uninstall|trust|enable|restage|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
+    usage: "/plugin [list|status|show|create|suggest|validate|export|install|import|update|uninstall|trust|enable|restage|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
     description_key: "cmd_plugin_description",
 };
 
@@ -83,7 +84,8 @@ impl RegisterCommand<CommandResult> for PluginsCmd {
         CommandHandler::Contextual {
             capabilities: CommandCapabilities::WORKSPACE
                 .union(CommandCapabilities::PRESENTATION)
-                .union(CommandCapabilities::PLUGIN),
+                .union(CommandCapabilities::PLUGIN)
+                .union(CommandCapabilities::SESSION_LIFECYCLE),
             handler: plugins_contextual,
         }
     }
@@ -100,7 +102,17 @@ fn plugins_contextual(contexts: CommandContexts<'_>, arg: Option<&str>) -> Comma
     let Some(plugin) = parts.plugin.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: plugin");
     };
-    plugins(&workspace.workspace(), presentation, plugin, arg, None)
+    let Some(lifecycle) = parts.lifecycle.as_deref_mut() else {
+        return CommandResult::error("Command capability unavailable: session_lifecycle");
+    };
+    plugins(
+        &workspace.workspace(),
+        presentation,
+        plugin,
+        lifecycle,
+        arg,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -117,7 +129,8 @@ fn plugins_with_kimi_home_override(
     let mut bundle = app.command_contexts();
     let capabilities = CommandCapabilities::WORKSPACE
         .union(CommandCapabilities::PRESENTATION)
-        .union(CommandCapabilities::PLUGIN);
+        .union(CommandCapabilities::PLUGIN)
+        .union(CommandCapabilities::SESSION_LIFECYCLE);
     let mut contexts = bundle.contexts(capabilities).into_parts();
     let Some(workspace) = contexts.workspace.as_deref() else {
         return CommandResult::error("Command capability unavailable: workspace");
@@ -128,7 +141,17 @@ fn plugins_with_kimi_home_override(
     let Some(plugin) = contexts.plugin.as_deref_mut() else {
         return CommandResult::error("Command capability unavailable: plugin");
     };
-    plugins(&workspace.workspace(), presentation, plugin, arg, kimi_home)
+    let Some(lifecycle) = contexts.lifecycle.as_deref_mut() else {
+        return CommandResult::error("Command capability unavailable: session_lifecycle");
+    };
+    plugins(
+        &workspace.workspace(),
+        presentation,
+        plugin,
+        lifecycle,
+        arg,
+        kimi_home,
+    )
 }
 
 /// Portable `/plugin` dispatch (FEAT-020 Phase 4).
@@ -140,6 +163,7 @@ pub(super) fn plugins(
     workspace: &Path,
     presentation: &mut dyn CommandPresentationContext,
     plugin: &mut dyn CommandPluginContext,
+    lifecycle: &mut dyn CommandSessionLifecycleContext,
     arg: Option<&str>,
     kimi_home: Option<&Path>,
 ) -> CommandResult {
@@ -156,7 +180,7 @@ pub(super) fn plugins(
         ["restage"] => CommandResult::error("Usage: /plugin restage <name>"),
         ["restage", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Restage),
         ["help"] => CommandResult::message(format!(
-            "{}\n\n/plugin import kimi [list]\n/plugin import kimi approve <name> <content-hash>\n{}\n{}",
+            "{}\n\n/plugin create [idea]\n/plugin import kimi [list]\n/plugin import kimi approve <name> <content-hash>\n{}\n{}",
             translate(presentation, "cmd_plugin_bundle_usage"),
             dsh_import::USAGE,
             DOCTOR_USAGE
@@ -206,6 +230,7 @@ pub(super) fn plugins(
         ["dismissals", ..] => CommandResult::error("Usage: /plugin dismissals [reset [<name>]]"),
         ["tools"] => legacy_tools(presentation, plugin, None),
         ["tools", name] => legacy_tools(presentation, plugin, Some(name)),
+        ["create", ..] => create_plugin(lifecycle, create_draft_from_arg(arg.unwrap_or_default())),
         [selector] => {
             if plugin.detail(selector).is_ok() {
                 show_bundle(presentation, plugin, selector)
@@ -216,6 +241,37 @@ pub(super) fn plugins(
             }
         }
         _ => CommandResult::error(translate(presentation, "cmd_plugin_bundle_usage")),
+    }
+}
+
+fn create_draft_from_arg(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_start();
+    let rest = trimmed.strip_prefix("create")?;
+    let delimiter = rest.chars().next()?;
+    if !delimiter.is_whitespace() {
+        return None;
+    }
+    let idea = &rest[delimiter.len_utf8()..];
+    (!idea.trim().is_empty()).then(|| idea.to_string())
+}
+
+fn create_plugin(
+    lifecycle: &mut dyn CommandSessionLifecycleContext,
+    draft: Option<String>,
+) -> CommandResult {
+    if lifecycle.transition_blocked() {
+        return CommandResult::error(transition_blocked_message(
+            "start a new session",
+            &lifecycle.transition_blockers(),
+        ));
+    }
+    match lifecycle.fresh_session(false, Some("creator")) {
+        Ok(receipt) => CommandResult::action(AppAction::NewSession {
+            sync: receipt.sync,
+            force: false,
+            draft,
+        }),
+        Err(error) => CommandResult::error(error),
     }
 }
 
@@ -426,17 +482,53 @@ fn list_bundles_and_legacy_tools(
             .unwrap_or_default();
         output.push('\n');
         for summary in &summaries {
+            let review = summary
+                .review_display
+                .as_deref()
+                .unwrap_or(&summary.trust_status);
             let _ = writeln!(
                 output,
                 "• {} — {}\n  {} · {} · compatibility={} · {}\n  {}",
                 escape_review_text(&summary.name, ReviewTextContext::Prose),
                 summary.state_label,
                 summary.scope,
-                summary.trust_status,
+                review,
                 summary.compatibility,
                 summary.inventory,
                 escape_review_text(&summary.id, ReviewTextContext::Prose)
             );
+            if let Some(approver) = summary.approver.as_deref() {
+                if let Some(date) = summary.reviewed_date.as_deref() {
+                    let safe_date = escape_review_text(date, ReviewTextContext::Plain);
+                    let approved_date = presentation
+                        .translate("cmd_plugin_audit_approved_date", &[("date", &safe_date)])
+                        .unwrap_or_else(|_| format!("approved {safe_date}"));
+                    let _ = writeln!(output, "  {approver} ({approved_date})");
+                } else {
+                    let _ = writeln!(output, "  {approver}");
+                }
+            }
+            if let Some(enabled_by) = summary.enabled_by.as_deref() {
+                let _ = writeln!(output, "  {enabled_by}");
+            }
+            if summary.outside_reach || summary.reach_folder.is_some() {
+                let folder = escape_review_text(
+                    summary.reach_folder.as_deref().unwrap_or("unknown"),
+                    ReviewTextContext::Prose,
+                );
+                let key = if summary.outside_reach {
+                    "cmd_plugin_audit_reach_only_in"
+                } else {
+                    "cmd_plugin_audit_reach_here"
+                };
+                let reach = presentation
+                    .translate(key, &[("folder", &folder)])
+                    .unwrap_or(folder);
+                let _ = writeln!(output, "  {reach}");
+            }
+            if let Some(note) = summary.process_note.as_deref() {
+                let _ = writeln!(output, "  {note}");
+            }
         }
         output
     };

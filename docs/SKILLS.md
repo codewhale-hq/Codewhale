@@ -1,9 +1,16 @@
 # Skills Manager
 
-In the terminal, `/skills` opens **Extensions → Skills**. Enter on a skill opens the dedicated manager, also available directly through `/skills manage`, for existing install, update, remove, and trust operations. `/skill <name>` still activates a skill, and the explicit inspection, remote, sync, and suggestion subcommands remain available.
+In the terminal, `/skills` opens **Plugins → Skills**. Enter on a skill opens the dedicated manager, also available directly through `/skills manage`, for existing install, update, remove, and trust operations. `/skill <name>` still activates a skill, and the explicit inspection, remote, sync, and suggestion subcommands remain available.
 
 
 > 阅读简体中文版：[zh_hans/SKILLS.md](zh_hans/SKILLS.md)
+
+Everything you add to Codewhale is a plugin: a skill you set up by hand is a
+plugin of the kind **Skill**, and a skill inside a plugin bundle belongs to that
+plugin. Skills are still managed here, under Plugins → Skills and Customize ›
+Skills; one Plugins list that shows every kind together is planned for 0.10.3 and
+is not in this build. This page keeps the word "skill" for the kind; files, trust
+and the `/skills` commands are unchanged.
 
 Skills are reusable `SKILL.md` instruction packs. Codewhale discovers them from
 several roots, but **only Codewhale-owned directories are writable**. The unified
@@ -66,7 +73,7 @@ warning, and the session's skills directory falls back to the global one.
 
 | Command | Behavior |
 | --- | --- |
-| `/skills` | Opens Extensions → Skills (owned-only scan, **no network**). |
+| `/skills` | Opens Plugins → Skills (owned-only scan, **no network**). |
 | `/skills manage` | Opens the dedicated Skills Manager for audit and mutation. |
 | `/skills <prefix>` | Text list filtered by name prefix. |
 | `/skills inspect` | Text discovery mode, searched directories, and source paths. |
@@ -237,7 +244,7 @@ still enters context only through `load_skill`.
 
 ### Catalog fixture matrix (provider-free)
 
-[`crates/tui/assets/skills-catalog-matrix.json`](../crates/tui/assets/skills-catalog-matrix.json)
+[`crates/skills/assets/skills-catalog-matrix.json`](../crates/skills/assets/skills-catalog-matrix.json)
 is an **authored** expectation table covering every bundled skill: canonical
 name, tier, invocation, aliases, whether it renders as an ambient catalogue
 entry, and which of its aliases are shadowed by another canonical name. The
@@ -262,7 +269,7 @@ Collision and prompt-budget invariants asserted today:
 | Single alias owner | No two bundled skills may claim the same alias. |
 | No duplicate entries | Each canonical name renders at most one catalogue line; aliases render zero. |
 | Budget headroom | The shipped pack alone renders under the window-scaled skills budget (2,400 characters at the default 128k window, the index floor) with **no** "additional skills omitted" line, so user skills are never silently displaced. |
-| No context poisoning | Descriptions stay single-line and respect `[skills] listing_max_description_chars` (default 120) before entering the prompt. |
+| Bounded preview | Descriptions stay single-line and respect `[skills] listing_max_description_chars` (default 120) in the catalog preview. |
 
 ### Locale-aware routing metadata
 
@@ -360,9 +367,11 @@ does not run readiness probes and does not block mutations on readiness.
 
 ## Config knobs
 
-Parents, fresh and nested children, and `/context` use the same ambient-index renderer. `[skills] listing_max_description_chars` controls the per-entry ceiling (1–40,000; default 120). `listing_budget_fraction` controls the share of the resolved route window (greater than 0 and at most 1; default 0.002), estimated at four characters per token. The total index retains a 2,400-character floor and 40,000-character ceiling. Explicit profile values override inherited values independently. Changing a route recomputes its budget; it does not silently change the description setting.
+Parent and child sessions discover skills on demand through `load_skill`. `/context` and `codewhale doctor --context-json` estimate a catalog preview and record zero prompt tokens for it. `[skills] listing_max_description_chars` sets the preview's per-entry ceiling (1–40,000, default 120). `listing_budget_fraction` sets its share of the resolved route window (greater than 0 and at most 1, default 0.002), estimated at four characters per token with a 2,400-character floor and 40,000-character ceiling. Explicit profile values override inherited values independently.
 
-The renderer favors `Use when:` triggers, shortens descriptions before falling back to names, and reports shortened/omitted entries. Descriptions exceeding the configured cap without a trigger also produce a load warning. `/skills inspect` shows a localized note with the same effective cap, and `/context` repeats the loss count. `load_skill name="list"` and exact-name loading retain full text. These limits govern ambient routing metadata, not skill bodies or external MCP resource descriptions.
+The preview favors `Use when:` triggers and shortens descriptions before falling back to names. When descriptions are shortened, the context report includes a count in the preview detail. Descriptions exceeding the configured cap without a recognized trigger produce a load warning. `/skills inspect` shows a localized note with the same effective cap.
+
+`load_skill name="list"` shows concise descriptions for project and Codewhale skills and counts global compatible skills by source. Use `name="list-all"` or `include_external=true` to list those skills individually. A multi-word `query` searches names, aliases, and full descriptions across both groups. Loading an exact name returns the full skill body. For filesystem skills, the companion list covers regular files beside `SKILL.md`. Use paths documented in the skill body to find material in subdirectories.
 
 ```toml
 # Optional override for discovery preference (not automatically a write target
@@ -398,7 +407,7 @@ explicit_only = ["handoff"]
 
 `auto` preserves the generation-marker and deletion-as-opt-out behavior. Setting top-level `skills_dir` disables automatic bundle installation in this mode. `all` installs enabled missing names even with a current marker or a discovery override, writing only to the owned global root (`$CODEWHALE_HOME/skills`, normally `~/.codewhale/skills`). `none` writes no files and leaves the marker untouched. Discovery continues in every mode.
 
-An empty `selected` list enables the whole bundle; a nonempty list limits installation and discovery. `disabled` wins and ignores the bundled copy before name resolution, so a compatible root can supply the same name. `explicit_only` removes an enabled bundled copy from the model index and model `load_skill`, while retaining explicit `/skill <name>` invocation. Canonical names and their compatibility aliases share policy: `documents` maps to `docx`, `presentations` to `pptx`, and `spreadsheets` to `xlsx`.
+An empty `selected` list enables the whole bundle; a nonempty list limits installation and discovery. `disabled` wins and ignores the bundled copy before name resolution, so a compatible root can supply the same name. `explicit_only` keeps an enabled bundled copy available through explicit `/skill <name>` invocation and excludes it from model discovery and loading. Canonical names and their compatibility aliases share policy: `documents` maps to `docx`, `presentations` to `pptx`, and `spreadsheets` to `xlsx`.
 
 These lists apply only to recognized shipped copies in the owned global root. Edited files, managed installs with `.installed-from`, project copies and compatible-root copies keep their own behavior. Bundle settings never delete skill files, including retired pack entries. `all` preserves edited and managed bodies. A marker that is a directory or symlink is refused without deleting its contents. Profile fields merge independently; an explicit empty list clears the inherited list.
 

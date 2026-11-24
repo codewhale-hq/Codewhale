@@ -1164,13 +1164,18 @@ impl Git {
         Self::with_filter_overrides(workspace, overrides)
     }
 
-    /// Like [`Self::review_command`] for status reads, which must keep the
-    /// user's own filters (Git LFS in global or system config) working so
-    /// files they manage do not look modified. Only filter drivers that
-    /// repository-controlled config (local or worktree scope, including files
-    /// it includes) defines are neutralized. If the scoped probe fails, this
-    /// falls back to neutralizing every driver.
+    /// Returns `git status --ignore-submodules=dirty`; callers append output
+    /// options and pathspecs. Like [`Self::review_command`] it keeps the
+    /// user's own global or system filters (such as Git LFS) working and
+    /// neutralizes only repository-controlled filter drivers, falling back to
+    /// neutralizing every driver if the scoped probe fails.
     pub fn status_command(workspace: &Path) -> anyhow::Result<Command> {
+        let mut command = Self::workspace_command(workspace)?;
+        command.args(["status", "--ignore-submodules=dirty"]);
+        Ok(command)
+    }
+
+    pub fn workspace_command(workspace: &Path) -> anyhow::Result<Command> {
         let overrides = match Self::filter_overrides(workspace, true) {
             Ok(overrides) => overrides,
             Err(_) => Self::review_filter_overrides(workspace)?,
@@ -1183,7 +1188,7 @@ impl Git {
         overrides: Vec<(String, &'static str)>,
     ) -> anyhow::Result<Command> {
         let mut command = Self::review_base(workspace)?;
-        let mut count = 2;
+        let mut count = 4;
         for (key, value) in overrides {
             // A subsection may contain '='; `-c key=value` would then
             // override a different key. Separate env fields preserve it.
@@ -1195,8 +1200,15 @@ impl Git {
         Ok(command)
     }
 
-    /// Git with fsmonitor, hooks, lazy fetch and replace objects disabled,
-    /// running in `workspace`. [`Self::review_command`] adds filter overrides.
+    /// Git with fsmonitor, hooks, lazy fetch, replace objects and path quoting
+    /// disabled, running in `workspace`, and submodule dirty checks off by
+    /// default. That default is only a config value: a tracked `.gitmodules`
+    /// `ignore` entry takes precedence over it, so every `status` or `diff`
+    /// also passes `--ignore-submodules=dirty` on its own command line
+    /// ([`Self::REVIEW_DIFF_ARGS`] carries it for diffs). Filters defined in
+    /// repository config are neutralized only by [`Self::review_command`],
+    /// [`Self::status_command`] and [`Self::workspace_command`]; filters from
+    /// the user's global or system config are left alone by the last two.
     pub fn review_base(workspace: &Path) -> anyhow::Result<Command> {
         use anyhow::Context;
 
@@ -1257,7 +1269,7 @@ impl Git {
             // Both phases must observe the same effective repository config.
             .env_remove("GIT_CONFIG")
             .env_remove("GIT_CONFIG_PARAMETERS")
-            .env("GIT_CONFIG_COUNT", "2")
+            .env("GIT_CONFIG_COUNT", "4")
             .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
             .env("GIT_CONFIG_VALUE_0", "false")
             .env("GIT_CONFIG_KEY_1", "core.hooksPath")
@@ -1265,18 +1277,26 @@ impl Git {
                 "GIT_CONFIG_VALUE_1",
                 if cfg!(windows) { "NUL" } else { "/dev/null" },
             )
+            .env("GIT_CONFIG_KEY_2", "core.quotePath")
+            .env("GIT_CONFIG_VALUE_2", "false")
+            .env("GIT_CONFIG_KEY_3", "diff.ignoreSubmodules")
+            .env("GIT_CONFIG_VALUE_3", "dirty")
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_NO_REPLACE_OBJECTS", "1");
         Ok(command)
     }
 
-    /// Config overrides (`key`, `value`) that neutralize every clean/process
-    /// filter driver configured for the repository at `workspace`. Callers
+    /// Config overrides (`key`, `value`) that neutralize every clean, smudge and
+    /// process filter driver configured for the repository at `workspace`. Callers
     /// apply them through `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`.
     pub fn review_filter_overrides(
         workspace: &Path,
     ) -> anyhow::Result<Vec<(String, &'static str)>> {
         Self::filter_overrides(workspace, false)
+    }
+
+    pub fn defines_repository_filters(workspace: &Path) -> anyhow::Result<bool> {
+        Ok(!Self::filter_overrides(workspace, true)?.is_empty())
     }
 
     fn filter_overrides(
@@ -1294,7 +1314,7 @@ impl Git {
             "--null",
             "--name-only",
             "--get-regexp",
-            r"^filter\..*\.(clean|process|required)$",
+            r"^filter\..*\.(clean|smudge|process|required)$",
         ]);
         let output =
             run_bounded_git_with_timeout(&mut command, "config", Self::REVIEW_CONFIG_TIMEOUT)
@@ -1333,8 +1353,13 @@ impl Git {
         Ok(filters
             .into_iter()
             .flat_map(|driver| {
-                [("clean", ""), ("process", ""), ("required", "false")]
-                    .map(|(suffix, value)| (format!("{driver}.{suffix}"), value))
+                [
+                    ("clean", ""),
+                    ("smudge", ""),
+                    ("process", ""),
+                    ("required", "false"),
+                ]
+                .map(|(suffix, value)| (format!("{driver}.{suffix}"), value))
             })
             .collect())
     }
@@ -1591,7 +1616,7 @@ pub fn run_bounded_git_with_timeout(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let (mut child, tree) = codewhale_runtime::process_tree::spawn_contained_std(cmd)?;
     // Drain both pipes while waiting: the restore path's `ls-tree -r` and
     // the diff commands emit output that grows with workspace size, and a
     // child blocked on a full pipe buffer never exits — it would turn every
@@ -1626,6 +1651,7 @@ pub fn run_bounded_git_with_timeout(
     drop(done_tx);
 
     let Some(status) = child.wait_timeout(timeout)? else {
+        let _ = tree.kill();
         let _ = child.kill();
         // Reap off the pipeline thread (see the doc comment): the kernel may
         // not deliver the kill until an uninterruptible syscall returns.
@@ -1637,6 +1663,7 @@ pub fn run_bounded_git_with_timeout(
             format!("git {subcommand} timed out after {}s", timeout.as_secs()),
         ));
     };
+    tree.release();
     // Wait for the readers up to the grace, then return what was captured. A
     // clean git already closed its write ends, so both readers deliver
     // immediately; the grace only covers a pipe still held open by an
@@ -1787,6 +1814,38 @@ mod tests {
         let output = probe_output(&mut command, true, VERSION_PROBE_TIMEOUT).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"version");
+        let pid = codewhale_runtime::process_tree::read_pid_file(
+            &pid_file,
+            std::time::Duration::from_secs(1),
+        );
+        assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
+            pid,
+            std::time::Duration::from_secs(2)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_timeout_kills_descendants_holding_pipes() {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("git-descendant.pid");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 & echo $! > \"$1\"; wait",
+                "git-timeout-test",
+            ])
+            .arg(&pid_file);
+        let started = std::time::Instant::now();
+        let error = run_bounded_git_with_timeout(
+            &mut command,
+            "sleep",
+            std::time::Duration::from_millis(250),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let pid = codewhale_runtime::process_tree::read_pid_file(
             &pid_file,
             std::time::Duration::from_secs(1),
@@ -2116,7 +2175,11 @@ mod tests {
         // generic `--version` probe reports it missing even when installed.
         // The resolver must probe with `-v`. Gated on pdftotext actually
         // being installed so CI without Poppler stays green.
-        if probe_executable_with_flag("pdftotext", "-v") {
+        let mut probe = version_probe_command("pdftotext");
+        probe.arg("-v");
+        let answers_dash_v = probe_output(&mut probe, false, std::time::Duration::from_secs(60))
+            .is_ok_and(|output| output.status.success());
+        if answers_dash_v {
             assert!(
                 resolve_pdftotext().is_some(),
                 "an installed pdftotext must be detected via -v (#1667)"
@@ -2479,6 +2542,244 @@ mod tests {
         let seen = std::fs::read_to_string(&marker).expect("fsmonitor hook ran");
         assert!(seen.contains("leak=unset"), "{seen}");
         assert!(!seen.contains("git-secret-value"), "{seen}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_command_runs_no_repository_or_nested_filter() {
+        use std::os::unix::fs::PermissionsExt;
+        if !Git::available() {
+            return;
+        }
+        let _env_lock = codewhale_runtime::test_support::lock_test_env();
+        let work = tempfile::tempdir().expect("work");
+        let outside = tempfile::tempdir().expect("outside");
+        let helper = outside.path().join("filter.sh");
+        std::fs::write(&helper, "#!/bin/sh\nprintf touched >> \"$1\"\ncat\n").expect("helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let top_marker = outside.path().join("top-ran");
+        let sub_marker = outside.path().join("sub-ran");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Git::output(args, dir).expect("git spawns");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let init = |dir: &Path| {
+            std::fs::create_dir_all(dir).expect("mkdir");
+            git(dir, &["init", "-q"]);
+            git(dir, &["config", "user.email", "test@example.com"]);
+            git(dir, &["config", "user.name", "Test User"]);
+            git(dir, &["config", "commit.gpgsign", "false"]);
+        };
+        let age = |path: &Path| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| {
+                    file.set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+                })
+                .expect("age file");
+        };
+        let top = work.path().join("top");
+        let sub = top.join("sub");
+        init(&top);
+        init(&sub);
+        std::fs::write(top.join(".gitattributes"), "a.md filter=poc\n").expect("attrs");
+        std::fs::write(top.join("a.md"), "one\n").expect("a.md");
+        std::fs::write(sub.join(".gitattributes"), "b.md filter=poc\n").expect("attrs");
+        std::fs::write(sub.join("b.md"), "two\n").expect("b.md");
+        git(&sub, &["add", "."]);
+        git(&sub, &["commit", "-q", "-m", "sub"]);
+        git(&top, &["add", "."]);
+        git(&top, &["commit", "-q", "-m", "top"]);
+        for (dir, marker) in [(&top, &top_marker), (&sub, &sub_marker)] {
+            let clean = format!("{} {}", helper.display(), marker.display());
+            git(dir, &["config", "filter.poc.clean", &clean]);
+        }
+        git(&top, &["config", "submodule.sub.ignore", "none"]);
+        age(&top.join("a.md"));
+        age(&sub.join("b.md"));
+
+        let control = Git::output(&["status", "--porcelain"], &top).expect("status");
+        assert!(control.status.success());
+        assert!(top_marker.exists(), "positive control: repository filter");
+        assert!(sub_marker.exists(), "positive control: nested filter");
+        std::fs::remove_file(&top_marker).expect("reset");
+        std::fs::remove_file(&sub_marker).expect("reset");
+
+        let output = Git::status_command(&top)
+            .expect("status command")
+            .arg("--porcelain=v1")
+            .output()
+            .expect("status");
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+        assert!(!top_marker.exists(), "status ran the repository filter");
+        assert!(!sub_marker.exists(), "status ran the nested filter");
+    }
+
+    #[cfg(unix)]
+    struct NestedFilterFixture {
+        root: tempfile::TempDir,
+        _helpers: tempfile::TempDir,
+        marker: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl NestedFilterFixture {
+        fn new(gitmodules_ignore_none: bool) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().expect("root");
+            let helpers = tempfile::tempdir().expect("helpers");
+            let marker = helpers.path().join("seen");
+            let script = helpers.path().join("clean.sh");
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display()),
+            )
+            .expect("write script");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+            let run = |dir: &Path, args: &[&str]| {
+                let status = Git::status(args, dir).expect("git spawns");
+                assert!(status.success(), "git {args:?}");
+            };
+            let init = |dir: &Path| {
+                run(dir, &["init", "-q"]);
+                run(dir, &["config", "user.email", "test@example.com"]);
+                run(dir, &["config", "user.name", "Test User"]);
+            };
+            init(root.path());
+            std::fs::write(root.path().join("file.txt"), "hello\n").expect("write");
+            if gitmodules_ignore_none {
+                std::fs::write(
+                    root.path().join(".gitmodules"),
+                    "[submodule \"nested\"]\n\tpath = nested\n\tignore = none\n",
+                )
+                .expect("gitmodules");
+            }
+            run(root.path(), &["add", "."]);
+            run(root.path(), &["commit", "-q", "-m", "init"]);
+
+            let nested = root.path().join("nested");
+            std::fs::create_dir(&nested).expect("nested");
+            init(&nested);
+            std::fs::write(nested.join(".gitattributes"), "*.txt filter=fixture\n").expect("attrs");
+            std::fs::write(nested.join("tracked.txt"), "one\n").expect("write");
+            run(&nested, &["add", "."]);
+            run(&nested, &["commit", "-q", "-m", "nested"]);
+            run(
+                &nested,
+                &["config", "filter.fixture.clean", &script.to_string_lossy()],
+            );
+            run(root.path(), &["add", "nested"]);
+            std::fs::write(nested.join("tracked.txt"), "two\n").expect("modify");
+            std::fs::File::options()
+                .write(true)
+                .open(nested.join("tracked.txt"))
+                .and_then(|file| file.set_modified(std::time::UNIX_EPOCH))
+                .expect("age the file so git re-reads it");
+            Self {
+                root,
+                _helpers: helpers,
+                marker,
+            }
+        }
+
+        fn seen(&self) -> String {
+            std::fs::read_to_string(&self.marker).unwrap_or_default()
+        }
+
+        fn reset(&self) {
+            let _ = std::fs::remove_file(&self.marker);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_command_does_not_enter_nested_repositories() {
+        if !Git::available() {
+            return;
+        }
+        let fixture = NestedFilterFixture::new(false);
+        let output = Git::review_command(fixture.root.path())
+            .expect("review command")
+            .args(["status", "--porcelain"])
+            .output()
+            .expect("status");
+        assert!(output.status.success());
+        let seen = fixture.seen();
+        assert!(
+            seen.is_empty(),
+            "a nested repository's clean filter ran: {seen:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_ignore_flag_holds_against_a_gitmodules_ignore_entry() {
+        if !Git::available() {
+            return;
+        }
+        let fixture = NestedFilterFixture::new(true);
+        let control =
+            Git::output(&["status", "--porcelain"], fixture.root.path()).expect("control status");
+        assert!(control.status.success());
+        assert!(
+            !fixture.seen().is_empty(),
+            "positive control: .gitmodules ignore = none enters the nested repository"
+        );
+        fixture.reset();
+
+        for constructor in [
+            Git::review_command,
+            Git::status_command,
+            Git::workspace_command,
+        ] {
+            let output = constructor(fixture.root.path())
+                .expect("command")
+                .args(["status", "--porcelain=v1", "--ignore-submodules=dirty"])
+                .output()
+                .expect("status");
+            assert!(output.status.success());
+            let seen = fixture.seen();
+            assert!(
+                seen.is_empty(),
+                "a nested repository's clean filter ran: {seen:?}"
+            );
+        }
+        let output = Git::review_command(fixture.root.path())
+            .expect("review command")
+            .arg("diff")
+            .args(Git::REVIEW_DIFF_ARGS)
+            .output()
+            .expect("diff");
+        assert!(output.status.success());
+        let seen = fixture.seen();
+        assert!(
+            seen.is_empty(),
+            "a nested repository's clean filter ran: {seen:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_filters_are_reported_only_for_repository_scope() {
+        if !Git::available() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("dir");
+        let run = |args: &[&str]| {
+            let status = Git::status(args, dir.path()).expect("git spawns");
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        assert!(!Git::defines_repository_filters(dir.path()).expect("inspect"));
+        run(&["config", "filter.crypt.clean", "cat"]);
+        assert!(Git::defines_repository_filters(dir.path()).expect("inspect"));
     }
 
     #[test]

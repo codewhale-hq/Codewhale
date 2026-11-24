@@ -96,6 +96,10 @@ fn shell_denial_keeps_the_existing_bounded_child_read_only_exception() {
         ("bash", json!({"command":"pwd", "background":true})),
         ("task_shell_start", json!({"command":"pwd"})),
         (
+            "terminal_send",
+            json!({"session":"existing", "text":"pwd\n"}),
+        ),
+        (
             "terminal/send",
             json!({"session":"existing", "text":"pwd\n"}),
         ),
@@ -166,6 +170,30 @@ fn mcp_image_result_uses_typed_block_without_base64_in_text() {
             mime_type: "image/png".to_string(),
             data: image_data.to_string(),
         }]
+    );
+}
+
+#[test]
+fn mcp_transport_metadata_is_dropped_from_the_result() {
+    let icon = format!("data:image/png;base64,{}", "A".repeat(2_048));
+    let payload = json!({
+        "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "github-mcp-server", "icons": [{"src": icon}]}},
+        "resultType": "complete",
+        "content": [{"type": "text", "text": "{\"total_count\":1}", "_meta": {"icon": icon}}]
+    });
+
+    let rich = mcp_result_to_bounded_rich_tool_result(payload);
+
+    assert!(rich.result.success);
+    assert!(
+        !rich.result.content.contains("base64"),
+        "{}",
+        rich.result.content
+    );
+    let sanitized: Value = serde_json::from_str(&rich.result.content).expect("MCP JSON");
+    assert_eq!(
+        sanitized,
+        json!({"content": [{"type": "text", "text": "{\"total_count\":1}"}]})
     );
 }
 
@@ -594,6 +622,130 @@ fn script_and_command_overrides_cannot_replace_builtins() {
     let disable = HashMap::from([("File".to_string(), ToolOverride::Disabled)]);
     registry.apply_overrides(&disable, tmp.path(), &builtins);
     assert!(!registry.contains("File"));
+}
+
+#[test]
+fn creator_tool_names_are_reserved_against_scripts_and_overrides_even_before_registration() {
+    let tmp = tempdir().unwrap();
+    let tools_dir = tmp.path().join("tools");
+    std::fs::create_dir(&tools_dir).unwrap();
+    for (file, name) in [
+        ("plugin_manager.sh", "plugin_manager"),
+        ("plugin_manager_upper.sh", "PLUGIN_MANAGER"),
+        ("cordis_inspect_list.sh", "cordis_inspect_list"),
+        ("cordis_inspect_query.sh", "cordis_inspect_query"),
+        ("safe_extra.sh", "safe_extra"),
+    ] {
+        std::fs::write(
+            tools_dir.join(file),
+            format!("# name: {name}\n# description: {name}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        tools_dir.join("wrapper.sh"),
+        "# name: wrapper\n# description: override wrapper\n",
+    )
+    .unwrap();
+
+    let mut registry = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .build(ToolContext::new(tmp.path()));
+    let builtins = builtin_names(&registry);
+
+    let load_errors = capture_registration_warnings(|| registry.load_plugins(&tools_dir));
+    assert!(registry.contains("safe_extra"));
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            load_errors.contains(&format!(
+                "Cannot load plugin tool '{reserved}': name is already registered"
+            )),
+            "{reserved}: {load_errors}"
+        );
+    }
+
+    let overrides = HashMap::from([
+        (
+            "plugin_manager".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "PLUGIN_MANAGER".to_string(),
+            ToolOverride::Command {
+                command: "hijack-pm".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_list".to_string(),
+            ToolOverride::Script {
+                path: "wrapper.sh".to_string(),
+                args: None,
+            },
+        ),
+        (
+            "cordis_inspect_query".to_string(),
+            ToolOverride::Command {
+                command: "hijack-inspect".to_string(),
+                args: None,
+            },
+        ),
+    ]);
+    let mut refused = Vec::new();
+    let override_errors = capture_registration_warnings(|| {
+        refused = registry.apply_overrides(&overrides, &tools_dir, &builtins);
+    });
+    refused.sort();
+    assert_eq!(
+        refused,
+        [
+            "PLUGIN_MANAGER",
+            "cordis_inspect_list",
+            "cordis_inspect_query",
+            "plugin_manager",
+        ]
+    );
+    for reserved in [
+        "plugin_manager",
+        "PLUGIN_MANAGER",
+        "cordis_inspect_list",
+        "cordis_inspect_query",
+    ] {
+        assert!(!registry.contains(reserved), "{reserved}");
+        assert!(
+            override_errors.contains(&super::override_refusal_notice(reserved)),
+            "{reserved}: {override_errors}"
+        );
+    }
+
+    for disable_key in ["plugin_manager", "PLUGIN_MANAGER"] {
+        let mut reg = ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(ToolContext::new(tmp.path()));
+        reg.register(Arc::new(TestTool {
+            name: "plugin_manager".to_string(),
+            description: "built-in creator".to_string(),
+        }));
+        let reg_builtins = builtin_names(&reg);
+        let disable = HashMap::from([(disable_key.to_string(), ToolOverride::Disabled)]);
+        let disable_refused = reg.apply_overrides(&disable, &tools_dir, &reg_builtins);
+        assert!(
+            disable_refused.is_empty(),
+            "{disable_key}: {disable_refused:?}"
+        );
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+        reg.load_plugins(&tools_dir);
+        assert!(!reg.contains("plugin_manager"), "{disable_key}");
+    }
 }
 
 /// D4 (CURRENT_DECISIONS §26): a script cannot approve itself. `approval: auto`
@@ -1032,6 +1184,7 @@ fn machine_verifier_catalog_and_dispatch_add_only_bounded_run() {
             "read_media",
             "request_user_input",
             "retrieve_tool_result",
+            "show_data",
             "todo_write",
             "tui_help",
             "validate_data",
@@ -1841,7 +1994,7 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
         registry
             .names()
             .into_iter()
-            .all(|name| !name.starts_with("terminal/"))
+            .all(|name| !name.starts_with("terminal/") && !name.starts_with("terminal_"))
     );
     let bash = registry
         .to_api_tools()
@@ -1858,6 +2011,7 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
             .collect::<std::collections::BTreeSet<_>>(),
         [
             "command",
+            "cwd",
             "description",
             "justification",
             "read_only",
@@ -1915,6 +2069,7 @@ fn machine_readonly_catalog_is_exactly_the_evidence_profile() {
             "read_media",
             "request_user_input",
             "retrieve_tool_result",
+            "show_data",
             "todo_write",
             "tui_help",
             "validate_data",
@@ -2357,6 +2512,7 @@ fn registration_adapter_origins_are_bounded_and_exclude_execution_payloads() {
         ),
         (
             Arc::new(super::McpToolAdapter {
+                delegated_read: None,
                 name: hostile.clone(),
                 server_name: Some("plugin-4-demo-server_with_underscores".into()),
                 tool: crate::mcp::McpTool {
@@ -2534,4 +2690,82 @@ fn dynamic_tools_never_replace_registered_tools() {
             .description(),
         "first lookup"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn scoped_worker_convert_output_is_judged_on_the_field_it_writes() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = crate::test_support::lock_test_env();
+    let bin = tempdir().expect("bin");
+    let stub = bin.path().join("pandoc");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'pandoc 3.1.9'; exit 0; fi\nsrc=\"$2\"\nout=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"--output\" ]; then out=\"$2\"; fi; shift; done\nif [ -n \"$out\" ]; then cat \"$src\" > \"$out\"; else cat \"$src\"; fi\n",
+    )
+    .expect("stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let search = std::env::join_paths(std::iter::once(bin.path().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("path");
+    let _path = crate::test_support::EnvVarGuard::set("PATH", search);
+
+    let tmp = tempdir().expect("tempdir");
+    std::fs::create_dir(tmp.path().join("src")).expect("src");
+    std::fs::create_dir(tmp.path().join("ops")).expect("ops");
+    std::fs::write(tmp.path().join("src/in.md"), "PAYLOAD\n").expect("source");
+    std::fs::write(tmp.path().join("ops/outside.txt"), "original\n").expect("fixture");
+    let registry = ToolRegistryBuilder::new()
+        .with_tool(Arc::new(crate::tools::pandoc::PandocConvertTool))
+        .build(scoped_context(tmp.path()));
+
+    registry
+        .execute_full(
+            "pandoc_convert",
+            json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "src/out.txt"}),
+        )
+        .await
+        .expect("an output inside the write scope");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("src/out.txt")).unwrap(),
+        "PAYLOAD\n"
+    );
+
+    for input in [
+        json!({"source_path": "src/in.md", "target_format": "plain", "output_path": "ops/outside.txt"}),
+        json!({
+            "source_path": "src/in.md",
+            "target_format": "plain",
+            "output_path": "ops/outside.txt",
+            "path": "src/unused.txt"
+        }),
+    ] {
+        registry
+            .execute_full("pandoc_convert", input)
+            .await
+            .expect_err("an output outside the write scope must be refused");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("ops/outside.txt")).unwrap(),
+            "original\n"
+        );
+    }
+}
+
+#[tokio::test]
+async fn subagent_mcp_tools_survive_a_busy_parent_pool() {
+    let mut pool = crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default());
+    pool.insert_test_connection("linear", &["list_issues"], None);
+    let pool = Arc::new(tokio::sync::Mutex::new(pool));
+    let held = pool.lock().await;
+    let build = tokio::spawn(ToolRegistryBuilder::new().with_mcp_tools(Arc::clone(&pool)));
+    tokio::task::yield_now().await;
+    assert!(!build.is_finished());
+    drop(held);
+    let tmp = tempdir().unwrap();
+    let registry = build
+        .await
+        .expect("builder task")
+        .build(ToolContext::new(tmp.path()));
+    assert!(registry.contains("mcp_linear_list_issues"));
 }

@@ -114,6 +114,8 @@ test('the published DSH plugin runs unmodified and returns its payload', async (
   for (const [name, definition, expected] of [
     ['invalid-output', "{ schema: { type: 'string' }, render: () => [{ type: 'text', text: 'invalid' }] }", /returned invalid output/],
     ['unsupported-content', "{ schema: { type: 'number' }, render: () => [{ type: 'image', source: 'hidden' }] }", /unsupported content block/],
+    ['extra-image-field', "{ schema: { type: 'number' }, render: () => [{ type: 'image', attachment: { attachmentId: 'sha256:0000' }, extra: 1 }] }", /unsupported image-block fields/],
+    ['missing-attachment-id', "{ schema: { type: 'number' }, render: () => [{ type: 'image', attachment: {} }] }", /without a valid attachmentId/],
     ['malformed-render', "{ schema: { type: 'number' }, render: () => 'hidden' }", /must return an array/],
   ]) {
     const plugin = tempPlugin(`export const inject = ['tools']; export function apply(ctx) { ctx.tools.register({ name: '${name}', parameters: { type: 'object' }, output: ${definition}, execute: () => 7 }) }`)
@@ -123,6 +125,15 @@ test('the published DSH plugin runs unmodified and returns its payload', async (
     const tool = host.registry.find(row => row.op === 'register' && row.spec.name === name)
     await assert.rejects(host.call('tool/call', { handle: tool.handle, call_id: name, input: {}, deadline_ms: 5000 }), expected)
   }
+  const imageRefPlugin = tempPlugin("export const inject = ['tools']; export function apply(ctx) { ctx.tools.register({ name: 'image-ref-output', parameters: { type: 'object' }, output: { schema: { type: 'string' }, render: () => [{ type: 'text', text: 'rendered' }, { type: 'image', attachment: { attachmentId: 'sha256:abcd', mediaType: 'image/png' } }] }, execute: () => 'ok' }) }")
+  t.after(() => imageRefPlugin.cleanup())
+  const imageRefActivated = await activate(host, 'image-ref-output', imageRefPlugin.entry)
+  assert.equal(imageRefActivated.result.status, 'ok', imageRefActivated.result.diagnostic)
+  const imageRefTool = host.registry.find(row => row.op === 'register' && row.spec.name === 'image-ref-output')
+  assert.deepEqual(
+    await host.call('tool/call', { handle: imageRefTool.handle, call_id: 'image-ref-call', input: {}, deadline_ms: 5000 }),
+    { content: [{ type: 'text', text: 'rendered' }, { type: 'image_ref', attachment_id: 'sha256:abcd' }], is_error: false, structured: 'ok' },
+  )
 })
 
 test('providing `approval` fails activation and rolls back every registration', async (t) => {
@@ -175,11 +186,17 @@ test('injecting a service the host does not provide fails with its name', async 
   assert.equal(result.status, 'failed')
   assert.match(result.diagnostic, /requires `secrets`/)
   assert.doesNotMatch(result.diagnostic, /belongs? to the Codewhale core/)
-  const provided = tempPlugin("export const inject = ['shellHooks', 'sessions', 'userQuestions']; export function apply(ctx) { if (!ctx.shellHooks || typeof ctx.sessions.flush !== 'function' || typeof ctx.userQuestions.ask !== 'function') throw new Error('missing provided service') }\n")
+  const provided = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
+export const inject = ['shellHooks', 'sessions', 'userQuestions', 'llm']
+export function apply(ctx) {
+  createUserMessage({ content: [], source: { kind: 'fixture' } })
+  if (!ctx.shellHooks || !ctx.llm || typeof ctx.sessions.flush !== 'function' || typeof ctx.userQuestions.ask !== 'function') throw new Error('missing provided service')
+}
+`)
   t.after(() => provided.cleanup())
   const available = await activate(host, 'needs-shell-hooks', provided.entry)
   assert.equal(available.result.status, 'ok', available.result.diagnostic)
-  for (const service of ['llm']) {
+  for (const service of ['approval']) {
     const pure = tempPlugin(`import { createUserMessage } from '@deepseek-ai/dsh-llm'
 export const inject = [${JSON.stringify(service)}]
 export function apply() { createUserMessage({ content: [], source: { kind: 'fixture' } }) }
@@ -188,8 +205,23 @@ export function apply() { createUserMessage({ content: [], source: { kind: 'fixt
     const refused = (await activate(host, `pure-needs-${service}`, pure.entry)).result
     assert.equal(refused.status, 'failed')
     assert.ok(refused.diagnostic.includes('requires `' + service + '`'), refused.diagnostic)
-    assert.match(refused.diagnostic, /`llm` belongs to the Codewhale core and no reviewed bridge exposes it yet/)
+    assert.match(refused.diagnostic, /`approval` belongs to the Codewhale core and no reviewed bridge exposes it yet/)
   }
+})
+
+test('a nested ctx.inject wait names only the services that are missing, and why', async (t) => {
+  const host = await startHost()
+  t.after(() => host.stop())
+  const web = tempPlugin("export const name = 'widget'\nexport function apply(ctx) { ctx.inject(['credentials', 'webServer', 'connection'], () => {}) }\n")
+  const presets = tempPlugin("export const name = 'presets'\nexport function apply(ctx) { ctx.inject(['agentPresets'], () => {}) }\n")
+  t.after(() => { web.cleanup(); presets.cleanup() })
+  const widget = (await activate(host, 'nested-web', web.entry)).result
+  assert.equal(widget.status, 'failed')
+  assert.match(widget.diagnostic, /waits on `webServer`, `connection`, not provided by the Codewhale extension host in this phase \(DSH Web UI services; Codewhale has no plugin web server\)/)
+  assert.doesNotMatch(widget.diagnostic, /credentials/)
+  const registry = (await activate(host, 'nested-presets', presets.entry)).result
+  assert.equal(registry.status, 'failed')
+  assert.match(registry.diagnostic, /waits on `agentPresets`, not provided .*\(the DSH 0\.2\.2 agent-preset registry is not adopted\)/)
 })
 
 test('an unsupported DSH peer fails the import loudly', async (t) => {

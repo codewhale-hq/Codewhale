@@ -333,6 +333,18 @@ pub fn persist_unset_root_key(config_path: Option<&Path>, key: &str) -> anyhow::
     Ok(path)
 }
 
+pub fn persist_unset_table_key(
+    config_path: Option<&Path>,
+    table_name: &str,
+    key: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = config_toml_path(config_path)?;
+    mutate_config_document(&path, |doc| {
+        unset_document_value(doc, &[table_name, key]).map(|_| ())
+    })?;
+    Ok(path)
+}
+
 pub fn persist_root_bool_key(
     config_path: Option<&Path>,
     key: &str,
@@ -595,10 +607,7 @@ mod tests {
 
     use std::path::Path;
 
-    use std::time::SystemTime;
-
     use super::test_support::*;
-    use std::time::UNIX_EPOCH;
 
     struct EnvGuard {
         _home: crate::test_support::EnvVarGuard,
@@ -630,11 +639,7 @@ mod tests {
     }
 
     fn temp_root(prefix: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+        crate::test_support::test_scratch_dir(prefix)
     }
 
     #[test]
@@ -1394,20 +1399,6 @@ slot = 1
     }
 
     /// The active model must be one answer, not two.
-    ///
-    /// The TUI resolves it with `Config::default_model()`, which is what
-    /// `client.rs` puts on the wire and what `doctor` reports. The dispatcher
-    /// resolves it independently in `codewhale-config`'s
-    /// `resolve_runtime_options`, which is what `codewhale model resolve`
-    /// reports and what the app-server and route descriptors consume. The two
-    /// silently disagreed for every non-DeepSeek provider (#4832, #4838): the
-    /// dispatcher gated root `default_text_model` behind `provider == Deepseek`
-    /// and so reported a provider default while the wire carried the user's
-    /// chosen model.
-    ///
-    /// A diagnostic that contradicts the request it is diagnosing is worse than
-    /// no diagnostic, so this pins the two chains together by construction
-    /// rather than asserting either one's internals.
     #[test]
     fn the_dispatcher_and_the_tui_resolve_the_same_active_model() {
         // (case, config body, what both chains must answer)

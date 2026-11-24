@@ -174,7 +174,14 @@ describe("no price, currency amount or plan name in the public surface", () => {
     for (const [name, load] of pages) {
       const html = await render((await load()).default as Page, locale);
       const structured = [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g)].map((match) => match[1]).join("\n");
-      const text = html.replace(/<script[\s\S]*?<\/script>/g, " ").replace(/<[^>]+>/g, " ");
+      // Real-session captures are product evidence, not authored copy: the
+      // recorded status line and /cost output show the session's own spend
+      // estimate ("estimate, not a bill"), which is the feature on display,
+      // not a price the site claims.
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/g, " ")
+        .replace(/<pre[^>]*data-capture-file[^>]*>[\s\S]*?<\/pre>/g, " ")
+        .replace(/<[^>]+>/g, " ");
       expect(text.match(PRICE)?.[0], `${locale}/${name} text`).toBeUndefined();
       expect(structured.match(PRICE)?.[0], `${locale}/${name} structured data`).toBeUndefined();
       expect(structured.match(STRUCTURED_PRICE)?.[0], `${locale}/${name} structured data`).toBeUndefined();

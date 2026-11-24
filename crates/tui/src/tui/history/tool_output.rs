@@ -732,7 +732,7 @@ fn styled_segments(line: &str, plain: &str) -> Option<Vec<StyledSegment>> {
         return None;
     }
     let mut kept = String::with_capacity(line.len());
-    codewhale_tui_kit::osc8::strip_ansi_keep_sgr_into(line, &mut kept);
+    codewhale_sanitize::sanitize::strip_ansi_keep_sgr_into(line, &mut kept);
     let text = kept.into_text().ok()?;
     let mut segments: Vec<StyledSegment> = Vec::new();
     for parsed in text.lines {

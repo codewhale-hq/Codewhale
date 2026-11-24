@@ -10,7 +10,7 @@ use crate::tui::app::{AppAction, AutomationAction};
 pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "automation",
     aliases: &["automations", "scheduled"],
-    usage: "/automation [list|show <id>|print <id>|pause <id>|resume <id>|delete <id> [--confirm <token>]|run <id>]",
+    usage: "/automation [list|show <id>|print <id>|pause <id>|resume <id>|adopt <id>|delete <id> [--confirm <token>]|run <id>]",
     description_key: "cmd_automation_description",
 };
 
@@ -61,6 +61,7 @@ fn automation(
         "print" => single_id(presentation, &mut parts, AutomationAction::Show),
         "pause" => single_id(presentation, &mut parts, AutomationAction::Pause),
         "resume" => single_id(presentation, &mut parts, AutomationAction::Resume),
+        "adopt" => single_id(presentation, &mut parts, AutomationAction::Adopt),
         "delete" | "remove" | "rm" => delete(presentation, &mut parts),
         "run" | "trigger" => single_id(presentation, &mut parts, AutomationAction::Run),
         _ => usage_error(presentation),
@@ -107,7 +108,7 @@ fn usage_error(presentation: &mut dyn CommandPresentationContext) -> CommandResu
         // The key is catalog-known; a translation failure must still fail
         // safely without exposing a raw lookup key (D3).
         Err(_) => CommandResult::error(
-            "Usage: /automation [list|show <id>|pause <id>|resume <id>|delete <id> [--confirm <token>]|run <id>]",
+            "Usage: /automation [list|show <id>|pause <id>|resume <id>|adopt <id>|delete <id> [--confirm <token>]|run <id>]",
         ),
     }
 }

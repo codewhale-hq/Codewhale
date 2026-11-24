@@ -66,7 +66,7 @@ async function prompt(request) {
     notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: toolCall.toolCallId, status: 'failed' } });
   }
   if (outcome.outcome === 'cancelled') {
-    result(request.id, { stopReason: 'cancelled' });
+    result(request.id, { stopReason: plan().endTurnOnCancel ? 'end_turn' : 'cancelled' });
     return;
   }
   notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' Done.' } } });

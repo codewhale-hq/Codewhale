@@ -2,28 +2,37 @@
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::{GlobBuilder, GlobMatcher, GlobSetBuilder};
-use ignore::WalkBuilder;
-use serde::Serialize;
+use ignore::{WalkBuilder, WalkState};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::file::{SEARCH_NAME_ALIASES, SEARCH_NAME_PARAMS};
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_str, optional_u64, required_str,
+    optional_bool, optional_str, optional_u64, required_str,
 };
 use codewhale_tools::param_alias::{PATH_ALIASES, apply_param_aliases};
 
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+const FILE_SEARCH_BUDGET: Duration = Duration::from_secs(20);
+const SHALLOW_PASS_DEPTH: usize = 4;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default)]
+struct FileSearchOutcome {
+    matches: Vec<FileSearchMatch>,
+    total_matches: usize,
+    stopped_after: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
 struct FileSearchMatch {
     path: String,
-    name: String,
     score: f64,
 }
 
@@ -40,7 +49,7 @@ impl ToolSpec for FileSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Find workspace files by name, path, or glob (e.g. src/**/*.rs). Space-separated terms must all match. Literal matches rank above fuzzy matches; results are capped. Respects ignore files and skips build/dependency directories by default. Use extensions to filter suffixes."
+        "Find workspace files by name, path, or glob (e.g. src/**/*.rs). Space-separated terms must all match. Literal matches rank above fuzzy matches; results return {files, total_matches, truncated}. Respects ignore files and skips build/dependency directories and hidden dot-directories by default (search inside one by setting path to it or naming it in the query). Use extensions to filter suffixes."
     }
 
     fn input_schema(&self) -> Value {
@@ -67,7 +76,11 @@ impl ToolSpec for FileSearchTool {
                 "exclude": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional replacement exclusion globs (e.g. [\"**/target/**\", \"*.lock\"]); [] disables default exclusions."
+                    "description": "Extra exclusion globs appended to the defaults (e.g. [\"fixtures/**\"]) unless replace_default_excludes=true."
+                },
+                "replace_default_excludes": {
+                    "type": "boolean",
+                    "description": "If true, exclude replaces the default build/dependency exclusions instead of appending (default: false)."
                 }
             },
             "required": ["query"]
@@ -113,8 +126,9 @@ impl ToolSpec for FileSearchTool {
         super::file::enforce_read_denylist(&base_path, "file_search")?;
 
         let extensions = parse_extensions(&input);
+        optional_bool(&input, "replace_default_excludes", false)?;
         let exclude_patterns = parse_exclude_patterns(&input);
-        let matches = search_files_async(
+        let outcome = search_files_async(
             query.to_string(),
             base_path,
             context.workspace.clone(),
@@ -123,11 +137,36 @@ impl ToolSpec for FileSearchTool {
             limit,
             context.cancel_token.clone(),
             FILE_SEARCH_TIMEOUT,
+            FILE_SEARCH_BUDGET,
             context.follow_symlinks,
         )
         .await?;
-        ToolResult::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
+        file_search_result(outcome).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
+}
+
+fn file_search_result(outcome: FileSearchOutcome) -> Result<ToolResult, serde_json::Error> {
+    let files: Vec<String> = outcome.matches.into_iter().map(|m| m.path).collect();
+    let truncated = outcome.stopped_after.is_some() || outcome.total_matches > files.len();
+    let Some(stopped_after) = outcome.stopped_after else {
+        return ToolResult::json(&json!({
+            "files": files,
+            "total_matches": outcome.total_matches,
+            "truncated": truncated,
+        }));
+    };
+    let seconds = stopped_after.as_secs().max(1);
+    let note = format!(
+        "partial: stopped after {seconds}s before the whole tree was searched; these are the best matches found so far. Narrow `path` or the query for complete results."
+    );
+    Ok(ToolResult::json(&json!({
+        "files": files,
+        "total_matches": outcome.total_matches,
+        "truncated": true,
+        "partial": true,
+        "note": note,
+    }))?
+    .with_metadata(json!({ "partial": true, "stopped_after_secs": seconds })))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,8 +179,9 @@ async fn search_files_async(
     limit: usize,
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
+    budget: Duration,
     follow_symlinks: bool,
-) -> Result<Vec<FileSearchMatch>, ToolError> {
+) -> Result<FileSearchOutcome, ToolError> {
     let workspace_canonical = tokio::fs::canonicalize(&workspace).await.ok();
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
         search_files(
@@ -153,6 +193,7 @@ async fn search_files_async(
             exclude_patterns,
             limit,
             Some(&worker_cancel_token),
+            budget,
             follow_symlinks,
         )
     })
@@ -163,9 +204,9 @@ async fn run_blocking_file_search<F>(
     timeout: Duration,
     cancel_token: Option<CancellationToken>,
     search: F,
-) -> Result<Vec<FileSearchMatch>, ToolError>
+) -> Result<FileSearchOutcome, ToolError>
 where
-    F: FnOnce(CancellationToken) -> Result<Vec<FileSearchMatch>, ToolError> + Send + 'static,
+    F: FnOnce(CancellationToken) -> Result<FileSearchOutcome, ToolError> + Send + 'static,
 {
     if cancel_token
         .as_ref()
@@ -233,16 +274,29 @@ fn parse_extensions(input: &Value) -> Vec<String> {
 }
 
 fn parse_exclude_patterns(input: &Value) -> Vec<String> {
-    if let Some(values) = input.get("exclude").and_then(Value::as_array) {
-        return values
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::trim)
-            .filter(|pattern| !pattern.is_empty())
-            .map(ToOwned::to_owned)
-            .collect();
+    let caller: Vec<String> = input
+        .get("exclude")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if input
+        .get("replace_default_excludes")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return caller;
     }
+    let mut patterns = default_exclude_patterns();
+    patterns.extend(caller);
+    patterns
+}
 
+fn default_exclude_patterns() -> Vec<String> {
     [
         "**/target/**",
         "**/node_modules/**",
@@ -250,6 +304,11 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
         "**/DerivedData/**",
         "**/dist/**",
         "**/build/**",
+        "**/.venv/**",
+        "**/__pycache__/**",
+        "**/.next/**",
+        "**/.turbo/**",
+        "**/.gradle/**",
         "*.lock",
         "*.plist",
     ]
@@ -268,8 +327,11 @@ fn search_files(
     exclude_patterns: Vec<String>,
     limit: usize,
     cancel_token: Option<&CancellationToken>,
+    budget: Duration,
     follow_symlinks: bool,
-) -> Result<Vec<FileSearchMatch>, ToolError> {
+) -> Result<FileSearchOutcome, ToolError> {
+    let started = Instant::now();
+    let deadline = started + budget;
     check_cancelled(cancel_token)?;
 
     if !base_path.exists() {
@@ -329,9 +391,11 @@ fn search_files(
     let exclusions = exclusions
         .build()
         .map_err(|err| ToolError::invalid_input(format!("Invalid exclude globs: {err}")))?;
-    let mut results: Vec<FileSearchMatch> = Vec::with_capacity(limit);
+    let include_hidden_dirs = query_norm.starts_with('.') || query_norm.contains("/.");
     let walk_root = base_path.to_path_buf();
     let walk_cancel_token = cancel_token.cloned();
+    let deadline_hit = Arc::new(AtomicBool::new(false));
+    let walk_deadline_hit = Arc::clone(&deadline_hit);
 
     let mut builder = WalkBuilder::new(base_path);
     builder
@@ -339,10 +403,21 @@ fn search_files(
         .follow_links(follow_symlinks)
         .require_git(false)
         .filter_entry(move |entry| {
+            if Instant::now() >= deadline {
+                walk_deadline_hit.store(true, AtomicOrdering::Relaxed);
+                return false;
+            }
             let rel_path = entry
                 .path()
                 .strip_prefix(&walk_root)
                 .unwrap_or(entry.path());
+            if entry.depth() > 0
+                && !include_hidden_dirs
+                && entry.file_type().is_some_and(|kind| kind.is_dir())
+                && entry.file_name().to_string_lossy().starts_with('.')
+            {
+                return false;
+            }
             if entry.depth() > 0
                 && !walk_cancel_token
                     .as_ref()
@@ -364,42 +439,23 @@ fn search_files(
             }
             true
         });
-    let walker = builder.build();
-
-    for entry in walker {
-        check_cancelled(cancel_token)?;
-
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-
-        let path = entry.path();
+    let match_path = |path: &Path| -> Option<FileSearchMatch> {
         let rel_path = path
             .strip_prefix(base_path)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
         if !extensions.is_empty() && !extension_matches(path, &extensions) {
-            continue;
+            return None;
         }
-
         let name = file_name(path);
-
-        let score = match score_match(
+        let score = score_match(
             query_norm,
             &query_terms,
             query_glob.as_ref(),
             &rel_path,
             &name,
-        ) {
-            Some(score) => score,
-            None => continue,
-        };
-
+        )?;
         let shown_path = path
             .strip_prefix(workspace)
             .ok()
@@ -411,29 +467,100 @@ fn search_files(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let found = FileSearchMatch {
+        Some(FileSearchMatch {
             path: shown_path,
-            name,
             score,
-        };
-        if results.len() == limit
-            && results
-                .last()
-                .is_some_and(|worst| compare_match(&found, worst) != Ordering::Less)
-        {
-            continue;
-        }
-        let index = results
-            .binary_search_by(|existing| compare_match(existing, &found))
-            .unwrap_or_else(|index| index);
-        if index < limit {
-            results.insert(index, found);
-            results.truncate(limit);
-        }
+        })
+    };
+    let run_pass = |builder: &WalkBuilder, max_depth: Option<usize>| {
+        let ranked = Mutex::new(Vec::with_capacity(limit));
+        let total_matches = AtomicUsize::new(0);
+        let deeper = AtomicBool::new(false);
+        builder.build_parallel().run(|| {
+            let match_path = &match_path;
+            let ranked = &ranked;
+            let total_matches = &total_matches;
+            let deadline_hit = &deadline_hit;
+            let deeper = &deeper;
+            Box::new(move |entry| {
+                if cancel_token.is_some_and(CancellationToken::is_cancelled) {
+                    return WalkState::Quit;
+                }
+                if Instant::now() >= deadline {
+                    deadline_hit.store(true, AtomicOrdering::Relaxed);
+                    return WalkState::Quit;
+                }
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                let Some(file_type) = entry.file_type() else {
+                    return WalkState::Continue;
+                };
+                if file_type.is_dir() && max_depth.is_some_and(|depth| entry.depth() >= depth) {
+                    deeper.store(true, AtomicOrdering::Relaxed);
+                }
+                if !file_type.is_file() {
+                    return WalkState::Continue;
+                }
+                if let Some(found) = match_path(entry.path()) {
+                    total_matches.fetch_add(1, AtomicOrdering::Relaxed);
+                    let mut results = ranked.lock().unwrap_or_else(PoisonError::into_inner);
+                    insert_ranked(&mut results, found, limit);
+                }
+                WalkState::Continue
+            })
+        });
+        (
+            ranked.into_inner().unwrap_or_else(PoisonError::into_inner),
+            total_matches.into_inner(),
+            deadline_hit.load(AtomicOrdering::Relaxed),
+            deeper.into_inner(),
+        )
+    };
+    let outcome = |matches, total_matches, stopped: bool| FileSearchOutcome {
+        matches,
+        total_matches,
+        stopped_after: stopped.then(|| started.elapsed()),
+    };
+
+    builder.max_depth(Some(SHALLOW_PASS_DEPTH));
+    let (shallow, shallow_total, stopped, deeper) = run_pass(&builder, Some(SHALLOW_PASS_DEPTH));
+    check_cancelled(cancel_token)?;
+    if stopped || !deeper {
+        return Ok(outcome(shallow, shallow_total, stopped));
     }
 
+    builder.max_depth(None);
+    let (mut full, full_total, stopped, _) = run_pass(&builder, None);
     check_cancelled(cancel_token)?;
-    Ok(results)
+    let total_matches = if stopped {
+        for found in shallow {
+            if !full.iter().any(|existing| existing.path == found.path) {
+                insert_ranked(&mut full, found, limit);
+            }
+        }
+        full_total.max(shallow_total).max(full.len())
+    } else {
+        full_total
+    };
+    Ok(outcome(full, total_matches, stopped))
+}
+
+fn insert_ranked(results: &mut Vec<FileSearchMatch>, found: FileSearchMatch, limit: usize) {
+    if results.len() == limit
+        && results
+            .last()
+            .is_some_and(|worst| compare_match(&found, worst) != Ordering::Less)
+    {
+        return;
+    }
+    let index = results
+        .binary_search_by(|existing| compare_match(existing, &found))
+        .unwrap_or_else(|index| index);
+    if index < limit {
+        results.insert(index, found);
+        results.truncate(limit);
+    }
 }
 
 fn check_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolError> {
@@ -653,15 +780,72 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        assert!(
-            matches
-                .as_array()
-                .expect("matches")
-                .iter()
-                .any(|item| item.get("path").and_then(Value::as_str) == Some("needle.txt"))
-        );
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let files: Vec<&str> = body["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(files.contains(&"needle.txt"));
+        assert_eq!(body["total_matches"], json!(1));
+        assert_eq!(body["truncated"], json!(false));
         assert!(!result.content.contains("fixtures/needle.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_file_search_exclude_appends_to_defaults_and_skips_hidden_dirs() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for dir in ["target", "fixtures", ".scratch", ".github"] {
+            std::fs::create_dir_all(root.join(dir)).expect("mkdir");
+            std::fs::write(root.join(dir).join("needle.txt"), "no\n").expect("write");
+        }
+        std::fs::write(root.join("needle.txt"), "yes\n").expect("write");
+        let ctx = ToolContext::new(root.to_path_buf());
+        let files = |content: &str| -> Vec<String> {
+            let body: Value = serde_json::from_str(content).expect("search json");
+            body["files"]
+                .as_array()
+                .expect("files")
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        };
+
+        let appended = FileSearchTool
+            .execute(json!({"query": "needle", "exclude": ["fixtures/**"]}), &ctx)
+            .await
+            .expect("execute");
+        assert_eq!(files(&appended.content), vec!["needle.txt"]);
+
+        let replaced = FileSearchTool
+            .execute(
+                json!({"query": "needle", "exclude": ["fixtures/**"], "replace_default_excludes": true}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        let replaced = files(&replaced.content);
+        assert!(
+            replaced.contains(&"target/needle.txt".to_string()),
+            "{replaced:?}"
+        );
+        assert!(
+            !replaced.iter().any(|path| path.starts_with('.')),
+            "{replaced:?}"
+        );
+
+        let targeted = FileSearchTool
+            .execute(json!({"query": ".github/needle"}), &ctx)
+            .await
+            .expect("execute");
+        assert!(
+            files(&targeted.content).contains(&".github/needle.txt".to_string()),
+            "{}",
+            targeted.content
+        );
     }
 
     #[tokio::test]
@@ -686,14 +870,16 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        assert!(
-            matches
-                .as_array()
-                .expect("matches")
-                .iter()
-                .any(|item| item.get("path").and_then(Value::as_str) == Some("needle.txt"))
-        );
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let files: Vec<&str> = body["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(files.contains(&"needle.txt"));
+        assert_eq!(body["total_matches"], json!(1));
+        assert_eq!(body["truncated"], json!(false));
         assert!(!result.content.contains("target/needle.txt"));
         assert!(!result.content.contains("nested_needle.txt"));
     }
@@ -714,17 +900,19 @@ mod tests {
             .await
             .expect("execute");
 
-        let matches: Value = serde_json::from_str(&result.content).expect("search json");
-        let paths: Vec<&str> = matches
+        let body: Value = serde_json::from_str(&result.content).expect("search json");
+        let paths: Vec<&str> = body["files"]
             .as_array()
-            .expect("matches")
+            .expect("files")
             .iter()
-            .filter_map(|item| item.get("path").and_then(Value::as_str))
+            .filter_map(Value::as_str)
             .collect();
         // `build/**` hides the build directory, not same-prefix siblings.
         assert!(paths.contains(&"build.rs"), "{paths:?}");
         assert!(paths.contains(&"builders/build_x.rs"), "{paths:?}");
         assert!(!paths.contains(&"build/build_out.rs"), "{paths:?}");
+        assert_eq!(body["total_matches"], json!(2));
+        assert_eq!(body["truncated"], json!(false));
     }
 
     #[tokio::test]
@@ -865,5 +1053,107 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("needle.txt"));
         assert!(!result.content.contains("needle-secret.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_file_search_large_non_git_tree_skips_heavy_dirs_and_returns_partial_on_budget() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for dir in 0..40 {
+            let shard = root.join("artifacts").join(format!("run-{dir}"));
+            std::fs::create_dir_all(&shard).expect("mkdir shard");
+            for file in 0..50 {
+                std::fs::write(shard.join(format!("log-{file}.txt")), "x\n").expect("write");
+            }
+            let heavy = root.join("worktrees").join(format!("wt-{dir}"));
+            for skipped in ["target/debug", "node_modules/pkg", ".git/objects"] {
+                std::fs::create_dir_all(heavy.join(skipped)).expect("mkdir heavy");
+                std::fs::write(heavy.join(skipped).join("READINESS.md"), "no\n").expect("write");
+            }
+            std::fs::write(heavy.join(".gitignore"), "scratch/\n").expect("write ignore");
+            std::fs::create_dir_all(heavy.join("scratch")).expect("mkdir scratch");
+            std::fs::write(heavy.join("scratch").join("READINESS.md"), "no\n").expect("write");
+        }
+        let wanted = root.join("ops").join("releases").join("launch");
+        std::fs::create_dir_all(&wanted).expect("mkdir wanted");
+        std::fs::write(wanted.join("READINESS.md"), "yes\n").expect("write wanted");
+        let deep = root.join("deep").join("a").join("b").join("c").join("d");
+        std::fs::create_dir_all(&deep).expect("mkdir deep");
+        std::fs::write(deep.join("READINESS.md"), "yes\n").expect("write deep");
+
+        let search = |budget| {
+            search_files_async(
+                "READINESS.md".to_string(),
+                root.to_path_buf(),
+                root.to_path_buf(),
+                Vec::new(),
+                parse_exclude_patterns(&json!({})),
+                20,
+                None,
+                FILE_SEARCH_TIMEOUT,
+                budget,
+                false,
+            )
+        };
+
+        let complete = search(FILE_SEARCH_BUDGET).await.expect("complete search");
+        assert!(complete.stopped_after.is_none());
+        let mut paths: Vec<&str> = complete.matches.iter().map(|m| m.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "deep/a/b/c/d/READINESS.md",
+                "ops/releases/launch/READINESS.md"
+            ]
+        );
+
+        let partial = search(Duration::ZERO)
+            .await
+            .expect("budget stop is not a failure");
+        assert!(partial.stopped_after.is_some());
+        let result = file_search_result(partial).expect("partial result");
+        assert!(result.success);
+        let body: Value = serde_json::from_str(&result.content).expect("partial json");
+        assert_eq!(body["partial"], json!(true));
+        assert_eq!(body["truncated"], json!(true));
+        assert!(body["files"].is_array());
+        assert!(body["total_matches"].is_u64());
+        assert!(
+            body["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("Narrow `path`"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_search_reports_total_matches_and_truncation_at_limit() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let deep = root.join("a").join("b").join("c").join("d").join("e");
+        std::fs::create_dir_all(&deep).expect("mkdir deep");
+        for idx in 1..=4 {
+            std::fs::write(root.join(format!("item_{idx}.rs")), "fn x() {}\n").expect("write");
+        }
+        std::fs::write(deep.join("item_5.rs"), "fn x() {}\n").expect("write deep");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let capped = FileSearchTool
+            .execute(json!({"query": "item", "limit": 2}), &ctx)
+            .await
+            .expect("capped execute");
+        let capped_body: Value = serde_json::from_str(&capped.content).expect("capped json");
+        assert_eq!(capped_body["files"].as_array().expect("files").len(), 2);
+        assert_eq!(capped_body["total_matches"], json!(5));
+        assert_eq!(capped_body["truncated"], json!(true));
+
+        let exact = FileSearchTool
+            .execute(json!({"query": "item", "limit": 5}), &ctx)
+            .await
+            .expect("exact execute");
+        let exact_body: Value = serde_json::from_str(&exact.content).expect("exact json");
+        assert_eq!(exact_body["files"].as_array().expect("files").len(), 5);
+        assert_eq!(exact_body["total_matches"], json!(5));
+        assert_eq!(exact_body["truncated"], json!(false));
     }
 }

@@ -874,7 +874,8 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
         .find(|skill| skill.name == "plugin-creator")
         .unwrap();
     assert!(skill.body.contains("Create `plugin.json`"));
-    assert!(skill.body.contains("## Experimental host code"));
+    assert!(skill.body.contains("cordis-plugin-development"));
+    assert!(!skill.body.contains("never automate the trust token"));
     for (generation, old) in [
         (
             "15",
@@ -884,9 +885,16 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
             "16",
             include_str!("../../assets/skills/plugin-creator/SKILL.generation-16.md"),
         ),
+        (
+            "19",
+            include_str!("../../assets/skills/plugin-creator/SKILL.generation-19.md"),
+        ),
     ] {
         assert!(is_superseded_shipped_body("plugin-creator", old));
-        assert!(!old.contains("## Experimental host code"));
+        assert_eq!(
+            old.contains("## Experimental host code"),
+            generation == "19"
+        );
         for customized in [false, true] {
             let tmp = TempDir::new().unwrap();
             fs::create_dir_all(skill_dir(&tmp, "plugin-creator")).unwrap();

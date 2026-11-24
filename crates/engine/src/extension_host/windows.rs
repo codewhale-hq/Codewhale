@@ -546,6 +546,11 @@ impl NativeSandbox {
             .map_err(|error| format!("cannot admit reviewed Windows bundle: {error}"))
     }
 
+    pub fn grant_data_dir(&self, dir: &Path) -> Result<(), String> {
+        self.grant_tree(dir, true)
+            .map_err(|error| format!("cannot grant cohort data directory: {error}"))
+    }
+
     fn grant_tree(&self, root: &Path, writable: bool) -> io::Result<()> {
         let _serial = AclEditGuard::acquire()?;
         let root_pin = WindowsDirectory::open_acl(root)?;

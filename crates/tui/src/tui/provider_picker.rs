@@ -30,19 +30,21 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Position, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 use crate::tui::views::{
-    ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
-    centered_modal_area, render_modal_footer, render_modal_surface, render_underwater_surface,
+    ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, SurfaceFrame, ViewAction,
+    ViewEvent, active_modal_accent_color, active_modal_border_color, centered_modal_area,
+    render_modal_footer, render_modal_rule, render_modal_surface, render_panel_scroll_rail,
+    render_rounded_card, render_surface_frame,
 };
 use codewhale_config::ProviderKind;
 use codewhale_config::catalog::{CatalogOffering, CatalogSnapshot};
 use codewhale_config::descriptors::{
-    ProviderDescriptor, bundled_provider_descriptors, provider_descriptor,
+    ProviderDescriptor, active_provider_descriptors, provider_descriptor,
 };
 use codewhale_config::provider::{CredentialAcquisition, WireFormat};
 use codewhale_config::route::{PricingSku, RequestProtocol};
@@ -119,8 +121,22 @@ impl ProviderOffer {
     }
 
     pub(crate) fn render(&self, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
+        self.render_if(crate::tui::orca_offer::available(locale), locale, area, buf)
+    }
+
+    fn render_if(&self, available: bool, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
         self.clear();
-        if area.height < 4 || area.width < 20 || !crate::tui::orca_offer::available(locale) {
+        if area.height < 4 || area.width < 20 || !available {
+            return area;
+        }
+        let disclosure = wrap_to_width(
+            &tr(locale, MessageId::OrcaRouterOfferDisclosure),
+            usize::from(area.width),
+        );
+        let rows = u16::try_from(disclosure.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
+        if rows > area.height.saturating_sub(3) {
             return area;
         }
         let chord = crate::tui::shell_key_routing::display_chord(
@@ -143,8 +159,49 @@ impl ProviderOffer {
                 Style::default().fg(palette::WHALE_ACTION).underlined()
             })
             .render(row, buf);
-        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+        for (index, line) in disclosure.into_iter().enumerate() {
+            let y = area.y + 1 + u16::try_from(index).unwrap_or(0);
+            Paragraph::new(line)
+                .style(Style::default().fg(palette::TEXT_MUTED))
+                .render(Rect::new(area.x, y, area.width, 1), buf);
+        }
+        Rect::new(area.x, area.y + rows, area.width, area.height - rows)
     }
+}
+
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0;
+    let mut last_space: Option<usize> = None;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if line_width + w > width {
+            if let Some(at) = last_space {
+                let rest = line.split_off(at);
+                lines.push(line.trim_end().to_owned());
+                line = rest.trim_start().to_owned();
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+            line_width = unicode_width::UnicodeWidthStr::width(line.as_str());
+            last_space = None;
+        }
+        if ch == ' ' {
+            if line.is_empty() {
+                continue;
+            }
+            last_space = Some(line.len());
+        }
+        line.push(ch);
+        line_width += w;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 const DS4_PROVIDER_ID: &str = "ds4";
@@ -315,7 +372,7 @@ pub struct ProviderPickerView {
     /// Bundled descriptor the custom form was prefilled from, so the form can
     /// show that host's credential console, docs and guidance (#6616). `None`
     /// for a hand-entered host and the other prefilled local routes.
-    custom_provider_descriptor: Option<&'static ProviderDescriptor>,
+    custom_provider_descriptor: Option<ProviderDescriptor>,
     /// Pointer geometry for the two-pane picker (Slice D): provider-strip
     /// rows on the left, model rows on the right/under, recorded during
     /// render like the consent hitboxes below.
@@ -737,7 +794,15 @@ impl ProviderDashboardRow {
                     billing_presentation:
                         codewhale_engine::route_billing::BillingPresentation::Unknown,
                     maturity: ProviderMaturity::for_provider(provider),
-                    messages: vec![format!("provider admission failed: {error}")],
+                    messages: if provider == ProviderKind::Custom
+                        && !is_active
+                        && configured.is_none()
+                        && provider_descriptor(&provider_id).is_none()
+                    {
+                        Vec::new()
+                    } else {
+                        vec![format!("provider admission failed: {error}")]
+                    },
                     external_credential_status: None,
                     is_active,
                     has_key: false,
@@ -1110,6 +1175,9 @@ impl ProviderDashboardRow {
     /// posture belong against the surface that actually shows them.
     #[cfg(test)]
     fn detail_facts(&self) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint | OpenAI-compatible endpoint".to_string();
+        }
         let self_hosted = if codewhale_runtime::config::provider_route_is_keyless_self_hosted(
             self.provider,
             &self.base_url,
@@ -1140,6 +1208,9 @@ impl ProviderDashboardRow {
     /// repeats. One owner so the renderer and the tests cannot disagree about
     /// what a provider's state reads as.
     fn detail_state_line(&self) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint".to_string();
+        }
         let auth = match self.auth_status {
             ProviderAuthStatus::Missing | ProviderAuthStatus::Configured => String::new(),
             status => format!(" | {}", status.label()),
@@ -1162,18 +1233,18 @@ impl ProviderDashboardRow {
     /// soooooo busy and it doesn't need to be at all". `compact_hint` keeps
     /// the full pipe-delimited form for surfaces that have no Details pane.
     fn list_row_hint(&self, view: ProviderListView) -> String {
+        if self.is_custom_placeholder() {
+            return "needs endpoint".to_string();
+        }
         match view {
             // `readiness` already reads as prose ("key saved · not checked",
-            // "missing key"); `auth_status` said the same thing again in
+            // "needs key"); `auth_status` said the same thing again in
             // machine spelling ("key:configured", "key:not-set").
             ProviderListView::Configured => self.readiness.label().to_string(),
             ProviderListView::Catalog => {
                 // A row you cannot use yet says what it needs, once. The
                 // bundled-model count beside it only repeated itself down a
                 // fifty-row list; the Details pane still carries it.
-                if self.is_custom_placeholder() {
-                    return "needs endpoint".to_string();
-                }
                 match self.readiness {
                     ResolvedProviderReadiness::MissingKey => return "needs key".to_string(),
                     ResolvedProviderReadiness::MissingLogin => return "needs sign-in".to_string(),
@@ -1190,15 +1261,87 @@ impl ProviderDashboardRow {
         }
     }
 
-    /// The blank `Custom` slot: Enter opens the endpoint form (see
-    /// `activate_selected_row`), so it is neither a broken route nor legacy.
     fn is_custom_placeholder(&self) -> bool {
         self.provider == ProviderKind::Custom
             && !self.is_configured
             && provider_descriptor(&self.provider_id).is_none()
     }
 
+    fn category_label(&self) -> MessageId {
+        if matches!(
+            self.provider,
+            ProviderKind::Ollama | ProviderKind::Sglang | ProviderKind::Vllm
+        ) || base_url_uses_local_host(&self.base_url)
+            || matches!(
+                self.auth_status,
+                ProviderAuthStatus::Local | ProviderAuthStatus::Optional
+            )
+        {
+            MessageId::ProviderCategoryLocal
+        } else if self.provider == ProviderKind::Custom {
+            MessageId::RouterPresetCustomLabel
+        } else if matches!(
+            self.provider,
+            ProviderKind::Openrouter
+                | ProviderKind::Orcarouter
+                | ProviderKind::NvidiaNim
+                | ProviderKind::Together
+                | ProviderKind::Fireworks
+                | ProviderKind::Deepinfra
+                | ProviderKind::Huggingface
+                | ProviderKind::Siliconflow
+                | ProviderKind::SiliconflowCN
+                | ProviderKind::Novita
+                | ProviderKind::Atlascloud
+                | ProviderKind::Openmodel
+                | ProviderKind::OpencodeGo
+                | ProviderKind::OpencodeZen
+        ) {
+            MessageId::ProviderCategoryGateway
+        } else {
+            MessageId::ProviderCategoryDirect
+        }
+    }
+
+    fn connection_badge(&self) -> (&'static str, MessageId, Color) {
+        if self.is_active {
+            ("★", MessageId::CtxInspActive, active_modal_accent_color())
+        } else if matches!(
+            self.readiness,
+            ResolvedProviderReadiness::SavedLastCheckFailed { .. }
+                | ResolvedProviderReadiness::InvalidRoute
+        ) {
+            (
+                codewhale_tui_kit::glyphs::AVAILABLE,
+                MessageId::ProviderBadgeCheckFailed,
+                palette::STATUS_ERROR,
+            )
+        } else if matches!(
+            self.credential_state,
+            CredentialState::Saved
+                | CredentialState::ImportedToken
+                | CredentialState::NoAuth
+                | CredentialState::Local
+                | CredentialState::Legacy
+        ) {
+            (
+                codewhale_tui_kit::glyphs::CURRENT,
+                MessageId::ExtensionsStateConnected,
+                palette::STATUS_SUCCESS,
+            )
+        } else {
+            (
+                codewhale_tui_kit::glyphs::AVAILABLE,
+                MessageId::ProviderBadgeNotConfigured,
+                palette::STATUS_WARNING,
+            )
+        }
+    }
+
     fn catalog_label(&self) -> String {
+        if self.is_custom_placeholder() {
+            return String::new();
+        }
         match self.catalog_status {
             ProviderCatalogStatus::Bundled => format!("{} models", self.available_model_count),
             ProviderCatalogStatus::DefaultOnly => "default-only".to_string(),
@@ -1212,16 +1355,28 @@ impl ProviderDashboardRow {
     /// route means a model name or wire id surfaces the provider that serves it,
     /// keeping this picker consistent with the model picker's cross-field search
     /// (`model_row_matches_query`).
-    fn matches_query(&self, query: &str) -> bool {
+    fn query_match_rank(&self, query: &str) -> Option<u8> {
         let query = query.trim().to_ascii_lowercase();
         if query.is_empty() {
-            return true;
+            return Some(0);
         }
-        self.display_name.to_ascii_lowercase().contains(&query)
-            || self.provider_id.to_ascii_lowercase().contains(&query)
+        let name_fields = [
+            self.provider_id.to_ascii_lowercase(),
+            self.provider.as_str().to_ascii_lowercase(),
+            self.display_name.to_ascii_lowercase(),
+        ];
+        if name_fields.iter().any(|field| field == &query) {
+            return Some(0);
+        }
+        if name_fields.iter().any(|field| field.starts_with(&query)) {
+            return Some(1);
+        }
+        if name_fields.iter().any(|field| field.contains(&query))
             || self.kind.to_ascii_lowercase().contains(&query)
-            || self.base_url.to_ascii_lowercase().contains(&query)
-            || self.provider.as_str().to_ascii_lowercase().contains(&query)
+        {
+            return Some(2);
+        }
+        if self.base_url.to_ascii_lowercase().contains(&query)
             || self
                 .default_route
                 .logical_model
@@ -1232,6 +1387,14 @@ impl ProviderDashboardRow {
                 .wire_model
                 .to_ascii_lowercase()
                 .contains(&query)
+        {
+            return Some(3);
+        }
+        None
+    }
+
+    fn matches_query(&self, query: &str) -> bool {
+        self.query_match_rank(query).is_some()
     }
 }
 
@@ -2402,12 +2565,25 @@ impl ProviderPickerView {
         }
     }
 
-    /// Update the search query and clamp the selection to the first visible row.
+    /// Update the search query and select the best-matching visible row.
     fn update_query(&mut self, next: String) {
         self.query = next;
-        self.selected_idx = (0..self.rows.len())
-            .find(|idx| self.row_visible(*idx))
-            .unwrap_or(0);
+        let query = self.query.trim();
+        self.selected_idx = if query.is_empty() {
+            (0..self.rows.len())
+                .find(|idx| self.row_visible(*idx))
+                .unwrap_or(0)
+        } else {
+            (0..self.rows.len())
+                .filter(|idx| self.row_visible(*idx))
+                .min_by_key(|idx| {
+                    (
+                        self.rows[*idx].query_match_rank(query).unwrap_or(u8::MAX),
+                        *idx,
+                    )
+                })
+                .unwrap_or(0)
+        };
     }
 
     /// Move the selection one visible row forward (`step = 1`) or backward
@@ -2794,7 +2970,8 @@ impl ProviderPickerView {
         // the id the route actually sends whenever that id is also listed.
         let base_url = self.rows[self.selected_idx].base_url.clone();
         let wire = |model: &str| {
-            codewhale_runtime::config::wire_model_for_provider_route(provider, &base_url, model)
+            codewhale_config::route::resolve_model(provider, model, Some(&base_url))
+                .map_or_else(|_| model.trim().to_string(), |resolved| resolved.wire_id)
         };
         let listed: Vec<String> = models.clone();
         models.retain(|model| {
@@ -2916,7 +3093,7 @@ impl ProviderPickerView {
     /// credential env var, so the only field left is which env var holds the
     /// key. Submitting writes `[providers.<id>]` through the same path a
     /// hand-entered custom provider uses.
-    fn enter_descriptor_form(&mut self, descriptor: &'static ProviderDescriptor) {
+    fn enter_descriptor_form(&mut self, descriptor: ProviderDescriptor) {
         self.prefill_custom_form(
             &descriptor.id,
             &descriptor.base_url,
@@ -3094,59 +3271,36 @@ impl ProviderPickerView {
             ProviderListView::Catalog => self.tr(MessageId::PickerActionConfigured),
             ProviderListView::Local => self.tr(MessageId::PickerActionBrowseAll),
         };
-        let action_label = codewhale_tui_kit::ui_text::semantic_truncate(
-            &view_action,
-            usize::from(area.width.saturating_sub(20)),
-        );
-        let action_width = unicode_width::UnicodeWidthStr::width(action_label.as_str()) as u16;
-        let show_action = !self.onboarding_mode && area.width >= 28 && area.height > 0;
-        let title = if show_action {
-            codewhale_tui_kit::ui_text::semantic_truncate(
-                title.trim(),
-                usize::from(area.width.saturating_sub(action_width + 8)),
-            )
+        let accent = active_modal_accent_color();
+        let action_style = if self.catalog_action_hovered {
+            menu_style::hovered_row_style().fg(accent)
         } else {
-            title
+            Style::default()
+                .fg(accent)
+                .add_modifier(Modifier::UNDERLINED)
         };
         let inner = if self.onboarding_mode {
-            let outer = Block::default()
-                .title(Line::from(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(palette::WHALE_ACTION)
-                        .add_modifier(Modifier::BOLD),
-                )))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(palette::BORDER_COLOR))
-                .style(Style::default().bg(palette::WHALE_BG));
-            let inner = outer.inner(area);
-            outer.render(area, buf);
+            let mut frame = SurfaceFrame::new(title.trim());
+            let setup = self.tr(MessageId::ProviderSetupPill);
+            if unicode_width::UnicodeWidthStr::width(title.trim())
+                + unicode_width::UnicodeWidthStr::width(setup.as_ref())
+                + 10
+                <= usize::from(area.width)
+            {
+                frame = frame.right_pill(setup, Style::default().fg(palette::TEXT_MUTED));
+            }
+            let (inner, _) = render_rounded_card(area, buf, frame);
             inner
         } else {
-            render_underwater_surface(area, buf, title.trim())
+            let mut frame = SurfaceFrame::new(title.trim());
+            if area.width >= 28 && area.height > 0 {
+                frame = frame.right_pill(view_action.clone(), action_style);
+            }
+            let (inner, pill_hitbox) = render_surface_frame(area, buf, frame);
+            *self.catalog_action_hitbox.borrow_mut() = pill_hitbox;
+            inner
         };
-
-        if show_action {
-            let action = Rect::new(
-                inner.right().saturating_sub(action_width),
-                area.y + u16::from(area.height >= 24),
-                action_width,
-                1,
-            );
-            *self.catalog_action_hitbox.borrow_mut() = Some(action);
-            Paragraph::new(action_label)
-                .style(if self.catalog_action_hovered {
-                    menu_style::hovered_row_style()
-                } else {
-                    Style::default()
-                        .fg(palette::WHALE_ACTION)
-                        .add_modifier(Modifier::UNDERLINED)
-                })
-                .render(action, buf);
-        }
         let search_active = self.search_mode || !self.query.trim().is_empty();
-        // The action footer moves into the body so it wraps instead of clipping
-        // at narrow widths (#3732); the provider list renders above it.
         let content = if self.onboarding_mode {
             let mut hints = vec![
                 ActionHint::new("↑↓", self.tr(MessageId::PickerActionMove)),
@@ -3168,8 +3322,6 @@ impl ProviderPickerView {
                 inner,
                 buf,
                 &[
-                    // Two-stage Esc (clear the query, then cancel) reads as one
-                    // hint instead of a duplicated key.
                     ActionHint::new(
                         "Esc",
                         format!(
@@ -3183,8 +3335,6 @@ impl ProviderPickerView {
                 ],
             )
         } else if inner.height < 16 {
-            // Keep the selection and recovery actions visible before teaching
-            // secondary shortcuts; the full rail returns with vertical room.
             render_modal_footer(
                 inner,
                 buf,
@@ -3206,14 +3356,6 @@ impl ProviderPickerView {
                     ActionHint::new("/", self.tr(MessageId::SessionsActionSearch)),
                     ActionHint::new("Enter", enter_action),
                     ActionHint::new("A", view_action),
-                    // The footer advertises actions for the selected row and
-                    // the list as a whole. `L` local-only, `I` LM Studio,
-                    // `C` custom, `D` DS4 and `S` SenseNova were setup forms
-                    // for five specific providers out of forty, given
-                    // top-level keys — founder live-test: "please remove D S I
-                    // etc". The keys still work for anyone who learned them;
-                    // they are simply no longer taught here, because the way
-                    // to reach a provider is to select its row.
                     ActionHint::new("R", self.tr(MessageId::PickerActionEditKey)),
                     ActionHint::new("M", self.tr(MessageId::PickerActionModels)),
                     ActionHint::new("C-t", self.tr(MessageId::PickerActionTestConnection)),
@@ -3233,6 +3375,82 @@ impl ProviderPickerView {
 
         let content = self.offer.render(self.locale, content, buf);
         let filtered = self.filtered_rows();
+        let show_top_bar = !self.onboarding_mode && content.height >= 10;
+        let show_top_rule = show_top_bar && content.height >= 13;
+        let content = if show_top_bar {
+            let bar_rows = 1 + u16::from(show_top_rule);
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(bar_rows), Constraint::Min(1)])
+                .split(content);
+            let bar = Rect {
+                height: 1,
+                ..split[0]
+            };
+            let tab_style = |active: bool| {
+                if active {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette::TEXT_DIM)
+                }
+            };
+            let ascii = crate::tui::color_compat::ascii_safe_enabled();
+            let dot = if ascii { " / " } else { " · " };
+            let mut spans = vec![
+                Span::styled(
+                    self.tr(MessageId::ProviderTabConfigured),
+                    tab_style(self.view == ProviderListView::Configured),
+                ),
+                Span::styled(dot, Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(
+                    self.tr(MessageId::ProviderTabAll),
+                    tab_style(self.view == ProviderListView::Catalog),
+                ),
+                Span::styled(dot, Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(
+                    self.tr(MessageId::ProviderTabLocal),
+                    tab_style(self.view == ProviderListView::Local),
+                ),
+                Span::styled("   ", Style::default()),
+            ];
+            if search_active {
+                let caret = if ascii { "_" } else { "▏" };
+                spans.push(Span::styled(
+                    self.tr(MessageId::HelpFilterPrefix),
+                    Style::default().fg(accent).bold(),
+                ));
+                spans.push(Span::styled(
+                    self.query.clone(),
+                    Style::default().fg(palette::TEXT_PRIMARY).bold(),
+                ));
+                spans.push(Span::styled(caret, Style::default().fg(accent)));
+                spans.push(Span::styled(
+                    format!("  ({})", filtered.len()),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    self.tr(MessageId::ProviderShownCount)
+                        .replace("{count}", &filtered.len().to_string()),
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
+            Paragraph::new(Line::from(spans)).render(bar, buf);
+            if show_top_rule {
+                render_modal_rule(
+                    Rect {
+                        y: split[0].y.saturating_add(1),
+                        height: 1,
+                        ..split[0]
+                    },
+                    buf,
+                );
+            }
+            split[1]
+        } else {
+            content
+        };
+
         if filtered.is_empty() {
             if search_active {
                 EmptyState::new(
@@ -3253,9 +3471,6 @@ impl ProviderPickerView {
             return;
         }
 
-        // Onboarding asks one question. The ordinary provider manager keeps
-        // its technical detail pane, but first-run gives the available rows
-        // the whole body so 40x12 still has room to choose and proceed.
         let mut layout = if self.onboarding_mode {
             ListDetailLayout {
                 list: content,
@@ -3271,15 +3486,55 @@ impl ProviderPickerView {
             layout.detail.y = detail_y;
             layout.detail.height = content.bottom().saturating_sub(detail_y);
         }
-        let selected_pos = filtered
+
+        enum DisplayRow<'a> {
+            Header(MessageId),
+            Provider(usize, &'a ProviderDashboardRow),
+        }
+
+        let show_sections = !self.onboarding_mode
+            && !search_active
+            && self.view == ProviderListView::Catalog
+            && layout.list.height >= 8
+            && filtered.iter().any(|(_, row)| row.is_configured)
+            && filtered.iter().any(|(_, row)| !row.is_configured);
+        let mut display: Vec<DisplayRow<'_>> = Vec::with_capacity(filtered.len() + 2);
+        let mut current_group: Option<bool> = None;
+        for &(idx, row) in &filtered {
+            if show_sections && current_group != Some(row.is_configured) {
+                current_group = Some(row.is_configured);
+                display.push(DisplayRow::Header(if row.is_configured {
+                    MessageId::ProviderTabConfigured
+                } else {
+                    MessageId::ProviderSectionAvailable
+                }));
+            }
+            display.push(DisplayRow::Provider(idx, row));
+        }
+
+        let selected_display_pos = display
             .iter()
-            .position(|(idx, _)| *idx == self.selected_idx)
+            .position(
+                |item| matches!(item, DisplayRow::Provider(idx, _) if *idx == self.selected_idx),
+            )
             .unwrap_or(0);
         let visible_rows = usize::from(layout.list.height);
-        let visible_start = Self::visible_start(selected_pos, filtered.len(), visible_rows);
-        // Slice D two-pane picker: the provider strip lives on the left and
-        // every visible row is clickable, so record this frame's geometry for
-        // hover + click handling (mirrors the model picker hitboxes).
+        let mut visible_start =
+            Self::visible_start(selected_display_pos, display.len(), visible_rows);
+        if visible_start > 0
+            && selected_display_pos == visible_start
+            && matches!(display.get(visible_start - 1), Some(DisplayRow::Header(_)))
+        {
+            visible_start -= 1;
+        }
+        let list_area = render_panel_scroll_rail(
+            layout.list,
+            buf,
+            display.len(),
+            visible_start,
+            visible_rows,
+            true,
+        );
         self.list_row_hitboxes.borrow_mut().clear();
         let name_column = filtered
             .iter()
@@ -3287,107 +3542,141 @@ impl ProviderPickerView {
             .max()
             .unwrap_or(0);
         let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
-        for (pos, (idx, row)) in filtered
-            .iter()
-            .enumerate()
-            .skip(visible_start)
-            .take(visible_rows)
-        {
-            let is_selected = *idx == self.selected_idx;
-            debug_assert_eq!(is_selected, pos == selected_pos);
-            let is_active = row.is_active;
-            let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
-            let active_dot = if is_active { " *" } else { "  " };
-            let spacer_style = if is_selected {
-                menu_style::selected_row_bg_style()
-            } else {
-                Style::default()
-            };
-            let is_hovered = self.hovered_list_idx == Some(*idx);
-            let label_style = if is_selected {
-                menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
-            } else if is_hovered {
-                menu_style::hovered_row_style()
-            } else {
-                Style::default().fg(palette::TEXT_PRIMARY)
-            };
-            let has_usable_auth = matches!(
-                row.credential_state,
-                CredentialState::Saved
-                    | CredentialState::ImportedToken
-                    | CredentialState::NoAuth
-                    | CredentialState::Local
-                    | CredentialState::Legacy
-            );
-            let hint_style = if is_selected {
-                menu_style::selected_row_style_with_fg(if has_usable_auth {
-                    palette::SELECTION_TEXT
-                } else {
-                    palette::STATUS_WARNING
-                })
-            } else if has_usable_auth {
-                Style::default().fg(palette::TEXT_MUTED)
-            } else {
-                Style::default().fg(palette::STATUS_WARNING)
-            };
-            let full_hint = row.list_row_hint(self.view);
-            let unpadded_prefix = format!(" {arrow} {}{active_dot}  ", row.display_name);
-            let spare = usize::from(layout.list.width).saturating_sub(
-                codewhale_tui_kit::ui_text::text_display_width(&unpadded_prefix)
-                    + codewhale_tui_kit::ui_text::text_display_width(&full_hint),
-            );
-            let name_pad = " ".repeat(
-                name_column
-                    .saturating_sub(codewhale_tui_kit::ui_text::text_display_width(
-                        &row.display_name,
-                    ))
-                    .min(spare),
-            );
-            let prefix = format!(" {arrow} {}{active_dot}{name_pad}  ", row.display_name);
-            let hint = codewhale_tui_kit::ui_text::semantic_truncate_between_affixes(
-                &prefix,
-                &full_hint,
-                "",
-                usize::from(layout.list.width),
-            );
-            let mut line = Line::from(vec![
-                Span::styled(" ", spacer_style),
-                Span::styled(arrow, label_style),
-                Span::styled(" ", spacer_style),
-                Span::styled(row.display_name.as_str(), label_style),
-                Span::styled(active_dot, label_style),
-                Span::styled(name_pad, spacer_style),
-                Span::styled("  ", spacer_style),
-                Span::styled(hint, hint_style),
-            ]);
-            if is_hovered && !is_selected {
-                line.style = menu_style::hovered_row_style();
-            }
-            if is_selected {
-                line.style = menu_style::selected_row_bg_style();
-                let target_width = usize::from(layout.list.width);
-                let line_width = line.width();
-                if line_width < target_width {
-                    line.spans.push(Span::styled(
-                        " ".repeat(target_width - line_width),
-                        menu_style::selected_row_bg_style(),
-                    ));
+        for item in display.iter().skip(visible_start).take(visible_rows) {
+            match item {
+                DisplayRow::Header(heading) => {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", self.tr(*heading)),
+                        Style::default().fg(palette::TEXT_MUTED).bold(),
+                    )));
+                }
+                DisplayRow::Provider(idx, row) => {
+                    let is_selected = *idx == self.selected_idx;
+                    let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
+                    let (badge_glyph, _, badge_color) = row.connection_badge();
+                    let spacer_style = if is_selected {
+                        menu_style::selected_row_bg_style()
+                    } else {
+                        Style::default()
+                    };
+                    let is_hovered = self.hovered_list_idx == Some(*idx);
+                    let label_style = if is_selected {
+                        menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
+                    } else if is_hovered {
+                        menu_style::hovered_row_style().fg(palette::TEXT_PRIMARY)
+                    } else {
+                        Style::default().fg(palette::TEXT_PRIMARY)
+                    };
+                    let glyph_style = if is_selected {
+                        menu_style::selected_row_style_with_fg(badge_color)
+                    } else if is_hovered {
+                        menu_style::hovered_row_style().fg(badge_color)
+                    } else {
+                        Style::default().fg(badge_color)
+                    };
+                    let arrow_style = if is_selected {
+                        menu_style::selected_row_style_with_fg(accent)
+                    } else if is_hovered {
+                        menu_style::hovered_row_style().fg(palette::TEXT_DIM)
+                    } else {
+                        Style::default().fg(palette::TEXT_DIM)
+                    };
+                    let has_usable_auth = matches!(
+                        row.credential_state,
+                        CredentialState::Saved
+                            | CredentialState::ImportedToken
+                            | CredentialState::NoAuth
+                            | CredentialState::Local
+                            | CredentialState::Legacy
+                    );
+                    let hint_style = if is_selected {
+                        menu_style::selected_row_style_with_fg(if has_usable_auth {
+                            palette::SELECTION_TEXT
+                        } else {
+                            palette::STATUS_WARNING
+                        })
+                    } else if is_hovered {
+                        menu_style::hovered_row_style().fg(if has_usable_auth {
+                            palette::TEXT_MUTED
+                        } else {
+                            palette::STATUS_WARNING
+                        })
+                    } else if has_usable_auth {
+                        Style::default().fg(palette::TEXT_MUTED)
+                    } else {
+                        Style::default().fg(palette::STATUS_WARNING)
+                    };
+                    let full_hint = row.list_row_hint(self.view);
+                    let unpadded_prefix = format!(" {arrow} {badge_glyph} {}  ", row.display_name);
+                    let spare = usize::from(list_area.width).saturating_sub(
+                        codewhale_tui_kit::ui_text::text_display_width(&unpadded_prefix)
+                            + codewhale_tui_kit::ui_text::text_display_width(&full_hint),
+                    );
+                    let name_pad = " ".repeat(
+                        name_column
+                            .saturating_sub(codewhale_tui_kit::ui_text::text_display_width(
+                                &row.display_name,
+                            ))
+                            .min(spare),
+                    );
+                    let prefix = format!(" {arrow} {badge_glyph} {}{name_pad}  ", row.display_name);
+                    let hint = codewhale_tui_kit::ui_text::semantic_truncate_between_affixes(
+                        &prefix,
+                        &full_hint,
+                        "",
+                        usize::from(list_area.width),
+                    );
+                    let mut line = Line::from(vec![
+                        Span::styled(" ", spacer_style),
+                        Span::styled(arrow, arrow_style),
+                        Span::styled(" ", spacer_style),
+                        Span::styled(badge_glyph, glyph_style),
+                        Span::styled(" ", spacer_style),
+                        Span::styled(row.display_name.as_str(), label_style),
+                        Span::styled(name_pad, spacer_style),
+                        Span::styled("  ", spacer_style),
+                        Span::styled(hint, hint_style),
+                    ]);
+                    if is_hovered && !is_selected {
+                        line.style = menu_style::hovered_row_style();
+                    }
+                    if is_selected {
+                        line.style = menu_style::selected_row_bg_style();
+                        let target_width = usize::from(list_area.width);
+                        let line_width = line.width();
+                        if line_width < target_width {
+                            line.spans.push(Span::styled(
+                                " ".repeat(target_width - line_width),
+                                menu_style::selected_row_bg_style(),
+                            ));
+                        }
+                    }
+                    let row_y = list_area.y.saturating_add(lines.len() as u16);
+                    let row_rect = Rect::new(list_area.x, row_y, list_area.width, 1);
+                    if is_selected {
+                        buf.set_style(row_rect, menu_style::selected_row_bg_style());
+                    } else if is_hovered {
+                        buf.set_style(row_rect, menu_style::hovered_row_style());
+                    }
+                    self.list_row_hitboxes.borrow_mut().push((row_rect, *idx));
+                    lines.push(line);
                 }
             }
-            let row_y = layout.list.y.saturating_add(lines.len() as u16);
-            if is_hovered && !is_selected {
-                buf.set_style(
-                    Rect::new(layout.list.x, row_y, layout.list.width, 1),
-                    menu_style::hovered_row_style(),
-                );
-            }
-            self.list_row_hitboxes
-                .borrow_mut()
-                .push((Rect::new(layout.list.x, row_y, layout.list.width, 1), *idx));
-            lines.push(line);
         }
-        Paragraph::new(lines).render(layout.list, buf);
+        Paragraph::new(lines).render(list_area, buf);
         if !self.onboarding_mode {
+            if !layout.stacked && layout.detail.x > layout.list.right() {
+                let div_x = layout.list.right();
+                let div_sym = if crate::tui::color_compat::ascii_safe_enabled() {
+                    "|"
+                } else {
+                    "│"
+                };
+                let div_style = Style::default().fg(active_modal_border_color());
+                for y in content.top()..content.bottom() {
+                    buf[(div_x, y)].set_symbol(div_sym).set_style(div_style);
+                }
+            }
             self.render_provider_detail(layout.detail, buf, &self.rows[self.selected_idx]);
         }
     }
@@ -3397,8 +3686,7 @@ impl ProviderPickerView {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        // A quiet inspector shares the canvas with the list. The explicit
-        // details action opens the existing pager for complete diagnostics.
+        let accent = active_modal_accent_color();
         let action_label = format!(
             "{} {}",
             crate::tui::shell_key_routing::tool_details_chord(),
@@ -3414,27 +3702,50 @@ impl ProviderPickerView {
         );
         *self.detail_action_hitbox.borrow_mut() = Some(action);
         let action_style = if self.detail_action_hovered {
-            menu_style::hovered_row_style().fg(palette::WHALE_ACTION)
+            menu_style::hovered_row_style().fg(accent)
         } else {
             Style::default()
-                .fg(palette::WHALE_ACTION)
+                .fg(accent)
                 .add_modifier(Modifier::UNDERLINED)
         };
         Paragraph::new(action_label)
             .style(action_style)
             .render(action, buf);
-        let title = Rect::new(
-            area.x,
-            area.y,
-            area.width.saturating_sub(action_width + 1),
-            1,
-        );
-        Paragraph::new(codewhale_tui_kit::ui_text::semantic_truncate(
-            &row.display_name,
-            usize::from(title.width),
-        ))
-        .style(Style::default().fg(palette::TEXT_PRIMARY).bold())
-        .render(title, buf);
+        let title_width = area.width.saturating_sub(action_width + 1);
+        let (badge_glyph, badge_word, badge_color) = row.connection_badge();
+        let badge_word = self.tr(badge_word);
+        let category = self.tr(row.category_label());
+        let name_budget = usize::from(title_width);
+        let mut header_spans = vec![Span::styled(
+            codewhale_tui_kit::ui_text::semantic_truncate(&row.display_name, name_budget),
+            Style::default().fg(palette::TEXT_PRIMARY).bold(),
+        )];
+        let name_used = codewhale_tui_kit::ui_text::text_display_width(&row.display_name);
+        let badge_text = format!("  {badge_glyph} {badge_word}");
+        if name_used + codewhale_tui_kit::ui_text::text_display_width(&badge_text) <= name_budget {
+            header_spans.push(Span::styled(badge_text, Style::default().fg(badge_color)));
+            let cat_text = format!(" · {category}");
+            if name_used
+                + codewhale_tui_kit::ui_text::text_display_width(&format!(
+                    "  {badge_glyph} {badge_word}"
+                ))
+                + codewhale_tui_kit::ui_text::text_display_width(&cat_text)
+                <= name_budget
+            {
+                header_spans.push(Span::styled(
+                    cat_text,
+                    Style::default().fg(palette::TEXT_DIM),
+                ));
+            }
+        }
+        Paragraph::new(Line::from(header_spans))
+            .render(Rect::new(area.x, area.y, title_width, 1), buf);
+        if area.height >= 4 {
+            render_modal_rule(
+                Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
+                buf,
+            );
+        }
         let inner = Rect::new(
             area.x,
             area.y.saturating_add(2),
@@ -3478,6 +3789,18 @@ impl ProviderPickerView {
         width: u16,
         full: bool,
     ) -> Vec<Line<'static>> {
+        if row.is_custom_placeholder() {
+            return vec![
+                Line::from(Span::styled(
+                    row.detail_state_line(),
+                    Style::default().fg(palette::TEXT_MUTED),
+                )),
+                Line::from(Span::styled(
+                    "OpenAI-compatible endpoint · press Enter to configure",
+                    Style::default().fg(palette::TEXT_PRIMARY),
+                )),
+            ];
+        }
         let route = if row.default_route.logical_model == row.default_route.wire_model {
             row.default_route.logical_model.clone()
         } else {
@@ -3681,18 +4004,12 @@ impl ProviderPickerView {
     }
 
     fn render_subscription_auth_choice(&self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                self.tr(MessageId::XaiAuthChoiceTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::XaiAuthChoiceTitle))
+                .right_pill("Auth", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let mut hints = vec![
             ActionHint::new("↑↓/1-2", self.tr(MessageId::ProviderExternalActionChoose)),
             ActionHint::new("Enter", self.tr(MessageId::SetupActionContinue)),
@@ -3719,18 +4036,12 @@ impl ProviderPickerView {
     }
 
     fn render_chatgpt_auth_choice(&self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                self.tr(MessageId::ChatgptAuthChoiceTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::ChatgptAuthChoiceTitle))
+                .right_pill("Auth", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -3749,18 +4060,12 @@ impl ProviderPickerView {
     }
 
     fn render_orcarouter_auth_choice(&self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                self.tr(MessageId::OrcarouterAuthChoiceTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::OrcarouterAuthChoiceTitle))
+                .right_pill("Auth", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -3787,9 +4092,12 @@ impl ProviderPickerView {
 
     fn render_key_entry(&self, area: Rect, buf: &mut Buffer) {
         if let Some(provider) = self.selected_plugin_provider() {
-            let block = Block::default().title(provider).borders(Borders::ALL);
-            let inner = block.inner(area);
-            block.render(area, buf);
+            let (inner, _) = render_rounded_card(
+                area,
+                buf,
+                SurfaceFrame::new(provider)
+                    .right_pill("OAuth", Style::default().fg(palette::TEXT_MUTED)),
+            );
             Paragraph::new(self.tr(MessageId::PluginOAuthBrowser).into_owned())
                 .wrap(Wrap { trim: true })
                 .render(inner, buf);
@@ -3799,25 +4107,24 @@ impl ProviderPickerView {
         let codex_oauth = row.provider == ProviderKind::OpenaiCodex;
         let oauth_provider = codex_oauth;
         let saved_credential = !oauth_provider && row.has_key;
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
+        let title = if oauth_provider {
+            format!("OAuth login · {}", row.display_name)
+        } else {
+            format!("API key · {}", row.display_name)
+        };
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(title).right_pill(
                 if oauth_provider {
-                    format!(" OAuth login — {} ", row.display_name)
+                    "OAuth"
                 } else {
-                    format!(" API key — {} ", row.display_name)
+                    "Step 1/3 · Credentials"
                 },
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        );
 
-        // The action footer moves into the body so it wraps instead of clipping
-        // at narrow widths (#3732); the key-entry fields render above it.
         let content = if codex_oauth {
             render_modal_footer(
                 inner,
@@ -3848,29 +4155,40 @@ impl ProviderPickerView {
         };
 
         let masked = mask_key(&self.api_key_input);
+        let accent = active_modal_accent_color();
+        let ascii = crate::tui::color_compat::ascii_safe_enabled();
+        let caret = if ascii { "_" } else { "▏" };
+        let is_placeholder = !codex_oauth && masked.is_empty();
         let display = if codex_oauth {
             self.tr(MessageId::ChatgptAuthChoicePkceOption).into_owned()
         } else if masked.is_empty() && saved_credential {
-            // The key may come from the environment rather than a save, so
-            // "saved" was not always true (#6566).
             "A key is already set up".to_string()
         } else if masked.is_empty() {
             "(paste key here)".to_string()
         } else {
             masked
         };
-        let key_lines = vec![Line::from(vec![
+        let mut input_spans = vec![
             Span::styled(
-                if oauth_provider { "Auth: " } else { "Key: " },
-                Style::default().fg(palette::TEXT_MUTED),
+                if oauth_provider { " Auth: " } else { " Key:  " },
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 display,
-                Style::default()
-                    .fg(palette::TEXT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
+                if is_placeholder {
+                    Style::default().fg(palette::TEXT_MUTED)
+                } else {
+                    Style::default()
+                        .fg(palette::TEXT_PRIMARY)
+                        .add_modifier(Modifier::BOLD)
+                },
             ),
-        ])];
+        ];
+        if !oauth_provider {
+            input_spans.push(Span::styled(caret, Style::default().fg(accent)));
+        }
+        let key_line =
+            Line::from(input_spans).style(Style::default().bg(palette::SURFACE_ELEVATED));
         let reopen_command = if self.setup_mode {
             "/setup provider"
         } else {
@@ -3943,16 +4261,18 @@ impl ProviderPickerView {
         if let Some(ref error) = self.key_entry_error {
             hint_lines.insert(
                 0,
-                Line::from(Span::styled(
-                    error.clone(),
-                    Style::default().fg(palette::STATUS_ERROR),
-                )),
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", codewhale_tui_kit::glyphs::FAILED),
+                        Style::default()
+                            .fg(palette::STATUS_ERROR)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(error.clone(), Style::default().fg(palette::STATUS_ERROR)),
+                ]),
             );
         }
 
-        // `Line` count is not rendered row count: long environment-variable
-        // guidance can wrap to two or three terminal rows. Ask ratatui for the
-        // exact wrapped height instead of duplicating its layout arithmetic.
         let hint = Paragraph::new(hint_lines).wrap(Wrap { trim: true });
         let hint_height = u16::try_from(hint.line_count(content.width.max(1)))
             .unwrap_or(u16::MAX)
@@ -3960,31 +4280,34 @@ impl ProviderPickerView {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(2),
                 Constraint::Length(hint_height),
-                Constraint::Min(1),
+                Constraint::Min(0),
             ])
             .split(content);
 
-        Paragraph::new(key_lines).render(layout[0], buf);
+        if layout[0].height > 0 {
+            let input_row = Rect {
+                height: 1,
+                ..layout[0]
+            };
+            buf.set_style(input_row, Style::default().bg(palette::SURFACE_ELEVATED));
+            Paragraph::new(key_line).render(input_row, buf);
+        }
         hint.render(layout[1], buf);
     }
 
     fn render_external_consent_choice(&self, area: Rect, buf: &mut Buffer) {
         let provider_name = self.rows[self.selected_idx].display_name.clone();
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(
                 self.tr(MessageId::ProviderExternalChoiceTitle)
                     .replace("{provider}", &provider_name),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+            )
+            .right_pill("Gate 1/2", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -3994,9 +4317,6 @@ impl ProviderPickerView {
                 ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
-        // Slice D explicit-consent gate, Gate 1 of 2: choose access. The
-        // consent backend (#5779) and every localized string are unchanged —
-        // only the gate framing and the clickable rows are new.
         self.consent_row_hitboxes.borrow_mut().clear();
         let selected = self.external_consent_choice;
         let options = [
@@ -4019,11 +4339,8 @@ impl ProviderPickerView {
                 self.tr(MessageId::ProviderExternalManagedDetail),
             ),
         ];
-        // Options render first at fixed rows (header + one line per
-        // option) so hitboxes stay exact; the wrapping explainer lines live
-        // below where wrapping cannot disturb pointer geometry.
         let mut lines = vec![Line::from(Span::styled(
-            "Gate 1 of 2 · choose access",
+            self.tr(MessageId::ProviderExternalGateOneHeading),
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
@@ -4043,7 +4360,11 @@ impl ProviderPickerView {
                 Span::styled(format!("{marker} {digit}. {label}"), label_style),
                 Span::styled(
                     format!(" · {detail}"),
-                    Style::default().fg(palette::TEXT_MUTED),
+                    if is_selected {
+                        menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
+                    } else {
+                        Style::default().fg(palette::TEXT_MUTED)
+                    },
                 ),
             ]);
             if is_selected {
@@ -4061,7 +4382,8 @@ impl ProviderPickerView {
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(Span::styled(
-            "Enter continues · nothing is read or saved until Gate 2 confirms.",
+            self.tr(MessageId::ProviderExternalChoiceContinue)
+                .replace("{key}", "Enter"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         Paragraph::new(lines)
@@ -4073,18 +4395,12 @@ impl ProviderPickerView {
         let Some((provider, source, path)) = self.selected_external_consent_target() else {
             return;
         };
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                self.tr(MessageId::ProviderExternalConfirmTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::ProviderExternalConfirmTitle))
+                .right_pill("Gate 2/2", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -4099,14 +4415,8 @@ impl ProviderPickerView {
         let exact_path_label = self.tr(MessageId::ProviderExternalExactPathLabel);
         let semantics_label = self.tr(MessageId::ProviderExternalSemanticsLabel);
         let revoke_label = self.tr(MessageId::ProviderExternalRevokeLabel);
-        // #5772: the disclosure names the exact route (endpoint + default
-        // model), the source adapter, the custody boundary (local device
-        // only), the credential/billing owner, and the local-only revoke
-        // consequence before any validate/read/persist may run.
         let row = &self.rows[self.selected_idx];
         Paragraph::new(vec![
-            // Slice D explicit-consent gate, Gate 2 of 2: review the exact
-            // disclosure before granting. Backend (#5779) unchanged.
             Line::from(Span::styled(
                 "Gate 2 of 2 · review before granting",
                 Style::default()
@@ -4152,23 +4462,16 @@ impl ProviderPickerView {
         .render(content, buf);
     }
 
-    /// Revocation disclosure (#5772): names what is cleared (only the
-    /// Codewhale-owned consent record on this device) and what is never
-    /// touched (the external CLI's file). Enter revokes; Esc goes back.
     fn render_external_consent_revoke_confirm(&self, area: Rect, buf: &mut Buffer) {
         let provider_name = self.rows[self.selected_idx].display_name.clone();
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                self.tr(MessageId::ProviderExternalRevokeConfirmTitle),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::ProviderExternalRevokeConfirmTitle)).right_pill(
+                self.tr(MessageId::ProviderExternalRevokeLabel),
+                Style::default().fg(palette::STATUS_WARNING),
+            ),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -4197,18 +4500,12 @@ impl ProviderPickerView {
 
     fn render_model_pick(&self, area: Rect, buf: &mut Buffer) {
         let provider_name = self.rows[self.selected_idx].display_name.clone();
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                format!(" Default model · {provider_name} "),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(format!("Default model · {provider_name}"))
+                .right_pill("Step 2/3 · Model", Style::default().fg(palette::TEXT_MUTED)),
+        );
 
         let content = render_modal_footer(
             inner,
@@ -4230,16 +4527,20 @@ impl ProviderPickerView {
             .split(content);
         header.render(layout[0], buf);
 
-        let list_area = layout[1];
-        let visible_rows = usize::from(list_area.height);
+        let visible_rows = usize::from(layout[1].height);
         let visible_start = Self::visible_start(
             self.model_selected_idx,
             self.model_options.len(),
             visible_rows,
         );
-        // Slice D: every model row carries its own $/mtok from the catalog
-        // and every visible row is clickable, so record this frame's geometry
-        // for hover + click handling.
+        let list_area = render_panel_scroll_rail(
+            layout[1],
+            buf,
+            self.model_options.len(),
+            visible_start,
+            visible_rows,
+            true,
+        );
         self.model_row_hitboxes.borrow_mut().clear();
         let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
         for (idx, model) in self
@@ -4255,20 +4556,14 @@ impl ProviderPickerView {
             let label_style = if is_selected {
                 menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
             } else if is_hovered {
-                menu_style::hovered_row_style()
+                menu_style::hovered_row_style().fg(palette::TEXT_PRIMARY)
             } else {
                 Style::default().fg(palette::TEXT_PRIMARY)
             };
-            let default_tag = if self.rows[self.selected_idx]
+            let is_default = self.rows[self.selected_idx]
                 .default_route
                 .logical_model
-                .eq_ignore_ascii_case(model)
-            {
-                "default"
-            } else {
-                ""
-            };
-            // Slice D: cost moved off the provider level down to the model.
+                .eq_ignore_ascii_case(model);
             let price = configured_model_cost_label(
                 &self.route_config,
                 &self.rows[self.selected_idx],
@@ -4279,30 +4574,33 @@ impl ProviderPickerView {
                 Span::styled(
                     format!("  {price}"),
                     if is_selected {
-                        menu_style::selected_row_style_with_fg(palette::TEXT_MUTED)
+                        menu_style::selected_row_bg_style().fg(palette::SELECTION_TEXT)
                     } else {
                         Style::default().fg(palette::TEXT_MUTED)
                     },
                 ),
             ];
-            if !default_tag.is_empty() {
+            if is_default {
                 spans.push(Span::styled(
-                    format!("  ({default_tag})"),
+                    format!("  {} (default)", codewhale_tui_kit::glyphs::CURRENT),
                     if is_selected {
-                        menu_style::selected_row_style_with_fg(palette::TEXT_MUTED)
+                        menu_style::selected_row_style_with_fg(active_modal_accent_color())
                     } else {
-                        Style::default().fg(palette::TEXT_MUTED)
+                        Style::default().fg(active_modal_accent_color())
                     },
                 ));
             }
             let mut line = Line::from(spans);
+            let row_y = list_area.y.saturating_add(lines.len() as u16);
+            let row_rect = Rect::new(list_area.x, row_y, list_area.width, 1);
             if is_selected {
                 line.style = menu_style::selected_row_bg_style();
+                buf.set_style(row_rect, menu_style::selected_row_bg_style());
+            } else if is_hovered {
+                line.style = menu_style::hovered_row_style();
+                buf.set_style(row_rect, menu_style::hovered_row_style());
             }
-            let row_y = list_area.y.saturating_add(lines.len() as u16);
-            self.model_row_hitboxes
-                .borrow_mut()
-                .push((Rect::new(list_area.x, row_y, list_area.width, 1), idx));
+            self.model_row_hitboxes.borrow_mut().push((row_rect, idx));
             lines.push(line);
         }
         if lines.is_empty() {
@@ -4315,18 +4613,12 @@ impl ProviderPickerView {
     }
 
     fn render_plan_tier(&self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                " Kimi Code plan tier ",
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new("Kimi Code plan tier")
+                .right_pill("Plan tier", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -4354,18 +4646,12 @@ impl ProviderPickerView {
     }
 
     fn render_stepfun_billing_route(&self, area: Rect, buf: &mut Buffer) {
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                format!(" {} ", self.tr(MessageId::StepfunBillingRouteTitle)),
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new(self.tr(MessageId::StepfunBillingRouteTitle))
+                .right_pill("Billing", Style::default().fg(palette::TEXT_MUTED)),
+        );
         let content = render_modal_footer(
             inner,
             buf,
@@ -4375,8 +4661,6 @@ impl ProviderPickerView {
                 ActionHint::new("Esc", self.tr(MessageId::SetupActionBack)),
             ],
         );
-        // Keep the actual endpoint with each route; choosing only stages
-        // the value and still follows the existing confirmation flow.
         self.render_setup_choices(
             content,
             buf,
@@ -4462,18 +4746,14 @@ impl ProviderPickerView {
 
     fn render_confirm(&self, area: Rect, buf: &mut Buffer) {
         let row = &self.rows[self.selected_idx];
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                " Confirm provider setup ",
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new("Confirm provider setup").right_pill(
+                "Step 3/3 · Confirm",
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        );
 
         let content = render_modal_footer(
             inner,
@@ -4523,7 +4803,13 @@ impl ProviderPickerView {
                 ),
             ]),
             if let Some(context_window) = self.selected_context_window {
-                Line::from(format!("Context:  {} tokens", context_window))
+                Line::from(vec![
+                    Span::styled("Context:  ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        format!("{context_window} tokens"),
+                        Style::default().fg(palette::TEXT_PRIMARY),
+                    ),
+                ])
             } else {
                 Line::from("")
             },
@@ -4532,19 +4818,14 @@ impl ProviderPickerView {
     }
 
     fn render_custom_form(&self, area: Rect, buf: &mut Buffer) {
-        let title = " Custom provider ".to_string();
-        let outer = Block::default()
-            .title(Line::from(Span::styled(
-                title,
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(Style::default().bg(palette::WHALE_BG));
-        let inner = outer.inner(area);
-        outer.render(area, buf);
+        let (inner, _) = render_rounded_card(
+            area,
+            buf,
+            SurfaceFrame::new("Custom provider").right_pill(
+                "OpenAI-compatible",
+                Style::default().fg(palette::TEXT_MUTED),
+            ),
+        );
 
         let content = render_modal_footer(
             inner,
@@ -4597,7 +4878,7 @@ impl ProviderPickerView {
             "API key env",
             "optional",
         );
-        if let Some(descriptor) = self.custom_provider_descriptor {
+        if let Some(descriptor) = &self.custom_provider_descriptor {
             Paragraph::new(descriptor_help_lines(descriptor))
                 .wrap(Wrap { trim: true })
                 .render(layout[5], buf);
@@ -4616,6 +4897,12 @@ impl ProviderPickerView {
         let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
         let value = self.custom_form_field_value(field);
         let display = if value.is_empty() { placeholder } else { value };
+        let accent = active_modal_accent_color();
+        let caret = if crate::tui::color_compat::ascii_safe_enabled() {
+            "_"
+        } else {
+            "▏"
+        };
         let value_style = if selected {
             menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
         } else if value.is_empty() {
@@ -4624,22 +4911,27 @@ impl ProviderPickerView {
             Style::default().fg(palette::TEXT_PRIMARY)
         };
         let label_style = if selected {
-            menu_style::selected_row_style_with_fg(palette::WHALE_ACTION)
+            menu_style::selected_row_style_with_fg(accent)
         } else {
             Style::default().fg(palette::TEXT_MUTED)
         };
-        let mut line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(marker, label_style),
             Span::styled(" ", label_style),
-            Span::styled(format!("{label}: "), label_style),
+            Span::styled(format!("{label:<12} "), label_style),
             Span::styled(
                 codewhale_tui_kit::ui_text::truncate_line_to_width(
                     display,
-                    usize::from(area.width).saturating_sub(18),
+                    usize::from(area.width).saturating_sub(17),
                 ),
                 value_style,
             ),
-        ]);
+        ];
+        if selected {
+            spans.push(Span::styled(caret, label_style));
+            buf.set_style(area, menu_style::selected_row_bg_style());
+        }
+        let mut line = Line::from(spans);
         if selected {
             line.style = menu_style::selected_row_bg_style();
         }
@@ -5658,7 +5950,7 @@ fn descriptor_dashboard_rows(
         .as_ref()
         .map(|providers| providers.custom.keys().map(String::as_str).collect())
         .unwrap_or_default();
-    bundled_provider_descriptors()
+    active_provider_descriptors()
         .iter()
         .filter(|descriptor| !configured.iter().any(|id| descriptor.matches(id)))
         .map(|descriptor| descriptor_dashboard_row(descriptor, active, config, runtime_status))
@@ -5741,6 +6033,7 @@ fn descriptor_dashboard_row(
 mod tests {
     use super::*;
     use crate::test_support::EnvVarGuard;
+    use codewhale_config::descriptors::bundled_provider_descriptors;
     use codewhale_engine::provider_readiness::has_api_key_for;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
@@ -5888,6 +6181,75 @@ mod tests {
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn featured_offer_row_is_followed_by_its_disclosure_in_every_locale_and_width() {
+        for locale in Locale::shipped_complete() {
+            let disclosure = tr(*locale, MessageId::OrcaRouterOfferDisclosure).into_owned();
+            let label = tr(*locale, MessageId::OrcaRouterOfferRecommended).into_owned();
+            for width in [100u16, 56, 48, 30] {
+                let area = Rect::new(0, 0, width, 24);
+                let mut buf = Buffer::empty(area);
+                let offer = ProviderOffer::default();
+                let rest = offer.render_if(true, *locale, area, &mut buf);
+                let lines: Vec<String> = (0..24)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buf[(x, y)].symbol())
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect();
+                let chord = crate::tui::shell_key_routing::display_chord(
+                    crate::tui::shell_key_routing::binding(
+                        crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
+                    )
+                    .footer_chord,
+                );
+                let budget = usize::from(width)
+                    .saturating_sub(unicode_width::UnicodeWidthStr::width(chord.as_ref()) + 3);
+                let expected_label = codewhale_tui_kit::ui_text::semantic_truncate(&label, budget);
+                if width >= 48 {
+                    assert_eq!(expected_label, label, "{} {width}", locale.tag());
+                }
+                let squash = |text: &str| text.split_whitespace().collect::<String>();
+                assert!(
+                    squash(&lines[0]).starts_with(&squash(&expected_label))
+                        && lines[0].contains("OrcaRouter")
+                        && lines[0].ends_with(chord.as_ref()),
+                    "{} {width}: {:?}",
+                    locale.tag(),
+                    lines[0]
+                );
+                let shown = lines[1..usize::from(rest.y)].concat();
+                assert_eq!(
+                    squash(&shown),
+                    squash(&disclosure),
+                    "{} {width}",
+                    locale.tag()
+                );
+                assert!(
+                    lines[usize::from(rest.y)..].iter().all(String::is_empty),
+                    "{} {width}: list area overprinted",
+                    locale.tag()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn featured_offer_shows_neither_row_nor_disclosure_when_unavailable() {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        let offer = ProviderOffer::default();
+        assert_eq!(offer.render(Locale::ZhHans, area, &mut buf), area);
+        assert_eq!(offer.render_if(false, Locale::En, area, &mut buf), area);
+        assert!(
+            (0..24).all(|y| (0..100).all(|x| buf[(x, y)].symbol() == " ")),
+            "nothing may be drawn"
+        );
     }
 
     #[test]
@@ -6145,7 +6507,10 @@ mod tests {
     #[test]
     fn descriptor_form_shows_the_hosts_credential_docs_and_guidance() {
         let _env = crate::test_support::lock_test_env();
-        let descriptor = provider_descriptor("aicraft").expect("aicraft descriptor");
+        let descriptor = codewhale_config::descriptors::bundled_provider_descriptors()
+            .iter()
+            .find(|descriptor| descriptor.matches("aicraft"))
+            .expect("aicraft descriptor");
         let _key = crate::test_support::EnvVarGuard::remove(&descriptor.api_key_env);
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
@@ -6182,7 +6547,10 @@ mod tests {
     #[test]
     fn activating_a_descriptor_row_submits_it_as_a_named_custom_provider() {
         let _env = crate::test_support::lock_test_env();
-        let descriptor = provider_descriptor("groq").expect("groq descriptor");
+        let descriptor = codewhale_config::descriptors::bundled_provider_descriptors()
+            .iter()
+            .find(|descriptor| descriptor.matches("groq"))
+            .expect("groq descriptor");
         let _key = crate::test_support::EnvVarGuard::remove(&descriptor.api_key_env);
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
@@ -6239,6 +6607,167 @@ mod tests {
             row.list_row_hint(ProviderListView::Catalog),
             "needs endpoint"
         );
+    }
+
+    #[test]
+    fn fresh_install_custom_slot_reads_needs_endpoint_without_legacy_or_error() {
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &Config::default());
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(row.is_custom_placeholder());
+        assert_eq!(row.detail_state_line(), "needs endpoint");
+        assert!(!row.detail_state_line().contains("legacy"));
+        assert!(row.messages.is_empty(), "{:?}", row.messages);
+    }
+
+    #[test]
+    fn selected_custom_route_without_an_endpoint_keeps_its_admission_error() {
+        let mut config = Config::default();
+        config.provider = Some("custom".to_string());
+        let picker = ProviderPickerView::new(ProviderKind::Custom, &config);
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        assert!(!row.is_custom_placeholder());
+        assert!(
+            row.messages
+                .iter()
+                .any(|m| m.contains("provider admission failed")),
+            "{:?}",
+            row.messages
+        );
+    }
+
+    #[test]
+    fn custom_placeholder_in_configured_search_and_after_named_custom_route_reads_cleanly() {
+        let _lock = crate::test_support::lock_test_env();
+        let _deepseek_key = EnvVarGuard::set("DEEPSEEK_API_KEY", "sk-deepseek-test");
+        let _acme_key = EnvVarGuard::set("ACME_API_KEY", "sk-acme-test");
+
+        let mut fresh = ProviderPickerView::new(ProviderKind::Deepseek, &Config::default());
+        assert_eq!(fresh.view, ProviderListView::Configured);
+        fresh.update_query("custom".to_string());
+        let fresh_idx = fresh
+            .rows
+            .iter()
+            .position(|row| row.provider_id == ProviderKind::Custom.as_str())
+            .expect("custom slot");
+        fresh.selected_idx = fresh_idx;
+        let fresh_row = &fresh.rows[fresh_idx];
+        assert!(fresh_row.is_custom_placeholder());
+        assert_eq!(
+            fresh_row.list_row_hint(ProviderListView::Configured),
+            "needs endpoint"
+        );
+        assert_eq!(
+            fresh_row.list_row_hint(ProviderListView::Catalog),
+            "needs endpoint"
+        );
+        assert!(fresh_row.catalog_label().is_empty());
+        assert_eq!(fresh_row.detail_state_line(), "needs endpoint");
+        assert!(!fresh_row.detail_facts().contains("legacy"));
+        assert!(!fresh_row.detail_facts().contains("unresolved"));
+
+        let fresh_rendered = render_text(&fresh, 120, 24);
+        assert!(
+            fresh_rendered.contains("needs endpoint"),
+            "{fresh_rendered}"
+        );
+        assert!(!fresh_rendered.contains("legacy"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("unadmitted"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("unresolved"), "{fresh_rendered}");
+        assert!(!fresh_rendered.contains("! "), "{fresh_rendered}");
+        let ViewAction::Emit(ViewEvent::OpenTextPager {
+            content: fresh_pager,
+            ..
+        }) = fresh.open_provider_details()
+        else {
+            panic!("expected pager details for placeholder")
+        };
+        assert!(fresh_pager.contains("needs endpoint"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("legacy"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("unadmitted"), "{fresh_pager}");
+        assert!(!fresh_pager.contains("unresolved"), "{fresh_pager}");
+
+        let mut custom_config = Config::default();
+        custom_config.provider = Some("acme".to_string());
+        custom_config.providers = Some(codewhale_runtime::config::ProvidersConfig {
+            custom: std::collections::HashMap::from([(
+                "acme".to_string(),
+                codewhale_runtime::config::ProviderConfig {
+                    kind: Some("openai-compatible".to_string()),
+                    base_url: Some("https://api.acme.example/v1".to_string()),
+                    model: Some("acme/code-1".to_string()),
+                    api_key_env: Some("ACME_API_KEY".to_string()),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        });
+        let saved_picker = ProviderPickerView::new(ProviderKind::Custom, &custom_config);
+        assert_eq!(saved_picker.view, ProviderListView::Configured);
+        let saved_row = saved_picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == "acme")
+            .expect("saved named custom route");
+        assert!(!saved_row.is_custom_placeholder());
+        assert_eq!(
+            saved_row.list_row_hint(ProviderListView::Configured),
+            "key saved · not checked"
+        );
+        assert!(!saved_row.detail_state_line().contains("legacy"));
+        let saved_rendered = render_text(&saved_picker, 120, 24);
+        assert!(!saved_rendered.contains("legacy"), "{saved_rendered}");
+        assert!(!saved_rendered.contains("unadmitted"), "{saved_rendered}");
+        assert!(!saved_rendered.contains("unresolved"), "{saved_rendered}");
+
+        let remaining_slot = ProviderDashboardRow::from_config(
+            ProviderKind::Custom,
+            ProviderKind::Custom,
+            &custom_config,
+        );
+        assert!(remaining_slot.is_custom_placeholder());
+        assert!(
+            remaining_slot.messages.is_empty(),
+            "{:?}",
+            remaining_slot.messages
+        );
+        assert_eq!(
+            remaining_slot.list_row_hint(ProviderListView::Configured),
+            "needs endpoint"
+        );
+        assert_eq!(remaining_slot.detail_state_line(), "needs endpoint");
+        let slot_detail_text = saved_picker
+            .provider_detail_lines(&remaining_slot, 80, false)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            slot_detail_text.contains("needs endpoint"),
+            "{slot_detail_text}"
+        );
+        assert!(!slot_detail_text.contains("legacy"), "{slot_detail_text}");
+        assert!(
+            !slot_detail_text.contains("unadmitted"),
+            "{slot_detail_text}"
+        );
+        assert!(
+            !slot_detail_text.contains("unresolved"),
+            "{slot_detail_text}"
+        );
+        assert!(!slot_detail_text.contains("! "), "{slot_detail_text}");
     }
 
     #[test]
@@ -8223,9 +8752,9 @@ mod tests {
 
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
         assert_eq!(row.readiness, ResolvedProviderReadiness::MissingKey);
-        assert_eq!(row.readiness.label(), "missing key");
+        assert_eq!(row.readiness.label(), "needs key");
         let hint = row.detail_state_line();
-        assert!(hint.contains("missing key"));
+        assert!(hint.contains("needs key"));
         assert!(!hint.contains("key:not-set"));
         assert!(!hint.contains("needs-auth"));
         assert!(!hint.contains("auth:missing"));
@@ -8719,12 +9248,12 @@ mod tests {
     fn first_run_configured_route_skips_picker_and_records_configuration() {
         for key in ["api_key = \"fixture-not-a-key\"", ""] {
             let document = format!(
-                "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+                "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
                  [providers.openai]\n{key}\nbase_url = \"http://127.0.0.1:4880/v1\"\n"
             );
             with_first_run_config(&document, |mut app, _config| {
                 assert_eq!(app.api_provider, ProviderKind::Openai);
-                assert_eq!(app.model, "gpui-fixture");
+                assert_eq!(app.model, "fixture-model");
                 assert_eq!(app.active_route_base_url, "http://127.0.0.1:4880/v1");
                 assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
                 assert!(!app.should_adopt_live_local_ollama());
@@ -8738,7 +9267,7 @@ mod tests {
                 assert_eq!(entry.status, codewhale_config::StepStatus::Configured);
                 assert!(entry.status.is_settled());
                 let result = entry.result.as_deref().unwrap();
-                assert!(result.contains("provider=openai, model=gpui-fixture"));
+                assert!(result.contains("provider=openai, model=fixture-model"));
                 assert!(result.contains("not checked"));
                 assert!(!result.contains("fixture-not-a-key"));
             });
@@ -8748,7 +9277,7 @@ mod tests {
     #[test]
     fn first_run_configured_provider_is_preselected_when_picker_is_needed() {
         with_first_run_config(
-            "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+            "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
              [providers.openai]\nbase_url = \"https://fixture.invalid/v1\"\nauth_mode = \"api_key\"\n",
             |app, config| {
                 assert_eq!(app.onboarding, crate::tui::app::OnboardingState::None);
@@ -8817,7 +9346,7 @@ mod tests {
     fn first_run_configured_receipt_preserves_decisions_and_rejects_corrupt_state() {
         use codewhale_config::{SetupState, SetupStep, StepEntry, StepStatus};
         with_first_run_config(
-            "provider = \"openai\"\ndefault_text_model = \"gpui-fixture\"\n\
+            "provider = \"openai\"\ndefault_text_model = \"fixture-model\"\n\
              [providers.openai]\nbase_url = \"http://127.0.0.1:4880/v1\"\n",
             |app, _config| {
                 let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -10958,7 +11487,7 @@ mod tests {
         let rendered = render_text(&picker, 80, 12);
 
         assert!(rendered.contains("Ollama"));
-        assert!(!rendered.contains("DeepSeek *"));
+        assert!(!rendered.contains("★ DeepSeek"));
     }
 
     #[test]
@@ -10973,7 +11502,19 @@ mod tests {
 
         let rendered = render_text(&picker, 80, 12);
 
-        assert!(rendered.contains("Ollama *"));
+        assert!(rendered.contains("★ Ollama"));
+    }
+
+    #[test]
+    fn provider_detail_badge_and_category_use_the_selected_locale() {
+        let config = Config::default();
+        let mut picker =
+            ProviderPickerView::new(ProviderKind::Deepseek, &config).with_locale(Locale::ZhHans);
+        picker.toggle_view();
+
+        let rendered = render_text(&picker, 140, 26);
+        let compact = rendered.split_whitespace().collect::<String>();
+        assert!(compact.contains("活动中·直连"), "{rendered}");
     }
 
     #[test]
@@ -10985,7 +11526,7 @@ mod tests {
 
         let rendered = render_text(&picker, 80, 23);
 
-        assert!(rendered.contains("DeepSeek *"));
+        assert!(rendered.contains("★ DeepSeek"));
         assert!(rendered.contains(picker.tr(MessageId::CtxMenuOpenDetails).as_ref()));
         assert!(rendered.contains("Model:"));
     }

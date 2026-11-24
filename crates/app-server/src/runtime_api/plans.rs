@@ -6,9 +6,7 @@
 //! payload; a `todo_write` / `work_update` receipt carries the whole
 //! checklist. The newest receipt per thread is the live projection, and
 //! earlier `update_plan` receipts in the same thread report
-//! `superseded: true`. The projection mirrors the GPUI client
-//! (`codewhale-gpui/src/plans.rs`) so both surfaces read the same receipts the
-//! same way: match on `metadata.tool_name` (never on item `kind` — the store
+//! `superseded: true`. Match on `metadata.tool_name` (never on item `kind` — the store
 //! files `todo_write` under `file_change` because the name contains "write")
 //! and parse the args JSON out of `metadata.tool_input`, falling back to
 //! `detail` for seeded history receipts that predate durable `tool_input`
@@ -115,7 +113,7 @@ fn is_plan_tool(name: &str) -> bool {
 
 /// Names a checklist receipt can persist under: the canonical `todo_write`,
 /// its registered compat aliases (registry.rs `with_todo_tool`), and the
-/// `todos` name the GPUI client also recognizes.
+/// `todos` name.
 fn is_todo_tool(name: &str) -> bool {
     matches!(
         name,

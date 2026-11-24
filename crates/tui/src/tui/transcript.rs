@@ -91,6 +91,7 @@ impl TranscriptBlockKind {
             HistoryCell::System { .. }
             | HistoryCell::Error { .. }
             | HistoryCell::Automation(_)
+            | HistoryCell::ApprovalReceipt(_)
             | HistoryCell::ArchivedContext { .. } => Self::Notice,
         }
     }
@@ -1323,7 +1324,7 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     }
     let current_width: usize = spans
         .iter()
-        .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+        .map(|span| codewhale_tui_kit::ui_text::text_display_width(span.content.as_ref()))
         .sum();
     if current_width <= max_width {
         return spans;
@@ -1338,15 +1339,17 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     'outer: for span in spans {
         last_style = span.style;
         let mut content = String::new();
-        for ch in span.content.chars() {
-            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        for grapheme in
+            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
+        {
+            let width = codewhale_tui_kit::ui_text::text_display_width(grapheme);
             if used + width > content_budget {
                 if !content.is_empty() {
                     truncated.push(Span::styled(content, span.style));
                 }
                 break 'outer;
             }
-            content.push(ch);
+            content.push_str(grapheme);
             used += width;
         }
         if !content.is_empty() {

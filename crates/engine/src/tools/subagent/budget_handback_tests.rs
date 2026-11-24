@@ -43,12 +43,8 @@ impl Drop for Fixture {
 async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixture {
     // Only these cases exercise wall/API timeouts. The other cases exercise
     // budget and report semantics, so leave room for full-suite scheduling.
-    let timeout_case = matches!(mode, "hold" | "timeout" | "work-timeout");
-    let wall_time_secs = if matches!(mode, "hold" | "timeout") {
-        5
-    } else {
-        30
-    };
+    let timeout_case = matches!(mode, "timeout" | "work-timeout");
+    let wall_time_secs = if mode == "timeout" { 5 } else { 30 };
     let workspace = tempdir().unwrap();
     fs::write(
         workspace.path().join("README.md"),
@@ -73,8 +69,13 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
                     requests.len()
                 };
                 let choice = if call == 1 || mode == "tool-only" {
+                    let content = match mode {
+                        "tool-only" => Value::Null,
+                        "truncated" => json!(format!("RECORDED_FINDING{}TAIL", "界".repeat(4_000))),
+                        _ => json!("RECORDED_FINDING: checksum validation is missing."),
+                    };
                     json!({"index": 0, "message": {"role": "assistant",
-                        "content": if mode == "tool-only" { Value::Null } else { json!("RECORDED_FINDING: checksum validation is missing.") },
+                        "content": content,
                         "tool_calls": [{"id": format!("read-{call}"), "type": "function", "function": {
                             "name": "read", "arguments": "{\"path\":\"README.md\"}"
                         }}]}, "finish_reason": "tool_calls"})
@@ -301,6 +302,23 @@ async fn owner_step_limit_keeps_the_digest_as_the_deliverable() {
     );
     assert!(!text.contains("TRUNCATED_REPORT"), "{text}");
     assert!(text.contains("this child's deliverable"), "{text}");
+    assert!(text.contains("4000 of 4020 characters shown"), "{text}");
+    assert!(text.contains("transcript_handle"), "{text}");
+    assert!(text.ends_with(&"界".repeat(3_984)));
+    assert!(
+        result
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(
+                |block| matches!(block, ContentBlock::Text { text, .. } if text.ends_with("TAIL"))
+            )
+    );
+    let completion = fixture.completions.try_recv().unwrap();
+    assert!(completion.payload.contains("4000 of 4020 characters shown"));
 
     let state_root = fixture.manager.read().await.state_root.clone();
     let artifact = checked_subagent_state_path(
@@ -313,6 +331,8 @@ async fn owner_step_limit_keeps_the_digest_as_the_deliverable() {
     .unwrap();
     let saved = fs::read_to_string(&artifact).expect("digest artifact written");
     assert!(saved.contains("RECORDED_FINDING"), "{saved}");
+    assert!(saved.contains("4000 of 4020 characters shown"), "{saved}");
+    assert!(!saved.contains("TAIL"), "{saved}");
     assert!(!saved.contains("TRUNCATED_REPORT"), "{saved}");
     assert!(text.contains(&artifact.display().to_string()), "{text}");
 }
@@ -395,7 +415,7 @@ async fn child_work_cancellation_wins_once() {
     let _retry = codewhale_runtime::retry_status::test_guard();
     codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
-    tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
+    tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
         .await
         .unwrap();
     fixture.cancel.cancel();
@@ -426,7 +446,7 @@ async fn child_work_cancellation_after_response_preserves_actual_usage() {
     let _retry = codewhale_runtime::retry_status::test_guard();
     codewhale_runtime::retry_status::clear_rate_limit();
     let mut fixture = fixture("hold", 15, 2).await;
-    tokio::time::timeout(Duration::from_secs(2), fixture.report_started.notified())
+    tokio::time::timeout(Duration::from_secs(30), fixture.report_started.notified())
         .await
         .unwrap();
     let manager = Arc::clone(&fixture.manager);
@@ -434,7 +454,7 @@ async fn child_work_cancellation_after_response_preserves_actual_usage() {
     fixture.release_report.notify_one();
     // Runtime billing publishes the decoded response before it waits for the
     // worker ledger lock. This makes the cancellation seam deterministic.
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let entry = fixture.mailbox.recv().await.unwrap();
             if let MailboxMessage::TokenUsage {

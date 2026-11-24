@@ -51,7 +51,7 @@ export const LIMITS = { max_frame: 32 * 1024 * 1024, max_inflight: 256, dispose_
  * cancelled is not answered. Requests are recorded in `coreCalls`, the host's
  * `$/cancel` ids in `cancels`.
  */
-export async function startHost({ admit, env, ownGroup = false, tier = 'plugin', coreCall, checkpoint, userQuestions, subagent, compiledHost, cwd } = {}) {
+export async function startHost({ admit, env, ownGroup = false, tier = 'plugin', coreCall, checkpoint, userQuestions, subagent, dshBroker, compiledHost, cwd } = {}) {
   const started = performance.now()
   // `ownGroup` spawns the host as a process-group leader and tells it so, as
   // the Rust core does on Unix.
@@ -71,6 +71,7 @@ export async function startHost({ admit, env, ownGroup = false, tier = 'plugin',
     logs: [],
     faulted: [],
     coreCalls: [],
+    brokerCalls: [],
     checkpoints: [],
     questions: [],
     subagents: [],
@@ -150,10 +151,27 @@ export async function startHost({ admit, env, ownGroup = false, tier = 'plugin',
           case 'subagent/start':
           case 'subagent/result':
           case 'subagent/dispose':
+          case 'dsh/broker':
           case 'core/call': {
             const childRequest = message.method.startsWith('subagent/')
-            const handler = message.method === 'session/checkpoint' ? checkpoint : message.method === 'user-questions/ask' ? userQuestions : childRequest ? subagent : coreCall
-            const records = message.method === 'session/checkpoint' ? host.checkpoints : message.method === 'user-questions/ask' ? host.questions : childRequest ? host.subagents : host.coreCalls
+            const handler = message.method === 'session/checkpoint'
+              ? checkpoint
+              : message.method === 'user-questions/ask'
+                ? userQuestions
+                : childRequest
+                  ? subagent
+                  : message.method === 'dsh/broker'
+                    ? dshBroker
+                    : coreCall
+            const records = message.method === 'session/checkpoint'
+              ? host.checkpoints
+              : message.method === 'user-questions/ask'
+                ? host.questions
+                : childRequest
+                  ? host.subagents
+                  : message.method === 'dsh/broker'
+                    ? host.brokerCalls
+                    : host.coreCalls
             records.push({ id: message.id, ...(childRequest ? { method: message.method } : {}), ...message.params })
             const answer = handler ? handler(message.params, message.id, message.method) : { error: { code: -32002, message: 'no handler for ' + message.method } }
             const id = message.id

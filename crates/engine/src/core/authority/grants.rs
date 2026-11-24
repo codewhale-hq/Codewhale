@@ -811,6 +811,20 @@ impl GrantStore {
         )
     }
 
+    pub fn standing_grants(&self) -> Result<Vec<Grant>, String> {
+        let mut inner = self.inner.lock();
+        if let Some(reason) = &inner.degraded {
+            return Err(reason.clone());
+        }
+        inner.sweep(Utc::now());
+        Ok(inner
+            .grants
+            .iter()
+            .filter(|grant| matches!(grant.state, GrantState::Active | GrantState::Suspended))
+            .cloned()
+            .collect())
+    }
+
     /// Live (active) grants of one thread, oldest first.
     #[must_use]
     pub fn thread_grants(&self, thread_id: &str) -> Vec<Grant> {

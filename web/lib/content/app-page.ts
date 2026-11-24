@@ -9,12 +9,11 @@
  * download, and the page never links to the hosted app itself.
  */
 
+import type { DesktopShotId } from "@/components/desktop-shot";
 import type { LocalizedText } from "./vocabulary";
 
 export interface AppShot {
-  file: "conversation" | "approval" | "model-picker";
-  width: number;
-  height: number;
+  file: DesktopShotId;
   alt: LocalizedText;
   caption: LocalizedText;
 }
@@ -46,54 +45,59 @@ export const APP_COPY = {
   },
   actions: {
     install: { en: "Install the terminal", zh: "安装终端版" },
-    guide: { en: "Read the app guide", zh: "阅读应用指南" },
+    guide: { en: "Use codewhale web today", zh: "现在就用 codewhale web" },
     signIn: { en: "How sign-in works", zh: "登录方式" },
   },
-  guideUrl: "https://docs.codewhale.net",
+  guidePath: "/docs/web",
 
   shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
   shotsScope: {
-    en: "These are captures of the desktop development build, taken against a test fixture, so some names and text in them are placeholders. Details will change before a release.",
-    zh: "以下是桌面开发版本的截图，取自测试环境，其中部分名称和文字只是占位内容。发布前细节仍会变化。",
+    en: "These screens come from the desktop development build running the published 0.10.4 engine and a real model, DeepSeek V4.1 Flash. Details will change before a release.",
+    zh: "以下画面来自桌面开发版本，运行的是已发布的 0.10.4 引擎和真实模型 DeepSeek V4.1 Flash。发布前细节仍会变化。",
   },
   shots: [
     {
-      file: "conversation",
-      width: 1440,
-      height: 725,
+      file: "review",
       alt: {
-        en: "The desktop app showing a session named Explain this codebase. A sub-agent is running, and a side panel lists the agent, one changed file, the git branch and a short activity log.",
-        zh: "桌面应用中名为 Explain this codebase 的会话。一个子智能体正在运行，侧边栏列出该智能体、一个已更改的文件、Git 分支和简短的活动记录。",
+        en: "The desktop app with the session list on the left, a finished task in the middle that explains the cause and the fix and reports 3 passed, and on the right the review panel showing the change to core.py with Mark this diff reviewed and Commit and history.",
+        zh: "桌面应用：左侧是会话列表，中间是一项已完成的任务，说明了原因和修复并报告 3 个测试通过；右侧审阅面板显示对 core.py 的修改，以及“标记此差异已审阅”和“提交与历史”。",
       },
       caption: {
-        en: "A session with a sub-agent running. The side panel keeps agents, changes and activity next to the conversation. Development build capture.",
-        zh: "子智能体运行中的会话。侧边栏把智能体、改动和活动记录放在对话旁边。开发版本截图。",
+        en: "A finished task with its change open in the review panel. You can mark the diff reviewed and commit from the same panel.",
+        zh: "一项已完成的任务，修改在审阅面板中打开。你可以在同一面板中标记差异已审阅并提交。",
       },
     },
     {
       file: "approval",
-      width: 1440,
-      height: 725,
       alt: {
-        en: "The desktop app asking Run a command? with the exact shell command shown and three buttons: Allow once, Allow for this conversation and Don't allow.",
-        zh: "桌面应用弹出“Run a command?”的询问，显示完整的 shell 命令，并提供三个按钮：Allow once、Allow for this conversation 和 Don't allow。",
+        en: "The desktop app asking to run python3 -m pytest on tests/test_core.py, with Allow and Deny, while a task to fix a failing test in tally/core.py works in Accept Edits.",
+        zh: "桌面应用请求运行针对 tests/test_core.py 的 python3 -m pytest，提供 Allow 和 Deny 按钮；一项修复 tally/core.py 中失败测试的任务正在 Accept Edits 模式下进行。",
       },
       caption: {
-        en: "A command waits for your answer before it runs, with the exact command in view. Development build capture.",
-        zh: "命令在运行前等待你的回答，并展示完整命令。开发版本截图。",
+        en: "Accept Edits lets most file edits through without asking; the test command waits for your answer with the exact command in view.",
+        zh: "Accept Edits 模式会直接放行大多数文件修改；测试命令则等待你的回答，并展示完整命令。",
       },
     },
     {
-      file: "model-picker",
-      width: 1440,
-      height: 725,
+      file: "permissions",
       alt: {
-        en: "The desktop app's new session screen with the model picker open and filtered to two DeepSeek models, beside a thinking-level menu with Default, Off, Low, High and Max.",
-        zh: "桌面应用的新会话界面，模型选择器已打开并筛选出两个 DeepSeek 模型，旁边是包含 Default、Off、Low、High 和 Max 的思考强度菜单。",
+        en: "The Permissions menu open above the composer, listing Ask, Accept Edits (selected), Plan, Auto-Review and Full Access, each with a one-line description.",
+        zh: "输入框上方打开的 Permissions 菜单，列出 Ask、Accept Edits（已选中）、Plan、Auto-Review 和 Full Access，每项都有一行说明。",
       },
       caption: {
-        en: "Choose a model and a thinking level before you start. Development build capture.",
-        zh: "开始前选择模型和思考强度。开发版本截图。",
+        en: "The Permissions menu sets what the agent may do without asking, with one line on what each mode allows.",
+        zh: "Permissions 菜单决定智能体无需询问即可做什么，每种模式都有一行说明。",
+      },
+    },
+    {
+      file: "sessions",
+      alt: {
+        en: "The desktop app with four sessions in the tally folder, two marked Needs you, and the open session showing its finished three-point explanation of the project.",
+        zh: "桌面应用中 tally 文件夹下的四个会话，其中两个标记为 Needs you；打开的会话显示它已完成的三点项目说明。",
+      },
+      caption: {
+        en: "Several sessions work in the same folder, and the list shows which ones need you.",
+        zh: "多个会话在同一个文件夹中工作，列表会显示哪些需要你处理。",
       },
     },
   ] satisfies AppShot[],
@@ -114,8 +118,8 @@ export const APP_COPY = {
       body: { en: "Use your own model keys or a local model.", zh: "使用你自己的模型密钥或本地模型。" },
     },
     {
-      title: { en: "Plugins, connectors and skills", zh: "插件、连接器与技能" },
-      body: { en: "They run on this computer with no sign-in.", zh: "它们在这台电脑上运行，无需登录。" },
+      title: { en: "Plugins", zh: "插件" },
+      body: { en: "Skills, connectors, hooks and the plugin bundles that carry them run on this computer with no sign-in.", zh: "技能、连接器、钩子以及携带它们的插件包都在这台电脑上运行，无需登录。" },
     },
     {
       title: { en: "The terminal and the local browser", zh: "终端与本地浏览器" },

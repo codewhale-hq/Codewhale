@@ -57,6 +57,23 @@ fn open_regular(root: &Path, path: &Path, shared: bool) -> io::Result<File> {
     }
 }
 
+/// [`open_read`] for a workspace file that may be a link to another file in the
+/// same root, such as a shared `AGENTS.md`. Every link is resolved first and
+/// the final target must stay below the resolved root; the resolved path is
+/// then opened with the same no-follow policy, so a component swapped for a
+/// link after resolution is refused.
+pub fn open_read_linked_within(root: &Path, path: &Path) -> io::Result<File> {
+    let root = fs::canonicalize(root)?;
+    let resolved = fs::canonicalize(path)?;
+    if !resolved.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Refusing symlinked file that resolves outside the workspace",
+        ));
+    }
+    open_regular(&root, &resolved, false)
+}
+
 pub fn read_to_string(root: &Path, path: &Path) -> io::Result<String> {
     let mut contents = String::new();
     open_read(root, path)?.read_to_string(&mut contents)?;
@@ -196,6 +213,92 @@ mod tests {
             assert!(write(root.path(), &path, b"next").is_err());
             assert_eq!(fs::read_to_string(&original).unwrap(), "original");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_reads_follow_links_that_stay_within_the_root() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let shared = root.path().join("ops/operator/AGENTS.md");
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(&shared, "shared").unwrap();
+        fs::write(outside.path().join("AGENTS.md"), "outside").unwrap();
+        symlink("ops/operator/AGENTS.md", root.path().join("AGENTS.md")).unwrap();
+        symlink(&shared, root.path().join("absolute.md")).unwrap();
+        symlink("AGENTS.md", root.path().join("chain.md")).unwrap();
+        symlink(root.path().join("ops"), root.path().join("linked-dir")).unwrap();
+        for name in [
+            "AGENTS.md",
+            "absolute.md",
+            "chain.md",
+            "linked-dir/operator/AGENTS.md",
+        ] {
+            let mut text = String::new();
+            open_read_linked_within(root.path(), &root.path().join(name))
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            assert_eq!(text, "shared", "{name}");
+        }
+        let outside_agents = outside.path().join("AGENTS.md");
+        let relative_escape = Path::new("..")
+            .join(outside.path().file_name().unwrap())
+            .join("AGENTS.md");
+        symlink(&outside_agents, root.path().join("escape.md")).unwrap();
+        symlink(&relative_escape, root.path().join("dotdot.md")).unwrap();
+        symlink(&outside_agents, root.path().join("ops/out.md")).unwrap();
+        symlink("ops/out.md", root.path().join("chain-out.md")).unwrap();
+        symlink(outside.path(), root.path().join("outside-dir")).unwrap();
+        symlink(root.path().join("ops/operator"), root.path().join("dir.md")).unwrap();
+        for name in [
+            "escape.md",
+            "dotdot.md",
+            "chain-out.md",
+            "outside-dir/AGENTS.md",
+            "dir.md",
+        ] {
+            let error = open_read_linked_within(root.path(), &root.path().join(name)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name}: {error}");
+        }
+        assert!(
+            open_read_linked_within(root.path(), &root.path().join("escape.md"))
+                .unwrap_err()
+                .to_string()
+                .contains("outside")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn linked_reads_follow_junctions_within_the_root_and_refuse_escapes() {
+        fn junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("ops")).unwrap();
+        fs::write(root.path().join("ops/AGENTS.md"), "shared").unwrap();
+        fs::write(outside.path().join("AGENTS.md"), "outside").unwrap();
+        junction(&root.path().join("inside"), &root.path().join("ops"));
+        junction(&root.path().join("escape"), outside.path());
+        let mut text = String::new();
+        open_read_linked_within(root.path(), &root.path().join("inside/AGENTS.md"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "shared");
+        assert!(
+            open_read_linked_within(root.path(), &root.path().join("escape/AGENTS.md")).is_err()
+        );
+        assert!(open_read(root.path(), &root.path().join("inside/AGENTS.md")).is_err());
     }
 
     #[cfg(unix)]

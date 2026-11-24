@@ -93,6 +93,7 @@ async fn host_managed_engine_defers_idle_subagent_completion_to_explicit_turn() 
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -671,6 +672,9 @@ fn shell_denial_filters_search_catalog_without_expanding_allow_grants() {
         "exec_shell",
         "task_shell_start",
         "task_gate_run",
+        "terminal_run",
+        "terminal_send",
+        "terminal_reset",
         "terminal/run",
         "terminal/send",
         "terminal/reset",
@@ -710,7 +714,7 @@ fn shell_denial_filters_search_catalog_without_expanding_allow_grants() {
 }
 
 #[test]
-fn shell_denial_preserves_task_reads_and_bounded_verification_actions() {
+fn shell_denial_preserves_task_reads_and_denies_verification_actions() {
     let mut tasks = catalog_tool("tasks");
     tasks.input_schema =
         json!({"type":"object", "properties":{"action":{"enum":["list", "read", "gate_run"]}}});
@@ -719,6 +723,7 @@ fn shell_denial_preserves_task_reads_and_bounded_verification_actions() {
             tasks,
             catalog_tool("Run"),
             catalog_tool("task_shell_wait"),
+            catalog_tool("terminal_cancel"),
             catalog_tool("terminal/cancel"),
         ],
         None,
@@ -736,19 +741,306 @@ fn shell_denial_preserves_task_reads_and_bounded_verification_actions() {
     assert!(!surface.denies_call("tasks", &json!({"action":"list"})));
     assert!(surface.denies_call("tasks", &json!({"action":"gate_run"})));
     assert!(!surface.denies_call("task_shell_wait", &json!({})));
+    assert!(!surface.denies_call("terminal_cancel", &json!({})));
     assert!(!surface.denies_call("terminal/cancel", &json!({})));
-    assert!(!surface.denies_call(
-        "Run",
-        &json!({"action":"tests", "args":"-p fixture selected_test"})
-    ));
-    assert!(!surface.denies_call("Run", &json!({"action":"verifiers", "commands":[]})));
-    assert!(surface.denies_call(
-        "Run",
-        &json!({"action":"tests", "args":"--config build.rustc=malicious"})
-    ));
+    for input in [
+        json!({"action":"tests"}),
+        json!({"action":"tests", "args":""}),
+        json!({"action":"tests", "args":"-p fixture selected_test"}),
+        json!({"action":"tests", "args":"--config build.rustc=malicious"}),
+        json!({"action":"verifiers"}),
+        json!({"action":"verifiers", "profile":"node"}),
+        json!({"action":"verifiers", "commands":[]}),
+        json!({"action":"verifiers", "commands":[{"program":"sh"}]}),
+    ] {
+        assert!(surface.denies_call("Run", &input), "{input}");
+    }
+    for name in ["run_tests", "run_verifiers"] {
+        assert!(surface.denies_call(name, &json!({})), "{name}");
+    }
+}
+
+#[test]
+fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
+    use crate::tools::execution_envelope::{CallClass, classify_call, tool_call_denied};
+    use crate::tools::spec::ToolCapability;
+    use codewhale_agent_contract::worker_profile::ShellPolicy;
+
+    const EXEMPT: &[(&str, &str)] = &[
+        ("automation/pause", "stops a stored automation from firing"),
+        ("automation/delete", "removes a stored automation"),
+        ("send_later/cancel", "cancels a pending delayed message"),
+        ("tasks/cancel", "stops a durable task"),
+        ("tasks/suggest", "offers a task card and starts nothing"),
+        ("tasks/pr_attempt_record", "records a stored patch artifact"),
+        (
+            "tasks/pr_attempt_preflight",
+            "git apply --check of a stored patch",
+        ),
+        ("terminal_cancel", "stops an existing terminal session"),
+        ("terminal_wait", "reads an existing terminal session"),
+        ("terminal/cancel", "stops an existing terminal session"),
+        ("terminal/wait", "reads an existing terminal session"),
+        (
+            "rlm/open",
+            "loads content into a context; running code in it is rlm/eval, and a url is gated by fetch_url",
+        ),
+        (
+            "workflow/start",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
+        ),
+        (
+            "workflow/run",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
+        ),
+        (
+            "workflow/cancel",
+            "stops a workflow run and starts nothing",
+        ),
+    ];
+    const EXECUTING_FLAGS: &[(&str, &str)] = &[("workflow", "verify")];
+
+    let tmp = tempdir().expect("tempdir");
+    let mut options = crate::tools::AgentToolSurfaceOptions::new(ShellPolicy::Full);
+    options.apply_patch_enabled = true;
+    options.web_search_enabled = true;
+    options.memory_tool_enabled = true;
+    let pool = std::sync::Arc::new(tokio::sync::Mutex::new(crate::mcp::McpPool::new(
+        codewhale_mcp::config::McpConfig::default(),
+    )));
+    let client = CodewhaleClient::new(
+        &Config::default().with_legacy_root(Some("test-key".to_string()), None),
+    )
+    .expect("stub client");
+    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+    let runtime = SubAgentRuntime::new(
+        client.clone(),
+        "sweep-model".to_string(),
+        crate::tools::ToolContext::new(tmp.path().to_path_buf()),
+        true,
+        None,
+        manager.clone(),
+    );
+    let registry = crate::tools::ToolRegistryBuilder::new()
+        .with_full_agent_surface_options(
+            Some(client),
+            "sweep-model".to_string(),
+            manager,
+            runtime,
+            options,
+            crate::tools::todo::new_shared_todo_list(),
+            crate::tools::plan::new_shared_plan_state(),
+        )
+        .with_registry_mcp_sync_tool()
+        .with_runtime_mcp_tool(pool.clone())
+        .with_registry_mcp_start_tool(pool)
+        .build(crate::tools::ToolContext::new(tmp.path().to_path_buf()));
+
+    let rules = vec!["Bash".to_string()];
+    for name in ["workflow", "agent", "Run"] {
+        assert!(
+            registry.all().iter().any(|tool| tool.name() == name),
+            "the sweep surface lacks {name}"
+        );
+    }
+    for (name, flag) in EXECUTING_FLAGS {
+        let tool = registry
+            .all()
+            .into_iter()
+            .find(|tool| tool.name() == *name)
+            .unwrap_or_else(|| panic!("{name} is not registered"));
+        assert_eq!(
+            tool.input_schema()
+                .pointer(&format!("/properties/{flag}/type"))
+                .and_then(Value::as_str),
+            Some("boolean"),
+            "{name} no longer declares a boolean {flag}"
+        );
+        assert!(
+            tool_call_denied(Some(&rules), name, &json!({"action":"run", (*flag): true})),
+            "{name} with {flag} starts workspace code and a Bash rule does not deny it"
+        );
+    }
+    let mut swept = 0usize;
+    let mut unaccounted = Vec::new();
+    let mut stale = Vec::new();
+    for tool in registry.all() {
+        let schema = tool.input_schema();
+        let actions: Vec<Option<String>> = schema
+            .pointer("/properties/action/enum")
+            .and_then(Value::as_array)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .filter_map(|action| action.as_str().map(|action| Some(action.to_string())))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![None]);
+        for action in actions {
+            let input = action
+                .as_ref()
+                .map_or_else(|| json!({}), |action| json!({"action": action}));
+            let label = match &action {
+                Some(action) => format!("{}/{action}", tool.name()),
+                None => tool.name().to_string(),
+            };
+            let denied = tool_call_denied(Some(&rules), tool.name(), &input);
+            let executes = tool.capabilities().contains(&ToolCapability::ExecutesCode)
+                && classify_call(tool.name(), &input, &*tool) != CallClass::Bounded;
+            let exempt = EXEMPT.iter().any(|(name, _)| *name == label);
+            if executes {
+                swept += 1;
+            }
+            if executes && !denied && !exempt {
+                unaccounted.push(label.clone());
+            }
+            if exempt && denied {
+                stale.push(label);
+            }
+        }
+    }
+    assert!(swept > 10, "the sweep found only {swept} executing actions");
+    assert!(
+        unaccounted.is_empty(),
+        "executing actions neither denied by a Bash rule nor exempt: {unaccounted:?}"
+    );
+    assert!(
+        stale.is_empty(),
+        "exempt actions a Bash rule already denies: {stale:?}"
+    );
+}
+
+#[test]
+fn shell_denial_keeps_only_the_bounded_verifier_its_default_gate() {
+    use crate::tools::execution_envelope::{enforce_tool_denial, holds_bounded_verification};
+    use crate::tools::spec::{
+        ToolAuthorityEnvelope, ToolMutationAuthority, ToolShellAuthority,
+        ToolVerificationAuthority,
+    };
+    let tmp = tempdir().expect("tempdir");
+    let rules: Vec<String> = codewhale_agent_contract::role::RAW_SHELL_DENYLIST
+        .iter()
+        .map(|rule| (*rule).to_string())
+        .collect();
+
+    let mut operator = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    operator.disallowed_tools = rules.clone();
+    assert!(!holds_bounded_verification(&operator));
+
+    let mut verifier = crate::tools::ToolContext::new(tmp.path().to_path_buf())
+        .with_tool_authority(ToolAuthorityEnvelope {
+            schema_version: 1,
+            owner: "verifier-1".to_string(),
+            authority: ToolMutationAuthority::ReadOnly,
+            network_access: Some(false),
+            shell: ToolShellAuthority::None,
+            verification: ToolVerificationAuthority::Bounded,
+            writable_roots: Vec::new(),
+            writable_files: Vec::new(),
+            coordination_contracts: Vec::new(),
+        })
+        .expect("bounded verifier authority");
+    verifier.disallowed_tools = rules;
+    assert!(holds_bounded_verification(&verifier));
+
+    for input in [
+        json!({"action":"tests"}),
+        json!({"action":"tests", "args":"-p fixture selected_test"}),
+        json!({"action":"verifiers"}),
+    ] {
+        assert!(enforce_tool_denial(&operator, "Run", &input).is_err(), "{input}");
+        assert!(enforce_tool_denial(&verifier, "Run", &input).is_ok(), "{input}");
+    }
+    for input in [
+        json!({"action":"tests", "args":"--config build.rustc=malicious"}),
+        json!({"action":"verifiers", "commands":[{"program":"sh"}]}),
+    ] {
+        assert!(enforce_tool_denial(&operator, "Run", &input).is_err(), "{input}");
+        assert!(enforce_tool_denial(&verifier, "Run", &input).is_err(), "{input}");
+    }
+    let workflow_verify = json!({"action":"run", "script":"return 1;", "verify":true});
+    assert!(enforce_tool_denial(&operator, "workflow", &workflow_verify).is_err());
+    assert!(enforce_tool_denial(&verifier, "workflow", &workflow_verify).is_ok());
+    let workflow_evaluator = json!({
+        "action": "run",
+        "args": {
+            "strategy": "search",
+            "evaluator": {"manifestPath": "/trusted/evaluator.json"}
+        }
+    });
+    assert!(enforce_tool_denial(&operator, "workflow", &workflow_evaluator).is_err());
+    assert!(enforce_tool_denial(&verifier, "workflow", &workflow_evaluator).is_err());
+
+    let surface = ToolSurfacePolicy::new(
+        crate::tools::ToolRegistry::new(verifier.clone()),
+        Some(vec![catalog_tool("Run")]),
+        AppMode::Agent,
+        &HashSet::new(),
+        &[],
+        false,
+        None,
+        verifier.disallowed_tools.clone().into(),
+        None,
+        crate::core::engine::tool_catalog::ToolMode::Direct,
+    );
+    assert!(!surface.denies_call("Run", &json!({"action":"verifiers"})));
     assert!(surface.denies_call(
         "Run",
         &json!({"action":"verifiers", "commands":[{"program":"sh"}]})
+    ));
+}
+
+#[test]
+fn shell_denial_covers_workflow_completion_verification_but_not_plain_runs() {
+    use crate::tools::execution_envelope::tool_call_denied;
+    let rules = vec!["Bash".to_string()];
+    for input in [
+        json!({"verify":true}),
+        json!({"action":"start", "verify":true}),
+        json!({"action":"spawn", "verify":true, "script":"return 1;"}),
+        json!({"action":"run", "verify":true, "script":"return 1;"}),
+        json!({"action":"wait", "verify":true}),
+        json!({"action":" RUN ", "verify":true}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
+        json!({"action":"start", "args":{"evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
+    ] {
+        assert!(tool_call_denied(Some(&rules), "workflow", &input), "{input}");
+    }
+    for input in [
+        json!({"action":"run", "script":"return 1;"}),
+        json!({"action":"run", "verify":false}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":null}}),
+        json!({"action":"status", "run_id":"workflow_1"}),
+        json!({"action":"cancel", "run_id":"workflow_1"}),
+    ] {
+        assert!(!tool_call_denied(Some(&rules), "workflow", &input), "{input}");
+    }
+    assert!(!tool_call_denied(
+        None,
+        "workflow",
+        &json!({"action":"run", "verify":true})
+    ));
+}
+
+#[test]
+fn shell_denial_covers_delayed_message_scheduling_but_not_its_management() {
+    use crate::tools::execution_envelope::tool_call_denied;
+    let rules = vec!["Bash".to_string()];
+    assert!(tool_call_denied(
+        Some(&rules),
+        "send_later",
+        &json!({"action":"schedule", "delay_minutes":5, "message":"go", "thread_id":""})
+    ));
+    for action in ["list", "read", "cancel"] {
+        assert!(
+            !tool_call_denied(Some(&rules), "send_later", &json!({"action": action})),
+            "{action}"
+        );
+    }
+    assert!(!tool_call_denied(
+        None,
+        "send_later",
+        &json!({"action":"schedule"})
     ));
 }
 
@@ -1133,24 +1425,32 @@ async fn user_steer_during_parent_answer_still_gets_a_reply_with_healthy_childre
                     replace_pending: false,
                     turn_id,
                     content: "Also read state.txt and include its evidence.".to_string(),
+                    person_text: None,
                     outcome: Some(outcome),
+                    owner_steer: false,
                 })
                 .await
                 .expect("steer channel open");
-            assert_eq!(accepted.await.unwrap(), handle::SteerOutcome::Accepted);
+            let outcome = tokio::time::timeout(Duration::from_secs(5), accepted)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("{phase}: steering must preempt an indefinitely silent request")
+                })
+                .unwrap();
+            assert_eq!(outcome, handle::SteerOutcome::Accepted);
             assert!(
                 dropped.load(Ordering::SeqCst),
                 "{phase}: obsolete request must close before steer acceptance"
             );
         };
-        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let ((status, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
             tokio::join!(
                 engine.run_turn(&mut turn, surface, Some(Arc::clone(&children)), None),
                 steer
             )
         })
         .await
-        .expect("steering must preempt an indefinitely silent request");
+        .unwrap_or_else(|_| panic!("{phase}: steered turn must finish"));
         assert_eq!(status, TurnOutcomeStatus::Completed, "{phase}: {error:?}");
         assert_eq!(client.calls.load(Ordering::SeqCst), 3, "{phase}");
         let requests = client.requests.lock().unwrap().clone();

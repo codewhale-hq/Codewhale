@@ -166,7 +166,7 @@ fn operator_row_is_pinned_first_with_the_session_model() {
             row.chars()
                 .skip(detail_start)
                 .collect::<String>()
-                .trim()
+                .trim_matches(|c: char| c == '│' || c.is_whitespace())
                 .to_owned()
         })
         .collect::<Vec<_>>()

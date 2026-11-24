@@ -16,13 +16,16 @@ export const PERMANENT_ROUTE_REDIRECTS: Readonly<Record<string, string>> = {
   enterprise: "/faq#teams",
 };
 
-export const INSTALL_OR_APP_ROUTES: readonly string[] = ["download", "desktop"];
+export const INSTALL_OR_APP_ROUTES: readonly string[] = ["download"];
+
+export const APP_ROUTES: readonly string[] = ["desktop"];
 
 export const INSTALL_ALIAS_ROUTES: readonly string[] = ["pricing"];
 
 export const REDIRECTED_ROUTES: readonly string[] = [
   ...Object.keys(PERMANENT_ROUTE_REDIRECTS),
   ...INSTALL_OR_APP_ROUTES,
+  ...APP_ROUTES,
   ...INSTALL_ALIAS_ROUTES,
 ];
 
@@ -36,6 +39,7 @@ export function routeRedirect(
   if (INSTALL_OR_APP_ROUTES.includes(key)) {
     return { to: desktopDownload(release) ? "/app" : "/install", status: 307 };
   }
+  if (APP_ROUTES.includes(key)) return { to: "/app", status: 307 };
   if (INSTALL_ALIAS_ROUTES.includes(key)) return { to: "/install", status: 307 };
   return null;
 }

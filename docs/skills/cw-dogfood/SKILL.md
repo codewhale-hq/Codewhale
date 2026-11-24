@@ -28,9 +28,12 @@ Stage 4 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    deserves. Never install an ungated build.
 
 2. **Build stamped.** Release work follows `docs/RELEASE_CHECKLIST.md`.
-   Local builds are unstamped (`(dev)`), and the
-   installer refuses an unstamped binary on purpose — the stamp is what proves
-   the thing on your PATH is the thing you just built:
+   Plain `cargo` and dirty local builds are unstamped (`(dev)`), and
+   `scripts/dev-cargo.sh` release builds from a clean checkout stamp
+   `CODEWHALE_LOCAL_BUILD_SHA` for `--version` and receipts while keeping
+   telemetry `git_sha` null. The installer refuses an unstamped binary on
+   purpose — the stamp is what proves the thing on your PATH is the thing you
+   just built:
    ```bash
    CODEWHALE_BUILD_SHA=$(git rev-parse HEAD) \
      scripts/dev-cargo.sh build --release --locked -p codewhale-cli --bin codewhale

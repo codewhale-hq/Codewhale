@@ -30,6 +30,7 @@
 7. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
 8. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
 9. [RECEIPTS.md](./RECEIPTS.md) —— 回执：查看一个会话改了哪些文件、运行了哪些命令、谁批准了什么，以及哪些操作未经询问就运行
+10. [AUTO_REVIEW.md](./AUTO_REVIEW.md) —— Auto-Review：让 Codewhale 自己审查工具调用，安全的直接运行、危险的带理由阻断、拿不准的交给第二个模型
 
 ## 三、进阶用户（已经有充足了解，追求效率、安全与定制）
 
@@ -54,6 +55,7 @@
 17. [WEB.md](./WEB.md) —— 本地浏览器客户端：启动方式、会话验证边界与故障排查
 18. [VOICE.md](./VOICE.md) —— 语气与终端视觉章程（产品文案与界面的一致性原则）
 19. [CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md) —— Claude Code 技能与插件包的兼容范围：支持哪些、拒绝哪些
+20. [OTHER_AGENTS.md](./OTHER_AGENTS.md) —— 在 Codewhale 中安装、登录并运行外部智能体
 
 ## 四、开发者（阅读源码或为 Codewhale 贡献）
 

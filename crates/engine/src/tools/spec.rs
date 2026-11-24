@@ -95,9 +95,13 @@ pub trait DynamicToolExecutor: Send + Sync {
 /// contexts keep working. Tools that need durable task/automation state fail
 /// closed with a clear "not available" error when the relevant service is not
 /// attached.
+pub type OwnerAccountingOriginLookup =
+    Arc<dyn Fn(&str) -> Option<crate::cost_status::NativeUsageOrigin> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub owner_accounting_origin: Option<OwnerAccountingOriginLookup>,
     pub runtime_mcp_servers: Option<(PathBuf, crate::mcp::SharedRuntimeMcpServers)>,
     pub shell_manager: Option<SharedShellManager>,
     /// True only for the real headless exec host after it has established the
@@ -131,6 +135,7 @@ impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
             accounting_origin: None,
+            owner_accounting_origin: None,
             runtime_mcp_servers: None,
             shell_manager: None,
             persist_services_enabled: false,
@@ -538,7 +543,9 @@ pub fn resolve_strict_authority_path(
         for segment in normalized.split('/') {
             current.push(segment);
             match fs::symlink_metadata(&current) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
+                Ok(metadata)
+                    if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) =>
+                {
                     return Err(ToolError::permission_denied(format!(
                         "machine-readable authority paths must not traverse symlinks: {}",
                         current.display()
@@ -594,6 +601,8 @@ pub struct ToolExecutionState {
     pub child_host: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
     /// Set only on the context of one call a person approved on a card.
     pub human_decision: Option<crate::core::engine::HumanDecision>,
+    /// Carried authorization for a changing `plugin_manager` call.
+    pub creator_decision: Option<crate::extension_host::creator_policy::CreatorDecisionCarrier>,
     pub mcp_always_binding: Option<u64>,
     pub account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Shared shell manager for background tasks and streaming IO.
@@ -646,6 +655,7 @@ pub struct ToolExecutionState {
     /// inherits the authority the caller was granted rather than re-deriving
     /// one from a legacy bit.
     pub approval_mode: ApprovalMode,
+    pub owner_present: bool,
     /// Effective shell policy for this execution context.
     pub shell_policy: ShellPolicy,
     /// Effective feature flag set for the running session.
@@ -660,6 +670,7 @@ pub struct ToolExecutionState {
     /// and refreshed when the user runs `/trust add <path>`. Distinct from
     /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
     pub trusted_external_paths: Vec<PathBuf>,
+    pub read_only_roots: Vec<PathBuf>,
     /// Whether to follow symbolic links during file discovery and tool
     /// operations. When `true`, symlinked directories are traversed and
     /// symlinked paths that resolve outside the workspace are still allowed
@@ -732,6 +743,7 @@ pub struct ToolExecutionState {
     pub live_posture: Option<crate::core::engine::LivePosture>,
     pub browser_tool: Option<String>,
     pub child_activation: Option<Arc<crate::tools::subagent::ChildActivationRequest>>,
+    pub strict_workspace_confinement: bool,
 }
 
 impl std::ops::Deref for ToolContext {
@@ -794,6 +806,7 @@ impl ToolContext {
                 acp_host: None,
                 child_host: None,
                 human_decision: None,
+                creator_decision: None,
                 mcp_always_binding: None,
                 account_fence: None,
                 shell_manager,
@@ -813,11 +826,13 @@ impl ToolContext {
                 shell_network_denied_hint: None,
                 auto_approve: false,
                 approval_mode: ApprovalMode::Suggest,
+                owner_present: false,
                 shell_policy,
                 features: Features::with_defaults(),
                 state_namespace: "workspace".to_string(),
                 route_context_window: None,
                 trusted_external_paths: Vec::new(),
+                read_only_roots: Vec::new(),
                 follow_symlinks: false,
                 network_policy: None,
                 runtime: RuntimeToolServices::default(),
@@ -837,6 +852,7 @@ impl ToolContext {
                 live_posture: None,
                 browser_tool: None,
                 child_activation: None,
+                strict_workspace_confinement: false,
             }),
         }
     }
@@ -1001,6 +1017,35 @@ impl ToolContext {
         self
     }
 
+    #[must_use]
+    pub fn with_read_only_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.read_only_roots = roots;
+        self
+    }
+
+    pub fn resolve_read_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        let escape = match self.resolve_path(raw) {
+            Err(error @ ToolError::PathEscape { .. }) if !self.read_only_roots.is_empty() => error,
+            other => return other,
+        };
+        self.read_only_root_path(raw).ok_or(escape)
+    }
+
+    fn read_only_root_path(&self, raw: &str) -> Option<PathBuf> {
+        let candidate = resolve_home_path(raw)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| PathBuf::from(raw));
+        if !candidate.is_absolute() {
+            return None;
+        }
+        let canonical = candidate.canonicalize().ok()?;
+        self.read_only_roots
+            .iter()
+            .any(|root| canonical.starts_with(root))
+            .then_some(canonical)
+    }
+
     /// Set whether tools should follow symbolic links. When `true`,
     /// `resolve_path` allows symlinked paths that resolve outside the
     /// workspace, and walk-based tools traverse symlinked directories.
@@ -1011,10 +1056,9 @@ impl ToolContext {
         self
     }
 
-    /// Attach an LSP manager so that edit tools can auto-inject diagnostics
-    /// into their results after a successful file modification (#428).
+    /// Attach an LSP manager so the `lsp` tool can query language intelligence
+    /// and diagnostics.
     #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
         self.lsp_manager = Some(manager);
         self
@@ -1042,13 +1086,7 @@ impl ToolContext {
         path: &Path,
         requested_path: &str,
     ) -> Result<(), ToolError> {
-        self.require_fresh_read_for(
-            path,
-            requested_path,
-            "File action=\"edit\"",
-            "File with action=\"read\"",
-            "File action=\"read\"",
-        )
+        self.require_fresh_read_for(path, requested_path, "edit", "read", "read")
     }
 
     pub fn require_fresh_read_before_write(
@@ -1266,7 +1304,7 @@ impl ToolContext {
         let mut existing_ancestor = candidate.clone();
         let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
 
-        while !existing_ancestor.exists() {
+        while fs::symlink_metadata(&existing_ancestor).is_err() {
             if let Some(file_name) = existing_ancestor.file_name() {
                 suffix_parts.push(file_name.to_owned());
             }
@@ -1281,11 +1319,38 @@ impl ToolContext {
             }
         }
         let ancestor_normalized = normalize_path(&existing_ancestor);
+        let follows_in_workspace = self.follow_symlinks
+            && (ancestor_normalized.starts_with(&workspace_plain)
+                || ancestor_normalized.starts_with(&workspace_normalized));
 
-        let canonical_ancestor = if existing_ancestor.exists() {
-            existing_ancestor
-                .canonicalize()
-                .unwrap_or(existing_ancestor)
+        let canonical_ancestor = if fs::symlink_metadata(&existing_ancestor).is_ok() {
+            match existing_ancestor.canonicalize() {
+                Ok(canonical) => canonical,
+                Err(_) if follows_in_workspace => existing_ancestor,
+                Err(_) => {
+                    let mut landing =
+                        resolve_unresolvable_link(&existing_ancestor).map_err(|_| {
+                            ToolError::PathEscape {
+                                path: existing_ancestor.clone(),
+                            }
+                        })?;
+                    landing.extend(suffix_parts.iter().rev());
+                    if !landing.starts_with(workspace_canonical)
+                        && !landing.starts_with(&workspace_normalized)
+                        && !self.is_trusted_external_path(&landing)
+                    {
+                        return Err(ToolError::PathEscape { path: landing });
+                    }
+                    let spelled = match (
+                        existing_ancestor.parent().map(Path::canonicalize),
+                        existing_ancestor.file_name(),
+                    ) {
+                        (Some(Ok(parent)), Some(name)) => Some(parent.join(name)),
+                        _ => None,
+                    };
+                    spelled.unwrap_or(existing_ancestor)
+                }
+            }
         } else {
             existing_ancestor
         };
@@ -1297,10 +1362,7 @@ impl ToolContext {
         }
         let canonical = normalize_path(&canonical);
 
-        if self.follow_symlinks
-            && (ancestor_normalized.starts_with(&workspace_plain)
-                || ancestor_normalized.starts_with(&workspace_normalized))
-        {
+        if follows_in_workspace {
             return Ok(canonical);
         }
 
@@ -1371,6 +1433,16 @@ impl ToolContext {
         self
     }
 
+    /// Carry the turn loop's `plugin_manager` admission decision onto the tool context.
+    #[must_use]
+    pub fn with_creator_decision(
+        mut self,
+        decision: crate::extension_host::creator_policy::CreatorDecisionCarrier,
+    ) -> Self {
+        self.creator_decision = Some(decision);
+        self
+    }
+
     /// Set the shell network-denial hint used by network-restricted modes.
     pub fn with_shell_network_denied_hint(mut self, hint: impl Into<String>) -> Self {
         self.shell_network_denied_hint = Some(hint.into());
@@ -1402,33 +1474,94 @@ impl ToolContext {
     }
 }
 
-/// Gather LSP diagnostics for `paths` using the manager stored in `context`,
-/// and return the rendered `<diagnostics …>` blocks joined by newlines.
-///
-/// Returns an empty string when:
-/// - `context.lsp_manager` is `None`
-/// - the manager's `enabled` flag is `false`
-/// - none of the files produce diagnostics (e.g. all clean, or language unknown)
-///
-/// This function is non-blocking by design: every failure mode (missing LSP
-/// binary, timeout, unknown language) degrades to an empty string rather than
-/// propagating an error to the caller.
-pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf]) -> String {
-    use codewhale_lsp::render_blocks;
+const MAX_LINK_HOPS: usize = 40;
 
-    let manager = match context.lsp_manager.as_ref() {
-        Some(m) if m.config().enabled => m,
-        _ => return String::new(),
-    };
-
-    let mut blocks = Vec::new();
-    for (idx, path) in paths.iter().enumerate() {
-        if let Some(block) = manager.diagnostics_for(path, idx as u64).await {
-            blocks.push(block);
+fn resolve_unresolvable_link(link: &Path) -> std::io::Result<PathBuf> {
+    let mut link = link.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    for _ in 0..MAX_LINK_HOPS {
+        let target = fs::read_link(&link)?;
+        let parent = link
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize()?;
+        let joined = parent.join(&target);
+        let mut ancestor = PathBuf::new();
+        let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+        let mut missing = false;
+        for component in joined.components() {
+            match component {
+                Component::Prefix(prefix) => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor.push(prefix.as_os_str());
+                }
+                Component::RootDir => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor.push(component.as_os_str());
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if missing {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    let next_candidate = ancestor.join(component.as_os_str());
+                    if fs::symlink_metadata(&next_candidate).is_err() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "parent traversal in unresolved link target",
+                        ));
+                    }
+                    ancestor = next_candidate;
+                }
+                Component::Normal(name) => {
+                    if missing {
+                        suffix.push(name.to_owned());
+                    } else {
+                        let next_candidate = ancestor.join(name);
+                        if fs::symlink_metadata(&next_candidate).is_ok() {
+                            ancestor = next_candidate;
+                        } else {
+                            missing = true;
+                            suffix.push(name.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        if fs::symlink_metadata(&ancestor).is_err() {
+            let mut landing = normalize_path(&joined);
+            landing.extend(tail.iter());
+            return Ok(landing);
+        }
+        match ancestor.canonicalize() {
+            Ok(mut landing) => {
+                landing.extend(suffix);
+                landing.extend(tail);
+                return Ok(landing);
+            }
+            Err(_) => {
+                let mut rest = suffix;
+                rest.extend(tail);
+                tail = rest;
+                link = ancestor;
+            }
         }
     }
-
-    render_blocks(&blocks)
+    Err(std::io::Error::other("too many levels of symbolic links"))
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {
@@ -1473,6 +1606,302 @@ pub fn normalize_path(path: &Path) -> PathBuf {
         normalized.push(part);
     }
     normalized
+}
+
+pub(crate) fn has_forbidden_windows_colon(raw: &str, windows: bool) -> bool {
+    if !windows {
+        return false;
+    }
+    let bytes = raw.as_bytes();
+    let rest = if raw.starts_with(r"\\?\")
+        || raw.starts_with("//?/")
+        || raw.starts_with(r"\\.\")
+        || raw.starts_with("//./")
+    {
+        if bytes.get(4).is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(5) == Some(&b':')
+            && matches!(bytes.get(6), Some(b'\\') | Some(b'/'))
+        {
+            &raw[6..]
+        } else {
+            raw
+        }
+    } else if bytes.first().is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(1) == Some(&b':')
+        && matches!(bytes.get(2), Some(b'\\') | Some(b'/'))
+    {
+        &raw[2..]
+    } else {
+        raw
+    };
+    rest.contains(':')
+}
+
+pub(crate) fn is_windows_short_name_segment(segment: &str) -> bool {
+    for (idx, _) in segment.match_indices('~') {
+        let after = &segment[idx + 1..];
+        let digits = after.split('.').next().unwrap_or(after);
+        if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn has_windows_trailing_dot_or_space(segment: &str, windows: bool) -> bool {
+    windows && segment != "." && segment != ".." && segment.ends_with(['.', ' '])
+}
+
+pub(crate) fn is_protected_workspace_metadata_segment(segment: &str, windows: bool) -> bool {
+    if codewhale_util::git_metadata::git_metadata_name(segment, windows) {
+        return true;
+    }
+    let trimmed = if windows {
+        segment
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(['.', ' '])
+    } else {
+        segment
+    };
+    if trimmed.eq_ignore_ascii_case(".codewhale") {
+        return true;
+    }
+    if windows {
+        let stem = trimmed.split('.').next().unwrap_or(trimmed);
+        if let Some((prefix, digits)) = stem.rsplit_once('~')
+            && !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            let prefix = prefix.strip_prefix('.').unwrap_or(prefix);
+            let upper = prefix.to_ascii_uppercase();
+            if !upper.is_empty() && "CODEWHALE".starts_with(&upper) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn validate_windows_relative_segments(
+    relative: &str,
+    windows: bool,
+) -> Result<(), String> {
+    if !windows {
+        return Ok(());
+    }
+    if has_forbidden_windows_colon(relative, true) {
+        return Err("windows colons and alternate data streams are not allowed".to_string());
+    }
+    for segment in relative.replace('\\', "/").split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if has_windows_trailing_dot_or_space(segment, true) {
+            return Err(format!(
+                "trailing dots or spaces are not allowed: {segment}"
+            ));
+        }
+        if is_windows_short_name_segment(segment) {
+            return Err(format!(
+                "windows short-name aliases are not allowed: {segment}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn strip_windows_verbatim_slashes(raw: &str) -> String {
+    let mut normalized = raw.replace('\\', "/");
+    if let Some(rest) = normalized
+        .strip_prefix("//?/UNC/")
+        .or_else(|| normalized.strip_prefix("//?/unc/"))
+    {
+        normalized = format!("//{rest}");
+    } else if let Some(rest) = normalized
+        .strip_prefix("//?/")
+        .or_else(|| normalized.strip_prefix("//./"))
+    {
+        normalized = rest.to_string();
+    }
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        if normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':') {
+            break;
+        }
+        normalized.pop();
+    }
+    normalized
+}
+
+pub(crate) fn has_windows_drive_or_unc_prefix(raw: &str) -> bool {
+    raw.starts_with(r"\\")
+        || raw.starts_with("//")
+        || (raw.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && raw.as_bytes().get(1) == Some(&b':'))
+}
+
+pub(crate) fn strip_workspace_root_str(
+    workspace_raw: &str,
+    workspace_canonical: Option<&str>,
+    raw: &str,
+    windows: bool,
+) -> Option<String> {
+    if !windows {
+        let candidate = Path::new(raw);
+        let rest = candidate
+            .strip_prefix(Path::new(workspace_raw))
+            .ok()
+            .or_else(|| {
+                workspace_canonical.and_then(|root| candidate.strip_prefix(Path::new(root)).ok())
+            })?;
+        let mut clean = PathBuf::new();
+        for component in rest.components() {
+            match component {
+                Component::Normal(part) => clean.push(part),
+                Component::CurDir => {}
+                _ => return None,
+            }
+        }
+        let shown = clean.to_str()?;
+        return Some(if shown.is_empty() {
+            ".".to_string()
+        } else {
+            shown.to_string()
+        });
+    }
+
+    let cand = strip_windows_verbatim_slashes(raw);
+    for root in std::iter::once(workspace_raw).chain(workspace_canonical) {
+        let root_norm = strip_windows_verbatim_slashes(root);
+        if cand.eq_ignore_ascii_case(&root_norm) {
+            return Some(".".to_string());
+        }
+        let cand_bytes = cand.as_bytes();
+        let root_len = root_norm.len();
+        if cand_bytes.len() > root_len
+            && cand[..root_len].eq_ignore_ascii_case(&root_norm)
+            && (root_norm.ends_with('/') || cand_bytes[root_len] == b'/')
+        {
+            let tail = &cand[if root_norm.ends_with('/') {
+                root_len
+            } else {
+                root_len + 1
+            }..];
+            let mut segments = Vec::new();
+            for segment in tail.split('/') {
+                match segment {
+                    "" | "." => {}
+                    ".." => return None,
+                    part => segments.push(part),
+                }
+            }
+            return Some(if segments.is_empty() {
+                ".".to_string()
+            } else {
+                segments.join("/")
+            });
+        }
+    }
+    None
+}
+
+pub(crate) fn resolve_confined_target(
+    context: &ToolContext,
+    workspace_canonical: &Path,
+    raw: &str,
+    allow_root_dot: bool,
+) -> Result<PathBuf, ToolError> {
+    if context.workspace.as_os_str().is_empty() || raw.is_empty() {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot be empty".to_string(),
+        ));
+    }
+    if has_forbidden_windows_colon(raw, cfg!(windows)) {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot contain a colon outside a Windows drive prefix".to_string(),
+        ));
+    }
+    if context.strict_workspace_confinement
+        && (raw == "~" || raw.starts_with("~/") || (cfg!(windows) && raw.starts_with("~\\")))
+    {
+        return Err(ToolError::permission_denied(
+            "workspace path cannot use home shorthand".to_string(),
+        ));
+    }
+    let home_resolved = if !context.strict_workspace_confinement {
+        resolve_home_path(raw)?
+    } else {
+        None
+    };
+    let check_path = home_resolved.as_deref().unwrap_or_else(|| Path::new(raw));
+    if check_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ToolError::PathEscape {
+            path: normalize_path(&context.workspace.join(check_path)),
+        });
+    }
+    let relative = if let Some(home_path) = home_resolved.as_deref() {
+        let home_str = home_path.to_str().ok_or_else(|| {
+            ToolError::permission_denied("workspace path must be valid UTF-8".to_string())
+        })?;
+        let ws_plain = normalize_path(&context.workspace);
+        let ws_str = ws_plain.to_string_lossy();
+        let can_str = workspace_canonical.to_string_lossy();
+        let rel = strip_workspace_root_str(&ws_str, Some(&can_str), home_str, cfg!(windows))
+            .ok_or_else(|| ToolError::PathEscape {
+                path: normalize_path(home_path),
+            })?;
+        if rel == "." {
+            PathBuf::new()
+        } else {
+            PathBuf::from(rel)
+        }
+    } else if check_path.is_absolute()
+        || check_path.has_root()
+        || (cfg!(windows) && has_windows_drive_or_unc_prefix(raw))
+    {
+        let ws_str = context.workspace.to_string_lossy();
+        let can_str = workspace_canonical.to_string_lossy();
+        let rel = strip_workspace_root_str(&ws_str, Some(&can_str), raw, cfg!(windows))
+            .ok_or_else(|| ToolError::PathEscape {
+                path: PathBuf::from(raw),
+            })?;
+        if rel == "." {
+            PathBuf::new()
+        } else {
+            PathBuf::from(rel)
+        }
+    } else {
+        let mut rel = PathBuf::new();
+        for component in check_path.components() {
+            match component {
+                Component::Normal(part) => rel.push(part),
+                Component::CurDir => {}
+                _ => {
+                    return Err(ToolError::PathEscape {
+                        path: PathBuf::from(raw),
+                    });
+                }
+            }
+        }
+        rel
+    };
+
+    if relative.as_os_str().is_empty() {
+        if !allow_root_dot {
+            return Err(ToolError::permission_denied(
+                "workspace path must name an entry inside the workspace".to_string(),
+            ));
+        }
+    } else {
+        validate_windows_relative_segments(&relative.to_string_lossy(), cfg!(windows))
+            .map_err(ToolError::permission_denied)?;
+    }
+
+    Ok(relative)
 }
 
 /// Resolve an exact `~` or `~/` path prefix to the current user's home directory.
@@ -1535,6 +1964,10 @@ pub fn resolve_home_path_with(
 /// The core trait that all tools must implement.
 #[async_trait]
 pub trait ToolSpec: Send + Sync {
+    fn delegated_mcp_read(&self) -> Option<Arc<crate::mcp::DelegatedMcpRead>> {
+        None
+    }
+
     /// Returns the unique name of this tool (used in API calls).
     fn name(&self) -> &str;
 

@@ -24,21 +24,29 @@ contributors="$(printf '%s\n' "${section}" | awk '
   in_contributors { print }
 ')"
 
+upgrade_notes="$(printf '%s\n' "${section}" | awk '
+  /^### Upgrade notes[[:space:]]*$/ { in_upgrade = 1; next }
+  in_upgrade && /^### / { exit }
+  in_upgrade { print }
+' | sed '/./,$!d')"
 notes="$(printf '%s\n' "${section}" | awk '
-  /^### Contributors[[:space:]]*$/ { in_contributors = 1; next }
+  /^### (Contributors|Upgrade notes)[[:space:]]*$/ { in_contributors = 1; next }
   in_contributors && /^### / { in_contributors = 0 }
   !in_contributors { print }
 ')"
 
 summary="$(printf '%s\n' "${notes}" | awk '/^### / { in_details = 1 } !in_details { print }')"
 details="$(printf '%s\n' "${notes}" | awk '/^### / { in_details = 1 } in_details { print }')"
-if [[ -z "${summary//[[:space:]]/}" ]]; then
+if [[ "${summary}" != *[![:space:]]* ]]; then
   summary="${notes}"
   details=""
 fi
 
 render_body() {
 printf "## What's in %s\n\n" "${tag}"
+if [[ "${upgrade_notes}" == *[![:space:]]* ]]; then
+  printf '%s\n\n%s\n\n' '### Upgrade notes' "${upgrade_notes}"
+fi
 if [[ -n "${summary}" ]]; then
   printf '%s\n' "${summary}"
 else
@@ -187,6 +195,9 @@ EOF
 
 body="$(render_body)"
 if (( ${#body} >= 125000 )); then
+  if [[ -z "${details}" ]]; then
+    summary=""
+  fi
   details="The full notes exceed GitHub's release-description limit. Read the [complete changelog for ${tag}](https://github.com/codewhale-hq/CodeWhale/blob/${tag}/CHANGELOG.md)."
   body="$(render_body)"
 fi

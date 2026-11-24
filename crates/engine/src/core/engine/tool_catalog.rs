@@ -5,10 +5,12 @@
 //! tool suggestions, and the small set of built-in advanced tools that are not
 //! registered by the normal runtime tool registry.
 
-use crate::tools::execution_envelope::tool_call_denied;
+use crate::tools::execution_envelope::{holds_bounded_verification, tool_call_denied_for};
 use codewhale_tools::names::{
-    LEGACY_TOOL_SEARCH_BM25_NAME, LEGACY_TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_NAME,
-    is_tool_search_tool,
+    LEGACY_TERMINAL_CANCEL_NAME, LEGACY_TERMINAL_RESET_NAME, LEGACY_TERMINAL_RUN_NAME,
+    LEGACY_TERMINAL_SEND_NAME, LEGACY_TERMINAL_WAIT_NAME, LEGACY_TOOL_SEARCH_BM25_NAME,
+    LEGACY_TOOL_SEARCH_REGEX_NAME, TERMINAL_CANCEL_NAME, TERMINAL_RESET_NAME, TERMINAL_RUN_NAME,
+    TERMINAL_SEND_NAME, TERMINAL_WAIT_NAME, TOOL_SEARCH_NAME, is_tool_search_tool,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -29,7 +31,7 @@ use codewhale_models::Tool;
 use crate::core::session::ToolActivationCache;
 use codewhale_dependencies::ExternalTool;
 use codewhale_runtime::features::{Feature, Features};
-use codewhale_runtime::regex_cache::compile_user_regex;
+use codewhale_runtime::regex_cache::compile_user_regex_case_insensitive;
 pub const CODE_EXECUTION_TOOL_NAME: &str = "code_execution";
 const CODE_EXECUTION_TOOL_TYPE: &str = "code_execution_20250825";
 const CODE_EXECUTION_DESCRIPTION: &str = "Execute Python code with the local Python interpreter using this call's execution policy and return stdout/stderr/return_code as JSON.";
@@ -37,23 +39,25 @@ pub(super) use crate::tools::codemode::EXECUTE_TOOLS_TOOL_NAME;
 pub(super) use crate::tools::js_execution::JS_EXECUTION_TOOL_NAME;
 const TOOL_RESULT_RETRIEVAL_NAME: &str = "retrieve_tool_result";
 const TOOL_SEARCH_TYPE: &str = "tool_search_20251119";
-const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 8;
+const TOOL_SEARCH_DEFAULT_MAX_RESULTS: usize = 4;
 const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 
 // Crate-visible so the hook gate tests the real eager names instead of a copy.
 #[rustfmt::skip]
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "grep_files", "bash", "agent", "todo_write",
-    // Continuation instructions require these controls. Hiding them behind
-    // discovery leaves a model unable to stop the work it was asked to run.
-    "create_goal", "get_goal", "update_goal", "task_shell_wait",
+    "read", "write", "edit", "list_dir", "file_search", "grep_files", "bash", "agent", "todo_write",
+    // Starting a goal stays eager; follow-up goal and background-shell controls auto-activate on demand.
+    "create_goal",
     "present",
     // The prompt core tells the model to discover skills through
     // `load_skill`, so the tool has to be on the wire for that instruction
     // to be true.
     "load_skill",
 ];
+
+pub const GOAL_FOLLOWUP_TOOLS: &[&str] = &["get_goal", "update_goal"];
+pub const TASK_SHELL_WAIT_NAME: &str = "task_shell_wait";
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
     CoreActionToolFallback {
@@ -126,8 +130,17 @@ fn default_active_native_tools_set() -> &'static HashSet<&'static str> {
         .get_or_init(|| DEFAULT_ACTIVE_NATIVE_TOOLS.iter().copied().collect())
 }
 
+pub(super) fn always_load_matches(always_load: &HashSet<String>, name: &str) -> bool {
+    always_load.contains(name)
+        || always_load.iter().any(|entry| {
+            entry
+                .strip_suffix('*')
+                .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
+        })
+}
+
 pub(super) fn should_default_defer_tool(name: &str, always_load: &HashSet<String>) -> bool {
-    if always_load.contains(name) {
+    if always_load_matches(always_load, name) {
         return false;
     }
 
@@ -153,7 +166,7 @@ pub(super) fn apply_mcp_tool_deferral(
     always_load: &HashSet<String>,
 ) {
     for tool in catalog {
-        if always_load.contains(&tool.name) {
+        if always_load_matches(always_load, &tool.name) {
             tool.defer_loading = Some(false);
             continue;
         }
@@ -226,7 +239,7 @@ pub(super) fn apply_tool_surface_budget(
         return;
     }
     for tool in catalog {
-        if always_load.contains(&tool.name) {
+        if always_load_matches(always_load, &tool.name) {
             continue;
         }
         if matches!(tool.name.as_str(), "Run" | "tasks" | "Web") {
@@ -370,7 +383,7 @@ pub fn ensure_advanced_tooling(
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
-            description: "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Run`, `Web`, `tasks`, `workflow`, `request_user_input`, `github`, `automation`, `lsp`, `review`, `session_search`, `terminal/run`, `apply_patch`, `context_archive_search`/`context_archive_get`, connected MCP servers, and the Registry pair (`registry_sync`, `start_registry_mcp_server`). Calling one by name also loads it.".to_string(),
+            description: tool_search_description(catalog),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -397,6 +410,58 @@ pub fn ensure_advanced_tooling(
             strict: None,
             cache_control: None,
         });
+    }
+    refresh_tool_search_description(catalog);
+}
+
+const ADVERTISED_DEFERRED_TOOLS: &[&str] = &[
+    "Git",
+    "Run",
+    "Web",
+    "tasks",
+    "workflow",
+    "request_user_input",
+    "github",
+    "automation",
+    "lsp",
+    "review",
+    "session_search",
+    TERMINAL_RUN_NAME,
+    "apply_patch",
+    "context_archive_search",
+    "context_archive_get",
+    "registry_sync",
+    "start_registry_mcp_server",
+];
+
+fn tool_search_description(catalog: &[Tool]) -> String {
+    let advertised = ADVERTISED_DEFERRED_TOOLS
+        .iter()
+        .filter(|name| {
+            catalog
+                .iter()
+                .any(|tool| tool.name == **name && tool.defer_loading.unwrap_or(false))
+        })
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>();
+    let mut description =
+        "Search deferred tool definitions and return matching references. Deferred tools include "
+            .to_string();
+    if !advertised.is_empty() {
+        description.push_str(&advertised.join(", "));
+        description.push_str(", and ");
+    }
+    description.push_str("tools from connected MCP servers. Calling one by name also loads it.");
+    description
+}
+
+pub(super) fn refresh_tool_search_description(catalog: &mut [Tool]) {
+    let description = tool_search_description(catalog);
+    if let Some(tool) = catalog
+        .iter_mut()
+        .find(|tool| tool.name == TOOL_SEARCH_NAME && tool.description != description)
+    {
+        tool.description = description;
     }
 }
 
@@ -436,17 +501,29 @@ pub(super) fn configure_composition_entry(
         && let Some(batch) = catalog.iter().find(|tool| Some(tool.name.as_str()) == name)
         && let Some((field, _)) = crate::mcp::named_batch_members(&batch.input_schema)
     {
-        let mut arguments = batch.input_schema.clone();
-        arguments["properties"][field]["items"]["properties"]["tool"]["enum"] = json!(members);
-        if !batch.defer_loading.unwrap_or(false) {
-            arguments = json!({"type":"object", "description":"Use the named batch schema shown in this request; only these step tools are offered here.",
-                "required":[field], "properties":{(field):{"type":"array","minItems":arguments["properties"][field]["minItems"].as_u64().unwrap_or(1),"maxItems":arguments["properties"][field]["maxItems"],
-                    "items":{"type":"object","required":["tool"],"properties":{"arguments":{"type":"object"},
-                        "tool":{"type":"string","enum":members}}}}}});
-        }
+        let deferred = batch.defer_loading.unwrap_or(false);
+        let bounds = &batch.input_schema["properties"][field];
+        let (arguments_description, batch_description) = if deferred {
+            (
+                format!(
+                    "Step arguments follow `{}`; load its schema with {TOOL_SEARCH_NAME} before the first batch.",
+                    batch.name
+                ),
+                format!("Named step batch for `{}`.", batch.name),
+            )
+        } else {
+            (
+                "Use the named batch schema shown in this request; only these step tools are offered here.".to_string(),
+                batch.description.clone(),
+            )
+        };
+        let arguments = json!({"type":"object", "description":arguments_description,
+            "required":[field], "properties":{(field):{"type":"array","minItems":bounds["minItems"].as_u64().unwrap_or(1),"maxItems":bounds["maxItems"],
+                "items":{"type":"object","required":["tool"],"properties":{"arguments":{"type":"object"},
+                    "tool":{"type":"string","enum":members}}}}}});
         definition.description.push_str(" For a known sequence, pass batch instead of code. It runs that server's named steps in one gated call and returns a bounded result. Group known steps, including setup and their verification, in one batch. Use code if later actions depend on reading an intermediate result.");
         definition.input_schema["properties"]["batch"] = json!({
-            "type":"object", "description":batch.description,
+            "type":"object", "description":batch_description,
             "required":["tool","arguments"], "additionalProperties":false,
             "properties":{
                 "tool":{"type":"string","enum":[batch.name]},
@@ -550,10 +627,84 @@ pub fn remove_evicted_cache_activations(
     }
 }
 
-/// Make the recovery schema visible on the next provider step when a tool
-/// result actually publishes retrievable evidence. The initial toolbox stays
-/// small, while a receipt never advertises a deferred route that merely asks
-/// the model to repeat the same call.
+fn activate_deferred_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    names: &[&str],
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    let mut to_activate = Vec::new();
+    for name in names {
+        let is_deferred = catalog
+            .iter()
+            .any(|tool| tool.name == *name && tool.defer_loading.unwrap_or(false));
+        if !is_deferred {
+            continue;
+        }
+        if active.contains(*name) {
+            cache.record_use(name);
+            continue;
+        }
+        to_activate.push((*name).to_string());
+    }
+    if to_activate.is_empty() {
+        return Ok(false);
+    }
+    let active_before = active.clone();
+    let delta = cache.activate_measured(catalog, &to_activate, measure)?;
+    remove_evicted_cache_activations(catalog, active, delta.evicted.iter().cloned());
+    active.extend(delta.admitted.iter().cloned());
+    for name in &delta.admitted {
+        cache.record_use(name);
+    }
+    Ok(*active != active_before)
+}
+
+fn result_started_background_shell_job(metadata: Option<&Value>) -> bool {
+    let Some(metadata) = metadata else {
+        return false;
+    };
+    if metadata.get("backgrounded").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let running_task = metadata
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+        && metadata
+            .get("task_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+    if running_task {
+        return true;
+    }
+    if metadata
+        .get("poll_with")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.as_str() == Some(TASK_SHELL_WAIT_NAME))
+        })
+    {
+        return true;
+    }
+    metadata
+        .get("shell_jobs")
+        .and_then(Value::as_array)
+        .is_some_and(|jobs| {
+            jobs.iter().any(|job| {
+                job.get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| status.eq_ignore_ascii_case("running"))
+            })
+        })
+}
+
+/// Make result-dependent deferred schemas visible on the next provider step
+/// when a tool result publishes retrievable evidence or starts a background
+/// shell job.
 pub fn activate_result_dependencies(
     catalog: &[Tool],
     active: &mut HashSet<String>,
@@ -561,6 +712,7 @@ pub fn activate_result_dependencies(
     result: &ToolResult,
     measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
 ) -> Result<bool, ToolError> {
+    let mut names = Vec::new();
     let needs_retrieval = result
         .metadata
         .as_ref()
@@ -568,14 +720,34 @@ pub fn activate_result_dependencies(
         .and_then(Value::as_bool)
         == Some(true)
         || super::context::offers_retrieval(result.metadata.as_ref());
-    if !needs_retrieval {
+    if needs_retrieval {
+        names.push(TOOL_RESULT_RETRIEVAL_NAME);
+    }
+    if result_started_background_shell_job(result.metadata.as_ref()) {
+        names.push(TASK_SHELL_WAIT_NAME);
+    }
+    if names.is_empty() {
         return Ok(false);
     }
-    let delta =
-        cache.activate_measured(catalog, &[TOOL_RESULT_RETRIEVAL_NAME.to_string()], measure)?;
-    remove_evicted_cache_activations(catalog, active, delta.evicted.iter().cloned());
-    active.extend(delta.admitted.iter().cloned());
-    Ok(!delta.admitted.is_empty() || !delta.evicted.is_empty())
+    activate_deferred_tools(catalog, active, cache, &names, measure)
+}
+
+pub fn activate_goal_followup_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    activate_deferred_tools(catalog, active, cache, GOAL_FOLLOWUP_TOOLS, measure)
+}
+
+pub fn activate_background_shell_tools(
+    catalog: &[Tool],
+    active: &mut HashSet<String>,
+    cache: &mut ToolActivationCache,
+    measure: &mut crate::core::session::ToolActivationMeasurer<'_>,
+) -> Result<bool, ToolError> {
+    activate_deferred_tools(catalog, active, cache, &[TASK_SHELL_WAIT_NAME], measure)
 }
 
 fn active_tool_list_from_catalog(catalog: &[Tool], active: &HashSet<String>) -> Vec<Tool> {
@@ -625,6 +797,8 @@ pub(super) struct ToolSurfacePolicy {
     pub(super) strict_tool_mode: bool,
     allowed_tools: Option<Vec<String>>,
     disallowed_tools: Option<Vec<String>>,
+    holds_bounded_verification: bool,
+    pub(super) extension_tool_names: HashSet<String>,
     /// Hard per-turn cap on admitted tool calls (#4415). The turn loop copies
     /// this limit into its own admission counter at turn start; `None` means
     /// unlimited (the default), which keeps the admission gate inert.
@@ -645,7 +819,16 @@ impl ToolSurfacePolicy {
         max_tool_calls: Option<u32>,
         tool_mode: ToolMode,
     ) -> Self {
+        let holds_bounded_verification = holds_bounded_verification(registry.context());
         let mut catalog = tools.unwrap_or_default();
+        if !registry
+            .context()
+            .lsp_manager
+            .as_ref()
+            .is_some_and(|manager| manager.config().enabled)
+        {
+            catalog.retain(|tool| tool.name != "lsp");
+        }
         if !catalog.is_empty() {
             ensure_advanced_tooling(&mut catalog, mode, always_load, tool_mode);
         }
@@ -669,10 +852,11 @@ impl ToolSurfacePolicy {
                 .and_then(Value::as_array_mut)
             {
                 actions.retain(|action| {
-                    !tool_call_denied(
+                    !tool_call_denied_for(
                         disallowed_tools.as_deref(),
                         &tool.name,
                         &json!({"action": action}),
+                        holds_bounded_verification,
                     )
                 });
             }
@@ -683,6 +867,7 @@ impl ToolSurfacePolicy {
                 .and_then(Value::as_array)
                 .is_none_or(|actions| !actions.is_empty())
         });
+        refresh_tool_search_description(&mut catalog);
         let mut active_names = initial_active_tools(&catalog);
         active_names.extend(dynamic_active_tools.iter().map(|name| (*name).to_string()));
         active_names.retain(|name| catalog.iter().any(|tool| tool.name == *name));
@@ -697,11 +882,17 @@ impl ToolSurfacePolicy {
             strict_tool_mode,
             allowed_tools,
             disallowed_tools,
+            holds_bounded_verification,
+            extension_tool_names: HashSet::new(),
             max_tool_calls,
         }
     }
 
-    #[cfg(test)]
+    pub(super) fn with_extension_tool_names(mut self, names: HashSet<String>) -> Self {
+        self.extension_tool_names = names;
+        self
+    }
+
     pub(super) fn allows_tool(&self, name: &str) -> bool {
         !self.denies_tool(name) && self.passes_allow_list(name)
     }
@@ -738,7 +929,12 @@ impl ToolSurfacePolicy {
     }
 
     pub(super) fn denies_call(&self, name: &str, input: &Value) -> bool {
-        tool_call_denied(self.disallowed_tools.as_deref(), name, input)
+        tool_call_denied_for(
+            self.disallowed_tools.as_deref(),
+            name,
+            input,
+            self.holds_bounded_verification,
+        )
     }
 }
 
@@ -940,6 +1136,11 @@ impl ToolSearchScratch {
     }
 }
 
+fn compile_tool_search_regex(query: &str) -> Result<regex::Regex, ToolError> {
+    compile_user_regex_case_insensitive(query)
+        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))
+}
+
 fn catalog_contains_tool(catalog: &[Tool], name: &str) -> bool {
     catalog.iter().any(|tool| tool.name == name)
 }
@@ -952,8 +1153,7 @@ fn unavailable_core_action_tools_with_regex(
     if max_results == 0 {
         return Ok(Vec::new());
     }
-    let regex = compile_user_regex(query)
-        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
+    let regex = compile_tool_search_regex(query)?;
     Ok(cached_fallbacks()
         .iter()
         .filter(|cf| !catalog_contains_tool(catalog, cf.fallback.name))
@@ -1008,22 +1208,30 @@ fn unavailable_core_action_tools_with_bm25_like(
         .collect()
 }
 
+fn is_eager_wire_tool(
+    tool: &Tool,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
+) -> bool {
+    !tool.defer_loading.unwrap_or(false)
+        || is_tool_search_tool(&tool.name)
+        || (active_tools.contains(&tool.name)
+            && cache.is_some_and(|cache| !cache.names().any(|cached| cached == tool.name)))
+}
+
 fn discover_tools_with_regex(
     catalog: &[Tool],
     query: &str,
     max_results: usize,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
 ) -> Result<Vec<String>, ToolError> {
-    let regex = compile_user_regex(query)
-        .map_err(|err| ToolError::invalid_input(format!("Invalid regex query: {err}")))?;
+    let regex = compile_tool_search_regex(query)?;
 
     let mut matches = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
-        // tool_search loads definitions omitted from the current request. An
-        // eager tool is already present, so returning it as a cache candidate
-        // would misclassify it as rejected (the cache intentionally accepts
-        // deferred definitions only).
-        if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
+        if is_eager_wire_tool(tool, active_tools, cache) {
             continue;
         }
         scratch.load(tool);
@@ -1037,7 +1245,124 @@ fn discover_tools_with_regex(
     Ok(matches)
 }
 
-fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usize) -> Vec<String> {
+const TOOL_SEARCH_SYNONYM_GROUPS: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "pdf",
+            "image",
+            "images",
+            "screenshot",
+            "screenshots",
+            "photo",
+            "picture",
+            "audio",
+            "video",
+            "media",
+        ],
+        &["read", "read_media", "media"],
+    ),
+    (
+        &[
+            "git", "diff", "commit", "branch", "blame", "status", "stash", "merge", "log",
+        ],
+        &["git"],
+    ),
+    (
+        &[
+            "test", "tests", "lint", "check", "build", "verify", "verifier", "cargo", "pytest",
+        ],
+        &["run", "verify", "run_tests"],
+    ),
+    (
+        &[
+            "shell",
+            "pty",
+            "terminal",
+            "tty",
+            "bg",
+            "background",
+            "interactive",
+            "process",
+        ],
+        &[
+            "bash",
+            "terminal_run",
+            "terminal_wait",
+            "terminal_send",
+            "terminal_cancel",
+            "task_shell_wait",
+        ],
+    ),
+    (
+        &[
+            "subagent", "delegate", "worker", "spawn", "child", "parallel",
+        ],
+        &["agent", "workflow"],
+    ),
+    (
+        &["memory", "note", "notes", "remember", "recall", "save"],
+        &["remember", "memory_search", "memory_get"],
+    ),
+    (
+        &[
+            "web", "url", "http", "https", "fetch", "browse", "internet", "search",
+        ],
+        &["web", "web.run", "fetch_url", "web_search"],
+    ),
+    (
+        &[
+            "lsp",
+            "definition",
+            "references",
+            "diagnostics",
+            "symbol",
+            "symbols",
+            "hover",
+            "typecheck",
+        ],
+        &["lsp"],
+    ),
+    (
+        &["todo", "checklist", "plan", "task", "tasks"],
+        &["todo_write", "tasks"],
+    ),
+];
+
+fn expand_bm25_synonyms(terms: &[String]) -> Vec<&'static str> {
+    let mut expanded = Vec::new();
+    for term in terms {
+        let normalized = term.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.');
+        if normalized.is_empty() {
+            continue;
+        }
+        for (triggers, targets) in TOOL_SEARCH_SYNONYM_GROUPS {
+            if triggers.contains(&normalized) {
+                for target in *targets {
+                    if !terms.iter().any(|existing| existing == target)
+                        && !expanded.contains(target)
+                    {
+                        expanded.push(*target);
+                    }
+                }
+            }
+        }
+    }
+    expanded
+}
+
+fn name_has_token(name_lower: &str, token: &str) -> bool {
+    name_lower
+        .split(['_', '-', '.', '/', ':'])
+        .any(|part| part == token)
+}
+
+fn discover_tools_with_bm25_like(
+    catalog: &[Tool],
+    query: &str,
+    max_results: usize,
+    active_tools: &HashSet<String>,
+    cache: Option<&ToolActivationCache>,
+) -> Vec<String> {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|term| term.trim().to_lowercase())
@@ -1047,21 +1372,37 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usi
         return Vec::new();
     }
 
+    let synonym_targets = expand_bm25_synonyms(&terms);
     let mut scored: Vec<(i64, String)> = Vec::new();
     let mut scratch = ToolSearchScratch::default();
     for tool in catalog {
-        if !tool.defer_loading.unwrap_or(false) || is_tool_search_tool(&tool.name) {
+        if is_eager_wire_tool(tool, active_tools, cache) {
             continue;
         }
         scratch.load(tool);
+        let body_weight = if crate::mcp::McpPool::is_mcp_tool(&tool.name) {
+            3
+        } else {
+            10
+        };
         let mut score = 0i64;
         for term in &terms {
             if scratch.hay.contains(term) {
-                score += 1;
+                score += body_weight;
             }
             // Loop-invariant: lowered once by `load`, not once per term.
             if scratch.name_lower.contains(term) {
-                score += 2;
+                score += 20;
+            }
+            if scratch.name_lower == *term {
+                score += 40;
+            }
+        }
+        for target in &synonym_targets {
+            if scratch.name_lower == *target {
+                score += 12;
+            } else if name_has_token(&scratch.name_lower, target) {
+                score += 5;
             }
         }
         if score > 0 {
@@ -1069,8 +1410,10 @@ fn discover_tools_with_bm25_like(catalog: &[Tool], query: &str, max_results: usi
         }
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let floor = scored.first().map_or(0, |(top, _)| top / 4);
     scored
         .into_iter()
+        .take_while(|(score, _)| *score >= floor)
         .take(max_results)
         .map(|(_, name)| name)
         .collect()
@@ -1219,7 +1562,7 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     if tool_name == "exec_shell" {
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
-             `exec_shell` was replaced by `bash` — call `bash` with a `command` instead. \
+             `exec_shell` was replaced by `bash` — call `bash` with a `command` (or `background: true` for background jobs) instead. \
              If `bash` is also absent: {shell_hint}.",
             shell_hint = shell_tool_allow_shell_hint()
         );
@@ -1230,7 +1573,8 @@ pub(super) fn missing_tool_error_message(tool_name: &str, catalog: &[Tool]) -> S
     ) {
         return format!(
             "Tool '{tool_name}' is not available in the current tool catalog. \
-             Lowercase `bash` is foreground-only; use {TOOL_SEARCH_NAME} to discover shell session controls."
+             Use `bash` (with `background: true` for background work) and `task_shell_wait` for background jobs, \
+             or use {TOOL_SEARCH_NAME} to discover persistent terminal controls (`{TERMINAL_RUN_NAME}`, `{TERMINAL_WAIT_NAME}`, `{TERMINAL_SEND_NAME}`, `{TERMINAL_CANCEL_NAME}`)."
         );
     }
     if suggestions.is_empty() {
@@ -1269,14 +1613,27 @@ fn shell_tool_allow_shell_hint() -> &'static str {
      the next turn will expose shell again"
 }
 
-fn is_shell_tool_name(tool_name: &str) -> bool {
+pub(super) fn is_shell_tool_name(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "exec_shell"
+        "bash"
+            | "Bash"
+            | "exec_shell"
             | "exec_shell_wait"
             | "exec_shell_interact"
+            | "exec_shell_cancel"
             | "task_shell_start"
             | "task_shell_wait"
+            | TERMINAL_RUN_NAME
+            | TERMINAL_WAIT_NAME
+            | TERMINAL_SEND_NAME
+            | TERMINAL_CANCEL_NAME
+            | TERMINAL_RESET_NAME
+            | LEGACY_TERMINAL_RUN_NAME
+            | LEGACY_TERMINAL_WAIT_NAME
+            | LEGACY_TERMINAL_SEND_NAME
+            | LEGACY_TERMINAL_CANCEL_NAME
+            | LEGACY_TERMINAL_RESET_NAME
     )
 }
 
@@ -1375,10 +1732,16 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
             } else {
                 ""
             };
-            lines.push(format!(
-                "  {}: {}{}",
-                field.name, field.kind, required_marker
-            ));
+            match field.description.as_deref() {
+                Some(description) => lines.push(format!(
+                    "  {}: {}{} — {}",
+                    field.name, field.kind, required_marker, description
+                )),
+                None => lines.push(format!(
+                    "  {}: {}{}",
+                    field.name, field.kind, required_marker
+                )),
+            }
         }
     }
     lines.push(String::new());
@@ -1406,7 +1769,7 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
         }
     }
 
-    ToolResult::success(lines.join("\n")).with_metadata(json!({
+    ToolResult::error(lines.join("\n")).with_metadata(json!({
         "event": "tool.schema_hydrated",
         "tool": tool.name,
         "executed": false,
@@ -1426,6 +1789,7 @@ pub fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) ->
 struct SchemaField {
     name: String,
     kind: String,
+    description: Option<String>,
 }
 
 fn schema_fields(schema: &Value) -> Vec<SchemaField> {
@@ -1437,10 +1801,25 @@ fn schema_fields(schema: &Value) -> Vec<SchemaField> {
         .map(|(name, spec)| SchemaField {
             name: name.clone(),
             kind: schema_type_label(spec),
+            description: concise_schema_description(spec),
         })
         .collect::<Vec<_>>();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
     fields
+}
+
+fn concise_schema_description(spec: &Value) -> Option<String> {
+    const MAX_DESC_CHARS: usize = 160;
+    let raw = spec.get("description").and_then(Value::as_str)?;
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    if collapsed.chars().count() <= MAX_DESC_CHARS {
+        return Some(collapsed);
+    }
+    let truncated: String = collapsed.chars().take(MAX_DESC_CHARS - 1).collect();
+    Some(format!("{truncated}…"))
 }
 
 fn schema_required_fields(schema: &Value) -> Vec<String> {
@@ -1456,16 +1835,86 @@ fn schema_required_fields(schema: &Value) -> Vec<String> {
 }
 
 fn schema_type_label(spec: &Value) -> String {
-    let Some(kind) = spec.get("type").and_then(Value::as_str) else {
-        return "value".to_string();
-    };
+    schema_type_label_at_depth(spec, 0)
+}
+
+fn schema_type_label_at_depth(spec: &Value, depth: usize) -> String {
+    const MAX_NESTED_DEPTH: usize = 2;
+    const MAX_NESTED_FIELDS: usize = 6;
     if let Some(values) = spec.get("enum").and_then(Value::as_array) {
-        let labels = values.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        let labels = values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(text) => Some(text.clone()),
+                Value::Number(num) => Some(num.to_string()),
+                Value::Bool(flag) => Some(flag.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         if !labels.is_empty() {
+            let kind = spec.get("type").and_then(Value::as_str).unwrap_or("enum");
             return format!("{kind} ({})", labels.join(" | "));
         }
     }
+    if let Some(variants) = spec
+        .get("oneOf")
+        .or_else(|| spec.get("anyOf"))
+        .and_then(Value::as_array)
+        && depth < MAX_NESTED_DEPTH
+    {
+        let labels = variants
+            .iter()
+            .map(|variant| schema_type_label_at_depth(variant, depth + 1))
+            .collect::<Vec<_>>();
+        if !labels.is_empty() {
+            return labels.join(" | ");
+        }
+    }
+    let Some(kind) = spec.get("type").and_then(Value::as_str) else {
+        if spec.get("properties").is_some() && depth < MAX_NESTED_DEPTH {
+            return format_nested_object_shape(spec, depth, MAX_NESTED_FIELDS);
+        }
+        return "value".to_string();
+    };
+    if kind == "array"
+        && depth < MAX_NESTED_DEPTH
+        && let Some(items) = spec.get("items")
+    {
+        return format!("array<{}>", schema_type_label_at_depth(items, depth + 1));
+    }
+    if kind == "object" && depth < MAX_NESTED_DEPTH && spec.get("properties").is_some() {
+        return format_nested_object_shape(spec, depth, MAX_NESTED_FIELDS);
+    }
     kind.to_string()
+}
+
+fn format_nested_object_shape(spec: &Value, depth: usize, max_fields: usize) -> String {
+    let Some(properties) = spec.get("properties").and_then(Value::as_object) else {
+        return "object".to_string();
+    };
+    if properties.is_empty() {
+        return "object".to_string();
+    }
+    let required = schema_required_fields(spec);
+    let mut keys = properties.keys().collect::<Vec<_>>();
+    keys.sort();
+    let total = keys.len();
+    let mut parts = keys
+        .into_iter()
+        .take(max_fields)
+        .map(|key| {
+            let child = schema_type_label_at_depth(&properties[key], depth + 1);
+            if required.contains(key) {
+                format!("{key}: {child} required")
+            } else {
+                format!("{key}: {child}")
+            }
+        })
+        .collect::<Vec<_>>();
+    if total > max_fields {
+        parts.push(format!("+{} more", total - max_fields));
+    }
+    format!("object {{{}}}", parts.join(", "))
 }
 
 fn received_field_names(input: &Value) -> Vec<String> {
@@ -1609,10 +2058,16 @@ fn execute_tool_search_inner(
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
     let mut discovered = if match_kind == "regex" {
-        discover_tools_with_regex(catalog, query, max_results)?
+        discover_tools_with_regex(catalog, query, max_results, active_tools, cache.as_deref())?
     } else {
-        discover_tools_with_bm25_like(catalog, query, max_results)
+        discover_tools_with_bm25_like(catalog, query, max_results, active_tools, cache.as_deref())
     };
+    discovered.retain(|name| {
+        catalog
+            .iter()
+            .find(|tool| &tool.name == name)
+            .is_some_and(|tool| !is_eager_wire_tool(tool, active_tools, cache.as_deref()))
+    });
     let remaining_results = max_results.saturating_sub(discovered.len());
     let unavailable = if match_kind == "regex" {
         unavailable_core_action_tools_with_regex(catalog, query, remaining_results)?
@@ -1625,24 +2080,35 @@ fn execute_tool_search_inner(
     let mut evicted = Vec::new();
     let mut toolbox = None;
     if let Some(cache) = cache {
-        let delta = cache.activate_measured(catalog, &discovered, measure)?;
-        toolbox = Some(json!({
-            "active_deferred_tools": cache.names().collect::<Vec<_>>(),
-            "added_wire_schema_bytes": delta.schema_bytes,
-            "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
-            "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
-            "exceeds_soft_target": delta.exceeds_soft_target,
-            "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
-        }));
-        remove_evicted_cache_activations(catalog, active_tools, delta.evicted.iter().cloned());
-        evicted = delta
-            .evicted
-            .into_iter()
-            .filter(|name| !active_tools.contains(name))
-            .collect();
-        cache_rejected = delta.rejected;
-        cache_held = delta.held;
-        discovered = delta.admitted;
+        if discovered.is_empty() {
+            toolbox = Some(json!({
+                "active_deferred_tools": cache.names().collect::<Vec<_>>(),
+                "added_wire_schema_bytes": Value::Null,
+                "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
+                "exceeds_soft_target": cache.names().count() > crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
+            }));
+        } else {
+            let delta = cache.activate_measured(catalog, &discovered, measure)?;
+            toolbox = Some(json!({
+                "active_deferred_tools": cache.names().collect::<Vec<_>>(),
+                "added_wire_schema_bytes": delta.schema_bytes,
+                "soft_name_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+                "soft_wire_byte_target": crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES,
+                "exceeds_soft_target": delta.exceeds_soft_target,
+                "authority": "Current deferred toolbox; admitted tools supersede earlier eviction or unavailable notices for the same name. Permission checks still apply to every call.",
+            }));
+            remove_evicted_cache_activations(catalog, active_tools, delta.evicted.iter().cloned());
+            evicted = delta
+                .evicted
+                .into_iter()
+                .filter(|name| !active_tools.contains(name))
+                .collect();
+            cache_rejected = delta.rejected;
+            cache_held = delta.held;
+            discovered = delta.admitted;
+        }
     }
     for name in &discovered {
         active_tools.insert(name.clone());
@@ -1666,14 +2132,14 @@ fn execute_tool_search_inner(
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "The provider cannot offer this tool schema, or its added wire schema exceeds 16KiB. It was not loaded. Use a smaller matching tool or a compatible route."
+            "reason": format!("The provider cannot offer this tool schema, or its added wire schema exceeds {}KiB. It was not loaded. Use a smaller matching tool or a compatible route.", crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 1024)
         })
     }));
     unavailable_references.extend(cache_held.iter().map(|name| {
         json!({
             "type": "unavailable_tool_reference",
             "tool_name": name,
-            "reason": "Not loaded in this batch: recently used tools fill the soft toolbox target (8 deferred tools, 16KiB of added wire schemas). Call tool_search with tool_search_input to load this match on its own; recently used tools can exceed these soft targets.",
+            "reason": format!("Not loaded in this batch: recently used tools fill the soft toolbox target ({}). Call tool_search with tool_search_input to load this match on its own; recently used tools can exceed these soft targets.", toolbox_soft_targets()),
             "tool_search_input": readmission_search_input(name),
         })
     }));
@@ -1698,7 +2164,7 @@ fn execute_tool_search_inner(
                 json!({
                     "type": "evicted_tool_reference",
                     "tool_name": name,
-                    "reason": "Removed from the current deferred toolbox while making room under its soft targets (8 deferred tools, 16KiB of added wire schemas). Call tool_search with tool_search_input to load it again; a later admission supersedes this notice.",
+                    "reason": format!("Removed from the current deferred toolbox while making room under its soft targets ({}); MCP tools are removed before first-party tools. Call tool_search with tool_search_input to load it again; a later admission supersedes this notice.", toolbox_soft_targets()),
                     "tool_search_input": readmission_search_input(name),
                 })
             })
@@ -1713,9 +2179,17 @@ fn execute_tool_search_inner(
     })
 }
 
+fn toolbox_soft_targets() -> String {
+    format!(
+        "{} deferred tools, {}KiB of added wire schemas",
+        crate::core::session::TOOL_ACTIVATION_CACHE_MAX_NAMES,
+        crate::core::session::TOOL_ACTIVATION_CACHE_MAX_SCHEMA_BYTES / 1024
+    )
+}
+
 fn readmission_search_input(name: &str) -> Value {
     json!({
-        "query": format!("^{}\\n", regex::escape(&name.to_lowercase())),
+        "query": format!("^{}$", regex::escape(name)),
         "match": "regex",
         "max_results": 1,
     })
@@ -1738,9 +2212,10 @@ pub(super) fn describe_tools_for_program(
     )?)
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
+    let no_active = HashSet::new();
     let names = match match_kind {
-        "regex" => discover_tools_with_regex(catalog, query, max_results)?,
-        "bm25" => discover_tools_with_bm25_like(catalog, query, max_results),
+        "regex" => discover_tools_with_regex(catalog, query, max_results, &no_active, None)?,
+        "bm25" => discover_tools_with_bm25_like(catalog, query, max_results, &no_active, None),
         other => {
             return Err(ToolError::invalid_input(format!(
                 "Unsupported match algorithm '{other}'. Expected one of: bm25, regex"

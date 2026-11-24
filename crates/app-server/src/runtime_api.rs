@@ -20,7 +20,7 @@ use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
@@ -59,9 +59,10 @@ use codewhale_config::ProviderKind;
 #[cfg(test)]
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_engine::automation_manager::{
-    AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
-    CreateAutomationRequest, CreateDelayedTriggerRequest, DelayedTriggerRecord,
-    DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
+    AutomationManager, AutomationRecord, AutomationRecordView, AutomationRunRecord,
+    AutomationSchedulerConfig, CreateAutomationRequest, CreateDelayedTriggerRequest,
+    DelayedTriggerRecord, DelayedTriggerStatus, SharedAutomationManager, UpdateAutomationRequest,
+    spawn_scheduler,
 };
 use codewhale_engine::fleet::executor::{FleetExecutor, configured_codewhale_binary};
 use codewhale_engine::fleet::ledger::{
@@ -78,13 +79,15 @@ use codewhale_engine::fleet::worker_runtime::fleet_write_roots;
 use codewhale_engine::mcp::McpPool;
 use codewhale_engine::runtime_threads::{
     MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
-    manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
-    manager::RuntimeThreadManagerConfig, manager::RuntimeTurnOperationReceipt,
-    manager::SharedRuntimeThreadManager, manager::StartTurnRequest, manager::StartWatchTurnRequest,
-    manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
-    manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
+    manager::CreateThreadRequest, manager::ExternalApprovalDecision,
+    manager::RuntimeThreadCreateConflict, manager::RuntimeThreadCreateRouteConflict,
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    manager::RuntimeTurnOperationReceipt, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest, manager::StartWatchTurnRequest, manager::SteerTurnRequest,
+    manager::ThreadDetail, manager::ThreadListFilter, manager::UpdateThreadRequest,
+    manager::UsageGroupBy, manager::UsageTotals,
 };
-use codewhale_runtime::config::{Config, normalize_model_name_for_provider, validate_route};
+use codewhale_runtime::config::{Config, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
 // its rows from `ThreadListFacts` instead of walking item records here.
 #[cfg(test)]
@@ -129,7 +132,9 @@ mod members;
 mod memory_lens;
 mod mobile;
 mod plans;
+mod plugin_index;
 mod plugins;
+mod remote_pairings;
 pub(crate) mod review;
 mod secrets;
 pub use self::secrets::{SetAccountModelAccessRequest, install_account_model_access};
@@ -171,6 +176,15 @@ CODEWHALE_RUNTIME_TOKEN (the legacy alias is removed in 0.10.0).";
 struct RuntimeTokenEnvironment {
     token: Option<String>,
     legacy_alias_used: bool,
+}
+
+const DESKTOP_BROWSER_OWNER_ENV: &str = "CODEWHALE_BROWSER_OWNER_PUBLIC_KEY";
+
+fn desktop_browser_owner_env() -> Option<String> {
+    std::env::var(DESKTOP_BROWSER_OWNER_ENV)
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| crate::is_valid_desktop_browser_owner_key(key))
 }
 
 fn runtime_token_environment(lookup: &dyn Fn(&str) -> Option<String>) -> RuntimeTokenEnvironment {
@@ -223,6 +237,7 @@ pub struct RuntimeApiState {
     automations: SharedAutomationManager,
     sub_agent_manager: SharedSubAgentManager,
     runtime_token: Option<String>,
+    desktop_browser_owner: Option<String>,
     skill_state: Arc<Mutex<SkillStateStore>>,
     auth_required: bool,
     bind_host: String,
@@ -252,6 +267,8 @@ pub struct RuntimeApiState {
     provider_connect: secrets::ProviderConnect,
     #[cfg(test)]
     compat_stream_test_hook: Option<tokio::sync::mpsc::UnboundedSender<CompatStreamTestPoint>>,
+    #[cfg(test)]
+    automation_admission_test_hook: Arc<parking_lot::Mutex<Option<AutomationAdmissionTestHook>>>,
 }
 
 // This is a cache bound inside the existing owner, matching the daemon's
@@ -386,7 +403,7 @@ impl RuntimeWorkspaceScopes {
         let owner = self.clone();
         codewhale_runtime::runtime_control::owner_work(move || {
             let (canonical, directory) =
-                codewhale_util::workspace_dir::open_workspace_directory(&lexical)?;
+                codewhale_util::workspace_dir::open_pinned_workspace_directory(&lexical)?;
             let directory = Arc::new(directory);
             let mut scopes = owner.scopes.lock();
             if let Some(scope) = scopes.get(&lexical) {
@@ -861,6 +878,21 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             since_seq,
         ))
     }
+    fn events_in_workspace(
+        &self,
+        workspace: PathBuf,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        Box::pin(owner_calls::events_in_workspace(
+            self.state.clone(),
+            workspace,
+            thread_id,
+            since_seq,
+        ))
+    }
     fn validate_selection<'a>(
         &'a self,
         selection: &'a crate::RuntimeOwnerFrontendSelection,
@@ -970,6 +1002,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 "immutable ACP-base owner cannot admit ordinary listener turns"
             );
             let workspace = selection.workspace;
+            let selection_browser_owner = selection.desktop_browser_owner;
             let options = RuntimeApiOptions {
                 host: selection.host,
                 port: selection.port,
@@ -1011,6 +1044,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 && options.cors_origins == self.state.cors_origins
                 && workspace == self.state.workspace
                 && same_auth
+                && selection_browser_owner == self.state.desktop_browser_owner
             {
                 let ready = RuntimeFrontendReady {
                     endpoint: original_addr,
@@ -1036,6 +1070,7 @@ impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             state.workspace = workspace.clone();
             state.workspace_scope = workspace_scope;
             state.runtime_token = resolved.token.clone();
+            state.desktop_browser_owner = selection_browser_owner;
             state.auth_required = resolved.token.is_some();
             state.bind_host = options.host;
             state.bind_port = endpoint.port();
@@ -1194,8 +1229,8 @@ pub struct RuntimeApiOptions {
     pub port: u16,
     pub workers: usize,
     /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Populated by `--cors-origin` (repeatable),
+    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`).
+    /// Populated by `--cors-origin` (repeatable),
     /// `CODEWHALE_CORS_ORIGINS` (comma-separated, `DEEPSEEK_CORS_ORIGINS`
     /// as alias), and `[runtime_api] cors_origins` in `config.toml`.
     /// Whalescale#255 / #561.
@@ -1539,7 +1574,16 @@ struct DecideApprovalBody {
     #[serde(default)]
     remember: bool,
     #[serde(default)]
+    remember_scope: Option<RememberScope>,
+    #[serde(default)]
     client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RememberScope {
+    Thread,
+    Workspace,
 }
 
 #[derive(Debug, Serialize)]
@@ -1548,6 +1592,37 @@ struct DecideApprovalResponse {
     approval_id: String,
     decision: String,
     delivered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    standing_rules: Option<Vec<codewhale_execpolicy::ToolAskRule>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemovePermissionRuleBody {
+    token: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApproveAutoReviewRetryBody {
+    #[serde(alias = "receipt_id", alias = "call_digest")]
+    target: String,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApproveAutoReviewRetryResponse {
+    ok: bool,
+    thread_id: String,
+    grant: codewhale_engine::core::authority::auto_review::AutoReviewRetryGrant,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoReviewBlocksResponse {
+    thread_id: String,
+    blocks: Vec<codewhale_engine::core::authority::auto_review::AutoReviewBlockedAction>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1622,6 +1697,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         session_provider_keys: false,
         threads: true,
         thread_create_idempotency: true,
+        exact_route_thread_create: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
         thread_scoped_reads: true,
@@ -1635,6 +1711,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         worktrees: true,
         job_operations: true,
         thread_shell_consent: true,
+        thread_standing_context: true,
         turns: true,
         turn_operation_idempotency: true,
         turn_operation_lookup: true,
@@ -1668,6 +1745,9 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         // SSE journal frames carry their durable `seq` as the event id, and the
         // thread event stream resumes from `Last-Event-ID`.
         event_stream_resume: true,
+        permission_rules: true,
+        approval_remember_workspace: true,
+        approval_grants_list: true,
     }
 }
 
@@ -2006,20 +2086,26 @@ pub(crate) fn open_runtime_threads_for_host(
     // thread manager can spawn any of those engines, matching interactive and
     // headless exec startup.
     let workshop_activation = install_runtime_server_workshop_budgets(config);
-    let profile = if acp {
-        codewhale_engine::core::engine::EngineHostProfile::Acp
+    let manager = Arc::new(if acp {
+        RuntimeThreadManager::open_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            codewhale_engine::core::engine::EngineHostProfile::Acp,
+            preheld_lock,
+            binding,
+        )?
     } else {
-        codewhale_engine::core::engine::EngineHostProfile::Normal
-    };
-    let manager = Arc::new(RuntimeThreadManager::open_host(
-        config.clone(),
-        workspace,
-        manager_config,
-        plugin_registry,
-        profile,
-        preheld_lock,
-        binding,
-    )?);
+        RuntimeThreadManager::open_owner_host(
+            config.clone(),
+            workspace,
+            manager_config,
+            plugin_registry,
+            preheld_lock,
+            binding,
+        )?
+    });
     if let Some(skills_dir) = config.bundled_skills_install_dir()
         && let Err(error) =
             codewhale_skills::install_system_skills(&skills_dir, &config.skills_config().bundled)
@@ -2289,6 +2375,7 @@ pub async fn run_http_server(
                     insecure_no_auth: options.insecure_no_auth,
                     mobile: options.mobile,
                     web: options.web,
+                    desktop_browser_owner: desktop_browser_owner_env(),
                 };
                 drop(control);
                 crate::daemon_client::connect_listener_if_published(
@@ -2425,6 +2512,7 @@ pub async fn run_http_server(
         automations,
         sub_agent_manager,
         runtime_token: runtime_token.clone(),
+        desktop_browser_owner: desktop_browser_owner_env(),
         skill_state: Arc::new(Mutex::new(skill_state)),
         auth_required: auth_enabled,
         bind_host: options.host.clone(),
@@ -2442,6 +2530,8 @@ pub async fn run_http_server(
         provider_connect: Default::default(),
         #[cfg(test)]
         compat_stream_test_hook: None,
+        #[cfg(test)]
+        automation_admission_test_hook: Default::default(),
     };
     #[cfg(any(unix, windows))]
     let (owner_endpoint, control_state) = bind_captured_runtime_frontends(
@@ -2619,7 +2709,7 @@ fn selected_control_socket(options: &RuntimeApiOptions) -> Option<PathBuf> {
 /// `selected_store` is the store root this run resolved, the same value the
 /// thread manager will open.
 #[cfg(unix)]
-async fn store_selected_control_socket(
+pub(crate) async fn store_selected_control_socket(
     explicit: Option<PathBuf>,
     selected_store: &FsPath,
 ) -> Result<PathBuf> {
@@ -3134,6 +3224,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(jobs::kill_thread_job),
         )
         .route(
+            "/v1/threads/{id}/jobs/{job_id}/keepalive",
+            post(jobs::keepalive_thread_job),
+        )
+        .route(
             "/v1/threads/{id}/jobs/{job_id}/resize",
             post(jobs::resize_thread_job),
         )
@@ -3161,6 +3255,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(terminal::terminal_kill),
         )
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
+        .route(
+            "/v1/threads/{id}/context/standing",
+            get(context::get_thread_standing_context),
+        )
         .route(
             "/v1/threads/{id}/members",
             post(members::start_thread_member)
@@ -3207,6 +3305,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/voice/dictate", post(voice::voice_dictate))
         .route("/v1/voice/send", post(voice::voice_send))
         .route("/v1/voice/control", post(voice::voice_control))
+        .route(
+            "/v1/voice/transcribe",
+            post(voice::voice_transcribe).layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/v1/voice/tts",
+            post(voice::voice_tts).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
@@ -3303,9 +3409,20 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/goals", get(list_goals))
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{approval_id}", post(decide_approval))
+        .route("/v1/approval-grants", get(list_approval_grants))
+        .route("/v1/permissions/rules", get(list_permission_rules))
+        .route("/v1/permissions/rules/remove", post(remove_permission_rule))
         .route(
             "/v1/threads/{id}/approval-grants/{grant_id}",
             delete(revoke_approval_grant),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/blocks",
+            get(list_auto_review_blocks),
+        )
+        .route(
+            "/v1/threads/{id}/auto-review/approve",
+            post(approve_auto_review_retry),
         )
         .route(
             "/v1/user-input/{thread_id}/{input_id}",
@@ -3372,6 +3489,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/skills/{name}/audit", get(audit_skill_api))
         .route("/v1/apps/mcp/tools", get(list_mcp_tools))
         .route("/v1/apps/plugins", get(plugins::list_plugins))
+        .route("/v1/apps/plugin-index", get(plugin_index::get_plugin_index))
         .route("/v1/apps/avatars", get(avatars::list_avatars))
         .route(
             "/v1/apps/avatars/{handle}/atlases/{page}",
@@ -3466,6 +3584,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/run", post(run_automation))
         .route("/v1/automations/{id}/pause", post(pause_automation))
         .route("/v1/automations/{id}/resume", post(resume_automation))
+        .route("/v1/automations/{id}/adopt", post(adopt_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/automations/missed", get(automations::list_missed))
         .route("/v1/automations/{id}/missed", get(automations::get_missed))
@@ -3576,6 +3695,27 @@ pub fn build_router(state: RuntimeApiState) -> Router {
                 .delete(clear_memory),
         )
         .route("/v1/memory/{id}", get(get_memory_entry))
+        .route(
+            "/v1/dsh/remote/pairings",
+            get(remote_pairings::list_pairings).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}/present",
+            post(remote_pairings::present_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
+        .route(
+            "/v1/dsh/remote/pairings/{grant}",
+            delete(remote_pairings::withdraw_pairing).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_runtime_master_bearer,
+            )),
+        )
         .merge(memory_lens::routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3602,6 +3742,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/__codewhale/mobile/bootstrap/{nonce}",
             get(exchange_mobile_bootstrap),
+        )
+        .route(
+            "/__codewhale/mobile/pair/{secret}",
+            get(remote_pairings::redeem_pairing),
         )
         .route("/__codewhale/mobile/session", post(exchange_mobile_session))
         .route(
@@ -3672,11 +3816,18 @@ async fn exchange_mobile_bootstrap(
         }
     };
 
+    mobile_redirect_response(session)
+}
+
+fn mobile_redirect_response(session: mobile::MobileSessionBootstrap) -> Response {
     let location = format!(
         "/mobile#request_proof={}&stream_ticket={}",
         session.request_proof, session.stream_ticket
     );
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = (StatusCode::SEE_OTHER, "").into_response();
     response.headers_mut().insert(
         header::LOCATION,
@@ -3710,8 +3861,17 @@ async fn refresh_mobile_stream_ticket(
     let Some(mobile_state) = state.mobile.as_ref() else {
         return mobile_not_found();
     };
-    if !auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
-        return mobile_unauthorized();
+    match auth::mobile_session_request_is_authorized(&req, &state, mobile_state) {
+        auth::RuntimeAuthDecision::Allow(_) => {}
+        auth::RuntimeAuthDecision::Forbidden(message) => {
+            let mut response =
+                (StatusCode::FORBIDDEN, Json(json!({ "error": message }))).into_response();
+            secure_mobile_response(&mut response);
+            return response;
+        }
+        auth::RuntimeAuthDecision::Unauthorized => {
+            return mobile_unauthorized();
+        }
     }
     let ticket = mobile_state.refresh_stream_ticket(
         req.headers()
@@ -3734,7 +3894,10 @@ async fn refresh_mobile_stream_ticket(
 }
 
 fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response {
-    let cookie = mobile::mobile_session_cookie(&session.session_cookie);
+    let cookie = mobile::mobile_session_cookie_with_max_age(
+        &session.session_cookie,
+        session.session_ttl_seconds,
+    );
     let mut response = Json(MobileSessionResponse {
         request_proof: session.request_proof,
         stream_ticket: session.stream_ticket,
@@ -3750,7 +3913,7 @@ fn mobile_session_response(session: mobile::MobileSessionBootstrap) -> Response 
     response
 }
 
-fn mobile_not_found() -> Response {
+pub(super) fn mobile_not_found() -> Response {
     secured_mobile_text(StatusCode::NOT_FOUND, "not found")
 }
 
@@ -3760,13 +3923,13 @@ fn mobile_unauthorized() -> Response {
     response
 }
 
-fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
+pub(super) fn secured_mobile_text(status: StatusCode, body: &'static str) -> Response {
     let mut response = (status, body).into_response();
     secure_mobile_response(&mut response);
     response
 }
 
-fn secure_mobile_response(response: &mut Response) {
+pub(super) fn secure_mobile_response(response: &mut Response) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -3867,12 +4030,30 @@ async fn refresh_local_default_catalog(
 }
 
 fn runtime_request_model(config: &Config, requested: Option<&str>) -> Result<String, ApiError> {
-    if let Some(model) = requested {
-        return Ok(model.to_string());
-    }
     let identity = config
         .active_provider_identity()
         .map_err(ApiError::bad_request)?;
+    if let Some(model) = requested {
+        let base_url = config.base_url_for_route(&identity);
+        return codewhale_config::resolve_model_for_configured_route(
+            identity.provider,
+            identity.key.as_str(),
+            &base_url,
+            config.custom_models.as_deref(),
+            model,
+        )
+        .map(|resolved| resolved.wire_id)
+        .map_err(|error| {
+            ApiError::bad_request(codewhale_config::format_configured_model_error(
+                identity.key.as_str(),
+                model,
+                &error,
+            ))
+        });
+    }
+    if let Some(error) = config.configured_model_error() {
+        return Err(ApiError::bad_request(error));
+    }
     let model = provider_default_model_for_api(config, &identity);
     if model.is_empty() {
         return Err(ApiError::bad_request(
@@ -3920,13 +4101,15 @@ async fn create_thread(
     if req.mode.as_ref().is_none_or(|m| m.trim().is_empty()) {
         req.mode = Some("agent".to_string());
     }
-    refresh_local_default_catalog(
-        &state,
-        req.model.as_deref(),
-        req.model_provider.as_deref(),
-        req.model_provider_id.as_deref(),
-    )
-    .await;
+    if req.route_selection.is_none() {
+        refresh_local_default_catalog(
+            &state,
+            req.model.as_deref(),
+            req.model_provider.as_deref(),
+            req.model_provider_id.as_deref(),
+        )
+        .await;
+    }
 
     let thread = state
         .runtime_threads
@@ -3939,9 +4122,9 @@ async fn create_thread(
         .map_err(|e| {
             if let Some(refusal) = external_agent_refusal(&e).or_else(|| mode_refusal(&e)) {
                 refusal
-            } else if e
-                .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
-            {
+            } else if e.is::<RuntimeThreadCreateRouteConflict>() {
+                ApiError::conflict(e.to_string()).with_code("route_selection_stale")
+            } else if e.is::<RuntimeThreadCreateConflict>() {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
@@ -3952,14 +4135,22 @@ async fn create_thread(
 
 async fn list_threads(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadsQuery>,
 ) -> Result<Json<Vec<ThreadRecord>>, ApiError> {
     let filter = resolve_thread_filter(query.include_archived, query.archived_only);
-    let threads = state
+    let scan_limit = if scope.is_some() { None } else { query.limit };
+    let mut threads = state
         .runtime_threads
-        .list_threads(filter, query.limit)
+        .list_threads(filter, scan_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(Extension(scope)) = scope {
+        threads.retain(|thread| thread.id == scope.session_id);
+        if let Some(limit) = query.limit {
+            threads.truncate(limit);
+        }
+    }
     Ok(Json(threads))
 }
 
@@ -4028,6 +4219,7 @@ fn distinct_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 
 async fn list_threads_summary(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Query(query): Query<ThreadSummaryQuery>,
 ) -> Result<Json<Vec<ThreadSummary>>, ApiError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
@@ -4062,7 +4254,7 @@ async fn list_threads_summary(
     //
     // Match on the thread record *before* harvesting row facts. Preview is
     // filled only for rows that are returned; it is not a search key.
-    let scan_limit = if search.is_some() || thread_ids.is_some() {
+    let scan_limit = if scope.is_some() || search.is_some() || thread_ids.is_some() {
         None
     } else {
         Some(limit)
@@ -4075,6 +4267,11 @@ async fn list_threads_summary(
 
     let mut rows = Vec::new();
     for thread in threads {
+        if let Some(Extension(scope)) = &scope
+            && thread.id != scope.session_id
+        {
+            continue;
+        }
         if rows.len() >= limit {
             break;
         }
@@ -5875,6 +6072,10 @@ struct CommandCatalogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    workspace_sourced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }
 
@@ -5933,6 +6134,8 @@ fn command_catalog(
             shadowed_by,
             shadowed_aliases,
             origin: None,
+            plugin_id: None,
+            workspace_sourced: false,
             registration_id: None,
         });
     }
@@ -5956,6 +6159,8 @@ fn command_catalog(
             shadowed_by: None,
             shadowed_aliases: Vec::new(),
             origin: None,
+            plugin_id: command.plugin_id.clone(),
+            workspace_sourced: command.workspace_sourced,
             registration_id: None,
         });
     }
@@ -5993,10 +6198,14 @@ async fn list_commands(
     };
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let plugins = state.plugin_discovery.registry_for_workspace(&workspace);
     let commands = tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let mut commands = command_catalog(&catalog.builtins(), &catalog.user_commands(&workspace));
+        let mut commands = command_catalog(
+            &catalog.builtins(),
+            &catalog.user_commands_with_plugins(&workspace, &plugins),
+        );
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
             *counts
@@ -6038,6 +6247,8 @@ async fn list_commands(
                 shadowed_by: None,
                 shadowed_aliases: Vec::new(),
                 origin: Some(reference.origin.clone()),
+                plugin_id: Some(reference.plugin_id.clone()),
+                workspace_sourced: false,
                 registration_id: query
                     .thread_id
                     .as_deref()
@@ -6257,17 +6468,23 @@ async fn list_hooks(
 async fn list_modes(
     State(state): State<RuntimeApiState>,
 ) -> Json<codewhale_engine::conversation_modes::ConversationModeTable> {
+    let plugin_creator_enabled = state
+        .config
+        .read()
+        .features()
+        .enabled(codewhale_runtime::features::Feature::PluginCreator);
     Json(
         codewhale_engine::conversation_modes::current_table(
             state.runtime_threads.extension_host_options(),
+            plugin_creator_enabled,
         )
         .await,
     )
 }
 
-async fn list_skills(
-    State(state): State<RuntimeApiState>,
-) -> Result<Json<SkillsResponse>, ApiError> {
+fn discover_skills_snapshot(
+    state: &RuntimeApiState,
+) -> (PathBuf, codewhale_skills::SkillRegistry, Vec<PathBuf>) {
     let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
@@ -6283,25 +6500,40 @@ async fn list_skills(
         &skills_config,
         Some(plugin_registry.as_ref()),
     );
-    let mut skill_state = state.skill_state.lock().await;
-    skill_state
-        .refresh()
-        .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
-    let skills = registry
-        .list()
-        .iter()
-        .map(|skill| {
-            let enabled = skill_state
-                .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
-            skill_entry_for(skill, enabled, &skills_dir)
-        })
-        .collect();
-    Ok(Json(SkillsResponse {
-        directory: skills_dir,
-        directories,
-        warnings: registry.warnings().to_vec(),
-        skills,
-    }))
+    (skills_dir, registry, directories)
+}
+
+async fn list_skills(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let mut skill_state = state.skill_state.blocking_lock();
+        skill_state
+            .refresh()
+            .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
+        let skills = registry
+            .list()
+            .iter()
+            .map(|skill| {
+                let enabled = skill_state
+                    .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
+                skill_entry_for(skill, enabled, &skills_dir)
+            })
+            .collect();
+        Ok(Json(SkillsResponse {
+            directory: skills_dir,
+            directories,
+            warnings: registry.warnings().to_vec(),
+            skills,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("list skills task failed: {error}")))?
 }
 
 async fn set_skill_enabled(
@@ -6309,37 +6541,31 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let (skills_dir, skills_config) = {
-        let config = state.config.read();
-        let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let skills_config = config.skills_config();
-        (skills_dir, skills_config)
-    };
-    let plugin_registry = state
-        .plugin_discovery
-        .registry_for_workspace(&state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(
-        &state.workspace,
-        &skills_dir,
-        &skills_config,
-        Some(plugin_registry.as_ref()),
-    );
-    let exists = registry.list().iter().any(|skill| skill.name == name);
-    if !exists {
-        return Err(ApiError::not_found(format!(
-            "skill '{name}' not found in searched directories: {}",
-            format_skill_search_paths(&directories)
-        )));
-    }
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (_skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let exists = registry.list().iter().any(|skill| skill.name == name);
+        if !exists {
+            return Err(ApiError::not_found(format!(
+                "skill '{name}' not found in searched directories: {}",
+                format_skill_search_paths(&directories)
+            )));
+        }
 
-    let mut store = state.skill_state.lock().await;
-    store
-        .set_enabled(&name, req.enabled)
-        .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
-    Ok(Json(SetSkillEnabledResponse {
-        name,
-        enabled: req.enabled,
-    }))
+        let mut store = state.skill_state.blocking_lock();
+        store
+            .set_enabled(&name, req.enabled)
+            .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
+        Ok(Json(SetSkillEnabledResponse {
+            name,
+            enabled: req.enabled,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("set skill enabled task failed: {error}")))?
 }
 
 /// `GET /v1/skills/{name}` — one skill's full routing metadata plus its body.
@@ -6362,21 +6588,7 @@ async fn get_skill_detail(
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let (skills_dir, skills_config) = {
-            let config = state.config.read();
-            let skills_dir = resolve_skills_dir(&config, &state.workspace);
-            let skills_config = config.skills_config();
-            (skills_dir, skills_config)
-        };
-        let plugin_registry = state
-            .plugin_discovery
-            .registry_for_workspace(&state.workspace);
-        let (registry, directories) = discover_skills_for_runtime_api(
-            &state.workspace,
-            &skills_dir,
-            &skills_config,
-            Some(plugin_registry.as_ref()),
-        );
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
         let Some(skill) = registry.get(&name) else {
             return Err(ApiError::not_found(format!(
                 "skill '{name}' not found in searched directories: {}",
@@ -6979,8 +7191,45 @@ async fn list_approvals(
     Ok(Json(rows))
 }
 
+fn resolve_approval_responder(
+    auth_caller: auth::RuntimeAuthCaller,
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    match auth_caller {
+        auth::RuntimeAuthCaller::MasterOrLocal => Ok(client),
+        auth::RuntimeAuthCaller::WebSession => match client {
+            None | Some(ApprovalResponder::Web) => Ok(Some(ApprovalResponder::Web)),
+            Some(_) => Err(
+                ApiError::forbidden("web session cannot claim another client surface")
+                    .with_code("owner_required"),
+            ),
+        },
+        auth::RuntimeAuthCaller::MobileSession => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(Some(ApprovalResponder::Phone))
+        }
+        auth::RuntimeAuthCaller::DeviceClient => {
+            if client.is_some_and(ApprovalResponder::is_owner_surface) {
+                return Err(
+                    ApiError::forbidden("only the owner surface may answer this approval")
+                        .with_code("owner_required"),
+                );
+            }
+            Ok(client)
+        }
+    }
+}
+
 async fn decide_approval(
     State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
     Path(approval_id): Path<String>,
     Json(req): Json<DecideApprovalBody>,
 ) -> Result<Json<DecideApprovalResponse>, ApiError> {
@@ -6997,9 +7246,126 @@ async fn decide_approval(
             )));
         }
     };
+    if req.remember_scope.is_some() && !req.remember {
+        return Err(
+            ApiError::bad_request("remember_scope requires \"remember\": true")
+                .with_code("invalid_remember_scope"),
+        );
+    }
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.remember_scope == Some(RememberScope::Workspace) {
+        if !matches!(decision, ExternalApprovalDecision::Allow { .. }) {
+            return Err(ApiError::bad_request(
+                "remember_scope \"workspace\" is valid only with decision \"allow\"",
+            )
+            .with_code("invalid_remember_scope"));
+        }
+        return settle_approval_with_standing_rule(state, approval_id, responder)
+            .await
+            .map(Json);
+    }
     Ok(Json(
-        settle_approval_request(&state, approval_id, None, decision, req.client).await?,
+        settle_approval_request(&state, approval_id, None, decision, responder).await?,
     ))
+}
+
+async fn settle_approval_with_standing_rule(
+    state: RuntimeApiState,
+    approval_id: String,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+) -> Result<DecideApprovalResponse, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    let id = approval_id.clone();
+    let settled = tokio::spawn(async move {
+        runtime_threads
+            .deliver_approval_with_standing_rule(&id, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("standing rule task failed"))?
+    .map_err(map_permission_rule_error)?;
+    let Some((delivered, rules)) = settled else {
+        return Err(ApiError::not_found(format!(
+            "no pending approval with id '{approval_id}'"
+        )));
+    };
+    Ok(DecideApprovalResponse {
+        ok: true,
+        approval_id,
+        decision: "allow".to_owned(),
+        delivered,
+        standing_rules: Some(rules),
+    })
+}
+
+fn map_permission_rule_error(error: anyhow::Error) -> ApiError {
+    use codewhale_engine::runtime_threads::manager::{
+        ApprovalOwnerRequired, PermissionRulesUnavailable, StalePermissionToken,
+        StandingRuleIneligible,
+    };
+    if error.is::<ApprovalOwnerRequired>() {
+        ApiError::forbidden(error.to_string()).with_code("owner_required")
+    } else if error.is::<StandingRuleIneligible>() {
+        ApiError::unprocessable(error.to_string()).with_code("standing_rule_ineligible")
+    } else if error.is::<StalePermissionToken>() {
+        ApiError::conflict(error.to_string()).with_code("stale_permission_token")
+    } else if error.is::<PermissionRulesUnavailable>() {
+        ApiError::conflict(error.to_string()).with_code("permissions_unavailable")
+    } else if error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+    {
+        ApiError::conflict(error.to_string())
+    } else {
+        ApiError::internal(format!("permission rule update failed: {error:#}"))
+    }
+}
+
+async fn list_permission_rules(
+    State(state): State<RuntimeApiState>,
+) -> Json<codewhale_engine::runtime_threads::manager::PermissionRulesListing> {
+    Json(state.runtime_threads.list_permission_rules().await)
+}
+
+async fn remove_permission_rule(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Json(req): Json<RemovePermissionRuleBody>,
+) -> Result<Json<Value>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    if req.token.len() != 24
+        || !req
+            .token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(
+            ApiError::bad_request("token must be a listed removal token")
+                .with_code("invalid_permission_token"),
+        );
+    }
+    let runtime_threads = state.runtime_threads.clone();
+    let removed = tokio::spawn(async move {
+        runtime_threads
+            .remove_permission_rule_by_token(&req.token, responder)
+            .await
+    })
+    .await
+    .map_err(|_| ApiError::internal("permission removal task failed"))?
+    .map_err(map_permission_rule_error)?;
+    Ok(Json(
+        json!({ "ok": true, "removed": removed, "applied_to": "this_runtime" }),
+    ))
+}
+
+async fn list_approval_grants(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<codewhale_engine::runtime_threads::manager::StandingGrantsListing>, ApiError> {
+    let runtime_threads = state.runtime_threads.clone();
+    tokio::task::spawn_blocking(move || runtime_threads.list_standing_grants())
+        .await
+        .map(Json)
+        .map_err(|_| ApiError::internal("approval grant read task failed"))
 }
 
 async fn settle_approval_request(
@@ -7009,16 +7375,39 @@ async fn settle_approval_request(
     decision: ExternalApprovalDecision,
     responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 ) -> Result<DecideApprovalResponse, ApiError> {
+    settle_approval_request_in_workspace(state, approval_id, binding, decision, responder, None)
+        .await
+}
+
+async fn settle_approval_request_in_workspace(
+    state: &RuntimeApiState,
+    approval_id: String,
+    binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
+    decision: ExternalApprovalDecision,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
+    expected_workspace: Option<&FsPath>,
+) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_approval_from(&approval_id, binding, decision, responder)
+        .deliver_approval_from_workspace(
+            &approval_id,
+            binding,
+            decision,
+            responder,
+            expected_workspace,
+        )
         .await
         .map_err(|error| {
-            if error
-                .downcast_ref::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
-                .is_some()
+            if error.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                ApiError::forbidden(error.to_string()).with_code("workspace_mismatch")
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
             {
                 ApiError::forbidden(error.to_string())
+            } else if error
+                .is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>()
+            {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
             } else if error
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
@@ -7042,6 +7431,7 @@ async fn settle_approval_request(
         }
         .to_owned(),
         delivered,
+        standing_rules: None,
     })
 }
 
@@ -7064,6 +7454,37 @@ async fn revoke_approval_grant(
     Ok(Json(
         json!({ "ok": true, "grant_id": grant_id, "revoked": true }),
     ))
+}
+
+async fn list_auto_review_blocks(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<AutoReviewBlocksResponse>, ApiError> {
+    let blocks = state
+        .runtime_threads
+        .list_auto_review_blocks(&thread_id, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(AutoReviewBlocksResponse { thread_id, blocks }))
+}
+
+async fn approve_auto_review_retry(
+    State(state): State<RuntimeApiState>,
+    axum::Extension(auth_caller): axum::Extension<auth::RuntimeAuthCaller>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<ApproveAutoReviewRetryBody>,
+) -> Result<Json<ApproveAutoReviewRetryResponse>, ApiError> {
+    let responder = resolve_approval_responder(auth_caller, req.client)?;
+    let grant = state
+        .runtime_threads
+        .approve_auto_review_retry(&thread_id, &req.target, responder, None)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(ApproveAutoReviewRetryResponse {
+        ok: true,
+        thread_id,
+        grant,
+    }))
 }
 
 async fn submit_user_input(
@@ -7204,28 +7625,14 @@ fn mcp_management_config(
     .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
     let global = codewhale_engine::mcp::load_config(&global_path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
-    let project_path = codewhale_engine::mcp::workspace_mcp_config_path(&state.workspace);
-    let same_source = project_path == global_path
-        || project_path
-            .canonicalize()
-            .ok()
-            .zip(global_path.canonicalize().ok())
-            .is_some_and(|(project, global)| project == global);
-    let project = if !same_source
-        && codewhale_runtime::config::is_workspace_trusted(&state.workspace)
-    {
-        codewhale_engine::mcp::load_config(&project_path)
-            .map_err(|e| ApiError::internal(format!("Failed to load project MCP config: {e}")))?
-    } else {
-        codewhale_mcp::config::McpConfig::default()
-    };
+    let project = codewhale_engine::mcp::project_server_names(&global_path, &state.workspace);
     let origins = config
         .servers
         .iter()
         .map(|(name, server)| {
             let origin = if server.reviewed_plugin.is_some() {
                 "plugin"
-            } else if project.servers.contains_key(name) {
+            } else if project.contains(name) {
                 "project"
             } else if global.servers.contains_key(name) {
                 "global"
@@ -7784,8 +8191,13 @@ async fn register_desktop_browser_config(
             "MCP configuration changed; reload it before registering desktop tools",
         ));
     }
-    pool.add_desktop_browser_server_config(name, config, proof)
-        .map_err(ApiError::bad_request)?;
+    pool.add_desktop_browser_server_config_for_owner(
+        name,
+        config,
+        proof,
+        state.desktop_browser_owner.as_deref(),
+    )
+    .map_err(ApiError::bad_request)?;
     Ok(())
 }
 
@@ -8190,10 +8602,10 @@ fn apply_write_request_to_config(
 
 async fn list_automations(
     State(state): State<RuntimeApiState>,
-) -> Result<Json<Vec<AutomationRecord>>, ApiError> {
+) -> Result<Json<Vec<AutomationRecordView>>, ApiError> {
     let manager = state.automations.lock().await;
     let automations = manager
-        .list_automations()
+        .list_automation_views()
         .map_err(|e| ApiError::internal(format!("Failed to list automations: {e}")))?;
     Ok(Json(automations))
 }
@@ -8465,6 +8877,7 @@ async fn create_trigger(
         owner_session_id: Some(owner_session_id),
         parent_trigger_id: None,
         destination_thread_id: destination,
+        disallowed_tools: Vec::new(),
     };
     automation_mutation(
         &state,
@@ -8502,25 +8915,73 @@ fn map_trigger_err(err: anyhow::Error) -> ApiError {
     }
 }
 
+#[cfg(test)]
+struct AutomationAdmissionTestHook {
+    arrived: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+async fn automation_admission_test_point(state: &RuntimeApiState) {
+    let hook = { state.automation_admission_test_hook.lock().take() };
+    if let Some(hook) = hook {
+        let _ = hook.arrived.send(());
+        let _ = hook.resume.await;
+    }
+}
+
 async fn create_automation(
     State(state): State<RuntimeApiState>,
     headers: HeaderMap,
     Json(req): Json<CreateAutomationRequest>,
 ) -> Result<Response, ApiError> {
+    create_automation_in_workspace(state, headers, req, None).await
+}
+
+async fn create_automation_in_workspace(
+    state: RuntimeApiState,
+    headers: HeaderMap,
+    req: CreateAutomationRequest,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         "POST /v1/automations",
         &req,
         StatusCode::CREATED,
-        |e| ApiError::bad_request(e.to_string()),
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                ApiError::bad_request(e.to_string())
+            }
+        },
         async {
-            state
-                .automations
-                .lock()
-                .await
-                .create_automation(req.clone())
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let req = req.clone();
+            let expected_workspace = expected_workspace.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => runtime.with_thread_in_workspace(
+                    req.destination_thread_id.as_deref().ok_or(
+                        codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                    )?,
+                    workspace,
+                    |thread| {
+                        anyhow::ensure!(!thread.archived, "destination thread is archived");
+                        manager.create_automation(req.clone())
+                    },
+                ),
+                None => manager.create_automation(req.clone()),
+            })
+            .await
+            .context("automation create admission worker failed")?
         },
     )
     .await
@@ -8529,9 +8990,11 @@ async fn create_automation(
 async fn get_automation(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-) -> Result<Json<AutomationRecord>, ApiError> {
+) -> Result<Json<AutomationRecordView>, ApiError> {
     let manager = state.automations.lock().await;
-    let automation = manager.get_automation(&id).map_err(map_automation_err)?;
+    let automation = manager
+        .get_automation_view(&id)
+        .map_err(map_automation_err)?;
     Ok(Json(automation))
 }
 
@@ -8602,19 +9065,66 @@ async fn set_automation_status(
     action: &str,
     status: codewhale_engine::automation_manager::AutomationStatus,
 ) -> Result<Response, ApiError> {
+    set_automation_status_in_workspace(state, id, query, headers, action, status, None).await
+}
+
+async fn set_automation_status_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: AutomationPreconditionQuery,
+    headers: HeaderMap,
+    action: &str,
+    status: codewhale_engine::automation_manager::AutomationStatus,
+    expected_workspace: Option<PathBuf>,
+) -> Result<Response, ApiError> {
     let req = UpdateAutomationRequest {
         status: Some(status),
         expected_revision: query.expected_revision,
         ..UpdateAutomationRequest::default()
     };
+    #[cfg(test)]
+    if expected_workspace.is_some() {
+        automation_admission_test_point(&state).await;
+    }
     automation_mutation(
         &state,
         &headers,
         &format!("POST /v1/automations/{id}/{action}"),
         &query.expected_revision,
         StatusCode::OK,
-        map_automation_err,
-        async { state.automations.lock().await.update_automation(&id, req) },
+        |e| {
+            if e.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+                map_thread_err(e)
+            } else {
+                map_automation_err(e)
+            }
+        },
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let runtime = state.runtime_threads.clone();
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || match expected_workspace.as_deref() {
+                Some(workspace) => {
+                    let record = manager.get_automation(&id)?;
+                    if record.cwds.as_slice() != [workspace.to_path_buf()] {
+                        return Err(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch
+                                .into(),
+                        );
+                    }
+                    runtime.with_thread_in_workspace(
+                        record.destination_thread_id.as_deref().ok_or(
+                            codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch,
+                        )?,
+                        workspace,
+                        |_| manager.update_automation(&id, req),
+                    )
+                }
+                None => manager.update_automation(&id, req),
+            })
+            .await
+            .context("automation status admission worker failed")?
+        },
     )
     .await
 }
@@ -8649,6 +9159,41 @@ async fn resume_automation(
         headers,
         "resume",
         codewhale_engine::automation_manager::AutomationStatus::Active,
+    )
+    .await
+}
+
+async fn adopt_automation(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(query): Query<AutomationPreconditionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let existing = state
+        .automations
+        .lock()
+        .await
+        .get_automation(&id)
+        .map_err(map_automation_err)?;
+    require_destination_thread(&state, existing.destination_thread_id.as_deref()).await?;
+    automation_mutation(
+        &state,
+        &headers,
+        &format!("POST /v1/automations/{id}/adopt"),
+        &query.expected_revision,
+        StatusCode::OK,
+        map_automation_err,
+        async {
+            let manager = state.automations.clone().lock_owned().await;
+            let id = id.clone();
+            let expected = query.expected_revision;
+            tokio::task::spawn_blocking(move || {
+                let adopted = manager.adopt_automation_if(&id, expected)?;
+                Ok(manager.record_view(adopted))
+            })
+            .await
+            .context("automation adopt worker failed")?
+        },
     )
     .await
 }
@@ -9072,6 +9617,11 @@ async fn update_thread(
         )
         .await
         .map_err(map_thread_err)?;
+    if thread.archived
+        && let Some(mobile) = state.mobile.as_ref()
+    {
+        mobile.revoke_remote_session(&id);
+    }
     Ok(Json(thread))
 }
 
@@ -9482,6 +10032,7 @@ fn attribute_window(
     workspace: &FsPath,
     turn_id: &str,
     receipts: &[codewhale_snapshot::WorkspaceSnapshotRef],
+    delegated: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<
     (
         std::collections::BTreeSet<PathBuf>,
@@ -9558,6 +10109,11 @@ fn attribute_window(
                 _ => SpanWriter::Nobody,
             }
         };
+    }
+    for path in delegated {
+        if foreign.remove(path) {
+            owned.insert(path.clone());
+        }
     }
     Ok((owned, foreign))
 }
@@ -9733,7 +10289,12 @@ fn patch_undo_workspace_files_impl(
             })
             .filter_map(|receipt| receipt.write_paths.as_ref())
             .flatten();
-        for raw in turn.declared_writes.iter().chain(receipt_writes) {
+        for raw in turn
+            .declared_writes
+            .iter()
+            .chain(&turn.delegated_writes)
+            .chain(receipt_writes)
+        {
             let covered = match declared_write_path(workspace, raw) {
                 Some(rel) => !repo.path_is_excluded(&rel).map_err(|e| {
                     ApiError::internal(format!(
@@ -9759,7 +10320,12 @@ fn patch_undo_workspace_files_impl(
     for (turn, receipts) in windows {
         let (pre, pre_label) = resolve(&turn.turn_id, &receipts[0])?;
         let (post, _) = resolve(&turn.turn_id, &receipts[receipts.len() - 1])?;
-        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts)?;
+        let delegated = turn
+            .delegated_writes
+            .iter()
+            .filter_map(|raw| declared_write_path(workspace, raw))
+            .collect();
+        let (owned, foreign) = attribute_window(workspace, &turn.turn_id, receipts, &delegated)?;
         segments.push(UndoSegment {
             turn_id: turn.turn_id.clone(),
             pre,
@@ -10186,19 +10752,13 @@ async fn retry_thread_turn(
     Json(req): Json<RetryTurnRequest>,
 ) -> Result<(StatusCode, Json<RetryTurnResponse>), ApiError> {
     let depth = req.depth.unwrap_or(0);
-    let (reservation, _) = state
-        .runtime_threads
-        .thread_restore_guard(&id)
-        .await
-        .map_err(map_thread_err)?;
     let runtime = state.runtime_threads.clone();
     let sessions_dir = state.sessions_dir.clone();
     let prompt = req.prompt;
     let (forked_thread, retry_prompt, original_user_images, max_output_tokens) =
         tokio::spawn(async move {
-            let _reservation = reservation;
             let prepared = runtime
-                .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &sessions_dir)
+                .prepare_retry_in_sessions_dir(&id, depth, &sessions_dir)
                 .await
                 .map_err(map_thread_err)?;
             let retry_prompt = prompt
@@ -10210,7 +10770,7 @@ async fn retry_thread_turn(
                 ));
             }
             let (forked_thread, _, original_user_images, max_output_tokens) = runtime
-                .publish_prepared_fork(prepared)
+                .publish_prepared_fork_guarded(prepared)
                 .await
                 .map_err(map_thread_err)?;
             Ok((
@@ -10293,8 +10853,55 @@ async fn start_thread_watch_turn(
 
 async fn start_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Json(value): Json<Value>,
+) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    let scope = scope.map(|Extension(remote_scope)| remote_scope);
+    if let Some(ref remote_scope) = scope
+        && remote_scope.session_id != id
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices are restricted to their paired conversation",
+        ));
+    }
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
+    start_thread_turn_for_caller(State(state), Path(id), Json(value), owner_composer, scope).await
+}
+
+fn turn_caller_is_owner_composer(
+    state: &RuntimeApiState,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
+    body: &Value,
+) -> Result<bool, ApiError> {
+    use codewhale_engine::runtime_threads::manager::ApprovalResponder;
+
+    let Some(axum::Extension(caller)) = caller else {
+        return Ok(false);
+    };
+    let client = match body.get("client") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<ApprovalResponder>(value.clone())
+                .map_err(|error| ApiError::unprocessable(format!("client: {error}")))?,
+        ),
+    };
+    if caller == auth::RuntimeAuthCaller::MasterOrLocal && state.runtime_token.is_none() {
+        return Ok(false);
+    }
+    Ok(
+        resolve_approval_responder(caller, client)?
+            .is_some_and(ApprovalResponder::is_owner_surface),
+    )
+}
+
+async fn start_thread_turn_for_caller(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(value): Json<Value>,
+    owner_composer: bool,
+    scope: Option<remote_pairings::RemoteSessionScope>,
 ) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
     if value.as_object().is_some_and(|object| {
         [
@@ -10302,6 +10909,8 @@ async fn start_thread_turn(
             "watchEvent",
             "input_provenance",
             "inputProvenance",
+            "input_authorship",
+            "inputAuthorship",
         ]
         .iter()
         .any(|key| object.contains_key(*key))
@@ -10314,6 +10923,8 @@ async fn start_thread_turn(
                 "watchEvent",
                 "input_provenance",
                 "inputProvenance",
+                "input_authorship",
+                "inputAuthorship",
             ]
             .iter()
             .any(|key| metadata.contains_key(*key))
@@ -10323,18 +10934,39 @@ async fn start_thread_turn(
             "Watch input requires the dedicated attested watch-turn endpoint",
         ));
     }
-    let req: StartTurnRequest = serde_json::from_value(value)
+    let mut req: StartTurnRequest = serde_json::from_value(value)
         .map_err(|error| ApiError::unprocessable(error.to_string()))?;
-    let (turn, replayed) = state
-        .runtime_threads
-        .start_turn_reporting_replay(&id, req)
-        .await
-        .map_err(map_thread_err)?;
+    if scope.is_some() {
+        sanitize_remote_turn_request(&mut req)?;
+    }
+    let expected_workspace = req.expected_workspace.clone();
+    let (turn, replayed) = if owner_composer {
+        state
+            .runtime_threads
+            .start_turn_owner_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    } else {
+        state
+            .runtime_threads
+            .start_turn_reporting_replay(&id, req)
+            .await
+            .map_err(map_thread_err)?
+    };
     let thread = state
         .runtime_threads
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
+    if expected_workspace
+        .as_ref()
+        .is_some_and(|expected| expected != &thread.workspace)
+    {
+        return Err(
+            ApiError::forbidden("thread is outside the selected workspace")
+                .with_code("workspace_mismatch"),
+        );
+    }
     // A replay acknowledges work already accepted rather than admitting new
     // work: 200 tells the client "this is the turn I already started", which
     // is what lets an ambiguous submit resolve without duplicate messages or
@@ -10352,6 +10984,33 @@ async fn start_thread_turn(
             idempotent_replay: replayed,
         }),
     ))
+}
+
+fn sanitize_remote_turn_request(req: &mut StartTurnRequest) -> Result<(), ApiError> {
+    if req.mode.is_some()
+        || req.permission_posture.is_some()
+        || req.allowed_tools.is_some()
+        || !req.dynamic_tools.is_empty()
+        || req.model.is_some()
+        || req.model_provider.is_some()
+        || req.model_provider_id.is_some()
+        || req.account_model_owner.is_some()
+        || req.profile_constitution.is_some()
+        || req.reasoning_effort.is_some()
+        || req.max_output_tokens.is_some()
+        || req.environment_id.is_some()
+        || req.allow_shell == Some(true)
+        || req.trust_mode == Some(true)
+        || req.auto_approve == Some(true)
+    {
+        return Err(ApiError::forbidden(
+            "paired remote devices cannot override turn posture, tools, model, or environment",
+        ));
+    }
+    req.allow_shell = None;
+    req.trust_mode = None;
+    req.auto_approve = None;
+    Ok(())
 }
 
 async fn get_thread_turn_operation(
@@ -10484,12 +11143,16 @@ async fn cancel_agent_mail(
 
 async fn steer_thread_turn(
     State(state): State<RuntimeApiState>,
+    caller: Option<axum::Extension<auth::RuntimeAuthCaller>>,
     Path((id, turn_id)): Path<(String, String)>,
-    Json(req): Json<SteerTurnRequest>,
+    Json(value): Json<Value>,
 ) -> Result<Json<TurnRecord>, ApiError> {
+    let owner_composer = turn_caller_is_owner_composer(&state, caller, &value)?;
+    let req: SteerTurnRequest = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(error.to_string()))?;
     let turn = state
         .runtime_threads
-        .steer_turn(&id, &turn_id, req)
+        .steer_turn_for_caller(&id, &turn_id, req, owner_composer)
         .await
         .map_err(map_thread_err)?;
     Ok(Json(turn))
@@ -10913,10 +11576,22 @@ async fn cancel_task(
 
 async fn stream_thread_events(
     State(state): State<RuntimeApiState>,
+    scope: Option<Extension<remote_pairings::RemoteSessionScope>>,
     Path(id): Path<String>,
     Query(mut query): Query<ThreadEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    if let Some(Extension(ref remote_scope)) = scope {
+        if remote_scope.session_id != id {
+            return Err(ApiError::forbidden(
+                "paired remote devices are restricted to their paired conversation",
+            ));
+        }
+        if !remote_pairings::scope_is_live(&state, remote_scope).await {
+            remote_pairings::evict_scope(&state, remote_scope);
+            return Err(ApiError::unauthorized("Remote device pairing has ended"));
+        }
+    }
     // Two clients, two cursors. A browser `EventSource` can only replay through
     // the `Last-Event-ID` header it sets on reconnect (the ids now ride the
     // journal frames below); every other client passes `since_seq`. An explicit
@@ -10926,9 +11601,18 @@ async fn stream_thread_events(
     query.since_seq = query.since_seq.or_else(|| last_event_id(&headers));
 
     let progress = query.progress;
-    let stream = open_thread_event_frames(state, id, query)
-        .await?
-        .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)));
+    let initial_last_seq = query.since_seq.unwrap_or(0);
+    let frames = open_thread_event_frames(state.clone(), id.clone(), query).await?;
+    let stream = match scope {
+        Some(Extension(remote_scope)) => {
+            remote_scoped_thread_event_stream(state, id, remote_scope, frames, initial_last_seq)
+                .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+                .boxed()
+        }
+        None => frames
+            .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)))
+            .boxed(),
+    };
 
     let mut response = Sse::new(stream)
         .keep_alive(
@@ -10951,16 +11635,123 @@ async fn stream_thread_events(
     Ok(response)
 }
 
+struct RemoteStreamWatcherGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for RemoteStreamWatcherGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn remote_scoped_thread_event_stream(
+    state: RuntimeApiState,
+    thread_id: String,
+    remote_scope: remote_pairings::RemoteSessionScope,
+    mut inner: crate::RuntimeOwnerEventStream,
+    mut last_seq: u64,
+) -> impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> {
+    let per_stream_cancel = CancellationToken::new();
+    let watcher_cancel = per_stream_cancel.clone();
+    let watcher_state = state.clone();
+    let watcher_scope = remote_scope.clone();
+    let _guard = RemoteStreamWatcherGuard(tokio::spawn(async move {
+        let deadline = tokio::time::Instant::from_std(watcher_scope.expires_at);
+        let sleep_ttl = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep_ttl);
+        let mut poll = tokio::time::interval(Duration::from_millis(250));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        poll.tick().await;
+        loop {
+            tokio::select! {
+                () = watcher_scope.cancel.cancelled() => {
+                    watcher_cancel.cancel();
+                    break;
+                }
+                () = &mut sleep_ttl => {
+                    remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                    watcher_cancel.cancel();
+                    break;
+                }
+                _ = poll.tick() => {
+                    if !remote_pairings::scope_is_live(&watcher_state, &watcher_scope).await {
+                        remote_pairings::evict_scope(&watcher_state, &watcher_scope);
+                        watcher_cancel.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    }));
+    stream! {
+        let _keep_guard_alive = _guard;
+        loop {
+            if !remote_pairings::scope_is_live_sync(&remote_scope) {
+                remote_pairings::evict_scope(&state, &remote_scope);
+                yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                return;
+            }
+            let next = tokio::select! {
+                biased;
+                () = per_stream_cancel.cancelled() => None,
+                frame = inner.next() => Some(frame),
+            };
+            match next {
+                None => {
+                    remote_pairings::evict_scope(&state, &remote_scope);
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                    return;
+                }
+                Some(None) => return,
+                Some(Some(frame)) => {
+                    if !remote_pairings::scope_is_live_for_frame(&state, &remote_scope, &frame).await {
+                        remote_pairings::evict_scope(&state, &remote_scope);
+                        yield thread_stream_end(&thread_id, ThreadStreamEnd::RemoteAccessRevoked, last_seq);
+                        return;
+                    }
+                    if let Some(seq) = frame.sequence {
+                        last_seq = last_seq.max(seq);
+                    } else if frame.event == "stream.progress"
+                        && let Some(seq) = frame.data.get("seq").and_then(Value::as_u64)
+                    {
+                        last_seq = last_seq.max(seq);
+                    }
+                    let is_end = frame.event == "stream.end";
+                    yield frame;
+                    if is_end {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn open_thread_event_frames(
     state: RuntimeApiState,
     id: String,
     query: ThreadEventsQuery,
 ) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
-    let _ = state
-        .runtime_threads
-        .get_thread(&id)
-        .await
-        .map_err(map_thread_err)?;
+    open_thread_event_frames_in_workspace(state, id, query, None).await
+}
+
+async fn open_thread_event_frames_in_workspace(
+    state: RuntimeApiState,
+    id: String,
+    query: ThreadEventsQuery,
+    expected_workspace: Option<PathBuf>,
+) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    } else {
+        let _ = state
+            .runtime_threads
+            .get_thread(&id)
+            .await
+            .map_err(map_thread_err)?;
+    }
 
     // Subscribe before reading durable history. An event emitted while replay
     // is loaded is then present in both places (and deduped below) or queued
@@ -10979,6 +11770,12 @@ async fn open_thread_event_frames(
         .replay_events(&id, query.since_seq, query.replay_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    if let Some(workspace) = expected_workspace.as_deref() {
+        state
+            .runtime_threads
+            .with_thread_in_workspace(&id, workspace, |_| Ok(()))
+            .map_err(map_thread_err)?;
+    }
 
     let stream = replay_live_thread_events(
         state.runtime_threads.clone(),
@@ -11027,6 +11824,7 @@ enum ThreadStreamEnd {
     CatchUpFailed,
     /// The Runtime API server is stopping (a terminating signal).
     RuntimeShutdown,
+    RemoteAccessRevoked,
 }
 
 impl ThreadStreamEnd {
@@ -11035,15 +11833,14 @@ impl ThreadStreamEnd {
             Self::ReplayFailed => "replay_failed",
             Self::CatchUpFailed => "catch_up_failed",
             Self::RuntimeShutdown => "runtime_shutdown",
+            Self::RemoteAccessRevoked => "remote_access_revoked",
         }
     }
 
-    /// Every current end is resumable from `last_seq`. The flag exists so the
-    /// client rule keys on it rather than on the reason list: a future
-    /// non-resumable end stops clients without a client change.
     const fn retryable(self) -> bool {
         match self {
             Self::ReplayFailed | Self::CatchUpFailed | Self::RuntimeShutdown => true,
+            Self::RemoteAccessRevoked => false,
         }
     }
 }
@@ -11707,6 +12504,8 @@ fn map_compat_stream_event(
                     "turn_id": event.turn_id,
                     "decision": payload.get("decision"),
                     "remember": payload.get("remember"),
+                    "remember_scope": payload.get("remember_scope"),
+                    "standing_rules": payload.get("standing_rules"),
                     "auto": payload.get("auto"),
                     "timeout": payload.get("timeout"),
                     // Set when the decision was forced by a turn interrupt
@@ -12189,6 +12988,35 @@ struct ProviderEntry {
     credential_writable_reason: Option<&'static str>,
     #[serde(rename = "browserConnect", skip_serializing_if = "std::ops::Not::not")]
     browser_connect: bool,
+    #[serde(rename = "lastCheck", skip_serializing_if = "Option::is_none")]
+    last_check: Option<ProviderLastCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProviderLastCheck {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<codewhale_error_taxonomy::ErrorCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl From<codewhale_engine::provider_readiness::LastProviderCheck> for ProviderLastCheck {
+    fn from(check: codewhale_engine::provider_readiness::LastProviderCheck) -> Self {
+        use codewhale_engine::provider_readiness::LastProviderCheck;
+        match check {
+            LastProviderCheck::Passed | LastProviderCheck::ModelsEndpointPassed => Self {
+                ok: true,
+                category: None,
+                message: None,
+            },
+            LastProviderCheck::Failed { category, message } => Self {
+                ok: false,
+                category: Some(category),
+                message: Some(message),
+            },
+        }
+    }
 }
 
 /// Stable, non-secret wire projection of provider readiness.
@@ -12269,6 +13097,8 @@ struct RefreshProviderModelsResponse {
 /// Entry in `GET /v1/providers/{id}/models`.
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route: Option<codewhale_engine::model_inventory::ExactRouteModel>,
     /// Canonical model id suitable for `POST /v1/threads`'s `model` field.
     id: String,
     /// Image-input support reported by the exact resolved provider/model
@@ -12285,6 +13115,11 @@ struct ProviderModelEntry {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProviderModelsResponse {
+    inventory_revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inventory_status: Option<codewhale_config::catalog::CatalogStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_supported: Option<bool>,
     provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_provider_id: Option<String>,
@@ -12374,20 +13209,84 @@ fn paginate_provider_models(
         )));
     }
 
+    let exact_query = params.filter.as_deref().unwrap_or_default().trim();
+    let rank = |entry: &ProviderModelEntry| {
+        if filter.is_empty() {
+            return 0;
+        }
+        if !filter.is_empty() && entry.id == exact_query {
+            return 0;
+        }
+        let id = entry.id.to_lowercase();
+        let name = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        let alias = entry
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.get("canonical_model_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_lowercase();
+        if id == filter || name == filter || alias == filter {
+            1
+        } else if id.starts_with(&filter) || name.starts_with(&filter) || alias.starts_with(&filter)
+        {
+            2
+        } else {
+            3
+        }
+    };
     models.sort_by(|left, right| {
-        left.id
-            .to_lowercase()
-            .cmp(&right.id.to_lowercase())
+        rank(left)
+            .cmp(&rank(right))
+            .then_with(|| {
+                if filter.is_empty() {
+                    left.route
+                        .as_ref()
+                        .and_then(|row| row.provider_rank)
+                        .unwrap_or(usize::MAX)
+                        .cmp(
+                            &right
+                                .route
+                                .as_ref()
+                                .and_then(|row| row.provider_rank)
+                                .unwrap_or(usize::MAX),
+                        )
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| left.id.to_lowercase().cmp(&right.id.to_lowercase()))
             .then_with(|| left.id.cmp(&right.id))
     });
-    models.dedup_by(|left, right| left.id.eq_ignore_ascii_case(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
     if models.len() > MAX_PROVIDER_MODELS_CATALOG_SIZE {
         return Err(ApiError::internal(format!(
             "Provider model catalog exceeds the safe {MAX_PROVIDER_MODELS_CATALOG_SIZE}-row limit"
         )));
     }
     if !filter.is_empty() {
-        models.retain(|entry| entry.id.to_lowercase().contains(&filter));
+        models.retain(|entry| {
+            entry.id.to_lowercase().contains(&filter)
+                || ["name", "canonical_model_id"].iter().any(|key| {
+                    entry
+                        .facts
+                        .as_ref()
+                        .and_then(|facts| facts.get(*key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value.to_lowercase().contains(&filter))
+                })
+                || provider.to_lowercase().contains(&filter)
+                || params
+                    .model_provider_id
+                    .as_ref()
+                    .is_some_and(|id| id.to_lowercase().contains(&filter))
+        });
     }
 
     // A live catalog can refresh between requests. Bind the opaque position
@@ -12430,7 +13329,7 @@ fn paginate_provider_models(
             version: PROVIDER_MODELS_CURSOR_VERSION,
             provider: provider.to_string(),
             filter,
-            catalog_fingerprint,
+            catalog_fingerprint: catalog_fingerprint.clone(),
             route_fingerprint,
             offset: end,
         })?)
@@ -12439,6 +13338,9 @@ fn paginate_provider_models(
     };
 
     Ok(ProviderModelsResponse {
+        inventory_revision: catalog_fingerprint,
+        inventory_status: None,
+        discovery_supported: None,
         provider: provider.to_string(),
         model_provider_id: params.model_provider_id.clone(),
         models: page,
@@ -12447,75 +13349,18 @@ fn paginate_provider_models(
     })
 }
 
-fn push_unique_model(models: &mut Vec<String>, model: &str) {
-    let model = model.trim();
-    if !model.is_empty()
-        && !models
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(model))
-    {
-        models.push(model.to_string());
-    }
-}
-
 fn provider_models_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
 ) -> Vec<String> {
-    if config.verify_provider_identity(identity).is_err() {
-        return Vec::new();
-    }
-    let provider = identity.provider;
-    let mut models = Vec::new();
-    if let Some(model) = config
-        .provider_config_for(identity)
-        .and_then(|entry| entry.model.as_deref())
-    {
-        push_unique_model(&mut models, model);
-    }
-    if config.active_provider_identity().ok().as_ref() == Some(identity) {
-        let active_model = provider_default_model_for_api(config, identity);
-        if !active_model.trim().eq_ignore_ascii_case("auto") {
-            push_unique_model(&mut models, &active_model);
-        }
-    }
-    let exact_catalog = codewhale_engine::provider_catalog_live::cached_entry_for_route(
-        provider,
-        identity.key.as_str(),
-        &config.base_url_for_route(identity),
+    codewhale_engine::model_inventory::exact_route_inventory(
+        config,
+        identity,
+        &Default::default(),
+        &[],
     )
-    .ok()
-    .flatten()
-    .is_some_and(|entry| entry.fetched_at > 0);
-    // A pass-through provider normally lists only what its own live catalog
-    // returned. When that catalog cannot exist (an OAuth route), the catalog
-    // lake's next layers (Models.dev, then the bundled snapshot) answer.
-    if !config.model_ids_pass_through_for_provider(identity)
-        || exact_catalog
-        || codewhale_engine::provider_lake::live_catalog_unavailable(config, identity)
-    {
-        for model in codewhale_engine::provider_lake::models_for_provider(config, identity) {
-            push_unique_model(&mut models, &model);
-        }
-    }
-    for model in config.custom_models.as_deref().unwrap_or_default() {
-        if codewhale_runtime::config::configured_model_for_route(
-            config,
-            provider,
-            identity.key.as_str(),
-            &config.base_url_for_route(identity),
-            &model.id,
-        )
-        .is_some()
-            && !models.contains(&model.id)
-        {
-            models.push(model.id.clone());
-        }
-    }
-    if provider == ProviderKind::Ollama {
-        models.retain(|model| !codewhale_runtime::config::is_unresolved_local_ollama_model(model));
-    }
-    models
+    .map(|inventory| inventory.models.into_iter().map(|row| row.model).collect())
+    .unwrap_or_default()
 }
 
 fn provider_model_image_input_for_api(
@@ -12566,6 +13411,7 @@ fn provider_model_entry_for_api(
 
     let provider = identity.provider;
     let mut entry = ProviderModelEntry {
+        route: None,
         image_input: provider_model_image_input_for_api(config, identity, &model),
         output_token_limit: provider_model_output_token_limit_for_api(config, identity, &model),
         id: model,
@@ -12916,6 +13762,8 @@ fn configured_custom_provider_routes(config: &Config) -> Vec<String> {
 fn provider_entry_for_api(
     config: &Config,
     identity: &codewhale_runtime::config::ProviderIdentity,
+    last_check: Option<codewhale_engine::provider_readiness::LastProviderCheck>,
+    claude_org_available: bool,
 ) -> ProviderEntry {
     let writeability = secrets::credential_writeability(config, identity);
     ProviderEntry {
@@ -12934,15 +13782,21 @@ fn provider_entry_for_api(
         credential_source: writeability.source,
         credential_writable: writeability.writable,
         credential_writable_reason: writeability.reason,
-        browser_connect: identity.provider == ProviderKind::Orcarouter
+        browser_connect: (identity.provider == ProviderKind::Orcarouter
+            || (identity.provider == ProviderKind::Anthropic
+                && claude_org_available
+                && !config.provider_uses_custom_endpoint(identity)))
             && writeability.writable
             && !config.session_provider_keys_only,
+        last_check: last_check.map(ProviderLastCheck::from),
     }
 }
 
 async fn list_providers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<ProvidersResponse>, ApiError> {
+    secrets::refresh_claude_org_availability_if_stale(&state);
+    let claude_org_available = state.provider_connect.claude_org_available();
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
@@ -12953,13 +13807,14 @@ async fn list_providers(
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
         let current = active_identity.as_ref().map_or_else(|| config.provider.clone().unwrap_or_else(|| "unavailable".into()), |identity| identity.persisted_kind().to_string());
-        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity)).collect::<Vec<_>>();
+        let mut providers = config.provider_identities().iter().filter(|identity| identity.provider != ProviderKind::Antigravity).map(|identity| provider_entry_for_api(&config, identity, state.runtime_threads.provider_last_check(identity), claude_org_available)).collect::<Vec<_>>();
         providers.extend(config.unadmitted_provider_keys().into_iter().map(|key| ProviderEntry {
             id: key.to_string(), model_provider_id: Some(key.to_string()), display_name: format!("{key} (unavailable)"),
             default_model: String::new(), has_model_catalog: false,
             credential_state: ProviderCredentialState::Legacy, credential_source: secrets::ProviderCredentialSource::None,
             credential_writable: false, credential_writable_reason: Some("This configured route is unavailable; repair its exact provider definition before using it."),
             browser_connect: false,
+            last_check: None,
         }));
         Ok(Json(ProvidersResponse {
             current_provider_id: active_identity.as_ref().and_then(|identity| identity.persisted_id()).map(str::to_string),
@@ -13030,26 +13885,40 @@ async fn list_provider_models(
         let config = state.config.read().clone();
         secrets::invalidate_stale_account_catalog(&config);
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
-        let route = serde_json::to_vec(&(
-            identity.persisted_kind(),
-            identity.persisted_id(),
-            config.base_url_for_route(&identity),
-        ))
-        .map_err(|error| {
-            ApiError::internal(format!("Could not fingerprint provider route: {error}"))
-        })?;
-        let route_fingerprint = Some(codewhale_runtime::hashing::sha256_hex(route));
-        let models = provider_models_for_api(&config, &identity)
-            .into_iter()
-            .map(|id| provider_model_entry_for_api(&config, &identity, id))
+        let inventory = codewhale_engine::model_inventory::exact_route_inventory(
+            &config,
+            &identity,
+            &state.runtime_threads.provider_readiness_snapshot(),
+            &[],
+        )
+        .map_err(ApiError::bad_request)?;
+        let route_fingerprint = Some(inventory.revision.clone());
+        let models = inventory
+            .models
+            .iter()
+            .cloned()
+            .map(|route| {
+                let mut entry =
+                    provider_model_entry_for_api(&config, &identity, route.model.clone());
+                entry.route = Some(route);
+                entry
+            })
             .collect();
-        paginate_provider_models(
+        if !inventory.is_current(&config, &identity) {
+            return Err(ApiError::conflict(
+                "Inventory changed while reading; retry the exact route",
+            ));
+        }
+        let mut response = paginate_provider_models(
             identity.persisted_kind(),
             models,
             &params,
             route_fingerprint,
-        )
-        .map(Json)
+        )?;
+        response.inventory_revision = inventory.revision;
+        response.inventory_status = Some(inventory.status);
+        response.discovery_supported = Some(inventory.discovery_supported);
+        Ok(Json(response))
     })
     .await
     .map_err(|_| ApiError::internal("Provider model listing failed"))?
@@ -14392,15 +15261,14 @@ fn normalize_runtime_config_model(
         .map_err(ApiError::bad_request);
     }
     validate_route(provider, value).map_err(ApiError::bad_request)?;
-    if value.eq_ignore_ascii_case("auto") {
-        return Ok("auto".to_string());
-    }
-    normalize_model_name_for_provider(provider, value).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "Invalid model '{value}' for provider '{}'.",
-            provider.as_str()
-        ))
-    })
+    codewhale_config::route::resolve_model(provider, value, None)
+        .map(|resolved| resolved.wire_id)
+        .map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid model '{value}' for provider '{}'.",
+                provider.as_str()
+            ))
+        })
 }
 
 async fn reload_config(
@@ -14602,6 +15470,17 @@ async fn list_memory(
     State(state): State<RuntimeApiState>,
     Query(query): Query<ListMemoryQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let store = native_store_for_state(&state);
+    tokio::task::spawn_blocking(move || list_memory_sync(store, state.workspace, query))
+        .await
+        .map_err(|error| ApiError::internal(format!("memory list worker stopped: {error}")))?
+}
+
+fn list_memory_sync(
+    store: codewhale_runtime::native_memory::NativeMemoryStore,
+    workspace: PathBuf,
+    query: ListMemoryQuery,
+) -> Result<Json<Value>, ApiError> {
     let limit = match query.limit.unwrap_or(MEMORY_LIST_DEFAULT_LIMIT) {
         0 => {
             return Err(ApiError::bad_request("limit must be at least 1"));
@@ -14614,15 +15493,14 @@ async fn list_memory(
         n => n,
     };
 
-    let store = native_store_for_state(&state);
     let root = store.root().to_path_buf();
-    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &state.workspace)?;
+    let (scope_filter, mut workspace_id) = resolve_memory_scope(&query.scope, &workspace)?;
     if scope_filter.is_none() {
         // "all" is global memory plus this repository's. With no identity
         // (no origin remote, or git unavailable) there is no workspace memory
         // to show, and the listing still serves global memory.
         workspace_id =
-            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&state.workspace)
+            codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace)
                 .unwrap_or_else(|error| {
                     tracing::warn!("memory list shows global memory only: {error}");
                     None
@@ -14636,7 +15514,7 @@ async fn list_memory(
         }
         match scope_filter {
             None if workspace_id.is_some() => {
-                store.search_in_workspace(workspace_id.as_deref(), &state.workspace, q, limit)
+                store.search_in_workspace(workspace_id.as_deref(), &workspace, q, limit)
             }
             None => store.search(q, limit),
             Some(codewhale_runtime::native_memory::MemoryScope::Global) => {
@@ -14646,16 +15524,21 @@ async fn list_memory(
                         .collect()
                 })
             }
-            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => store
-                .search_for_workspace(&state.workspace, q, limit)
-                .map(|h| {
+            Some(codewhale_runtime::native_memory::MemoryScope::Workspace) => {
+                store.search_for_workspace(&workspace, q, limit).map(|h| {
                     h.into_iter()
                         .filter(|h| scope_label_for_source(&h.source, &root) == "workspace")
                         .collect()
-                }),
+                })
+            }
         }
     } else {
-        store.list_all(scope_filter, workspace_id.as_deref(), limit)
+        store.list_in_workspace(
+            scope_filter,
+            workspace_id.as_deref(),
+            Some(&workspace),
+            limit,
+        )
     }
     .map_err(|e| ApiError::internal(format!("memory list error: {e}")))?;
 
@@ -14781,7 +15664,6 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "http://127.0.0.1:3000",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
-    "tauri://localhost",
 ];
 
 fn cors_layer(extra_origins: &[String]) -> CorsLayer {
@@ -14875,6 +15757,32 @@ fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if err.is::<codewhale_engine::runtime_threads::manager::ThreadWorkspaceMismatch>() {
+        return ApiError::forbidden(err.to_string()).with_code("workspace_mismatch");
+    }
+    if err.is::<codewhale_engine::runtime_threads::manager::ApprovalOwnerRequired>() {
+        return ApiError::forbidden(err.to_string()).with_code("owner_required");
+    }
+    if let Some(error) =
+        err.downcast_ref::<codewhale_engine::core::engine::AutoReviewRetryApprovalError>()
+    {
+        use codewhale_engine::core::engine::AutoReviewRetryApprovalError;
+        return match error {
+            AutoReviewRetryApprovalError::OwnerRequired => {
+                ApiError::forbidden(error.to_string()).with_code("owner_required")
+            }
+            AutoReviewRetryApprovalError::NotInAutoReview => {
+                ApiError::conflict(error.to_string()).with_code("not_in_auto_review")
+            }
+            AutoReviewRetryApprovalError::InvalidTarget(detail) => {
+                if detail.contains("no blocked action") {
+                    ApiError::not_found(error.to_string())
+                } else {
+                    ApiError::conflict(error.to_string())
+                }
+            }
+        };
+    }
     if let Some(refusal) = external_agent_refusal(&err).or_else(|| mode_refusal(&err)) {
         return refusal;
     }
@@ -14990,6 +15898,14 @@ impl ApiError {
     fn forbidden(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
             message: message.into(),
             code: None,
         }
@@ -15174,6 +16090,7 @@ base_url = "http://127.0.0.1:9/v1"
             )?)),
             sub_agent_manager,
             runtime_token: None,
+            desktop_browser_owner: None,
             skill_state: Arc::new(Mutex::new(SkillStateStore::load_from(
                 root.join("skills_state.toml"),
             )?)),
@@ -15192,6 +16109,8 @@ base_url = "http://127.0.0.1:9/v1"
             provider_switches: Arc::new(tokio::sync::Mutex::new(())),
             provider_connect: Default::default(),
             compat_stream_test_hook: None,
+            #[cfg(test)]
+            automation_admission_test_hook: Default::default(),
         };
         let router = build_router(state.clone());
         let server = tokio::spawn(async move {

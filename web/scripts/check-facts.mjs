@@ -23,7 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildFacts, deriveFeatures, REPO_ROOT } from "./facts-lib.mjs";
 import { deriveAgentDocs } from "./docs-sources-lib.mjs";
-import { deriveReleaseBaseline, readCommittedBaseline, serializeBaseline, tagResolves } from "./release-baseline-lib.mjs";
+import { checkReleaseBaseline, deriveReleaseBaseline, readCommittedBaseline, tagResolves } from "./release-baseline-lib.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GENERATED_PATH = resolve(__dirname, "..", "lib", "facts.generated.ts");
@@ -95,9 +95,10 @@ if (committed.error) {
 
 // The shared parser refuses incomplete or malformed provider projections.
 const fresh = buildFacts();
-const docsPath = resolve(__dirname, "..", "data", "agent-docs.generated.json");
-if (!existsSync(docsPath) || JSON.stringify(JSON.parse(readFileSync(docsPath, "utf8"))) !== JSON.stringify(deriveAgentDocs(resolve(__dirname, ".."), REPO_ROOT))) {
-  console.error("[check-facts] FAIL — generated agent docs are stale; run npm run prebuild");
+try {
+  deriveAgentDocs(resolve(__dirname, ".."), REPO_ROOT);
+} catch (error) {
+  console.error(`[check-facts] FAIL — agent docs cannot be derived from lib/docs-map.ts: ${error.message}`);
   process.exit(1);
 }
 const featuresPath = resolve(__dirname, "..", "data", "features.generated.json");
@@ -106,19 +107,25 @@ if (!existsSync(featuresPath) || JSON.stringify(JSON.parse(readFileSync(features
   process.exit(1);
 }
 
+const allowShallow = process.argv.includes("--allow-shallow") || process.env.CODEWHALE_ALLOW_SHALLOW_CHECKOUT === "1";
 const committedBaseline = readCommittedBaseline();
-if (!committedBaseline || !fresh.latestPublishedRelease || committedBaseline.tag !== fresh.latestPublishedRelease.tag) {
-  console.error(`[check-facts] FAIL — data/release-baseline.json is for ${committedBaseline?.tag ?? "nothing"}, the published release is ${fresh.latestPublishedRelease?.tag ?? "unknown"}; run npm run prebuild in a checkout that has the tag`);
-  process.exit(1);
+const tagAvailable = Boolean(committedBaseline && tagResolves(committedBaseline.tag));
+const derivedBaseline =
+  tagAvailable && fresh.latestPublishedRelease
+    ? deriveReleaseBaseline(fresh.latestPublishedRelease)
+    : null;
+if (committedBaseline && fresh.latestPublishedRelease && !tagAvailable && allowShallow) {
+  console.warn(`[check-facts] warning: tag ${committedBaseline.tag} is not in this checkout, so the release baseline was not recomputed (--allow-shallow)`);
 }
-if (tagResolves(committedBaseline.tag)) {
-  const derivedBaseline = deriveReleaseBaseline(fresh.latestPublishedRelease);
-  if (!derivedBaseline || serializeBaseline(derivedBaseline) !== serializeBaseline(committedBaseline)) {
-    console.error("[check-facts] FAIL — data/release-baseline.json differs from the tagged source; run npm run prebuild");
-    process.exit(1);
-  }
-} else {
-  console.warn(`[check-facts] warning: tag ${committedBaseline.tag} is not in this checkout, so the release baseline was not recomputed`);
+const baselineProblems = checkReleaseBaseline(
+  committedBaseline,
+  fresh.latestPublishedRelease,
+  derivedBaseline,
+  { allowShallow: allowShallow && !tagAvailable },
+);
+if (baselineProblems.length > 0) {
+  for (const problem of baselineProblems) console.error(`[check-facts] FAIL — ${problem}`);
+  process.exit(1);
 }
 
 // Quick sanity: critical source facts must never degrade to matching nulls.

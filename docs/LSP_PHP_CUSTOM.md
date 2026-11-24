@@ -121,6 +121,6 @@ cargo clippy -p codewhale-tui --lib
 | `crates/lsp/src/registry.rs` | +Php variant, detection, server mapping, tests |
 | `crates/lsp/src/lib.rs` | +CustomLspDef, LspConfig.custom, LspManager custom fallback |
 | `crates/lsp/src/client.rs` | spawn accepts &str language_id |
-| `crates/tui/src/config.rs` | LspConfigToml.custom + into_runtime |
+| `crates/runtime/src/config.rs` | LspConfigToml.custom + into_runtime |
 | `crates/config/src/lib.rs` | LspConfigToml.custom + CustomLspDef |
 | `config.example.toml` | PHP docs + custom extension examples |

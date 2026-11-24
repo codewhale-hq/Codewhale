@@ -40,16 +40,17 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::ManagerShared;
-use super::core_call::InvocationGuard;
-use super::protocol::{ContentBlockWire, CoreRequest, ToolCallParams, ToolResultWire};
+use super::core_call::{HeldImage, InvocationGuard};
+use super::protocol::{ContentBlockWire, CoreRequest, DshService, ToolCallParams, ToolResultWire};
 use super::registry::ToolRegistration;
 use super::supervisor::HostCallError;
 use super::tier::{self, HostTier};
 use crate::tools::codemode::ExtensionCaller;
 use crate::tools::spec::{
-    ApprovalRequirement, PreparedToolCall, ToolCapability, ToolContext, ToolError, ToolResult,
-    ToolSpec,
+    ApprovalRequirement, PreparedToolCall, RichToolResult, ToolCapability, ToolContext, ToolError,
+    ToolResult, ToolSpec,
 };
+use codewhale_tools::ToolResultContentBlock;
 
 /// Default per-call deadline, matching script tools
 /// (`SupervisionOptions::tool_call_deadline`).
@@ -98,7 +99,7 @@ impl HostToolSpec {
     /// origin shown in approval cards and diagnostics.
     #[must_use]
     pub fn origin(&self) -> String {
-        match self.registration.tier {
+        match self.registration.tier() {
             HostTier::Plugin => format!("extension:{}", self.registration.plugin_name),
             HostTier::Builtin => self.registration.owner.plugin_id.clone(),
         }
@@ -108,7 +109,7 @@ impl HostToolSpec {
     /// for a built-in module's, what the Rust table says and `Required` when
     /// it says nothing.
     fn approval(&self) -> ApprovalRequirement {
-        match self.registration.tier {
+        match self.registration.tier() {
             HostTier::Plugin => ApprovalRequirement::Required,
             HostTier::Builtin => tier::tool_approval(
                 self.manager.builtin_modules,
@@ -116,6 +117,11 @@ impl HostToolSpec {
                 &self.registration.name,
             ),
         }
+    }
+
+    fn is_creator_plugin_manager(&self) -> bool {
+        self.registration.owner.plugin_id == super::creator_policy::CREATOR_PLUGIN_ID
+            && self.registration.name == super::creator_policy::PLUGIN_MANAGER_TOOL_NAME
     }
 
     /// Check `input` against the schema the plugin registered the tool with.
@@ -161,7 +167,7 @@ impl HostToolSpec {
     /// so the card says when this one is not alone (design §4.4, threat 3).
     #[must_use]
     pub fn approval_text(&self) -> String {
-        if self.registration.tier == HostTier::Builtin {
+        if self.registration.tier() == HostTier::Builtin {
             return format!(
                 "Tool `{}` of built-in host module `{}` ({}) runs on Codewhale's built-in extension host",
                 self.registration.name,
@@ -226,12 +232,186 @@ fn map_call_error(tool: &str, error: HostCallError) -> ToolError {
     }
 }
 
+#[cfg(test)]
+pub(super) fn failed_with_acts(
+    error: ToolError,
+    receipts: Option<&Value>,
+) -> Result<ToolResultWire, ToolError> {
+    failed_with_acts_and_mark(error, receipts, None)
+}
+
+pub(super) fn failed_with_acts_and_mark(
+    error: ToolError,
+    receipts: Option<&Value>,
+    plugin_change: Option<&super::core_call::PluginChangeMark>,
+) -> Result<ToolResultWire, ToolError> {
+    let holds_acts = receipts.is_some_and(|receipts| receipts.get("broker_acts").is_some())
+        || plugin_change.is_some();
+    if !holds_acts {
+        return Err(error);
+    }
+    Ok(ToolResultWire {
+        content: vec![ContentBlockWire::Text {
+            text: error.to_string(),
+        }],
+        is_error: true,
+        structured: None,
+    })
+}
+
+fn record_held_image_outcome(
+    invocation: Option<&InvocationGuard>,
+    method: &str,
+    outcome: &str,
+    reason: Option<&str>,
+    held: &HeldImage,
+) {
+    let Some(invocation) = invocation else {
+        return;
+    };
+    let mut entry = serde_json::json!({
+        "method": method,
+        "outcome": outcome,
+        "attachment_id": held.attachment_id,
+        "media_type": held.media_type,
+        "bytes": held.bytes,
+        "width": held.width,
+        "height": held.height,
+    });
+    if let (Some(reason), Some(map)) = (reason, entry.as_object_mut()) {
+        map.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    let _ = invocation.record_service_act(DshService::Attachments, entry);
+}
+
+pub(super) fn resolve_held_image(
+    held_image: Option<HeldImage>,
+    attachments_granted: bool,
+    settled: &mut Result<ToolResultWire, ToolError>,
+    invocation: Option<&InvocationGuard>,
+) -> Vec<ToolResultContentBlock> {
+    if !attachments_granted {
+        if let Some(held) = held_image.as_ref() {
+            record_held_image_outcome(invocation, "save", "dropped", Some("grant_revoked"), held);
+        }
+        if let Ok(wire) = settled.as_ref()
+            && wire
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlockWire::ImageRef { .. }))
+        {
+            *settled = Err(ToolError::execution_failed(
+                "tool returned an image reference after `attachments` grant was revoked",
+            ));
+        }
+        return Vec::new();
+    }
+    match settled {
+        Ok(wire) => {
+            let refs: Vec<&str> = wire
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlockWire::ImageRef { attachment_id } => Some(attachment_id.as_str()),
+                    ContentBlockWire::Text { .. } => None,
+                })
+                .collect();
+            if wire.is_error {
+                let unheld = refs.iter().find(|id| {
+                    held_image
+                        .as_ref()
+                        .is_none_or(|held| held.attachment_id != **id)
+                });
+                if let Some(held) = held_image.as_ref() {
+                    let reason = if unheld.is_some() {
+                        "unheld_reference"
+                    } else {
+                        "tool_failed"
+                    };
+                    record_held_image_outcome(invocation, "save", "dropped", Some(reason), held);
+                }
+                if let Some(bad) = unheld {
+                    let shown: String = bad.chars().take(80).collect();
+                    *settled = Err(ToolError::execution_failed(format!(
+                        "tool returned an image reference `{shown}` not held by this call"
+                    )));
+                }
+                return Vec::new();
+            }
+            if refs.len() > crate::image_attach::MAX_TOOL_RESULT_IMAGES {
+                if let Some(held) = held_image.as_ref() {
+                    record_held_image_outcome(
+                        invocation,
+                        "save",
+                        "dropped",
+                        Some("too_many_images"),
+                        held,
+                    );
+                }
+                *settled = Err(ToolError::execution_failed(
+                    "this Codewhale keeps one image per tool result",
+                ));
+                return Vec::new();
+            }
+            if let [wanted_id] = refs.as_slice() {
+                match held_image {
+                    Some(held) if held.attachment_id == *wanted_id => {
+                        record_held_image_outcome(invocation, "result", "delivered", None, &held);
+                        return vec![ToolResultContentBlock::Image {
+                            mime_type: held.media_type,
+                            data: held.data_base64,
+                        }];
+                    }
+                    Some(held) => {
+                        record_held_image_outcome(
+                            invocation,
+                            "save",
+                            "dropped",
+                            Some("unheld_reference"),
+                            &held,
+                        );
+                        let shown: String = wanted_id.chars().take(80).collect();
+                        *settled = Err(ToolError::execution_failed(format!(
+                            "tool returned an image reference `{shown}` not held by this call"
+                        )));
+                        return Vec::new();
+                    }
+                    None => {
+                        let shown: String = wanted_id.chars().take(80).collect();
+                        *settled = Err(ToolError::execution_failed(format!(
+                            "tool returned an image reference `{shown}` not held by this call"
+                        )));
+                        return Vec::new();
+                    }
+                }
+            }
+            if let Some(held) = held_image.as_ref() {
+                record_held_image_outcome(
+                    invocation,
+                    "save",
+                    "dropped",
+                    Some("not_referenced"),
+                    held,
+                );
+            }
+            Vec::new()
+        }
+        Err(_) => {
+            if let Some(held) = held_image.as_ref() {
+                record_held_image_outcome(invocation, "save", "dropped", Some("tool_failed"), held);
+            }
+            Vec::new()
+        }
+    }
+}
+
 pub fn wire_to_result(wire: ToolResultWire, origin: &str) -> ToolResult {
     let content = wire
         .content
         .iter()
-        .map(|block| match block {
-            ContentBlockWire::Text { text } => text.as_str(),
+        .filter_map(|block| match block {
+            ContentBlockWire::Text { text } => Some(text.as_str()),
+            ContentBlockWire::ImageRef { .. } => None,
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -277,16 +457,20 @@ impl ToolSpec for HostToolSpec {
         self.approval()
     }
 
-    fn approval_requirement_for(&self, _input: &Value) -> ApprovalRequirement {
-        self.approval()
+    fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
+        if self.is_creator_plugin_manager() && super::creator_policy::is_list_action(input) {
+            ApprovalRequirement::Auto
+        } else {
+            self.approval()
+        }
     }
 
     fn is_read_only(&self) -> bool {
         false
     }
 
-    fn is_read_only_for(&self, _input: &Value) -> bool {
-        false
+    fn is_read_only_for(&self, input: &Value) -> bool {
+        self.is_creator_plugin_manager() && super::creator_policy::is_list_action(input)
     }
 
     fn defer_loading(&self) -> bool {
@@ -309,20 +493,35 @@ impl ToolSpec for HostToolSpec {
         // Before the user is asked to approve it: a call the schema refuses is
         // returned to the model to correct and never becomes an approval card.
         self.check_input(&input)?;
+        let read_only = self.is_read_only_for(&input);
+        let approval = self.approval_requirement_for(&input);
+        let description = if self.is_creator_plugin_manager() {
+            super::creator_policy::initial_prepared_description(&input)
+        } else {
+            self.approval_text()
+        };
         Ok(PreparedToolCall {
             name: self.registration.name.clone(),
             // Rust composes the card; the extension cannot supply approval text.
-            description: self.approval_text(),
-            read_only: false,
+            description,
+            read_only,
             supports_parallel: false,
             starts_detached: false,
-            approval: self.approval(),
-            resources: vec![crate::tools::spec::ResourceClaim::GlobalExclusive],
+            approval,
+            resources: if read_only {
+                Vec::new()
+            } else {
+                vec![crate::tools::spec::ResourceClaim::GlobalExclusive]
+            },
             input,
         })
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute_rich(
+        &self,
+        input: Value,
+        context: &ToolContext,
+    ) -> Result<RichToolResult, ToolError> {
         self.check_caller(context)?;
         let registration = &self.registration;
         // Again here: `execute` is also reached without `prepare`, and nothing
@@ -353,7 +552,7 @@ impl ToolSpec for HostToolSpec {
             .as_ref()
             .and_then(|gate| {
                 self.manager.core_calls.begin_scoped(
-                    registration.tier,
+                    &registration.cohort,
                     host.generation,
                     &registration.owner,
                     &call_id,
@@ -396,28 +595,85 @@ impl ToolSpec for HostToolSpec {
         });
         // The deadline stops while one of this call's `core/call`s waits on
         // the gate (an approval card), so a person's time is not the tool's.
-        let value = host
+        let outcome = host
             .call_with_clock(
                 request,
                 Some(registration.owner.plugin_id.clone()),
                 invocation.as_ref().map(InvocationGuard::clock),
             )
-            .await
-            .map_err(|error| map_call_error(&registration.name, error))?;
-        self.check_caller(context)?;
-        self.manager
-            .live_host_for(registration)
-            .await
-            .map_err(ToolError::not_available)?;
-        self.check_caller(context)?;
-        let wire: ToolResultWire = serde_json::from_value(value).map_err(|error| {
-            ToolError::execution_failed(format!(
-                "extension tool `{}` returned a malformed result: {error}",
-                registration.name
-            ))
-        })?;
+            .await;
+        let held_image = invocation
+            .as_ref()
+            .and_then(InvocationGuard::seal_held_image);
+        let mut settled: Result<ToolResultWire, ToolError> = async {
+            match outcome {
+                Ok(value) => {
+                    self.check_caller(context)?;
+                    self.manager
+                        .live_host_for(registration)
+                        .await
+                        .map_err(ToolError::not_available)?;
+                    self.check_caller(context)?;
+                    serde_json::from_value(value).map_err(|error| {
+                        ToolError::execution_failed(format!(
+                            "extension tool `{}` returned a malformed result: {error}",
+                            registration.name
+                        ))
+                    })
+                }
+                Err(error) => Err(map_call_error(&registration.name, error)),
+            }
+        }
+        .await;
+        let needs_attachment_grant = held_image.is_some()
+            || matches!(
+                settled.as_ref(),
+                Ok(wire)
+                    if wire
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlockWire::ImageRef { .. }))
+            );
+        let attachments_granted = if needs_attachment_grant {
+            self.manager
+                .broker_granted(&registration.owner, DshService::Attachments)
+                .await
+        } else {
+            true
+        };
+        let content_blocks = resolve_held_image(
+            held_image,
+            attachments_granted,
+            &mut settled,
+            invocation.as_ref(),
+        );
+        let receipts = invocation.as_ref().and_then(InvocationGuard::seal_receipts);
+        let plugin_change = invocation
+            .as_ref()
+            .and_then(InvocationGuard::seal_plugin_change)
+            .filter(|_| self.is_creator_plugin_manager());
+        let wire = match settled {
+            Ok(wire) => wire,
+            Err(error) => {
+                let wire =
+                    failed_with_acts_and_mark(error, receipts.as_ref(), plugin_change.as_ref())?;
+                if plugin_change.is_some() {
+                    wire
+                } else {
+                    match self.check_caller(context) {
+                        Ok(()) => wire,
+                        Err(stale) => failed_with_acts_and_mark(
+                            stale,
+                            receipts.as_ref(),
+                            plugin_change.as_ref(),
+                        )?,
+                    }
+                }
+            }
+        };
         let mut result = wire_to_result(wire, &self.origin());
         if let Some(Value::Object(metadata)) = result.metadata.as_mut() {
+            metadata.remove("plugin_change");
             metadata.insert(
                 "extension".to_string(),
                 serde_json::json!({
@@ -433,13 +689,24 @@ impl ToolSpec for HostToolSpec {
             );
         }
         // What the tool asked the core to run, so the persisted record shows it.
-        if let (Some(receipts), Some(Value::Object(metadata))) = (
-            invocation.as_ref().and_then(InvocationGuard::receipts),
-            result.metadata.as_mut(),
-        ) {
+        if let (Some(receipts), Some(Value::Object(metadata))) =
+            (receipts, result.metadata.as_mut())
+        {
             metadata.insert("core_calls".to_string(), receipts);
         }
-        Ok(result)
+        if let (Some(mark), Some(Value::Object(metadata))) =
+            (plugin_change, result.metadata.as_mut())
+            && let Ok(value) = serde_json::to_value(mark)
+        {
+            metadata.insert("plugin_change".to_string(), value);
+        }
+        Ok(RichToolResult::with_content_blocks(result, content_blocks))
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        self.execute_rich(input, context)
+            .await
+            .map(RichToolResult::into_result)
     }
 }
 

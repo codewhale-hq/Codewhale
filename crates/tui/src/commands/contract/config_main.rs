@@ -241,16 +241,15 @@ impl CommandPetContext for PetAdapter<'_> {
     }
 
     fn queue(&mut self, control: CommandPetControl) -> bool {
-        use crate::tui::pet_watch::{BodyStyle, Control, TextLanguage};
+        use crate::tui::pet_watch::{BodyStyle, Control};
         let control = match control {
             CommandPetControl::Sound => Control::Sound,
             CommandPetControl::Browser => Control::Browser,
-            CommandPetControl::Window => Control::Window,
             CommandPetControl::Select => Control::Select,
             CommandPetControl::FocusAgents => Control::FocusAgents,
-            CommandPetControl::Appearance { body, language } => Control::Appearance {
-                body: body.and_then(|body| BodyStyle::parse(body.as_str())),
-                language: language.and_then(|language| TextLanguage::parse(language.as_str())),
+            CommandPetControl::Appearance { body } => match BodyStyle::parse(body.as_str()) {
+                Some(body) => Control::Appearance { body },
+                None => return false,
             },
         };
         let mut app = self.host.app.borrow_mut();

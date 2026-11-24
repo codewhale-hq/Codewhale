@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use codewhale_release::InstallMethod;
 use serde::Serialize;
 
 /// Canonical user-scoped paths reported by both human and JSON doctor output.
@@ -115,6 +116,67 @@ pub(crate) struct SessionStoreCounts {
     pub(crate) checkpoints: usize,
 }
 
+pub(crate) fn latest_session_route_line(
+    sessions: &Path,
+    configured_provider: &str,
+    configured_model: &str,
+) -> Option<String> {
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(sessions)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let path = entry.path();
+            path.extension().is_some_and(|ext| ext == "json")
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| {
+                        stem != "session_boot_owners"
+                            && codewhale_runtime::artifacts::is_valid_session_id(stem)
+                    })
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    let metadata = candidates
+        .into_iter()
+        .take(32)
+        .filter_map(|(_, path)| {
+            codewhale_engine::session_manager::SessionManager::load_session_metadata(&path).ok()
+        })
+        .filter(|meta| {
+            let provider = meta
+                .model_provider_id
+                .as_deref()
+                .unwrap_or(meta.model_provider.as_str());
+            !provider.trim().is_empty() && !meta.model.trim().is_empty()
+        })
+        .max_by_key(|meta| meta.updated_at)?;
+
+    let clean = |value: &str| -> String { value.chars().filter(|ch| !ch.is_control()).collect() };
+    let provider = clean(
+        metadata
+            .model_provider_id
+            .as_deref()
+            .unwrap_or(metadata.model_provider.as_str()),
+    );
+    let model = clean(&metadata.model);
+    let short_id: String = clean(&metadata.id).chars().take(8).collect();
+    let relation = if provider == configured_provider
+        && model.trim_start_matches("models/") == configured_model.trim_start_matches("models/")
+    {
+        "same as the configured default"
+    } else {
+        "differs from the configured default; each session keeps the route it ran with, and /provider or /model without saving as default changes only that session"
+    };
+    Some(format!(
+        "most recent saved session route: {provider} / {model} (session {short_id}, updated {}; {relation})",
+        metadata.updated_at.format("%Y-%m-%d %H:%M UTC"),
+    ))
+}
+
 pub(crate) fn session_store_counts(sessions: &Path) -> Result<Option<SessionStoreCounts>, String> {
     let Some(manager) =
         codewhale_engine::session_manager::SessionManager::open_read_only(sessions.to_path_buf())
@@ -202,6 +264,9 @@ pub(crate) fn config_credential_shaped_keys(raw: &str) -> Vec<String> {
         value.len() >= 20 && PREFIXES.iter().any(|prefix| value.starts_with(prefix))
     }
     fn suspect_key(key: &str) -> bool {
+        if key == "oauth_credential_generation" {
+            return false;
+        }
         let key = key.to_ascii_lowercase();
         [
             "token",
@@ -551,22 +616,43 @@ pub(crate) async fn print_update_report(
     for line in update_mode_lines(update) {
         println!("  · {line}");
     }
+    let cached = (!probes.should_check_updates())
+        .then(codewhale_config::codewhale_home)
+        .and_then(Result::ok)
+        .and_then(|home| {
+            codewhale_release::UpdateCheckCache::load(&codewhale_release::check::cache_path_in(
+                &home,
+            ))
+        })
+        .and_then(|entry| entry.latest_tag);
     let report = if probes.should_check_updates() {
         doctor_update_report(
             current_version,
             codewhale_release::latest_release_tag_async(codewhale_release::ReleaseChannel::Stable)
                 .await,
         )
+    } else if let Some(tag) = cached.as_deref() {
+        doctor_update_report(current_version, Ok::<_, ()>(tag.to_string()))
     } else {
         DoctorUpdateReport::NotChecked
     };
-    let method = codewhale_release::current_install_method();
-    for (index, line) in doctor_update_report_lines(&report, method.update_command())
+    let update_command = std::env::current_exe().map_or_else(
+        |_| "codewhale update".to_string(),
+        |exe| {
+            codewhale_release::installs::manager_update_command(InstallMethod::detect(&exe), &exe)
+        },
+    );
+    for (index, line) in doctor_update_report_lines(&report, &update_command)
         .into_iter()
         .enumerate()
     {
         let indent = if index == 0 { "  ·" } else { "   " };
         println!("{indent} {line}");
+    }
+    if cached.is_some() {
+        println!(
+            "    (latest is from the last automatic check; `codewhale doctor --check-updates` asks again)"
+        );
     }
 }
 
@@ -594,7 +680,7 @@ pub(crate) async fn probe_ds4_models(
     use codewhale_engine::core::model_client::ModelClient;
 
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let client = CodewhaleClient::new(config)?;
     let configured_alias = client.model().to_string();
     let models = match tokio::time::timeout(
@@ -632,7 +718,7 @@ pub(crate) async fn probe_ds4_models(
 
 fn ds4_probe_error(config: &codewhale_runtime::config::Config, error: &str) -> String {
     let endpoint =
-        codewhale_secrets::sanitize::redact_url_for_display(&config.active_route_base_url());
+        codewhale_sanitize::sanitize::redact_url_for_display(&config.active_route_base_url());
     let status = error
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -661,17 +747,13 @@ mod tests;
 
 pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig) -> Vec<String> {
     use codewhale_release::autoupdate;
-    let method = codewhale_release::current_install_method();
+    let exe = std::env::current_exe().unwrap_or_default();
+    let method = InstallMethod::detect(&exe);
     let resolved = autoupdate::resolve_mode(update.mode.as_deref(), update.check_for_updates);
-    let mut lines = vec![if method.supports_self_update() {
-        format!("automatic updates: {}", resolved.describe())
-    } else {
-        format!(
-            "automatic updates: not for this copy; {} updates it ({})",
-            method.label(),
-            method.update_command()
-        )
-    }];
+    let mut lines = vec![codewhale_release::installs::update_answer(method, &exe)];
+    if method.supports_self_update() {
+        lines.push(format!("automatic updates: {}", resolved.describe()));
+    }
     if let Ok(home) = codewhale_config::codewhale_home() {
         if let Some(staged) = autoupdate::load_staged(&home) {
             lines.push(format!(
@@ -690,14 +772,27 @@ pub(crate) fn update_mode_lines(update: &codewhale_runtime::config::UpdateConfig
             ));
         }
         if let Some(previous) = autoupdate::load_previous(&home) {
-            lines.push(format!(
-                "rollback: v{} is kept (`codewhale update --rollback`)",
-                previous.version
-            ));
+            lines.push(
+                match autoupdate::rollback_blocker(&previous.version, env!("CARGO_PKG_VERSION")) {
+                    None => format!(
+                        "rollback: v{} is kept (`codewhale update --rollback`)",
+                        previous.version
+                    ),
+                    Some(blocker) => {
+                        format!("rollback: v{} is kept, but {blocker}", previous.version)
+                    }
+                },
+            );
         }
-        if let Some(skip) = autoupdate::load_state(&home).skip_version {
+        let state = autoupdate::load_state(&home);
+        if let Some(skip) = state.skip_version {
             lines.push(format!(
                 "skipped: v{skip} was rolled back and is not reinstalled automatically"
+            ));
+        }
+        if let Some(reason) = state.last_failure {
+            lines.push(format!(
+                "last automatic update failed: {reason}. Run `codewhale update` to retry and see the full error."
             ));
         }
     }
@@ -727,10 +822,23 @@ pub(crate) fn installation_lines(brief: bool) -> Vec<String> {
     lines
 }
 
-pub(crate) fn run_installs_report(json: bool, brief: bool) -> Result<()> {
+/// `update` is set for the installers' brief report, so their closing lines
+/// come from the installed binary's own update state rather than a guess.
+pub(crate) fn run_installs_report(
+    json: bool,
+    brief: bool,
+    update: Option<&codewhale_runtime::config::UpdateConfig>,
+) -> Result<()> {
     if !json {
         for line in installation_lines(brief) {
             println!("{line}");
+        }
+        // The installers already print the update command with its full path.
+        if let Some(update) = update {
+            for line in update_mode_lines(update).into_iter().skip(1) {
+                println!("{line}");
+            }
+            println!("Change it with: codewhale config set update.mode auto|notify|off");
         }
         return Ok(());
     }

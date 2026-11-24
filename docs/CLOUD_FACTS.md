@@ -1,17 +1,19 @@
 # Signed cloud facts
 
 Cloud facts are an optional signed overlay for model metadata and unset provider
-model defaults. They are **off by default**. The production trust tables in Rust
-and the website are empty, so enabling the setting currently reports an inert
-layer and does not fetch or trust a production channel.
+model defaults. They are **off by default**: a client fetches nothing unless the
+setting is turned on.
 
-This source slice does not establish a deployed endpoint, published database
-row, signing-key custody, or a real provider request. The JSON under
-`docs/cloud-facts/stable.json` is unsigned authoring material; its release entry
-matches the checked-in `web/data/latest-published-release.json` receipt. It is
-not a publication receipt. Public test fixtures establish local behavior only.
+One production key, `cwf-2026-09`, is pinned in the Rust and website trust
+tables with the `founder` role. This document and the source it describes do
+not establish a deployed endpoint, a published database row, signing-key
+custody, or a real provider request; check the live channel for those. The JSON
+under `docs/cloud-facts/stable.json` is unsigned authoring material; its release
+entry matches the checked-in `web/data/latest-published-release.json` receipt.
+It is not a publication receipt. Public test fixtures establish local behavior
+only.
 
-Related: [catalog refresh](CATALOG_REFRESH.md) and [provider routes](PROVIDERS.md).
+Related: [models and providers](MODELS_AND_PROVIDERS.md), [catalog refresh](CATALOG_REFRESH.md), and [provider routes](PROVIDERS.md).
 
 ## Authority and configuration
 
@@ -42,6 +44,56 @@ network success is never a startup dependency. Missing, rejected, inapplicable
 or expired facts leave the remaining catalog authorities usable. Status reports
 whether facts are off, inert, verified, rejected or unavailable through the
 existing compact catalog/status surface.
+
+## Key roles
+
+Every pinned key has a role, recorded in both trust tables and compared by
+`check:facts`. One public key may appear under one key ID only.
+
+- `founder`: held by a person, may sign any payload the client understands, on
+  any channel.
+- `automation`: for a scheduled publisher. A payload authenticated only by an
+  automation key is accepted when all of the following hold, and is otherwise
+  rejected whole as outside the key's scope:
+  - the channel the client asked for ends in `-models`. An automation key can
+    never authenticate `stable`, `beta` or any other founder channel, so it
+    cannot replace a founder release or move that channel's rollback floor;
+  - `facts_version` equals `published_at` in Unix seconds, so a version cannot
+    run ahead of the clock and exhaust the channel's version space;
+  - `not_after` is present, later than `published_at`, and at most seven days
+    after it. Both timestamps are whole-second UTC;
+  - it carries at most 256 model entries and no provider defaults, release
+    facts, announcements or field outside the known payload fields;
+  - every model entry is an upsert or a deprecation using only `provider`,
+    `id`, `op`, `context_window`, `max_output`, `reasoning`, `display_name`,
+    `deprecated_at`, `replacement`, `note`, `applies_to` and
+    `pricing_withheld`. Prices, `allow_unlisted`, `reasoning_options` and any
+    other field are refused;
+  - text fields are plain (no control characters) and bounded, a context window
+    is between 1,024 and 20,000,000 tokens, and a maximum output is between 1
+    and 2,000,000 and not above the context window.
+
+  The same rule is written three times: `automation_scope_violation` in
+  `crates/config/src/cloud_facts/verify.rs`, `automationScopeViolation` in
+  `web/lib/cloud-facts.ts`, and the function of that name in
+  `web/scripts/facts-publish.mjs`. All three are tested against
+  `docs/cloud-facts/fixtures/automation-scope-cases.json`.
+
+If an envelope carries both a founder and an automation signature that verify,
+the founder signature decides and the scope does not apply.
+
+What this does not do:
+
+- **No automation key is pinned**, and a test in each language fails if one
+  appears without that test being changed.
+- **No client fetches a `-models` channel.** On the `registry` channel (below),
+  a future pinned automation key may sign bounded model-and-offering registry
+  updates, never new provider admissions.
+- **No scheduled publisher exists**, and `emit-sql --public-key` still performs
+  no pin, role or scope check.
+- The seven-day limit bounds one payload. A client keeps applying a cached
+  payload through the existing 48-hour grace after `not_after`, and whoever
+  holds the key can sign a new payload at any time.
 
 ## Verification and expiration
 
@@ -176,6 +228,56 @@ availability and Ollama endpoint tags retain their own authority. Cloud data
 cannot introduce a provider implementation, billing owner or wire protocol.
 A cloud `base_url` field is accepted only by the shared static public HTTPS
 endpoint contract; it is not consumed to migrate an execution endpoint.
+
+## Model and provider registry (`registry.json`)
+
+The signed models-and-providers registry (`codewhale.registry.v1`) travels in
+the same `facts/v1` Ed25519 envelope on the `registry` channel (up to 8 MiB
+payload), verified by `crates/config/src/cloud_facts/registry.rs` and fetched
+and cached by `crates/cloud-facts/src/registry.rs` at
+`$CODEWHALE_HOME/facts/registry-cache.json`. Full schema, resolver overlay
+precedence, and pulled-provider admission rules live in
+[Models and providers](MODELS_AND_PROVIDERS.md#4-signed-registryjson-codewhaleregistryv1-updates).
+
+Envelope and transport rules shared with cloud facts:
+
+- Follows `[cloud_facts]` opt-in (`enabled = false` by default) and
+  `CODEWHALE_DISABLE_CLOUD_FACTS=1` hard disable; CI suppresses network pulls.
+  When enabled, the source defaults to
+  `https://codewhale.net/api/facts/v1/registry` (or `CODEWHALE_CLOUD_FACTS_URL`
+  when templated with `{channel}`), overridable via `CODEWHALE_REGISTRY_URL` or
+  `CODEWHALE_REGISTRY_PATH`.
+- `envelope.facts_version` must equal `registry.revision` (`>= 1`),
+  `envelope.published_at` must equal `registry.generated_at` (not in the future
+  beyond clock tolerance), `sha256` must match, and `revision` must not fall
+  below the highest accepted revision. Floor checks and overlay installation
+  share the same lock and source-generation ticket as facts publication, and
+  disabling cloud facts clears the active registry overlay immediately.
+- Key-role boundary on `registry`: a `founder` key may sign model/offering
+  updates, naming-rule and default changes, and new public-HTTPS
+  OpenAI-compatible descriptor providers. An `automation` key is accepted only
+  with a valid bounded `not_after` window, and may change only models,
+  offerings and built-in providers' `models.aliases` / `models.wire_slugs`;
+  `accept`, `strip_prefixes`, `ids`, default models, offering default flags,
+  catalog headers, corrections and `pricing_withheld` need a founder signature
+  (exact rules in
+  [Models and providers](MODELS_AND_PROVIDERS.md#key-roles-automation-vs-founder)).
+  Built-in provider endpoints, auth modes and wire policies are never altered by
+  pulled data.
+- The admission `base_url` check is static. Model requests to a custom provider
+  whose host an active verified registry admitted resolve that host on every
+  connection and refuse private, loopback, link-local and cloud-metadata
+  answers; see
+  [Models and providers](MODELS_AND_PROVIDERS.md#pulled-provider-admission-ssrf-and-credential-isolation)
+  for what that guard does and does not cover.
+- The website relay (`web/app/api/facts/v1/[channel]/route.ts`) and publisher
+  (`web/scripts/facts-publish.mjs`) verify and serve `codewhale.registry.v1`
+  envelopes (`CW-8253`); activating the public `registry` channel row in
+  Supabase and signing remain operator actions, and the Platform database
+  export cutover (`CW-8249`, `CW-8255`) remains planned; see
+  [Models and providers](MODELS_AND_PROVIDERS.md#6-planned-not-shipped-yet).
+- As for facts, an equal revision replaces the held copy, and a torn cache
+  file loses the floor at the next start.
 
 ## Website transport
 

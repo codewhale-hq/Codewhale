@@ -3,12 +3,29 @@ use std::path::Path;
 
 #[cfg(unix)]
 pub fn open_bundle_file(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::io::AsRawFd as _;
 
-    fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "plugin file is not a regular file",
+        ));
+    }
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
 }
 
 #[cfg(windows)]
@@ -116,4 +133,34 @@ pub fn open_bundle_identity_probe(
         ));
     }
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_bundle_file;
+
+    #[test]
+    fn open_bundle_file_rejects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = open_bundle_file(dir.path()).unwrap_err();
+        #[cfg(unix)]
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        #[cfg(not(unix))]
+        let _ = err;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_bundle_file_rejects_fifo_without_blocking() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let c_fifo = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe { libc::mkfifo(c_fifo.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+        let err = open_bundle_file(&fifo).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
 }

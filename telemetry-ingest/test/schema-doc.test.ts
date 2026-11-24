@@ -251,8 +251,12 @@ describe("the doc and the validator publish the same limits", () => {
   });
 
   it("agrees that the disk rings are larger than one batch", () => {
-    expect(DOC).toContain("rings capped at 512 records or\n256 KiB");
-    expect(MAX_BODY_BYTES).toBeLessThan(256 * 1024);
+    const caps = DOC.match(/ring capped at (\d+) records \(the header counts as one\) or\s+(\d+) KiB/);
+    expect(caps).not.toBeNull();
+    const [, records, kib] = caps as RegExpMatchArray;
+    expect(Number(records)).toBe(512);
+    expect(Number(kib)).toBe(256);
+    expect(MAX_BODY_BYTES).toBeLessThan(Number(kib) * 1024);
   });
 });
 

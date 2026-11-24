@@ -22,7 +22,8 @@ fn default_socket() -> PathBuf {
 }
 
 fn temp_root(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("cw-control-socket-{tag}-{}", std::process::id()));
+    let root =
+        codewhale_engine::test_support::test_scratch_dir(&format!("cw-control-socket-{tag}"));
     std::fs::create_dir_all(&root).expect("fixture root");
     root
 }

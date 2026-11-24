@@ -129,6 +129,10 @@ struct Cli {
     /// Recover the exact durable Resume/Fork intent without repeating its mutation.
     #[arg(long, global = true, value_name = "KEY")]
     operation_key: Option<String>,
+    /// Conversation mode for a new interactive session (for example `creator`).
+    /// With `--resume` or `--continue` it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
 }
 
 impl std::ops::Deref for Cli {
@@ -147,7 +151,9 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
-    #[command(about = "Inspect, review, trust, enable, disable or revoke plugin bundles")]
+    #[command(
+        about = "Install, inspect, review, trust, enable, disable, update, uninstall or revoke plugin bundles"
+    )]
     Plugins {
         #[command(subcommand)]
         command: PluginsCommand,
@@ -278,6 +284,47 @@ enum PluginsCommand {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Show a plugin's capability review without prompting or trusting")]
+    Show {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the review as JSON")]
+        json: bool,
+    },
+    #[command(
+        about = "Install a local, GitHub or version-pinned npm plugin bundle without trusting or enabling it"
+    )]
+    Install {
+        #[arg(value_name = "SPEC")]
+        spec: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(
+        about = "Review or install a third-party plugin package (currently: DeepSeek Harness `dsh`)"
+    )]
+    Import {
+        #[command(subcommand)]
+        command: PluginImportCommand,
+    },
+    #[command(about = "Update an installed user-scope plugin bundle from its recorded source")]
+    Update {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(
+        about = "Uninstall an installed user-scope plugin bundle (disables it first if enabled)"
+    )]
+    Uninstall {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, short = 'y', help = "Skip the confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Print the result as JSON; requires --yes")]
+        json: bool,
+    },
     #[command(about = "Restore an eligible reviewed plugin snapshot")]
     Restage {
         #[arg(value_name = "NAME")]
@@ -326,6 +373,24 @@ enum PluginsCommand {
         #[arg(value_name = "NAME", help = "Plugin bundle name")]
         name: String,
         #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PluginImportCommand {
+    #[command(
+        about = "Review a DeepSeek Harness package, or approve and install an exact reviewed content hash"
+    )]
+    Dsh {
+        #[arg(
+            value_name = "ARGS",
+            required = true,
+            num_args = 1..=3,
+            help = "<package-dir> to review, or `approve <package-dir> <content-hash>` to install"
+        )]
+        args: Vec<String>,
+        #[arg(long, help = "Print the review or install result as JSON")]
         json: bool,
     },
 }
@@ -380,6 +445,35 @@ enum SessionsCommand {
         /// Overwrite the destination file if it already exists
         #[arg(long, default_value_t = false)]
         force: bool,
+    },
+    #[command(
+        about = "Update saved sessions and Runtime stores after a workspace directory was renamed or moved"
+    )]
+    Migrate {
+        #[arg(
+            long = "old-path",
+            value_name = "PATH",
+            help = "Previous workspace directory path recorded on the sessions"
+        )]
+        old_path: PathBuf,
+        #[arg(
+            long = "new-path",
+            value_name = "PATH",
+            help = "New workspace directory path"
+        )]
+        new_path: PathBuf,
+        #[arg(
+            long,
+            value_name = "SESSION_ID",
+            help = "Only migrate this session id (or unique prefix)"
+        )]
+        session: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Report what would change without creating or modifying any files"
+        )]
+        dry_run: bool,
     },
 }
 
@@ -473,6 +567,10 @@ struct ExecArgs {
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
+    /// Conversation mode for a new session (for example `creator`). With a
+    /// resumed session it must match the session's saved mode.
+    #[arg(long = "conversation-mode", value_name = "MODE")]
+    conversation_mode: Option<String>,
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -862,6 +960,10 @@ fn spawn_signal_cleanup_task() {
     let mut signals = TerminatingSignals::register();
     tokio::spawn(async move {
         let exit_code = signals.wait().await;
+        codewhale_telemetry::record_session_end_blocking(codewhale_telemetry::ExitClass::Signal);
+        let telemetry_send = tokio::task::spawn_blocking(|| {
+            codewhale_telemetry::flush_for_termination(codewhale_telemetry::SIGNAL_FLUSH_TIMEOUT)
+        });
         // Persistence and a serving Runtime API share a bounded window to
         // flush queued saves and end open streams with a typed `stream.end`.
         // A second signal skips both waits.
@@ -870,6 +972,9 @@ fn spawn_signal_cleanup_task() {
                 tokio::join!(
                     codewhale_app_server::runtime_api::drain_for_signal_exit(),
                     crate::tui::persistence_actor::flush_for_signal_exit(),
+                    async {
+                        let _ = telemetry_send.await;
+                    },
                 )
             } => {}
             _ = signals.wait() => {}
@@ -885,64 +990,9 @@ fn spawn_signal_cleanup_task() {
             #[cfg(unix)]
             codewhale_runtime::process_tree::kill_contained_trees_for_exit();
             crate::tui::ui::emergency_restore_terminal();
-            // Nothing async survives the `exit` below, so this is the last
-            // chance to say how the session ended. `record_blocking` is one
-            // `O_APPEND` write with no lock: taking the compaction lock here
-            // would let a second Codewhale process sharing CODEWHALE_HOME hang
-            // Ctrl-C, and the second-signal short-circuit below has to stay
-            // reachable. A no-op unless this process was armed.
-            //
-            // The class is stated, not derived: `RunTerminationReason::Canceled`
-            // also exits 130, so `exit_code` cannot tell a signal from an
-            // Esc-cancelled turn.
-            record_signal_session_end();
         }
         std::process::exit(exit_code);
     });
-}
-
-/// When this process's armed telemetry session began. Set once, at arming, and
-/// read from both the ordinary teardown and the signal path.
-static TELEMETRY_SESSION_START: std::sync::OnceLock<std::time::Instant> =
-    std::sync::OnceLock::new();
-
-/// Build `session_end` from what this process actually accumulated.
-///
-/// The exit class is read from the process-wide atomic and never derived from
-/// an exit code: `RunTerminationReason::Canceled` maps to 130, the same value
-/// the SIGINT path uses, so a code-based derivation would report every
-/// Esc-cancelled turn as a signal.
-///
-/// The cold-start bucket is `None` unless the interactive event loop actually
-/// began, which is what keeps it absent rather than invented on the surfaces
-/// that have no event loop.
-fn telemetry_session_end() -> codewhale_telemetry::Event {
-    let counters = codewhale_telemetry::session_counters();
-    codewhale_telemetry::Event::SessionEnd {
-        duration_bucket: codewhale_telemetry::DurationBucket::from_secs(
-            TELEMETRY_SESSION_START
-                .get()
-                .map_or(0, |start| start.elapsed().as_secs()),
-        ),
-        exit_class: codewhale_telemetry::exit_class(),
-        cold_start_bucket: codewhale_runtime::startup_trace::cold_start_ms()
-            .map(codewhale_telemetry::ColdStartBucket::from_millis),
-        providers: counters.providers(),
-        counters: counters.counters(),
-        errors: counters.errors(),
-        turn_wall: counters.turn_wall(),
-    }
-}
-
-/// Close the session synchronously, from the signal handler.
-///
-/// A no-op unless this process was armed.
-fn record_signal_session_end() {
-    codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Signal);
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record_blocking(event);
-    }
-    codewhale_telemetry::record_blocking(telemetry_session_end());
 }
 
 /// Terminating-signal streams, registered up front and awaited later.
@@ -1056,6 +1106,33 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
 
 const EXEC_STDIN_GRACE: Duration = Duration::from_secs(2);
 
+#[cfg(unix)]
+fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
+    use std::os::fd::AsRawFd;
+    let stdin = io::stdin();
+    let mut poll_fd = libc::pollfd {
+        fd: stdin.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(grace.as_millis()).unwrap_or(i32::MAX);
+    let ready = loop {
+        let rc = unsafe { libc::poll(&mut poll_fd, 1, timeout) };
+        if rc >= 0 {
+            break rc;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    };
+    if ready == 0 {
+        return Ok(None);
+    }
+    read_capped_text(stdin.lock(), MAX_EXEC_PROMPT_BYTES, "exec prompt on stdin").map(Some)
+}
+
+#[cfg(not(unix))]
 fn read_stdin_context(grace: Duration) -> Result<Option<String>> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
@@ -1646,7 +1723,7 @@ struct ServeArgs {
     #[arg(long, default_value_t = 2)]
     workers: usize,
     /// Additional CORS origin to allow (repeatable). Stacks on top of the
-    /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
+    /// built-in defaults (localhost:3000, localhost:1420).
     /// Also reads `CODEWHALE_CORS_ORIGINS` (comma-separated), then
     /// `DEEPSEEK_CORS_ORIGINS` as an alias, and `[runtime_api] cors_origins`
     /// from `config.toml`. Whalescale#255.
@@ -2160,6 +2237,7 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
         }
         // Invoke the original hook (prints to stderr, etc.)
         orig_hook(panic_info);
+        crate::tui::ui::mark_terminal_restored_by_panic();
     }));
 
     // Parse and freeze every startup authority before Tokio or any other
@@ -2468,7 +2546,7 @@ fn telemetry_command_is_read_only(command: Option<&Commands>) -> bool {
         || matches!(
             command,
             Some(Commands::Plugins {
-                command: PluginsCommand::Status { .. }
+                command: PluginsCommand::Status { .. } | PluginsCommand::Show { .. }
             })
         )
 }
@@ -2514,7 +2592,6 @@ fn arm_telemetry_with_setup(
         return;
     };
     codewhale_telemetry::init(consent.with_config_path(Some(store.path().to_path_buf())));
-    let _ = TELEMETRY_SESSION_START.set(std::time::Instant::now());
     codewhale_telemetry::record(codewhale_telemetry::Event::SessionStart { source });
 }
 
@@ -2580,10 +2657,7 @@ async fn finish_telemetry(outcome: &Result<()>, surface: codewhale_telemetry::Su
     {
         codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Error);
     }
-    for event in codewhale_telemetry::session_counters().usage_events() {
-        codewhale_telemetry::record(event);
-    }
-    codewhale_telemetry::record(telemetry_session_end());
+    codewhale_telemetry::record_session_end();
     if surface == codewhale_telemetry::Surface::Cli {
         let persistence = codewhale_telemetry::persist_local_blocking();
         logging::info(format!(
@@ -2740,7 +2814,7 @@ async fn run_async_main_dispatch(
                     return crate::doctor::run_restore(stamp);
                 }
                 if args.installs {
-                    return crate::doctor::run_installs_report(args.json, args.brief);
+                    return run_doctor_installs_report(&cli, &args);
                 }
                 let config = match load_doctor_config_from_cli(&cli, &args) {
                     Ok(config) => config,
@@ -2779,14 +2853,15 @@ async fn run_async_main_dispatch(
                     )
                     .await;
                     if args.fix {
-                        let plan = crate::doctor_fix::plan_fixes(
+                        let plan = crate::doctor_fix::plan_fixes_for_config(
                             &config,
                             &workspace,
+                            cli.config.as_deref(),
                             plugin_registry.as_ref(),
                         );
                         crate::doctor_fix::print_fix_plan(&plan);
                         if !plan.is_empty() && (args.yes || crate::doctor_fix::confirm_fix(&plan)) {
-                            let results = crate::doctor_fix::apply_fixes(&plan);
+                            let results = crate::doctor_fix::apply_fixes(&plan, &config);
                             crate::doctor_fix::print_apply_results(&results);
                         }
                     }
@@ -2803,15 +2878,59 @@ async fn run_async_main_dispatch(
                 )
                 .await
             }
-            Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
-                let _config = load_structural_config_from_cli(&cli)?;
-                let workspace = crate::commands::groups::plugins::headless::agent_project()
-                    .unwrap_or_else(|| resolve_workspace(&cli));
-                let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
-                run_plugins_cli(command, registry)
-            })
-            .await
-            .context("Plugin command failed to finish")?,
+            Commands::Plugins { command } => match command {
+                PluginsCommand::Install { spec, json } => {
+                    let config = load_config_from_cli(&cli)?;
+                    let default_workspace = resolve_workspace(&cli);
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let registry = if workspace == default_workspace {
+                        (*plugin_registry).clone()
+                    } else {
+                        (*plugin_discovery.inspect_registry_for_workspace(&workspace)).clone()
+                    };
+                    run_plugins_install_cli(
+                        spec,
+                        json,
+                        config,
+                        registry,
+                        &plugin_discovery,
+                        &workspace,
+                    )
+                    .await
+                }
+                PluginsCommand::Import {
+                    command: PluginImportCommand::Dsh { args, json },
+                } => {
+                    let config = load_config_from_cli(&cli)?;
+                    let default_workspace = resolve_workspace(&cli);
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| default_workspace.clone());
+                    let registry = if workspace == default_workspace {
+                        (*plugin_registry).clone()
+                    } else {
+                        (*plugin_discovery.inspect_registry_for_workspace(&workspace)).clone()
+                    };
+                    run_plugins_import_dsh_cli(
+                        args,
+                        json,
+                        config,
+                        registry,
+                        &plugin_discovery,
+                        &workspace,
+                    )
+                    .await
+                }
+                command => tokio::task::spawn_blocking(move || {
+                    let config = load_structural_config_from_cli(&cli)?;
+                    let workspace = crate::commands::groups::plugins::headless::agent_project()
+                        .unwrap_or_else(|| resolve_workspace(&cli));
+                    let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
+                    run_plugins_cli(command, registry, &config)
+                })
+                .await
+                .context("Plugin command failed to finish")?,
+            },
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -2848,6 +2967,12 @@ async fn run_async_main_dispatch(
                 }) => {
                     run_sessions_export(&id, output.as_deref(), skip_artifacts, compression, force)
                 }
+                Some(SessionsCommand::Migrate {
+                    old_path,
+                    new_path,
+                    session,
+                    dry_run,
+                }) => run_sessions_migrate(old_path, new_path, session, dry_run).await,
             },
             Commands::Receipts {
                 id,
@@ -3010,6 +3135,17 @@ async fn run_async_main_dispatch(
                     .as_deref()
                     .map(load_exec_resume_session)
                     .transpose()?;
+                let exec_conversation_mode = match tui::conversation_mode::launch_conversation_mode(
+                    &config,
+                    codewhale_localization::resolve_locale("auto"),
+                    args.conversation_mode.as_deref(),
+                    resume_session.as_ref(),
+                )
+                .await
+                {
+                    Ok(mode) => mode,
+                    Err(message) => exit_refused("codewhale exec", &message),
+                };
                 let explicit_model = args
                     .model
                     .as_deref()
@@ -3071,6 +3207,12 @@ async fn run_async_main_dispatch(
                 // CODEWHALE_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
+                validate_cli_permission_mode(
+                    cli.permission_mode,
+                    &config,
+                    args.auto || yolo,
+                    "--permission-mode cannot be combined with --auto, --full-access, or --yolo",
+                )?;
                 let env_tool_surface = exec_tool_surface_from_env();
                 // #6510: every exec runs on the Engine — one turn loop, one
                 // prompt authority (BASE_PROMPT, AGENTS.md, skills). Without
@@ -3093,7 +3235,10 @@ async fn run_async_main_dispatch(
                         || config.max_subagents_for_provider(&identity),
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
-                    let auto_mode = args.auto || yolo;
+                    let auto_mode = args.auto
+                        || yolo
+                        || cli.permission_mode
+                            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
                     // A zero-tool run only spends model steps on output-limit
                     // continuations; without `--max-turns` those would run to
                     // the turn wall clock, so it gets a small default ceiling.
@@ -3130,6 +3275,7 @@ async fn run_async_main_dispatch(
                         args.sandbox.as_deref(),
                         args.json,
                         resume_session,
+                        resume_explicit_provider || resume_explicit_model.is_some(),
                         force_configured_route,
                         args.output_format,
                         max_turns,
@@ -3140,7 +3286,9 @@ async fn run_async_main_dispatch(
                         args.tool_authority_json.clone(),
                         args.hooks,
                         std::sync::Arc::clone(&plugin_registry),
+                        cli.permission_mode,
                         !tool_surface_requested,
+                        exec_conversation_mode,
                     )
                     .await
                 }
@@ -3216,6 +3364,7 @@ async fn run_async_main_dispatch(
                         workspace,
                         skills_dir,
                         skills_config,
+                        config.tool_launcher.is_some(),
                     )
                     .await
                 } else if http_selected {
@@ -3303,6 +3452,13 @@ async fn run_async_main_dispatch(
                 let plugin_registry = policy_current_registry(plugin_registry);
                 let prepared = prepare_interactive_config(&cli, &config, true)?;
                 let source_id = resolve_session_id(session_id, last, &prepared.workspace)?;
+                refuse_resume_mode_mismatch(
+                    &cli,
+                    &prepared.config,
+                    &source_id,
+                    &prepared.workspace,
+                )
+                .await;
                 let (prepared, new_session_id) = prepare_mounted_session(
                     &cli,
                     prepared,
@@ -3348,10 +3504,23 @@ async fn run_async_main_dispatch(
     let mut startup_notice = None;
     let resume_session_id = if cli.continue_session {
         let workspace = resolve_workspace(&cli);
-        resolve_continue_session_id(
+        let resolved = resolve_continue_session_id(
             &workspace,
             io::stdin().is_terminal() && io::stdout().is_terminal(),
-        )
+        );
+        if resolved.is_none()
+            && let Ok(manager) = SessionManager::default_location()
+            && let Some(missing) = manager.missing_workspace_session_hint(&workspace)
+        {
+            startup_notice = Some(format!(
+                "No saved sessions found for {}. If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                workspace.display(),
+                missing.display(),
+                session_manager::shell_quote_path(&missing),
+                session_manager::shell_quote_path(&workspace),
+            ));
+        }
+        resolved
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
     } else if !cli.fresh {
@@ -3368,6 +3537,13 @@ async fn run_async_main_dispatch(
     } else {
         None
     };
+
+    if let Some(note) = project_mcp_approval_note(&resolve_workspace(&cli)) {
+        startup_notice = Some(match startup_notice {
+            Some(existing) => format!("{existing}\n{note}"),
+            None => note,
+        });
+    }
 
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (auto-approve; shell enabled)
@@ -3573,6 +3749,7 @@ fn is_workspace_dotenv_credential_key(key: &str) -> bool {
             "DEEPSEEK_SEARCH_API_KEY"
                 | "SOFYA_API_KEY"
                 | "SERPLY_API_KEY"
+                | "SEARCHAPI_API_KEY"
                 | "METASO_API_KEY"
                 | "BAIDU_SEARCH_API_KEY"
                 | "TAVILY_API_KEY"
@@ -3957,7 +4134,7 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             // re-arm mouse reporting in the caller's shell and leave it
             // executing escape fragments after this command exits.
             let mut safe_preview = String::with_capacity(preview.len());
-            codewhale_tui_kit::osc8::strip_ansi_into(&preview, &mut safe_preview);
+            codewhale_sanitize::sanitize::strip_ansi_into(&preview, &mut safe_preview);
             print!("{safe_preview}");
             if contents.chars().count() > preview.chars().count() {
                 println!("\n[truncated]");
@@ -4484,7 +4661,7 @@ fn init_plugins_dir(
 /// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
 ///
 /// The runtime API always allows the built-in dev defaults
-/// (localhost:3000, localhost:1420, tauri://localhost). User entries are
+/// (localhost:3000, localhost:1420). User entries are
 /// appended on top — empty strings are skipped, and duplicates are deduped
 /// while preserving first-seen order. Whalescale#255 / #561.
 fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
@@ -5295,6 +5472,15 @@ async fn run_doctor(
     };
     // Presence and variable name only; the value is never held here.
     let env_key_source = codewhale_runtime::config::active_provider_env_api_key_source(config);
+    let route_record_stale = verdict_state
+        .steps
+        .get(&codewhale_config::SetupStep::ProviderModel)
+        .and_then(|entry| entry.result.as_deref())
+        .is_some_and(|result| {
+            doctor_setup_route_record_is_stale(result, &api_target.provider, &api_target.model)
+        });
+    let route_credential_unavailable =
+        resolve_credential_diagnostic(config).availability == CredentialAvailability::Unavailable;
     let verdict = doctor_verdict(
         &verdict_state,
         identity
@@ -5316,6 +5502,8 @@ async fn run_doctor(
                         true,
                     )
                 }),
+            route_record_stale,
+            route_credential_unavailable,
         },
     );
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
@@ -5370,7 +5558,7 @@ async fn run_doctor(
             let flagged = crate::doctor::config_credential_shaped_keys(&raw);
             if !flagged.is_empty() {
                 println!(
-                    "  {} credential-shaped value(s) in config.toml ({}): move them to the secret backend, then scrub the file — config.toml is plain text",
+                    "  {} credential-shaped value(s) in config.toml ({}): config.toml is plain text. `codewhale doctor --fix` moves provider `api_key` values into the secret store and removes them from the file; delete any other listed key by hand once it is unused",
                     "!".truecolor(sky_r, sky_g, sky_b),
                     flagged.join(", ")
                 );
@@ -5495,11 +5683,14 @@ async fn run_doctor(
     .await;
 
     let (setup_state, setup_source) = doctor_setup_state(config, workspace);
+    let route_source = doctor_route_source(config, profile, local_route.is_some());
     print_doctor_setup_report(
         config,
         workspace,
         &setup_state,
         setup_source,
+        &api_target,
+        &route_source,
         (aqua_r, aqua_g, aqua_b),
         (sky_r, sky_g, sky_b),
     );
@@ -5627,25 +5818,42 @@ async fn run_doctor(
     // API connectivity test
     println!();
     println!("{}", "API Connectivity:".bold());
-    // Configured-vs-active honesty (DGF-01): doctor describes the route a
-    // session launched NOW would resolve. It cannot see inside an already
-    // running session, which keeps the route it resolved at its own launch.
     println!(
-        "  · scope: configured route — what a session launched now would use; a running session keeps the route it resolved at launch (its TUI header shows the live route)"
+        "  · scope: configured default route, the one a session launched now uses; /provider and /model change only the running session, whose TUI header shows its route"
     );
-    println!("  · provider: {}", api_target.provider);
+    println!(
+        "  · provider: {} (from {})",
+        api_target.provider, route_source.provider
+    );
+    let latest_session_route = {
+        let sessions = doctor_paths.sessions.clone();
+        let provider = api_target.provider.clone();
+        let model = api_target.model.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::doctor::latest_session_route_line(&sessions, &provider, &model)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(line) = latest_session_route {
+        println!("  · {line}");
+    }
     println!(
         "  · base_url: {}",
         codewhale_config::structural_url_authority(&api_target.base_url)
     );
     match api_target.resolution {
         DoctorModelResolution::Resolved => {
-            println!("  · model: {} (resolved)", api_target.model);
+            println!(
+                "  · model: {} (resolved; from {})",
+                api_target.model, route_source.model
+            );
         }
         DoctorModelResolution::ConfiguredOnly => {
             println!(
-                "  · model: {} (configured; route resolution unavailable)",
-                api_target.model
+                "  · model: {} (from {}; route resolution unavailable)",
+                api_target.model, route_source.model
             );
         }
     }
@@ -5816,6 +6024,20 @@ async fn run_doctor(
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
             codewhale_util::utils::display_path(&project_mcp_config_path)
         );
+        match codewhale_engine::mcp::project_authority::project_mcp_status(workspace) {
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Untrusted => {
+                println!("    Not loaded: the workspace is not trusted.")
+            }
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Unapproved { .. } => {
+                println!(
+                    "    Not loaded: its exact contents are not approved. Run /mcp review, then /mcp approve <digest>, in a session."
+                )
+            }
+            codewhale_engine::mcp::project_authority::ProjectMcpStatus::Unreadable(error) => {
+                println!("    Not loaded: {error}.")
+            }
+            _ => {}
+        }
     } else {
         println!(
             "  {} Project MCP config not found at {}",
@@ -5953,6 +6175,12 @@ async fn run_doctor(
         println!("  {}", status.summary());
         if !status.unknown.is_empty() {
             println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.retired.is_empty() {
+            println!(
+                "  · No longer bundled (kept in [skills.bundled]): {}",
+                status.retired.join(", ")
+            );
         }
         if !status.ignored.is_empty() {
             println!(
@@ -6528,6 +6756,8 @@ struct DoctorVerdictFacts {
     /// (#6889). A model the provider is still loading looks exactly like this.
     live_probe_timed_out: bool,
     local_discovery: bool,
+    route_record_stale: bool,
+    route_credential_unavailable: bool,
 }
 
 /// `set via <VAR> (value not shown; not checked offline)`.
@@ -6581,16 +6811,39 @@ fn doctor_verdict(
     // `first_run_ready` accepts NeedsAction (a failed key still reaches the
     // wizard's ready screen), so check the provider first.
     match state.status(codewhale_config::SetupStep::ProviderModel) {
-        StepStatus::Verified if state.first_run_ready() || facts.onboarded => {
+        StepStatus::Verified
+            if !facts.route_credential_unavailable
+                && !facts.route_record_stale
+                && (state.first_run_ready() || facts.onboarded) =>
+        {
             "Ready: setup is complete.".to_string()
         }
         StepStatus::Configured | StepStatus::Verified
-            if state.first_run_ready() || facts.onboarded =>
+            if !facts.route_credential_unavailable
+                && (state.first_run_ready() || facts.onboarded) =>
         {
-            format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            if facts.route_record_stale {
+                format!(
+                    "Ready: setup is complete (saved {provider} key not checked offline; {PROBE_HINT}; run /setup provider to refresh the recorded route)."
+                )
+            } else {
+                format!("Ready: setup is complete (saved key not checked offline; {PROBE_HINT}).")
+            }
         }
         StepStatus::Configured | StepStatus::Verified => env_ready.unwrap_or_else(|| {
-            "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            if facts.route_credential_unavailable {
+                if facts.local_discovery {
+                    format!(
+                        "Not confirmed: the {provider} route has no verified key, so Codewhale and `codewhale exec` use a local Ollama model if one is running → `codewhale doctor --probe-local` checks for one; or save a key with /provider in Codewhale or `codewhale auth set --provider {provider}`."
+                    )
+                } else {
+                    format!(
+                        "Not ready: the {provider} route has no verified key → save one with /provider in Codewhale or `codewhale auth set --provider {provider}`; `codewhale doctor --probe-api` checks a key already saved."
+                    )
+                }
+            } else {
+                "Not ready: first-run setup is unfinished → run `codewhale setup`.".to_string()
+            }
         }),
         StepStatus::NeedsAction => env_ready.unwrap_or_else(|| {
             // A derived NeedsAction only means offline doctor cannot see the
@@ -6700,6 +6953,8 @@ mod doctor_verdict_tests {
             live_probe,
             live_probe_timed_out: false,
             local_discovery: false,
+            route_record_stale: false,
+            route_credential_unavailable: false,
         }
     }
 
@@ -7537,11 +7792,14 @@ fn doctor_has_credentials_or_local_runtime(config: &Config) -> bool {
         .certifies_ready()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_doctor_setup_report(
     config: &Config,
     workspace: &Path,
     state: &codewhale_config::SetupState,
     source: &str,
+    api_target: &DoctorApiTarget,
+    route_source: &DoctorRouteSource,
     ok_rgb: (u8, u8, u8),
     warn_rgb: (u8, u8, u8),
 ) {
@@ -7574,6 +7832,10 @@ fn print_doctor_setup_report(
     println!();
     println!("{}", "Setup State:".bold());
     println!("  · source: {source}");
+    println!(
+        "  · configured default route: {} / {} (provider from {}, model from {}; API Connectivity checks this same route)",
+        api_target.provider, api_target.model, route_source.provider, route_source.model
+    );
     println!(
         "  · credential: source={}, availability={}",
         doctor_api_key_source_label(credential.source),
@@ -7637,7 +7899,22 @@ fn print_doctor_setup_report(
         let result = entry.and_then(|entry| entry.result.as_deref());
         let required_label = if required { "required" } else { "optional" };
         let version_label = version.unwrap_or("unversioned");
-        let result_label = result.unwrap_or("no result");
+        let result_label = match result {
+            Some(result)
+                if step == codewhale_config::SetupStep::ProviderModel
+                    && doctor_setup_route_record_is_stale(
+                        result,
+                        &api_target.provider,
+                        &api_target.model,
+                    ) =>
+            {
+                format!(
+                    "recorded at setup: {result}; the configured default route has changed since, run /setup provider to refresh this record"
+                )
+            }
+            Some(result) => format!("recorded at setup: {result}"),
+            None => "no result".to_string(),
+        };
         println!(
             "    · {}: {} ({required_label}, {version_label}, {result_label})",
             setup_step_id(step),
@@ -7867,7 +8144,7 @@ fn doctor_control_socket_posture_line(config: &Config) -> String {
 /// Report the durable opt-out and environment preference without arming or
 /// touching telemetry state. Notice presentation is not a permission gate.
 fn doctor_runtime_telemetry(config: &Config) -> (bool, &'static str) {
-    let (on, source) = codewhale_config::resolved_telemetry_consent(config.telemetry);
+    let (on, source) = codewhale_config::dispatched_telemetry_consent(config.telemetry);
     if !on {
         return (false, source.as_str());
     }
@@ -8944,14 +9221,114 @@ fn doctor_route_report(config: &Config) -> serde_json::Value {
 fn doctor_provider_config_table(identity: &codewhale_runtime::config::ProviderIdentity) -> String {
     format!(
         "providers.{}",
-        identity
+        identity.config_table_key().unwrap_or_else(|_| identity
             .compatibility()
-            .map_or(identity.key.as_str(), |row| row.config_key)
+            .map_or(identity.key.as_str(), |row| row.config_key))
     )
 }
 
+struct DoctorRouteSource {
+    provider: String,
+    model: String,
+}
+
+fn doctor_route_source(
+    config: &Config,
+    profile: Option<&str>,
+    local_adopted: bool,
+) -> DoctorRouteSource {
+    if local_adopted {
+        return DoctorRouteSource {
+            provider: "live local Ollama (--probe-local)".to_string(),
+            model: "live local Ollama (--probe-local)".to_string(),
+        };
+    }
+    let profile_note = profile
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(|profile| format!(" with profile `{profile}`"))
+        .unwrap_or_default();
+    let provider = if config.route_provenance.provider_from_managed {
+        "managed configuration".to_string()
+    } else if config.route_provenance.provider_from_env
+        || codewhale_runtime::config::explicit_launch_provider_override().is_some()
+    {
+        "environment CODEWHALE_PROVIDER".to_string()
+    } else if config.route_provenance.provider_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if config
+        .provider
+        .as_ref()
+        .is_some_and(|provider| !provider.trim().is_empty())
+    {
+        if config.route_provenance.provider_from_profile {
+            format!("config `provider`{profile_note}")
+        } else {
+            "config `provider`".to_string()
+        }
+    } else {
+        "the built-in default".to_string()
+    };
+    let model_profile_note = if config.route_provenance.model_from_profile {
+        profile_note.as_str()
+    } else {
+        ""
+    };
+    let provider_model_table = config.active_provider_identity().ok().filter(|identity| {
+        config
+            .provider_config_for(identity)
+            .and_then(|entry| entry.model.as_deref())
+            .is_some_and(|model| !model.trim().is_empty())
+    });
+    let model = if config.route_provenance.model_from_managed {
+        "managed configuration".to_string()
+    } else if codewhale_runtime::config::explicit_launch_model_override().is_some() {
+        "environment CODEWHALE_MODEL".to_string()
+    } else if config.environment_model_applied {
+        "environment model override".to_string()
+    } else if config.route_provenance.model_from_saved_selection {
+        "saved selection in settings.toml".to_string()
+    } else if let Some(identity) = provider_model_table {
+        format!(
+            "config `[{}].model`{model_profile_note}",
+            doctor_provider_config_table(&identity)
+        )
+    } else if config.default_model_uses_root_default_text_model() {
+        format!("config `default_text_model`{model_profile_note}")
+    } else {
+        "the provider default".to_string()
+    };
+    DoctorRouteSource { provider, model }
+}
+
+fn doctor_setup_route_record_is_stale(record: &str, provider: &str, model: &str) -> bool {
+    let mut recorded_provider: Option<&str> = None;
+    let mut recorded_model: Option<&str> = None;
+    for segment in record.split([',', ';']) {
+        let part = segment.trim();
+        if let Some(value) = part.strip_prefix("provider=") {
+            recorded_provider = Some(value.split_whitespace().next().unwrap_or_default());
+        } else if let Some(value) = part.strip_prefix("model=") {
+            recorded_model = Some(value.trim());
+        }
+    }
+    let model = model.trim().trim_start_matches("models/");
+    let provider_stale = recorded_provider.is_some_and(|recorded| recorded != provider);
+    let model_stale = recorded_model.is_some_and(|recorded| {
+        if let Some(effective) = recorded.strip_prefix("auto:") {
+            !model.eq_ignore_ascii_case("auto")
+                && effective.trim().trim_start_matches("models/") != model
+        } else {
+            recorded.trim_start_matches("models/") != model
+        }
+    });
+    provider_stale || model_stale
+}
+
 fn doctor_provider_source(config: &Config) -> &'static str {
-    if config
+    if codewhale_runtime::config::explicit_launch_provider_override().is_some() {
+        "env"
+    } else if config
         .provider
         .as_ref()
         .is_some_and(|provider| !provider.trim().is_empty())
@@ -9001,6 +9378,12 @@ fn doctor_auth_scheme(config: &Config) -> &'static str {
         config.auth_mode_for_provider(&identity).as_deref(),
     ) {
         "none"
+    } else if provider == codewhale_config::ProviderKind::Anthropic
+        && codewhale_config::credentials::auth_mode_is_claude_org(
+            config.auth_mode_for_provider(&identity).as_deref(),
+        )
+    {
+        "bearer"
     } else if provider == codewhale_config::ProviderKind::Anthropic {
         "x-api-key"
     } else if provider == codewhale_config::ProviderKind::XiaomiMimo
@@ -9432,9 +9815,228 @@ fn print_plugin_cli_diagnostic(diagnostic: &codewhale_plugins::types::PluginDiag
     );
 }
 
+async fn run_plugins_install_cli(
+    spec: String,
+    json: bool,
+    config: Config,
+    registry: codewhale_plugins::PluginRegistry,
+    plugin_discovery: &Arc<codewhale_plugins::PluginDiscoveryContext>,
+    workspace: &Path,
+) -> Result<()> {
+    if !json {
+        return codewhale_plugins::mutation::install_from_cli(spec, config, registry).await;
+    }
+    let receipt =
+        codewhale_plugins::mutation::install_from_cli_receipt(spec, config, registry).await?;
+    let refreshed = plugin_discovery.inspect_registry_for_workspace(workspace);
+    let record = refreshed
+        .get(&receipt.name)
+        .map(|plugin| {
+            let mut value = plugin_cli_record(plugin);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("action".to_string(), "installed".into());
+            }
+            value
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "name": plugin_cli_text(&receipt.name),
+                "action": "installed",
+                "path": receipt.path.as_ref().map(|p| plugin_cli_text(&p.to_string_lossy())),
+                "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                "trust": "untrusted",
+                "enabled": false,
+            })
+        });
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
+async fn run_plugins_import_dsh_cli(
+    args: Vec<String>,
+    json: bool,
+    config: Config,
+    registry: codewhale_plugins::PluginRegistry,
+    plugin_discovery: &Arc<codewhale_plugins::PluginDiscoveryContext>,
+    workspace: &Path,
+) -> Result<()> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["approve", path, expected_hash] => {
+            let receipt = codewhale_plugins::mutation::install_exact_from_cli_receipt(
+                format!("dsh:{path}"),
+                (*expected_hash).to_string(),
+                config,
+                registry,
+            )
+            .await?;
+            if !json {
+                println!("Installed {} (disabled, untrusted).", receipt.name);
+                println!(
+                    "Review with `codewhale plugins trust {}`, then enable with `codewhale plugins enable {}`.",
+                    receipt.name, receipt.name
+                );
+                return Ok(());
+            }
+            let refreshed = plugin_discovery.inspect_registry_for_workspace(workspace);
+            let record = refreshed
+                .get(&receipt.name)
+                .map(|plugin| {
+                    let mut value = plugin_cli_record(plugin);
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("action".to_string(), "installed".into());
+                    }
+                    value
+                })
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "name": plugin_cli_text(&receipt.name),
+                        "action": "installed",
+                        "path": receipt.path.as_ref().map(|p| plugin_cli_text(&p.to_string_lossy())),
+                        "content_hash": receipt.installed_content_hash.or(receipt.content_hash),
+                        "trust": "untrusted",
+                        "enabled": false,
+                    })
+                });
+            println!("{}", serde_json::to_string_pretty(&record)?);
+            Ok(())
+        }
+        [path] if *path != "approve" => {
+            let package_path = PathBuf::from(path);
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+            let (canonical, conversion, content_hash) = tokio::task::spawn_blocking(move || {
+                let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+                let canonical = package_path.canonicalize().with_context(|| {
+                    format!("DSH package not found at {}", package_path.display())
+                })?;
+                let (conversion, content_hash) =
+                    codewhale_plugins::install::preview_dsh_with_network(&canonical, &network)?;
+                Ok::<_, anyhow::Error>((canonical, conversion, content_hash))
+            })
+            .await
+            .context("DSH preview task failed to finish")??;
+            let manual_ports: Vec<String> = conversion
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.needs_manual_port())
+                .map(|outcome| {
+                    format!(
+                        "{} ({}) {}: {}",
+                        outcome.row.as_deref().unwrap_or("unlabeled"),
+                        outcome.package.as_deref().unwrap_or("unlabeled"),
+                        outcome.kind,
+                        outcome.reason
+                    )
+                })
+                .collect();
+            if json {
+                let payload = serde_json::json!({
+                    "action": "preview",
+                    "plugin_name": conversion.plugin_name,
+                    "source_package": conversion.source_package,
+                    "source_version": conversion.source_version,
+                    "package_path": canonical.to_string_lossy(),
+                    "content_hash": content_hash,
+                    "skills": conversion.skills,
+                    "commands": conversion.commands,
+                    "agents": conversion.agents,
+                    "hooks": conversion.hooks,
+                    "remote_servers": conversion.remote_servers,
+                    "local_servers": conversion.local_servers,
+                    "network_hosts": conversion.network_hosts,
+                    "native_rows": conversion.native_rows,
+                    "requires_node": conversion.requires_node,
+                    "manual_ports": manual_ports,
+                    "diagnostics": conversion.diagnostics,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+                return Ok(());
+            }
+            let pkg_label =
+                plugin_cli_text(conversion.source_package.as_deref().unwrap_or("unnamed"));
+            let version_suffix = conversion
+                .source_version
+                .as_deref()
+                .map(|v| format!("@{}", plugin_cli_text(v)))
+                .unwrap_or_default();
+            println!(
+                "DeepSeek Harness package {pkg_label}{version_suffix} -> plugin '{}'",
+                plugin_cli_text(&conversion.plugin_name)
+            );
+            println!(
+                "  Source: {}",
+                plugin_cli_text(&canonical.to_string_lossy())
+            );
+            let fmt_list = |items: &[String]| {
+                if items.is_empty() {
+                    "none".to_string()
+                } else {
+                    plugin_cli_text(&items.join(", "))
+                }
+            };
+            println!("  Skills: {}", fmt_list(&conversion.skills));
+            println!("  Commands: {}", fmt_list(&conversion.commands));
+            println!("  Agents: {}", fmt_list(&conversion.agents));
+            println!("  Hooks: {}", fmt_list(&conversion.hooks));
+            println!(
+                "  Remote MCP servers: {}",
+                fmt_list(&conversion.remote_servers)
+            );
+            println!(
+                "  Local MCP servers: {}",
+                fmt_list(&conversion.local_servers)
+            );
+            println!("  Network hosts: {}", fmt_list(&conversion.network_hosts));
+            if !conversion.native_rows.is_empty() {
+                println!("  Native host code: {}", fmt_list(&conversion.native_rows));
+            }
+            if conversion.requires_node {
+                println!("  Requires: node on PATH");
+            }
+            if manual_ports.is_empty() {
+                println!("  Skipped: none");
+            } else {
+                println!("  Skipped ({}):", manual_ports.len());
+                for line in &manual_ports {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            if !conversion.diagnostics.is_empty() {
+                println!("  Diagnostics:");
+                for line in &conversion.diagnostics {
+                    println!("    - {}", plugin_cli_text(line));
+                }
+            }
+            println!("  Content hash: {content_hash}");
+            println!();
+            println!(
+                "Nothing was installed. To import exactly this bundle (disabled and untrusted):"
+            );
+            println!(
+                "  codewhale plugins import dsh approve {} {}",
+                plugin_cli_text(&format!(
+                    "'{}'",
+                    canonical.to_string_lossy().replace('\'', "'\\''")
+                )),
+                content_hash
+            );
+            Ok(())
+        }
+        _ => bail!(
+            "Usage:\n  codewhale plugins import dsh <package-dir> [--json]\n  codewhale plugins import dsh approve <package-dir> <content-hash> [--json]"
+        ),
+    }
+}
+
 fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
+    config: &Config,
 ) -> Result<()> {
     use crate::commands::groups::plugins::headless;
     use codewhale_localization::{MessageId, resolve_locale, tr};
@@ -9524,6 +10126,39 @@ fn run_plugins_cli(
                 }
             }
         }
+        PluginsCommand::Show { name, json } => headless::show(
+            &registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Install { .. } | PluginsCommand::Import { .. } => {
+            unreachable!("plugins install/import is dispatched before spawn_blocking")
+        }
+        PluginsCommand::Update { name, json } => {
+            let network = config
+                .network
+                .clone()
+                .map(codewhale_net::network_policy::NetworkPolicy::from)
+                .unwrap_or_default();
+            headless::update(
+                &mut registry,
+                locale,
+                &name,
+                &network,
+                json,
+                &mut headless::ProcessConsole,
+            )?;
+        }
+        PluginsCommand::Uninstall { name, yes, json } => headless::uninstall(
+            &mut registry,
+            locale,
+            &name,
+            yes,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
         PluginsCommand::Trust {
             name,
             review_token,
@@ -9661,15 +10296,25 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     let identity = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
-    if identity.provider != ProviderKind::XiaomiMimo {
+    if !matches!(
+        identity.provider,
+        ProviderKind::XiaomiMimo | ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    ) {
         bail!(
-            "`speech` requires provider = \"xiaomi-mimo\" (current: {}). Run with `--provider xiaomi-mimo` or set it in config.",
+            "`speech` requires provider = \"xiaomi-mimo\" or \"deepseek\" (current: {}). Run with `--provider xiaomi-mimo` or `--provider deepseek` or set it in config.",
             identity.key.as_str()
         );
     }
 
     if text.trim().is_empty() {
         bail!("Speech text cannot be empty");
+    }
+    let is_deepseek = matches!(
+        identity.provider,
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic
+    );
+    if is_deepseek && (clone_voice.is_some() || instruction.is_some() || voice_prompt.is_some()) {
+        bail!("DeepSeek TTS does not support --clone-voice, --voice-prompt, or --instruction");
     }
     let features = config.features();
     let workspace = std::env::current_dir()?;
@@ -9694,22 +10339,49 @@ async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     )
     .await
     .map_err(adapter_error)?;
-    let model = plan.model;
+    let mut model = plan.model;
+    if is_deepseek && (model == "mimo-v2.5-tts" || model == "mimo-v2-tts") {
+        model = codewhale_engine::deepseek_media::DEEPSEEK_TTS_MODEL.to_string();
+    }
     let instruction = plan.instruction;
     // Clone sample/voice data stays inside the existing Core/provider path.
-    let voice = match plan.voice {
-        SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
-            clone_voice
-                .as_deref()
-                .context("speech adapter requested an uncaptured clone sample")?,
-        )?),
-        SpeechVoice::Omit => None,
-        SpeechVoice::Raw => Some(voice.context("speech adapter requested an uncaptured voice")?),
-        SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+    let voice = if is_deepseek {
+        match plan.voice {
+            SpeechVoice::Clone => bail!("DeepSeek TTS does not support --clone-voice"),
+            SpeechVoice::Omit | SpeechVoice::Default => None,
+            SpeechVoice::Raw => {
+                let raw = voice.context("speech adapter requested an uncaptured voice")?;
+                let normalized =
+                    codewhale_engine::deepseek_media::normalize_deepseek_voice_id(Some(&raw))
+                        .map_err(anyhow::Error::msg)?;
+                Some(normalized.to_string())
+            }
+        }
+    } else {
+        match plan.voice {
+            SpeechVoice::Clone => Some(encode_voice_clone_sample_data_uri(
+                clone_voice
+                    .as_deref()
+                    .context("speech adapter requested an uncaptured clone sample")?,
+            )?),
+            SpeechVoice::Omit => None,
+            SpeechVoice::Raw => {
+                Some(voice.context("speech adapter requested an uncaptured voice")?)
+            }
+            SpeechVoice::Default => Some(DEFAULT_VOICE.to_string()),
+        }
     };
     let format = prepare_speech_format(&format, SpeechSurface::Cli, &context)
         .await
         .map_err(adapter_error)?;
+    let format = if is_deepseek {
+        let (wire_format, _) =
+            codewhale_engine::deepseek_media::normalize_deepseek_tts_format(&format)
+                .map_err(anyhow::Error::msg)?;
+        wire_format.to_string()
+    } else {
+        format
+    };
     let output = output.unwrap_or_else(|| {
         output_dir
             .or_else(|| config.speech_output_dir())
@@ -9862,6 +10534,8 @@ async fn test_api_connectivity(config: &Config) -> Result<()> {
         stream: Some(false),
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     };
 
     // Use tokio timeout to catch hanging requests. The timeout is typed so
@@ -10281,6 +10955,95 @@ fn run_sessions_export(
     Ok(())
 }
 
+async fn run_sessions_migrate(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    #[cfg(test)]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        run_sessions_migrate_blocking(old_path, new_path, session_id, dry_run)
+    })
+    .await?
+}
+
+fn run_sessions_migrate_blocking(
+    old_path: PathBuf,
+    new_path: PathBuf,
+    session_id: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let manager = SessionManager::default_location()?;
+    let session_arg = session_id
+        .as_deref()
+        .map(|id| {
+            format!(
+                " --session {}",
+                session_manager::shell_quote_path(Path::new(id))
+            )
+        })
+        .unwrap_or_default();
+    let report = manager.migrate_workspace(&session_manager::WorkspaceMigrationOptions {
+        old_path,
+        new_path,
+        session_id,
+        dry_run,
+    })?;
+    let total = report.migrated_sessions.len()
+        + report.migrated_checkpoints.len()
+        + report.migrated_threads.len();
+    if total == 0 && report.busy_sessions.is_empty() && report.unreadable.is_empty() {
+        println!(
+            "No saved sessions or Runtime threads matched workspace {}.",
+            report.old_path.display()
+        );
+        return Ok(());
+    }
+    let verb = if dry_run { "Would migrate" } else { "Migrated" };
+    println!(
+        "{verb} {} session(s), {} checkpoint(s), and {} Runtime thread(s) from {} to {}.",
+        report.migrated_sessions.len(),
+        report.migrated_checkpoints.len(),
+        report.migrated_threads.len(),
+        report.old_path.display(),
+        report.new_path.display(),
+    );
+    for id in &report.migrated_sessions {
+        println!("  session {id}");
+    }
+    if !report.busy_sessions.is_empty() {
+        println!(
+            "{} session(s) were skipped because another Codewhale process is using them (close open sessions and re-run):",
+            report.busy_sessions.len()
+        );
+        for id in &report.busy_sessions {
+            println!("  {id}");
+        }
+    }
+    if !report.unreadable.is_empty() {
+        println!("{} warning(s):", report.unreadable.len());
+        for err in &report.unreadable {
+            println!("  {err}");
+        }
+    }
+    if dry_run && total > 0 {
+        println!(
+            "Re-run without `--dry-run` to apply: `codewhale sessions migrate --old-path {} --new-path {}{session_arg}`.",
+            session_manager::shell_quote_path(&report.old_path),
+            session_manager::shell_quote_path(&report.new_path),
+        );
+    } else if !dry_run && total > 0 {
+        println!(
+            "Run `codewhale --continue` or `codewhale resume <SESSION_ID>` from the new workspace."
+        );
+    }
+    Ok(())
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     let bytes = bytes as f64;
@@ -10369,6 +11132,17 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
 /// a provider endpoint. Keep credential-bearing environment values out of the
 /// regular diagnostic configuration so an unrelated renderer or error path
 /// cannot disclose them.
+/// Kept out of line so the config it loads never widens the debug poll frame
+/// of the top-level dispatch future, which runs at near-zero stack margin.
+#[inline(never)]
+fn run_doctor_installs_report(cli: &Cli, args: &DoctorArgs) -> Result<()> {
+    let update = (args.brief && !args.json)
+        .then(|| load_doctor_config_from_cli(cli, args).ok())
+        .flatten()
+        .map(|config| config.update_config());
+    crate::doctor::run_installs_report(args.json, args.brief, update.as_ref())
+}
+
 fn load_doctor_config_from_cli(cli: &Cli, args: &DoctorArgs) -> Result<Config> {
     if args.probe_api || args.probe_local {
         return load_config_from_cli(cli);
@@ -10728,8 +11502,20 @@ fn run_orcarouter_revoke(config_path: Option<&Path>) -> Result<()> {
 fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
     if last {
         return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
+            let hint = SessionManager::default_location()
+                .ok()
+                .and_then(|manager| manager.missing_workspace_session_hint(workspace))
+                .map(|missing| {
+                    format!(
+                        " If you renamed {}, preview the move with `codewhale sessions migrate --old-path {} --new-path {} --dry-run`.",
+                        missing.display(),
+                        session_manager::shell_quote_path(&missing),
+                        session_manager::shell_quote_path(workspace),
+                    )
+                })
+                .unwrap_or_default();
             anyhow!(
-                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.",
+                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.{hint}",
                 workspace.display()
             )
         });
@@ -10805,19 +11591,49 @@ async fn prepare_mounted_session(
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
+        if let Err(err) = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace)) {
+            if err.kind() == std::io::ErrorKind::PermissionDenied
+                && let Some(old_ws) = manager
+                    .load_recovery_checkpoint(&id)
+                    .ok()
+                    .flatten()
+                    .filter(|ckpt| {
+                        !session_manager::paths_equivalent(&ckpt.metadata.workspace, &selection_workspace)
+                    })
+                    .map(|ckpt| ckpt.metadata.workspace)
+                    .or_else(|| {
+                        manager
+                            .load_session(&id)
+                            .ok()
+                            .filter(|saved| {
+                                !session_manager::paths_equivalent(&saved.metadata.workspace, &selection_workspace)
+                            })
+                            .map(|saved| saved.metadata.workspace)
+                    })
+            {
+                anyhow::bail!(
+                    "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+                    old_ws.display(),
+                    session_manager::shell_quote_path(&old_ws),
+                    session_manager::shell_quote_path(&selection_workspace),
+                    id,
+                    session_manager::shell_quote_path(&old_ws),
+                );
+            }
+            return Err(err.into());
+        }
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
         // Project grants were captured for this launch before awaiting. The
         // existing restore changes App workspace, so it cannot silently apply
-        // that snapshot to a different saved project. Match the same physical/
-        // config equality used by workspace overlays without changing either
-        // selected lexical path or merging a second project after the await.
-        let launch_scope = selection_workspace.canonicalize().unwrap_or_else(|_| selection_workspace.clone());
-        let saved_scope = saved.metadata.workspace.canonicalize().unwrap_or_else(|_| saved.metadata.workspace.clone());
+        // that snapshot to a different saved project.
         anyhow::ensure!(
-            paths_equal_for_config(&launch_scope, &saved_scope),
-            "selected session belongs to workspace {}; captured launch project differs; retry with --workspace {} before any canonical operation",
-            saved.metadata.workspace.display(), saved.metadata.workspace.display(),
+            session_manager::paths_equivalent(&selection_workspace, &saved.metadata.workspace),
+            "selected session belongs to workspace {}; captured launch project differs; if the workspace moved or was renamed, run `codewhale sessions migrate --old-path {} --new-path {} --session {} --dry-run`, or retry with --workspace {} before any canonical operation",
+            saved.metadata.workspace.display(),
+            session_manager::shell_quote_path(&saved.metadata.workspace),
+            session_manager::shell_quote_path(&selection_workspace),
+            id,
+            session_manager::shell_quote_path(&saved.metadata.workspace),
         );
         let digest = saved_document_digest(&saved)?;
         if let Some(binding) = saved.metadata.runtime_store.as_ref() {
@@ -11081,7 +11897,10 @@ async fn prepare_mounted_session(
         anyhow::ensure!(
             committed.metadata.id == verify_id
                 && committed.metadata.runtime_store.as_ref() == Some(&binding)
-                && committed.metadata.workspace == selected_workspace,
+                && session_manager::paths_equivalent(
+                    &committed.metadata.workspace,
+                    &selected_workspace,
+                ),
             "committed saved session lost its exact owner binding; mounted handoff refused"
         );
         Ok(committed)
@@ -11169,7 +11988,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let config = &config;
     validate_review_receipt_args(&args)?;
 
-    if args.pr.is_some() && !is_command_available("gh") {
+    if args.pr.is_some() && !tokio::task::spawn_blocking(|| is_command_available("gh")).await? {
         bail!(
             "`gh` CLI not found on PATH. Install GitHub CLI \
              (https://cli.github.com) and authenticate (`gh auth login`) \
@@ -11179,7 +11998,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     // Fetched before the diff so a missing/hidden PR fails before any model
     // route is resolved or billed.
     let pr_view = match args.pr {
-        Some(number) => Some((number, run_gh_pr_view(number, args.repo.as_deref())?)),
+        Some(number) => {
+            let repo = args.repo.clone();
+            let view = tokio::task::spawn_blocking(move || run_gh_pr_view(number, repo.as_deref()))
+                .await??;
+            Some((number, view))
+        }
         None => None,
     };
     if let Some(base) = args.base.as_deref() {
@@ -11188,11 +12012,14 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             "--base must name a commit or ref, not an option: {base}"
         );
     }
-    let diff = collect_diff(
-        &args,
-        pr_view.as_ref().map(|(_, view)| view),
-        &std::env::current_dir()?,
-    )?;
+    let workspace = std::env::current_dir()?;
+    let diff = {
+        let args = args.clone();
+        let view = pr_view.as_ref().map(|(_, view)| view.clone());
+        let workspace = workspace.clone();
+        tokio::task::spawn_blocking(move || collect_diff(&args, view.as_ref(), &workspace))
+            .await??
+    };
     if diff.trim().is_empty() {
         bail!("No diff to review.");
     }
@@ -11201,7 +12028,12 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     }
     let commits = match (&args.base, args.pr) {
         (Some(base), None) => {
-            collect_base_commit_messages(base, args.path.as_deref(), &std::env::current_dir()?)?
+            let base = base.clone();
+            let path = args.path.clone();
+            tokio::task::spawn_blocking(move || {
+                collect_base_commit_messages(&base, path.as_deref(), &workspace)
+            })
+            .await??
         }
         _ => String::new(),
     };
@@ -11230,7 +12062,8 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         }),
         _ => None,
     };
-    let (_, review_source, _review_lease) = admit_cli_saved_operation(
+    let mut review_accounting_origin = None;
+    let _review_lease = match admit_cli_saved_operation(
         None,
         uuid::Uuid::new_v4().to_string(),
         review_workspace.clone(),
@@ -11241,12 +12074,24 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         format!("Review the following diff:\n\n{diff}"),
     )
     .await
-    .context("could not admit the review's saved accounting operation")?;
-    let review_accounting_origin =
-        review_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, review_source, lease)) => {
+            match review_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => review_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "review accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit review saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let mut review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
         .with_features(config.features());
-    review_context.accounting_origin = Some(review_accounting_origin.clone());
+    review_context.accounting_origin = review_accounting_origin.clone();
     // #6510: one review prompt authority. Plain diffs and PRs both ask for
     // the structured review contract; a plain diff renders it locally.
     //
@@ -11288,7 +12133,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         &model,
         route_input,
         force_configured_route,
-        Some(review_accounting_origin.clone()),
+        review_accounting_origin.clone(),
     )
     .await?;
     let execution_config = review_config_with_spend_rates(config, &route, review_rates)?;
@@ -11377,7 +12222,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         request.budget = review_budget.tool_budget();
         request.max_output_tokens = Some(review_allowance);
         request.reasoning_effort = reasoning_effort;
-        request.accounting_origin = Some(review_accounting_origin.clone());
+        request.accounting_origin = review_accounting_origin.clone();
         if let Some(cap) = review_budget
             .money_cap_usd
             .filter(|_| review_budget.money_limit_supported)
@@ -11879,6 +12724,7 @@ fn review_config_with_spend_rates(
             display_name: None,
             limit: None,
             cost: None,
+            cost_currency: None,
             modalities: None,
             attachment: None,
             reasoning: None,
@@ -11890,6 +12736,7 @@ fn review_config_with_spend_rates(
             .last_mut()
             .expect("inserted review route declaration")
     };
+    row.cost_currency = None;
     row.cost = Some(codewhale_config::models_dev::ModelsDevCost {
         input: Some(rates.input_usd_per_million),
         output: Some(rates.output_usd_per_million),
@@ -12935,7 +13782,7 @@ fn duplicate_computer_use_warning(name: &str) -> String {
 
 /// Credential-safe launch summary used by the actual `mcp list` path.
 fn mcp_server_listing(command: Option<&str>, args: &[String], url: Option<&str>) -> String {
-    use codewhale_secrets::sanitize::{
+    use codewhale_sanitize::sanitize::{
         is_sensitive_key_name, redact_url_for_display, sanitize_text,
     };
     let flag_name = |arg: &str| arg.trim_start_matches('-').to_string();
@@ -14218,6 +15065,7 @@ fn merge_project_config_with_approval_baseline(
             .set_provider_model_override(&identity, Some(model.to_string()))
             .map_err(anyhow::Error::msg)?;
         config.remembered_selection_scope = Some(false);
+        config.project_model = Some(model.to_string());
     }
     if let Some(v) = table.get("reasoning_effort").and_then(toml::Value::as_str)
         && !v.is_empty()
@@ -14236,7 +15084,15 @@ fn merge_project_config_with_approval_baseline(
             .approval_policy
             .as_deref()
             .or(saved_approval_baseline);
-        if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
+        let auto_review_refused = config.auto_review_disabled()
+            && codewhale_execpolicy::ApprovalMode::from_config_value(v)
+                == Some(codewhale_execpolicy::ApprovalMode::Auto);
+        if auto_review_refused {
+            eprintln!(
+                "warning: project-scope `approval_policy = \"{v}\"` is ignored — \
+                 Auto-Review is disabled by managed configuration."
+            );
+        } else if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
             config.approval_policy = Some(v.to_string());
         } else {
             eprintln!(
@@ -14295,6 +15151,12 @@ fn merge_project_config_with_approval_baseline(
             "warning: project-scope `instruction_budget` is ignored — \
              set instruction budgets in user config instead. \
              (See #417.)"
+        );
+    }
+    if table.contains_key("auto_review") {
+        eprintln!(
+            "warning: project-scope `auto_review` is ignored — \
+             set Auto-Review settings and `auto_review.environment` in user or managed config instead."
         );
     }
     Ok(())
@@ -14486,6 +15348,18 @@ async fn run_interactive(
     .await
 }
 
+pub(crate) fn project_mcp_approval_note(workspace: &std::path::Path) -> Option<String> {
+    use codewhale_engine::mcp::project_authority::{ProjectMcpStatus, project_mcp_status};
+    match project_mcp_status(workspace) {
+        ProjectMcpStatus::Unapproved { .. } => Some(
+            "Project .codewhale/mcp.json is not approved for these exact contents, so its servers are not loaded. Use /mcp review, then /mcp approve <digest>."
+                .to_string(),
+        ),
+        ProjectMcpStatus::Unreadable(error) => Some(format!("Project MCP servers are not loaded: {error}.")),
+        _ => None,
+    }
+}
+
 /// As [`run_interactive`], but carrying a one-line startup receipt to show in
 /// the transcript — used by auto-resume to explain why it did or did not
 /// reattach to a previous session (#2934).
@@ -14502,6 +15376,7 @@ async fn run_interactive_with_notice(
     let plugin_registry = policy_current_registry(plugin_registry);
     let prepared = prepare_interactive_config(cli, config, resume_session_id.is_some())?;
     let (prepared, resume_session_id) = if let Some(selector) = resume_session_id {
+        refuse_resume_mode_mismatch(cli, &prepared.config, &selector, &prepared.workspace).await;
         let (prepared, id) = prepare_mounted_session(
             cli,
             prepared,
@@ -14524,6 +15399,33 @@ async fn run_interactive_with_notice(
         plugin_registry,
     ))
     .await
+}
+
+fn exit_refused(program: &str, message: &str) -> ! {
+    eprintln!("{program}: {message}");
+    std::process::exit(2)
+}
+
+async fn refuse_resume_mode_mismatch(cli: &Cli, config: &Config, selector: &str, workspace: &Path) {
+    if cli.conversation_mode.is_none() {
+        return;
+    }
+    let locale = codewhale_localization::resolve_locale("auto");
+    let outcome = match tui::conversation_mode::load_saved_for_resume(locale, selector, workspace) {
+        Ok(saved) => {
+            tui::conversation_mode::launch_conversation_mode(
+                config,
+                locale,
+                cli.conversation_mode.as_deref(),
+                Some(&saved),
+            )
+            .await
+        }
+        Err(message) => Err(message),
+    };
+    if let Err(message) = outcome {
+        exit_refused("codewhale", &message);
+    }
 }
 
 struct PreparedInteractiveConfig {
@@ -14584,6 +15486,32 @@ async fn run_interactive_prepared(
 ) -> Result<()> {
     let PreparedInteractiveConfig { config, workspace } = prepared;
     let config = &config;
+    let launch_conversation_mode = {
+        let locale = codewhale_localization::resolve_locale("auto");
+        let resumed = match (
+            cli.conversation_mode.as_deref(),
+            resume_session_id.as_deref(),
+        ) {
+            (Some(_), Some(id)) => {
+                match tui::conversation_mode::load_saved_for_resume(locale, id, &workspace) {
+                    Ok(saved) => Some(saved),
+                    Err(message) => exit_refused("codewhale", &message),
+                }
+            }
+            _ => None,
+        };
+        match tui::conversation_mode::launch_conversation_mode(
+            config,
+            locale,
+            cli.conversation_mode.as_deref(),
+            resumed.as_ref(),
+        )
+        .await
+        {
+            Ok(mode) => mode,
+            Err(message) => exit_refused("codewhale", &message),
+        }
+    };
     let initial_input = if cli.remote_control {
         Some(tui::InitialInput::RemoteControl)
     } else {
@@ -14702,7 +15630,16 @@ async fn run_interactive_prepared(
 
     // A launcher can forward `--yolo` to this binary via the CODEWHALE_YOLO
     // env var (config.yolo), not as a CLI flag. Honour either.
-    let yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let base_yolo = cli.yolo || config.yolo.unwrap_or(false);
+    validate_cli_permission_mode(
+        cli.permission_mode,
+        config,
+        base_yolo,
+        "--permission-mode cannot be combined with --full-access or --yolo",
+    )?;
+    let yolo = base_yolo
+        || cli.permission_mode
+            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
 
     Box::pin(tui::run_tui(
         config,
@@ -14731,8 +15668,30 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
+        launch_conversation_mode,
+        cli.permission_mode,
     ))
     .await
+}
+
+fn validate_cli_permission_mode(
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    config: &Config,
+    conflicting_full_access: bool,
+    conflict_msg: &str,
+) -> Result<()> {
+    let Some(mode) = permission_mode else {
+        return Ok(());
+    };
+    if conflicting_full_access {
+        bail!("{conflict_msg}");
+    }
+    if mode == codewhale_engine::runtime_options::PermissionMode::AutoReview
+        && config.auto_review_disabled()
+    {
+        bail!("Auto-Review is disabled by managed configuration (`auto_review.disabled = true`)");
+    }
+    Ok(())
 }
 
 /// Review-pass reasoning effort: resolve `Auto` from the prompt exactly as the
@@ -14845,7 +15804,8 @@ async fn run_workflow_tool_command_inner(
     initialize_cloud_facts(&config);
     let model = resolve_exec_model(&config, None);
     let workflow_session_id = uuid::Uuid::new_v4().to_string();
-    let (_, workflow_source, _workflow_lease) = admit_cli_saved_operation(
+    let mut workflow_accounting_origin = None;
+    let _workflow_lease = match admit_cli_saved_operation(
         None,
         workflow_session_id.clone(),
         workspace.clone(),
@@ -14856,15 +15816,27 @@ async fn run_workflow_tool_command_inner(
         format!("Run this Workflow:\n{}", serde_json::to_string(&input)?),
     )
     .await
-    .context("could not admit the Workflow's saved accounting operation")?;
-    let workflow_accounting_origin =
-        workflow_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    {
+        Ok((_, workflow_source, lease)) => {
+            match workflow_source.usage_origin(codewhale_engine::cost_status::scope_token()) {
+                Ok(origin) => workflow_accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "workflow accounting origin unavailable; continuing with unknown cost")
+                }
+            }
+            Some(lease)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not admit the Workflow's saved accounting operation; continuing with unknown cost");
+            None
+        }
+    };
     let route = resolve_cli_exec_route(
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
-        Some(workflow_accounting_origin.clone()),
+        workflow_accounting_origin.clone(),
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route)?;
@@ -15071,7 +16043,7 @@ async fn build_direct_workflow_tool(
     workspace: &Path,
     event_tx: tokio::sync::mpsc::Sender<codewhale_engine::core::events::Event>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
-    accounting_origin: codewhale_engine::cost_status::NativeUsageOrigin,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
 ) -> Result<(
     codewhale_engine::tools::workflow::WorkflowTool,
     codewhale_engine::tools::ToolContext,
@@ -15134,7 +16106,7 @@ async fn build_direct_workflow_tool(
             config.sandbox_network_access,
         ),
     ));
-    context.accounting_origin = Some(accounting_origin);
+    context.accounting_origin = accounting_origin;
     let network_policy = config.network.clone().map(|network| {
         codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
             codewhale_net::network_policy::NetworkPolicy::from(network),
@@ -16558,6 +17530,8 @@ mod doctor_setup_state_tests {
         let _telemetry_alias_env = crate::test_support::EnvVarGuard::remove("DEEPSEEK_TELEMETRY");
         let _telemetry_floor =
             crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_FLOOR");
+        let _telemetry_source =
+            crate::test_support::EnvVarGuard::remove("CODEWHALE_TELEMETRY_SOURCE");
         let workspace = tmp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
 
@@ -16608,6 +17582,32 @@ mod doctor_setup_state_tests {
         let report = doctor_setup_report_json(&config, &workspace);
         assert_eq!(report["runtime_posture"]["telemetry"]["value"], false);
         assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+
+        {
+            let _handed_down =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "false");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "0");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "config");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (config)"),
+                "a saved opt-out the dispatcher handed down is not the environment: {line}"
+            );
+            let report = doctor_setup_report_json(&config, &workspace);
+            assert_eq!(report["runtime_posture"]["telemetry"]["source"], "config");
+        }
+        {
+            let _by_hand = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY", "0");
+            let _floor = crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_FLOOR", "1");
+            let _source =
+                crate::test_support::EnvVarGuard::set("CODEWHALE_TELEMETRY_SOURCE", "env");
+            let line = doctor_runtime_posture_line(&config, &workspace);
+            assert!(
+                line.contains("telemetry=off (env)"),
+                "a kill switch the person set is the environment: {line}"
+            );
+        }
     }
 
     #[test]
@@ -16685,6 +17685,103 @@ mod doctor_setup_state_tests {
 #[cfg(test)]
 mod doctor_endpoint_tests {
     use super::*;
+
+    #[test]
+    fn doctor_setup_route_record_flags_a_route_changed_after_setup() {
+        let record = "provider=google, model=gemini-4-carbon, context_window=1048576 (catalog) auth=key saved";
+        assert!(doctor_setup_route_record_is_stale(
+            record,
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            record,
+            "google",
+            "models/gemini-4-carbon"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=deepseek-flash; configured, not checked",
+            "deepseek",
+            "deepseek-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "auto"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "provider=deepseek, model=auto: deepseek-v4-flash, context_window=131072",
+            "deepseek",
+            "deepseek-v4-flash"
+        ));
+        assert!(!doctor_setup_route_record_is_stale(
+            "bundled/default",
+            "deepseek",
+            "deepseek-flash"
+        ));
+    }
+
+    #[test]
+    fn doctor_route_source_respects_env_ignored_root_model_and_local_probe() {
+        let mut env_cfg = Config::default();
+        env_cfg.provider = Some("openai".to_string());
+        env_cfg
+            .providers
+            .get_or_insert_with(Default::default)
+            .openai
+            .model = Some("gpt-5".to_string());
+        env_cfg.environment_model_applied = true;
+        let env_src = doctor_route_source(&env_cfg, Some("sandbox-strict"), false);
+        assert_eq!(env_src.provider, "config `provider`");
+        assert_eq!(env_src.model, "environment model override");
+
+        let mut foreign_root = Config::default();
+        foreign_root.provider = Some("openai".to_string());
+        foreign_root.default_text_model = Some("deepseek-v4-pro".to_string());
+        let foreign_src = doctor_route_source(&foreign_root, None, false);
+        assert_eq!(foreign_src.model, "the provider default");
+
+        let local_src = doctor_route_source(&Config::default(), None, true);
+        assert_eq!(local_src.provider, "live local Ollama (--probe-local)");
+        assert_eq!(local_src.model, "live local Ollama (--probe-local)");
+    }
+
+    #[test]
+    fn doctor_verdict_does_not_certify_stale_route_without_credentials() {
+        use codewhale_config::{
+            ConstitutionChoice, RuntimePostureSource, SetupState, SetupStep, StepEntry, StepStatus,
+        };
+        let mut state = SetupState::default();
+        state.set_step(
+            SetupStep::Language,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2"),
+        );
+        state.set_step(
+            SetupStep::ProviderModel,
+            StepEntry::new(StepStatus::Verified, true, "0.10.2")
+                .with_result("provider=google, model=gemini-4-carbon"),
+        );
+        state.runtime_posture_source = RuntimePostureSource::Confirmed;
+        state.constitution_choice = ConstitutionChoice::Bundled;
+        let unavailable = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: true,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict = doctor_verdict(&state, "openai", &unavailable);
+        assert!(verdict.starts_with("Not ready"), "{verdict}");
+
+        let stale_with_key = DoctorVerdictFacts {
+            onboarded: true,
+            route_record_stale: true,
+            route_credential_unavailable: false,
+            ..DoctorVerdictFacts::default()
+        };
+        let verdict2 = doctor_verdict(&state, "openai", &stale_with_key);
+        assert!(verdict2.contains("not checked offline"), "{verdict2}");
+        assert!(verdict2.contains("/setup provider"), "{verdict2}");
+    }
 
     #[test]
     fn doctor_api_target_reports_default_endpoint() {
@@ -18343,6 +19440,108 @@ mod mounted_history_tests {
     }
 
     #[tokio::test]
+    async fn mounted_resume_recovers_after_workspace_rename_via_migrate_and_symlinks() -> Result<()>
+    {
+        let _env = lock_test_env();
+        let _runtime_override = EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+        let _legacy_runtime_override = EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+        let project_a = root.join("Project_A");
+        let project_b = root.join("Project_B");
+        std::fs::create_dir(&project_a)?;
+        let manager = SessionManager::default_location()?;
+        let (original, _) = source(&manager, &project_a)?;
+        let cli_a = cli(&project_a);
+        let (_, id) = prepare_mounted_session(
+            &cli_a,
+            prepare_interactive_config(&cli_a, &config(), true)?,
+            original.metadata.id,
+            MountedHistoryIntent::Resume,
+            plugins(&project_a),
+        )
+        .await?;
+
+        std::fs::rename(&project_a, &project_b)?;
+        let cli_b = cli(&project_b);
+        let mismatch = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("renamed workspace must refuse before migration")?;
+        let mismatch_text = format!("{mismatch:#}");
+        assert!(
+            mismatch_text.contains("codewhale sessions migrate --old-path"),
+            "{mismatch_text}"
+        );
+
+        let mut half_edited = manager
+            .load_session_snapshot_bounded(&id, codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES)?;
+        half_edited.metadata.workspace = project_b.clone();
+        half_edited
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())?;
+        manager.publish_session(&half_edited)?;
+        let half_err = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await
+        .err()
+        .context("half-edited document must diagnose thread mismatch")?;
+        let half_text = format!("{half_err:#}");
+        assert!(
+            half_text.contains("saved history holder source workspace changed")
+                && half_text.contains("codewhale sessions migrate --old-path"),
+            "{half_text}"
+        );
+
+        let report = manager.migrate_workspace(
+            &codewhale_engine::session_manager::WorkspaceMigrationOptions {
+                old_path: project_a.clone(),
+                new_path: project_b.clone(),
+                session_id: None,
+                dry_run: false,
+            },
+        )?;
+        assert_eq!(report.migrated_threads.len(), 1);
+
+        let (_, resumed_id) = prepare_mounted_session(
+            &cli_b,
+            prepare_interactive_config(&cli_b, &config(), true)?,
+            id.clone(),
+            MountedHistoryIntent::Resume,
+            plugins(&project_b),
+        )
+        .await?;
+        assert_eq!(resumed_id, id);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&project_b, &project_a)?;
+            let cli_link = cli(&project_a);
+            let (_, link_resumed_id) = prepare_mounted_session(
+                &cli_link,
+                prepare_interactive_config(&cli_link, &config(), true)?,
+                id.clone(),
+                MountedHistoryIntent::Resume,
+                plugins(&project_a),
+            )
+            .await?;
+            assert_eq!(link_resumed_id, id);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn mounted_pending_recovery_refuses_foreign_association_workspace_and_changed_prepared_history()
     -> Result<()> {
         use codewhale_app_server::runtime_api::thread_history::lookup_thread_history_operation_in_runtime;
@@ -19430,6 +20629,36 @@ instructions = ["./AGENTS.md", "./extra.md"]
             Some(user.as_slice()),
             "project overlay must not replace user-owned instructions"
         );
+    }
+
+    #[test]
+    fn project_overlay_ignores_auto_review_and_environment() {
+        let tmp = workspace_with_project_config(
+            r#"
+[auto_review]
+disabled = true
+review_all_shell = true
+environment = ["attacker.example.com"]
+"#,
+        );
+        let user_env = vec!["trusted.example.internal".to_string()];
+        let mut config = Config::default();
+        config.auto_review = Some(codewhale_runtime::config::AutoReviewConfig {
+            disabled: false,
+            review_all_shell: false,
+            environment: user_env.clone(),
+            ..Default::default()
+        });
+        merge_project_config(&mut config, tmp.path());
+        assert!(!config.auto_review_disabled());
+        assert!(!config.auto_review_review_all_shell());
+        assert_eq!(config.auto_review_environment(), user_env.as_slice());
+
+        let mut empty_user = Config::default();
+        merge_project_config(&mut empty_user, tmp.path());
+        assert!(empty_user.auto_review.is_none());
+        assert!(!empty_user.auto_review_review_all_shell());
+        assert!(empty_user.auto_review_environment().is_empty());
     }
 
     #[test]
@@ -20727,7 +21956,7 @@ mod setup_helper_tests {
         assert_eq!(doctor_auth_scheme(&cloud), "bearer");
         let report = doctor_route_report(&cloud);
         assert_eq!(report["provider"], "ollama-cloud");
-        assert_eq!(report["provider_config_table"], "providers.ollama_cloud");
+        assert_eq!(report["provider_config_table"], "providers.ollama");
 
         let custom_remote = ollama_config("https://ollama-gateway.example.test/v1");
         assert_eq!(
@@ -20987,6 +22216,72 @@ mod mcp_add_arg_tests {
 
 #[cfg(test)]
 mod config_stay_tests;
+
+#[cfg(test)]
+mod plugins_cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn plugins_cli_parses_install_uninstall_update_and_show() {
+        let install = Cli::try_parse_from([
+            "codewhale",
+            "plugins",
+            "install",
+            "github:example/plugin",
+            "--json",
+        ])
+        .expect("parse plugins install");
+        assert!(matches!(
+            install.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Install {
+                    ref spec,
+                    json: true,
+                }
+            }) if spec == "github:example/plugin"
+        ));
+
+        let uninstall =
+            Cli::try_parse_from(["codewhale", "plugins", "uninstall", "demo", "-y", "--json"])
+                .expect("parse plugins uninstall");
+        assert!(matches!(
+            uninstall.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Uninstall {
+                    ref name,
+                    yes: true,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+
+        let update = Cli::try_parse_from(["codewhale", "plugins", "update", "demo", "--json"])
+            .expect("parse plugins update");
+        assert!(matches!(
+            update.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Update {
+                    ref name,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+
+        let show = Cli::try_parse_from(["codewhale", "plugins", "show", "demo", "--json"])
+            .expect("parse plugins show");
+        assert!(matches!(
+            show.command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Show {
+                    ref name,
+                    json: true,
+                }
+            }) if name == "demo"
+        ));
+        assert!(telemetry_command_is_read_only(show.command.as_ref()));
+    }
+}
 
 #[cfg(test)]
 mod doctor_secret_scan_tests {

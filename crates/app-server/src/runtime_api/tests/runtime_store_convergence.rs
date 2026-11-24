@@ -262,6 +262,7 @@ fn listener_selection(
         insecure_no_auth: false,
         mobile: false,
         web: false,
+        desktop_browser_owner: None,
     }
 }
 fn authenticated_http(token: &str) -> Result<reqwest::Client> {
@@ -1202,15 +1203,15 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
     {
         let error = fs::rename(&selected_workspace, &retired_workspace)
             .expect_err("a live Runtime owner must prevent workspace replacement");
-        assert_eq!(error.raw_os_error(), Some(5), "{error}");
+        assert_eq!(error.raw_os_error(), Some(32), "{error}");
         assert!(!retired_workspace.exists());
     }
     manager.shutdown_and_wait().await?;
     #[cfg(windows)]
     {
         let error = fs::rename(&selected_workspace, &retired_workspace)
-            .expect_err("Engine shutdown must retain the Runtime owner's workspace lock");
-        assert_eq!(error.raw_os_error(), Some(5), "{error}");
+            .expect_err("Engine shutdown must retain the Runtime owner's pinned workspace");
+        assert_eq!(error.raw_os_error(), Some(32), "{error}");
         assert!(!retired_workspace.exists());
         assert!(Arc::ptr_eq(
             &scopes.admit(selected_workspace.clone()).await?,
@@ -2772,5 +2773,218 @@ async fn native_fork_copy_refusal_never_publishes_a_shared_session_thread() -> R
     assert_eq!(fs::read(&path)?, b"{invalid-complete-source");
     codewhale_util::utils::write_atomic(&path, &original_bytes)?;
     assert!(fixture.model.captured_requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn attached_listener_forwards_isolated_desktop_browser_owner_and_preserves_legacy_wire_shape()
+-> Result<()> {
+    let _env = lock_test_env();
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().canonicalize()?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+
+    let host_pkcs8 = codewhale_engine::mcp::generate_desktop_browser_owner_keypair_for_test();
+    let host_pubkey = codewhale_engine::mcp::desktop_browser_owner_public_key_for_test(&host_pkcs8);
+    let guest_pkcs8 = codewhale_engine::mcp::generate_desktop_browser_owner_keypair_for_test();
+    let guest_pubkey =
+        codewhale_engine::mcp::desktop_browser_owner_public_key_for_test(&guest_pkcs8);
+    let _host_owner_env = EnvVarGuard::set("CODEWHALE_BROWSER_OWNER_PUBLIC_KEY", &host_pubkey);
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyListenerSelection {
+        workers: usize,
+        workspace: PathBuf,
+        config_profile: Option<String>,
+        #[serde(default)]
+        config_source: Option<PathBuf>,
+        host: String,
+        port: u16,
+        cors_origins: Vec<String>,
+        auth_token: Option<String>,
+        insecure_no_auth: bool,
+        mobile: bool,
+        web: bool,
+    }
+
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let mut probe_selection = listener_selection(workspace.clone(), 0, "cwrt_probe".into());
+    probe_selection.desktop_browser_owner = Some(guest_pubkey.clone());
+    probe_selection.validate_bounds()?;
+    let wire_json = serde_json::to_string(&probe_selection)?;
+    let legacy_ok: LegacyListenerSelection = serde_json::from_str(&wire_json)?;
+    assert_eq!(
+        (
+            legacy_ok.workers,
+            &legacy_ok.workspace,
+            &legacy_ok.config_profile,
+            &legacy_ok.config_source,
+            legacy_ok.host.as_str(),
+            legacy_ok.port,
+            legacy_ok.cors_origins.len(),
+            legacy_ok.auth_token.as_deref(),
+            legacy_ok.insecure_no_auth,
+            legacy_ok.mobile,
+            legacy_ok.web,
+        ),
+        (
+            1,
+            &workspace,
+            &None,
+            &None,
+            "127.0.0.1",
+            0,
+            0,
+            Some("cwrt_probe"),
+            false,
+            false,
+            false,
+        )
+    );
+
+    let mut invalid_selection = listener_selection(workspace.clone(), 0, "cwrt_bad".into());
+    invalid_selection.desktop_browser_owner = Some("not-a-32-byte-ed25519-key".into());
+    assert!(invalid_selection.validate_bounds().is_err());
+
+    #[cfg(unix)]
+    let socket = root.join("private-run").join("browser-owner.sock");
+    #[cfg(windows)]
+    let socket = PathBuf::from(format!(r"\\.\pipe\browser-owner-{}", Uuid::new_v4()));
+    let host_token = "cwrt_host_owner_token";
+    let desktop_token = "cwrt_attached_desktop_token";
+    let cli_token = "cwrt_attached_cli_token";
+    let config = Config::default().with_legacy_root(
+        Some("fixture-key".into()),
+        Some("http://127.0.0.1:1/v1".into()),
+    );
+    let (host_addr, _manager, server) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.clone(),
+            root.join("sessions"),
+            Some(host_token.into()),
+            false,
+            workspace.clone(),
+            TestServerOverrides {
+                config: Some(config),
+                owner_socket: Some(socket.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .context("real listener required")?;
+    let _abort = AbortOnDrop(server.abort_handle());
+
+    let control = crate::daemon_client::connect(None, Some(socket.clone())).await?;
+    let receipt = control.receipt().clone();
+    validate_selected_owner(&control, receipt.data_dir.clone()).await?;
+    drop(control);
+
+    let desktop_ws = root.join("desktop-workspace");
+    fs::create_dir_all(&desktop_ws)?;
+    let mut desktop_selection = listener_selection(desktop_ws.clone(), 0, desktop_token.into());
+    desktop_selection.desktop_browser_owner = Some(guest_pubkey.clone());
+    let mut desktop_guest = crate::daemon_client::connect_listener_if_published(
+        None,
+        Some(socket.clone()),
+        desktop_selection,
+        receipt.clone(),
+    )
+    .await?
+    .context("published owner for desktop")?;
+    let desktop_ready = frontend_ready(&mut desktop_guest).await?;
+    assert!(!desktop_ready.reused_owner_listener);
+
+    let mut same_addr_selection =
+        listener_selection(workspace.clone(), host_addr.port(), host_token.into());
+    same_addr_selection.desktop_browser_owner = Some(guest_pubkey);
+    let mut mismatched_reuse = crate::daemon_client::connect_listener_if_published(
+        None,
+        Some(socket.clone()),
+        same_addr_selection,
+        receipt.clone(),
+    )
+    .await?
+    .context("published owner for mismatched reuse")?;
+    assert!(frontend_ready(&mut mismatched_reuse).await.is_err());
+
+    let cli_ws = root.join("cli-workspace");
+    fs::create_dir_all(&cli_ws)?;
+    let mut cli_guest = crate::daemon_client::connect_listener_if_published(
+        None,
+        Some(socket.clone()),
+        listener_selection(cli_ws.clone(), 0, cli_token.into()),
+        receipt,
+    )
+    .await?
+    .context("published owner for cli")?;
+    let cli_ready = frontend_ready(&mut cli_guest).await?;
+
+    let bearer = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let tag = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    let browser_url = format!("http://127.0.0.1:45123/mcp/{tag}");
+
+    let desktop_http = authenticated_http(desktop_token)?;
+    let wrong_sig = codewhale_engine::mcp::sign_desktop_browser_registration_for_test(
+        &host_pkcs8,
+        &desktop_ws,
+        &browser_url,
+        bearer,
+    );
+    let wrong_resp = desktop_http
+        .post(format!(
+            "http://{}/v1/apps/mcp/desktop-browser",
+            desktop_ready.endpoint
+        ))
+        .json(&json!({
+            "url": browser_url,
+            "bearer": bearer,
+            "signature": wrong_sig,
+        }))
+        .send()
+        .await?;
+    assert_eq!(wrong_resp.status(), StatusCode::BAD_REQUEST);
+
+    let valid_sig = codewhale_engine::mcp::sign_desktop_browser_registration_for_test(
+        &guest_pkcs8,
+        &desktop_ws,
+        &browser_url,
+        bearer,
+    );
+    let ok_resp = desktop_http
+        .post(format!(
+            "http://{}/v1/apps/mcp/desktop-browser",
+            desktop_ready.endpoint
+        ))
+        .json(&json!({
+            "url": browser_url,
+            "bearer": bearer,
+            "signature": valid_sig,
+        }))
+        .send()
+        .await?;
+    assert_eq!(ok_resp.status(), StatusCode::CREATED);
+
+    let cli_http = authenticated_http(cli_token)?;
+    let cli_sig_with_host = codewhale_engine::mcp::sign_desktop_browser_registration_for_test(
+        &host_pkcs8,
+        &cli_ws,
+        &browser_url,
+        bearer,
+    );
+    let cli_resp = cli_http
+        .post(format!(
+            "http://{}/v1/apps/mcp/desktop-browser",
+            cli_ready.endpoint
+        ))
+        .json(&json!({
+            "url": browser_url,
+            "bearer": bearer,
+            "signature": cli_sig_with_host,
+        }))
+        .send()
+        .await?;
+    assert_eq!(cli_resp.status(), StatusCode::BAD_REQUEST);
     Ok(())
 }

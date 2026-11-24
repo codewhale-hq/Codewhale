@@ -19,12 +19,12 @@ env:
 jobs:
   cargo-check:
     name: cargo check (aarch64-unknown-linux-ohos)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: aarch64-unknown-linux-ohos
       - name: Install OpenHarmony native SDK

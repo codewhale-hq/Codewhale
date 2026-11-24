@@ -17,7 +17,7 @@ use super::protocol::{
 };
 use super::registry::{OwnerRegistry, OwnerState};
 use super::test_support::*;
-use super::tier::HostTier;
+use super::tier::{HostCohort, HostTier};
 use super::{ExtensionHostManager, ExtensionHostOptions, HostAttachment, HostStatus};
 use crate::command_catalog::CatalogGuard;
 use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolError, ToolSpec};
@@ -137,7 +137,7 @@ fn registry_refuses_shadowing_and_foreign_names_and_undoes_exactly_one_entry() {
     registry.add_native_names(["grep_files"]);
     let a = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -146,7 +146,7 @@ fn registry_refuses_shadowing_and_foreign_names_and_undoes_exactly_one_entry() {
         .unwrap();
     let b = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "b",
             "b",
             Some(fake_authority("b")),
@@ -204,7 +204,7 @@ fn registry_refuses_names_the_approval_tables_special_case() {
     let mut registry = OwnerRegistry::new();
     let a = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -259,11 +259,65 @@ fn registry_refuses_names_the_approval_tables_special_case() {
 }
 
 #[test]
+fn registry_reserves_creator_tool_names_for_creator_host_only() {
+    let mut registry = OwnerRegistry::new();
+    let plugin = registry
+        .begin_owner(
+            HostCohort::reviewed(),
+            "rogue-plugin",
+            "rogue-plugin",
+            Some(fake_authority("rogue-plugin")),
+            "hash-plugin",
+        )
+        .unwrap();
+    let other_builtin = registry
+        .begin_owner(
+            HostCohort::Builtin,
+            "host:harness",
+            "harness",
+            None,
+            "hash-h",
+        )
+        .unwrap();
+    let creator = registry
+        .begin_owner(
+            HostCohort::Builtin,
+            "host:creator",
+            "creator",
+            None,
+            "hash-c",
+        )
+        .unwrap();
+
+    for owner in [&plugin, &other_builtin] {
+        for name in [
+            "plugin_manager",
+            "PLUGIN_MANAGER",
+            "cordis_inspect_list",
+            "CORDIS_INSPECT_LIST",
+            "cordis_inspect_query",
+            "Cordis_Inspect_Query",
+        ] {
+            let err = register(&mut registry, owner, name)
+                .expect_err(&format!("{name} must be refused for {}", owner.plugin_id));
+            assert!(
+                err.contains("collides with a built-in tool"),
+                "{name}: {err}"
+            );
+        }
+    }
+
+    for name in crate::conversation_modes::CREATOR_TOOL_NAMES {
+        register(&mut registry, &creator, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+#[test]
 fn registry_enforces_schema_and_count_caps() {
     let mut registry = OwnerRegistry::new();
     let a = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -321,7 +375,7 @@ fn admitted_tool(schema: Value) -> Result<super::registry::ToolRegistration, Str
     let mut registry = OwnerRegistry::new();
     let owner = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "probe",
             "probe",
             Some(fake_authority("probe")),
@@ -1267,7 +1321,7 @@ async fn killed_host_fails_calls_once_and_replays_with_fresh_owners() {
     let pid = manager.host_pid().unwrap();
     let generation = manager
         .shared
-        .ready_host(HostTier::Plugin)
+        .ready_host(&HostCohort::reviewed())
         .unwrap()
         .generation;
     let tool = host_tool(&engine, fixture.workspace(), "slow_wait");
@@ -1303,7 +1357,7 @@ async fn killed_host_fails_calls_once_and_replays_with_fresh_owners() {
     assert!(
         manager
             .shared
-            .ready_host(HostTier::Plugin)
+            .ready_host(&HostCohort::reviewed())
             .unwrap()
             .generation
             > generation
@@ -1826,7 +1880,7 @@ fn extension_approval_keys_are_bound_to_the_plugin_receipt() {
 
     let first = owners
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -1845,7 +1899,7 @@ fn extension_approval_keys_are_bound_to_the_plugin_receipt() {
     // Same plugin, same input, updated bytes: a different grant.
     let updated = owners
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -1859,7 +1913,7 @@ fn extension_approval_keys_are_bound_to_the_plugin_receipt() {
     owners.revoke_owner("a");
     let other = owners
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "b",
             "b",
             Some(fake_authority("b")),
@@ -1985,7 +2039,13 @@ fn owner_reports_keep_bounded_attributed_logs_and_ignore_stale_hosts() {
         let mut registry = manager.shared.registry.lock().unwrap();
         for id in ["alpha", "beta"] {
             let owner = registry
-                .begin_owner(HostTier::Plugin, id, id, Some(fake_authority(id)), "hash")
+                .begin_owner(
+                    HostCohort::reviewed(),
+                    id,
+                    id,
+                    Some(fake_authority(id)),
+                    "hash",
+                )
                 .unwrap();
             registry.mark_active(&owner);
             register(&mut registry, &owner, &format!("{id}_probe")).unwrap();
@@ -1993,12 +2053,12 @@ fn owner_reports_keep_bounded_attributed_logs_and_ignore_stale_hosts() {
     }
     let current = super::Events {
         shared: Arc::downgrade(&manager.shared),
-        tier: HostTier::Plugin,
+        cohort: HostCohort::reviewed(),
         generation: 2,
     };
     let stale = super::Events {
         shared: Arc::downgrade(&manager.shared),
-        tier: HostTier::Plugin,
+        cohort: HostCohort::reviewed(),
         generation: 1,
     };
     for index in 0..25 {
@@ -2161,6 +2221,7 @@ fn attachment_changes_discard_the_complete_scan_before_owner_side_effects() {
         owners: [(
             "plugin".into(),
             super::DesiredOwner {
+                cohort: HostCohort::reviewed(),
                 plugin_name: "plugin".into(),
                 authority: fake_authority("plugin"),
                 entries: Vec::new(),
@@ -2326,7 +2387,7 @@ fn supervised_manager(fixture: &FixturePlugins, node: PathBuf) -> Arc<ExtensionH
 }
 
 async fn wait_host(manager: &ExtensionHostManager, predicate: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         while !predicate() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -2490,7 +2551,7 @@ async fn ordinary_exit_rejects_requests_from_a_drained_calls_waker() {
     }));
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
-    let host = manager.shared.ready_host(HostTier::Plugin).unwrap();
+    let host = manager.shared.ready_host(&HostCohort::reviewed()).unwrap();
     let registration = manager.shared.registry.lock().unwrap().live_tools()[0].clone();
     let (_, mut call) = host
         .start_request(
@@ -2555,7 +2616,7 @@ async fn idle_retirement_seals_admission_and_does_not_wait_for_heartbeat() {
     let manager = supervised_manager(&fixture, node);
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
-    let host = manager.shared.ready_host(HostTier::Plugin).unwrap();
+    let host = manager.shared.ready_host(&HostCohort::reviewed()).unwrap();
     let registration = manager.shared.registry.lock().unwrap().live_tools()[0].clone();
     let (_, call) = host
         .start_request(
@@ -2587,7 +2648,7 @@ async fn idle_retirement_seals_admission_and_does_not_wait_for_heartbeat() {
         .unwrap();
     assert!(host.terminate_if_idle(super::DIRTY_RESTART_REASON));
     assert!(matches!(
-        manager.shared.ready_host(HostTier::Plugin),
+        manager.shared.ready_host(&HostCohort::reviewed()),
         Err(HostStatus::Restarting { .. })
     ));
     assert!(matches!(manager.status(), HostStatus::Restarting { .. }));
@@ -2596,7 +2657,7 @@ async fn idle_retirement_seals_admission_and_does_not_wait_for_heartbeat() {
     // a valid receipt before replay.
     assert!(
         manager
-            .ensure_host(HostTier::Plugin, true)
+            .ensure_host(&HostCohort::reviewed(), true)
             .now_or_never()
             .unwrap()
             .is_err()
@@ -2656,7 +2717,7 @@ async fn two_dirty_teardowns_wait_for_a_live_call_then_replay_without_spending_c
     engine.set_plugins(Arc::new(enabled));
     engine.sync().await.unwrap();
     let old = host_tool(&engine, fixture.workspace(), "slow_wait");
-    let host = manager.shared.ready_host(HostTier::Plugin).unwrap();
+    let host = manager.shared.ready_host(&HostCohort::reviewed()).unwrap();
     let registration = manager.shared.registry.lock().unwrap().live_tools()[0].clone();
     let (_, call) = host
         .start_request(
@@ -2813,7 +2874,7 @@ fn host_exit_preserves_failed_receipts_and_blames_only_the_activating_owner() {
     let mut registry = OwnerRegistry::new();
     let active = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "healthy",
             "healthy",
             Some(fake_authority("healthy")),
@@ -2824,7 +2885,7 @@ fn host_exit_preserves_failed_receipts_and_blames_only_the_activating_owner() {
     register(&mut registry, &active, "healthy_probe").unwrap();
     let failed = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "failed",
             "failed",
             Some(fake_authority("failed")),
@@ -2834,14 +2895,14 @@ fn host_exit_preserves_failed_receipts_and_blames_only_the_activating_owner() {
     registry.mark_failed(&failed, OwnerState::Faulted("existing fault".into()));
     registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "activating",
             "activating",
             Some(fake_authority("activating")),
             "hash-activating",
         )
         .unwrap();
-    registry.host_exited(HostTier::Plugin, "fixture crash");
+    registry.host_exited(HostCohort::reviewed(), "fixture crash");
     assert!(registry.owner("healthy").is_none());
     assert!(registry.live_tools().is_empty());
     assert!(matches!(
@@ -2854,7 +2915,7 @@ fn host_exit_preserves_failed_receipts_and_blames_only_the_activating_owner() {
     ));
     let replay = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "healthy",
             "healthy",
             Some(fake_authority("healthy")),
@@ -2915,7 +2976,7 @@ async fn a_host_that_is_down_names_why_in_plugin_status_and_tool_errors() {
         let mut registry = manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "probe",
                 "probe",
                 Some(fake_authority("probe")),
@@ -3153,7 +3214,7 @@ fn old_host_callbacks_cannot_fault_or_remove_a_new_owner() {
         let mut registry = manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "fixture",
                 "fixture",
                 Some(fake_authority("fixture")),
@@ -3166,7 +3227,7 @@ fn old_host_callbacks_cannot_fault_or_remove_a_new_owner() {
     };
     let old = super::Events {
         shared: Arc::downgrade(&manager.shared),
-        tier: HostTier::Plugin,
+        cohort: HostCohort::reviewed(),
         generation: 1,
     };
     old.faulted(&protocol::FaultedParams {
@@ -3429,7 +3490,7 @@ fn launch_plan_gives_each_runtime_its_own_flags() {
             },
         };
         let launch = super::supervisor::plan_launch(
-            HostTier::Builtin,
+            &HostCohort::Builtin,
             &runtime,
             &bundle,
             home.path(),
@@ -3527,7 +3588,7 @@ async fn handshake_refuses_a_runtime_or_version_mismatch_and_an_unapplied_kernel
     }
     for case in ["runtime", "version", "cap"] {
         let mut launch = super::supervisor::plan_launch(
-            HostTier::Plugin,
+            &HostCohort::reviewed(),
             &runtime,
             &bundle,
             home.path(),
@@ -3583,6 +3644,7 @@ async fn handshake_refuses_a_tier_or_built_in_module_digest_mismatch() {
         id: "demo",
         source_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         tools: &[],
+        services: &[],
     }];
     struct NoEvents;
     impl super::supervisor::HostEvents for NoEvents {
@@ -3605,7 +3667,12 @@ async fn handshake_refuses_a_tier_or_built_in_module_digest_mismatch() {
     .selected
     .expect("the test Node resolves");
     let launch_for = |tier: HostTier| {
-        super::supervisor::plan_launch(tier, &runtime, &bundle, home.path(), 1 << 30, &[]).unwrap()
+        let cohort = match tier {
+            HostTier::Plugin => HostCohort::reviewed(),
+            HostTier::Builtin => HostCohort::Builtin,
+        };
+        super::supervisor::plan_launch(&cohort, &runtime, &bundle, home.path(), 1 << 30, &[])
+            .unwrap()
     };
 
     // Each tier reports its own tier and the exact embedded module digests.
@@ -4018,7 +4085,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
     let mut registry = OwnerRegistry::new();
     let a = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "a",
             "a",
             Some(fake_authority("a")),
@@ -4027,7 +4094,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
         .unwrap();
     let b = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "b",
             "b",
             Some(fake_authority("b")),
@@ -4048,7 +4115,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
     let long_name = "name".repeat(40);
     let long_owner = long_registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "long-id",
             &long_name,
             Some(fake_authority("long-id")),
@@ -4202,7 +4269,7 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
     registry.mark_active(&b);
     let handle = register_command(&mut registry, &b, "survivor", None).unwrap();
     assert!(registry.live_command(handle, "b", b.generation).is_some());
-    registry.host_exited(HostTier::Plugin, "exited");
+    registry.host_exited(HostCohort::reviewed(), "exited");
     assert!(registry.live_commands().is_empty());
     assert!(registry.live_command(handle, "b", b.generation).is_none());
 }
@@ -4361,7 +4428,7 @@ fn a_command_registration_is_refused_when_no_built_in_catalog_is_installed() {
     let owner = |registry: &mut OwnerRegistry| {
         registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "a",
                 "a",
                 Some(fake_authority("a")),
@@ -4411,7 +4478,7 @@ async fn a_command_from_a_dead_host_reports_host_down() {
         let mut registry = manager.shared.registry.lock().unwrap();
         let owner = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "probe",
                 "probe",
                 Some(fake_authority("probe")),
@@ -4611,7 +4678,7 @@ fn owners_are_bound_to_their_tier() {
     // A `host:` id on the plugin tier, and any other id on the builtin tier.
     let refused = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "host:mcp",
             "mcp",
             Some(fake_authority("host:mcp")),
@@ -4623,14 +4690,14 @@ fn owners_are_bound_to_their_tier() {
         "{refused}"
     );
     let refused = registry
-        .begin_owner(HostTier::Builtin, plugin_id, "demo", None, "h")
+        .begin_owner(HostCohort::Builtin, plugin_id, "demo", None, "h")
         .unwrap_err();
     assert!(
         refused.contains("not a built-in host module id"),
         "{refused}"
     );
     let refused = registry
-        .begin_owner(HostTier::Builtin, "demo", "demo", None, "h")
+        .begin_owner(HostCohort::Builtin, "demo", "demo", None, "h")
         .unwrap_err();
     assert!(
         refused.contains("not a built-in host module id"),
@@ -4639,14 +4706,14 @@ fn owners_are_bound_to_their_tier() {
     // The authority must fit the tier too.
     assert!(
         registry
-            .begin_owner(HostTier::Plugin, plugin_id, "demo", None, "h")
+            .begin_owner(HostCohort::reviewed(), plugin_id, "demo", None, "h")
             .unwrap_err()
             .contains("needs its reviewed plugin authority")
     );
     assert!(
         registry
             .begin_owner(
-                HostTier::Builtin,
+                HostCohort::Builtin,
                 "host:mcp",
                 "mcp",
                 Some(fake_authority("host:mcp")),
@@ -4662,7 +4729,7 @@ fn owners_are_bound_to_their_tier() {
 
     let plugin = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             plugin_id,
             "demo",
             Some(fake_authority(plugin_id)),
@@ -4671,7 +4738,7 @@ fn owners_are_bound_to_their_tier() {
         .unwrap();
     let other_plugin = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             "user/0123456789ab/other",
             "other",
             Some(fake_authority("user/0123456789ab/other")),
@@ -4679,13 +4746,16 @@ fn owners_are_bound_to_their_tier() {
         )
         .unwrap();
     let builtin = registry
-        .begin_owner(HostTier::Builtin, "host:mcp", "mcp", None, "digest-mcp")
+        .begin_owner(HostCohort::Builtin, "host:mcp", "mcp", None, "digest-mcp")
         .unwrap();
     for owner in [&plugin, &other_plugin, &builtin] {
         registry.mark_active(owner);
     }
-    assert_eq!(registry.owner("host:mcp").unwrap().tier, HostTier::Builtin);
-    assert_eq!(registry.owner(plugin_id).unwrap().tier, HostTier::Plugin);
+    assert_eq!(
+        registry.owner("host:mcp").unwrap().tier(),
+        HostTier::Builtin
+    );
+    assert_eq!(registry.owner(plugin_id).unwrap().tier(), HostTier::Plugin);
     assert_eq!(registry.tier_of(&builtin), Some(HostTier::Builtin));
     assert!(registry.authority_for(&builtin).is_none());
     assert!(registry.authority_for(&plugin).is_some());
@@ -4699,7 +4769,10 @@ fn owners_are_bound_to_their_tier() {
     let tiers: Vec<_> = registry
         .live_tools()
         .into_iter()
-        .map(|tool| (tool.name, tool.tier))
+        .map(|tool| {
+            let tier = tool.tier();
+            (tool.name, tier)
+        })
         .collect();
     assert_eq!(
         tiers,
@@ -4713,7 +4786,7 @@ fn owners_are_bound_to_their_tier() {
 
     // Each tier's host is its own process: a crash of one takes only its own
     // owners and registrations with it.
-    registry.host_exited(HostTier::Plugin, "plugin host crashed");
+    registry.host_exited(HostCohort::reviewed(), "plugin host crashed");
     assert!(registry.owner(plugin_id).is_none());
     assert_eq!(
         registry.owner("host:mcp").unwrap().state,
@@ -4724,7 +4797,7 @@ fn owners_are_bound_to_their_tier() {
     // ... and a shutdown of the builtin tier leaves the plugin tier's alone.
     let replay = registry
         .begin_owner(
-            HostTier::Plugin,
+            HostCohort::reviewed(),
             plugin_id,
             "demo",
             Some(fake_authority(plugin_id)),
@@ -4733,7 +4806,7 @@ fn owners_are_bound_to_their_tier() {
         .unwrap();
     registry.mark_active(&replay);
     let again = register(&mut registry, &replay, "zz_plugin_probe").unwrap();
-    registry.revoke_all(HostTier::Builtin, "builtin host shut down");
+    registry.revoke_all(HostCohort::Builtin, "builtin host shut down");
     assert!(registry.is_live(again, &replay));
     assert!(matches!(
         registry.owner("host:mcp").unwrap().state,
@@ -4752,7 +4825,7 @@ fn a_host_registers_and_logs_only_for_owners_of_its_own_tier() {
         let mut registry = manager.shared.registry.lock().unwrap();
         let plugin = registry
             .begin_owner(
-                HostTier::Plugin,
+                HostCohort::reviewed(),
                 "user/0123456789ab/demo",
                 "demo",
                 Some(fake_authority("user/0123456789ab/demo")),
@@ -4760,36 +4833,37 @@ fn a_host_registers_and_logs_only_for_owners_of_its_own_tier() {
             )
             .unwrap();
         let builtin = registry
-            .begin_owner(HostTier::Builtin, "host:mcp", "mcp", None, "digest")
+            .begin_owner(HostCohort::Builtin, "host:mcp", "mcp", None, "digest")
             .unwrap();
         registry.mark_active(&plugin);
         registry.mark_active(&builtin);
         (plugin, builtin)
     };
-    let events = |tier| super::Events {
+    let events = |cohort| super::Events {
         shared: Arc::downgrade(&manager.shared),
-        tier,
+        cohort,
         generation: 0,
     };
-    let refused = events(HostTier::Plugin).register(&tier_register_params(&builtin, "zz_probe"));
+    let refused =
+        events(HostCohort::reviewed()).register(&tier_register_params(&builtin, "zz_probe"));
     assert!(
         matches!(&refused, protocol::RegisterResult::Refused { refused }
-            if refused.contains("belongs to the builtin tier")),
+            if refused.contains("belongs to")),
         "{refused:?}"
     );
-    let refused = events(HostTier::Builtin).register(&tier_register_params(&plugin, "zz_probe"));
+    let refused = events(HostCohort::Builtin).register(&tier_register_params(&plugin, "zz_probe"));
     assert!(
         matches!(&refused, protocol::RegisterResult::Refused { refused }
-            if refused.contains("belongs to the plugin tier")),
+            if refused.contains("belongs to")),
         "{refused:?}"
     );
     assert!(manager.live_tool_names().is_empty());
     assert!(matches!(
-        events(HostTier::Builtin).register(&tier_register_params(&builtin, "zz_probe")),
+        events(HostCohort::Builtin).register(&tier_register_params(&builtin, "zz_probe")),
         protocol::RegisterResult::Admitted { .. }
     ));
     assert!(matches!(
-        events(HostTier::Plugin).register(&tier_register_params(&plugin, "zz_other")),
+        events(HostCohort::reviewed()).register(&tier_register_params(&plugin, "zz_other")),
         protocol::RegisterResult::Admitted { .. }
     ));
 
@@ -4798,8 +4872,8 @@ fn a_host_registers_and_logs_only_for_owners_of_its_own_tier() {
         msg: "m".into(),
         plugin_id: Some(plugin_id.into()),
     };
-    events(HostTier::Plugin).log(&warn("host:mcp"));
-    events(HostTier::Builtin).log(&warn("user/0123456789ab/demo"));
+    events(HostCohort::reviewed()).log(&warn("host:mcp"));
+    events(HostCohort::Builtin).log(&warn("user/0123456789ab/demo"));
     assert!(
         manager
             .owner_report("host:mcp")
@@ -4814,7 +4888,7 @@ fn a_host_registers_and_logs_only_for_owners_of_its_own_tier() {
             .diagnostics
             .is_empty()
     );
-    events(HostTier::Builtin).log(&warn("host:mcp"));
+    events(HostCohort::Builtin).log(&warn("host:mcp"));
     assert_eq!(
         manager.owner_report("host:mcp").unwrap().diagnostics,
         ["warn: m"]
@@ -4899,8 +4973,12 @@ fn launch_plans_carry_their_tier_and_use_a_data_directory_each() {
     };
     let mut dirs = Vec::new();
     for tier in HostTier::ALL {
+        let cohort = match tier {
+            HostTier::Builtin => HostCohort::Builtin,
+            HostTier::Plugin => HostCohort::reviewed(),
+        };
         let launch = match super::supervisor::plan_launch(
-            tier,
+            &cohort,
             &runtime,
             &bundle,
             home.path(),
@@ -4914,7 +4992,7 @@ fn launch_plans_carry_their_tier_and_use_a_data_directory_each() {
                     "{error}"
                 );
                 assert!(matches!(
-                    super::supervisor::planned_sandbox(tier, &runtime, home.path()),
+                    super::supervisor::planned_sandbox_tier(tier, &runtime, home.path()),
                     Err(reason) if reason.contains("would create")
                 ));
                 let data = super::supervisor::tier_data_dir(home.path(), tier);
@@ -4959,6 +5037,7 @@ fn test_builtin_table(source: &Path) -> &'static [BuiltinModule] {
         id: "tier0-module",
         source_sha256: Box::leak(digest.into_boxed_str()),
         tools,
+        services: &[],
     }]))
 }
 
@@ -5096,7 +5175,7 @@ async fn a_tier_zero_host_runs_apart_from_the_plugin_host_and_its_tool_approval_
     let plugin_pid = manager.host_pid().expect("plugin host running");
     let builtin_pid = manager
         .shared
-        .ready_host(HostTier::Builtin)
+        .ready_host(&HostCohort::Builtin)
         .expect("builtin host running")
         .pid
         .expect("builtin pid");
@@ -5115,11 +5194,11 @@ async fn a_tier_zero_host_runs_apart_from_the_plugin_host_and_its_tool_approval_
     {
         let registry = manager.shared.registry.lock().unwrap();
         assert_eq!(
-            registry.owner("host:tier0-module").unwrap().tier,
+            registry.owner("host:tier0-module").unwrap().tier(),
             HostTier::Builtin
         );
         assert_eq!(
-            registry.owner(&plugin_host_id).unwrap().tier,
+            registry.owner(&plugin_host_id).unwrap().tier(),
             HostTier::Plugin
         );
         assert_eq!(
@@ -5132,7 +5211,7 @@ async fn a_tier_zero_host_runs_apart_from_the_plugin_host_and_its_tool_approval_
     assert!(
         super::supervisor::owner_data_dir(
             &fixture.root,
-            HostTier::Builtin,
+            HostCohort::Builtin,
             "host:tier0-module",
             "tier0-module"
         )
@@ -5212,7 +5291,7 @@ async fn a_tier_zero_host_runs_apart_from_the_plugin_host_and_its_tool_approval_
     })
     .await;
     assert_eq!(
-        manager.shared.ready_host(HostTier::Builtin).unwrap().pid,
+        manager.shared.ready_host(&HostCohort::Builtin).unwrap().pid,
         Some(builtin_pid)
     );
     assert_eq!(manager.tier_spawn_attempts(HostTier::Builtin), 1);
@@ -5645,4 +5724,57 @@ async fn all_fifteen_project_hook_events_use_the_pinned_runner_and_reject_change
     ));
     assert!(!matches!(manager.status(), HostStatus::Ready { .. }));
     manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn sync_creator_within_signals_cancellation_at_safe_point_on_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = Arc::new(ExtensionHostManager::new(ExtensionHostOptions {
+        root: Some(temp.path().join("home")),
+        ..Default::default()
+    }));
+    let attachment = manager.attach(Arc::new(PluginRegistry::empty(temp.path())));
+    assert!(attachment.set_creator_demand(true));
+
+    let hold = manager.shared.sync_lock.lock().await;
+    let settled = attachment
+        .sync_creator_within(Duration::from_millis(20))
+        .await;
+    assert!(!settled);
+    drop(hold);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(manager.tier_spawn_attempts(HostTier::Builtin), 0);
+    assert_eq!(manager.owner_state("host:creator"), None);
+    assert!(manager.shared.sync_lock.try_lock().is_ok());
+    assert!(
+        manager
+            .diagnostics()
+            .iter()
+            .any(|line| line.contains("timed out") && line.contains("cancellation"))
+    );
+}
+
+#[test]
+fn materialize_file_atomically_replaces_read_only_bundle_without_leaking_temp_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("bundle");
+    let first = super::materialize_file(&dir, "asset.mjs", b"export const v = 1;\n").unwrap();
+    assert_eq!(std::fs::read(&first).unwrap(), b"export const v = 1;\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+    }
+    let replaced = super::materialize_file(&dir, "asset.mjs", b"export const v = 2;\n").unwrap();
+    assert_eq!(replaced, first);
+    assert_eq!(std::fs::read(&replaced).unwrap(), b"export const v = 2;\n");
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["asset.mjs".to_string()]);
 }

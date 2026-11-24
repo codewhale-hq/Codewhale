@@ -37,10 +37,10 @@ use self::constitution::repo_constitution_candidate_paths;
 pub use self::constitution::{RepoLawAction, RepoLawRule, load_repo_law_rules};
 use self::pack::generate_bounded_project_overview;
 pub use self::pack::generate_project_context_pack;
-pub use self::types::ProjectContext;
 use self::types::ProjectContextError;
 pub use self::types::project_instructions_source_label;
 use self::types::repo_relative_source_label;
+pub use self::types::{PinnedProjectInstructions, ProjectContext};
 use codewhale_config::instruction_budget::DEFAULT_FILE_MAX_BYTES;
 
 /// Names of project context files to look for, in priority order.
@@ -1240,6 +1240,7 @@ fn load_project_context_with_settings_uncached(
     );
     ctx.notices.extend(rules.notices);
     ctx.rules_block = rules.block;
+    ctx.loaded_rule_paths = rules.paths;
 
     // `source_path` names the most specific source — the workspace file when
     // there is one, otherwise the nearest ancestor that contributed.
@@ -1299,6 +1300,7 @@ fn load_rules_block(
 ) -> RulesLoad {
     let mut block = String::new();
     let mut notices = Vec::new();
+    let mut paths = Vec::new();
     for rules_dir in rules_dirs_for(imports) {
         let rules = load_rules_from_dir(workspace, rules_dir, file_max_bytes);
         notices.extend(rules.notices);
@@ -1311,11 +1313,13 @@ fn load_rules_block(
                 repo_relative_source_label(&path, Some(label_root)),
                 content.trim()
             ));
+            paths.push(path);
         }
     }
     RulesLoad {
         block: if block.is_empty() { None } else { Some(block) },
         notices,
+        paths,
     }
 }
 
@@ -1331,6 +1335,7 @@ struct RulesDirLoad {
 struct RulesLoad {
     block: Option<String>,
     notices: Vec<InstructionNotice>,
+    paths: Vec<PathBuf>,
 }
 
 pub fn project_context_cache_candidate_paths(
@@ -1712,7 +1717,7 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     ))
 }
 
-/// Load a context file with size checking and no links below its scope root.
+/// Load a context file with size checking; links must resolve inside its scope root.
 fn load_context_file(root: &Path, path: &Path) -> Result<String, ProjectContextError> {
     load_context_file_limited(root, path, DEFAULT_FILE_MAX_BYTES)
 }
@@ -1722,12 +1727,13 @@ fn load_context_file_limited(
     path: &Path,
     cap: u64,
 ) -> Result<String, ProjectContextError> {
-    let file = codewhale_util::fs_confined::open_read(root, path).map_err(|source| {
-        ProjectContextError::Read {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
+    let file =
+        codewhale_util::fs_confined::open_read_linked_within(root, path).map_err(|source| {
+            ProjectContextError::Read {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
     read_context_file(file, path, cap)
 }
 
@@ -2608,6 +2614,28 @@ mod tests {
             "expected symlink warning, got {:?}",
             ctx.warnings
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_context_follows_agents_md_linked_within_the_workspace() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let operator = workspace.path().join("ops/operator");
+        fs::create_dir_all(&operator).expect("mkdir operator");
+        fs::write(operator.join("AGENTS.md"), "Shared operator rules").expect("write agents");
+        std::os::unix::fs::symlink("ops/operator/AGENTS.md", workspace.path().join("AGENTS.md"))
+            .expect("symlink agents");
+
+        let ctx = load_project_context(workspace.path());
+
+        assert!(
+            ctx.instructions
+                .as_deref()
+                .is_some_and(|text| text.contains("Shared operator rules")),
+            "an in-workspace AGENTS.md link must load: {:?}",
+            ctx.warnings
+        );
+        assert!(ctx.warnings.is_empty(), "{:?}", ctx.warnings);
     }
 
     #[test]

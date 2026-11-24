@@ -99,6 +99,10 @@ impl WorkGraphChange {
             WorkGraphChange::AddEdge { .. } => "add_edge",
             WorkGraphChange::RemoveEdge { .. } => "remove_edge",
             WorkGraphChange::BindOperation { .. } => "bind_operation",
+            WorkGraphChange::ReconcileOperation {
+                obs: OperationObservation::OwnerUnreadable { .. },
+                ..
+            } => "reconcile_operation_owner_unreadable",
             WorkGraphChange::ReconcileOperation { .. } => "reconcile_operation",
             WorkGraphChange::AttachEvidence { .. } => "attach_evidence",
             WorkGraphChange::ProposePlanDiff { .. } => "propose_plan_diff",
@@ -214,6 +218,12 @@ pub enum OperationObservation {
     /// Active or Completed — only to Stale (fail toward honesty).
     OwnerMissing {
         checked_at: Ts,
+    },
+    /// Owner record could not be loaded (e.g. corrupt JSON or I/O error).
+    /// Maps to Stale like OwnerMissing while preserving the load failure.
+    OwnerUnreadable {
+        checked_at: Ts,
+        reason: String,
     },
     CancelUpdate {
         outcome: CancelOutcome,

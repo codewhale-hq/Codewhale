@@ -170,6 +170,19 @@ pub fn load_permissions_snapshot(config_path: Option<PathBuf>) -> Result<Permiss
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StalePermissionSnapshot {
+    detail: String,
+}
+
+impl std::fmt::Display for StalePermissionSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for StalePermissionSnapshot {}
+
 /// Remove one zero-based permission rule if `expected_token` still describes
 /// that exact index in the current file.
 ///
@@ -185,24 +198,30 @@ pub fn remove_permission_rule(
     config_document::with_config_write_lock(&path, |path| {
         let (file_exists, raw, permissions) = read_permissions_state(path)?;
         if !file_exists {
-            bail!(
-                "permissions changed after they were listed; reload {} and retry",
-                quote_os_path(path)
-            );
+            return Err(anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permissions changed after they were listed; reload {} and retry",
+                    quote_os_path(path)
+                ),
+            }));
         }
-        let rule = permissions.rules.get(index).cloned().with_context(|| {
-            format!(
-                "permission rule {} no longer exists in {}; list rules again",
-                index + 1,
-                quote_os_path(path)
-            )
+        let rule = permissions.rules.get(index).cloned().ok_or_else(|| {
+            anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permission rule {} no longer exists in {}; list rules again",
+                    index + 1,
+                    quote_os_path(path)
+                ),
+            })
         })?;
         let current_token = permission_removal_token(path, &raw, index);
         if current_token != expected_token {
-            bail!(
-                "permissions changed after they were listed; reload {} and retry",
-                quote_os_path(path)
-            );
+            return Err(anyhow::Error::new(StalePermissionSnapshot {
+                detail: format!(
+                    "permissions changed after they were listed; reload {} and retry",
+                    quote_os_path(path)
+                ),
+            }));
         }
 
         let mut document = parse_permissions_document(path, &raw)?;
@@ -421,6 +440,14 @@ pub(crate) fn permission_rule_inline_table(rule: &ToolAskRule) -> toml_edit::Inl
 }
 
 pub(crate) fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
+    write_permissions_atomic_with_dir_sync(path, body, crate::persistence::sync_parent_dir)
+}
+
+fn write_permissions_atomic_with_dir_sync(
+    path: &Path,
+    body: &[u8],
+    sync_dir: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let parent = path.parent().with_context(|| {
         format!(
             "permissions path has no parent directory: {}",
@@ -463,5 +490,38 @@ pub(crate) fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to replace permissions at {}", path.display()))?;
+    let sync_target = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    crate::persistence::sync_parent_dir_best_effort(sync_target, sync_dir);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_permissions_atomic_syncs_parent_directory_without_failing_persisted_save() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("permissions.toml");
+        let mut synced = None;
+        write_permissions_atomic_with_dir_sync(&path, b"rules = []\n", |dir| {
+            synced = Some(dir.to_path_buf());
+            Ok(())
+        })
+        .expect("write should succeed when parent sync succeeds");
+        assert_eq!(synced.as_deref(), Some(tmp.path()));
+
+        write_permissions_atomic_with_dir_sync(&path, b"rules = [\"allow\"]\n", |_| {
+            anyhow::bail!("injected directory sync failure")
+        })
+        .expect("best-effort parent directory sync must not fail an already-persisted write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read permissions"),
+            "rules = [\"allow\"]\n"
+        );
+    }
 }

@@ -138,7 +138,6 @@ pub enum ShellBindingId {
     PetCopyReply,
     PetSound,
     PetBrowser,
-    PetWindow,
     RedactionGateConfirm,
     RedactionGateKeepOrBack,
     RedactionGateQuit,
@@ -228,7 +227,6 @@ impl ShellBinding {
             }
             ShellBindingId::PetSound => key.code == KeyCode::F(6) && key.modifiers.is_empty(),
             ShellBindingId::PetBrowser => key.code == KeyCode::F(8) && key.modifiers.is_empty(),
-            ShellBindingId::PetWindow => key.code == KeyCode::F(9) && key.modifiers.is_empty(),
 
             ShellBindingId::RedactionGateConfirm => is_redaction_gate_choice(key, '1', 'y'),
             ShellBindingId::RedactionGateKeepOrBack => is_redaction_gate_choice(key, '2', 'u'),
@@ -428,12 +426,6 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
         id: ShellBindingId::PetBrowser,
         catalog_chord: "F8",
         footer_chord: "F8",
-        focus: FocusScope::Pet,
-    },
-    ShellBinding {
-        id: ShellBindingId::PetWindow,
-        catalog_chord: "F9",
-        footer_chord: "F9",
         focus: FocusScope::Pet,
     },
     ShellBinding {

@@ -33,15 +33,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap},
+    widgets::{Padding, Paragraph, Widget, Wrap},
 };
 
 use crate::tui::app::App;
 use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
-    render_modal_footer_with_gutter, render_modal_surface, truncate_view_text,
+    ActionHint, ModalKind, ModalView, SurfaceFrame, ViewAction, ViewEvent, centered_modal_area,
+    render_modal_footer_with_gutter, render_rounded_modal, truncate_view_text,
 };
 use codewhale_agent_contract::role::public_role_label;
 use codewhale_engine::fleet::profile::FleetProfileScope;
@@ -2217,7 +2217,6 @@ impl ModalView for FleetSetupView {
             Step::Review => 32,
         };
         let popup_area = centered_modal_area(area, 96, preferred_height, 60, 16);
-        render_modal_surface(area, popup_area, buf);
 
         let step_no = match self.step {
             Step::Role => 1,
@@ -2226,31 +2225,17 @@ impl ModalView for FleetSetupView {
             Step::Destination => 3,
             Step::Review => 4,
         };
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                " Fleet setup — your agent team ",
-                Style::default()
-                    .fg(palette::WHALE_ACTION)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .title_bottom(
-                Line::from(Span::styled(
-                    format!(" Step {step_no}/4 "),
+        let (inner, _) = render_rounded_modal(
+            area,
+            popup_area,
+            buf,
+            SurfaceFrame::new("Fleet setup — your agent team")
+                .bottom_right(
+                    format!("Step {step_no}/4"),
                     Style::default().fg(palette::TEXT_MUTED),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette::BORDER_COLOR))
-            .style(
-                Style::default()
-                    .fg(palette::TEXT_PRIMARY)
-                    .bg(palette::WHALE_BG),
-            )
-            .padding(Padding::uniform(1));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+                )
+                .padding(Padding::uniform(1)),
+        );
 
         let hints = self.footer_hints();
         let content = render_modal_footer_with_gutter(inner, buf, &hints);
@@ -2357,40 +2342,38 @@ impl ModalView for FleetSetupView {
 
 impl FleetSetupView {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
+        let locale = self.snapshot.locale;
         let (title, subtitle): (Cow<'static, str>, Cow<'static, str>) = match self.step {
             Step::Role => (
-                Cow::Borrowed("Choose a team role"),
-                Cow::Borrowed("Each Fleet member plays one role in the delegation."),
+                tr(locale, MessageId::FleetSetupRoleTitle),
+                tr(locale, MessageId::FleetSetupRoleSubtitle),
             ),
             Step::Composition => (
-                Cow::Borrowed("Unratified composition suggestion"),
-                Cow::Borrowed(
-                    "Review the configured-pool assignments; nothing is saved or running.",
-                ),
+                tr(locale, MessageId::FleetSetupCompositionTitle),
+                tr(locale, MessageId::FleetSetupCompositionSubtitle),
             ),
             Step::Model => (
-                Cow::Borrowed("Choose a model"),
-                Cow::Borrowed("Pick this agent's model, or inherit your current route."),
+                tr(locale, MessageId::FleetSetupModelTitle),
+                tr(locale, MessageId::FleetSetupModelSubtitle),
             ),
             Step::Destination => (
-                Cow::Owned(tr(self.snapshot.locale, MessageId::FleetDestStepTitle).into_owned()),
-                Cow::Owned(tr(self.snapshot.locale, MessageId::FleetDestStepSubtitle).into_owned()),
+                tr(locale, MessageId::FleetDestStepTitle),
+                tr(locale, MessageId::FleetDestStepSubtitle),
             ),
             Step::Review if self.assignment.is_some() => (
-                Cow::Owned(format!("Review {} model", self.selected_role())),
-                Cow::Borrowed(
-                    "Save this role's model and thinking; the session model stays unchanged.",
+                Cow::Owned(
+                    tr(locale, MessageId::FleetSetupRoleReviewTitle)
+                        .replace("{role}", &self.selected_role()),
                 ),
+                tr(locale, MessageId::FleetSetupRoleReviewSubtitle),
             ),
             Step::Review if self.model_draft.is_some() => (
-                Cow::Borrowed("Save profile"),
-                Cow::Borrowed(
-                    "Exact TOML shown below; nothing is written until you activate the save control.",
-                ),
+                tr(locale, MessageId::FleetSetupProfileSaveTitle),
+                tr(locale, MessageId::FleetSetupProfileSaveSubtitle),
             ),
             Step::Review => (
-                Cow::Borrowed("Review & save"),
-                Cow::Borrowed("Nothing is written until you activate the save control."),
+                tr(locale, MessageId::FleetSetupReviewTitle),
+                tr(locale, MessageId::FleetSetupReviewSubtitle),
             ),
         };
         let chip_style = Style::default().fg(palette::TEXT_MUTED);
@@ -2909,7 +2892,18 @@ fn render_choice_step(
     let visible = choices.len().min(usize::from(list_area.height));
     let row_start = choice_window_start(choices.len(), selected, visible);
     let mut list_lines: Vec<Line> = Vec::with_capacity(visible);
-    for (idx, choice) in choices.iter().enumerate().skip(row_start).take(visible) {
+    let highlight_width = if area.width >= CHOICE_TWO_COLUMN_MIN_WIDTH {
+        list_area.width.saturating_sub(1)
+    } else {
+        list_area.width
+    };
+    for (line_offset, (idx, choice)) in choices
+        .iter()
+        .enumerate()
+        .skip(row_start)
+        .take(visible)
+        .enumerate()
+    {
         let is_selected = idx == selected;
         let pointer = format!(
             "{} ",
@@ -2920,6 +2914,17 @@ fn render_choice_step(
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
         };
+        if is_selected && highlight_width > 0 {
+            buf.set_style(
+                Rect::new(
+                    list_area.x,
+                    list_area.y.saturating_add(line_offset as u16),
+                    highlight_width,
+                    1,
+                ),
+                menu_style::selected_row_bg_style(),
+            );
+        }
         list_lines.push(Line::from(Span::styled(
             truncate_view_text(&format!("{pointer}{}", choice.label), list_width),
             style,

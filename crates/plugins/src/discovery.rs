@@ -27,20 +27,40 @@ pub struct DiscoveryConfig {
     pub state_path: PathBuf,
 }
 
-/// Cheap on-disk catalog fingerprint: plugin-bundle directories only.
+/// Cheap on-disk catalog fingerprint: plugin-bundle directories plus the
+/// content of the plugin state file.
 ///
-/// Used to nudge `/plugin reload` when a bundle appears, disappears, or is
-/// rewritten without consulting process environment or auto-applying trust.
-/// `state.json` writes are ignored so enable/trust does not look like a
-/// catalog change.
+/// Used to apply or nudge a reload when a bundle appears, disappears, or is
+/// rewritten, or when another process installs, enables or disables a plugin.
+/// The state file is compared by content digest, never by mtime, so a rewrite
+/// with identical bytes is not a change and a same-second rewrite is.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PluginCatalogStamp {
     entries: BTreeMap<PathBuf, Option<SystemTime>>,
+    state: Option<[u8; 32]>,
+}
+
+const MAX_STAMPED_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// SHA-256 of a small file's bytes, or `None` when it is absent, unreadable or
+/// larger than the stamp bound.
+#[must_use]
+pub fn file_content_digest(path: &Path) -> Option<[u8; 32]> {
+    use std::io::Read;
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_STAMPED_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_STAMPED_FILE_BYTES {
+        return None;
+    }
+    Some(Sha256::digest(&bytes).into())
 }
 
 impl PluginCatalogStamp {
     #[must_use]
-    pub fn capture(roots: impl IntoIterator<Item = PathBuf>) -> Self {
+    pub fn capture(roots: impl IntoIterator<Item = PathBuf>, state_path: &Path) -> Self {
         let mut entries = BTreeMap::new();
         for root in roots {
             let Ok(read) = fs::read_dir(&root) else {
@@ -57,7 +77,14 @@ impl PluginCatalogStamp {
                 entries.insert(path, metadata.modified().ok());
             }
         }
-        Self { entries }
+        Self {
+            entries,
+            state: file_content_digest(state_path),
+        }
+    }
+
+    pub fn refresh_state(&mut self, state_path: &Path) {
+        self.state = file_content_digest(state_path);
     }
 }
 
@@ -383,6 +410,22 @@ fn load_plugin(
     }
     let validated = refreshed;
 
+    let install_nonce = match read_install_nonce(&validated.canonical_root) {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            diagnostics.push(PluginDiagnostic::warning(
+                "install-record-invalid",
+                error,
+                Some(
+                    validated
+                        .canonical_root
+                        .join(codewhale_skill_install::install::INSTALLED_FROM_MARKER),
+                ),
+            ));
+            None
+        }
+    };
+
     Ok(LoadedPlugin {
         id,
         manifest: validated.manifest,
@@ -403,9 +446,45 @@ fn load_plugin(
         enabled_by: None,
         host_services: Vec::new(),
         outside_reach: false,
+        reviewed_at: None,
+        review_history: Vec::new(),
+        install_nonce,
         skill_snapshots,
         diagnostics,
     })
+}
+
+pub(crate) fn read_install_nonce(root: &Path) -> Result<Option<String>, String> {
+    use std::io::Read as _;
+
+    let path = root.join(codewhale_skill_install::install::INSTALLED_FROM_MARKER);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("failed to inspect {}: {error}", path.display()));
+        }
+    };
+    if metadata_is_link_or_reparse(&metadata) || !metadata.file_type().is_file() {
+        return Err(format!(
+            "{} is not an ordinary regular file",
+            path.display()
+        ));
+    }
+    let file = codewhale_util::bundle_file::open_bundle_file(&path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let mut raw = String::new();
+    file.take(64 * 1024 + 1)
+        .read_to_string(&mut raw)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    if raw.len() > 64 * 1024 {
+        return Err(format!("{} exceeds maximum marker size", path.display()));
+    }
+    Ok(
+        serde_json::from_str::<codewhale_skill_install::install::InstalledFromMarker>(&raw)
+            .ok()
+            .and_then(|marker| marker.install_nonce().map(str::to_string)),
+    )
 }
 
 fn parse_skill_snapshots(

@@ -362,3 +362,472 @@
         let loaded = manager.load_session(&saved.metadata.id).expect("load");
         assert_eq!(loaded.agent_preset.as_deref(), Some("creator"));
     }
+
+    #[test]
+    fn a_hand_edited_agent_preset_still_loads_and_never_becomes_standard() {
+        let session = create_saved_session(&[], "test-model", std::path::Path::new("."), 0, None);
+        let base = serde_json::to_value(&session).expect("serialize");
+        let big = "x".repeat(1_000_000);
+        for (edited, expected) in [
+            (serde_json::Value::Null, None),
+            (serde_json::json!("creator"), Some("creator".to_string())),
+            (serde_json::json!(""), Some(String::new())),
+            (serde_json::json!("../x"), Some("../x".to_string())),
+            (serde_json::json!(5), Some("5".to_string())),
+            (serde_json::json!(true), Some("true".to_string())),
+            (serde_json::json!({"a": 1}), Some("{\"a\":1}".to_string())),
+            (serde_json::json!(big.clone()), Some(big)),
+        ] {
+            let mut raw = base.clone();
+            raw["agent_preset"] = edited;
+            let loaded: SavedSession = serde_json::from_value(raw).expect("loads");
+            assert_eq!(loaded.agent_preset, expected);
+        }
+    }
+
+    #[test]
+    fn migrate_workspace_updates_session_checkpoint_and_runtime_thread() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let old_dir = tmp.path().join("Project_A");
+        let new_dir = tmp.path().join("Project_B");
+        std::fs::create_dir_all(&old_dir).expect("mkdir old");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+
+        let mut session = create_saved_session(&[], "test-model", &old_dir, 0, None);
+        let id = session.metadata.id.clone();
+        let store_dir = sessions_dir.join(&id).join("runtime");
+        let store = crate::runtime_threads::RuntimeThreadStore::open(store_dir.clone())
+            .expect("create runtime store");
+        let thread = migration_test_thread("thr_test_1", &id, &old_dir);
+        let binding = crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&store_dir)
+            .expect("binding");
+        session.metadata.runtime_store = Some(binding);
+        manager.save_session(&session).expect("save session");
+        manager.save_checkpoint(&session).expect("save checkpoint");
+        std::fs::copy(
+            manager.checkpoints_dir().join(format!("{id}.json")),
+            manager.checkpoints_dir().join("latest.json"),
+        )
+        .expect("copy legacy checkpoint");
+        let initial_obs = manager
+            .with_session_write_admission(&id, || manager.observe_session_admitted(&id))
+            .expect("observe pre")
+            .expect("pre obs");
+        let mut thread = thread;
+        thread.saved_session_checkpoint = Some(crate::runtime_threads::SavedSessionCheckpoint {
+            publication_observation: Some(initial_obs),
+            covered_turn_id: None,
+            messages_sha256: "abc".to_string(),
+            messages_len: Some(0),
+            retained_messages: None,
+        });
+        store.save_thread(&thread).expect("save thread");
+
+        std::fs::rename(&old_dir, &new_dir).expect("rename workspace");
+        assert!(
+            manager
+                .get_latest_session_for_workspace(&new_dir)
+                .expect("query")
+                .is_none()
+        );
+
+        let before_dry = migration_test_tree(&sessions_dir);
+        let dry = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: old_dir.clone(),
+                new_path: new_dir.clone(),
+                session_id: None,
+                dry_run: true,
+            })
+            .expect("dry run");
+        assert_eq!(migration_test_tree(&sessions_dir), before_dry);
+        assert_eq!(dry.migrated_sessions, vec![id.clone()]);
+        assert_eq!(dry.migrated_checkpoints, vec![id.clone()]);
+        assert_eq!(dry.migrated_threads, vec!["thr_test_1".to_string()]);
+        assert!(
+            !store_dir
+                .join(crate::runtime_threads::RUNTIME_PROCESS_OWNER_LOCK_FILE)
+                .exists()
+        );
+        assert_eq!(
+            manager.load_session(&id).expect("still old").metadata.workspace,
+            old_dir
+        );
+
+        let applied = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: old_dir.clone(),
+                new_path: new_dir.clone(),
+                session_id: None,
+                dry_run: false,
+            })
+            .expect("apply migration");
+        assert_eq!(applied.migrated_sessions, vec![id.clone()]);
+        assert_eq!(applied.migrated_checkpoints, vec![id.clone()]);
+        assert_eq!(applied.migrated_threads, vec!["thr_test_1".to_string()]);
+
+        let canonical_new = std::fs::canonicalize(&new_dir).expect("canonical new");
+        assert_eq!(
+            manager.load_session(&id).expect("updated").metadata.workspace,
+            canonical_new
+        );
+        assert_eq!(
+            manager
+                .load_recovery_checkpoint(&id)
+                .expect("ckpt")
+                .expect("present")
+                .metadata
+                .workspace,
+            canonical_new
+        );
+        assert_eq!(
+            manager
+                .load_legacy_checkpoint()
+                .expect("legacy ckpt")
+                .expect("legacy present")
+                .metadata
+                .workspace,
+            canonical_new
+        );
+        let expected_post_obs = manager
+            .with_session_write_admission(&id, || manager.observe_session_admitted(&id))
+            .expect("observe post")
+            .expect("post obs");
+        let reloaded_thread = store.load_thread("thr_test_1").expect("thread");
+        assert_eq!(reloaded_thread.workspace, canonical_new);
+        assert_eq!(
+            reloaded_thread
+                .saved_session_checkpoint
+                .as_ref()
+                .and_then(|cp| cp.publication_observation.as_ref()),
+            Some(&expected_post_obs)
+        );
+
+        let live_lease = manager.reserve_session_for_external_write(&id).expect("lease");
+        let busy = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: new_dir.clone(),
+                new_path: tmp.path().join("Project_C"),
+                session_id: None,
+                dry_run: true,
+            })
+            .expect("busy skipped");
+        assert_eq!(busy.busy_sessions, vec![id]);
+        drop(live_lease);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_workspace_heals_half_edited_session_json_and_matches_symlinks() {
+        let tmp = tempdir().expect("tempdir");
+        let old_dir = tmp.path().join("Project_A");
+        let old_sub = old_dir.join("apps").join("api");
+        let new_dir = tmp.path().join("Project_B");
+        let new_sub = new_dir.join("apps").join("api");
+        std::fs::create_dir_all(&old_sub).expect("mkdir old");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+
+        let mut session = create_saved_session(&[], "test-model", &old_sub, 0, None);
+        let id = session.metadata.id.clone();
+        let store_dir = sessions_dir.join(&id).join("runtime");
+        let store = crate::runtime_threads::RuntimeThreadStore::open(store_dir.clone())
+            .expect("create runtime store");
+        let mut thread = migration_test_thread("thr_half_1", &id, &old_sub);
+        let binding = crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&store_dir)
+            .expect("binding");
+        session.metadata.runtime_store = Some(binding);
+        std::fs::rename(&old_dir, &new_dir).expect("rename workspace");
+        session.metadata.workspace = new_sub.clone();
+        manager.save_session(&session).expect("save half-edited session");
+
+        let initial_obs = manager
+            .with_session_write_admission(&id, || manager.observe_session_admitted(&id))
+            .expect("observe pre")
+            .expect("pre obs");
+        thread.saved_session_checkpoint = Some(crate::runtime_threads::SavedSessionCheckpoint {
+            publication_observation: Some(initial_obs.clone()),
+            covered_turn_id: None,
+            messages_sha256: "abc".to_string(),
+            messages_len: Some(0),
+            retained_messages: None,
+        });
+        store.save_thread(&thread).expect("save thread");
+
+        let applied = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: old_dir.clone(),
+                new_path: new_dir.clone(),
+                session_id: None,
+                dry_run: false,
+            })
+            .expect("heal thread without CODEWHALE_HOME override");
+        assert!(applied.unreadable.is_empty(), "{:?}", applied.unreadable);
+        assert!(applied.migrated_sessions.is_empty());
+        assert_eq!(applied.migrated_threads, vec!["thr_half_1".to_string()]);
+        let canonical_new_sub = std::fs::canonicalize(&new_sub).expect("canonical new sub");
+        let healed_thread = store.load_thread("thr_half_1").expect("thread");
+        assert_eq!(healed_thread.workspace, canonical_new_sub);
+        let healed_obs = healed_thread
+            .saved_session_checkpoint
+            .as_ref()
+            .and_then(|cp| cp.publication_observation.as_ref())
+            .expect("healed publication observation");
+        assert_eq!(healed_obs, &initial_obs);
+
+        let symlink_path = tmp.path().join("Project_Link");
+        std::os::unix::fs::symlink(&new_dir, &symlink_path).expect("symlink");
+        assert!(paths_equivalent(&symlink_path, &new_dir));
+
+        let real_parent = tmp.path().join("real_parent");
+        let real_sub = real_parent.join("sub");
+        std::fs::create_dir_all(&real_sub).expect("mkdir real_sub");
+        let sym_sub = tmp.path().join("sym_sub");
+        std::os::unix::fs::symlink(&real_sub, &sym_sub).expect("sym_sub");
+        assert!(!paths_equivalent(
+            &sym_sub.join("..").join("missing"),
+            &tmp.path().join("missing")
+        ));
+        assert!(paths_equivalent(
+            &sym_sub.join("..").join("missing"),
+            &real_parent.join("missing")
+        ));
+
+        let nested_err = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: new_dir.clone(),
+                new_path: new_sub,
+                session_id: None,
+                dry_run: true,
+            })
+            .expect_err("nested paths must be rejected");
+        assert_eq!(nested_err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    fn migration_test_thread(
+        thread_id: &str,
+        session_id: &str,
+        workspace: &Path,
+    ) -> crate::runtime_threads::ThreadRecord {
+        crate::runtime_threads::ThreadRecord {
+            schema_version: 2,
+            id: thread_id.to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            model: "test-model".to_string(),
+            model_provider: Some("deepseek".to_string()),
+            model_provider_id: None,
+            reasoning_effort: None,
+            allowed_tools: None,
+            disallowed_tools: Vec::new(),
+            add_dirs: Vec::new(),
+            workspace: workspace.to_path_buf(),
+            mode: "agent".to_string(),
+            permission_posture: None,
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: false,
+            latest_turn_id: None,
+            latest_response_bookmark: None,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+            parent_thread_id: None,
+            title: None,
+            session_id: Some(session_id.to_string()),
+            saved_session_checkpoint: None,
+            last_read: None,
+            executor: None,
+            environment: None,
+            agent_preset: None,
+        }
+    }
+
+    fn migration_test_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut entries = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read dir").flatten() {
+                let path = entry.path();
+                let meta = fs::symlink_metadata(&path).expect("metadata");
+                if meta.is_dir() {
+                    stack.push(path.clone());
+                    entries.push((path, Vec::new()));
+                } else if meta.file_type().is_symlink() {
+                    let target = fs::read_link(&path).expect("read link");
+                    entries.push((path, target.into_os_string().into_encoded_bytes()));
+                } else {
+                    entries.push((path.clone(), fs::read(&path).expect("read file")));
+                }
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_workspace_refuses_symlinked_tasks_runtime_and_leaves_target_untouched() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let old_dir = tmp.path().join("Project_A");
+        let new_dir = tmp.path().join("Project_B");
+        fs::create_dir_all(&new_dir).expect("mkdir new");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+        let session = create_saved_session(&[], "test-model", &old_dir, 0, None);
+        let id = session.metadata.id.clone();
+        manager.save_session(&session).expect("save session");
+
+        let victim_dir = tmp.path().join("victim");
+        fs::create_dir_all(victim_dir.join("threads")).expect("mkdir victim threads");
+        let victim_thread = migration_test_thread("thr_victim", &id, &old_dir);
+        fs::write(
+            victim_dir.join("threads").join("thr_victim.json"),
+            serde_json::to_vec(&victim_thread).expect("thread json"),
+        )
+        .expect("write victim thread");
+        let tasks_dir = tmp.path().join("tasks");
+        fs::create_dir_all(&tasks_dir).expect("mkdir tasks");
+        std::os::unix::fs::symlink(&victim_dir, tasks_dir.join("runtime")).expect("sym tasks");
+        let victim_before = migration_test_tree(&victim_dir);
+
+        for dry_run in [true, false] {
+            let report = manager
+                .migrate_workspace(&WorkspaceMigrationOptions {
+                    old_path: old_dir.clone(),
+                    new_path: new_dir.clone(),
+                    session_id: None,
+                    dry_run,
+                })
+                .expect("migration reports instead of failing");
+            assert!(report.migrated_sessions.is_empty(), "{report:?}");
+            assert!(report.migrated_threads.is_empty(), "{report:?}");
+            assert!(
+                report
+                    .unreadable
+                    .iter()
+                    .any(|warning| warning.contains("runtime store")),
+                "{report:?}"
+            );
+            assert_eq!(migration_test_tree(&victim_dir), victim_before);
+        }
+        assert_eq!(
+            manager.load_session(&id).expect("session").metadata.workspace,
+            old_dir
+        );
+
+        for data_dir in [tasks_dir.join("runtime"), fs::canonicalize(&victim_dir).expect("canon")] {
+            let binding = crate::runtime_threads::RuntimeStoreBinding {
+                data_dir,
+                execution_scope: String::new(),
+            };
+            assert!(binding.try_hold_for_sessions_dir(&sessions_dir).is_err());
+        }
+        assert_eq!(migration_test_tree(&victim_dir), victim_before);
+
+        let peer_store = sessions_dir.join("peer_session").join("runtime");
+        fs::create_dir_all(peer_store.join("threads")).expect("mkdir peer threads");
+        fs::write(
+            peer_store.join("threads").join("thr_peer.json"),
+            serde_json::to_vec(&victim_thread).expect("peer thread json"),
+        )
+        .expect("write peer thread");
+        let peer_before = migration_test_tree(&peer_store);
+        fs::remove_file(tasks_dir.join("runtime")).expect("rm old sym");
+        std::os::unix::fs::symlink(&peer_store, tasks_dir.join("runtime")).expect("sym peer");
+        for dry_run in [true, false] {
+            let report = manager
+                .migrate_workspace(&WorkspaceMigrationOptions {
+                    old_path: old_dir.clone(),
+                    new_path: new_dir.clone(),
+                    session_id: None,
+                    dry_run,
+                })
+                .expect("intra-root symlink reports instead of failing");
+            assert!(report.migrated_sessions.is_empty(), "{report:?}");
+            assert!(report.migrated_threads.is_empty(), "{report:?}");
+            assert!(
+                report
+                    .unreadable
+                    .iter()
+                    .any(|warning| warning.contains("runtime store")),
+                "{report:?}"
+            );
+            assert_eq!(migration_test_tree(&peer_store), peer_before);
+        }
+    }
+
+    #[test]
+    fn migrate_workspace_leaves_stale_publication_observation_for_reopen() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let old_dir = tmp.path().join("Project_A");
+        let new_dir = tmp.path().join("Project_B");
+        fs::create_dir_all(&old_dir).expect("mkdir old");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+
+        let mut session = create_saved_session(&[], "test-model", &old_dir, 0, None);
+        let id = session.metadata.id.clone();
+        let store_dir = sessions_dir.join(&id).join("runtime");
+        let store = crate::runtime_threads::RuntimeThreadStore::open(store_dir.clone())
+            .expect("create runtime store");
+        session.metadata.runtime_store = Some(
+            crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&store_dir)
+                .expect("binding"),
+        );
+        manager.save_session(&session).expect("save session");
+        let stale_obs = manager
+            .with_session_write_admission(&id, || manager.observe_session_admitted(&id))
+            .expect("observe")
+            .expect("obs");
+        let mut thread = migration_test_thread("thr_stale_1", &id, &old_dir);
+        thread.saved_session_checkpoint = Some(crate::runtime_threads::SavedSessionCheckpoint {
+            publication_observation: Some(stale_obs.clone()),
+            covered_turn_id: None,
+            messages_sha256: "abc".to_string(),
+            messages_len: Some(0),
+            retained_messages: None,
+        });
+        store.save_thread(&thread).expect("save thread");
+
+        fs::rename(&old_dir, &new_dir).expect("rename workspace");
+        session.metadata.workspace = fs::canonicalize(&new_dir).expect("canonical new");
+        manager.save_session(&session).expect("simulate interrupted migration");
+
+        let applied = manager
+            .migrate_workspace(&WorkspaceMigrationOptions {
+                old_path: old_dir.clone(),
+                new_path: new_dir.clone(),
+                session_id: None,
+                dry_run: false,
+            })
+            .expect("re-run migration");
+        assert_eq!(applied.migrated_threads, vec!["thr_stale_1".to_string()]);
+        assert!(
+            applied
+                .unreadable
+                .iter()
+                .any(|warning| warning.contains("thr_stale_1") && warning.contains("reopen")),
+            "{:?}",
+            applied.unreadable
+        );
+        let reloaded = store.load_thread("thr_stale_1").expect("thread");
+        assert_eq!(
+            reloaded.workspace,
+            fs::canonicalize(&new_dir).expect("canonical new")
+        );
+        assert_eq!(
+            reloaded
+                .saved_session_checkpoint
+                .as_ref()
+                .and_then(|cp| cp.publication_observation.as_ref()),
+            Some(&stale_obs)
+        );
+    }

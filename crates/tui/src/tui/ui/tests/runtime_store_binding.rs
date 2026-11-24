@@ -19,6 +19,16 @@ fn fixture_config() -> Config {
 
 #[tokio::test]
 async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow::Result<()> {
+    // The body is built on the heap (`boxed_phase`) rather than inline: a
+    // switch can now adopt a Runtime store, which grew the load future past
+    // what an inline body holds on libtest's test-thread stack.
+    crate::test_support::boxed_phase(
+        runtime_store_binding_persists_on_exit_without_a_model_turn_body,
+    )
+    .await
+}
+
+async fn runtime_store_binding_persists_on_exit_without_a_model_turn_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -48,14 +58,19 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     apply_loaded_session_with_goal(&mut app, &mut config, original.clone(), None)
         .map_err(anyhow::Error::msg)?;
     let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
-    let tasks = TaskManager::start(
-        task_config.clone(),
-        config.clone(),
-        app.plugin_registry.clone(),
-        &original.metadata.id,
-        None,
-    )
-    .await?;
+    // Each `TaskManager::start` is a large state machine of its own (the launch
+    // path documents ~1.1 MiB for these). Boxed separately so the two do not
+    // both occupy this body's frame at once.
+    let tasks = {
+        let task_config = task_config.clone();
+        let config = config.clone();
+        let plugin_registry = app.plugin_registry.clone();
+        let session_id = original.metadata.id.clone();
+        crate::test_support::boxed_phase(move || async move {
+            TaskManager::start(task_config, config, plugin_registry, &session_id, None).await
+        })
+        .await?
+    };
     let binding = tasks
         .session_store_binding()
         .expect("attached Runtime store");
@@ -85,14 +100,22 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     drop(tasks);
     drop(explicit_store);
     // Ordinary resume now reopens the same authority without an env override.
-    let resumed = TaskManager::start(
-        task_config,
-        config,
-        Arc::new(codewhale_plugins::PluginRegistry::empty(root.path())),
-        &saved.metadata.id,
-        saved.metadata.runtime_store.as_ref(),
-    )
-    .await?;
+    let resumed = {
+        let saved_id = saved.metadata.id.clone();
+        let saved_binding = saved.metadata.runtime_store.clone();
+        let plugin_root = root.path().to_path_buf();
+        crate::test_support::boxed_phase(move || async move {
+            TaskManager::start(
+                task_config,
+                config,
+                Arc::new(codewhale_plugins::PluginRegistry::empty(&plugin_root)),
+                &saved_id,
+                saved_binding.as_ref(),
+            )
+            .await
+        })
+        .await?
+    };
     assert_eq!(resumed.execution_scope(), binding.execution_scope);
     resumed.shutdown_and_wait().await?;
     Ok(())
@@ -215,6 +238,7 @@ fn runtime_store_binding_survives_launch_snapshot_and_resume() -> anyhow::Result
                 auto_approve: Some(false),
                 delivery_mode: None,
                 status: Some(AutomationStatus::Paused),
+                disallowed_tools: Vec::new(),
             })?;
             tasks.shutdown_and_wait().await?;
             drop(app);
@@ -342,13 +366,18 @@ fn runtime_store_binding_survives_launch_snapshot_and_resume() -> anyhow::Result
                 other_app.runtime_services.task_manager = Some(foreign.clone());
                 other_app.input = "preserve pending input".into();
                 let old_id = other_app.current_session_id.clone();
-                let error = apply_loaded_session_with_goal(
+                // The refusal lives on the switch entry point now, not on the
+                // load function behind it: adoption is the switch's job.
+                let next_config = resumed_config.clone();
+                let error = apply_loaded_session_config_snapshot(
                     &mut other_app,
                     resumed_config,
                     loaded.clone(),
-                    None,
+                    next_config,
+                    false,
                 )
-                .unwrap_err();
+                .await
+                .expect_err("a foreign execution scope must refuse");
                 // The refusal must name the route that actually works. "Resume
                 // it in a new Codewhale process" was true but unactionable:
                 // starting a new process and then picking the session from
@@ -557,8 +586,22 @@ fn missing_runtime_store_recovers_without_reusing_authority_or_resurrecting_stal
     Ok(())
 }
 
-#[tokio::test]
-async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning()
+#[test]
+fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning()
+-> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(
+            picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning_body,
+        )
+    })
+}
+
+async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_returning_body()
 -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
@@ -863,6 +906,7 @@ fn adoptable_empty_store_refuses_a_scope_pinned_automation() -> anyhow::Result<(
         auto_approve: Some(false),
         delivery_mode: None,
         status: Some(AutomationStatus::Paused),
+        disallowed_tools: Vec::new(),
     })?;
     automations.edit_automation(&created.id, |record| {
         let mut record = record.ok_or_else(|| anyhow::anyhow!("fresh automation must exist"))?;
@@ -883,8 +927,19 @@ fn adoptable_empty_store_refuses_a_scope_pinned_automation() -> anyhow::Result<(
 /// #6207 end to end: the picker adopts an existing-but-empty unheld store
 /// into the idle host and persists the repaired binding, the way the
 /// missing-store path already does.
-#[tokio::test]
-async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
+#[test]
+fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(picker_adopts_existing_empty_unheld_store_body)
+    })
+}
+
+async fn picker_adopts_existing_empty_unheld_store_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -961,8 +1016,25 @@ async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
 }
 
 /// #6144 P1a: an abandoned store another document still binds is kept.
-#[tokio::test]
-async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Result<()> {
+/// Drive on the default 2 MiB test stack, not the caller's.
+///
+/// `apply_loaded_session_with_goal` grew past what this test's former
+/// `#[tokio::test]` body could hold once a switch could adopt a store: the
+/// load call, the task manager it rebinds and the session snapshots all share
+/// one poll frame. `block_on_default_test_stack` pins the budget libtest
+/// actually gives a test thread, so this fails here rather than in CI's
+/// 16 MiB `RUST_MIN_STACK`.
+#[test]
+fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Result<()> {
+    // `boxed_phase` builds the body future on the heap, so its temporaries
+    // live in that future's own poll frame instead of being inlined into the
+    // thread's stack frame.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(picker_adoption_keeps_a_store_another_document_binds_body)
+    })
+}
+
+async fn picker_adoption_keeps_a_store_another_document_binds_body() -> anyhow::Result<()> {
     let _environment = crate::test_support::lock_test_env();
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
@@ -1012,11 +1084,284 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
     .await?;
     app.runtime_services.task_manager = Some(tasks.clone());
     app.current_session_id = Some("picker-current".into());
-    apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
-        .map_err(anyhow::Error::msg)?;
-    // Give the background retirement time to (wrongly) act.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(store_dir.is_dir(), "the sibling still binds it");
+    // Boxed like the other phases here: libtest gives a test thread a 2 MiB
+    // stack, and the load future's state machine outgrew it once the switch
+    // gained store adoption (`LoadedSessionOutcome` and its checks).
+    crate::test_support::boxed_phase(move || async move {
+        apply_loaded_session_with_goal(&mut app, &mut config, saved, None)
+            .map_err(anyhow::Error::msg)?;
+        // Give the background retirement time to (wrongly) act.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(store_dir.is_dir(), "the sibling still binds it");
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?;
     tasks.shutdown_and_wait().await?;
     Ok(())
+}
+
+/// A store that holds only finished history is no longer a reason to refuse a
+/// switch.
+///
+/// The rule this replaces refused any target whose `threads/` directory held a
+/// record, so a conversation that had ever run under the Runtime could not be
+/// opened from inside a running session even though nothing in it was pending.
+/// The switch does not abandon the target — that store stays on disk for
+/// whichever process opens it next — so the only question worth asking is
+/// whether the store being *left* still needs this process.
+#[test]
+fn switch_adopts_a_store_holding_finished_history() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(switch_adopts_a_store_holding_finished_history_body)
+    })
+}
+
+async fn switch_adopts_a_store_holding_finished_history_body() -> anyhow::Result<()> {
+    let _environment = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let _runtime = crate::test_support::EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+    let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+    let sessions = SessionManager::default_location()?;
+    let mut config = fixture_config();
+
+    // A populated target store: one thread record, which is what
+    // `first_durable_work_dir` reports as `HasDurableWork { dir: "threads" }`.
+    let target_store = root.path().join("sessions/populated/runtime");
+    {
+        let store = crate::runtime_threads::RuntimeThreadStore::open(target_store.clone())?;
+        let thread = fixture_thread("thr_finished", config.default_model(), root.path());
+        store.save_thread(&thread)?;
+    }
+    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+        "populated-target".into(),
+        &[text_message("user", "long conversation")],
+        "deepseek-v4-pro",
+        root.path(),
+        0,
+        None,
+        None,
+    );
+    // The real binding, not a fabricated scope: adoption validates the store's
+    // own owner file, and a made-up scope is the *stale* case (recovered onto
+    // the current host instead).
+    saved.metadata.runtime_store = Some(
+        crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&target_store)?,
+    );
+    sessions.save_session(&saved)?;
+
+    let mut app = Box::new(create_test_app());
+    // Boxed: `TaskManager::start` is a large state machine and would otherwise
+    // share this body's frame with the load-and-adopt call below.
+    let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
+    let start_config = config.clone();
+    let plugin_registry = app.plugin_registry.clone();
+    let tasks = crate::test_support::boxed_phase(move || async move {
+        TaskManager::start(
+            task_config,
+            start_config,
+            plugin_registry,
+            "switch-current",
+            None,
+        )
+        .await
+    })
+    .await?;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    app.current_session_id = Some("switch-current".into());
+
+    // Drive the real entry point, not the load function behind it: adoption is
+    // what the switch does, so the assertion belongs on the host's owner.
+    let expected_store = target_store.clone();
+    let next_config = config.clone();
+    apply_loaded_session_config_snapshot(&mut app, &mut config, saved, next_config, false)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(app.current_session_id.as_deref(), Some("populated-target"));
+    // The host must now own the target store. Compare canonical paths: the
+    // adopted binding is the store's own canonical root, while the fixture
+    // path may be the /var symlink.
+    let held = app
+        .runtime_services
+        .task_manager
+        .as_ref()
+        .expect("host keeps a manager")
+        .session_store_binding()
+        .expect("host holds a store");
+    let held_dir = held
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| held.data_dir.clone());
+    let expected_dir = expected_store
+        .canonicalize()
+        .unwrap_or_else(|_| expected_store.clone());
+    assert_eq!(held_dir, expected_dir, "the host adopted the target store");
+    assert!(target_store.is_dir(), "the target store is never discarded");
+    if let Some(tasks) = app.runtime_services.task_manager.clone() {
+        tasks.shutdown_and_wait().await?;
+    }
+    Ok(())
+}
+
+/// A refused switch leaves the live session, its workspace and its manager
+/// exactly as they were.
+///
+/// This is the case the review named: adoption used to run *after* the load had
+/// already replaced the session id and metadata, and it took the manager out of
+/// the App before trying to open the target. A refusal could therefore strand a
+/// host with no manager while the UI showed the new conversation. Adoption is
+/// now preflight, so a refusal costs nothing.
+#[test]
+fn refused_switch_keeps_the_live_session_and_its_manager() -> anyhow::Result<()> {
+    // Run on the default 2 MiB test stack with the body boxed: a switch can
+    // now adopt a Runtime store, which grew `apply_loaded_session_with_goal`'s
+    // future past what an inline `#[tokio::test]` body holds. `boxed_phase`
+    // keeps those temporaries in the future's own poll frame, and
+    // `block_on_default_test_stack` pins the budget libtest really gives.
+    crate::test_support::block_on_default_test_stack(|| {
+        crate::test_support::boxed_phase(refused_switch_keeps_the_live_session_and_its_manager_body)
+    })
+}
+
+async fn refused_switch_keeps_the_live_session_and_its_manager_body() -> anyhow::Result<()> {
+    let _environment = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
+    let _runtime = crate::test_support::EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
+    let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
+    let sessions = SessionManager::default_location()?;
+    let mut config = fixture_config();
+
+    let target_store = root.path().join("sessions/target/runtime");
+    {
+        let store = crate::runtime_threads::RuntimeThreadStore::open(target_store.clone())?;
+        store.save_thread(&fixture_thread(
+            "thr_target",
+            config.default_model(),
+            root.path(),
+        ))?;
+    }
+    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+        "refused-target".into(),
+        &[text_message("user", "elsewhere")],
+        "deepseek-v4-pro",
+        root.path(),
+        0,
+        None,
+        None,
+    );
+    saved.metadata.runtime_store = Some(
+        crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&target_store)?,
+    );
+    sessions.save_session(&saved)?;
+
+    let mut app = Box::new(create_test_app());
+    // Boxed: `TaskManager::start` is a large state machine, and it would share
+    // this body's frame with the load call below.
+    let task_config = TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1));
+    let start_config = config.clone();
+    let plugin_registry = app.plugin_registry.clone();
+    let tasks = crate::test_support::boxed_phase(move || async move {
+        TaskManager::start(
+            task_config,
+            start_config,
+            plugin_registry,
+            "waiting-current",
+            None,
+        )
+        .await
+    })
+    .await?;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    app.current_session_id = Some("waiting-current".into());
+    app.input = "keep my draft".into();
+
+    // Refuse the switch the way a live turn does: `session_transition_blocked`
+    // is consulted before anything is released, so the failure must cost
+    // nothing. A request waiting on this process is the other refusal
+    // (`switch_refuses_while_requests_are_waiting`'s predecessor did not exist;
+    // the in-memory half is covered by `has_unsettled_requests`).
+    app.runtime_turn_status = Some("in_progress".to_string());
+    let current = tasks.session_store_binding().expect("host holds a store");
+    let next_config = config.clone();
+    let (app, error) = crate::test_support::boxed_phase(move || async move {
+        let result =
+            apply_loaded_session_config_snapshot(&mut app, &mut config, saved, next_config, false)
+                .await;
+        (app, result)
+    })
+    .await;
+    let error = error.expect_err("a store with an active turn must not be released");
+    assert!(
+        error.contains("runtime work is active"),
+        "the refusal must name the active work: {error}"
+    );
+    // Nothing about the live session moved.
+    assert_eq!(app.current_session_id.as_deref(), Some("waiting-current"));
+    assert_eq!(app.input, "keep my draft");
+    let held = app
+        .runtime_services
+        .task_manager
+        .as_ref()
+        .expect("the manager must survive a refused switch")
+        .session_store_binding()
+        .expect("host holds a store");
+    let held_dir = held
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| held.data_dir.clone());
+    let expected_dir = current
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| current.data_dir.clone());
+    assert_eq!(held_dir, expected_dir, "the host kept its own store");
+    tasks.shutdown_and_wait().await?;
+    Ok(())
+}
+
+/// A minimal durable thread record: enough for `first_durable_work_dir` to see
+/// the `threads/` directory as non-empty, which is the whole condition under
+/// test. Field values are otherwise inert.
+fn fixture_thread(
+    id: &str,
+    model: String,
+    workspace: &std::path::Path,
+) -> crate::runtime_threads::ThreadRecord {
+    crate::runtime_threads::ThreadRecord {
+        schema_version: 2,
+        id: id.to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        model: model.to_string(),
+        model_provider: None,
+        model_provider_id: None,
+        reasoning_effort: None,
+        allowed_tools: None,
+        disallowed_tools: Vec::new(),
+        add_dirs: Vec::new(),
+        workspace: workspace.to_path_buf(),
+        mode: "agent".to_string(),
+        permission_posture: None,
+        allow_shell: false,
+        trust_mode: false,
+        auto_approve: false,
+        latest_turn_id: None,
+        latest_response_bookmark: None,
+        archived: false,
+        system_prompt: None,
+        task_id: None,
+        title: None,
+        parent_thread_id: None,
+        last_read: None,
+        session_id: None,
+        saved_session_checkpoint: None,
+        executor: None,
+        environment: None,
+        agent_preset: None,
+    }
 }

@@ -286,7 +286,7 @@ def run_row(args, pins: dict) -> dict:
     steps: list[dict] = []
     receipt = {"schema": RECEIPT_SCHEMA, "row": pin["row"], "package": pin["package"], "version": pin["version"],
                "tarball_sha256": pin["tarball_sha256"], "os": os_name(), "arch": platform.machine().lower(),
-               "flags": list(args.enable), "steps": steps,
+               "flags": list(args.enable), "network_allow": list(args.allow_host), "steps": steps,
                "provider_calls_allowed": bool(args.allow_provider)}
     version = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     receipt["engine"] = {"path": str(binary), "sha256": sha256_file(binary), "version": version, "kind": args.engine_kind}
@@ -325,6 +325,9 @@ def run_row(args, pins: dict) -> dict:
         workspace.mkdir()
         engine = Engine(binary, home, workspace, list(args.enable), "dsh-acc-" + hashlib.sha256(os.urandom(16)).hexdigest())
         subprocess.run([str(binary), "config", "set", "telemetry", "false"], env=engine.env(), capture_output=True, timeout=60)
+        if args.allow_host:
+            with (home / "config.toml").open("a") as config:
+                config.write("\n[network]\nallow = " + json.dumps(args.allow_host) + "\n")
         engine.start()
         code, preview = engine.request("POST", "/v1/apps/plugins/import/dsh/preview", {"path": str(package)})
         if pin["admission"] != "admit":
@@ -403,11 +406,16 @@ def trust_and_enable(engine: Engine, name: str) -> list[dict]:
     rounds = []
     for _ in range(3):
         code, detail = engine.request("GET", base)
-        token = (detail.get("review") or {}).get("token")
+        review = detail.get("review") or {}
+        token = review.get("token")
         if code != 200 or not token:
             return [step("lifecycle.trust", "FAIL", f"no review token, HTTP {code}", {"http": code}),
                     step("lifecycle.enable", "SKIPPED", "trust did not complete")]
-        code, answer = engine.request("POST", base + "/trust", {"token": token})
+        payload = {"token": token}
+        hs_token = (review.get("host_services") or {}).get("token")
+        if hs_token:
+            payload["host_services_token"] = hs_token
+        code, answer = engine.request("POST", base + "/trust", payload)
         rounds.append({"trust_http": code})
         if code != 200:
             return [step("lifecycle.trust", "FAIL", f"trust HTTP {code}", {"http": code, "answer": answer}),
@@ -575,6 +583,7 @@ def main() -> int:
     run.add_argument("--engine-kind", choices=["installed", "source-build"], required=True)
     run.add_argument("--tarballs", required=True, help="directory holding the pinned tarballs")
     run.add_argument("--enable", action="append", default=[], help="Engine feature to enable (repeatable), e.g. extension_host")
+    run.add_argument("--allow-host", action="append", default=[], help="host the isolated Engine may reach without prompting (repeatable), e.g. registry.npmjs.org for npm dependencies")
     run.add_argument("--allow-provider", action="store_true", help="permit model-provider calls (spend); off by default")
     run.add_argument("--work-dir", default=None, help="scratch parent directory")
     run.add_argument("--out", required=True, help="receipt path")

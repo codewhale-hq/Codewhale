@@ -38,20 +38,21 @@
 //!   does not execute `plugin.json` plugin runtimes or custom command bundles.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+use crate::bounded_tar::{
+    MAX_ENTRY_NAME_BYTES, entry_names_within_bound, map_stream_limit, open_bounded_tarball,
+    read_body_within, stream_cap,
+};
 use anyhow::{Context, Result, bail};
-use flate2::read::GzDecoder;
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use codewhale_net::guard::{
-    DnsPin, fetch_target_host, guarded_reqwest_client_builder, validate_fetch_destination,
-};
-use codewhale_net::network_policy::{Decision, NetworkPolicy, NetworkPolicyDecider, host_from_url};
+use codewhale_net::guard::{GuardedGet, PrivateTargets};
+use codewhale_net::network_policy::{Decision, NetworkPolicy, host_from_url};
 
 const MAX_INSTALL_REDIRECTS: usize = 5;
 
@@ -72,81 +73,24 @@ fn install_http_timeouts() -> (std::time::Duration, std::time::Duration) {
     }
 }
 
-fn reqwest_client(proxy: Option<reqwest::Proxy>, pin: DnsPin) -> reqwest::Client {
-    let (connect_timeout, total_timeout) = install_http_timeouts();
-    let mut builder = guarded_reqwest_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        // The shared platform builder sets no timeouts; without a bound, a
-        // connection that opens but stalls (dead proxy, black-holed route)
-        // hangs installs and registry sync forever. Connect is bounded tightly;
-        // the total budget is generous for 5 MiB tarballs on slow links
-        // (registry sync fans out `SYNC_REGISTRY_CONCURRENCY` of these in
-        // parallel).
-        .connect_timeout(connect_timeout)
-        .timeout(total_timeout);
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(proxy);
-    } else if let Some((host, ip)) = pin {
-        builder = builder.resolve(&host, std::net::SocketAddr::new(ip, 0));
-    }
-    builder.build().expect("build platform HTTP client")
-}
-
 async fn guarded_get(
     url: &str,
     network: &NetworkPolicy,
     if_none_match: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let decider = NetworkPolicyDecider::new(network.clone(), None);
-    let mut current = reqwest::Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
-    let mut initial_pin: Option<DnsPin> = (cfg!(any(test, feature = "test-support"))
-        && current.host_str() == Some("127.0.0.1"))
-    .then_some(None);
-    for _ in 0..=MAX_INSTALL_REDIRECTS {
-        let host = fetch_target_host(&current)?;
-        if matches!(network.decide(&host), Decision::Deny) {
-            bail!("network policy denies {host}");
-        }
-        let proxy = if initial_pin.is_some() {
-            None
+    let (connect_timeout, total_timeout) = install_http_timeouts();
+    let request = GuardedGet::new(url, network, "skill_install", PrivateTargets::Refuse)
+        .if_none_match(if_none_match)
+        .timeouts(connect_timeout, total_timeout)
+        .max_redirects(MAX_INSTALL_REDIRECTS);
+    #[cfg(any(test, feature = "test-support"))]
+    let request =
+        if reqwest::Url::parse(url).is_ok_and(|parsed| parsed.host_str() == Some("127.0.0.1")) {
+            request.trust_first_hop()
         } else {
-            codewhale_net::proxy::configured_mcp_proxy(&current, false, |key| std::env::var(key))?
+            request
         };
-        let pin = match initial_pin.take() {
-            Some(pin) => pin,
-            None => {
-                validate_fetch_destination(host, Some(&decider), "skill_install", proxy.is_none())
-                    .await?
-            }
-        };
-        let mut request = reqwest_client(proxy, pin).get(current.clone());
-        if let Some(etag) = if_none_match {
-            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
-        }
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("failed to GET {current}"))?;
-        if !response.status().is_redirection() {
-            return Ok(response);
-        }
-        let Some(location) = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-        else {
-            return Ok(response);
-        };
-        let next = response
-            .url()
-            .join(location)
-            .with_context(|| format!("invalid redirect location from {current}"))?;
-        if current.scheme() == "https" && next.scheme() != "https" {
-            bail!("redirect from {current} would downgrade HTTPS");
-        }
-        current = next;
-    }
-    bail!("{url} exceeded {MAX_INSTALL_REDIRECTS} redirects")
+    request.send().await
 }
 
 /// Cache directory for registry-synced skills.
@@ -334,6 +278,8 @@ pub enum InstallError {
     PathTraversal(String),
     #[error("entry is too large; uncompressed total would exceed {limit} bytes")]
     OversizedTarball { limit: u64 },
+    #[error("archive entry name is longer than {limit} bytes")]
+    EntryNameTooLong { limit: usize },
     #[error("missing SKILL.md in archive")]
     MissingSkillMd,
     #[error("symlinks are not allowed in skill tarballs")]
@@ -364,8 +310,8 @@ pub enum InstallError {
 /// 3. Stream the tarball into a tempfile (capped at `max_size`).
 /// 4. Validate the archive (path-traversal, size, no symlinks in the selected
 ///    skill subtree, SKILL.md present with required frontmatter fields) into a
-///    sibling `<name>.tmp/` directory.
-/// 5. Atomic-rename `<name>.tmp/` → `<name>/`.
+///    fresh hidden sibling staging directory.
+/// 5. Atomic-rename the staging directory → `<name>/`.
 /// 6. Write `.installed-from` and return [`InstalledSkill`].
 ///
 /// `update = false` rejects an existing destination. Pass `update = true`
@@ -422,7 +368,12 @@ pub async fn install_with_registry(
     // no-op changes without redoing the extract.
     let checksum = sha256_hex(&bytes);
 
-    let staged = stage_tarball(&bytes, skills_dir, max_size)?;
+    let staged = {
+        let skills_dir = skills_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || stage_tarball(&bytes, &skills_dir, max_size))
+            .await
+            .context("skill staging task failed")??
+    };
 
     // Move the staged dir into its final location. If `update` is set and the
     // destination exists, replace it; otherwise reject.
@@ -475,34 +426,38 @@ pub async fn install_with_registry(
     // Write the marker last so a partial install never leaves a stale
     // .installed-from on disk. Prefer v2 with package content digest.
     let spec = source_spec_string(&source);
-    let content_digest = match crate::package_digest::compute_package_digest(&final_path) {
-        Ok(digest) => digest,
-        Err(err) => {
-            let _ = tokio::fs::remove_dir_all(&final_path).await;
-            if let Some(backup) = backup_path.take() {
-                let _ = tokio::fs::rename(&backup, &final_path).await;
+    {
+        let final_path = final_path.clone();
+        let source_url = source_url.clone();
+        let checksum = checksum.clone();
+        let skill_name = staged.skill_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let finalized = crate::package_digest::compute_package_digest(&final_path)
+                .map_err(|err| {
+                    anyhow::anyhow!("installed package failed content digest validation: {err}")
+                })
+                .and_then(|content_digest| {
+                    write_installed_from_v2(
+                        &final_path,
+                        &spec,
+                        Some(&source_url),
+                        &checksum,
+                        &content_digest,
+                        &skill_name,
+                    )
+                });
+            if finalized.is_err() {
+                let _ = fs::remove_dir_all(&final_path);
+                if let Some(backup) = &backup_path {
+                    let _ = fs::rename(backup, &final_path);
+                }
+            } else if let Some(backup) = &backup_path {
+                let _ = fs::remove_dir_all(backup);
             }
-            return Err(anyhow::anyhow!(
-                "installed package failed content digest validation: {err}"
-            ));
-        }
-    };
-    if let Err(err) = write_installed_from_v2(
-        &final_path,
-        &spec,
-        Some(&source_url),
-        &checksum,
-        &content_digest,
-        &staged.skill_name,
-    ) {
-        let _ = tokio::fs::remove_dir_all(&final_path).await;
-        if let Some(backup) = backup_path.take() {
-            let _ = tokio::fs::rename(&backup, &final_path).await;
-        }
-        return Err(err);
-    }
-    if let Some(backup) = backup_path {
-        tokio::fs::remove_dir_all(&backup).await.ok();
+            finalized
+        })
+        .await
+        .context("skill finalize task failed")??;
     }
 
     Ok(InstallOutcome::Installed(InstalledSkill {
@@ -893,7 +848,13 @@ async fn sync_one_skill(
 
         let final_path: PathBuf = if is_tarball {
             // Extract into a temp staging dir, then rename atomically.
-            let staged = match stage_tarball(&bytes, cache_dir, max_size) {
+            let staging = {
+                let (bytes, cache_dir) = (bytes.clone(), cache_dir.to_path_buf());
+                tokio::task::spawn_blocking(move || stage_tarball(&bytes, &cache_dir, max_size))
+                    .await
+                    .unwrap_or_else(|err| Err(anyhow::anyhow!("skill staging task failed: {err}")))
+            };
+            let staged = match staging {
                 Ok(s) => s,
                 Err(err) => {
                     return SkillSyncOutcome::Failed {
@@ -939,8 +900,21 @@ async fn sync_one_skill(
             sha256,
             url: url.clone(),
         };
-        let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-        let _ = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await;
+        let meta_json = match serde_json::to_string(&meta) {
+            Ok(json) => json,
+            Err(err) => {
+                return SkillSyncOutcome::Failed {
+                    name: name.to_string(),
+                    reason: format!("failed to serialize cache metadata: {err:#}"),
+                };
+            }
+        };
+        if let Err(err) = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await {
+            return SkillSyncOutcome::Failed {
+                name: name.to_string(),
+                reason: format!("failed to write cache metadata: {err:#}"),
+            };
+        }
 
         return SkillSyncOutcome::Downloaded {
             name: name.to_string(),
@@ -976,6 +950,8 @@ pub struct InstalledFromMarker {
     #[serde(default)]
     #[expect(dead_code)]
     content_digest: Option<String>,
+    #[serde(default)]
+    install_nonce: Option<String>,
 }
 
 impl InstalledFromMarker {
@@ -984,6 +960,10 @@ impl InstalledFromMarker {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(self.checksum.as_str())
+    }
+
+    pub fn install_nonce(&self) -> Option<&str> {
+        self.install_nonce.as_deref().filter(|s| !s.is_empty())
     }
 }
 
@@ -1003,7 +983,47 @@ pub fn write_installed_from_v2(
     content_digest: &str,
     installed_name: &str,
 ) -> Result<()> {
-    let body = serde_json::json!({
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        None,
+    )
+}
+
+pub fn write_installed_from_v2_with_nonce(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: &str,
+) -> Result<()> {
+    write_installed_from_marker_v2(
+        skill_dir,
+        spec,
+        url,
+        source_checksum,
+        content_digest,
+        installed_name,
+        Some(install_nonce),
+    )
+}
+
+fn write_installed_from_marker_v2(
+    skill_dir: &Path,
+    spec: &str,
+    url: Option<&str>,
+    source_checksum: &str,
+    content_digest: &str,
+    installed_name: &str,
+    install_nonce: Option<&str>,
+) -> Result<()> {
+    let mut body = serde_json::json!({
         "schema_version": 2,
         "spec": spec,
         "url": url,
@@ -1012,7 +1032,17 @@ pub fn write_installed_from_v2(
         "installed_name": installed_name,
         "registry_version": null,
     });
-    fs::write(skill_dir.join(INSTALLED_FROM_MARKER), body.to_string()).with_context(|| {
+    if let (Some(nonce), Some(object)) = (install_nonce, body.as_object_mut()) {
+        object.insert(
+            "install_nonce".to_string(),
+            serde_json::Value::String(nonce.to_string()),
+        );
+    }
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(INSTALLED_FROM_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             INSTALLED_FROM_MARKER,
@@ -1028,7 +1058,11 @@ pub fn write_trust_v2(skill_dir: &Path, content_digest: &str) -> Result<()> {
         "schema_version": 2,
         "content_digest": content_digest,
     });
-    fs::write(skill_dir.join(TRUSTED_MARKER), body.to_string()).with_context(|| {
+    codewhale_util::utils::write_atomic(
+        &skill_dir.join(TRUSTED_MARKER),
+        body.to_string().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "failed to write {} for {}",
             TRUSTED_MARKER,
@@ -1230,8 +1264,9 @@ enum DownloadAttempt {
 }
 
 /// Stream a URL into memory with a size cap. Aborts on the first read that
-/// would push the buffer over `max_size * 4` (the *4 accounts for compression;
-/// the unpack step still enforces `max_size` on the *uncompressed* bytes).
+/// would push the buffer over `(max_size * 4).min(4 GiB)` (accounting for
+/// compression while capping compressed downloads at 4 GiB; the unpack step
+/// still enforces `max_size` on the *uncompressed* bytes).
 async fn download_with_cap(
     url: &str,
     network: &NetworkPolicy,
@@ -1257,7 +1292,7 @@ async fn download_with_cap(
 /// Soft cap on the *compressed* download — well above `max_size` to allow for
 /// highly compressible payloads but still bounded.
 fn compressed_download_cap(max_size: u64) -> usize {
-    usize::try_from(max_size.saturating_mul(4)).unwrap_or(usize::MAX)
+    usize::try_from(stream_cap(max_size)).unwrap_or(usize::MAX)
 }
 
 struct StagedSkill {
@@ -1265,7 +1300,7 @@ struct StagedSkill {
     staged_path: PathBuf,
 }
 
-/// Validate a tarball and extract it into `<skills_dir>/<name>.tmp/`.
+/// Validate a tarball and extract it into a fresh hidden staging dir under `skills_dir`.
 fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<StagedSkill> {
     fs::create_dir_all(skills_dir)
         .with_context(|| format!("failed to create skills directory {}", skills_dir.display()))?;
@@ -1277,20 +1312,11 @@ fn stage_tarball(bytes: &[u8], skills_dir: &Path, max_size: u64) -> Result<Stage
 
     let scan = scan_tarball(bytes, max_size)?;
 
-    // Prepare staged directory. Use a `.tmp` suffix so a crashed install
-    // never collides with a real name; remove any leftover from a prior
-    // failed attempt.
-    let staged_path = skills_dir.join(format!("{}.tmp", scan.skill_name));
-    if staged_path.exists() {
-        fs::remove_dir_all(&staged_path).with_context(|| {
-            format!(
-                "failed to clean stale staging dir {}",
-                staged_path.display()
-            )
-        })?;
-    }
-    fs::create_dir_all(&staged_path)
-        .with_context(|| format!("failed to create staging dir {}", staged_path.display()))?;
+    let staged_path = tempfile::Builder::new()
+        .prefix(".staging-")
+        .tempdir_in(skills_dir)
+        .with_context(|| format!("failed to create staging dir in {}", skills_dir.display()))?
+        .keep();
 
     // Second pass — extract.
     let result = extract_into(&scan, bytes, &staged_path, max_size);
@@ -1320,9 +1346,17 @@ struct TarballScan {
 /// reject path-traversal entries and symlinks inside the selected install
 /// subtree. We do not write anything in this pass; that's the second pass's job.
 fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    scan_tarball_entries(bytes, max_size).map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn oversized_if_stream_limit(err: anyhow::Error, max_size: u64) -> anyhow::Error {
+    map_stream_limit(err, || {
+        InstallError::OversizedTarball { limit: max_size }.into()
+    })
+}
+
+fn scan_tarball_entries(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let mut prefix: Option<(String, bool)> = None;
@@ -1337,6 +1371,12 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1351,15 +1391,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
             has_claude_plugin_manifest = true;
         }
 
-        // Track total size against `max_size` (uncompressed). We honor `header
-        // .size` rather than streaming-read every file; tar archives are
-        // self-describing so this is reliable for non-malicious inputs and
-        // catches the gzip-bomb case.
-        if let Ok(size) = header.size() {
-            total_size = total_size.saturating_add(size);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
+        total_size = total_size.saturating_add(entry.size());
+        if total_size > max_size {
+            return Err(InstallError::OversizedTarball { limit: max_size }.into());
         }
 
         if entry_type == tar::EntryType::XGlobalHeader {
@@ -1394,10 +1428,9 @@ fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
                 .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
         {
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .context("failed to read SKILL.md from archive")?;
+            let buf = read_body_within(&mut entry, max_size)
+                .context("failed to read SKILL.md from archive")?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             skill_md_files.push((path_str, buf));
         }
     }
@@ -1508,9 +1541,12 @@ fn is_claude_plugin_manifest_path(path: &Path) -> bool {
 }
 
 fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
-    let mut archive = tar::Archive::new(gz);
+    extract_entries(scan, bytes, dest, max_size)
+        .map_err(|err| oversized_if_stream_limit(err, max_size))
+}
+
+fn extract_entries(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) -> Result<()> {
+    let mut archive = open_bounded_tarball(bytes, max_size);
 
     let mut total_size: u64 = 0;
     let prefix_with_root = if scan.skill_root.is_empty() {
@@ -1526,6 +1562,12 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
         .context("failed to read tar entries (corrupt archive?)")?
     {
         let mut entry = entry.context("failed to read tar entry")?;
+        if !entry_names_within_bound(&entry) {
+            return Err(InstallError::EntryNameTooLong {
+                limit: MAX_ENTRY_NAME_BYTES,
+            }
+            .into());
+        }
         let header = entry.header().clone();
         let entry_type = header.entry_type();
         let path = entry
@@ -1583,14 +1625,10 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
             }
             // Read into a buffer so we can enforce `max_size`. Files inside
             // a SKILL bundle are small; copying through a buffer is fine.
-            let mut buf = Vec::new();
-            entry
-                .read_to_end(&mut buf)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let buf = read_body_within(&mut entry, max_size.saturating_sub(total_size))
+                .with_context(|| format!("failed to read {}", path.display()))?
+                .ok_or(InstallError::OversizedTarball { limit: max_size })?;
             total_size = total_size.saturating_add(buf.len() as u64);
-            if total_size > max_size {
-                return Err(InstallError::OversizedTarball { limit: max_size }.into());
-            }
             let mut options = fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
@@ -1754,6 +1792,7 @@ fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bounded_tar::test_archives;
 
     fn skill_tarball(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -1766,6 +1805,92 @@ mod tests {
             builder.append_data(&mut header, path, *body).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    const SKILL_MD: &[u8] = b"---\nname: demo\ndescription: test\n---\nbody";
+    const SMALL_CAP: u64 = 64 * 1024;
+    const HUGE_BODY: u64 = 16 * 1024 * 1024;
+
+    fn assert_oversized(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::OversizedTarball { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn scan_counts_the_size_a_pax_record_gives_an_entry() {
+        let bytes = test_archives::pax_size_record_archive(("SKILL.md", SKILL_MD), HUGE_BODY);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_oversized(
+            &stage_tarball(&bytes, tmp.path(), SMALL_CAP)
+                .map(|staged| staged.skill_name)
+                .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn scan_and_extract_bound_the_decoded_stream_for_extension_entries() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+            let bytes =
+                test_archives::extension_body_archive(("SKILL.md", SKILL_MD), kind, HUGE_BODY);
+            assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_oversized(
+                &extract_into(&benign_scan, &bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+    }
+
+    fn assert_name_too_long(err: &anyhow::Error) {
+        assert!(
+            matches!(
+                err.downcast_ref::<InstallError>(),
+                Some(InstallError::EntryNameTooLong { .. })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn entry_names_longer_than_the_bound_are_rejected_before_any_copy() {
+        let benign = skill_tarball(&[("SKILL.md", SKILL_MD, 0o644)]);
+        let benign_scan = scan_tarball(&benign, SMALL_CAP).unwrap();
+        let archives = [
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES + 1),
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), 100 * 1024),
+            test_archives::long_link_target_archive(
+                ("SKILL.md", SKILL_MD),
+                MAX_ENTRY_NAME_BYTES + 1,
+            ),
+        ];
+        for bytes in &archives {
+            assert_name_too_long(&scan_tarball(bytes, SMALL_CAP).err().unwrap());
+            let tmp = tempfile::tempdir().unwrap();
+            assert_name_too_long(
+                &extract_into(&benign_scan, bytes, tmp.path(), SMALL_CAP).unwrap_err(),
+            );
+        }
+        let at_bound =
+            test_archives::long_name_archive(("SKILL.md", SKILL_MD), MAX_ENTRY_NAME_BYTES);
+        assert_eq!(
+            scan_tarball(&at_bound, SMALL_CAP).unwrap().skill_name,
+            "demo"
+        );
+    }
+
+    #[test]
+    fn scan_bounds_the_decoded_stream_for_many_empty_entries() {
+        let bytes = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 600);
+        assert_oversized(&scan_tarball(&bytes, SMALL_CAP).err().unwrap());
+        let few = test_archives::empty_entries_archive(("SKILL.md", SKILL_MD), 20);
+        assert_eq!(scan_tarball(&few, SMALL_CAP).unwrap().skill_name, "demo");
     }
 
     #[test]
@@ -1862,6 +1987,38 @@ mod tests {
             digest
         );
         fs::rename(&staged.staged_path, skills.join("demo")).unwrap();
+    }
+
+    #[test]
+    fn concurrent_stages_of_one_skill_use_distinct_hidden_dirs() {
+        let bytes = skill_tarball(&[(
+            "repo/SKILL.md",
+            b"---\nname: demo\ndescription: test\n---\nbody",
+            0o644,
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("demo.tmp")).unwrap();
+        fs::write(tmp.path().join("demo.tmp/keep"), b"other").unwrap();
+        let first = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        let second = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_ne!(first.staged_path, second.staged_path);
+        for staged in [&first, &second] {
+            assert!(staged.staged_path.join("SKILL.md").is_file());
+            let name = staged.staged_path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(".staging-"), "{name}");
+        }
+        assert!(tmp.path().join("demo.tmp/keep").is_file());
+    }
+
+    #[test]
+    fn stage_accepts_a_skill_name_near_the_component_limit() {
+        let name = "a".repeat(250);
+        let skill_md = format!("---\nname: {name}\ndescription: test\n---\nbody");
+        let bytes = skill_tarball(&[("repo/SKILL.md", skill_md.as_bytes(), 0o644)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = stage_tarball(&bytes, tmp.path(), DEFAULT_MAX_SIZE_BYTES).unwrap();
+        assert_eq!(staged.skill_name, name);
+        assert!(staged.staged_path.join("SKILL.md").is_file());
     }
 
     #[cfg(unix)]
@@ -2026,6 +2183,145 @@ mod tests {
             Err(err) => format!("{err:#}"),
         };
         assert!(err.contains("timed out"), "{err}");
+    }
+
+    async fn counting_server(
+        response: String,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (addr, hits)
+    }
+
+    #[tokio::test]
+    async fn an_allow_listed_hop_to_a_local_address_is_refused() {
+        use std::sync::atomic::Ordering;
+        let (internal, internal_hits) = counting_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\ninternal-only"
+                .to_string(),
+        )
+        .await;
+        let location = format!("http://127.0.0.1:{}/secret", internal.port());
+        let (entry, _) = counting_server(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ))
+        .await;
+        let policy = NetworkPolicy {
+            default: Decision::Prompt.into(),
+            allow: vec!["127.0.0.1".to_string()],
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = guarded_get(&format!("http://{entry}/start"), &policy, None).await;
+        assert!(
+            outcome.is_err(),
+            "the hop to an allow-listed local name must be refused"
+        );
+        assert_eq!(internal_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_one_skill_reports_failure_when_cache_meta_cannot_be_written() {
+        let skill_body = "---\nname: demo\ndescription: test\n---\nbody\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            skill_body.len(),
+            skill_body
+        );
+        let (addr, _hits) = counting_server(response).await;
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("cache");
+        // Occupy `.cache-meta.json` with a directory so writing the file fails portably.
+        std::fs::create_dir_all(cache_dir.join("demo/.cache-meta.json")).unwrap();
+        let entry = RegistryEntry {
+            source: format!("http://{addr}/SKILL.md"),
+            description: None,
+            keywords: Vec::new(),
+            domains: Vec::new(),
+        };
+        let policy = NetworkPolicy {
+            default: Decision::Allow.into(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = sync_one_skill("demo", &entry, &policy, &cache_dir, 64 * 1024).await;
+        assert!(
+            matches!(
+                outcome,
+                SkillSyncOutcome::Failed { ref name, ref reason }
+                    if name == "demo" && reason.contains("cache metadata")
+            ),
+            "expected Failed when .cache-meta.json is unwritable, got: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn marker_writes_are_atomic_and_truncated_marker_fails_closed_on_update() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        write_installed_from_v2(
+            &skill_dir,
+            "https://example.invalid/demo.tar.gz",
+            Some("https://example.invalid/demo.tar.gz"),
+            "abc123",
+            "def456",
+            "demo",
+        )
+        .unwrap();
+        write_trust_v2(&skill_dir, "def456").unwrap();
+
+        let mut names: Vec<String> = std::fs::read_dir(&skill_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                INSTALLED_FROM_MARKER.to_string(),
+                TRUSTED_MARKER.to_string()
+            ]
+        );
+
+        // Truncated `.installed-from` must fail closed during update.
+        std::fs::write(skill_dir.join(INSTALLED_FROM_MARKER), "").unwrap();
+        let err = update_with_registry(
+            "demo",
+            root.path(),
+            64 * 1024,
+            &NetworkPolicy::default(),
+            DEFAULT_REGISTRY_URL,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("malformed .installed-from"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

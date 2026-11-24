@@ -12,6 +12,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(super) const MOBILE_SESSION_COOKIE_NAME: &str = "codewhale_mobile_session";
@@ -25,6 +26,7 @@ const BOOTSTRAP_PREFIX: &str = "cwmb_";
 const SESSION_PREFIX: &str = "cwms_";
 const REQUEST_PREFIX: &str = "cwmr_";
 const STREAM_PREFIX: &str = "cwmt_";
+const STREAM_TICKET_PENDING_LIMIT: usize = 32;
 
 #[derive(Clone)]
 pub(super) struct RuntimeMobileState {
@@ -39,14 +41,48 @@ struct BootstrapCapability {
     expires_at: Instant,
 }
 
-struct MobileSession {
-    request_proof: String,
-    stream_ticket: Option<String>,
-    expires_at: Instant,
-    stream_ticket_expires_at: Instant,
+#[derive(Clone)]
+pub(super) struct RemoteGrantBinding {
+    pub(super) grant: String,
+    pub(super) session_id: String,
+    pub(super) token: codewhale_engine::extension_host::RemoteSecret,
+    pub(super) cancel: CancellationToken,
+    pub(super) expires_at: Instant,
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for RemoteGrantBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteGrantBinding")
+            .field("grant", &self.grant)
+            .field("session_id", &self.session_id)
+            .field("token", &"[redacted]")
+            .field("cancelled", &self.cancel.is_cancelled())
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+struct MobileSession {
+    request_proof: String,
+    stream_tickets: Vec<BootstrapCapability>,
+    expires_at: Instant,
+    cancel: CancellationToken,
+    remote_grant: Option<RemoteGrantBinding>,
+}
+
+impl std::fmt::Debug for MobileSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MobileSession")
+            .field("request_proof", &"[redacted]")
+            .field("stream_tickets", &self.stream_tickets.len())
+            .field("expires_at", &self.expires_at)
+            .field("cancelled", &self.cancel.is_cancelled())
+            .field("remote_grant", &self.remote_grant)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct MobileSessionBootstrap {
     pub(super) session_cookie: String,
     pub(super) request_proof: String,
@@ -55,10 +91,31 @@ pub(super) struct MobileSessionBootstrap {
     pub(super) stream_ticket_ttl_seconds: u64,
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for MobileSessionBootstrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MobileSessionBootstrap")
+            .field("session_cookie", &"[redacted]")
+            .field("request_proof", &"[redacted]")
+            .field("stream_ticket", &"[redacted]")
+            .field("session_ttl_seconds", &self.session_ttl_seconds)
+            .field("stream_ticket_ttl_seconds", &self.stream_ticket_ttl_seconds)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct MobileStreamTicket {
     pub(super) ticket: String,
     pub(super) expires_in_seconds: u64,
+}
+
+impl std::fmt::Debug for MobileStreamTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MobileStreamTicket")
+            .field("ticket", &"[redacted]")
+            .field("expires_in_seconds", &self.expires_in_seconds)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +130,7 @@ impl RuntimeMobileState {
         Self::new_with_ttls(BOOTSTRAP_TTL, SESSION_TTL, STREAM_TICKET_TTL)
     }
 
-    fn new_with_ttls(
+    pub(super) fn new_with_ttls(
         bootstrap_ttl: Duration,
         session_ttl: Duration,
         stream_ticket_ttl: Duration,
@@ -126,55 +183,125 @@ impl RuntimeMobileState {
 
     /// Create an opaque mobile browser session after explicit bearer proof.
     pub(super) fn issue_session(&self) -> MobileSessionBootstrap {
+        self.issue_session_with(None, None)
+    }
+
+    pub(super) fn issue_grant_session(
+        &self,
+        grant: String,
+        session_id: String,
+        token: codewhale_engine::extension_host::RemoteSecret,
+        client_expires_in_seconds: u64,
+    ) -> MobileSessionBootstrap {
+        self.issue_session_with(
+            Some((grant, session_id, token)),
+            Some(Duration::from_secs(client_expires_in_seconds)),
+        )
+    }
+
+    fn issue_session_with(
+        &self,
+        remote_grant: Option<(
+            String,
+            String,
+            codewhale_engine::extension_host::RemoteSecret,
+        )>,
+        max_ttl: Option<Duration>,
+    ) -> MobileSessionBootstrap {
         let session_cookie = random_capability(SESSION_PREFIX);
         let request_proof = random_capability(REQUEST_PREFIX);
         let stream_ticket = random_capability(STREAM_PREFIX);
+        let effective_session_ttl =
+            max_ttl.map_or(self.session_ttl, |limit| self.session_ttl.min(limit));
+        let effective_ticket_ttl = self.stream_ticket_ttl.min(effective_session_ttl);
+        let now = Instant::now();
+        let expires_at = now + effective_session_ttl;
+        let cancel = CancellationToken::new();
+        let remote_grant = remote_grant.map(|(grant, session_id, token)| RemoteGrantBinding {
+            grant,
+            session_id,
+            token,
+            cancel: cancel.clone(),
+            expires_at,
+        });
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        retain_live_sessions(&mut sessions, now);
+        if effective_session_ttl > Duration::ZERO {
+            sessions.insert(
+                session_cookie.clone(),
+                MobileSession {
+                    request_proof: request_proof.clone(),
+                    stream_tickets: vec![BootstrapCapability {
+                        nonce: stream_ticket.clone(),
+                        expires_at: now + effective_ticket_ttl,
+                    }],
+                    expires_at,
+                    cancel,
+                    remote_grant,
+                },
+            );
+        }
+        MobileSessionBootstrap {
+            session_cookie,
+            request_proof,
+            stream_ticket,
+            session_ttl_seconds: effective_session_ttl.as_secs(),
+            stream_ticket_ttl_seconds: effective_ticket_ttl.as_secs(),
+        }
+    }
+
+    pub(super) fn authorize_proof(
+        &self,
+        cookie_header: Option<&str>,
+        request_proof: Option<&str>,
+    ) -> Option<Option<RemoteGrantBinding>> {
+        let session_cookie = cookie_value(cookie_header, MOBILE_SESSION_COOKIE_NAME)?;
+        let request_proof = request_proof?;
         let now = Instant::now();
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        sessions.retain(|_, session| session.expires_at > now);
-        sessions.insert(
-            session_cookie.clone(),
-            MobileSession {
-                request_proof: request_proof.clone(),
-                stream_ticket: Some(stream_ticket.clone()),
-                expires_at: now + self.session_ttl,
-                stream_ticket_expires_at: now + self.stream_ticket_ttl,
-            },
-        );
-        MobileSessionBootstrap {
-            session_cookie,
-            request_proof,
-            stream_ticket,
-            session_ttl_seconds: self.session_ttl.as_secs(),
-            stream_ticket_ttl_seconds: self.stream_ticket_ttl.as_secs(),
-        }
+        retain_live_sessions(&mut sessions, now);
+        let session = sessions.get(session_cookie)?;
+        constant_time_eq(request_proof.as_bytes(), session.request_proof.as_bytes())
+            .then(|| session.remote_grant.clone())
     }
 
-    /// Validate a cookie plus the origin-scoped proof used by fetch requests.
+    #[cfg(test)]
     pub(super) fn matches_request(
         &self,
         cookie_header: Option<&str>,
         request_proof: Option<&str>,
     ) -> bool {
-        let Some(session_cookie) = cookie_value(cookie_header, MOBILE_SESSION_COOKIE_NAME) else {
-            return false;
-        };
-        let Some(request_proof) = request_proof else {
-            return false;
-        };
+        self.authorize_proof(cookie_header, request_proof).is_some()
+    }
+
+    pub(super) fn peek_stream_ticket(
+        &self,
+        cookie_header: Option<&str>,
+        stream_ticket: Option<&str>,
+    ) -> Option<Option<RemoteGrantBinding>> {
+        let session_cookie = cookie_value(cookie_header, MOBILE_SESSION_COOKIE_NAME)?;
+        let stream_ticket = stream_ticket?;
         let now = Instant::now();
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        sessions.retain(|_, session| session.expires_at > now);
-        let Some(session) = sessions.get(session_cookie) else {
-            return false;
-        };
-        constant_time_eq(request_proof.as_bytes(), session.request_proof.as_bytes())
+        retain_live_sessions(&mut sessions, now);
+        let session = sessions.get_mut(session_cookie)?;
+        session
+            .stream_tickets
+            .retain(|issued| now < issued.expires_at);
+        let matches = session
+            .stream_tickets
+            .iter()
+            .any(|issued| constant_time_eq(stream_ticket.as_bytes(), issued.nonce.as_bytes()));
+        matches.then(|| session.remote_grant.clone())
     }
 
     /// Consume a short-lived stream ticket. A reconnect must mint a fresh one
@@ -195,22 +322,63 @@ impl RuntimeMobileState {
             .sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        sessions.retain(|_, session| session.expires_at > now);
+        retain_live_sessions(&mut sessions, now);
         let Some(session) = sessions.get_mut(session_cookie) else {
             return false;
         };
-        if now >= session.stream_ticket_expires_at {
-            session.stream_ticket = None;
+        session
+            .stream_tickets
+            .retain(|issued| now < issued.expires_at);
+        let Some(index) = session
+            .stream_tickets
+            .iter()
+            .position(|issued| constant_time_eq(stream_ticket.as_bytes(), issued.nonce.as_bytes()))
+        else {
             return false;
-        }
-        let matches = session
-            .stream_ticket
-            .as_ref()
-            .is_some_and(|issued| constant_time_eq(stream_ticket.as_bytes(), issued.as_bytes()));
-        if matches {
-            session.stream_ticket = None;
-        }
-        matches
+        };
+        session.stream_tickets.remove(index);
+        true
+    }
+
+    pub(super) fn remove_session_by_cookie(&self, cookie_header: Option<&str>) -> bool {
+        let Some(session_cookie) = cookie_value(cookie_header, MOBILE_SESSION_COOKIE_NAME) else {
+            return false;
+        };
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(removed) = sessions.remove(session_cookie) else {
+            return false;
+        };
+        removed.cancel.cancel();
+        true
+    }
+
+    fn revoke_grant_sessions(&self, predicate: impl Fn(&RemoteGrantBinding) -> bool) -> usize {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut revoked = 0;
+        sessions.retain(|_, session| {
+            if session.remote_grant.as_ref().is_some_and(&predicate) {
+                session.cancel.cancel();
+                revoked += 1;
+                false
+            } else {
+                true
+            }
+        });
+        revoked
+    }
+
+    pub(super) fn revoke_grant(&self, grant: &str) -> usize {
+        self.revoke_grant_sessions(|binding| binding.grant == grant)
+    }
+
+    pub(super) fn revoke_remote_session(&self, session_id: &str) -> usize {
+        self.revoke_grant_sessions(|binding| binding.session_id == session_id)
     }
 
     /// Mint a new single-use stream ticket after a normal origin-bound request.
@@ -226,17 +394,28 @@ impl RuntimeMobileState {
             .sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        sessions.retain(|_, session| session.expires_at > now);
+        retain_live_sessions(&mut sessions, now);
         let session = sessions.get_mut(session_cookie)?;
         if !constant_time_eq(request_proof.as_bytes(), session.request_proof.as_bytes()) {
             return None;
         }
         let ticket = random_capability(STREAM_PREFIX);
-        session.stream_ticket = Some(ticket.clone());
-        session.stream_ticket_expires_at = now + self.stream_ticket_ttl;
+        let ticket_ttl = self
+            .stream_ticket_ttl
+            .min(session.expires_at.saturating_duration_since(now));
+        session
+            .stream_tickets
+            .retain(|issued| now < issued.expires_at);
+        if session.stream_tickets.len() == STREAM_TICKET_PENDING_LIMIT {
+            session.stream_tickets.remove(0);
+        }
+        session.stream_tickets.push(BootstrapCapability {
+            nonce: ticket.clone(),
+            expires_at: now + ticket_ttl,
+        });
         Some(MobileStreamTicket {
             ticket,
-            expires_in_seconds: self.stream_ticket_ttl.as_secs(),
+            expires_in_seconds: ticket_ttl.as_secs(),
         })
     }
 }
@@ -245,11 +424,29 @@ pub(super) fn bootstrap_url(addr: SocketAddr, nonce: &str) -> String {
     format!("http://{addr}/__codewhale/mobile/bootstrap/{nonce}")
 }
 
-pub(super) fn mobile_session_cookie(session_cookie: &str) -> String {
+pub(super) fn mobile_session_cookie_with_max_age(
+    session_cookie: &str,
+    max_age_seconds: u64,
+) -> String {
     format!(
-        "{MOBILE_SESSION_COOKIE_NAME}={session_cookie}; Max-Age={}; HttpOnly; SameSite=Strict; Path=/",
-        SESSION_TTL.as_secs()
+        "{MOBILE_SESSION_COOKIE_NAME}={session_cookie}; Max-Age={max_age_seconds}; HttpOnly; SameSite=Strict; Path=/"
     )
+}
+
+#[cfg(test)]
+pub(super) fn mobile_session_cookie(session_cookie: &str) -> String {
+    mobile_session_cookie_with_max_age(session_cookie, SESSION_TTL.as_secs())
+}
+
+fn retain_live_sessions(sessions: &mut HashMap<String, MobileSession>, now: Instant) {
+    sessions.retain(|_, session| {
+        if session.expires_at > now {
+            true
+        } else {
+            session.cancel.cancel();
+            false
+        }
+    });
 }
 
 fn random_capability(prefix: &str) -> String {
@@ -260,7 +457,7 @@ fn random_capability(prefix: &str) -> String {
     )
 }
 
-fn cookie_value<'a>(cookie_header: Option<&'a str>, name: &str) -> Option<&'a str> {
+pub(super) fn cookie_value<'a>(cookie_header: Option<&'a str>, name: &str) -> Option<&'a str> {
     cookie_header.and_then(|cookie| {
         cookie.split(';').find_map(|pair| {
             let (key, value) = pair.trim().split_once('=')?;
@@ -328,6 +525,33 @@ mod tests {
     }
 
     #[test]
+    fn refreshed_stream_tickets_coexist_within_one_session() {
+        let (state, _nonce) = RuntimeMobileState::new_with_ttls(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        let session = state.issue_session();
+        let cookie = format!("{MOBILE_SESSION_COOKIE_NAME}={}", session.session_cookie);
+        let first = state
+            .refresh_stream_ticket(Some(&cookie), Some(&session.request_proof))
+            .expect("first refresh");
+        let second = state
+            .refresh_stream_ticket(Some(&cookie), Some(&session.request_proof))
+            .expect("second refresh");
+        assert_ne!(first.ticket, second.ticket);
+        assert!(
+            state.consume_stream_ticket(Some(&cookie), Some(&first.ticket)),
+            "a second refresh must not evict the ticket a reconnect already holds"
+        );
+        assert!(state.consume_stream_ticket(Some(&cookie), Some(&second.ticket)));
+        assert!(
+            !state.consume_stream_ticket(Some(&cookie), Some(&second.ticket)),
+            "each ticket stays single-use"
+        );
+    }
+
+    #[test]
     fn cookie_has_exact_security_attributes_and_no_domain() {
         let session_cookie = format!("{SESSION_PREFIX}{}", "01".repeat(32));
         let cookie = mobile_session_cookie(&session_cookie);
@@ -349,5 +573,29 @@ mod tests {
         assert!(!url.contains('?'));
         assert!(!url.contains('#'));
         assert!(!url.contains("cwrt_"));
+    }
+
+    #[test]
+    fn debug_formatting_redacts_session_secrets() {
+        let (state, _nonce) = RuntimeMobileState::new_with_ttls(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(30),
+        );
+        let bootstrap = state.issue_session();
+        let cookie = format!("{MOBILE_SESSION_COOKIE_NAME}={}", bootstrap.session_cookie);
+        let bootstrap_debug = format!("{bootstrap:?}");
+        assert!(!bootstrap_debug.contains(&bootstrap.session_cookie));
+        assert!(!bootstrap_debug.contains(&bootstrap.request_proof));
+        assert!(!bootstrap_debug.contains(&bootstrap.stream_ticket));
+
+        let ticket = state
+            .refresh_stream_ticket(Some(&cookie), Some(&bootstrap.request_proof))
+            .expect("refresh ticket");
+        let ticket_debug = format!("{ticket:?}");
+        assert!(!ticket_debug.contains(&ticket.ticket));
+
+        assert!(state.remove_session_by_cookie(Some(&cookie)));
+        assert!(!state.matches_request(Some(&cookie), Some(&bootstrap.request_proof)));
     }
 }

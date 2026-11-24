@@ -272,7 +272,7 @@ describe("no page links to a missing or gone route", () => {
   it.each(["en", "zh"])("answers every header and footer link in %s with a page that exists", (locale) => {
     const chrome = getChrome(locale);
     const links = [
-      ...navLinks(locale, chrome, true),
+      ...navLinks(locale, chrome),
       signInLink(locale, chrome),
       ...footerProductLinks(locale, chrome),
       ...footerDocsLinks(locale, chrome),

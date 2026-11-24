@@ -65,10 +65,6 @@ impl FleetRoleMap {
         self.roles.get(&key).map(String::as_str)
     }
 
-    pub fn contains_role(&self, role: &str) -> bool {
-        self.get(role).is_some()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty()
     }

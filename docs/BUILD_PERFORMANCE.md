@@ -406,8 +406,18 @@ doubles throughput. A build beyond the slot count waits and prints every
 holder. Set `CODEWHALE_BUILD_SLOTS=1` on a smaller machine,
 `CODEWHALE_BUILD_LOCK=0` to skip the lock, or `CODEWHALE_BUILD_LOCK_FILE` to
 name the slot-0 lock file. A self-hosted CI runner on the same machine joins the lock when its
-`.env` sets `CODEWHALE_BUILD_LOCK_FILE` to the same path: the macOS Test job
-then holds it from the first test build to the end of the job. The lock is advisory: Cargo started
+`.env` sets `CODEWHALE_BUILD_LOCK_FILE` to the same path: the macOS suite's
+Build job (`ci-test-suite.yml`) then holds it from the first test build through
+the doctests, with `CARGO_BUILD_JOBS=6`. That job and its single shard run on
+the `codewhale-mac` runner only for a `ci.yml` dispatch in this repository with
+the `macos_runner` input `self-hosted`, or `default` while the
+`CW_SELF_HOSTED_MAC` repository variable is `true`; pull requests never do.
+`gh variable set CW_SELF_HOSTED_MAC -R codewhale-hq/Codewhale --body false`
+sends every run back to hosted macOS (three shards, one Cargo job). There the
+job keeps its target, `CARGO_HOME` and `RUSTUP_HOME` under the runner's work
+directory (`ci-state/`), starts an empty target when `rustc -V` changes or the
+disk has under 100 GiB free, and uses a per-job `TMPDIR` it removes at the end.
+The lock is advisory: Cargo started
 directly, outside these scripts, does not take it, and on platforms without
 `fcntl` (Windows) the build runs unlocked after a warning.
 
@@ -481,6 +491,39 @@ table above (cold build, incremental build, incremental test build,
 `cargo test -p codewhale-tui --lib --no-run`). Expected win: the tui
 frontend time drops with lines removed; the test-binary link is unchanged
 until the tests that live with those modules move with them.
+
+## Hosted CI: keep the rust-cache when a test fails (2026-11-16)
+
+`Swatinem/rust-cache@v2` saves in a post step guarded by
+`post-if: success() || env.CACHE_ON_FAILURE == 'true'`
+([action.yml](https://raw.githubusercontent.com/Swatinem/rust-cache/master/action.yml)).
+A Test leg that compiles everything and then fails one test therefore
+throws away a complete dependency build. `ci.yml` now sets
+`cache-on-failure: true` on the Safety gate, Lint and Test rust-cache steps;
+`save-if` stays main-only and `cache-workspace-crates` stays at its default
+`false`, so entries remain dependencies-only.
+
+Before the change, measured from `gh api actions/runs/<id>/jobs` and the Test
+job logs of main `workflow_dispatch` runs 43879207835, 43879706605,
+43896698899, 43932443327 and 43935781907 (hosted runners; raw data and
+`extract.py` in `CW/artifacts/rust-20261116/b2/`):
+
+| | Failed Test legs (n=10) | Linux leg, cache restored (n=2) | Linux leg, no cache (n=3) |
+| --- | --- | --- | --- |
+| Post rust-cache step | skipped 10/10 | ran, "Cache up-to-date" | skipped 3/3 |
+| Dependency `Compiling` lines | 649-732 | 26 | 732 |
+| Binary build step (min) | | 7.2, 12.3 | 14.1-15.7 |
+| `Run tests` step (min) | | 40.2, 52.5 | 57.2-64.2 |
+
+`gh api actions/caches?key=v0-rust` at 21:35Z listed Test entries for Linux
+(0.90 GB) and Windows (0.82 GB) only; no macOS Test entry existed, and both
+green macOS legs logged `Unable to reserve cache ... another job may be
+creating this cache`. Repo cache usage was 10.57 GB across 1679 entries.
+
+After: not yet measured. `save-if` is main-only, so the effect appears only
+on main runs after this lands. Check the same three things there: a Test
+entry per OS after a red main run, `Restored from cache key` on the next leg,
+and the median binary-build and `Run tests` minutes.
 
 ## Optional accelerators (not required)
 

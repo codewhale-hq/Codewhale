@@ -85,6 +85,13 @@ pub const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
+/// `ink` lifted out of `water` by `amount`, when both are RGB. `None` means
+/// the pair has no meaningful blend and the caller keeps its role colour.
+#[must_use]
+pub fn glow_over(ink: Color, water: Color, amount: f32) -> Option<Color> {
+    matches!((ink, water), (Color::Rgb(..), Color::Rgb(..))).then(|| blend(ink, water, amount))
+}
+
 /// Mix two RGB colors at `alpha` (0.0 = `bg`, 1.0 = `fg`). A non-RGB input
 /// returns `fg`: a named color has no meaningful blend.
 #[must_use]
@@ -168,6 +175,11 @@ pub fn indexed_rgb(index: u8) -> Option<(u8, u8, u8)> {
             Some((v, v, v))
         }
     }
+}
+
+#[must_use]
+pub(crate) const fn is_truecolor(color: Color) -> bool {
+    matches!(color, Color::Rgb(..))
 }
 
 /// The RGB a color is *known* to render as, or `None` when the terminal owns

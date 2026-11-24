@@ -64,14 +64,53 @@ use codewhale_runtime::child_env;
 use codewhale_sandbox::{
     CommandSpec, ExecEnv, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxType,
 };
+#[cfg(any(test, feature = "test-support"))]
+use output::new_shared_raw_output;
 use output::{
-    BoundedOutputAccumulator, BoundedOutputSnapshot, RAW_STREAM_SETTLED_TAIL_BYTES,
-    RawOutputBuffer, SharedRawOutput, new_shared_raw_output, tail_from_buffer, tail_text,
-    take_delta_from_buffer,
+    BoundedOutputAccumulator, BoundedOutputSnapshot, PersistedShellArtifact, RAW_STREAM_MAX_BYTES,
+    RAW_STREAM_SETTLED_TAIL_BYTES, RawOutputBuffer, SessionArtifactSpec, SharedRawOutput,
+    persist_shell_output_artifact, tail_from_buffer, tail_text, take_delta_from_buffer,
 };
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
 pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
+pub const AGENT_POSTURE_ENV: &str = "CODEWHALE_AGENT_POSTURE";
+pub const AGENT_THREAD_ID_ENV: &str = "CODEWHALE_AGENT_THREAD_ID";
+pub const AGENT_TURN_ID_ENV: &str = "CODEWHALE_AGENT_TURN_ID";
+pub const AGENT_TOOL_CALL_ID_ENV: &str = "CODEWHALE_AGENT_TOOL_CALL_ID";
+
+pub fn insert_agent_mark_env(
+    env: &mut std::collections::HashMap<String, String>,
+    context: &ToolContext,
+) {
+    env.insert(
+        AGENT_PROJECT_ENV.to_string(),
+        context.workspace.to_string_lossy().into_owned(),
+    );
+    if context.approval_mode == codewhale_execpolicy::ApprovalMode::Auto {
+        env.insert(AGENT_POSTURE_ENV.to_string(), "auto_review".to_string());
+        let thread_id = context.state_namespace.trim();
+        if !thread_id.is_empty() {
+            env.insert(AGENT_THREAD_ID_ENV.to_string(), thread_id.to_string());
+        }
+        if let Some(turn_id) = context
+            .origin_turn_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            env.insert(AGENT_TURN_ID_ENV.to_string(), turn_id.to_string());
+        }
+        if let Some(tool_call_id) = context
+            .origin_tool_call_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            env.insert(AGENT_TOOL_CALL_ID_ENV.to_string(), tool_call_id.to_string());
+        }
+    }
+}
 
 #[cfg(unix)]
 static PENDING_PERSISTENT_PROCESS_GROUPS: std::sync::OnceLock<
@@ -130,7 +169,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         format!(
-            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `working_dir`/`cwd` to exec_shell",
+            "{source} is unavailable: {}. Restore or remap that directory, resume/fork the session from an existing workspace, or pass an explicit `cwd` to `bash`",
             path.display()
         )
     })?;
@@ -141,7 +180,7 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
             "requested working directory"
         };
         return Err(anyhow!(
-            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `working_dir`/`cwd`",
+            "{source} is not a directory: {}. Resume/fork from an existing workspace or pass an explicit `cwd` to `bash`",
             path.display()
         ));
     }
@@ -169,6 +208,83 @@ pub enum ShellTerminationCause {
     Killed,
     TimedOut,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellJobStopReason {
+    OwnerLost,
+    Deadline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellJobHold {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_keepalive_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<ShellJobStopReason>,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ShellHoldError {
+    #[error("job not found")]
+    NotFound,
+    #[error("job is not running")]
+    NotRunning,
+    #[error("job has no owner keepalive")]
+    NotHeld,
+    #[error("job owner keepalive expired")]
+    Expired,
+}
+
+#[derive(Debug, Clone)]
+struct JobHoldState {
+    keepalive: Option<Duration>,
+    keepalive_until: Option<Instant>,
+    deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    stop_reason: Option<ShellJobStopReason>,
+}
+
+impl JobHoldState {
+    fn expired(
+        &self,
+        now: Instant,
+        now_utc: chrono::DateTime<chrono::Utc>,
+    ) -> Option<ShellJobStopReason> {
+        if self.deadline_at.is_some_and(|deadline| now_utc >= deadline) {
+            Some(ShellJobStopReason::Deadline)
+        } else if self.keepalive_until.is_some_and(|until| now >= until) {
+            Some(ShellJobStopReason::OwnerLost)
+        } else {
+            None
+        }
+    }
+
+    fn view(&self) -> ShellJobHold {
+        let now = Instant::now();
+        ShellJobHold {
+            owner_keepalive_seconds: self.keepalive.map(|keepalive| keepalive.as_secs()),
+            keepalive_expires_at: self.keepalive_until.and_then(|until| {
+                chrono::Duration::from_std(until.saturating_duration_since(now))
+                    .ok()
+                    .map(|left| chrono::Utc::now() + left)
+            }),
+            deadline_at: self.deadline_at,
+            stop_reason: self.stop_reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellRunningJob {
+    pub job_id: String,
+    pub background: bool,
+    pub last_progress_at: chrono::DateTime<chrono::Utc>,
+    pub hold: Option<ShellJobHold>,
 }
 
 /// Result from a shell command execution.
@@ -217,6 +333,8 @@ pub struct ShellJobSnapshot {
     pub id: String,
     pub job_id: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub cwd: PathBuf,
     pub status: ShellStatus,
     /// Explicitly backgrounded or detached from the foreground waiter.
@@ -264,6 +382,7 @@ pub struct ShellReceiptWitness {
     pub owner_session_id: String,
     pub wait_failed: bool,
     pub terminal_confirmed: bool,
+    pub stop_reason: Option<ShellJobStopReason>,
 }
 
 impl ShellReceiptWitness {
@@ -278,6 +397,7 @@ impl ShellReceiptWitness {
             owner_session_id: shell.owner_session_id.clone(),
             wait_failed: shell.wait_failed,
             terminal_confirmed,
+            stop_reason: shell.hold.as_ref().and_then(|hold| hold.stop_reason),
         }
     }
 }
@@ -327,6 +447,7 @@ pub struct ShellCompletionEvidence {
     stderr: Vec<u8>,
     stdout_omitted: usize,
     stderr_omitted: usize,
+    persisted_artifact: Option<PersistedShellArtifact>,
 }
 
 impl ShellCompletionEvidence {
@@ -361,7 +482,7 @@ impl ShellCompletionEvidence {
             value
         }
 
-        serde_json::json!({
+        let mut payload = serde_json::json!({
             "schema": "codewhale.shell_completion.evidence.v1",
             "task_id": self.event.task_id,
             "command": self.event.command,
@@ -372,9 +493,24 @@ impl ShellCompletionEvidence {
             "origin_turn_id": self.event.origin_turn_id,
             "stdout": stream(&self.stdout, self.stdout_omitted),
             "stderr": stream(&self.stderr, self.stderr_omitted),
-        })
-        .to_string()
-        .into_bytes()
+        });
+        if let Some(artifact) = self.persisted_artifact.as_ref() {
+            stamp_persisted_shell_artifact_metadata(
+                &mut payload["stdout"],
+                artifact,
+                &self.event.stdout_tail,
+            );
+        }
+        payload.to_string().into_bytes()
+    }
+
+    pub fn needs_evidence_artifact(&self) -> bool {
+        self.stdout_omitted > 0
+            || self.stderr_omitted > 0
+            || self.event.stdout_len > SHELL_COMPLETION_TAIL_BYTES
+            || self.event.stderr_len > SHELL_COMPLETION_TAIL_BYTES
+            || self.event.stdout_tail.as_bytes() != self.stdout.as_slice()
+            || self.event.stderr_tail.as_bytes() != self.stderr.as_slice()
     }
 }
 
@@ -428,6 +564,24 @@ pub struct ShellDeltaResult {
     pub stderr_total_len: usize,
 }
 
+struct RawShellDelta {
+    command: String,
+    task_id: String,
+    status: ShellStatus,
+    exit_code: Option<i64>,
+    duration_ms: u64,
+    stdout: String,
+    stderr: String,
+    stdout_delta_len: usize,
+    stderr_delta_len: usize,
+    stdout_total_len: usize,
+    stderr_total_len: usize,
+    sandboxed: bool,
+    sandbox_type: Option<String>,
+    sandbox_denied: bool,
+    persisted_artifact: Option<PersistedShellArtifact>,
+}
+
 /// Which of a job's raw output streams to read. Stderr is a separate stream
 /// only for piped jobs; PTY and merged modes fold it into stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,7 +591,7 @@ pub enum ShellOutputStream {
 }
 
 /// A non-consuming window of a job's raw output stream at absolute byte
-/// offsets. Unlike [`ShellManager::get_output_delta`], reading a chunk never
+/// offsets. Unlike delta polling, reading a chunk never
 /// advances anyone else's cursor, so several HTTP clients can follow the same
 /// job without splitting the stream.
 pub struct ShellOutputChunk {
@@ -973,7 +1127,14 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    buffer
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_read_error();
+                    break;
+                }
             }
         }
     })
@@ -982,6 +1143,7 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
 fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
     mut reader: R,
     output: Arc<Mutex<BoundedOutputAccumulator>>,
+    raw: SharedRawOutput,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 4096];
@@ -989,6 +1151,13 @@ fn spawn_bounded_reader_thread<R: Read + Send + 'static>(
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if !raw
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .append(&chunk[..n])
+                    {
+                        return;
+                    }
                     let mut guard = output.lock().unwrap_or_else(|error| error.into_inner());
                     if let Err(error) = guard.append(&chunk[..n]) {
                         guard.record_error(&error);
@@ -1131,6 +1300,7 @@ impl PtyDimensions {
 pub struct BackgroundShell {
     pub id: String,
     pub command: String,
+    pub description: Option<String>,
     pub working_dir: PathBuf,
     pub status: ShellStatus,
     background: bool,
@@ -1158,6 +1328,7 @@ pub struct BackgroundShell {
     /// small-contract-compatible accumulator while persisting the complete output.
     bounded_output: Option<Arc<Mutex<BoundedOutputAccumulator>>>,
     heavy_permit: Option<HeavyCommandPermit>,
+    scratch: Option<codewhale_sandbox::ScratchDir>,
     stdout_cursor: usize,
     stderr_cursor: usize,
     completion_reported: bool,
@@ -1184,10 +1355,11 @@ pub struct BackgroundShell {
     /// exit or signal. Such a run gets no execution receipt (#6689).
     wait_failed: bool,
     terminal_exit_confirmed: bool,
+    hold: Option<JobHoldState>,
 }
 
 #[derive(Clone)]
-struct ShellWorkLifecycle {
+pub(super) struct ShellWorkLifecycle {
     work: SharedWorkRuntime,
     session_id: String,
 }
@@ -1356,6 +1528,7 @@ impl BackgroundShell {
                     };
                     self.heavy_permit.take();
                     self.collect_output();
+                    self.scratch.take();
                     true
                 }
                 Ok(None) => false, // Still running
@@ -1364,6 +1537,7 @@ impl BackgroundShell {
                     self.wait_failed = true;
                     self.heavy_permit.take();
                     self.collect_output();
+                    self.scratch.take();
                     true
                 }
             }
@@ -1441,6 +1615,12 @@ impl BackgroundShell {
     fn release_delivered_output(&mut self) {
         if self.status == ShellStatus::Running {
             return;
+        }
+        if let Some(output) = self.bounded_output.as_ref() {
+            output
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release_temp();
         }
         for buffer in [Some(&self.stdout_buffer), self.stderr_buffer.as_ref()]
             .into_iter()
@@ -1550,6 +1730,14 @@ impl BackgroundShell {
     /// bound discarded. Callers that publish these bytes as evidence must
     /// declare the omission rather than presenting a clipped stream as exact.
     fn retained_output_bytes_with_omissions(&self) -> (Vec<u8>, Vec<u8>, usize, usize) {
+        if let Some(output) = self.bounded_output.as_ref()
+            && let Some((bytes, omitted)) = output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retained_raw_bytes()
+        {
+            return (bytes, Vec::new(), omitted, 0);
+        }
         if let Some(snapshot) = self.bounded_output_snapshot(false).ok().flatten() {
             let omitted = snapshot.total_bytes.saturating_sub(snapshot.retained_bytes);
             return (snapshot.content.into_bytes(), Vec::new(), omitted, 0);
@@ -1572,9 +1760,17 @@ impl BackgroundShell {
         (stdout_bytes, stderr_bytes, stdout_omitted, stderr_omitted)
     }
 
-    fn take_delta(&mut self) -> (String, String, usize, usize, usize, usize) {
-        // Only the bytes after the cursor: returning the whole retained tail
-        // made every `wait` poll repeat output the caller already holds.
+    fn take_delta(
+        &mut self,
+    ) -> (
+        String,
+        String,
+        usize,
+        usize,
+        usize,
+        usize,
+        Option<PersistedShellArtifact>,
+    ) {
         let bounded_delta = self.bounded_output.as_ref().and_then(|output| {
             let output = output.lock().unwrap_or_else(|error| error.into_inner());
             let total = output.total_bytes();
@@ -1587,21 +1783,31 @@ impl BackgroundShell {
             let delta_len = total_bytes.saturating_sub(self.stdout_cursor);
             self.stdout_cursor = total_bytes;
             if delta_len == 0 {
-                return (String::new(), String::new(), 0, 0, total_bytes, 0);
+                return (String::new(), String::new(), 0, 0, total_bytes, 0, None);
             }
             self.last_output_at = Instant::now();
             self.last_observed_output_len = total_bytes;
+            let mut persisted_artifact = None;
             if omitted > 0
                 && let Some(output) = self.bounded_output.as_ref()
             {
-                let notice = output
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .omitted_notice(omitted);
+                let mut guard = output.lock().unwrap_or_else(|error| error.into_inner());
+                let notice = guard.omitted_notice(omitted);
+                persisted_artifact = guard.persisted_artifact();
                 delta.insert_str(0, &notice);
             }
-            return (delta, String::new(), delta_len, 0, total_bytes, 0);
+            return (
+                delta,
+                String::new(),
+                delta_len,
+                0,
+                total_bytes,
+                0,
+                persisted_artifact,
+            );
         }
+        let previous_stdout = self.stdout_cursor;
+        let previous_stderr = self.stderr_cursor;
         let (stdout_delta, stdout_total) =
             take_delta_from_buffer(&self.stdout_buffer, &mut self.stdout_cursor);
         let (stderr_delta, stderr_total) = if let Some(buffer) = self.stderr_buffer.as_ref() {
@@ -1610,8 +1816,8 @@ impl BackgroundShell {
             (Vec::new(), 0)
         };
 
-        let stdout_delta_len = stdout_delta.len();
-        let stderr_delta_len = stderr_delta.len();
+        let stdout_delta_len = self.stdout_cursor.saturating_sub(previous_stdout);
+        let stderr_delta_len = self.stderr_cursor.saturating_sub(previous_stderr);
 
         if stdout_delta_len > 0 || stderr_delta_len > 0 {
             self.last_output_at = Instant::now();
@@ -1625,6 +1831,7 @@ impl BackgroundShell {
             stderr_delta_len,
             stdout_total,
             stderr_total,
+            None,
         )
     }
 
@@ -1689,61 +1896,123 @@ impl BackgroundShell {
         self.mark_finished();
         self.heavy_permit.take();
         self.collect_output();
+        self.scratch.take();
         self.publish_lifecycle_best_effort();
         Ok(())
     }
 
-    /// Get a snapshot of the current state
     pub fn snapshot(&self) -> Result<ShellResult> {
+        self.snapshot_with_artifact(self.status != ShellStatus::Running)
+            .map(|(result, _)| result)
+    }
+
+    fn snapshot_with_artifact(
+        &self,
+        finalize: bool,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let sandboxed = !matches!(self.sandbox_type, SandboxType::None);
-        if let Some(snapshot) = self.bounded_output_snapshot(self.status != ShellStatus::Running)? {
-            return Ok(ShellResult {
-                task_id: Some(self.id.clone()),
-                status: self.status.clone(),
-                exit_code: self.exit_code,
-                stdout: snapshot.content,
-                stderr: String::new(),
-                duration_ms: self.wall_millis(),
-                stdout_len: snapshot.total_bytes,
-                stderr_len: 0,
-                stdout_omitted: snapshot.total_bytes.saturating_sub(snapshot.retained_bytes),
-                stderr_omitted: 0,
-                stdout_truncated: snapshot.truncated,
-                stderr_truncated: false,
-                sandboxed,
-                sandbox_type: sandboxed.then(|| self.sandbox_type.to_string()),
-                sandbox_denied: false,
-            });
+        if let Some(snapshot) = self.bounded_output_snapshot(finalize)? {
+            return Ok((
+                ShellResult {
+                    task_id: Some(self.id.clone()),
+                    status: self.status.clone(),
+                    exit_code: self.exit_code,
+                    stdout: snapshot.content,
+                    stderr: String::new(),
+                    duration_ms: self.wall_millis(),
+                    stdout_len: snapshot.total_bytes,
+                    stderr_len: 0,
+                    stdout_omitted: snapshot.total_bytes.saturating_sub(snapshot.retained_bytes),
+                    stderr_omitted: 0,
+                    stdout_truncated: snapshot.truncated,
+                    stderr_truncated: false,
+                    sandboxed,
+                    sandbox_type: sandboxed.then(|| self.sandbox_type.to_string()),
+                    sandbox_denied: false,
+                },
+                snapshot.persisted_artifact,
+            ));
         }
         let (stdout_full, stderr_full, stdout_total, stderr_total) = self.full_output();
         let (stdout, stdout_meta) = truncate_with_meta(&stdout_full);
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_full);
-        // `truncate_with_meta` can only see the bytes still held. Fold in what
-        // the in-memory bound dropped so a >16 MiB stream reports its real
-        // length and its real omission instead of silently shrinking (#5472).
         let stdout_dropped = stdout_total.saturating_sub(stdout_meta.original_len);
         let stderr_dropped = stderr_total.saturating_sub(stderr_meta.original_len);
-        Ok(ShellResult {
-            task_id: Some(self.id.clone()),
-            status: self.status.clone(),
-            exit_code: self.exit_code,
-            stdout,
-            stderr,
-            duration_ms: self.wall_millis(),
-            stdout_len: stdout_total,
-            stderr_len: stderr_total,
-            stdout_omitted: stdout_meta.omitted.saturating_add(stdout_dropped),
-            stderr_omitted: stderr_meta.omitted.saturating_add(stderr_dropped),
-            stdout_truncated: stdout_meta.truncated || stdout_dropped > 0,
-            stderr_truncated: stderr_meta.truncated || stderr_dropped > 0,
-            sandboxed,
-            sandbox_type: if sandboxed {
-                Some(self.sandbox_type.to_string())
-            } else {
-                None
+        let stdout_truncated = stdout_meta.truncated || stdout_dropped > 0;
+        let stderr_truncated = stderr_meta.truncated || stderr_dropped > 0;
+        let persisted_artifact = if finalize && (stdout_truncated || stderr_truncated) {
+            self.publish_raw_output()?
+        } else {
+            None
+        };
+        Ok((
+            ShellResult {
+                task_id: Some(self.id.clone()),
+                status: self.status.clone(),
+                exit_code: self.exit_code,
+                stdout,
+                stderr,
+                duration_ms: self.wall_millis(),
+                stdout_len: stdout_total,
+                stderr_len: stderr_total,
+                stdout_omitted: stdout_meta.omitted.saturating_add(stdout_dropped),
+                stderr_omitted: stderr_meta.omitted.saturating_add(stderr_dropped),
+                stdout_truncated,
+                stderr_truncated,
+                sandboxed,
+                sandbox_type: if sandboxed {
+                    Some(self.sandbox_type.to_string())
+                } else {
+                    None
+                },
+                sandbox_denied: self.sandbox_denied(),
             },
-            sandbox_denied: self.sandbox_denied(),
-        })
+            persisted_artifact,
+        ))
+    }
+
+    fn publish_raw_output(&self) -> Result<Option<PersistedShellArtifact>> {
+        if !codewhale_runtime::artifacts::is_valid_session_id(&self.owner_session_id) {
+            return Ok(None);
+        }
+        let mut stdout = self.stdout_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let stderr = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buffer| buffer.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(artifact) = stdout.artifact() {
+            return Ok(Some(artifact));
+        }
+        if !stdout.capture_complete() || stderr.as_ref().is_some_and(|s| !s.capture_complete()) {
+            return Ok(None);
+        }
+        let key = self.origin_tool_call_id.as_deref().unwrap_or(&self.id);
+        let publish = stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, key);
+        let publish = match publish {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && key != self.id => {
+                stdout.publish_complete(stderr.as_deref(), &self.owner_session_id, &self.id)
+            }
+            other => other,
+        };
+        Ok(Some(publish?))
+    }
+
+    fn finalize_output_artifact(&self) -> Result<Option<PersistedShellArtifact>> {
+        if let Some(snapshot) = self.bounded_output_snapshot(true)? {
+            return Ok(snapshot.persisted_artifact);
+        }
+        let large = [&self.stdout_buffer]
+            .into_iter()
+            .chain(self.stderr_buffer.iter())
+            .any(|buffer| {
+                let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                guard.total_len() > RAW_STREAM_MAX_BYTES
+            });
+        if large {
+            self.publish_raw_output()
+        } else {
+            Ok(None)
+        }
     }
 
     fn bounded_output_snapshot(&self, finalize: bool) -> Result<Option<BoundedOutputSnapshot>> {
@@ -1757,6 +2026,14 @@ impl BackgroundShell {
                     .map_err(anyhow::Error::from)
             })
             .transpose()
+    }
+
+    fn last_progress_at(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Duration::from_std(self.last_output_at.elapsed())
+            .ok()
+            .and_then(|age| chrono::Utc::now().checked_sub_signed(age))
+            .unwrap_or(self.started_at_utc)
+            .max(self.started_at_utc)
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
@@ -1784,6 +2061,7 @@ impl BackgroundShell {
             id: self.id.clone(),
             job_id: self.id.clone(),
             command: self.command.clone(),
+            description: self.description.clone(),
             cwd: self.working_dir.clone(),
             status: self.status.clone(),
             background: self.background,
@@ -1855,7 +2133,22 @@ impl BackgroundShell {
     }
 
     fn completion_evidence(&self) -> ShellCompletionEvidence {
-        let event = self.completion_event();
+        let mut event = self.completion_event();
+        let persisted_artifact = self.bounded_output.as_ref().and_then(|output| {
+            output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .persisted_artifact()
+        });
+        let persisted_artifact = persisted_artifact.or_else(|| {
+            self.stdout_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .artifact()
+        });
+        if let Some(artifact) = persisted_artifact.as_ref() {
+            event.evidence_ref = Some(artifact.artifact_id.clone());
+        }
         let (stdout, stderr, stdout_omitted, stderr_omitted) =
             self.retained_output_bytes_with_omissions();
         ShellCompletionEvidence {
@@ -1864,6 +2157,7 @@ impl BackgroundShell {
             stderr,
             stdout_omitted,
             stderr_omitted,
+            persisted_artifact,
         }
     }
 
@@ -1975,7 +2269,7 @@ pub fn inherited_interactive_terminal_refusal() -> Option<&'static str> {
         "Inherited interactive terminal takeover is unavailable on Unix because foreground TTY \
          ownership cannot be transferred safely. Use Bash with `background: true, tty: true`, \
          then continue it with `action: \"interact\"` and the returned `task_id`; alternatively \
-         use `terminal/run` and `terminal/send`, or launch the command in a new terminal. For \
+         use `terminal_run` and `terminal_send`, or launch the command in a new terminal. For \
          non-interactive work, omit `interactive: true`.",
     )
 }
@@ -2109,6 +2403,7 @@ impl ShellManager {
             BackgroundShell {
                 id,
                 command: String::new(),
+                description: None,
                 working_dir: self.default_workspace.clone(),
                 status: ShellStatus::Completed,
                 background: true,
@@ -2131,6 +2426,7 @@ impl ShellManager {
                 stderr_buffer: Some(new_shared_raw_output()),
                 bounded_output: None,
                 heavy_permit: None,
+                scratch: None,
                 stdout_cursor: 0,
                 stderr_cursor: 0,
                 completion_reported: false,
@@ -2151,6 +2447,7 @@ impl ShellManager {
                 last_lifecycle_bytes: 0,
                 wait_failed: false,
                 terminal_exit_confirmed: false,
+                hold: None,
             },
         );
     }
@@ -2334,6 +2631,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2370,6 +2668,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2406,6 +2705,7 @@ impl ShellManager {
     ) -> Result<ShellResult> {
         self.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir,
             timeout_ms,
             background,
@@ -2426,9 +2726,10 @@ impl ShellManager {
 
     /// Owner-aware execution with an optional Work Graph lifecycle sink.
     #[allow(clippy::too_many_arguments)]
-    fn execute_with_options_env_for_owner_and_work(
+    pub(super) fn execute_with_options_env_for_owner_and_work(
         &mut self,
         command: &str,
+        program_args: Option<(&str, &[String])>,
         working_dir: Option<&str>,
         timeout_ms: u64,
         background: bool,
@@ -2460,7 +2761,18 @@ impl ShellManager {
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
 
         // Create command spec and prepare sandboxed environment
-        let spec = if let Some(workspace) = readonly_workspace {
+        let spec = if let Some((program, args)) = program_args {
+            anyhow::ensure!(
+                readonly_workspace.is_none(),
+                "explicit argv cannot use shell read-only validation"
+            );
+            CommandSpec::program(
+                program,
+                args.to_vec(),
+                work_dir.clone(),
+                Duration::from_millis(timeout_ms),
+            )
+        } else if let Some(workspace) = readonly_workspace {
             if readonly_command_needs_shell(command) {
                 let script = hardened_readonly_script(command, workspace)?;
                 CommandSpec::shell(&script, work_dir.clone(), Duration::from_millis(timeout_ms))
@@ -2480,7 +2792,12 @@ impl ShellManager {
             CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
         };
         let spec = spec.with_policy(policy).with_env(extra_env);
-        let exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
+        let spec = if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
+            spec.with_private_tmp()
+        } else {
+            spec
+        };
+        let mut exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
             anyhow::Error::msg(message.clone())
                 .context(ShellLaunchNotStarted)
                 .context(message)
@@ -2497,11 +2814,13 @@ impl ShellManager {
         }
 
         if background {
-            let bounded_output = timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS);
+            let bounded_output = !tty
+                && !persist_pending
+                && (program_args.is_some() || timeout_bounds_ms == (1, BASH_MAX_TIMEOUT_MS));
             self.spawn_background_sandboxed(
                 command,
                 &work_dir,
-                &exec_env,
+                &mut exec_env,
                 None,
                 stdin_data,
                 tty,
@@ -2834,7 +3153,7 @@ impl ShellManager {
         &mut self,
         original_command: &str,
         working_dir: &std::path::Path,
-        exec_env: &ExecEnv,
+        exec_env: &mut ExecEnv,
         heavy_permit: Option<HeavyCommandPermit>,
         stdin_data: Option<&str>,
         tty: bool,
@@ -2871,20 +3190,36 @@ impl ShellManager {
             ));
         }
 
-        let stdout_buffer = new_shared_raw_output();
+        let spool = !small_contract_mode
+            && !persist_pending
+            && codewhale_runtime::artifacts::is_valid_session_id(&owner_session_id);
+        let stdout_buffer = RawOutputBuffer::for_job(
+            if small_contract_mode {
+                RAW_STREAM_SETTLED_TAIL_BYTES
+            } else {
+                RAW_STREAM_MAX_BYTES
+            },
+            spool,
+        );
         let stderr_buffer = if tty || persist_pending || small_contract_mode {
             None
         } else {
-            Some(new_shared_raw_output())
+            Some(RawOutputBuffer::for_job(RAW_STREAM_MAX_BYTES, spool))
         };
-        // The spill file is best-effort: a full disk or exhausted descriptor
-        // table must not make `echo ok` unrunnable (that is exactly how the
-        // owner's session got wedged under swap exhaustion).
-        let bounded_output = small_contract_mode.then(|| {
-            Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
-                self.output_spill_dir.as_deref(),
-            )))
-        });
+        let bounded_output =
+            small_contract_mode.then(|| {
+                let session_artifact = codewhale_runtime::artifacts::is_valid_session_id(
+                    &owner_session_id,
+                )
+                .then(|| SessionArtifactSpec {
+                    session_id: owner_session_id.clone(),
+                    artifact_id: codewhale_runtime::artifacts::artifact_id_for_tool_call(&task_id),
+                });
+                Arc::new(Mutex::new(BoundedOutputAccumulator::new_in(
+                    self.output_spill_dir.as_deref(),
+                    session_artifact,
+                )))
+            });
 
         #[cfg(windows)]
         let mut windows_job = None;
@@ -3010,7 +3345,11 @@ impl ShellManager {
             let (stdout_thread, stderr_thread) =
                 if let (Some(reader), Some(output)) = (combined_reader, bounded_output.as_ref()) {
                     (
-                        Some(spawn_bounded_reader_thread(reader, Arc::clone(output))),
+                        Some(spawn_bounded_reader_thread(
+                            reader,
+                            Arc::clone(output),
+                            Arc::clone(&stdout_buffer),
+                        )),
                         None,
                     )
                 } else {
@@ -3050,6 +3389,7 @@ impl ShellManager {
         let mut bg_shell = BackgroundShell {
             id: task_id.clone(),
             command: original_command.to_string(),
+            description: None,
             working_dir: working_dir.to_path_buf(),
             status: ShellStatus::Running,
             background: true,
@@ -3076,6 +3416,7 @@ impl ShellManager {
             stderr_buffer,
             bounded_output,
             heavy_permit,
+            scratch: exec_env.scratch.take(),
             stdout_cursor: 0,
             stderr_cursor: 0,
             completion_reported: false,
@@ -3096,6 +3437,7 @@ impl ShellManager {
             last_lifecycle_bytes: 0,
             wait_failed: false,
             terminal_exit_confirmed: false,
+            hold: None,
         };
 
         #[cfg(unix)]
@@ -3149,13 +3491,22 @@ impl ShellManager {
         })
     }
 
-    /// Get output from a background process
     pub fn get_output(
         &mut self,
         task_id: &str,
         block: bool,
         timeout_ms: u64,
     ) -> Result<ShellResult> {
+        self.get_output_with_artifact(task_id, block, timeout_ms)
+            .map(|(result, _)| result)
+    }
+
+    fn get_output_with_artifact(
+        &mut self,
+        task_id: &str,
+        block: bool,
+        timeout_ms: u64,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let shell = self
             .processes
             .get_mut(task_id)
@@ -3172,15 +3523,28 @@ impl ShellManager {
                 std::thread::sleep(Duration::from_millis(100));
             }
 
-            // If still running after timeout
             if shell.status == ShellStatus::Running {
-                return shell.snapshot();
+                return shell.snapshot_with_artifact(false);
             }
         } else {
             shell.poll();
         }
 
-        shell.snapshot()
+        shell.snapshot_with_artifact(shell.status != ShellStatus::Running)
+    }
+
+    pub(super) fn test_output(
+        &mut self,
+        task_id: &str,
+        session_id: &str,
+    ) -> Result<(ShellResult, serde_json::Value)> {
+        self.require_session_owner(task_id, session_id)?;
+        let (snapshot, artifact) = self.get_output_with_artifact(task_id, false, 0)?;
+        let mut metadata = json!({});
+        if let Some(artifact) = artifact {
+            stamp_persisted_shell_artifact_metadata(&mut metadata, &artifact, &snapshot.stdout);
+        }
+        Ok((snapshot, metadata))
     }
 
     /// Poll a job and return only its status.
@@ -3190,7 +3554,7 @@ impl ShellManager {
     /// raw buffers to build it. On a command printing 50 MB that was ~1.5 GB of
     /// allocate-and-drop churn per wait, all of it thrown away (#5472 finding 1,
     /// the transient term). Status is what the loop actually needs.
-    fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
+    pub(super) fn poll_status(&mut self, task_id: &str) -> Result<ShellStatus> {
         let shell = self
             .processes
             .get_mut(task_id)
@@ -3264,62 +3628,92 @@ impl ShellManager {
         self.write_stdin(task_id, input, close)
     }
 
-    /// Get incremental output from a background process, consuming any new output.
+    fn get_raw_output_delta(
+        &mut self,
+        task_id: &str,
+        wait: bool,
+        timeout_ms: u64,
+    ) -> Result<RawShellDelta> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        wait_while_running(shell, wait, timeout_ms);
+        let finalized_artifact = if shell.status != ShellStatus::Running {
+            shell.finalize_output_artifact()?
+        } else {
+            None
+        };
+        let (
+            stdout,
+            stderr,
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total_len,
+            stderr_total_len,
+            persisted_artifact,
+        ) = shell.take_delta();
+        let persisted_artifact = finalized_artifact.or(persisted_artifact);
+        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
+        let sandbox_denied = shell.sandbox_denied();
+        let status = shell.status.clone();
+        if status != ShellStatus::Running {
+            shell.completion_reported = true;
+            shell.release_delivered_output();
+        }
+
+        Ok(RawShellDelta {
+            command: shell.command.clone(),
+            task_id: shell.id.clone(),
+            status,
+            exit_code: shell.exit_code,
+            duration_ms: u64::try_from(shell.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            stdout,
+            stderr,
+            stdout_delta_len,
+            stderr_delta_len,
+            stdout_total_len,
+            stderr_total_len,
+            sandboxed,
+            sandbox_type: sandboxed.then(|| shell.sandbox_type.to_string()),
+            sandbox_denied,
+            persisted_artifact,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     fn get_output_delta(
         &mut self,
         task_id: &str,
         wait: bool,
         timeout_ms: u64,
     ) -> Result<ShellDeltaResult> {
-        let shell = self
-            .processes
-            .get_mut(task_id)
-            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
-        wait_while_running(shell, wait, timeout_ms);
-        if shell.status != ShellStatus::Running && shell.owner_agent.is_some() {
-            shell.completion_reported = true;
-        }
-
-        let (
-            stdout_delta,
-            stderr_delta,
-            stdout_delta_len,
-            stderr_delta_len,
-            stdout_total,
-            stderr_total,
-        ) = shell.take_delta();
-        let (stdout, stdout_meta) = truncate_with_meta(&stdout_delta);
-        let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
-        let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
-
-        let command = shell.command.clone();
+        let raw = self.get_raw_output_delta(task_id, wait, timeout_ms)?;
+        let (stdout, stdout_meta) = truncate_with_meta(&raw.stdout);
+        let (stderr, stderr_meta) = truncate_with_meta(&raw.stderr);
         let result = ShellResult {
-            task_id: Some(shell.id.clone()),
-            status: shell.status.clone(),
-            exit_code: shell.exit_code,
+            task_id: Some(raw.task_id),
+            status: raw.status,
+            exit_code: raw.exit_code,
             stdout,
             stderr,
-            duration_ms: u64::try_from(shell.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            stdout_len: stdout_meta.original_len.max(stdout_delta_len),
-            stderr_len: stderr_meta.original_len.max(stderr_delta_len),
+            duration_ms: raw.duration_ms,
+            stdout_len: stdout_meta.original_len.max(raw.stdout_delta_len),
+            stderr_len: stderr_meta.original_len.max(raw.stderr_delta_len),
             stdout_omitted: stdout_meta.omitted,
             stderr_omitted: stderr_meta.omitted,
             stdout_truncated: stdout_meta.truncated,
             stderr_truncated: stderr_meta.truncated,
-            sandboxed,
-            sandbox_type: if sandboxed {
-                Some(shell.sandbox_type.to_string())
-            } else {
-                None
-            },
-            sandbox_denied: shell.sandbox_denied(),
+            sandboxed: raw.sandboxed,
+            sandbox_type: raw.sandbox_type,
+            sandbox_denied: raw.sandbox_denied,
         };
 
         Ok(ShellDeltaResult {
-            command,
+            command: raw.command,
             result,
-            stdout_total_len: stdout_total,
-            stderr_total_len: stderr_total,
+            stdout_total_len: raw.stdout_total_len,
+            stderr_total_len: raw.stderr_total_len,
         })
     }
 
@@ -3330,6 +3724,104 @@ impl ShellManager {
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
         shell.heavy_permit = Some(permit);
         Ok(())
+    }
+
+    pub fn hold_job(
+        &mut self,
+        task_id: &str,
+        keepalive: Option<Duration>,
+        deadline_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), ShellHoldError> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or(ShellHoldError::NotFound)?;
+        shell.hold = Some(JobHoldState {
+            keepalive,
+            keepalive_until: keepalive.map(|keepalive| Instant::now() + keepalive),
+            deadline_at,
+            stop_reason: None,
+        });
+        Ok(())
+    }
+
+    pub fn keep_job_alive(&mut self, task_id: &str) -> Result<ShellJobHold, ShellHoldError> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or(ShellHoldError::NotFound)?;
+        shell.poll();
+        let hold = shell
+            .hold
+            .as_mut()
+            .filter(|hold| hold.keepalive.is_some())
+            .ok_or(ShellHoldError::NotHeld)?;
+        if hold.stop_reason.is_some() {
+            return Err(ShellHoldError::Expired);
+        }
+        if shell.status != ShellStatus::Running {
+            return Err(ShellHoldError::NotRunning);
+        }
+        if hold.expired(Instant::now(), chrono::Utc::now()).is_some() {
+            return Err(ShellHoldError::Expired);
+        }
+        hold.keepalive_until = hold.keepalive.map(|keepalive| Instant::now() + keepalive);
+        Ok(hold.view())
+    }
+
+    pub fn job_hold(&self, task_id: &str) -> Option<ShellJobHold> {
+        self.processes
+            .get(task_id)?
+            .hold
+            .as_ref()
+            .map(JobHoldState::view)
+    }
+
+    pub fn job_last_progress_at(&self, task_id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.processes
+            .get(task_id)
+            .filter(|shell| shell.status == ShellStatus::Running)
+            .map(BackgroundShell::last_progress_at)
+    }
+
+    pub fn enforce_job_hold(&mut self, task_id: &str) -> bool {
+        let Some(shell) = self.processes.get_mut(task_id) else {
+            return false;
+        };
+        shell.poll();
+        if shell.status != ShellStatus::Running {
+            return false;
+        }
+        let Some(reason) = shell
+            .hold
+            .as_ref()
+            .and_then(|hold| hold.expired(Instant::now(), chrono::Utc::now()))
+        else {
+            return shell.hold.is_some();
+        };
+        if let Some(hold) = shell.hold.as_mut() {
+            hold.stop_reason = Some(reason);
+        }
+        if let Err(error) = shell.kill() {
+            tracing::warn!(shell_id = %task_id, ?reason, error = %error, "failed to stop held job");
+            return true;
+        }
+        shell.status == ShellStatus::Running
+    }
+
+    pub fn running_jobs(&mut self) -> Vec<ShellRunningJob> {
+        self.processes
+            .values_mut()
+            .filter_map(|shell| {
+                shell.poll();
+                (shell.status == ShellStatus::Running).then(|| ShellRunningJob {
+                    job_id: shell.id.clone(),
+                    background: shell.background,
+                    last_progress_at: shell.last_progress_at(),
+                    hold: shell.hold.as_ref().map(JobHoldState::view),
+                })
+            })
+            .collect()
     }
 
     pub fn last_output_age_ms(&self, task_id: &str) -> Option<u64> {
@@ -3351,25 +3843,32 @@ impl ShellManager {
         ))
     }
 
-    /// Kill a running background process
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
+        self.kill_with_artifact(task_id).map(|(result, _)| result)
+    }
+
+    fn kill_with_artifact(
+        &mut self,
+        task_id: &str,
+    ) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
         let shell = self
             .processes
             .get_mut(task_id)
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
 
         shell.kill()?;
-        shell.snapshot()
+        shell.snapshot_with_artifact(true)
     }
 
     pub fn mark_cancel_reported(&mut self, result: &ShellResult) {
-        if result.status == ShellStatus::Killed
+        if result.status != ShellStatus::Running
             && let Some(shell) = result
                 .task_id
                 .as_deref()
                 .and_then(|id| self.processes.get_mut(id))
         {
             shell.completion_reported = true;
+            shell.release_delivered_output();
         }
     }
 
@@ -3540,15 +4039,15 @@ impl ShellManager {
         self.get_output_delta(task_id, wait, timeout_ms)
     }
 
-    fn get_output_delta_for_session(
+    fn get_raw_output_delta_for_session(
         &mut self,
         active_session_id: &str,
         task_id: &str,
         wait: bool,
         timeout_ms: u64,
-    ) -> Result<ShellDeltaResult> {
+    ) -> Result<RawShellDelta> {
         self.require_session_owner(task_id, active_session_id)?;
-        self.get_output_delta(task_id, wait, timeout_ms)
+        self.get_raw_output_delta(task_id, wait, timeout_ms)
     }
 
     /// Read a job's raw stream at an absolute byte offset without consuming
@@ -3644,6 +4143,15 @@ impl ShellManager {
             .get_mut(task_id)
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
         shell.linked_task_id = linked_task_id;
+        Ok(())
+    }
+
+    pub fn tag_description(&mut self, task_id: &str, description: Option<String>) -> Result<()> {
+        let shell = self
+            .processes
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
+        shell.description = description;
         Ok(())
     }
 
@@ -3760,6 +4268,10 @@ impl ShellManager {
                 && shell.status != ShellStatus::Running
                 && !shell.completion_reported
             {
+                if let Err(error) = shell.finalize_output_artifact() {
+                    tracing::warn!(task_id = %shell.id, %error, "shell completion artifact publication failed; retaining output for retry");
+                    continue;
+                }
                 shell.completion_reported = true;
                 completions.push(shell.completion_evidence());
                 // The bytes are now in the caller's hands (they become a durable
@@ -3774,7 +4286,7 @@ impl ShellManager {
 
     /// A terminal foreground result is already returned as the tool result;
     /// do not emit it again through the background-completion channel.
-    fn acknowledge_foreground_completion(&mut self, task_id: &str) {
+    pub(super) fn acknowledge_foreground_completion(&mut self, task_id: &str) {
         if let Some(shell) = self.processes.get_mut(task_id) {
             shell.completion_reported = true;
             // The caller already holds this job's `ShellResult`; the record only
@@ -3861,6 +4373,7 @@ impl ShellManager {
                 id: id.clone(),
                 job_id: id,
                 command: command.into(),
+                description: None,
                 cwd,
                 status: ShellStatus::Killed,
                 background: true,
@@ -4283,15 +4796,195 @@ fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
         "couldn't connect",
         "connection timed out",
         "connection reset",
+        "error connecting to",
+        "token in keyring is invalid",
     ]
     .iter()
     .any(|pattern| output.contains(pattern))
 }
 
-const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+const READONLY_OFFLINE_NETWORK_HINT: &str = "This read_only run has no network and cannot write files outside its private TMPDIR. Read-only commands reach the network only in Full Access, with a session sandbox that allows network, a [network] policy that does not deny by default, and this agent's network grant. Use a web tool if this session has one; otherwise report the source as unreachable.";
+
+const READONLY_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. A command that must write (git fetch writes .git/FETCH_HEAD; git ls-remote reads remote refs without writing) has to run without read_only.";
+
+const READONLY_AGENT_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. This read-only agent cannot run mutating commands; return your findings and the blocked command to the parent.";
+
+const READONLY_SESSION_WRITE_DENIED_HINT: &str = "read_only=true can write only to its private TMPDIR, which is deleted when the command ends; the workspace, home, Git metadata and every other path stay read-only. This read-only session cannot run mutating commands; the user can change modes with /mode.";
+
+const READONLY_MACOS_MKTEMP_HINT: &str = "macOS mktemp ignores TMPDIR unless told otherwise and writes to the per-user temporary directory, which read_only cannot write. Use `mktemp -p \"$TMPDIR\"` or `mktemp \"$TMPDIR/name.XXXXXX\"`.";
+
+const READONLY_MACOS_HEREDOC_HINT: &str = "macOS /bin/sh and /bin/bash ignore TMPDIR for here-documents (<<EOF) and write to /var/tmp, which read_only cannot write. Run the heredoc with `/bin/zsh -c '...'` (which uses the private TMPDIR), pipe with `printf ... |`, or pass input via a file under `\"$TMPDIR\"`.";
+
+const READONLY_SETUID_DENIED_HINT: &str = "macOS Seatbelt never starts a setuid program such as ps or top inside a sandbox. List processes with `pgrep -lf <pattern>` or `lsof -nP -iTCP -sTCP:LISTEN` instead.";
+
+fn split_shell_separators(token: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let bytes = token.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let sep_len = if bytes[i..].starts_with(b"||") || bytes[i..].starts_with(b"&&") {
+            2
+        } else if matches!(
+            bytes[i],
+            b';' | b'|' | b'&' | b'(' | b')' | b'\n' | b'<' | b'>'
+        ) {
+            1
+        } else {
+            0
+        };
+        if sep_len > 0 {
+            if start < i {
+                out.push(&token[start..i]);
+            }
+            out.push(&token[i..i + sep_len]);
+            i += sep_len;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < bytes.len() {
+        out.push(&token[start..]);
+    }
+    out
+}
+
+fn command_invokes_program(command: &str, target: &str) -> bool {
+    let mut expect_command = true;
+    let mut in_shell_invocation = false;
+    let mut after_shell_c = false;
+    let tokens = shell_words::split(command).unwrap_or_else(|_| {
+        command
+            .split_whitespace()
+            .map(|token| token.trim_matches(['\'', '"']).to_string())
+            .collect()
+    });
+    for token in tokens {
+        for piece in split_shell_separators(&token) {
+            if piece.is_empty() {
+                continue;
+            }
+            if matches!(piece, ";" | "|" | "||" | "&" | "&&" | "(" | ")" | "\n") {
+                expect_command = true;
+                in_shell_invocation = false;
+                after_shell_c = false;
+                continue;
+            }
+            if after_shell_c {
+                after_shell_c = false;
+                if command_invokes_program(piece, target) {
+                    return true;
+                }
+                expect_command = false;
+                continue;
+            }
+            if expect_command {
+                if piece.contains('=') && !piece.starts_with('=') {
+                    continue;
+                }
+                if matches!(
+                    piece,
+                    "command" | "exec" | "env" | "nohup" | "time" | "nice"
+                ) {
+                    continue;
+                }
+                let base = piece.rsplit('/').next().unwrap_or(piece);
+                let matches_target = base == target
+                    && (piece == target
+                        || match target {
+                            "ps" => piece == "/bin/ps",
+                            "top" => piece == "/usr/bin/top",
+                            _ => true,
+                        });
+                if matches_target {
+                    return true;
+                }
+                in_shell_invocation = matches!(base, "sh" | "bash" | "zsh" | "dash" | "ksh");
+                expect_command = false;
+            } else if in_shell_invocation && piece.starts_with('-') && piece.contains('c') {
+                after_shell_c = true;
+                in_shell_invocation = false;
+            } else if !piece.starts_with('-') {
+                in_shell_invocation = false;
+            }
+        }
+    }
+    false
+}
+
+fn mentions_denied_program(output: &str, name: &str, abs_path: &str) -> bool {
+    output.contains(&format!("{abs_path}: operation not permitted"))
+        || output.contains(&format!("operation not permitted: {abs_path}"))
+        || output.contains(&format!("operation not permitted: '{abs_path}'"))
+        || output.contains(&format!("operation not permitted: {name}"))
+        || output.contains(&format!("{name}: operation not permitted"))
+}
+
+fn readonly_write_denied_hint(context: &ToolContext) -> &'static str {
+    if matches!(context.shell_policy, ShellPolicy::ReadOnly) {
+        if context.owner_agent_id.is_some() || context.tool_authority.is_some() {
+            READONLY_AGENT_WRITE_DENIED_HINT
+        } else {
+            READONLY_SESSION_WRITE_DENIED_HINT
+        }
+    } else {
+        READONLY_WRITE_DENIED_HINT
+    }
+}
+
+fn readonly_denied_hint(
+    context: &ToolContext,
+    command: &str,
+    result: &ShellResult,
+) -> Option<&'static str> {
+    readonly_denied_hint_for_os(context, command, result, cfg!(target_os = "macos"))
+}
+
+fn readonly_denied_hint_for_os(
+    context: &ToolContext,
+    command: &str,
+    result: &ShellResult,
+    is_macos: bool,
+) -> Option<&'static str> {
+    if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
+        || result.exit_code == Some(0)
+    {
+        return None;
+    }
+    if result.sandbox_denied && codewhale_sandbox::bwrap_setup_failure(&result.stderr).is_some() {
+        return None;
+    }
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if !output.contains("operation not permitted") && !output.contains("read-only file system") {
+        return None;
+    }
+    if is_macos {
+        if output.contains("cannot create temp file for here document") {
+            return Some(READONLY_MACOS_HEREDOC_HINT);
+        }
+        if (command_invokes_program(command, "ps")
+            && mentions_denied_program(&output, "ps", "/bin/ps"))
+            || (command_invokes_program(command, "top")
+                && mentions_denied_program(&output, "top", "/usr/bin/top"))
+        {
+            return Some(READONLY_SETUID_DENIED_HINT);
+        }
+        if command_invokes_program(command, "mktemp")
+            && (output.contains("mkstemp failed") || output.contains("mkdtemp failed"))
+        {
+            return Some(READONLY_MACOS_MKTEMP_HINT);
+        }
+    }
+    Some(readonly_write_denied_hint(context))
+}
 
 fn readonly_offline_network_hint(command: &str, result: &ShellResult) -> Option<&'static str> {
     if result.sandbox_denied && codewhale_sandbox::bwrap_setup_failure(&result.stderr).is_some() {
+        return None;
+    }
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if output.contains("read-only file system") || output.contains("fetch_head") {
         return None;
     }
     let rest = split_leading_cd(command).map(|(_, rest)| rest);
@@ -4344,7 +5037,7 @@ fn shell_sandbox_denied_hint(context: &ToolContext, result: &ShellResult) -> Opt
     ))
 }
 
-fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
+pub(super) fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> {
     let agent_id = context
         .owner_agent_id
         .as_deref()
@@ -4362,7 +5055,9 @@ fn shell_job_owner_from_context(context: &ToolContext) -> Option<ShellJobOwner> 
     })
 }
 
-fn shell_work_lifecycle_from_context(context: &ToolContext) -> Option<ShellWorkLifecycle> {
+pub(super) fn shell_work_lifecycle_from_context(
+    context: &ToolContext,
+) -> Option<ShellWorkLifecycle> {
     context
         .runtime
         .work
@@ -4445,9 +5140,21 @@ fn enforced_readonly_input(input: &serde_json::Value) -> bool {
         && fields.keys().all(|key| {
             matches!(
                 key.as_str(),
-                "action" | "command" | "cwd" | "timeout_ms" | "read_only"
+                "action"
+                    | "command"
+                    | "cwd"
+                    | "timeout_ms"
+                    | "read_only"
+                    | "description"
+                    | "background"
             )
         })
+        && fields
+            .get("description")
+            .is_none_or(|value| value.is_null() || value.is_string())
+        && fields
+            .get("background")
+            .is_none_or(|value| value == &serde_json::Value::Bool(false))
         && fields
             .get("action")
             .is_none_or(|action| action.as_str() == Some("run"))
@@ -4673,9 +5380,17 @@ fn exec_shell_input_is_parallel_readonly_shape(input: &serde_json::Value) -> boo
     let Some(fields) = input.as_object() else {
         return false;
     };
+    if fields.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "action" | "command" | "cwd" | "timeout_ms" | "description" | "background"
+        )
+    }) {
+        return false;
+    }
     if fields
-        .keys()
-        .any(|key| !matches!(key.as_str(), "action" | "command" | "cwd" | "timeout_ms"))
+        .get("description")
+        .is_some_and(|value| !value.is_null() && !value.is_string())
     {
         return false;
     }
@@ -5145,6 +5860,7 @@ fn persistent_services_enabled_for(context: &ToolContext) -> bool {
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
+    description: Option<String>,
     heavy_permit: Option<HeavyCommandPermit>,
     working_dir: Option<String>,
     timeout_ms: Option<u64>,
@@ -5156,7 +5872,7 @@ async fn execute_foreground_via_background(
     timeout_bounds_ms: (u64, u64),
     wants_receipt: bool,
     receipt_identity: &mut Option<ShellExecutionIdentity>,
-) -> Result<ShellResult> {
+) -> Result<(ShellResult, Option<PersistedShellArtifact>)> {
     let timeout_ms =
         timeout_ms.map(|timeout| timeout.clamp(timeout_bounds_ms.0, timeout_bounds_ms.1));
     let spawn_timeout_ms = timeout_ms.unwrap_or(timeout_bounds_ms.1);
@@ -5186,6 +5902,7 @@ async fn execute_foreground_via_background(
         let lifecycle = shell_work_lifecycle_from_context(context);
         let spawned = manager.execute_with_options_env_for_owner_and_work(
             command,
+            None,
             working_dir.as_deref(),
             spawn_timeout_ms,
             true,
@@ -5212,6 +5929,7 @@ async fn execute_foreground_via_background(
             .get_mut(&task_id)
             .ok_or_else(|| anyhow!("foreground shell {task_id} is not tracked"))?;
         process.background = false;
+        process.description = description;
         // #6689: the receipt identity is what the manager recorded for this
         // spawn — the admitted command and the directory handed to the OS —
         // never the before-hook request. Only pipe-backed, unsandboxed local
@@ -5280,7 +5998,7 @@ async fn execute_foreground_via_background(
                 .shell_manager
                 .lock()
                 .map_err(|_| anyhow!("shell manager lock poisoned"))?;
-            let result = manager.kill(&task_id);
+            let result = manager.kill_with_artifact(&task_id);
             if result.is_ok() {
                 manager.acknowledge_foreground_completion(&task_id);
                 foreground.armed = false;
@@ -5288,10 +6006,6 @@ async fn execute_foreground_via_background(
             return result;
         }
 
-        // Poll status only. The snapshot — and the buffer clones behind it — is
-        // built once, when there is actually a result to return (#5472). Both
-        // happen under one lock acquisition so the record cannot be evicted
-        // between observing that it finished and reading its result.
         let finished = {
             let mut manager = context
                 .shell_manager
@@ -5303,14 +6017,11 @@ async fn execute_foreground_via_background(
                 }
                 let snapshot = manager.get_output(&task_id, false, 0)?;
                 foreground.armed = false;
-                return Ok(snapshot);
+                return Ok((snapshot, None));
             }
             if manager.poll_status(&task_id)? == ShellStatus::Running {
                 None
             } else {
-                // #6689: a status from a failed wait is neither an observed
-                // exit nor an interruption, so the receipt is left out rather
-                // than reporting a guessed state.
                 if manager
                     .processes
                     .get(&task_id)
@@ -5318,9 +6029,7 @@ async fn execute_foreground_via_background(
                 {
                     *receipt_identity = None;
                 }
-                let snapshot = manager.get_output(&task_id, false, 0)?;
-                // Ordering matters: the snapshot is taken before the
-                // acknowledgement releases the retained bytes.
+                let snapshot = manager.get_output_with_artifact(&task_id, false, 0)?;
                 manager.acknowledge_foreground_completion(&task_id);
                 Some(snapshot)
             }
@@ -5331,12 +6040,6 @@ async fn execute_foreground_via_background(
             return Ok(snapshot);
         }
 
-        // The foreground budget is how long the turn waits, never how long
-        // the command may live. Past it the process keeps running as a
-        // background job — exactly as Ctrl+B would move it — and the model
-        // gets the output so far plus the job id to wait on, read, or cancel.
-        // Killing here threw away minutes of a build or test run and made the
-        // model start it over.
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             let mut manager = context
                 .shell_manager
@@ -5347,7 +6050,7 @@ async fn execute_foreground_via_background(
             }
             let snapshot = manager.get_output(&task_id, false, 0)?;
             foreground.armed = false;
-            return Ok(snapshot);
+            return Ok((snapshot, None));
         }
 
         tokio::time::sleep(Duration::from_millis(poll_tick_ms)).await;
@@ -5582,6 +6285,81 @@ fn contract_bash_error_status(result: &ShellResult, timeout_ms: Option<u64>) -> 
     }
 }
 
+fn combine_full_shell_streams(stdout: &str, stderr: &str) -> String {
+    if stderr.is_empty() {
+        stdout.to_string()
+    } else if stdout.is_empty() {
+        format!("STDERR:\n{stderr}")
+    } else {
+        format!("{stdout}\n\nSTDERR:\n{stderr}")
+    }
+}
+
+fn format_persisted_shell_artifact_footer(artifact: &PersistedShellArtifact) -> String {
+    let label = if artifact.complete {
+        "Full output"
+    } else {
+        "Output excerpt"
+    };
+    format!(
+        "[{label} saved as artifact {}; {}]",
+        artifact.artifact_id,
+        crate::tools::truncate::spillover_recovery_instruction(Some(&artifact.artifact_id)),
+    )
+}
+
+fn stamp_persisted_shell_artifact_metadata(
+    metadata: &mut serde_json::Value,
+    artifact: &PersistedShellArtifact,
+    preview_source: &str,
+) {
+    let Some(obj) = metadata.as_object_mut() else {
+        return;
+    };
+    let absolute = serde_json::Value::String(artifact.absolute_path.display().to_string());
+    let relative =
+        codewhale_runtime::artifacts::format_artifact_relative_path(&artifact.relative_path);
+    let mut preview: String = preview_source.chars().take(200).collect();
+    if preview_source.chars().count() > 200 {
+        preview.push_str("...");
+    }
+    obj.insert("spillover_path".into(), absolute.clone());
+    obj.insert("artifact_path".into(), absolute);
+    obj.insert("artifact_id".into(), artifact.artifact_id.clone().into());
+    obj.insert(
+        "artifact_session_id".into(),
+        artifact.session_id.clone().into(),
+    );
+    obj.insert("artifact_relative_path".into(), relative.into());
+    obj.insert("artifact_byte_size".into(), artifact.byte_size.into());
+    obj.insert("artifact_digest".into(), artifact.digest.clone().into());
+    obj.insert(
+        "content_digest".into(),
+        format!("sha256:{}", artifact.digest).into(),
+    );
+    obj.insert("artifact_preview".into(), preview.into());
+    obj.insert("truncated".into(), true.into());
+    obj.insert("artifact_complete".into(), artifact.complete.into());
+    if artifact.complete {
+        obj.insert("original_byte_count".into(), artifact.byte_size.into());
+    }
+}
+
+fn attach_shell_artifact_to_tool_result(
+    result: &mut ToolResult,
+    artifact: &PersistedShellArtifact,
+) {
+    if !result.content.contains(&artifact.artifact_id) {
+        result.content.push_str("\n\n");
+        result
+            .content
+            .push_str(&format_persisted_shell_artifact_footer(artifact));
+    }
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    stamp_persisted_shell_artifact_metadata(metadata, artifact, &result.content);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn finish_contract_bash_result(
     result: ShellResult,
     timeout_ms: Option<u64>,
@@ -5589,9 +6367,15 @@ fn finish_contract_bash_result(
     execution_receipt: Option<serde_json::Value>,
     readonly_network: bool,
     network_restricted_hint: Option<&str>,
+    readonly_denied_hint: Option<&str>,
+    explicit_background: bool,
+    description: Option<&str>,
+    persisted_artifact: Option<PersistedShellArtifact>,
 ) -> Result<ToolResult, ToolError> {
     let sandbox_denied_hint = if network_restricted_hint.is_none() {
-        shell_sandbox_denied_hint(context, &result)
+        readonly_denied_hint
+            .map(str::to_string)
+            .or_else(|| shell_sandbox_denied_hint(context, &result))
     } else {
         None
     };
@@ -5604,9 +6388,9 @@ fn finish_contract_bash_result(
             format!("{hint}\n\n{output}")
         };
     }
-    if let Some(hint) = sandbox_denied_hint {
+    if let Some(hint) = sandbox_denied_hint.as_deref() {
         output = if output.is_empty() {
-            hint
+            hint.to_string()
         } else {
             format!("{hint}\n\n{output}")
         };
@@ -5617,6 +6401,9 @@ fn finish_contract_bash_result(
         "sandboxed": result.sandboxed, "sandbox_type": result.sandbox_type,
         "task_id": result.task_id, "backgrounded": result.status == ShellStatus::Running,
     });
+    if let Some(description) = description {
+        metadata["description"] = json!(description);
+    }
     if let Some(receipt) = execution_receipt {
         metadata["execution_receipt"] = receipt;
     }
@@ -5627,22 +6414,40 @@ fn finish_contract_bash_result(
         metadata["sandbox_network_restricted"] = json!(true);
         metadata["sandbox_network_denied_hint"] = json!(hint);
     }
+    if let Some(hint) = sandbox_denied_hint {
+        metadata["sandbox_denied_hint"] = json!(hint);
+    }
+    if let Some(artifact) = persisted_artifact.as_ref() {
+        if !output.contains(&artifact.artifact_id) {
+            if !output.is_empty() {
+                output.push_str("\n\n");
+            }
+            output.push_str(&format_persisted_shell_artifact_footer(artifact));
+        }
+        stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
+    }
     if result.status == ShellStatus::Running {
         let task_id = result.task_id.as_deref().unwrap_or("unknown");
-        let so_far = if output.trim().is_empty() {
-            "(no output yet)".to_string()
+        let lead = if explicit_background {
+            format!("Background task started: {task_id}.")
         } else {
-            tail_lines(output.trim(), 20)
+            let so_far = if output.trim().is_empty() {
+                "(no output yet)".to_string()
+            } else {
+                tail_lines(output.trim(), 20)
+            };
+            let notice = promotion_notice(context, task_id, result.duration_ms / 1_000, &output);
+            format!("{notice}\n\nOutput so far:\n{so_far}")
         };
-        let notice = promotion_notice(context, task_id, result.duration_ms / 1_000, &output);
         let completion = if context.owner_agent_id.is_some() {
             "Its completion stays in task/status and is not injected into the parent model."
         } else {
             "Its completion reaches you as a runtime event before your next step; if you end the turn first, a headless run stops it unseen."
         };
         return Ok(ToolResult::success(format!(
-            "{notice}\n\nOutput so far:\n{so_far}\n\n{completion} To see more output or block until it finishes, call `task_shell_wait` directly with task_id=\"{task_id}\"; do not sleep-poll with bash. To stop it, send the same call with cancel=true. It also stops when the session ends."
-        )).with_metadata(metadata));
+            "{lead}\n\n{completion} To see more output or block until it finishes, call `task_shell_wait` directly with task_id=\"{task_id}\"; do not sleep-poll with bash. To stop it, send the same call with cancel=true. It also stops when the session ends."
+        ))
+        .with_metadata(metadata));
     }
     if result.status != ShellStatus::Completed {
         // A nonzero exit, timeout, or kill stays a failed tool call, but it
@@ -5687,7 +6492,9 @@ impl ToolSpec for LowercaseBashTool {
             "properties": {
                 "command": { "type": "string", "description": guidance::runtime_command_guidance() },
                 "description": { "type": "string", "description": "Optional few-word summary shown to the user beside the command." },
+                "cwd": { "type": "string", "description": "Optional workspace-relative working directory." },
                 "timeout": { "type": "number", "description": "Optional seconds to wait in the foreground (default 30 seconds). A command still running then is not killed: it moves to the background by itself and you get its output so far, how long ago it last printed, its build phase, and a task_id. Call task_shell_wait directly with that task_id to read more or wait for it; do not sleep-poll with bash." },
+                "background": { "type": "boolean", "description": "Run immediately in the background and return a task_id (good for >5s or parallel jobs; incompatible with read_only=true). Call task_shell_wait to wait or cancel." },
                 "read_only": { "type": "boolean", "description": "Set true to run analysis code (including Python/SQLite) or a network fetch (curl) with mandatory native filesystem read-only isolation. Outbound network is on only in Full Access when the session sandbox, the network policy and your network grant allow it. Available during peer writes. Refused when native enforcement is unavailable; no background, stdin, external backend, or sandbox escalation." },
                 "sandbox_permissions": {
                     "type": "string",
@@ -5713,8 +6520,9 @@ impl ToolSpec for LowercaseBashTool {
     }
 
     fn approval_requirement_for(&self, input: &serde_json::Value) -> ApprovalRequirement {
-        let translated = contract_bash_legacy_input(input).unwrap_or_else(|_| input.clone());
-        BashTool::contract_delegate().approval_requirement_for(&translated)
+        contract_bash_legacy_input(input).map_or(ApprovalRequirement::Required, |translated| {
+            BashTool::contract_delegate().approval_requirement_for(&translated)
+        })
     }
 
     fn is_read_only_for(&self, input: &serde_json::Value) -> bool {
@@ -5723,7 +6531,18 @@ impl ToolSpec for LowercaseBashTool {
     }
 
     fn supports_parallel_for(&self, input: &serde_json::Value) -> bool {
-        self.is_read_only_for(input)
+        contract_bash_legacy_input(input).is_ok_and(|translated| {
+            BashTool::contract_delegate().is_read_only_for(&translated)
+                || translated
+                    .get("background")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        })
+    }
+
+    fn starts_detached_for(&self, input: &serde_json::Value) -> bool {
+        contract_bash_legacy_input(input)
+            .is_ok_and(|translated| BashTool::contract_delegate().starts_detached_for(&translated))
     }
 
     fn refusal_before_approval(
@@ -5731,7 +6550,7 @@ impl ToolSpec for LowercaseBashTool {
         input: &serde_json::Value,
         context: &ToolContext,
     ) -> Option<ToolResult> {
-        let translated = contract_bash_legacy_input(input).ok()?;
+        let translated = contract_bash_legacy_input(input).unwrap_or_else(|_| input.clone());
         BashTool::contract_delegate().refusal_before_approval(&translated, context)
     }
 
@@ -5744,6 +6563,15 @@ impl ToolSpec for LowercaseBashTool {
         BashTool::contract_delegate()
             .execute(translated, context)
             .await
+    }
+}
+
+pub fn strip_readonly_bash_schema_properties(schema: &mut serde_json::Value) {
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        properties.remove("background");
     }
 }
 
@@ -5782,7 +6610,9 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
                 key.as_str(),
                 "command"
                     | "description"
+                    | "cwd"
                     | "timeout"
+                    | "background"
                     | "read_only"
                     | "sandbox_permissions"
                     | "justification"
@@ -5797,8 +6627,16 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
         )));
     }
     let command = required_str(input, "command")?;
-    optional_str(input, "description")?;
     let mut translated = json!({"command": command});
+    if let Some(description) = optional_str(input, "description")?
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        translated["description"] = json!(description);
+    }
+    if let Some(cwd) = optional_str(input, "cwd")? {
+        translated["cwd"] = json!(cwd);
+    }
     if let Some(timeout) = input.get("timeout") {
         let seconds = timeout.as_f64().ok_or_else(|| {
             ToolError::invalid_input("Invalid timeout: expected a finite number of seconds")
@@ -5817,11 +6655,24 @@ fn contract_bash_legacy_input(input: &serde_json::Value) -> Result<serde_json::V
         }
         translated["timeout_ms"] = json!((millis as u64).max(1));
     }
+    let mut read_only = false;
     if let Some(value) = input.get("read_only") {
-        if !value.is_boolean() {
+        let Some(enabled) = value.as_bool() else {
             return Err(type_mismatch("read_only", value, "a boolean"));
-        }
+        };
+        read_only = enabled;
         translated["read_only"] = value.clone();
+    }
+    if let Some(value) = input.get("background") {
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| type_mismatch("background", value, "a boolean"))?;
+        if read_only && enabled {
+            return Err(ToolError::invalid_input(
+                "read_only=true accepts only foreground run with command, cwd and timeout_ms; background, input, interactive modes and sandbox escalation are incompatible",
+            ));
+        }
+        translated["background"] = json!(enabled);
     }
     for field in ["sandbox_permissions", "justification"] {
         if let Some(value) = input.get(field) {
@@ -5926,6 +6777,10 @@ impl ToolSpec for BashTool {
                 "command": {
                     "type": "string",
                     "description": guidance::runtime_command_guidance()
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional few-word summary shown to the user beside the command."
                 },
                 "read_only": { "type": "boolean", "description": "Set true to require native filesystem read-only execution, with outbound network only in Full Access when the session sandbox, the network policy and your network grant allow it. Only foreground run with command, cwd and timeout_ms; unavailable enforcement fails closed." },
                 "timeout_ms": {
@@ -6188,6 +7043,10 @@ impl ToolSpec for BashTool {
             }
         }
         let command = require_no_nul(required_str(&input, "command")?, "command")?;
+        let description = optional_str(&input, "description")?
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         match context.shell_policy {
             ShellPolicy::None => {
                 return Ok(ToolResult::error(
@@ -6384,7 +7243,9 @@ impl ToolSpec for BashTool {
             // shell_env hooks are arbitrary operator-configured processes.
             // They cannot run inside the evidence-only execution boundary.
             HashMap::new()
-        } else if let Some(hook_executor) = &context.runtime.hook_executor {
+        } else if context.acp_host.is_none()
+            && let Some(hook_executor) = &context.runtime.hook_executor
+        {
             let hook_ctx = crate::hooks::HookContext::new()
                 .with_tool_context(context)
                 .with_tool_name("exec_shell")
@@ -6489,10 +7350,7 @@ impl ToolSpec for BashTool {
             extra_env.insert("GIT_CONFIG_COUNT".to_string(), count.to_string());
             extra_env.insert(READONLY_ENV_MARKER.to_string(), "1".to_string());
         }
-        extra_env.insert(
-            AGENT_PROJECT_ENV.to_string(),
-            context.workspace.to_string_lossy().into_owned(),
-        );
+        insert_agent_mark_env(&mut extra_env, context);
 
         let command_expense = infer_command_expense(command);
         let heavy_permit = acquire_heavy_command_permit(command, context.cancel_token.as_ref())
@@ -6537,39 +7395,60 @@ impl ToolSpec for BashTool {
             let started = std::time::Instant::now();
             let backend_result = backend.exec(command, &extra_env).await;
 
-            let result = match backend_result {
+            let (result, persisted_artifact) = match backend_result {
                 Ok(output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
-                    ShellResult {
-                        task_id: None,
-                        status: if output.exit_code == 0 {
-                            ShellStatus::Completed
-                        } else {
-                            ShellStatus::Failed
+                    let persisted_artifact = if stdout_meta.truncated || stderr_meta.truncated {
+                        let session_id = context.state_namespace.clone();
+                        let origin_tool_call_id = context.origin_tool_call_id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let full_combined =
+                                combine_full_shell_streams(&output.stdout, &output.stderr);
+                            persist_shell_output_artifact(
+                                &session_id,
+                                origin_tool_call_id.as_deref(),
+                                &format!("bash-sandbox-{}", Uuid::new_v4().simple()),
+                                full_combined.as_bytes(),
+                            )
+                            .ok()
+                        })
+                        .await
+                        .map_err(|err| ToolError::execution_failed(err.to_string()))?
+                    } else {
+                        None
+                    };
+                    (
+                        ShellResult {
+                            task_id: None,
+                            status: if output.exit_code == 0 {
+                                ShellStatus::Completed
+                            } else {
+                                ShellStatus::Failed
+                            },
+                            exit_code: Some(i64::from(output.exit_code)),
+                            stdout,
+                            stderr,
+                            duration_ms: u64::try_from(started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                            stdout_len: stdout_meta.original_len,
+                            stderr_len: stderr_meta.original_len,
+                            stdout_omitted: stdout_meta.omitted,
+                            stderr_omitted: stderr_meta.omitted,
+                            stdout_truncated: stdout_meta.truncated,
+                            stderr_truncated: stderr_meta.truncated,
+                            sandboxed: true,
+                            sandbox_type: Some("opensandbox".to_string()),
+                            sandbox_denied: false,
                         },
-                        exit_code: Some(i64::from(output.exit_code)),
-                        stdout,
-                        stderr,
-                        duration_ms: u64::try_from(started.elapsed().as_millis())
-                            .unwrap_or(u64::MAX),
-                        stdout_len: stdout_meta.original_len,
-                        stderr_len: stderr_meta.original_len,
-                        stdout_omitted: stdout_meta.omitted,
-                        stderr_omitted: stderr_meta.omitted,
-                        stdout_truncated: stdout_meta.truncated,
-                        stderr_truncated: stderr_meta.truncated,
-                        sandboxed: true,
-                        sandbox_type: Some("opensandbox".to_string()),
-                        sandbox_denied: false,
-                    }
+                        persisted_artifact,
+                    )
                 }
                 Err(e) => {
                     return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
                 }
             };
 
-            // Build result (reuse the existing output rendering below).
             let stdout_summary = summarize_output(&result.stdout);
             let stderr_summary = summarize_output(&result.stderr);
             let summary = if !stderr_summary.is_empty() {
@@ -6618,9 +7497,17 @@ impl ToolSpec for BashTool {
                 "resource_admission_wait_ms": admission_wait_ms,
                 "resource_admission_limit": admission_limit,
             });
+            if let Some(description) = description.as_deref() {
+                metadata["description"] = json!(description);
+            }
             attach_shell_owner_metadata(&mut metadata, context);
             attach_cargo_failure_summary(&mut metadata, command, &result);
             attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
+            if let Some(artifact) = persisted_artifact.as_ref() {
+                output.push_str("\n\n");
+                output.push_str(&format_persisted_shell_artifact_footer(artifact));
+                stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
+            }
 
             return Ok(ToolResult {
                 content: output,
@@ -6630,6 +7517,11 @@ impl ToolSpec for BashTool {
         }
 
         let mut lifecycle_warning = None;
+        let timeout_bounds_ms = if self.optional_timeout {
+            (1, BASH_MAX_TIMEOUT_MS)
+        } else {
+            (1_000, 600_000)
+        };
         let mut receipt_identity = None;
         // #6689: the receipt exists for completion hooks to read. Without one
         // registered it would only ride along in tool metadata, which the
@@ -6669,7 +7561,7 @@ impl ToolSpec for BashTool {
                             lifecycle_warning = Some(err.to_string());
                         }
                     }
-                    Ok(result)
+                    Ok((result, None))
                 }
                 Err(err) => Err(err),
             }
@@ -6680,6 +7572,7 @@ impl ToolSpec for BashTool {
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             let result = manager.execute_with_options_env_for_owner_and_work(
                 command,
+                None,
                 working_dir.as_deref(),
                 timeout_value_ms,
                 true,
@@ -6694,7 +7587,7 @@ impl ToolSpec for BashTool {
                 shell_work_lifecycle_from_context(context),
                 None,
                 persist,
-                (1_000, 600_000),
+                timeout_bounds_ms,
             );
             if let (Ok(result), Some(permit)) = (&result, heavy_permit)
                 && let Some(task_id) = result.task_id.as_deref()
@@ -6703,11 +7596,17 @@ impl ToolSpec for BashTool {
                     .attach_heavy_permit(task_id, permit)
                     .map_err(|error| ToolError::execution_failed(error.to_string()))?;
             }
-            result
+            if let (Ok(result), Some(description)) = (&result, description.clone())
+                && let Some(task_id) = result.task_id.as_deref()
+            {
+                let _ = manager.tag_description(task_id, Some(description));
+            }
+            result.map(|result| (result, None))
         } else {
             execute_foreground_via_background(
                 context,
                 command,
+                description.clone(),
                 heavy_permit,
                 working_dir,
                 timeout_ms,
@@ -6716,11 +7615,7 @@ impl ToolSpec for BashTool {
                 policy_override,
                 extra_env,
                 matches!(context.shell_policy, ShellPolicy::ReadOnly) && !enforced_readonly,
-                if self.optional_timeout {
-                    (1, BASH_MAX_TIMEOUT_MS)
-                } else {
-                    (1_000, 600_000)
-                },
+                timeout_bounds_ms,
                 wants_receipt,
                 &mut receipt_identity,
             )
@@ -6728,7 +7623,7 @@ impl ToolSpec for BashTool {
         };
 
         match result {
-            Ok(result) => {
+            Ok((result, persisted_artifact)) => {
                 let backgrounded_foreground =
                     !background && !interactive && result.status == ShellStatus::Running;
                 if (background || backgrounded_foreground)
@@ -6745,8 +7640,6 @@ impl ToolSpec for BashTool {
                     .cancel_token
                     .as_ref()
                     .is_some_and(|token| token.is_cancelled());
-                // Lowercase `bash` joins stdout and stderr on one pipe, so
-                // its preview is combined output, not stdout.
                 let execution_receipt = receipt_identity.as_ref().and_then(|identity| {
                     shell_execution_receipt(
                         identity,
@@ -6761,6 +7654,9 @@ impl ToolSpec for BashTool {
                 let readonly_offline_hint = (enforced_readonly && !readonly_network)
                     .then(|| readonly_offline_network_hint(command, &result))
                     .flatten();
+                let readonly_sandbox_hint = enforced_readonly
+                    .then(|| readonly_denied_hint(context, command, &result))
+                    .flatten();
                 if self.optional_timeout {
                     let network_restricted_hint = readonly_offline_hint
                         .or_else(|| shell_network_restricted_hint(context, command, &result));
@@ -6771,6 +7667,10 @@ impl ToolSpec for BashTool {
                         execution_receipt,
                         readonly_network,
                         network_restricted_hint,
+                        readonly_sandbox_hint,
+                        background,
+                        description.as_deref(),
+                        persisted_artifact,
                     );
                 }
                 let task_id_str = result.task_id.clone().unwrap_or_default();
@@ -6785,7 +7685,9 @@ impl ToolSpec for BashTool {
                     .or_else(|| shell_network_restricted_hint(context, command, &result))
                     .map(str::to_string);
                 let sandbox_denied_hint = if network_restricted_hint.is_none() {
-                    shell_sandbox_denied_hint(context, &result)
+                    readonly_sandbox_hint
+                        .map(str::to_string)
+                        .or_else(|| shell_sandbox_denied_hint(context, &result))
                 } else {
                     None
                 };
@@ -6922,6 +7824,9 @@ impl ToolSpec for BashTool {
                         }),
                     }),
                 });
+                if let Some(description) = description.as_deref() {
+                    metadata["description"] = json!(description);
+                }
                 if let Some(receipt) = execution_receipt {
                     metadata["execution_receipt"] = receipt;
                 }
@@ -6958,6 +7863,11 @@ impl ToolSpec for BashTool {
                 attach_shell_owner_metadata(&mut metadata, context);
                 attach_cargo_failure_summary(&mut metadata, command, &result);
                 attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    output.push_str("\n\n");
+                    output.push_str(&format_persisted_shell_artifact_footer(artifact));
+                    stamp_persisted_shell_artifact_metadata(&mut metadata, artifact, &output);
+                }
 
                 Ok(ToolResult {
                     content: output,
@@ -7024,21 +7934,31 @@ impl BashTool {
         };
         let timeout_ms = wait_timeout_ms(input)?;
 
-        let (delta, interruption) = if wait {
+        let ((delta, persisted_artifact), interruption) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
         } else {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            let delta = manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, timeout_ms)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-            (delta, None)
+            let raw = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                manager
+                    .get_raw_output_delta_for_session(
+                        &context.state_namespace,
+                        task_id,
+                        false,
+                        timeout_ms,
+                    )
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
+            };
+            (finalize_raw_shell_delta(raw, context), None)
         };
 
         let status = delta.result.status.clone();
         let mut result = build_shell_delta_tool_result(delta, context);
+        if let Some(artifact) = persisted_artifact.as_ref() {
+            attach_shell_artifact_to_tool_result(&mut result, artifact);
+        }
         if let Some(metadata) = result.metadata.as_mut()
             && let Some(object) = metadata.as_object_mut()
         {
@@ -7311,14 +8231,25 @@ impl BashTool {
                 .as_ref()
                 .is_some_and(|token| token.is_cancelled())
             {
-                let mut manager = context
-                    .shell_manager
-                    .lock()
-                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-                let delta = manager
-                    .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
-                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                let raw = {
+                    let mut manager = context
+                        .shell_manager
+                        .lock()
+                        .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                    manager
+                        .get_raw_output_delta_for_session(
+                            &context.state_namespace,
+                            task_id,
+                            false,
+                            0,
+                        )
+                        .map_err(|err| ToolError::execution_failed(err.to_string()))?
+                };
+                let (delta, persisted_artifact) = finalize_raw_shell_delta(raw, context);
                 let mut result = build_shell_delta_tool_result(delta, context);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    attach_shell_artifact_to_tool_result(&mut result, artifact);
+                }
                 if let Some(metadata) = result.metadata.as_mut()
                     && let Some(object) = metadata.as_object_mut()
                 {
@@ -7327,22 +8258,27 @@ impl BashTool {
                 return Ok(result);
             }
 
-            let delta = {
+            let raw = {
                 let mut manager = context
                     .shell_manager
                     .lock()
                     .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
                 manager
-                    .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                    .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?
             };
 
-            if !delta.result.stdout.is_empty()
-                || !delta.result.stderr.is_empty()
-                || delta.result.status != ShellStatus::Running
+            if !raw.stdout.is_empty()
+                || !raw.stderr.is_empty()
+                || raw.status != ShellStatus::Running
                 || elapsed >= timeout_ms
             {
-                return Ok(build_shell_delta_tool_result(delta, context));
+                let (delta, persisted_artifact) = finalize_raw_shell_delta(raw, context);
+                let mut result = build_shell_delta_tool_result(delta, context);
+                if let Some(artifact) = persisted_artifact.as_ref() {
+                    attach_shell_artifact_to_tool_result(&mut result, artifact);
+                }
+                return Ok(result);
             }
 
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -7618,7 +8554,13 @@ async fn wait_for_shell_delta_cancellable(
     context: &ToolContext,
     task_id: &str,
     timeout_ms: u64,
-) -> Result<(ShellDeltaResult, Option<ShellWaitInterruption>), ToolError> {
+) -> Result<
+    (
+        (ShellDeltaResult, Option<PersistedShellArtifact>),
+        Option<ShellWaitInterruption>,
+    ),
+    ToolError,
+> {
     let detach = {
         let mut manager = context
             .shell_manager
@@ -7633,31 +8575,41 @@ async fn wait_for_shell_delta_cancellable(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut stdout_accum = String::new();
     let mut stderr_accum = String::new();
+    let mut stdout_delta_total = 0usize;
+    let mut stderr_delta_total = 0usize;
+    let mut persisted_artifact: Option<PersistedShellArtifact> = None;
 
     let mut poll_tick_ms: u64 = FOREGROUND_POLL_INITIAL_MS;
-    let (command, result, stdout_total_len, stderr_total_len) = loop {
+    let mut last_raw = loop {
         let canceled = context
             .cancel_token
             .as_ref()
             .is_some_and(|token| token.is_cancelled());
         if canceled || detach.load(Ordering::Acquire) {
-            let mut manager = context
-                .shell_manager
-                .lock()
-                .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
-            let delta = manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-            append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
+            let mut raw = {
+                let mut manager = context
+                    .shell_manager
+                    .lock()
+                    .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
+                manager
+                    .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
+            };
+            append_raw_shell_delta(
+                &mut stdout_accum,
+                &mut stderr_accum,
+                &mut stdout_delta_total,
+                &mut stderr_delta_total,
+                &mut persisted_artifact,
+                &mut raw,
+            );
+            raw.stdout = stdout_accum;
+            raw.stderr = stderr_accum;
+            raw.stdout_delta_len = stdout_delta_total;
+            raw.stderr_delta_len = stderr_delta_total;
+            raw.persisted_artifact = persisted_artifact;
             return Ok((
-                shell_delta_with_accumulated_output(
-                    delta.command,
-                    delta.result,
-                    &stdout_accum,
-                    &stderr_accum,
-                    delta.stdout_total_len,
-                    delta.stderr_total_len,
-                ),
+                finalize_raw_shell_delta(raw, context),
                 Some(if canceled {
                     ShellWaitInterruption::Canceled
                 } else {
@@ -7666,81 +8618,126 @@ async fn wait_for_shell_delta_cancellable(
             ));
         }
 
-        let delta = {
+        let mut raw = {
             let mut manager = context
                 .shell_manager
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             manager
-                .get_output_delta_for_session(&context.state_namespace, task_id, false, 0)
+                .get_raw_output_delta_for_session(&context.state_namespace, task_id, false, 0)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?
         };
+        append_raw_shell_delta(
+            &mut stdout_accum,
+            &mut stderr_accum,
+            &mut stdout_delta_total,
+            &mut stderr_delta_total,
+            &mut persisted_artifact,
+            &mut raw,
+        );
 
-        let stdout_total_len = delta.stdout_total_len;
-        let stderr_total_len = delta.stderr_total_len;
-        let command = delta.command.clone();
-        append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
-
-        let status = delta.result.status.clone();
-        if status != ShellStatus::Running || Instant::now() >= deadline {
-            break (command, delta.result, stdout_total_len, stderr_total_len);
+        if raw.status != ShellStatus::Running || Instant::now() >= deadline {
+            break raw;
         }
 
         tokio::time::sleep(Duration::from_millis(poll_tick_ms)).await;
         poll_tick_ms = (poll_tick_ms * 2).min(FOREGROUND_POLL_MAX_MS);
     };
 
-    Ok((
-        shell_delta_with_accumulated_output(
-            command,
-            result,
-            &stdout_accum,
-            &stderr_accum,
-            stdout_total_len,
-            stderr_total_len,
-        ),
-        None,
-    ))
+    last_raw.stdout = stdout_accum;
+    last_raw.stderr = stderr_accum;
+    last_raw.stdout_delta_len = stdout_delta_total;
+    last_raw.stderr_delta_len = stderr_delta_total;
+    last_raw.persisted_artifact = persisted_artifact;
+    Ok((finalize_raw_shell_delta(last_raw, context), None))
 }
 
-fn append_shell_delta_output(
+fn append_bounded_accum(accum: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    accum.push_str(chunk);
+    if accum.len() > RAW_STREAM_MAX_BYTES {
+        let mut start = accum.len().saturating_sub(RAW_STREAM_MAX_BYTES);
+        while start < accum.len() && !accum.is_char_boundary(start) {
+            start += 1;
+        }
+        accum.drain(..start);
+    }
+}
+
+fn append_raw_shell_delta(
     stdout_accum: &mut String,
     stderr_accum: &mut String,
-    result: &ShellResult,
+    stdout_delta_total: &mut usize,
+    stderr_delta_total: &mut usize,
+    persisted_artifact: &mut Option<PersistedShellArtifact>,
+    raw: &mut RawShellDelta,
 ) {
-    if !result.stdout.is_empty() {
-        stdout_accum.push_str(&result.stdout);
-    }
-    if !result.stderr.is_empty() {
-        stderr_accum.push_str(&result.stderr);
+    append_bounded_accum(stdout_accum, &raw.stdout);
+    append_bounded_accum(stderr_accum, &raw.stderr);
+    *stdout_delta_total = stdout_delta_total.saturating_add(raw.stdout_delta_len);
+    *stderr_delta_total = stderr_delta_total.saturating_add(raw.stderr_delta_len);
+    if let Some(artifact) = raw.persisted_artifact.take() {
+        *persisted_artifact = Some(artifact);
     }
 }
 
-fn shell_delta_with_accumulated_output(
-    command: String,
-    mut result: ShellResult,
-    stdout_accum: &str,
-    stderr_accum: &str,
-    stdout_total_len: usize,
-    stderr_total_len: usize,
-) -> ShellDeltaResult {
-    let (stdout, stdout_meta) = truncate_with_meta(stdout_accum);
-    let (stderr, stderr_meta) = truncate_with_meta(stderr_accum);
-    result.stdout = stdout;
-    result.stderr = stderr;
-    result.stdout_len = stdout_meta.original_len;
-    result.stderr_len = stderr_meta.original_len;
-    result.stdout_omitted = stdout_meta.omitted;
-    result.stderr_omitted = stderr_meta.omitted;
-    result.stdout_truncated = stdout_meta.truncated;
-    result.stderr_truncated = stderr_meta.truncated;
+fn finalize_raw_shell_delta(
+    raw: RawShellDelta,
+    context: &ToolContext,
+) -> (ShellDeltaResult, Option<PersistedShellArtifact>) {
+    let (stdout, stdout_meta) = truncate_with_meta(&raw.stdout);
+    let (stderr, stderr_meta) = truncate_with_meta(&raw.stderr);
+    let persisted_artifact = raw.persisted_artifact.or_else(|| {
+        if stdout_meta.truncated || stderr_meta.truncated {
+            let full_combined = combine_full_shell_streams(&raw.stdout, &raw.stderr);
+            persist_shell_output_artifact(
+                &context.state_namespace,
+                None,
+                &format!("shell-wait-{}-{}", raw.task_id, Uuid::new_v4().simple()),
+                full_combined.as_bytes(),
+            )
+            .ok()
+            .map(|mut artifact| {
+                artifact.complete = false;
+                artifact
+            })
+        } else {
+            None
+        }
+    });
+    let result = ShellResult {
+        task_id: Some(raw.task_id),
+        status: raw.status,
+        exit_code: raw.exit_code,
+        stdout,
+        stderr,
+        duration_ms: raw.duration_ms,
+        stdout_len: stdout_meta.original_len.max(raw.stdout_delta_len),
+        stderr_len: stderr_meta.original_len.max(raw.stderr_delta_len),
+        stdout_omitted: stdout_meta
+            .omitted
+            .saturating_add(raw.stdout_delta_len.saturating_sub(raw.stdout.len())),
+        stderr_omitted: stderr_meta
+            .omitted
+            .saturating_add(raw.stderr_delta_len.saturating_sub(raw.stderr.len())),
+        stdout_truncated: stdout_meta.truncated || raw.stdout_delta_len > raw.stdout.len(),
+        stderr_truncated: stderr_meta.truncated || raw.stderr_delta_len > raw.stderr.len(),
+        sandboxed: raw.sandboxed,
+        sandbox_type: raw.sandbox_type,
+        sandbox_denied: raw.sandbox_denied,
+    };
 
-    ShellDeltaResult {
-        command,
-        result,
-        stdout_total_len,
-        stderr_total_len,
-    }
+    (
+        ShellDeltaResult {
+            command: raw.command,
+            result,
+            stdout_total_len: raw.stdout_total_len,
+            stderr_total_len: raw.stderr_total_len,
+        },
+        persisted_artifact,
+    )
 }
 
 /// Refuse a notes target this auto-approved tool must not append to.
@@ -7926,4 +8923,31 @@ pub fn foreground_command_requests_detach(command: &str) -> bool {
             )
         })
     })
+}
+
+#[cfg(test)]
+mod working_dir_error_tests {
+    use super::validate_shell_working_dir;
+    use tempfile::tempdir;
+
+    #[test]
+    fn working_dir_errors_name_bash_instead_of_exec_shell() {
+        let tmp = tempdir().expect("tempdir");
+        let missing = tmp.path().join("does-not-exist");
+        let missing_err = validate_shell_working_dir(&missing, true)
+            .expect_err("missing dir must fail")
+            .to_string();
+        assert!(missing_err.contains("`bash`"), "{missing_err}");
+        assert!(missing_err.contains("`cwd`"), "{missing_err}");
+        assert!(!missing_err.contains("exec_shell"), "{missing_err}");
+
+        let file = tmp.path().join("plain.txt");
+        std::fs::write(&file, "x").expect("write");
+        let not_dir_err = validate_shell_working_dir(&file, false)
+            .expect_err("file path must fail")
+            .to_string();
+        assert!(not_dir_err.contains("`bash`"), "{not_dir_err}");
+        assert!(not_dir_err.contains("`cwd`"), "{not_dir_err}");
+        assert!(!not_dir_err.contains("exec_shell"), "{not_dir_err}");
+    }
 }

@@ -30,18 +30,13 @@ use std::hash::{Hash, Hasher};
 use crate::compaction::estimate_input_tokens_for_pressure;
 use codewhale_models::{Message, SystemPrompt};
 
-/// Default capacity for the rolling audit ring. Sized so a 64-entry window
-/// covers a full capacity controller observation cycle without unbounded
-/// growth on long-running sessions.
-const AUDIT_RING_CAPACITY: usize = 64;
-
 /// Process-local memoization for `estimate_input_tokens_for_pressure`.
 ///
 /// The cache is keyed on the `(messages_revision, system_fingerprint)`
 /// pair, both of which the engine bumps on every content change. On a hit
 /// the previously stored token estimate is returned without re-walking the
 /// message list. On a miss, the estimator runs and the result is stored
-/// alongside the audit ring entry.
+/// for the next lookup.
 #[derive(Debug, Default, Clone)]
 pub struct TokenEstimateCache {
     /// Monotonic counter bumped by the engine on every message mutation.
@@ -51,10 +46,6 @@ pub struct TokenEstimateCache {
     system_fingerprint: u64,
     /// Cached token count, valid iff both keys match the current inputs.
     cached_tokens: Option<usize>,
-    /// Audit ring of recent (revision, tokens) pairs. The most recent entry
-    /// is the tail; the oldest is dropped when capacity is exceeded. Used by
-    /// observability to surface cache effectiveness to `/status`.
-    audit_ring: Vec<(u64, usize)>,
     /// Number of cache hits since the cache was last cleared. Saturates at
     /// `u64::MAX` (effectively never in practice).
     hits: u64,
@@ -97,7 +88,6 @@ impl TokenEstimateCache {
         self.system_fingerprint = system_fingerprint;
         self.cached_tokens = Some(tokens);
         self.misses = self.misses.saturating_add(1);
-        self.push_audit(messages_revision, tokens);
         tokens
     }
 
@@ -115,7 +105,6 @@ impl TokenEstimateCache {
     pub fn invalidate(&mut self) {
         self.cached_tokens = None;
         self.system_fingerprint = 0;
-        self.audit_ring.clear();
         self.hits = 0;
         self.misses = 0;
     }
@@ -124,20 +113,6 @@ impl TokenEstimateCache {
     #[must_use]
     pub fn stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
-    }
-
-    /// Returns the most recent `(revision, tokens)` audit entries, newest
-    /// first. Bounded by [`AUDIT_RING_CAPACITY`].
-    #[must_use]
-    pub fn recent_audit(&self) -> &[(u64, usize)] {
-        &self.audit_ring
-    }
-
-    fn push_audit(&mut self, revision: u64, tokens: usize) {
-        if self.audit_ring.len() >= AUDIT_RING_CAPACITY {
-            self.audit_ring.remove(0);
-        }
-        self.audit_ring.push((revision, tokens));
     }
 }
 
@@ -287,30 +262,5 @@ mod tests {
         let (hits, misses) = cache.stats();
         assert_eq!(hits, 0);
         assert_eq!(misses, 2);
-    }
-
-    #[test]
-    fn audit_ring_records_recent_pairs() {
-        let mut cache = TokenEstimateCache::new();
-        let messages = vec![user_text("hi")];
-        for rev in 1..=5 {
-            let _ = cache.lookup_or_compute(rev, None, &messages);
-        }
-        let ring = cache.recent_audit();
-        assert_eq!(ring.len(), 5);
-        assert_eq!(ring.last().copied(), Some((5, ring.last().unwrap().1)));
-    }
-
-    #[test]
-    fn audit_ring_bounded_by_capacity() {
-        let mut cache = TokenEstimateCache::new();
-        let messages = vec![user_text("hi")];
-        for rev in 1..=(AUDIT_RING_CAPACITY + 10) as u64 {
-            let _ = cache.lookup_or_compute(rev, None, &messages);
-        }
-        let ring = cache.recent_audit();
-        assert_eq!(ring.len(), AUDIT_RING_CAPACITY);
-        // newest entry should be the most recent revision we asked for
-        assert_eq!(ring.last().unwrap().0, (AUDIT_RING_CAPACITY + 10) as u64);
     }
 }

@@ -68,11 +68,11 @@ impl StreamOpenFailure {
     async fn error(self) -> anyhow::Error {
         use anyhow::Context as _;
         match self {
-            Self::HeaderStall => anyhow::Error::new(crate::llm_client::LlmError::NetworkError(
-                "SSE stream request did not receive response headers after 45s \
-                 (HTTP/2 and HTTP/1.1)."
-                    .to_string(),
-            )),
+            Self::HeaderStall => anyhow::Error::new(crate::llm_client::LlmError::HeaderTimeout {
+                waited: std::time::Duration::from_secs(45),
+                http1: false,
+                retried: 0,
+            }),
             Self::WrappedConnectError => {
                 // A port that was just released refuses the connection.
                 let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -251,6 +251,7 @@ async fn run_headless_turn_with_flaky_network(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -399,10 +400,12 @@ async fn terminal_diagnostics_count_transparent_stream_requests_without_extra_sn
 }
 
 /// #6699: drive one interactive turn whose first `failures` requests fail
-/// before a stream opens, with `max_resumes` as the configured budget.
+/// before a stream opens, with `max_resumes` and `open_retries` as the
+/// configured budgets.
 async fn run_turn_with_stream_open_failures(
     failures: usize,
     max_resumes: Option<u32>,
+    open_retries: Option<u32>,
     open_failure: StreamOpenFailure,
 ) -> (
     std::sync::Arc<FlakyNetworkDropModelClient>,
@@ -422,7 +425,12 @@ async fn run_turn_with_stream_open_failures(
     let client: crate::core::model_client::SharedModelClient = model.clone();
     let engine_config = EngineConfig {
         terminal_chrome_enabled: true,
-        stream_retry_limits: turn_budget::resolve_stream_retry_limits(max_resumes, None, None),
+        stream_retry_limits: turn_budget::resolve_stream_retry_limits(
+            max_resumes,
+            None,
+            None,
+            open_retries,
+        ),
         ..deterministic_engine_config(workspace.path())
     };
     let (mut engine, handle) =
@@ -444,41 +452,61 @@ async fn run_turn_with_stream_open_failures(
 }
 
 #[tokio::test]
-async fn stream_open_failure_is_retried_through_the_resume_budget() {
+async fn header_timeout_is_retried_once_and_the_turn_recovers() {
     let (model, status, error, terminal, events) =
-        run_turn_with_stream_open_failures(1, None, StreamOpenFailure::HeaderStall).await;
-    assert_eq!(status, TurnOutcomeStatus::Failed, "{error:?}");
+        run_turn_with_stream_open_failures(1, Some(0), None, StreamOpenFailure::HeaderStall).await;
+    assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "a request that never opened must be re-issued once"
+        2,
+        "a request that received no response headers must be re-sent once"
     );
-    assert_eq!(terminal.model_requests_started, 1);
-    assert_eq!(terminal.stream_resumes, 0);
+    assert_eq!(terminal.model_requests_started, 2);
+    assert_eq!(terminal.stream_resumes, 1);
+    let statuses = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Status { message } if message.contains("stream-open-timeout") => {
+                Some(message.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        statuses,
+        [
+            "Retry attempt: stream-open-timeout 1/1; provider sent no response headers in 45s; sending the request again",
+            "Retry recovery: stream-open-timeout recovered after 1 retries",
+        ]
+    );
     assert!(
-        events
+        !events
             .iter()
             .any(|event| matches!(event, Event::Error { .. })),
-        "a recovered open failure must not surface an error event: {events:?}"
+        "a recovered header timeout must not surface an error event: {events:?}"
     );
 }
 
 #[tokio::test]
-async fn stream_open_failure_fails_the_turn_once_the_budget_is_spent() {
+async fn header_timeout_fails_the_turn_when_the_retry_also_times_out() {
     let (model, status, error, terminal, events) =
-        run_turn_with_stream_open_failures(usize::MAX, None, StreamOpenFailure::HeaderStall).await;
+        run_turn_with_stream_open_failures(usize::MAX, None, None, StreamOpenFailure::HeaderStall)
+            .await;
     assert_eq!(status, TurnOutcomeStatus::Failed);
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "initial attempt plus the default resume budget, then the turn fails"
+        2,
+        "the initial request plus the one default retry, then the turn fails"
     );
-    assert_eq!(terminal.stream_resumes, 0);
+    assert_eq!(terminal.stream_resumes, 1);
+    let error = error.expect("the header timeout must surface");
     assert!(
-        error
-            .as_deref()
-            .is_some_and(|error| error.contains("did not receive response headers")),
-        "the real transport error must surface: {error:?}"
+        error.contains("did not receive response headers after 45s"),
+        "{error}"
+    );
+    assert!(
+        error.contains("already retried once automatically"),
+        "{error}"
     );
     assert_eq!(
         events
@@ -491,17 +519,32 @@ async fn stream_open_failure_fails_the_turn_once_the_budget_is_spent() {
 }
 
 #[tokio::test]
-async fn stream_open_failure_honors_a_configured_resume_budget() {
-    let (model, status, _error, terminal, _events) =
-        run_turn_with_stream_open_failures(usize::MAX, Some(0), StreamOpenFailure::HeaderStall)
-            .await;
+async fn header_timeout_is_not_retried_when_open_retries_is_zero() {
+    let (model, status, error, terminal, events) = run_turn_with_stream_open_failures(
+        usize::MAX,
+        None,
+        Some(0),
+        StreamOpenFailure::HeaderStall,
+    )
+    .await;
     assert_eq!(status, TurnOutcomeStatus::Failed);
     assert_eq!(
         model.calls.load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "`stream_max_resumes = 0` disables the turn-level retry"
+        "`stream.open_retries = 0` disables the header-timeout retry"
     );
     assert_eq!(terminal.stream_resumes, 0);
+    assert!(
+        !error.unwrap_or_default().contains("already retried"),
+        "no retry was attempted"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            Event::Status { message } if message.contains("stream-open-timeout")
+        )),
+        "{events:?}"
+    );
 }
 
 /// #6711: an HTTP/1.1-pinned Anthropic open returns the reqwest connect
@@ -514,7 +557,7 @@ async fn stream_open_failure_behind_adapter_context_is_retried() {
         StreamOpenFailure::WrappedTypedNetworkError,
     ] {
         let (model, status, error, terminal, _events) =
-            run_turn_with_stream_open_failures(1, None, open_failure).await;
+            run_turn_with_stream_open_failures(1, None, None, open_failure).await;
         let safe = matches!(open_failure, StreamOpenFailure::WrappedConnectError);
         assert_eq!(
             status,
@@ -541,6 +584,7 @@ async fn stream_open_failure_behind_adapter_context_is_retried() {
 async fn stream_open_http_rejection_mentioning_connection_is_not_retried() {
     let (model, status, _error, terminal, events) = run_turn_with_stream_open_failures(
         usize::MAX,
+        None,
         None,
         StreamOpenFailure::HttpRejectionMentioningConnection,
     )
@@ -612,6 +656,7 @@ async fn terminal_output_limit_followed_by_stream_error_is_charged_and_not_retri
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -709,6 +754,7 @@ async fn error_frame_turn_events(turns: Vec<Vec<StreamEvent>>) -> (Vec<Event>, u
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -917,6 +963,7 @@ async fn midstream_error_frame_stops_the_stream_and_drops_trailing_deltas() {
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await
@@ -1186,6 +1233,7 @@ async fn run_interactive_turn_with_flaky_network(
             hook_executor: None,
             verbosity: None,
             provenance: UserInputProvenance::ExternalUser,
+            input_authorship: crate::core::ops::TurnInputAuthorship::NotPerson,
             submission_id: None,
         }))
         .await

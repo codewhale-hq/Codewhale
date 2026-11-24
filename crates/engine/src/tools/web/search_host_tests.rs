@@ -104,6 +104,11 @@ async fn real_host_all_nine_provider_decoders_match_current_rust_semantics() {
             json!({"results":[{"title":" A ","link":" https://example.com/a ","description":" body "}]}),
             parse_serply_results,
         ),
+        (
+            "searchapi",
+            json!({"organic_results":[{"title":" A ","link":" https://example.com/a ","snippet":" body ","domain":"example.com"}],"search_metadata":{"status":"Success"}}),
+            parse_searchapi_results,
+        ),
     ];
     for (name, raw, parse) in cases {
         let expected = parse(&raw, 5);

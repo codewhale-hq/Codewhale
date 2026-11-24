@@ -43,6 +43,16 @@ pub struct RemovedPermissionRule {
     pub action: CommandPermissionAction,
     pub tool: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedPermissionAction {
+    pub receipt_id: Option<String>,
+    pub tool_name: String,
+    pub rule: String,
+    pub reason: String,
+    pub action_summary: String,
+    pub approvable: bool,
+    pub approved: bool,
+}
 
 pub trait CommandPermissionsContext {
     fn snapshot(&self) -> Result<PermissionsView, String>;
@@ -53,6 +63,9 @@ pub trait CommandPermissionsContext {
         index: usize,
         expected_token: &str,
     ) -> Result<RemovedPermissionRule, String>;
+    fn blocked_actions(&self) -> Vec<BlockedPermissionAction> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

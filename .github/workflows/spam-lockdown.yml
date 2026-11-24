@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   lockdown:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Auto-close spam patterns from new accounts

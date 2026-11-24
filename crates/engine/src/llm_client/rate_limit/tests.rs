@@ -242,6 +242,14 @@ async fn native_json_envelopes_are_classified_before_model_parsing() {
     .await
     .unwrap_err();
     assert!(matches!(error, LlmError::RateLimited { .. }));
+    let error = inspect_json_envelope(
+        "zai",
+        make(r#"[{"error":{"code":1308,"details":[{"retryDelay":"42s"}]}}]"#),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, LlmError::QuotaWindow { .. }));
+    assert_eq!(error.suggested_retry_delay(), Some(Duration::from_secs(42)));
     let body = r#"{"base_resp":{"status_code":0},"choices":[]}"#;
     let response = inspect_json_envelope("minimax", make(body)).await.unwrap();
     assert_eq!(response.text().await.unwrap(), body);

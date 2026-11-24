@@ -58,10 +58,10 @@ pub struct AccountModels {
 
 #[derive(Clone)]
 pub struct AccountClient {
-    transport: ReqwestTransport,
+    pub(crate) transport: ReqwestTransport,
     store: AccountSessionStore,
     profile: String,
-    api_base: String,
+    pub(crate) api_base: String,
 }
 
 impl AccountClient {
@@ -78,7 +78,7 @@ impl AccountClient {
         })
     }
 
-    fn client(&self) -> CloudClient<'_, ReqwestTransport> {
+    pub(crate) fn client(&self) -> CloudClient<'_, ReqwestTransport> {
         CloudClient {
             transport: &self.transport,
             account_store: self.store.clone(),

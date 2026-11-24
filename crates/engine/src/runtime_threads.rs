@@ -29,9 +29,7 @@ use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
 use crate::core::engine::handle::SteerOutcome;
-use crate::core::engine::{
-    EngineConfig, EngineHandle, spawn_engine_with_authoritative_route_config,
-};
+use crate::core::engine::{EngineConfig, EngineHandle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::cost_status::{
@@ -74,10 +72,10 @@ use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 pub const RUNTIME_EVENT_REPLAY_BATCH_SIZE: usize = 256;
 pub const MAX_RUNTIME_EVENT_REPLAY_TAIL: usize = 4096;
 pub const MAX_RUNTIME_TURN_OPERATION_KEY_BYTES: usize = 128;
-const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const EVENT_TRANSACTION_LOCK_TIMEOUT: Duration = Duration::from_secs(25);
 const EVENT_TRANSACTION_LOCK_POLL: Duration = Duration::from_millis(5);
 const EVENT_TRANSACTION_LOCK_FILE: &str = "events.lock";
-const RUNTIME_PROCESS_OWNER_LOCK_FILE: &str = "runtime-process.owner.lock";
+pub(crate) const RUNTIME_PROCESS_OWNER_LOCK_FILE: &str = "runtime-process.owner.lock";
 const RUNTIME_PROCESS_OWNER_LOCK_HELD: &str = "This runtime is already active in another process. Close the other Codewhale session and try again, or set CODEWHALE_RUNTIME_DIR to a different directory.";
 const AGENT_MAIL_OWNER_FILE: &str = "owner.json";
 /// Every directory `RuntimeThreadStore::open` creates to hold work. Emptiness
@@ -227,7 +225,16 @@ const IMAGE_RUNTIME_SCHEMA_VERSION: u32 = 3;
 const OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION: u32 = 4;
 const PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION: u32 = 5;
 const SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION: u32 = 6;
-const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+const DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION: u32 = 7;
+const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION;
+
+pub(crate) const fn required_thread_schema_version(disallowed_tools: &[String]) -> u32 {
+    if disallowed_tools.is_empty() {
+        CURRENT_RUNTIME_SCHEMA_VERSION
+    } else {
+        DISALLOWED_TOOLS_RUNTIME_SCHEMA_VERSION
+    }
+}
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -386,6 +393,8 @@ pub struct ThreadRecord {
     /// normal configured tool catalog; `Some([])` deliberately exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     /// Extra roots the file tools may read and write outside the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add_dirs: Vec<PathBuf>,
@@ -1141,6 +1150,8 @@ pub struct TurnRecord {
     /// carry none, and so have no restore point.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_writes: Vec<String>,
 }
 
 impl TurnRecord {
@@ -1222,6 +1233,7 @@ impl TurnRecord {
                     && self.artifacts.is_empty()
                     && self.workspace.is_none()
                     && self.workspace_snapshots.is_empty()
+                    && self.delegated_writes.is_empty()
                     && self.source_accounting
                     && self.source_usage_records.len() == 1
                     && self
@@ -1690,6 +1702,14 @@ pub struct RuntimeThreadStore {
     /// whether a read is running by probing it. A writer never holds it, so a
     /// running turn's write is never behind a store-wide read.
     item_index_seed: Arc<parking_lot::Mutex<()>>,
+    /// Whether this handle may write the store's caches. A live engine does; a
+    /// read-only open does not, because its whole contract is that reading a
+    /// thread never mutates a store another process owns.
+    persist_caches: bool,
+    /// Set when the index this process built differs from the cached one, so a
+    /// later [`Self::cache_item_index`] knows there is something to write.
+    item_index_differs_from_cache: Arc<std::sync::atomic::AtomicBool>,
+    thread_progress: Arc<parking_lot::Mutex<HashMap<String, DateTime<Utc>>>>,
     /// Files read by whole-directory turn scans (`list_all_turns`). Shared
     /// across store clones so a `spawn_blocking` snapshot still counts against
     /// the manager the test holds. Per-store so parallel tests do not collide.
@@ -1729,6 +1749,45 @@ struct ItemIndex {
     /// published. Only writes that race a read are recorded; see
     /// [`RuntimeThreadStore::note_item_in_index`].
     pending: Vec<(String, String)>,
+}
+
+/// The item index as it is kept between processes: item id to turn id.
+///
+/// The in-memory index above answers "which items does this turn own", and it
+/// is built by reading every item record because an item's filename carries
+/// only its own id. That read is the cost of the first thread a process opens
+/// (see [`RuntimeThreadStore::ensure_item_index`]), and it is paid again by
+/// every new process — a restarted engine, a `codewhale receipts` run — because
+/// until now the answer lived only in memory.
+///
+/// This file is that answer on disk. It is a cache and nothing more: an id
+/// names one turn for the life of the record, so an entry can be stale only by
+/// naming an item that is gone, and the directory listing — which costs a
+/// `readdir`, not a record read — is what decides which entries still count. A
+/// missing, unreadable or out-of-date file therefore costs one full read and
+/// nothing worse, exactly what every open used to cost.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedItemIndex {
+    schema_version: u32,
+    /// Item id -> the turn that owns it.
+    by_item: HashMap<String, String>,
+}
+
+/// Bumped only if the shape of [`PersistedItemIndex`] changes. A file carrying
+/// another version is ignored and rebuilt, so this is never a migration.
+const ITEM_INDEX_SCHEMA_VERSION: u32 = 1;
+
+/// The cached item index, beside the directories it describes. It is not inside
+/// `items/`: that directory is read as "one file is one item", and a cache in it
+/// would be read as an item.
+const ITEM_INDEX_CACHE_FILE: &str = "item-index.json";
+
+/// The one field a whole-directory read needs from an item record. Deserializing
+/// into this instead of [`TurnItemRecord`] skips every string in `detail` and
+/// `metadata`, which is most of a tool result's bytes.
+#[derive(Debug, Deserialize)]
+struct ItemTurnReference {
+    turn_id: String,
 }
 
 impl RuntimeThreadStore {
@@ -1778,6 +1837,9 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            persist_caches: true,
+            item_index_differs_from_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -1835,6 +1897,9 @@ impl RuntimeThreadStore {
             mail_mutation: Arc::new(parking_lot::Mutex::new(())),
             item_index: Arc::new(parking_lot::RwLock::new(ItemIndex::default())),
             item_index_seed: Arc::new(parking_lot::Mutex::new(())),
+            persist_caches: false,
+            item_index_differs_from_cache: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            thread_progress: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             turn_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(any(test, feature = "test-support"))]
@@ -2526,6 +2591,19 @@ impl RuntimeThreadStore {
 
     pub fn save_thread(&self, thread: &ThreadRecord) -> Result<()> {
         let path = self.thread_path(&thread.id)?;
+        let min_version = required_thread_schema_version(&thread.disallowed_tools);
+        if thread.schema_version < min_version {
+            let mut updated = thread.clone();
+            updated.schema_version = min_version;
+            return write_json_atomic(&path, &updated).with_context(|| {
+                RuntimeStoreRecordFailure::new(
+                    RuntimeStoreOperation::Write,
+                    RuntimeStoreRecordKind::Thread,
+                    &updated.id,
+                    &path,
+                )
+            });
+        }
         write_json_atomic(&path, thread).with_context(|| {
             RuntimeStoreRecordFailure::new(
                 RuntimeStoreOperation::Write,
@@ -2560,6 +2638,9 @@ impl RuntimeThreadStore {
 
     pub fn save_item(&self, item: &TurnItemRecord) -> Result<()> {
         validated_record_id(&item.turn_id, "turn id")?;
+        // Before the write, because the record it replaces is the only thing
+        // that still knows which turn owned this id.
+        self.forget_cached_item_ownership(item);
         let path = self.item_path(&item.id)?;
         write_json_atomic(&path, item).with_context(|| {
             RuntimeStoreRecordFailure::new(
@@ -2588,6 +2669,7 @@ impl RuntimeThreadStore {
         let mut files = Vec::with_capacity(items.len());
         for item in items {
             validated_record_id(&item.turn_id, "turn id")?;
+            self.forget_cached_item_ownership(item);
             let path = self.item_path(&item.id)?;
             reject_symlinked_store_file(&path)?;
             let payload = serde_json::to_string_pretty(item)?;
@@ -3300,7 +3382,13 @@ impl RuntimeThreadStore {
     }
 
     fn remove_item(&self, item_id: &str) -> Result<()> {
-        remove_file_if_exists(&self.item_path(item_id)?)
+        let path = self.item_path(item_id)?;
+        // An id that disappears can come back under another turn, and the cache
+        // would still name the one it left.
+        if self.persist_caches && path.exists() {
+            self.drop_persisted_item_index();
+        }
+        remove_file_if_exists(&path)
     }
 
     pub fn load_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
@@ -3614,16 +3702,22 @@ impl RuntimeThreadStore {
             .collect())
     }
 
-    /// Read the items directory once, and never again for this store.
+    /// Learn which items each turn owns: one listing, plus a record read for
+    /// every item no earlier process has seen.
     ///
     /// An item's filename carries the item id and nothing else, so the only way
-    /// to learn which items a turn has is to read every item record. Both
-    /// callers used to do exactly that per request: [`Self::get_thread_detail`]
+    /// to learn which items a turn has is to open the item records. Both callers
+    /// used to do exactly that per request: [`Self::get_thread_detail`]
     /// (`GET /v1/threads/{id}`, one walk per thread opened) and the fork
     /// preparation whose items the transcript rebuild reads. On the store this
     /// was measured against — 61,441 items, 294MB, 140 threads — one walk costs
     /// ~1.4s warm and 6.7s cold, and it was the whole of a thread's open time; a
     /// median thread holds 272 items, so reading the ones it needs is ~7ms.
+    ///
+    /// The listing is cheap and decides membership; what an earlier process
+    /// learned is read from [`Self::cache_item_index`]'s file, so a store that
+    /// has been opened once costs the listing and nothing more. Measured on a
+    /// 55,572-item store: 3.9s with no cache, 93ms with one.
     ///
     /// The walk is not parallelizable either, which is why this reads once
     /// instead of reading harder: sixteen concurrent `cat` streams of the same
@@ -3649,8 +3743,11 @@ impl RuntimeThreadStore {
             return Ok(());
         }
 
-        let mut by_turn: HashMap<String, Vec<String>> = HashMap::new();
+        // The item ids the store holds now. This is a directory listing, not a
+        // read of its records: on the store this was measured against it is
+        // 27ms for 55,572 items against 4.8s to open every one of them.
         let items_dir = checked_existing_runtime_store_dir(&self.items_dir)?;
+        let mut item_ids: Vec<String> = Vec::new();
         for entry in fs::read_dir(&items_dir)
             .with_context(|| format!("Failed to read {}", items_dir.display()))?
         {
@@ -3659,26 +3756,255 @@ impl RuntimeThreadStore {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let item_id = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            #[cfg(any(test, feature = "test-support"))]
-            self.item_dir_files_read
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let item = self.load_item(&item_id)?;
-            by_turn.entry(item.turn_id).or_default().push(item.id);
+            item_ids.push(
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
         }
 
-        let mut index = self.item_index.write();
-        for (turn_id, item_id) in std::mem::take(&mut index.pending) {
-            let item_ids = by_turn.entry(turn_id).or_default();
-            if !item_ids.contains(&item_id) {
-                item_ids.push(item_id);
+        // What an earlier process already learned about these ids. Only the ids
+        // this listing does not account for are opened: a store that has been
+        // read once costs the listing above and nothing more, however many
+        // items it holds.
+        let known = self.load_persisted_item_index();
+
+        let mut by_turn: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_item: HashMap<String, String> = HashMap::with_capacity(item_ids.len());
+        for item_id in item_ids {
+            // An entry for an id that is no longer in the directory is simply
+            // not consulted: the listing decides membership, so deleting an
+            // item needs no invalidation here.
+            let turn_id = match known.get(&item_id) {
+                Some(turn_id) => turn_id.clone(),
+                None => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    self.item_dir_files_read
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.load_item_turn_id(&item_id)?
+                }
+            };
+            by_item.insert(item_id.clone(), turn_id.clone());
+            by_turn.entry(turn_id).or_default().push(item_id);
+        }
+
+        let differs_from_cache = by_item != known;
+        {
+            let mut index = self.item_index.write();
+            for (turn_id, item_id) in std::mem::take(&mut index.pending) {
+                let item_ids = by_turn.entry(turn_id).or_default();
+                if !item_ids.contains(&item_id) {
+                    item_ids.push(item_id);
+                }
+            }
+            index.by_turn = Some(by_turn);
+        }
+        drop(_seed);
+        // Nothing is written here. Reading a thread must leave the store exactly
+        // as it found it — a `GET` that rewrote a file would violate that for
+        // every reader, and the tests that snapshot a store to prove a route is
+        // read-only would be right to fail. Caching is [`Self::cache_item_index`],
+        // called deliberately by the startup warm-up.
+        if differs_from_cache {
+            self.item_index_differs_from_cache
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Build the item index and leave it on disk for the next process.
+    ///
+    /// The write belongs to a caller that has decided to pay for it — the
+    /// server's startup warm-up — and not to the reads it saves. A cache cannot
+    /// be wrong here, only absent: every id in the file is checked against the
+    /// directory listing before it is used, so a stale entry costs a record read
+    /// and nothing else.
+    pub fn cache_item_index(&self) -> Result<()> {
+        self.ensure_item_index()?;
+        if !self.persist_caches {
+            return Ok(());
+        }
+        if !self
+            .item_index_differs_from_cache
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            // The file already says exactly what this process learned.
+            return Ok(());
+        }
+        let by_item = {
+            let index = self.item_index.read();
+            index
+                .by_turn
+                .as_ref()
+                .map(|by_turn| {
+                    by_turn
+                        .iter()
+                        .flat_map(|(turn_id, item_ids)| {
+                            item_ids
+                                .iter()
+                                .map(move |item_id| (item_id.clone(), turn_id.clone()))
+                        })
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default()
+        };
+        match self.write_persisted_item_index(&by_item) {
+            // Cleared only once the file says it: a write that failed leaves
+            // the flag set, so a later call in this process can still try.
+            Ok(()) => self
+                .item_index_differs_from_cache
+                .store(false, std::sync::atomic::Ordering::Relaxed),
+            // A cache that cannot be written costs the next process the read it
+            // would have saved, which is the state every process was in before
+            // this file existed. It is not a reason to fail startup.
+            Err(error) => tracing::debug!(%error, "runtime item index could not be cached"),
+        }
+        Ok(())
+    }
+
+    /// Where the item index is cached, beside the directories it describes.
+    fn item_index_path(&self) -> Option<PathBuf> {
+        self.threads_dir
+            .parent()
+            .map(|root| root.join(ITEM_INDEX_CACHE_FILE))
+    }
+
+    /// The cached item->turn map, or an empty one to rebuild from.
+    ///
+    /// Every failure reads as "nothing known": a cache that cannot be trusted
+    /// must cost the full read, never a wrong answer, so a file from another
+    /// schema, a truncated file, or a file this process cannot read all take
+    /// the same branch.
+    fn load_persisted_item_index(&self) -> HashMap<String, String> {
+        let Some(path) = self.item_index_path() else {
+            return HashMap::new();
+        };
+        let raw = match read_store_file(&path) {
+            Ok(raw) => raw,
+            // Absent is the normal case for a store no process has warmed yet,
+            // and a file this process may not read is no different from absent.
+            Err(_) => return HashMap::new(),
+        };
+        match serde_json::from_str::<PersistedItemIndex>(&raw) {
+            Ok(cache) if cache.schema_version == ITEM_INDEX_SCHEMA_VERSION => cache.by_item,
+            _ => HashMap::new(),
+        }
+    }
+
+    /// Publish the cache for the next process.
+    ///
+    /// Deliberately not [`write_json_atomic`]: that one syncs the payload and
+    /// then the parent directory, which is what a durable record owes and what a
+    /// cache does not. Losing this file to a crash costs the next process one
+    /// full read — the state every process was in before it existed — so the
+    /// write is a plain rename over a temporary, atomic for readers and cheap
+    /// for the caller.
+    fn write_persisted_item_index(&self, by_item: &HashMap<String, String>) -> Result<()> {
+        let Some(path) = self.item_index_path() else {
+            return Ok(());
+        };
+        reject_symlinked_store_file(&path)?;
+        let payload = serde_json::to_vec(&PersistedItemIndex {
+            schema_version: ITEM_INDEX_SCHEMA_VERSION,
+            by_item: by_item.clone(),
+        })?;
+        // Named for this process so two of them cannot overwrite each other's
+        // temporary; the rename below is what publishes it either way.
+        let temporary = path.with_file_name(format!(
+            "{ITEM_INDEX_CACHE_FILE}.{}.tmp",
+            std::process::id()
+        ));
+        fs::write(&temporary, payload)
+            .with_context(|| format!("Failed to write {}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .with_context(|| format!("Failed to publish {}", path.display()))?;
+        Ok(())
+    }
+
+    /// The turn an item belongs to, without materializing the record.
+    ///
+    /// Only used where the whole directory is read to learn that one field —
+    /// see [`Self::ensure_item_index`]. An item's `detail` can hold a tool
+    /// result of hundreds of kilobytes, and deserializing into
+    /// [`TurnItemRecord`] allocates every one of them to answer a question
+    /// about an id.
+    fn load_item_turn_id(&self, item_id: &str) -> Result<String> {
+        let path = self.item_path(item_id)?;
+        let raw = read_store_file(&path).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Read,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        let reference: ItemTurnReference = serde_json::from_str(&raw).with_context(|| {
+            RuntimeStoreRecordFailure::new(
+                RuntimeStoreOperation::Parse,
+                RuntimeStoreRecordKind::Item,
+                item_id,
+                &path,
+            )
+        })?;
+        Ok(reference.turn_id)
+    }
+
+    /// Drop what the cache says about item ownership if this write moves an
+    /// item to another turn.
+    ///
+    /// An item's filename is its id, so a record written again under a second
+    /// turn is indistinguishable from the outside: the listing sees the same
+    /// name, and a cache built before the write keeps answering for the turn
+    /// that lost it. Ownership is therefore checked at the one place it can
+    /// change — the write — and the cache is dropped rather than patched. A
+    /// missing cache costs the next process one full read, which is the safe
+    /// side of this trade; a wrong owner is a turn that silently lists an item
+    /// it no longer has and a turn that cannot find one it does.
+    fn forget_cached_item_ownership(&self, item: &TurnItemRecord) {
+        if !self.persist_caches {
+            return;
+        }
+        let Some(cache) = self.item_index_path() else {
+            return;
+        };
+        // Nothing cached, nothing that can be stale — and no record read paid
+        // by the common case of a store no process has warmed yet.
+        if !cache.exists() {
+            return;
+        }
+        let previous = match self.load_item_turn_id(&item.id) {
+            Ok(turn_id) => turn_id,
+            // A new id: no cached entry can name it.
+            Err(error) if store_record_missing(&error) => return,
+            // Unreadable, so its owner is unknown. Distrust the whole cache
+            // rather than keep an entry that may be about to be wrong.
+            Err(_) => {
+                self.drop_persisted_item_index();
+                return;
+            }
+        };
+        if previous == item.turn_id {
+            return;
+        }
+        // This process's index holds the same stale entry.
+        {
+            let mut index = self.item_index.write();
+            if let Some(by_turn) = index.by_turn.as_mut()
+                && let Some(item_ids) = by_turn.get_mut(&previous)
+            {
+                item_ids.retain(|known| known != &item.id);
             }
         }
-        index.by_turn = Some(by_turn);
-        Ok(())
+        self.drop_persisted_item_index();
+    }
+
+    /// Forget the index kept on disk, so the next process rebuilds it.
+    fn drop_persisted_item_index(&self) {
+        if let Some(path) = self.item_index_path()
+            && let Err(error) = remove_file_if_exists(&path)
+        {
+            tracing::debug!(%error, "runtime item index cache could not be dropped");
+        }
     }
 
     /// Keep the item index current across an item write.
@@ -4020,7 +4346,7 @@ impl RuntimeThreadStore {
         let turn_id = turn_id.map(ToString::to_string);
         let item_id = item_id.map(ToString::to_string);
         let event = event.into();
-        tokio::task::spawn_blocking(move || {
+        let record = tokio::task::spawn_blocking(move || {
             store.append_event_transaction(
                 thread_id,
                 turn_id,
@@ -4031,7 +4357,24 @@ impl RuntimeThreadStore {
             )
         })
         .await
-        .context("Runtime event transaction worker failed")?
+        .context("Runtime event transaction worker failed")??;
+        let mut progress = self.thread_progress.lock();
+        let newest = progress
+            .entry(record.thread_id.clone())
+            .or_insert(record.timestamp);
+        *newest = (*newest).max(record.timestamp);
+        drop(progress);
+        Ok(record)
+    }
+
+    pub fn thread_last_progress_at(&self, thread_id: &str) -> Option<DateTime<Utc>> {
+        self.thread_progress.lock().get(thread_id).copied()
+    }
+
+    pub fn forget_thread_progress(&self, keep: &std::collections::HashSet<String>) {
+        self.thread_progress
+            .lock()
+            .retain(|thread, _| keep.contains(thread));
     }
 
     fn append_event_transaction(
@@ -4557,11 +4900,10 @@ pub struct RuntimeStoreBinding {
 
 impl RuntimeStoreBinding {
     /// The confinement shared by every store-recovery predicate: the bound
-    /// store must sit at `<state>/sessions/<session-id>/runtime` (or a
+    /// store must sit at `<sessions>/<session-id>/runtime` (or a
     /// `runtime-recovered-*` sibling) with no symlink on the way down. Wrong
     /// owner, symlinks and external paths fail closed for all callers.
-    fn is_confined_session_store(&self) -> Result<bool> {
-        let sessions = codewhale_config::resolve_state_dir("sessions")?;
+    fn is_confined_to_sessions_root(&self, sessions: &Path) -> Result<bool> {
         let Some(session_dir) = self.data_dir.parent() else {
             return Ok(false);
         };
@@ -4583,9 +4925,9 @@ impl RuntimeStoreBinding {
         // via `prepare_canonical_sessions_root`; only a caller that never
         // warmed it (synchronous tests and tools) resolves it here.
         let parent = session_dir.parent();
-        let under_sessions = parent == Some(sessions.as_path())
-            || cached_canonical_sessions_root(&sessions)
-                .or_else(|| resolve_canonical_sessions_root(&sessions))
+        let under_sessions = parent == Some(sessions)
+            || cached_canonical_sessions_root(sessions)
+                .or_else(|| resolve_canonical_sessions_root(sessions))
                 .is_some_and(|canonical| parent == Some(canonical.as_path()));
         if !under_sessions
             || !(store_name == "runtime" || store_name.starts_with("runtime-recovered-"))
@@ -4596,10 +4938,43 @@ impl RuntimeStoreBinding {
         {
             return Ok(false);
         }
-        for path in [&sessions, session_dir, &self.data_dir] {
+        for path in [sessions, session_dir, &self.data_dir] {
             reject_symlinked_store_dir(path)?;
         }
         Ok(true)
+    }
+
+    fn is_confined_session_store(&self) -> Result<bool> {
+        let sessions = codewhale_config::resolve_state_dir("sessions")?;
+        self.is_confined_to_sessions_root(&sessions)
+    }
+
+    fn is_confined_migration_store(&self, sessions_dir: &Path) -> Result<bool> {
+        if self.is_confined_to_sessions_root(sessions_dir)? || self.is_confined_session_store()? {
+            return Ok(true);
+        }
+        let mut tasks_roots = vec![crate::task_manager::default_tasks_dir()];
+        if sessions_dir.file_name().and_then(|n| n.to_str()) == Some("sessions")
+            && let Some(state_root) = sessions_dir.parent()
+        {
+            tasks_roots.push(state_root.join("tasks"));
+        }
+        for tasks_dir in tasks_roots {
+            let runtime_dir = tasks_dir.join("runtime");
+            let matches = self.data_dir == runtime_dir
+                || cached_canonical_sessions_root(&tasks_dir)
+                    .or_else(|| resolve_canonical_sessions_root(&tasks_dir))
+                    .is_some_and(|canonical_tasks| {
+                        self.data_dir == canonical_tasks.join("runtime")
+                    });
+            if matches {
+                for path in [&tasks_dir, &runtime_dir, &self.data_dir] {
+                    reject_symlinked_store_dir(path)?;
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Only a missing, confined session store can recover from its transcript.
@@ -4935,19 +5310,94 @@ impl RuntimeStoreBinding {
             "Runtime store {} is outside the sessions directory",
             self.data_dir.display()
         );
+        self.try_hold_verified_store(None)
+    }
+
+    pub fn try_hold_for_sessions_dir(
+        &self,
+        sessions_dir: &Path,
+    ) -> Result<Option<HeldRuntimeStore>> {
+        anyhow::ensure!(
+            self.is_confined_migration_store(sessions_dir)?,
+            "Runtime store {} is outside the sessions or tasks runtime directories",
+            self.data_dir.display()
+        );
+        self.try_hold_verified_store(Some(sessions_dir.to_path_buf()))
+    }
+
+    fn try_hold_verified_store(
+        &self,
+        migration_sessions_dir: Option<PathBuf>,
+    ) -> Result<Option<HeldRuntimeStore>> {
         anyhow::ensure!(
             self.data_dir.is_dir(),
             "Runtime store {} is not a directory",
             self.data_dir.display()
         );
-        let lock = RuntimeProcessOwnerLock::try_acquire_file(
+        reject_symlinked_store_dir(&self.data_dir)?;
+        let Some(lock) = RuntimeProcessOwnerLock::try_acquire_file(
             &self.data_dir.join(RUNTIME_PROCESS_OWNER_LOCK_FILE),
             true,
-        )?;
-        Ok(lock.map(|lock| HeldRuntimeStore {
+        )?
+        else {
+            return Ok(None);
+        };
+        let held = HeldRuntimeStore {
             binding: self.clone(),
+            migration_sessions_dir,
             _lock: lock,
-        }))
+        };
+        held.verify_confined()?;
+        Ok(Some(held))
+    }
+
+    pub fn preview_migrate_session_workspace(
+        &self,
+        sessions_dir: &Path,
+        session_ids: Option<&HashSet<String>>,
+        old_workspace: &Path,
+        new_workspace: &Path,
+    ) -> Result<Option<(Vec<String>, Vec<String>)>> {
+        anyhow::ensure!(
+            self.is_confined_migration_store(sessions_dir)?,
+            "Runtime store {} is outside the sessions or tasks runtime directories",
+            self.data_dir.display()
+        );
+        reject_symlinked_store_dir(&self.data_dir)?;
+        let lock_path = self.data_dir.join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
+        match open_runtime_store_file(&lock_path, "Execution owner lease", |options| {
+            options.read(true);
+        }) {
+            Ok(file) => {
+                let unlocked = codewhale_util::lock::try_lock_file_exclusive(&file)
+                    .context("Failed to probe execution owner lease")?;
+                if unlocked {
+                    codewhale_util::lock::unlock(&file);
+                } else {
+                    return Ok(None);
+                }
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        if !self.data_dir.join("threads").is_dir() {
+            return Ok(Some((Vec::new(), Vec::new())));
+        }
+        let Some(store) = RuntimeThreadStore::open_read_only(self.data_dir.clone())? else {
+            return Ok(Some((Vec::new(), Vec::new())));
+        };
+        let (migrated, skipped) = migrate_store_threads(
+            &store,
+            session_ids,
+            old_workspace,
+            new_workspace,
+            true,
+            None,
+        )?;
+        Ok(Some((migrated, skipped)))
     }
 }
 
@@ -4955,6 +5405,7 @@ impl RuntimeStoreBinding {
 /// session reconcile, or the switch/delete that just stopped binding it.
 pub struct HeldRuntimeStore {
     binding: RuntimeStoreBinding,
+    migration_sessions_dir: Option<PathBuf>,
     _lock: RuntimeProcessOwnerLock,
 }
 
@@ -5055,7 +5506,21 @@ impl HeldRuntimeStore {
     }
 
     fn open_store(&self) -> Result<RuntimeThreadStore> {
+        self.verify_confined()?;
         RuntimeThreadStore::open(self.binding.data_dir.clone())
+    }
+
+    fn verify_confined(&self) -> Result<()> {
+        let confined = match self.migration_sessions_dir.as_deref() {
+            Some(dir) => self.binding.is_confined_migration_store(dir)?,
+            None => self.binding.is_confined_session_store()?,
+        };
+        anyhow::ensure!(
+            confined,
+            "Runtime store {} is outside its confined root",
+            self.binding.data_dir.display()
+        );
+        reject_symlinked_store_dir(&self.binding.data_dir)
     }
 
     /// Threads in this store that name no session document, with their
@@ -5160,6 +5625,100 @@ impl HeldRuntimeStore {
         }
         Ok(unbound)
     }
+
+    pub fn migrate_session_workspace(
+        &self,
+        session_ids: Option<&HashSet<String>>,
+        old_workspace: &Path,
+        new_workspace: &Path,
+        dry_run: bool,
+        publication_update: Option<(
+            &str,
+            Option<&crate::session_manager::SessionObservation>,
+            &crate::session_manager::SessionObservation,
+        )>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        if !self.binding.data_dir.join("threads").is_dir() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let store = if dry_run {
+            self.verify_confined()?;
+            let Some(store) = RuntimeThreadStore::open_read_only(self.binding.data_dir.clone())?
+            else {
+                return Ok((Vec::new(), Vec::new()));
+            };
+            store
+        } else {
+            self.open_store()?
+        };
+        migrate_store_threads(
+            &store,
+            session_ids,
+            old_workspace,
+            new_workspace,
+            dry_run,
+            publication_update,
+        )
+    }
+}
+
+fn migrate_store_threads(
+    store: &RuntimeThreadStore,
+    session_ids: Option<&HashSet<String>>,
+    old_workspace: &Path,
+    new_workspace: &Path,
+    dry_run: bool,
+    publication_update: Option<(
+        &str,
+        Option<&crate::session_manager::SessionObservation>,
+        &crate::session_manager::SessionObservation,
+    )>,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let _thread_mutation = store.thread_mutation.lock();
+    let (threads, mut skipped) = store.list_threads_lenient()?;
+    let mut migrated = Vec::new();
+    for mut thread in threads {
+        if let Some(allowed) = session_ids {
+            let Some(session_id) = thread.session_id.as_deref() else {
+                continue;
+            };
+            if !allowed.contains(session_id) {
+                continue;
+            }
+        }
+        let next_workspace = crate::session_manager::remap_workspace_path(
+            &thread.workspace,
+            old_workspace,
+            new_workspace,
+        );
+        let mut observation_updated = false;
+        if let Some((expected_id, before_obs, after_obs)) = publication_update
+            && thread.session_id.as_deref() == Some(expected_id)
+            && let Some(checkpoint) = thread.saved_session_checkpoint.as_mut()
+            && let Some(obs) = checkpoint.publication_observation.as_ref()
+            && obs.same_session_target(after_obs)
+            && obs != after_obs
+        {
+            if before_obs.is_some_and(|pre| obs == pre) {
+                checkpoint.publication_observation = Some(after_obs.clone());
+                observation_updated = true;
+            } else {
+                skipped.push(format!(
+                    "thread {}: its saved-session observation predates this migration or a change made outside it; reopen session {expected_id} before saving from this thread",
+                    thread.id
+                ));
+            }
+        }
+        let workspace_remapped = next_workspace.is_some();
+        if let Some(next) = next_workspace {
+            thread.workspace = next;
+            migrated.push(thread.id.clone());
+        }
+        if !dry_run && (workspace_remapped || observation_updated) {
+            store.save_thread(&thread)?;
+        }
+    }
+    Ok((migrated, skipped))
 }
 
 /// Clear `session_id` (and its checkpoint) on every thread in `store` that
@@ -6036,8 +6595,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| anyhow!("Runtime record has no basename"))?;
-    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
-        .replace(payload.as_bytes())
+    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)
+        .and_then(|file| file.replace(payload.as_bytes()))
         .with_context(|| format!("Failed to write {}", path.display()))?;
     #[cfg(unix)]
     if let (Some(ancestor), Some(name)) = (parent.parent(), parent.file_name()) {

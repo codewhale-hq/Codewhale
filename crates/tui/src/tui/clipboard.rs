@@ -30,12 +30,21 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+#[cfg(all(
+    not(test),
+    any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )
+))]
+use arboard::Clipboard;
 #[cfg(any(
     target_os = "macos",
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
-use arboard::{Clipboard, ImageData};
+use arboard::ImageData;
 use base64::Engine as _;
 #[cfg(any(
     target_os = "macos",
@@ -57,6 +66,10 @@ const MAX_CLIPBOARD_HTML_BYTES: usize = 1024 * 1024;
 const WAYLAND_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
 const WL_PASTE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(any(not(test), all(test, unix)))]
+const TMUX_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(any(not(test), all(test, unix)))]
+const TMUX_STDERR_MAX_BYTES: u64 = 64 * 1024;
 
 /// Convert rich clipboard content without loading its linked resources. Keep
 /// the plain representation as a lossless fallback for empty/oversized HTML.
@@ -239,6 +252,13 @@ pub enum ClipboardContent {
     Image(PastedImage),
 }
 
+/// A clipboard read: answered at once (a test double, or no readable
+/// endpoint) or still running on the reader thread.
+pub(crate) enum ClipboardRead {
+    Ready(Option<ClipboardContent>),
+    Pending(std::sync::mpsc::Receiver<Option<ClipboardContent>>),
+}
+
 struct TerminalClipboardWriteRequest {
     text: String,
     in_tmux: bool,
@@ -340,18 +360,33 @@ pub struct ClipboardHandler {
     primary_enabled: bool,
     #[cfg(test)]
     primary_text: Option<String>,
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     clipboard: Option<Clipboard>,
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     clipboard_init_attempted: bool,
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
+    ))]
+    clipboard_init_pending: Option<std::sync::mpsc::Receiver<Option<Clipboard>>>,
     #[cfg(test)]
     written_text: Vec<String>,
     #[cfg(test)]
@@ -360,6 +395,9 @@ pub struct ClipboardHandler {
     /// clipboard answers, which tests must never touch.
     #[cfg(test)]
     clipboard_content: Option<ClipboardContent>,
+    /// A read that answers when the test sends on the paired sender.
+    #[cfg(test)]
+    pending_read: Option<std::sync::mpsc::Receiver<Option<ClipboardContent>>>,
 }
 
 impl ClipboardHandler {
@@ -382,24 +420,41 @@ impl ClipboardHandler {
             primary_enabled: false,
             #[cfg(test)]
             primary_text: None,
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
             ))]
             clipboard: None,
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
             ))]
             clipboard_init_attempted: false,
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
+            ))]
+            clipboard_init_pending: None,
             #[cfg(test)]
             written_text: Vec::new(),
             #[cfg(test)]
             fail_text_writes: false,
             #[cfg(test)]
             clipboard_content: None,
+            #[cfg(test)]
+            pending_read: None,
         }
     }
 
@@ -435,20 +490,21 @@ impl ClipboardHandler {
         handler
     }
 
+    /// A clipboard whose next read is still running until the returned
+    /// sender answers it.
+    #[cfg(test)]
+    pub(crate) fn with_pending_read_for_test()
+    -> (Self, std::sync::mpsc::Sender<Option<ClipboardContent>>) {
+        let mut handler = Self::for_test(false, false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        handler.pending_read = Some(rx);
+        (handler, tx)
+    }
+
     #[cfg(test)]
     pub(crate) fn unavailable_for_test(in_ssh_session: bool) -> Self {
         let mut handler = Self::for_test(in_ssh_session, false);
         handler.fail_text_writes = true;
-        // Reads are unavailable too: never fall through to the host's real
-        // clipboard from a test.
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
-        ))]
-        {
-            handler.clipboard_init_attempted = true;
-        }
         handler
     }
 
@@ -542,10 +598,13 @@ impl ClipboardHandler {
     /// temporary thread and give it 500 ms; if it doesn't return in time the
     /// handler stays in fallback/no-op mode and `read`/`write_text` fall
     /// through to their OSC 52 and pbcopy/powershell fallbacks.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     fn ensure_clipboard(&mut self) {
         // `clipboard_init_attempted` means the backend answered for good:
@@ -555,9 +614,12 @@ impl ClipboardHandler {
             return;
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(Clipboard::new().ok());
+        let rx = self.clipboard_init_pending.take().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(Clipboard::new().ok());
+            });
+            rx
         });
         // A timeout is not proof that the clipboard is unusable: a capture tool
         // holding the clipboard open can delay the open past the budget, and
@@ -570,108 +632,71 @@ impl ClipboardHandler {
                 self.clipboard_init_attempted = true;
             }
             Ok(None) => self.clipboard_init_attempted = true,
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.clipboard_init_pending = Some(rx);
                 tracing::warn!(
                     target: "codewhale_tui::clipboard",
                     "clipboard open timed out; will retry on the next paste"
                 );
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.clipboard_init_attempted = true;
+            }
         }
     }
 
-    /// Read the clipboard and return the parsed content.
+    /// Start a clipboard read without waiting on it.
+    ///
+    /// `wl-paste`, the native backend's first open and Windows' PowerShell
+    /// image fallback can each take seconds, so the read runs on its own
+    /// thread with its own backend handle and the caller polls the receiver.
+    /// `prefer_markdown` turns rich HTML into Markdown for the composer;
+    /// credentials and configuration fields read literal text.
     ///
     /// `workspace` is used as a fallback location when `~/.codewhale/` cannot
     /// be resolved (e.g. running with a stripped HOME in CI sandboxes).
-    pub fn read(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+    pub(crate) fn read(&mut self, workspace: &Path, prefer_markdown: bool) -> ClipboardRead {
+        // Tests never touch the host clipboard.
         #[cfg(test)]
-        if let Some(content) = self.clipboard_content.clone() {
-            return Some(content);
-        }
-        self.read_content(workspace, false)
-    }
-
-    /// Composer paste preserves headings, lists, links, tables and code from
-    /// rich applications. Credentials and configuration fields use `read` so
-    /// their literal text is never interpreted as Markdown.
-    pub fn read_markdown(&mut self, workspace: &Path) -> Option<ClipboardContent> {
-        #[cfg(test)]
-        if let Some(content) = self.clipboard_content.clone() {
-            return Some(content);
-        }
-        self.read_content(workspace, true)
-    }
-
-    fn read_content(
-        &mut self,
-        workspace: &Path,
-        prefer_markdown: bool,
-    ) -> Option<ClipboardContent> {
-        // With no display exported over SSH there is no synchronously readable
-        // clipboard endpoint. A forwarded X11/Wayland display is explicit and
-        // remains readable, including its image clipboard.
-        if !self.terminal_context.permits_native_read() {
-            return None;
-        }
-
-        #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
-        if !prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
-            return Some(ClipboardContent::Text(text));
-        }
-
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
-        ))]
         {
-            self.ensure_clipboard();
-            if let Some(clipboard) = self.clipboard.as_mut() {
-                if prefer_markdown
-                    && let Ok(html) = clipboard.get().html()
-                    && let Some(markdown) = clipboard_markdown(&html)
-                {
-                    return Some(ClipboardContent::Text(markdown));
-                }
-                if let Ok(text) = clipboard.get_text() {
-                    return Some(ClipboardContent::Text(text));
-                }
-
-                match clipboard.get_image() {
-                    Ok(image) => match save_image_as_png(workspace, &image) {
-                        Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
-                        Err(error) => tracing::warn!(
-                            target: "codewhale_tui::clipboard",
-                            "read: saving the clipboard image failed: {error:#}"
-                        ),
-                    },
-                    Err(error) => tracing::warn!(
+            let _ = (workspace, prefer_markdown);
+            match self.pending_read.take() {
+                Some(rx) => ClipboardRead::Pending(rx),
+                None => ClipboardRead::Ready(self.clipboard_content.clone()),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            // With no display exported over SSH there is no readable clipboard
+            // endpoint. A forwarded X11/Wayland display is explicit and remains
+            // readable, including its image clipboard.
+            if !self.terminal_context.permits_native_read() {
+                return ClipboardRead::Ready(None);
+            }
+            let workspace = workspace.to_path_buf();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("clipboard-read".to_string())
+                .spawn(move || {
+                    // The image writer creates `clipboard-images` but not a
+                    // missing state root (e.g. CODEWHALE_HOME points elsewhere).
+                    let images = codewhale_runtime::config::clipboard_images_dir(&workspace);
+                    if let Some(root) = images.parent() {
+                        let _ = std::fs::create_dir_all(root);
+                    }
+                    let _ = tx.send(read_native_clipboard(&workspace, prefer_markdown));
+                });
+            match spawned {
+                Ok(_) => ClipboardRead::Pending(rx),
+                Err(error) => {
+                    tracing::warn!(
                         target: "codewhale_tui::clipboard",
-                        "read: clipboard has no readable image: {error}"
-                    ),
-                }
-                // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
-                // Some capture tools publish the bitmap under a format that
-                // path misses, or leave it delay-rendered in a way that only
-                // resolves once another application asks: QQ's screenshot is
-                // the reported case, where the picture becomes readable only
-                // after it has been pasted somewhere else first. .NET's
-                // Clipboard.GetImage() handles those, so ask it before
-                // deciding the clipboard holds no image.
-                #[cfg(all(target_os = "windows", not(test)))]
-                if let Some(pasted) = read_image_via_powershell(workspace) {
-                    return Some(ClipboardContent::Image(pasted));
+                        "read: could not start the clipboard reader: {error}"
+                    );
+                    ClipboardRead::Ready(None)
                 }
             }
         }
-
-        #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
-        if prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
-            return Some(ClipboardContent::Text(text));
-        }
-
-        let _ = (workspace, prefer_markdown);
-        None
     }
 
     /// Write text to the clipboard.
@@ -784,6 +809,68 @@ impl ClipboardHandler {
     }
 }
 
+/// Blocking clipboard read; runs only on the `clipboard-read` thread.
+#[cfg(not(test))]
+fn read_native_clipboard(workspace: &Path, prefer_markdown: bool) -> Option<ClipboardContent> {
+    #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+    if !prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
+        return Some(ClipboardContent::Text(text));
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    {
+        if let Ok(mut clipboard) = Clipboard::new() {
+            if prefer_markdown
+                && let Ok(html) = clipboard.get().html()
+                && let Some(markdown) = clipboard_markdown(&html)
+            {
+                return Some(ClipboardContent::Text(markdown));
+            }
+            if let Ok(text) = clipboard.get_text() {
+                return Some(ClipboardContent::Text(text));
+            }
+
+            match clipboard.get_image() {
+                Ok(image) => match save_image_as_png(workspace, &image) {
+                    Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
+                    Err(error) => tracing::warn!(
+                        target: "codewhale_tui::clipboard",
+                        "read: saving the clipboard image failed: {error:#}"
+                    ),
+                },
+                Err(error) => tracing::warn!(
+                    target: "codewhale_tui::clipboard",
+                    "read: clipboard has no readable image: {error}"
+                ),
+            }
+            // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
+            // Some capture tools publish the bitmap under a format that
+            // path misses, or leave it delay-rendered in a way that only
+            // resolves once another application asks: QQ's screenshot is
+            // the reported case, where the picture becomes readable only
+            // after it has been pasted somewhere else first. .NET's
+            // Clipboard.GetImage() handles those, so ask it before
+            // deciding the clipboard holds no image.
+            #[cfg(all(target_os = "windows", not(test)))]
+            if let Some(pasted) = read_image_via_powershell(workspace) {
+                return Some(ClipboardContent::Image(pasted));
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+    if prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
+        return Some(ClipboardContent::Text(text));
+    }
+
+    let _ = (workspace, prefer_markdown);
+    None
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 fn write_text_with_pbcopy(text: &str) -> Result<()> {
     write_text_with_stdin_command("pbcopy", &[], text, "pbcopy")
@@ -813,10 +900,13 @@ fn write_text_with_stdin_command(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run {label}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {label}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(text.as_bytes())
+    {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!("Failed to write to {label}: {e}"));
     }
     let _ = std::thread::Builder::new()
         .name("clipboard-wait".to_string())
@@ -836,13 +926,14 @@ fn read_text_with_wlpaste() -> Result<String> {
     read_text_with_wlpaste_using_argv("wl-paste")
 }
 
-#[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
-fn wait_wayland_clipboard_child(
+#[cfg(any(not(test), all(test, unix)))]
+fn wait_bounded_clipboard_child(
     mut child: std::process::Child,
     program: &str,
+    timeout: std::time::Duration,
 ) -> Result<std::process::ExitStatus> {
     use wait_timeout::ChildExt;
-    let waited = child.wait_timeout(WAYLAND_CLIPBOARD_TIMEOUT);
+    let waited = child.wait_timeout(timeout);
     if let Ok(Some(status)) = waited {
         return Ok(status);
     }
@@ -854,11 +945,19 @@ fn wait_wayland_clipboard_child(
         });
     match waited {
         Err(e) => bail!("Failed to wait on {program}: {e}"),
-        _ => bail!(
-            "{program} timed out after {}s",
-            WAYLAND_CLIPBOARD_TIMEOUT.as_secs()
-        ),
+        _ if timeout.subsec_nanos() == 0 => {
+            bail!("{program} timed out after {}s", timeout.as_secs())
+        }
+        _ => bail!("{program} timed out after {}ms", timeout.as_millis()),
     }
+}
+
+#[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
+fn wait_wayland_clipboard_child(
+    child: std::process::Child,
+    program: &str,
+) -> Result<std::process::ExitStatus> {
+    wait_bounded_clipboard_child(child, program, WAYLAND_CLIPBOARD_TIMEOUT)
 }
 
 #[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
@@ -948,6 +1047,18 @@ fn write_text_with_tmux(text: &str) -> Result<()> {
 /// cannot honor the command.
 #[cfg(any(not(test), all(test, unix)))]
 fn write_text_with_tmux_using_argv(program: &str, prefix_args: &[&str], text: &str) -> Result<()> {
+    write_text_with_tmux_using_argv_with_timeout(program, prefix_args, text, TMUX_CLIPBOARD_TIMEOUT)
+}
+
+#[cfg(any(not(test), all(test, unix)))]
+fn write_text_with_tmux_using_argv_with_timeout(
+    program: &str,
+    prefix_args: &[&str],
+    text: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    use std::io::Read as _;
+
     let mut child = Command::new(program)
         .args(prefix_args)
         .args(["load-buffer", "-w", "-"])
@@ -957,30 +1068,60 @@ fn write_text_with_tmux_using_argv(program: &str, prefix_args: &[&str], text: &s
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run tmux load-buffer -w: {e}"))?;
 
-    let write_result = child
-        .stdin
-        .take()
-        .context("open tmux clipboard input")
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(text.as_bytes())
-                .context("write tmux clipboard input")
-        });
-    let output = child
-        .wait_with_output()
-        .context("wait for tmux load-buffer -w")?;
-    write_result?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+    let stdin = child.stdin.take();
+    let stderr = child.stderr.take();
+    let payload = text.as_bytes().to_vec();
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(error) = std::thread::Builder::new()
+        .name("tmux-clipboard-input".to_string())
+        .spawn(move || {
+            let written = match stdin {
+                Some(mut stdin) => stdin
+                    .write_all(&payload)
+                    .context("write tmux clipboard input"),
+                None => Err(anyhow::anyhow!("open tmux clipboard input")),
+            };
+            let _ = write_tx.send(written);
+        })
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!(
+            "spawn tmux clipboard input writer: {error}"
+        ));
+    }
+
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(error) = std::thread::Builder::new()
+        .name("tmux-clipboard-stderr".to_string())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stderr) = stderr {
+                let _ = stderr.take(TMUX_STDERR_MAX_BYTES).read_to_end(&mut bytes);
+            }
+            let _ = stderr_tx.send(bytes);
+        })
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!(
+            "spawn tmux clipboard stderr reader: {error}"
+        ));
+    }
+
+    let status = wait_bounded_clipboard_child(child, "tmux load-buffer -w", timeout)?;
+    let stderr = stderr_rx.recv_timeout(timeout).unwrap_or_default();
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
         let detail = detail.trim();
         if detail.is_empty() {
-            bail!("tmux load-buffer -w exited with {}", output.status);
+            bail!("tmux load-buffer -w exited with {status}");
         }
-        bail!(
-            "tmux load-buffer -w exited with {}: {detail}",
-            output.status
-        );
+        bail!("tmux load-buffer -w exited with {status}: {detail}");
     }
+    write_rx
+        .recv_timeout(timeout)
+        .map_err(|_| anyhow::anyhow!("tmux load-buffer -w input did not close"))??;
     Ok(())
 }
 
@@ -1040,10 +1181,13 @@ fn clipboard_image_target(
 
 /// Encode an RGBA `ImageData` from arboard as PNG and persist it. Returns
 /// the resulting path along with metadata used to render the paste hint.
-#[cfg(any(
-    target_os = "macos",
-    target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos"))
+#[cfg(all(
+    not(test),
+    any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )
 ))]
 fn save_image_as_png(workspace: &Path, image: &ImageData) -> Result<PastedImage> {
     save_image_as_png_in(
@@ -1685,6 +1829,130 @@ exit 42
 
         assert!(err.to_string().contains("exited with"), "{err}");
         assert!(err.to_string().contains("clipboard denied"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tmux_helper_times_out_stalled_child_and_unblocks_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let hang_script = dir.path().join("tmux-hang");
+        std::fs::write(
+            &hang_script,
+            r#"#!/bin/sh
+cat >/dev/null
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&hang_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&hang_script, perms).unwrap();
+
+        let ok_script = dir.path().join("tmux-ok");
+        std::fs::write(
+            &ok_script,
+            r#"#!/bin/sh
+cat >/dev/null
+exit 0
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&ok_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&ok_script, perms).unwrap();
+
+        let timeout = std::time::Duration::from_millis(150);
+        let run_with_retry = |program: &Path, text: &str| {
+            let mut attempts = 0;
+            loop {
+                let result = write_text_with_tmux_using_argv_with_timeout(
+                    program.to_str().unwrap(),
+                    &[],
+                    text,
+                    timeout,
+                );
+                attempts += 1;
+                let busy = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|err| err.to_string().contains("Text file busy"));
+                if !busy || attempts >= 100 {
+                    return result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+
+        let started = std::time::Instant::now();
+        let err =
+            run_with_retry(&hang_script, "stuck").expect_err("stalled tmux child must time out");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "stalled tmux child took too long: {:?}",
+            started.elapsed()
+        );
+
+        let hang_path = hang_script.clone();
+        let ok_path = ok_script.clone();
+        let writer = TerminalClipboardWriter::spawn_with(move |request| {
+            let (script, call_timeout) = if request.text == "stuck" {
+                (&hang_path, timeout)
+            } else {
+                (&ok_path, std::time::Duration::from_secs(2))
+            };
+            let mut attempts = 0;
+            loop {
+                let result = write_text_with_tmux_using_argv_with_timeout(
+                    script.to_str().unwrap(),
+                    &[],
+                    &request.text,
+                    call_timeout,
+                );
+                attempts += 1;
+                let busy = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|err| err.to_string().contains("Text file busy"));
+                if !busy || attempts >= 100 {
+                    return result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+        .expect("spawn clipboard writer");
+
+        writer
+            .enqueue("stuck", true)
+            .expect("enqueue stalled write");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let first_err = loop {
+            if let Some(completion) = writer.poll_completion() {
+                break completion.expect_err("stalled write should fail with timeout");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stalled tmux worker never reported timeout completion"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(first_err.contains("timed out"), "{first_err}");
+
+        writer
+            .enqueue("recovered", true)
+            .expect("worker must accept a subsequent write after timeout");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(completion) = writer.poll_completion() {
+                completion.expect("subsequent write should succeed after worker recovers");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subsequent tmux write never completed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(all(unix, not(target_env = "ohos")))]

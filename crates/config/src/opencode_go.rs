@@ -14,19 +14,12 @@ pub fn opencode_go_models() -> Vec<&'static str> {
 /// silently fall through to Chat, another provider, or the default model.
 #[must_use]
 pub fn opencode_go_model_id(model: &str) -> Option<&'static str> {
-    let normalized = model.trim().to_ascii_lowercase().replace(['_', ' '], "-");
-    let normalized = normalized
-        .strip_prefix("opencode-go/")
-        .unwrap_or(&normalized);
-    let reviewed = crate::catalog::reviewed::bundled_reviewed();
-    let normalized = reviewed
-        .go_aliases
-        .get(normalized)
-        .map_or(normalized, String::as_str);
+    let resolved =
+        crate::route::resolve_model(crate::ProviderKind::OpencodeGo, model, None).ok()?;
     crate::catalog::reviewed::constants::OPENCODE_GO_MODELS
         .iter()
         .copied()
-        .find(|id| *id == normalized)
+        .find(|id| *id == resolved.wire_id)
 }
 
 /// The documented endpoint for a Go model, independent of stale catalog metadata.

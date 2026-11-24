@@ -1,7 +1,7 @@
 # 回执
 
 > 英文原文：[RECEIPTS.md](../RECEIPTS.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-11-11。
+> 最后与英文同步日期（last synced with English revision）：2026-11-14。
 
 回执（receipt）用 Codewhale 已经保存的记录回答“这个会话做了什么？”。它按顺序列出改动的文件、运行的命令、Web 与 MCP 调用、启动的智能体、审批（以及每一项由谁决定）和失败，并在顶部给出汇总。它还会统计哪些操作未经询问就运行了，并写明放行它们的权限姿态。汇总下方还会给出提供商报告的 token 数；终端会话的回执另有 `/cost` 打印的同一条费用说明，Runtime 线程的回执只给 token 数（见[Token 与费用](#token-与费用)）。
 
@@ -56,7 +56,7 @@ Runtime 回执端点接受 `?format=md`，返回与终端相同的 Engine Markdo
 | --- | --- | --- |
 | 终端会话 | `sessions/<id>.json` | 按顺序保存每次工具调用及其结果文本；每条提示的 `<turn_meta>` 写明该回合运行时的权限姿态；`turn_outcomes` 记录回合的终态和错误 |
 | 终端会话 | `sessions/<id>/approval_receipts.jsonl` | 每一次审批请求与决定，附带时间和决定者 |
-| Runtime 线程 | `tasks/runtime/turns`、`items` | 每次工具调用的输入、状态、开始与结束时间，以及结构化结果（退出码、diff、智能体状态）；每个回合的 `permission_posture` |
+| Runtime 线程 | `tasks/runtime/turns`、`items` | 每次工具调用的输入、状态、开始与结束时间，以及结构化结果（退出码、diff、智能体状态，以及 `plugin_manager` 步骤上的 `core_calls.broker_acts`）；每个回合的 `permission_posture` |
 | Runtime 线程 | `tasks/runtime/events/<thread>.jsonl` | `approval.required` / `approval.decided`，以及说明由谁决定的标志 |
 
 已保存会话的 CLI 和实时的 `/receipts` 会把回合的终态失败（包括 exec 运行中的模型错误）读作 `turn_failed` 动作，即使没有工具失败，也计入失败数。截断对话会删除保留历史之外的结果，所以后续回合不会继承这些失败。已保存的会话只保留最新的 64 条失败回合记录。更早的结果，以及没有这项记录的旧会话，无法仅凭工具结果给出完整的终态失败历史。
@@ -138,6 +138,7 @@ JSON 中同一部分是 `usage`，费用是一个对象：
 - 0.9.10 之前开始的终端会话中，**哪些调用先询问过**。
 - 当错误中既没有退出码也没有 shell 状态行时，**失败的命令是否启动过**；以及没有结果的调用到底是否运行过。
 - 除回合的权限姿态之外，**调用为什么未经询问就运行**：记录不说明放行它的是权限姿态、允许规则，还是一项记住的授权。
+- **终端会话中的插件变更（`plugin_change`），或运行时代理动作记录不完整时。** Runtime 线程仅从宿主写入 `plugin_manager` 步骤的 `core_calls.broker_acts` 结构化元数据读取 `plugin_change` 动作，绝不解析工具输入或工具结果文本。缺失字段显示为 `"not recorded"`；实际动作数超过保留条数时 `not_recorded` 附加 `"Plugin changes: more plugin acts than this receipt lists."`；条目被截断（`cut`）且无结果详情时附加 `"Plugin changes: a plugin act was cut before details were recorded (not recorded)."`。终端会话暂未记录结构化插件代理动作元数据，因此其 `not_recorded` 会写出 `"Plugin changes are not itemized for a terminal session yet"`。
 
 ## 非目标
 
@@ -165,7 +166,7 @@ JSON 中同一部分是 `usage`，费用是一个对象：
     "files_created": 0, "files_deleted": 0,
     "lines_added": 2, "lines_removed": 1, "line_counts_complete": true,
     "commands": 1, "commands_failed": 0, "code_runs": 0, "network": 0,
-    "mcp_calls": 1, "plugin_calls": 0, "subagents": 0,
+    "mcp_calls": 1, "plugin_calls": 0, "plugin_changes": 0, "subagents": 0,
     "approvals": {
       "total": 3, "approved": 2, "denied": 1, "timed_out": 0,
       "not_answered": 0, "pending": 0,
@@ -201,7 +202,7 @@ JSON 中同一部分是 `usage`，费用是一个对象：
 }
 ```
 
-`kind` 取以下值之一：`file_change`（`files[]`，含 `path`、`change` = `edited|created|deleted|written`，以及可选的 `lines_added`/`lines_removed`）、`workspace_change`（`files[]` 为某回合快照显示有改动、但没有任何文件工具提到的文件；超过 50 个时带 `truncated`）、`command`（`command`、`cwd`、`exit_code`）、`code`（`exit_code`，以及 `nested[]`：`execute_tools` 程序发起的工具调用）、`network`（`action`、`host`、`query`）、`mcp`（`server`、`plugin`）、`subagent`（`name`、`agent_id`、`outcome`）、`approval`（没有对应调用的审批）、`tool`（其他任何调用，仅在失败时列出），或 `turn_failed`。`status` 取值为 `ok`、`failed`（运行后失败）、`not_run`（停在审批处）、`blocked`（启动前被拒绝；原因在 `error` 中）、`interrupted`、`running` 或 `unknown`（没有结果，或命令错误无法表明它是否启动过）。终端会话的 `turn` 是回合编号；线程的 `turn` 是回合 id。对会话中不存在的回合使用 `/receipts 7` 或 `--turn 7` 会报错，而不是返回一份空回执。
+`kind` 取以下值之一：`file_change`（`files[]`，含 `path`、`change` = `edited|created|deleted|written`，以及可选的 `lines_added`/`lines_removed`）、`workspace_change`（`files[]` 为某回合快照显示有改动、但没有任何文件工具提到的文件；超过 50 个时带 `truncated`）、`command`（`command`、`cwd`、`exit_code`）、`code`（`exit_code`，以及 `nested[]`：`execute_tools` 程序发起的工具调用）、`network`（`action`、`host`、`query`）、`mcp`（`server`、`plugin`）、`plugin_change`（`method`、`plugin`、可选 `hash`、`approver`、可选 `services[]`）、`subagent`（`name`、`agent_id`、`outcome`）、`approval`（没有对应调用的审批）、`tool`（其他任何调用，仅在失败时列出），或 `turn_failed`。`status` 取值为 `ok`、`failed`（运行后失败）、`not_run`（停在审批处）、`blocked`（启动前被拒绝；原因在 `error` 中）、`interrupted`、`running` 或 `unknown`（没有结果，或命令错误无法表明它是否启动过）。终端会话的 `turn` 是回合编号；线程的 `turn` 是回合 id。对会话中不存在的回合使用 `/receipts 7` 或 `--turn 7` 会报错，而不是返回一份空回执。
 
 ## `audit.log` 不是回执
 

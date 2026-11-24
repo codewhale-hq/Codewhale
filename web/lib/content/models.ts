@@ -9,6 +9,24 @@ export const MODELS_COPY = {
   latestTitle: { en: "Recently added", zh: "最近加入" },
   latestLead: { en: "The latest addition to the catalog from each first-party provider. Dates are when Codewhale added the model, not the maker's release date.", zh: "每家一方提供商最近加入目录的模型。日期为 Codewhale 加入该模型的时间，不是厂商的发布日期。" },
   latestSince: { en: "In Codewhale since {date}", zh: "{date} 起已加入 Codewhale" },
+  pickerTitle: { en: "Pick a model by name", zh: "按名称挑选模型" },
+  pickerLead: {
+    en: "Search the model picker, and the same model appears under every provider that offers it. These views are from real sessions on development builds.",
+    zh: "在模型选择器中搜索，同一个模型会出现在每个提供它的提供商下。这些画面来自开发版本上的真实会话。",
+  },
+  pickerTerminalLabel: {
+    en: "Codewhale in a terminal. The model picker, searched for deepseek-flash, lists deepseek-flash from DeepSeek, Fireworks AI and OpenRouter, with DeepSeek selected.",
+    zh: "终端中的 Codewhale。在模型选择器中搜索 deepseek-flash，列出 DeepSeek、Fireworks AI 和 OpenRouter 提供的 deepseek-flash，并选中了 DeepSeek。",
+  },
+  pickerTerminalCaption: { en: "The terminal model picker.", zh: "终端中的模型选择器。" },
+  pickerDesktopAlt: {
+    en: "The desktop app's Models settings with DeepSeek connected and ready, deepseek-flash as the model for new sessions and the thinking level on Auto.",
+    zh: "桌面应用的 Models 设置：DeepSeek 已连接并就绪，新会话使用 deepseek-flash，思考级别为 Auto。",
+  },
+  pickerDesktopCaption: {
+    en: "The desktop app, in development with no download yet, reads the model list from each connected provider.",
+    zh: "桌面应用（开发中，暂无下载）会从每个已连接的提供商读取模型列表。",
+  },
   setupTitle: { en: "Connect a model in three steps", zh: "三步连接模型" },
   setupLead: { en: "The same steps work for every provider on this page.", zh: "本页的所有提供商都适用同样的步骤。" },
   steps: [

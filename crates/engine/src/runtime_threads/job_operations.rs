@@ -21,6 +21,8 @@ pub struct JobOperation {
     pub job_id: Option<String>,
     pub job_status: Option<String>,
     pub exit_code: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<crate::tools::shell::ShellJobStopReason>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

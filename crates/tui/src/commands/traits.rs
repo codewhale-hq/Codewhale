@@ -31,7 +31,6 @@ pub(crate) const ADVANCED_DISCOVERY_COMMANDS: &[&str] = &[
     "modeldb",
     "models",
     "network",
-    "plugin",
     "preview-request",
     "profile",
     "purge",
@@ -293,7 +292,14 @@ impl CommandInfo {
         if self.aliases.is_empty() {
             desc.to_string()
         } else {
-            format!("{}  aliases: {}", desc, self.aliases.join(", "))
+            format!(
+                "{}  {}",
+                desc,
+                tr(locale, MessageId::PaletteAliasesSuffix).replace(
+                    "{aliases}",
+                    &self.aliases.join(&tr(locale, MessageId::ListSeparator))
+                )
+            )
         }
     }
 
@@ -556,7 +562,9 @@ mod usage_subcommand_tests {
             ),
             (
                 "automation",
-                vec!["list", "show", "print", "pause", "resume", "delete", "run"],
+                vec![
+                    "list", "show", "print", "pause", "resume", "adopt", "delete", "run",
+                ],
             ),
         ] {
             let info = get_command_info(name).expect("registered command");

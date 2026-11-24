@@ -1350,6 +1350,13 @@ impl FakePlugin {
                 state_label: "active".to_string(),
                 scope: "user".to_string(),
                 trust_status: "trusted".to_string(),
+                review_display: None,
+                approver: None,
+                reviewed_date: None,
+                enabled_by: None,
+                reach_folder: None,
+                outside_reach: false,
+                process_note: None,
                 compatibility: "full".to_string(),
                 inventory: "skills=1 mcp=0".to_string(),
                 active: true,
@@ -1365,6 +1372,17 @@ impl FakePlugin {
                 scope: "user".to_string(),
                 state_label: "active".to_string(),
                 trust_status: "trusted".to_string(),
+                trust_display: None,
+                approver: None,
+                reviewed_date: None,
+                enabled_by: None,
+                agent_thread_id: None,
+                agent_workspace_path: None,
+                reach_folder: None,
+                outside_reach: false,
+                process_note: None,
+                host_services: Vec::new(),
+                earlier_reviews: Vec::new(),
                 compatibility: "full".to_string(),
                 content_hash: "abc".to_string(),
                 capability_hash: "def".to_string(),
@@ -1375,6 +1393,8 @@ impl FakePlugin {
                 unsupported_labels: Vec::new(),
                 supported_labels: vec!["skills".to_string()],
                 skills: vec!["demo:demo-skill".to_string()],
+                commands: Vec::new(),
+                profiles: Vec::new(),
                 filesystem_roots: Vec::new(),
                 network_hosts: Vec::new(),
                 stdio_mcp_servers: 0,
@@ -2333,10 +2353,14 @@ impl CommandSessionLifecycleContext for FakeLifecycle {
             .clone()
             .ok_or_else(|| format!("unexpected fork_from({id}) on empty fake"))?
     }
-    fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String> {
-        self.fresh
-            .clone()
-            .ok_or_else(|| format!("unexpected fresh_session({force}) on empty fake"))?
+    fn fresh_session(
+        &mut self,
+        force: bool,
+        conversation_mode: Option<&str>,
+    ) -> Result<SessionNewReceipt, String> {
+        self.fresh.clone().ok_or_else(|| {
+            format!("unexpected fresh_session({force}, {conversation_mode:?}) on empty fake")
+        })?
     }
     fn load_session(&mut self, path: &str) -> Result<PathBuf, String> {
         self.load
@@ -2376,6 +2400,7 @@ fn lifecycle_sync_payload(session_id: Option<&str>) -> SessionSyncPayload {
         model: "lifecycle-model".to_string(),
         workspace: PathBuf::from("/workspace/lifecycle"),
         mode: CommandMode::Plan,
+        agent_preset: None,
     }
 }
 
@@ -2455,7 +2480,7 @@ fn lifecycle_facet_is_object_safe_and_transports_every_outcome() {
         explicit.sync.workspace,
         PathBuf::from("/workspace/lifecycle")
     );
-    let fresh = fake.fresh_session(true).expect("fresh ok");
+    let fresh = fake.fresh_session(true, None).expect("fresh ok");
     assert_eq!(fresh.truncated_id, "new-id");
     assert_eq!(fresh.sync.messages.len(), 1);
     let loaded = fake.load_session("loaded.json").expect("load ok");
@@ -3256,6 +3281,7 @@ fn export_facet_is_object_safe_and_transports_every_outcome() {
             restore_points: RestorePointProjection::Recorded {
                 snapshots: vec![export_recorded_snapshot()],
             },
+            turn_outcomes: Vec::new(),
         }),
         turn: Some(TurnHandoffProjection {
             markdown: "# turn handoff".to_string(),
@@ -3372,6 +3398,7 @@ fn export_error_and_empty_states_transport_exactly() {
             restore_points: RestorePointProjection::Unreadable {
                 reason: "permission denied".to_string(),
             },
+            turn_outcomes: Vec::new(),
         }),
         recovery: Some(None),
         clipboard: Some(Err("clipboard unavailable".to_string())),
@@ -3472,6 +3499,7 @@ fn export_projection_omission_markers_carry_no_hidden_payload() {
             blocks: vec![ExportBlock::InternalReasoning, ExportBlock::ImageOmitted],
         }]),
         restore_points: RestorePointProjection::None,
+        turn_outcomes: Vec::new(),
     };
     let rendered = format!("{projection:?}");
     assert!(!rendered.contains(HIDDEN_REASONING));

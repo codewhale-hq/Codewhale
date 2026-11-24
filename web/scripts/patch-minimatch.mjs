@@ -37,6 +37,18 @@ const reviewed = {
       "original": "59821ec2ce0d3df968292036e5c831ad322b33e9c33a949ecbc9dfe125d165be",
       "patched": "37ba4ff4010cda499e890975983b78ebd5f2be2dd8506d938472de4af8e9ed25"
     }
+  ],
+  "10.2.6": [
+    {
+      "file": "dist/commonjs/index.js",
+      "original": "d224f71f20d7c206fcc5b7e9f747324c7698345a0b2c28d717dd9cf698306783",
+      "patched": "7e835c0a30f7b4f29f4ad8cf8c3e92b97ab23ed854a7a777f240d6bdf3d19231"
+    },
+    {
+      "file": "dist/esm/index.js",
+      "original": "59821ec2ce0d3df968292036e5c831ad322b33e9c33a949ecbc9dfe125d165be",
+      "patched": "37ba4ff4010cda499e890975983b78ebd5f2be2dd8506d938472de4af8e9ed25"
+    }
   ]
 };
 const edits = [

@@ -1,5 +1,5 @@
 {
-  "$description": "Codewhale design 5.3.0. Generated from tokens.json; do not edit.",
+  "$description": "Codewhale design 5.4.0. Generated from tokens.json; do not edit.",
   "color": {
     "dark": {
       "$type": "color",
@@ -13,13 +13,16 @@
         "$value": "#04070c"
       },
       "muted_foreground": {
-        "$value": "#a8b6c3"
+        "$value": "#aebcc9"
+      },
+      "subagent": {
+        "$value": "#b8c7d6"
       },
       "disabled": {
-        "$value": "#848583"
+        "$value": "#7f8c9a"
       },
       "border": {
-        "$value": "#3b3c3f"
+        "$value": "#2a3648"
       },
       "sidebar": {
         "$value": "#0d121b"
@@ -34,25 +37,28 @@
         "$value": "#8fbdff"
       },
       "hover": {
-        "$value": "#303134"
+        "$value": "#253244"
       },
       "selected": {
-        "$value": "#17191c"
+        "$value": "#182232"
       },
       "attention": {
         "$value": "#eab982"
       },
       "live": {
-        "$value": "#9ecbbd"
+        "$value": "#86d3be"
+      },
+      "live_peak": {
+        "$value": "#dff7f0"
       },
       "danger": {
         "$value": "#eea59d"
       },
       "border_strong": {
-        "$value": "#828386"
+        "$value": "#8a98a6"
       },
       "ocean_depth": {
-        "$value": "#202123"
+        "$value": "#0d1624"
       },
       "diff_add": {
         "$value": "#22392f"
@@ -73,7 +79,10 @@
         "$value": "#fbfcfd"
       },
       "muted_foreground": {
-        "$value": "#4a545d"
+        "$value": "#47515a"
+      },
+      "subagent": {
+        "$value": "#3b4a56"
       },
       "disabled": {
         "$value": "#6f7780"
@@ -91,25 +100,28 @@
         "$value": "#ffffff"
       },
       "accent": {
-        "$value": "#245bc7"
+        "$value": "#2056c2"
       },
       "hover": {
-        "$value": "#e3e9ef"
+        "$value": "#dde6f0"
       },
       "selected": {
-        "$value": "#d8e0e8"
+        "$value": "#d2dde9"
       },
       "attention": {
-        "$value": "#84530d"
+        "$value": "#7d4e08"
       },
       "live": {
-        "$value": "#396554"
+        "$value": "#1b695a"
+      },
+      "live_peak": {
+        "$value": "#0d4035"
       },
       "danger": {
-        "$value": "#9e3f36"
+        "$value": "#a32934"
       },
       "border_strong": {
-        "$value": "#737d88"
+        "$value": "#6e7883"
       },
       "ocean_depth": {
         "$value": "#f6f9fc"
@@ -150,6 +162,9 @@
     },
     "group": {
       "$value": "12px"
+    },
+    "prose": {
+      "$value": "14px"
     },
     "section": {
       "$value": "16px"
@@ -199,6 +214,15 @@
     "row": {
       "$value": "30px"
     },
+    "session_row": {
+      "$value": "44px"
+    },
+    "turn_line": {
+      "$value": "28px"
+    },
+    "change_bar": {
+      "$value": "36px"
+    },
     "touch_target": {
       "$value": "44px"
     },
@@ -209,10 +233,19 @@
       "$value": "20px"
     },
     "sidebar": {
-      "$value": "272px"
+      "$value": "268px"
+    },
+    "reading": {
+      "$value": "680px"
+    },
+    "composer": {
+      "$value": "720px"
     },
     "panel": {
-      "$value": "300px"
+      "$value": "320px"
+    },
+    "panel_wide": {
+      "$value": "560px"
     }
   },
   "duration": {
@@ -231,6 +264,9 @@
     },
     "linger": {
       "$value": "1200ms"
+    },
+    "flash_in": {
+      "$value": "90ms"
     }
   },
   "easing": {
@@ -258,6 +294,14 @@
         0.16,
         1
       ]
+    },
+    "sine": {
+      "$value": [
+        0.37,
+        0,
+        0.63,
+        1
+      ]
     }
   },
   "type": {
@@ -282,7 +326,7 @@
       "$value": {
         "fontFamily": "Geist Sans",
         "fontSize": "13px",
-        "lineHeight": 1.3846,
+        "lineHeight": 1.5385,
         "fontWeight": 400
       }
     },
@@ -294,11 +338,19 @@
         "fontWeight": 400
       }
     },
+    "reading": {
+      "$value": {
+        "fontFamily": "Geist Sans",
+        "fontSize": "15px",
+        "lineHeight": 1.6667,
+        "fontWeight": 400
+      }
+    },
     "prose": {
       "$value": {
         "fontFamily": "Geist Sans",
         "fontSize": "16px",
-        "lineHeight": 1.625,
+        "lineHeight": 1.6875,
         "fontWeight": 400
       }
     },
@@ -306,7 +358,15 @@
       "$value": {
         "fontFamily": "Geist Sans",
         "fontSize": "15px",
-        "lineHeight": 1.6,
+        "lineHeight": 1.4667,
+        "fontWeight": 550
+      }
+    },
+    "subheading": {
+      "$value": {
+        "fontFamily": "Geist Sans",
+        "fontSize": "17px",
+        "lineHeight": 1.5294,
         "fontWeight": 550
       }
     },
@@ -356,7 +416,7 @@
     },
     "light": {
       "border": {
-        "$value": "#ffffffbf"
+        "$value": "#1f33401f"
       },
       "highlight": {
         "$value": "#ffffffbf"
@@ -407,6 +467,69 @@
       },
       "border": {
         "$value": "#1f33401a"
+      }
+    }
+  },
+  "change_bar": {
+    "$type": "color",
+    "dark": {
+      "fill": {
+        "$value": "#ffffff0a"
+      },
+      "border": {
+        "$value": "#ffffff17"
+      }
+    },
+    "light": {
+      "fill": {
+        "$value": "#1b2a3509"
+      },
+      "border": {
+        "$value": "#1f33401c"
+      }
+    }
+  },
+  "subagent_tag": {
+    "$type": "color",
+    "dark": {
+      "fill": {
+        "$value": "#8fbdff14"
+      },
+      "border": {
+        "$value": "#8fbdff33"
+      }
+    },
+    "light": {
+      "fill": {
+        "$value": "#1b2a350e"
+      },
+      "border": {
+        "$value": "#1f334024"
+      }
+    }
+  },
+  "workbar": {
+    "$type": "color",
+    "dark": {
+      "fill": {
+        "$value": "#0b121dad"
+      },
+      "border": {
+        "$value": "#ffffff14"
+      },
+      "track": {
+        "$value": "#ffffff1f"
+      }
+    },
+    "light": {
+      "fill": {
+        "$value": "#eef3f8c7"
+      },
+      "border": {
+        "$value": "#1f33401a"
+      },
+      "track": {
+        "$value": "#1b2a351c"
       }
     }
   }

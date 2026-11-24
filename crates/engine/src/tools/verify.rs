@@ -439,7 +439,15 @@ self-check of whether what you just did is actually correct and complete."
                 gather_diff_evidence(context.workspace.as_path(), staged, base.as_deref()).await?,
             );
         }
-        evidence.extend(gather_files(&files, context));
+        let worker_files = files.clone();
+        let worker_context = context.clone();
+        evidence.extend(
+            tokio::task::spawn_blocking(move || gather_files(&worker_files, &worker_context))
+                .await
+                .map_err(|e| {
+                    ToolError::execution_failed(format!("verify file reader failed: {e}"))
+                })?,
+        );
 
         let no_code_evidence = evidence.is_empty();
 
@@ -622,6 +630,8 @@ fn build_critic_request(
         // provider's own defaults apply and fixed-sampling routes don't reject.
         temperature: None,
         top_p: None,
+        safety_check: None,
+        title: None,
     }
 }
 
@@ -783,8 +793,10 @@ fn gather_files(files: &[String], context: &ToolContext) -> Vec<EvidenceBlock> {
             continue;
         }
         match crate::tools::file::resolve_guarded_read_path(context, raw, "verify") {
-            Ok(path) => match std::fs::read_to_string(&path) {
-                Ok(content) => {
+            Ok(path) => match std::fs::File::open(&path).and_then(|file| {
+                crate::prompts::read_prompt_text_bounded(file, PER_FILE_MAX_CHARS * 4)
+            }) {
+                Ok((content, _)) => {
                     let display = path
                         .strip_prefix(&context.workspace)
                         .unwrap_or(&path)
@@ -921,6 +933,9 @@ mod tests {
             stop_sequence: None,
             container: None,
             usage: Usage::default(),
+            title: None,
+            stop_details: None,
+            refusal: None,
         }
     }
 

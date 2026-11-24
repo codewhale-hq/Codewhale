@@ -746,16 +746,19 @@ pub fn build_pr_pass_prompt(
     // A degraded plan tells the model it is partial, so a pass summary can
     // never honestly claim full coverage; the manifest below carries the
     // same skip list for the record.
-    let task = if plan.manifest.skipped_files.is_empty() {
-        "Review only defects introduced in this pass. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.".to_string()
+    let scope = if plan.manifest.skipped_files.is_empty() {
+        "Review only defects introduced in this pass.".to_string()
     } else {
         format!(
-            "Review only defects introduced in this pass. This is a partial review (pass {} of {}): the gate did not read {}. Do not claim full coverage. Use supplementary source to check surrounding guards and declarations; it does not expand the commentable diff. Binary contents and omitted callers are not inspected. No build or tests have been run.",
+            "Review only defects introduced in this pass. This is a partial review (pass {} of {}): the gate did not read {}. Do not claim full coverage.",
             pass.manifest.number,
             plan.manifest.passes.len(),
             format_skipped_files(&plan.manifest.skipped_files)
         )
     };
+    let task = format!(
+        "{scope} Use supplementary source to check surrounding guards and declarations. If the prompt omits relevant caller bodies and read-only tools are offered, inspect those callers with the tools. Anchor findings to the commentable diff and scope coverage claims to the pass manifest. Binary changes are represented by metadata. No build or tests have been run."
+    );
     json!({
         "task": task,
         "untrusted_repository_data": true,
@@ -1572,15 +1575,16 @@ impl ToolSpec for ReviewTool {
             ReviewSource::Diff { diff, .. } => diff.clone(),
             ReviewSource::File { .. } => String::new(),
         };
-        let tool_workspace = match &source {
-            ReviewSource::PullRequest { view, .. } => {
-                super::review_core::repository_tool_workspace(
-                    &context.workspace,
-                    Some(view.head_sha.as_str()),
-                )
-            }
-            _ => super::review_core::repository_tool_workspace(&context.workspace, None),
+        let required_head = match &source {
+            ReviewSource::PullRequest { view, .. } => Some(view.head_sha.clone()),
+            _ => None,
         };
+        let workspace = context.workspace.clone();
+        let tool_workspace = tokio::task::spawn_blocking(move || {
+            super::review_core::repository_tool_workspace(&workspace, required_head.as_deref())
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("review workspace check failed: {e}")))?;
         let triage = super::review_triage::triage_review(&review_diff);
         let reserve_percent =
             crate::route_budget::review_visible_text_reserve_percent(&route.model);
@@ -1954,6 +1958,17 @@ fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSour
     if !path.is_file() {
         return Err(ToolError::invalid_input(format!(
             "Target is not a file: {}",
+            path.display()
+        )));
+    }
+    let len = fs::metadata(&path)
+        .map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
+        })?
+        .len();
+    if len > (MAX_MAX_CHARS as u64).saturating_mul(4) {
+        return Err(ToolError::invalid_input(format!(
+            "File {} is {len} bytes, too large to review (max_chars limit is {MAX_MAX_CHARS})",
             path.display()
         )));
     }
@@ -2889,6 +2904,7 @@ mod tests {
         first.server_tool_use = Some(codewhale_models::ServerToolUsage {
             code_execution_requests: Some(1),
             tool_search_requests: None,
+            ..Default::default()
         });
         let second = Usage {
             input_tokens: 20,
@@ -2900,6 +2916,7 @@ mod tests {
             server_tool_use: Some(codewhale_models::ServerToolUsage {
                 code_execution_requests: Some(2),
                 tool_search_requests: Some(3),
+                ..Default::default()
             }),
             ..Default::default()
         };

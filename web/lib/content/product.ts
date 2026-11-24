@@ -80,8 +80,8 @@ export const PRODUCT_COPY = {
     {
       title: { en: "Skills and plugins", zh: "技能与插件" },
       body: {
-        en: "Save a checklist or report format in a Markdown skill, then share it as a plugin.",
-        zh: "用 Markdown 技能保存清单或报告格式，再打包为插件分享。",
+        en: "Save a checklist or report format in a Markdown skill, then share it inside a plugin.",
+        zh: "用 Markdown 技能保存清单或报告格式，再放进插件中分享。",
       },
       href: "/docs/skills",
       command: "SKILL.md",
@@ -102,7 +102,7 @@ export const PRODUCT_COPY = {
   availabilityHeading: { en: "Where it runs", zh: "运行平台" },
   availability: AVAILABILITY_ROWS.filter((row) => row.pages.includes("product")),
 
-  controlHeading: { en: "Set permissions in the 0.10.3 source candidate", zh: "设置 0.10.3 源码候选版本的权限" },
+  controlHeading: { en: "Set permissions", zh: "设置权限" },
   modes: [
     { title: { en: "Plan", zh: "Plan" }, capability: { feature: "modes" }, body: { en: "Blocks file mutation and shell execution. Permitted research may contact external services; session state can still be saved.", zh: "禁止文件修改与 shell 执行。获准的研究可访问外部服务；会话状态仍可保存。" } },
     { title: { en: "Work", zh: "Work" }, capability: { feature: "modes" }, body: { en: "Edits files and runs commands within the permission you set.", zh: "在你设定的权限内修改文件、运行命令。" } },

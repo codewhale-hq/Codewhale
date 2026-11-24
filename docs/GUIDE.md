@@ -423,7 +423,11 @@ Common commands for first-time users:
 | `/workflow` | Orchestrate the current work as a Workflow; `status`, `cancel`, `settings` answer without a model turn |
 | `/workflows` | Open the live Workflow run dashboard: every run this workspace's journal keeps, with phases, children, progress, and host-side cancel |
 | `/config` | Edit runtime and provider settings |
+| `/settings` | Open the typed settings editor; `/settings text` prints the resolved values |
 | `/statusline` | Choose which footer status chips are visible |
+| `/anchor` | Pin a fact that stays when Codewhale makes room; `/anchor list` and `/anchor remove <n>` manage pins |
+| `/structcopy` | Copy one session object (`turn <n>`, `tool <call-id>`, `plan`, `workflow <run-id>`) as redacted JSON |
+| `/remote-env` | Show hosted Work options; `/remote-env open` opens new hosted Work from a GitHub or CNB branch tip |
 | `/color` | Give this chat's composer box its own color: bare `/color` cycles red, orange, amber, green, cyan, blue, purple and pink, `/color blue` picks one, `/color off` returns to the theme |
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |
@@ -681,7 +685,7 @@ Use skills when a task has a repeatable process:
 - Using a project-specific memory or wiki workflow.
 
 Inside the TUI, `/skill <name>` activates a skill when one is available, and
-bare `/skills` opens Extensions → Skills (owned-only inventory, no network).
+bare `/skills` opens Plugins → Skills (owned-only inventory, no network).
 Use `/skills manage` for the manager and
 `/skills <prefix>`, `/skills inspect`, `/skills --remote`, `/skills suggest <task>`,
 or `/skills sync` for the text/registry paths. Suggestions rank the remote
@@ -813,6 +817,16 @@ The `/sessions` picker starts scoped to the current workspace so resumes stay
 attached to the project you opened. Press `a` in the picker to show sessions
 from every workspace, or run `codewhale sessions` to list all saved sessions
 with last-updated timestamps before resuming a specific id.
+
+If you move or rename a project folder, update saved sessions, recovery
+checkpoints, and Runtime thread bindings together before resuming:
+
+```sh
+codewhale sessions migrate --old-path /path/to/old-project --new-path /path/to/new-project
+```
+
+Pass `--dry-run` to preview affected records, or `--session <id>` to migrate
+one session.
 
 To archive the durable record and its artifacts, run:
 

@@ -6053,30 +6053,29 @@ mode = "token-plan-usa"
     assert_eq!(resolved.base_url, DEFAULT_XIAOMI_MIMO_BASE_URL);
 }
 
+fn norm(provider: ProviderKind, model: &str) -> String {
+    crate::route::resolve_model(provider, model, None)
+        .map_or_else(|_| model.trim().to_string(), |r| r.wire_id)
+}
+
 #[test]
 fn xiaomi_mimo_aliases_resolve_to_canonical_models() {
+    assert_eq!(norm(ProviderKind::XiaomiMimo, "omni"), "mimo-v2.6-flash");
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "omni"),
-        "mimo-v2.6-flash"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "pro-ultraspeed"),
+        norm(ProviderKind::XiaomiMimo, "pro-ultraspeed"),
         "mimo-v2.5-pro-ultraspeed"
     );
+    assert_eq!(norm(ProviderKind::XiaomiMimo, "tts"), "mimo-v2.5-tts");
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "tts"),
-        "mimo-v2.5-tts"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voice-design"),
+        norm(ProviderKind::XiaomiMimo, "voice-design"),
         "mimo-v2.5-tts-voicedesign"
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voiceclone"),
+        norm(ProviderKind::XiaomiMimo, "voiceclone"),
         "mimo-v2.5-tts-voiceclone"
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "custom-mimo-model"),
+        norm(ProviderKind::XiaomiMimo, "custom-mimo-model"),
         "custom-mimo-model"
     );
 }
@@ -6085,15 +6084,12 @@ fn xiaomi_mimo_aliases_resolve_to_canonical_models() {
 fn zai_aliases_resolve_to_canonical_models() {
     // GLM-5.3 is the default; the glm-5.1 alias must still resolve to 5.1
     // (not to the default), and GLM-5-Turbo resolves to its own id.
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5.1"),
-        ZAI_GLM_5_1_MODEL
-    );
+    assert_eq!(norm(ProviderKind::Zai, "glm-5.1"), ZAI_GLM_5_1_MODEL);
     assert_eq!(DEFAULT_ZAI_MODEL, "GLM-5.3");
     assert_eq!(DEFAULT_ZAI_MODEL, ZAI_GLM_5_3_MODEL);
     for alias in ["glm-5.3", "glm-5-3", "zai-glm-5.3", "zai-glm-5-3"] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_MODEL,
             "{alias} must canonicalize to GLM-5.3"
         );
@@ -6102,12 +6098,12 @@ fn zai_aliases_resolve_to_canonical_models() {
     // must keep its own id and must never fold into DEFAULT_ZAI_MODEL.
     for alias in ["glm-5.2", "glm-5-2", "zai-glm-5.2", "zai-glm-5-2"] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_2_MODEL,
             "{alias} must canonicalize to GLM-5.2"
         );
         assert_ne!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             DEFAULT_ZAI_MODEL,
             "{alias} must not resolve to the Z.ai default"
         );
@@ -6119,22 +6115,22 @@ fn zai_aliases_resolve_to_canonical_models() {
         "GLM-5.3-Flash",
     ] {
         assert_eq!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_FLASH_MODEL,
             "{alias} must canonicalize to GLM-5.3-Flash"
         );
         assert_ne!(
-            normalize_model_for_provider(ProviderKind::Zai, alias),
+            norm(ProviderKind::Zai, alias),
             ZAI_GLM_5_3_MODEL,
             "{alias} must not collapse onto GLM-5.3"
         );
     }
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5-turbo"),
+        norm(ProviderKind::Zai, "glm-5-turbo"),
         ZAI_GLM_5_TURBO_MODEL
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "custom-glm-preview"),
+        norm(ProviderKind::Zai, "custom-glm-preview"),
         "custom-glm-preview"
     );
 }
@@ -6169,10 +6165,7 @@ fn zhipu_aliases_fold_into_zai_provider() {
     assert_eq!(provider.model.as_deref(), Some("glm-5-2"));
 
     // GLM aliases canonicalize under the Zai umbrella, to their own ids.
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::Zai, "glm-5-2"),
-        ZAI_GLM_5_2_MODEL
-    );
+    assert_eq!(norm(ProviderKind::Zai, "glm-5-2"), ZAI_GLM_5_2_MODEL);
 }
 
 #[test]
@@ -8763,6 +8756,7 @@ struct TelemetryEnvGuard {
     codewhale: Option<OsString>,
     deepseek: Option<OsString>,
     floor: Option<OsString>,
+    source: Option<OsString>,
     codewhale_endpoint: Option<OsString>,
     deepseek_endpoint: Option<OsString>,
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -8775,6 +8769,7 @@ impl TelemetryEnvGuard {
             codewhale: env::var_os("CODEWHALE_TELEMETRY"),
             deepseek: env::var_os("DEEPSEEK_TELEMETRY"),
             floor: env::var_os(TELEMETRY_FLOOR_ENV),
+            source: env::var_os(TELEMETRY_SOURCE_ENV),
             // The endpoint variables are cleared too. Resolution now has a
             // shipped default, so an ambient endpoint in the developer's or
             // CI's environment is the difference between pinning the default
@@ -8788,6 +8783,7 @@ impl TelemetryEnvGuard {
             env::remove_var("CODEWHALE_TELEMETRY");
             env::remove_var("DEEPSEEK_TELEMETRY");
             env::remove_var(TELEMETRY_FLOOR_ENV);
+            env::remove_var(TELEMETRY_SOURCE_ENV);
             env::remove_var("CODEWHALE_TELEMETRY_ENDPOINT");
             env::remove_var("DEEPSEEK_TELEMETRY_ENDPOINT");
         }
@@ -8808,6 +8804,13 @@ impl TelemetryEnvGuard {
         }
     }
 
+    fn set_source(&self, value: &str) {
+        // Safety: test-only environment mutation guarded by the module mutex.
+        unsafe {
+            env::set_var(TELEMETRY_SOURCE_ENV, value);
+        }
+    }
+
     fn set_floor(&self, value: &str) {
         // Safety: test-only environment mutation guarded by the module mutex.
         unsafe {
@@ -8821,6 +8824,7 @@ impl TelemetryEnvGuard {
             env::remove_var("CODEWHALE_TELEMETRY");
             env::remove_var("DEEPSEEK_TELEMETRY");
             env::remove_var(TELEMETRY_FLOOR_ENV);
+            env::remove_var(TELEMETRY_SOURCE_ENV);
         }
     }
 }
@@ -8840,6 +8844,10 @@ impl Drop for TelemetryEnvGuard {
             match self.floor.take() {
                 Some(value) => env::set_var(TELEMETRY_FLOOR_ENV, value),
                 None => env::remove_var(TELEMETRY_FLOOR_ENV),
+            }
+            match self.source.take() {
+                Some(value) => env::set_var(TELEMETRY_SOURCE_ENV, value),
+                None => env::remove_var(TELEMETRY_SOURCE_ENV),
             }
             match self.codewhale_endpoint.take() {
                 Some(value) => env::set_var("CODEWHALE_TELEMETRY_ENDPOINT", value),
@@ -8992,6 +9000,57 @@ fn telemetry_consent_names_its_source() {
     guard.set("1");
     let (on, source) = resolved_telemetry_consent(None);
     assert!(on);
+    assert_eq!(source, TelemetrySource::Env);
+}
+
+#[test]
+fn dispatched_consent_names_the_dispatchers_source_not_its_hand_off() {
+    let guard = TelemetryEnvGuard::take();
+
+    guard.set("false");
+    guard.set_floor("0");
+    guard.set_source("config");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Config);
+
+    guard.set("false");
+    guard.set_floor("1");
+    guard.set_source("env");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Env);
+
+    guard.set("true");
+    guard.set_floor("0");
+    guard.set_source("default");
+    let (on, source) = dispatched_telemetry_consent(None);
+    assert!(on);
+    assert_eq!(source, TelemetrySource::Default);
+
+    guard.set("false");
+    guard.set_floor("1");
+    guard.set_source("cli");
+    let (on, source) = dispatched_telemetry_consent(None);
+    assert!(!on);
+    assert_eq!(source, TelemetrySource::Cli);
+
+    guard.clear();
+    guard.set("0");
+    guard.set_source("config");
+    let (on, source) = dispatched_telemetry_consent(Some(false));
+    assert!(!on);
+    assert_eq!(
+        source,
+        TelemetrySource::Env,
+        "a source with no dispatcher floor statement is not believed"
+    );
+
+    guard.clear();
+    guard.set("0");
+    guard.set_floor("1");
+    guard.set_source("nonsense");
+    let (_, source) = dispatched_telemetry_consent(None);
     assert_eq!(source, TelemetrySource::Env);
 }
 
@@ -10701,6 +10760,60 @@ fn blank_or_unrecognized_env_overrides_do_not_shadow_config_or_legacy_vars() {
     ));
 }
 
+#[test]
+fn blank_primary_env_vars_fall_through_to_their_legacy_aliases() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let names = [
+        "CODEWHALE_FORCE_HTTP1",
+        "DEEPSEEK_FORCE_HTTP1",
+        "CODEWHALE_STREAM_OPEN_TIMEOUT_SECS",
+        "DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS",
+    ];
+    let saved: Vec<(&str, Option<OsString>)> = names
+        .iter()
+        .map(|name| (*name, env::var_os(name)))
+        .collect();
+    // SAFETY: env mutation is serialized by `env_lock` and restored below.
+    unsafe {
+        env::set_var("CODEWHALE_MODEL", "");
+        env::set_var("DEEPSEEK_MODEL", "legacy-model");
+        env::set_var("CODEWHALE_BASE_URL", " ");
+        env::set_var("DEEPSEEK_BASE_URL", "https://legacy.example/v1");
+        env::set_var("MOONSHOT_BASE_URL", "");
+        env::set_var("KIMI_BASE_URL", "https://kimi.example/v1");
+        env::set_var("CODEWHALE_FORCE_HTTP1", "");
+        env::set_var("DEEPSEEK_FORCE_HTTP1", "1");
+        env::set_var("CODEWHALE_STREAM_OPEN_TIMEOUT_SECS", "");
+        env::set_var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS", "120");
+    }
+
+    let env_overrides = EnvRuntimeOverrides::load();
+    let force_http1 = crate::stream_timeouts::force_http1_from_env();
+    let open_timeout = crate::stream_timeouts::resolve_stream_open_timeout(None);
+
+    unsafe {
+        for (name, value) in saved {
+            match value {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
+            }
+        }
+    }
+
+    assert_eq!(env_overrides.model.as_deref(), Some("legacy-model"));
+    assert_eq!(
+        env_overrides.active_route_base_url.as_deref(),
+        Some("https://legacy.example/v1")
+    );
+    assert_eq!(
+        env_overrides.moonshot_base_url.as_deref(),
+        Some("https://kimi.example/v1")
+    );
+    assert!(force_http1);
+    assert_eq!(open_timeout, std::time::Duration::from_secs(120));
+}
+
 #[cfg(unix)]
 #[test]
 fn failed_legacy_state_copy_leaves_no_partial_primary() {
@@ -10842,6 +10955,7 @@ fn stream_settings_are_typed_nested_and_fail_without_mutation() {
     for (key, value) in [
         ("stream.max_resumes", "-1"),
         ("stream.max_resumes", "4294967296"),
+        ("stream.open_retries", "4294967296"),
         ("stream.force_http1", "flase"),
         ("stream.tcp_keepalive_secs", "1.5"),
         ("stream.open_timout_secs", "45"),
@@ -10969,4 +11083,83 @@ model = "fixture-model"
     assert!(!shown.contains("private-s10-synthetic"));
     assert!(!shown.contains("client-s10-synthetic"));
     assert!(shown.contains("fixture-model"));
+}
+
+#[test]
+fn resolve_runtime_options_fails_loud_on_rejected_or_empty_models() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+
+    for (provider, raw, expected_provider, expected_model) in [
+        (
+            ProviderKind::Deepseek,
+            "totally-unknown-model-x",
+            "deepseek",
+            "totally-unknown-model-x",
+        ),
+        (
+            ProviderKind::OpencodeGo,
+            "totally-unknown-model-x",
+            "opencode-go",
+            "totally-unknown-model-x",
+        ),
+        (ProviderKind::Google, "models/", "google", "models/"),
+    ] {
+        let cli = CliRuntimeOverrides {
+            provider: Some(provider),
+            model: Some(raw.to_string()),
+            ..CliRuntimeOverrides::default()
+        };
+        let resolved = ConfigToml::default().resolve_runtime_options(&cli);
+        assert!(resolved.model.is_empty(), "{provider:?} {raw}");
+        let err = resolved
+            .ensure_valid_model()
+            .expect_err("rejected model must fail loud")
+            .to_string();
+        assert!(err.contains(expected_provider), "{err}");
+        assert!(err.contains(expected_model), "{err}");
+    }
+
+    let xiaomi = ConfigToml {
+        provider: ProviderKind::XiaomiMimo,
+        default_text_model: Some(DEFAULT_OPENROUTER_MODEL.to_string()),
+        ..ConfigToml::default()
+    };
+    let resolved = xiaomi.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, DEFAULT_XIAOMI_MIMO_MODEL);
+    assert!(resolved.model_error.is_none());
+
+    let declared: ConfigToml = toml::from_str(
+        r#"provider = "deepseek"
+[providers.deepseek]
+base_url = "https://api.deepseek.com"
+model = "account-model"
+[[custom_models]]
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+id = "account-model"
+"#,
+    )
+    .expect("declared custom_models config");
+    let resolved = declared.resolve_runtime_options(&CliRuntimeOverrides::default());
+    assert_eq!(resolved.model, "account-model");
+    assert!(resolved.model_error.is_none());
+    assert!(resolved.route.is_ok());
+}
+
+#[test]
+fn config_store_refuses_a_user_layer_tool_launcher() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_path = dir.path().join("config.toml");
+    for body in [
+        "tool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\"]\n",
+        "[profiles.work]\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+    ] {
+        fs::write(&config_path, body).expect("write config");
+        let error = ConfigStore::load(Some(config_path.clone()))
+            .expect_err("a user-layer tool_launcher is a load error");
+        assert!(error.to_string().contains("`tool_launcher`"), "{error}");
+    }
+    fs::write(&config_path, "model = \"deepseek-v4-flash\"\n").expect("write config");
+    ConfigStore::load(Some(config_path)).expect("a config without a launcher loads");
 }

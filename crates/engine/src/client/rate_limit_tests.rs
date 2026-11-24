@@ -333,3 +333,66 @@ async fn rate_limit_official_quota_retains_route_guidance_in_both_senders() {
         }
     }
 }
+
+#[tokio::test]
+async fn recovery_probe_never_holds_back_the_request_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"data": []}))
+                .set_delay(Duration::from_secs(20)),
+        )
+        .mount(&server)
+        .await;
+    let base_url = format!("{}/v1", server.uri());
+    let mut config = Config::default();
+    config.provider = Some("openai".into());
+    config.providers = Some(ProvidersConfig {
+        openai: ProviderConfig {
+            api_key: Some("probe-fixture".into()),
+            base_url: Some(base_url.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let mut client = CodewhaleClient::new(
+        &config.with_legacy_root(Some("probe-fixture".into()), Some(base_url)),
+    )
+    .unwrap();
+    client.retry.enabled = false;
+    apply_request_failure(&mut *client.connection_health.lock().await, Instant::now());
+
+    let started = std::time::Instant::now();
+    let result = client
+        .send_with_retry(|| client.http_client.post(server.uri()).body("{}"))
+        .await;
+    assert!(result.is_err());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the error waited {:?} on the recovery probe",
+        started.elapsed()
+    );
+    {
+        let health = client.connection_health.lock().await;
+        assert_eq!(health.state, ConnectionState::Recovering);
+        assert!(health.last_probe.is_some());
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let requests = server.received_requests().await.unwrap();
+        if requests.iter().any(|r| r.method.as_str() == "GET") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the detached recovery probe never reached /models"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
