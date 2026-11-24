@@ -2873,5 +2873,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} is not ready: {reason}",
   "ExternalAgentSessionStarted": "Started session with {agent} (ACP). Codewhale keeps the thread, transcript, and approvals.",
   "ExternalAgentSessionSwitchedBack": "Switched back to Codewhale ({model}).",
-  "ExternalAgentSwitchBusy": "Wait for the current turn to finish before switching agents."
+  "ExternalAgentSwitchBusy": "Wait for the current turn to finish before switching agents.",
+  "ModelPickerExternalAgentNotReady": "not ready",
+  "ExternalAgentThinkingStatus": "{agent} thinking...",
+  "ExternalAgentToolCallFallback": "External agent tool call",
+  "ExternalAgentTurnFailedFallback": "External agent turn failed",
+  "ExternalAgentTurnInterruptedStatus": "{agent} turn interrupted"
 }

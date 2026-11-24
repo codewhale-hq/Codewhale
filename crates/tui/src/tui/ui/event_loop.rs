@@ -1522,6 +1522,19 @@ pub async fn run_tui(
     {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
     }
+    if let Some(session) = app.external_agent.take() {
+        match tokio::time::timeout(Duration::from_secs(5), session.runtime.shutdown_and_wait())
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "External agent shutdown remains incomplete");
+            }
+            Err(_) => {
+                tracing::warn!("External agent shutdown timed out");
+            }
+        }
+    }
 
     // Join the startup-default writer before anything else tears down.
     //

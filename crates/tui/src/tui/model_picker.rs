@@ -332,10 +332,15 @@ impl std::ops::Index<usize> for VisibleModelRows<'_> {
 struct ExternalAgentRowInfo {
     agent_id: String,
     agent_name: String,
+    state: String,
     runnable: bool,
+    needs_update: bool,
     version: Option<String>,
+    reason_code: Option<String>,
     reason: Option<String>,
     login: Option<String>,
+    upgrade: Option<String>,
+    website: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1080,18 +1085,36 @@ impl ModelPickerView {
             return ViewAction::None;
         };
         if let Some(agent) = row.external_agent.as_ref() {
+            let not_ready = tr(self.locale, MessageId::ModelPickerExternalAgentNotReady);
             let mut detail = agent
                 .reason
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .unwrap_or("not ready")
+                .unwrap_or(not_ready.as_ref())
                 .to_string();
-            if let Some(login) = agent
-                .login
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            if agent.needs_update
+                && let Some(upgrade) = agent
+                    .upgrade
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !detail.contains(upgrade)
+            {
+                detail.push_str(&format!(" · {upgrade}"));
+            } else if agent.state == "not_installed"
+                && !agent.website.trim().is_empty()
+                && !detail.contains(agent.website.trim())
+            {
+                detail.push_str(&format!(" · {}", agent.website.trim()));
+            } else if agent.state == "installed"
+                && !agent.needs_update
+                && agent.reason_code.as_deref() != Some("adapter_missing")
+                && let Some(login) = agent
+                    .login
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
                 && !detail.contains(login)
             {
                 let sign_in = tr(self.locale, MessageId::ModelPickerExternalAgentSignInHint)
@@ -2498,6 +2521,7 @@ fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
         {
             hint_parts.push(format!("v{version}"));
         }
+        let not_ready = tr(app.ui_locale, MessageId::ModelPickerExternalAgentNotReady);
         if agent.runnable {
             hint_parts.push(
                 tr(
@@ -2506,27 +2530,60 @@ fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
                 )
                 .into_owned(),
             );
-        } else if let Some(reason) = agent
-            .reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            hint_parts.push(reason.to_string());
+            if let Some(login) = agent
+                .login
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(login))
+            {
+                hint_parts.push(
+                    tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
+                        .replace("{command}", login),
+                );
+            }
         } else {
-            hint_parts.push("not ready".to_string());
-        }
-        if let Some(login) = agent
-            .login
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            && !hint_parts.iter().any(|part| part.contains(login))
-        {
-            hint_parts.push(
-                tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
-                    .replace("{command}", login),
-            );
+            if let Some(reason) = agent
+                .reason
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                hint_parts.push(reason.to_string());
+            } else {
+                hint_parts.push(not_ready.to_string());
+            }
+            if agent.needs_update
+                && let Some(upgrade) = agent
+                    .upgrade
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(upgrade))
+            {
+                hint_parts.push(upgrade.to_string());
+            } else if agent.state == "not_installed"
+                && !agent.website.trim().is_empty()
+                && !hint_parts
+                    .iter()
+                    .any(|part| part.contains(agent.website.trim()))
+            {
+                hint_parts.push(agent.website.trim().to_string());
+            } else if agent.state == "installed"
+                && !agent.needs_update
+                && agent.reason_code.as_deref() != Some("adapter_missing")
+                && let Some(login) = agent
+                    .login
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                && !hint_parts.iter().any(|part| part.contains(login))
+            {
+                hint_parts.push(
+                    tr(app.ui_locale, MessageId::ModelPickerExternalAgentSignInHint)
+                        .replace("{command}", login),
+                );
+            }
         }
         let default_rank = if is_active {
             Some((DefaultSection::Current, 0))
@@ -2541,7 +2598,7 @@ fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
             agent
                 .reason
                 .clone()
-                .or_else(|| Some("not ready".to_string()))
+                .or_else(|| Some(not_ready.into_owned()))
         };
         rows.push(ModelPickerRow {
             id: agent.id.clone(),
@@ -2562,10 +2619,15 @@ fn push_external_agent_rows(rows: &mut Vec<ModelPickerRow>, app: &App) {
             external_agent: Some(ExternalAgentRowInfo {
                 agent_id: agent.id.clone(),
                 agent_name: agent.name.clone(),
+                state: agent.state.clone(),
                 runnable: agent.runnable,
+                needs_update: agent.needs_update,
                 version: agent.version.clone(),
+                reason_code: agent.reason_code.clone(),
                 reason: agent.reason.clone(),
                 login: agent.login.clone(),
+                upgrade: agent.upgrade.clone(),
+                website: agent.website.clone(),
             }),
         });
     }
@@ -7475,7 +7537,7 @@ api_key = "fixture-xai-key"
                     message.contains("@agentclientprotocol/claude-agent-acp"),
                     "{message}"
                 );
-                assert!(message.contains("claude auth login"), "{message}");
+                assert!(!message.contains("claude auth login"), "{message}");
             }
             other => panic!("expected StatusMessage for blocked external agent, got {other:?}"),
         }

@@ -2667,8 +2667,14 @@ fn run() -> Result<()> {
         }
         Some(Commands::Exec(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
             let mut exec_args = tui_args("exec", args);
+            let has_agent_flag = cli.agent.is_some()
+                || exec_args
+                    .iter()
+                    .any(|arg| arg == "--agent" || arg.starts_with("--agent="));
+            if !has_agent_flag {
+                ensure_dispatch_model_valid(&cli, &resolved_runtime)?;
+            }
             if let Some(agent) = cli.agent.as_deref()
                 && !exec_args
                     .iter()
@@ -3003,6 +3009,9 @@ fn run() -> Result<()> {
 }
 
 fn ensure_dispatch_model_valid(cli: &Cli, resolved: &ResolvedRuntimeOptions) -> Result<()> {
+    if cli.agent.is_some() {
+        return Ok(());
+    }
     if cli.profile.is_none() || cli.model.is_some() {
         resolved.ensure_valid_model()?;
     }
@@ -13726,6 +13735,11 @@ verbosity = "concise"
             root_tui_passthrough(&cli).unwrap(),
             vec!["--agent", "antigravity", "--prompt", "hello"]
         );
+        let invalid_model = ConfigToml::default().resolve_runtime_options(&CliRuntimeOverrides {
+            model: Some("nonexistent-model-id".to_string()),
+            ..CliRuntimeOverrides::default()
+        });
+        assert!(ensure_dispatch_model_valid(&cli, &invalid_model).is_ok());
     }
 
     #[test]

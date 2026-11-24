@@ -2873,5 +2873,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} は準備できていません: {reason}",
   "ExternalAgentSessionStarted": "{agent} (ACP) でセッションを開始しました。Codewhale がスレッド、記録、承認を保持します。",
   "ExternalAgentSessionSwitchedBack": "Codewhale ({model}) に戻しました。",
-  "ExternalAgentSwitchBusy": "エージェントを切り替える前に現在のターンが完了するのを待ってください。"
+  "ExternalAgentSwitchBusy": "エージェントを切り替える前に現在のターンが完了するのを待ってください。",
+  "ModelPickerExternalAgentNotReady": "準備未完了",
+  "ExternalAgentThinkingStatus": "{agent} が思考中...",
+  "ExternalAgentToolCallFallback": "外部エージェントのツール呼び出し",
+  "ExternalAgentTurnFailedFallback": "外部エージェントのターンが失敗しました",
+  "ExternalAgentTurnInterruptedStatus": "{agent} のターンが中断されました"
 }

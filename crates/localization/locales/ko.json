@@ -2873,5 +2873,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} 준비되지 않음: {reason}",
   "ExternalAgentSessionStarted": "{agent} (ACP)로 세션을 시작했습니다. Codewhale이 스레드, 기록 및 승인을 보관합니다.",
   "ExternalAgentSessionSwitchedBack": "Codewhale({model})로 다시 전환했습니다.",
-  "ExternalAgentSwitchBusy": "에이전트를 전환하기 전에 현재 턴이 끝날 때까지 기다려 주세요."
+  "ExternalAgentSwitchBusy": "에이전트를 전환하기 전에 현재 턴이 끝날 때까지 기다려 주세요.",
+  "ModelPickerExternalAgentNotReady": "준비되지 않음",
+  "ExternalAgentThinkingStatus": "{agent} 생각 중...",
+  "ExternalAgentToolCallFallback": "외부 에이전트 도구 호출",
+  "ExternalAgentTurnFailedFallback": "외부 에이전트 턴 실패",
+  "ExternalAgentTurnInterruptedStatus": "{agent} 턴이 중단됨"
 }

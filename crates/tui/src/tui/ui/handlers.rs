@@ -3114,6 +3114,12 @@ pub(crate) async fn handle_view_events(
                 }
                 if was_external {
                     crate::tui::external_agent::clear_external_agent(app);
+                    if !app.history.is_empty() {
+                        app.history.clear();
+                        app.streaming_message_index = None;
+                        app.streaming_thinking_active_entry = None;
+                        app.mark_history_updated();
+                    }
                     let notice = app
                         .tr(MessageId::ExternalAgentSessionSwitchedBack)
                         .replace("{model}", &model);

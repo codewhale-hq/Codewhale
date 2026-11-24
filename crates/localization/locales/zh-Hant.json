@@ -2873,5 +2873,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} 尚未就緒: {reason}",
   "ExternalAgentSessionStarted": "已使用 {agent} (ACP) 開始工作階段。Codewhale 保留執行緒、紀錄和核准。",
   "ExternalAgentSessionSwitchedBack": "已切換回 Codewhale ({model})。",
-  "ExternalAgentSwitchBusy": "請等待目前回合完成後再切換代理。"
+  "ExternalAgentSwitchBusy": "請等待目前回合完成後再切換代理。",
+  "ModelPickerExternalAgentNotReady": "尚未就緒",
+  "ExternalAgentThinkingStatus": "{agent} 正在思考...",
+  "ExternalAgentToolCallFallback": "外部代理工具呼叫",
+  "ExternalAgentTurnFailedFallback": "外部代理回合失敗",
+  "ExternalAgentTurnInterruptedStatus": "{agent} 回合已中斷"
 }

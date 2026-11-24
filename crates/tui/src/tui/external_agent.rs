@@ -31,6 +31,41 @@ pub struct ExternalAgentSession {
     pub events_rx: tokio::sync::broadcast::Receiver<RuntimeEventRecord>,
     pub pending_approvals: HashSet<String>,
     pub turn_start_rx: Option<tokio::sync::oneshot::Receiver<Result<String, String>>>,
+    pub interrupt_pending: bool,
+}
+
+pub fn resolve_external_agent_posture(
+    permission_mode: Option<codewhale_engine::runtime_options::PermissionMode>,
+    yolo_or_auto: bool,
+    config: &Config,
+) -> (&'static str, &'static str) {
+    if yolo_or_auto {
+        return ("full-access", "yolo");
+    }
+    match permission_mode {
+        Some(codewhale_engine::runtime_options::PermissionMode::Plan) => ("ask", "plan"),
+        Some(codewhale_engine::runtime_options::PermissionMode::Ask) => ("ask", "agent"),
+        Some(codewhale_engine::runtime_options::PermissionMode::AcceptEdits) => {
+            ("accept-edits", "agent")
+        }
+        Some(codewhale_engine::runtime_options::PermissionMode::AutoReview) => ("auto", "agent"),
+        Some(codewhale_engine::runtime_options::PermissionMode::FullAccess) => {
+            ("full-access", "yolo")
+        }
+        None => {
+            let approval = config
+                .approval_policy
+                .as_deref()
+                .and_then(codewhale_execpolicy::ApprovalMode::from_config_value)
+                .unwrap_or(codewhale_execpolicy::ApprovalMode::Suggest);
+            let mode = if approval == codewhale_execpolicy::ApprovalMode::Bypass {
+                "yolo"
+            } else {
+                "agent"
+            };
+            (approval_wire(approval), mode)
+        }
+    }
 }
 
 pub(crate) fn start_external_agent_discovery(app: &mut App) {
@@ -121,6 +156,7 @@ pub async fn create_external_agent_session(
         events_rx,
         pending_approvals: HashSet::new(),
         turn_start_rx: None,
+        interrupt_pending: false,
     })
 }
 
@@ -162,6 +198,13 @@ pub(crate) async fn switch_to_external_agent(
         }
     };
     clear_external_agent(app);
+    app.runtime_turn_status = None;
+    app.runtime_turn_id = None;
+    app.active_turn = None;
+    app.dispatch_started_at = None;
+    app.turn_started_at = None;
+    app.turn_last_activity_at = None;
+    app.suppress_stream_events_until_turn_complete = false;
     if !app.history.is_empty() {
         app.history.clear();
         app.streaming_message_index = None;
@@ -206,6 +249,7 @@ pub(crate) fn dispatch_external_turn(app: &mut App, message: QueuedMessage) -> R
     let mode = app.mode.as_setting().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
     session.turn_start_rx = Some(rx);
+    session.interrupt_pending = false;
 
     app.add_message(HistoryCell::User {
         content: prompt.clone(),
@@ -234,20 +278,26 @@ pub(crate) fn dispatch_external_turn(app: &mut App, message: QueuedMessage) -> R
 }
 
 pub(crate) fn interrupt_external_turn(app: &mut App) -> bool {
-    let Some(session) = app.external_agent.as_ref() else {
+    let Some(session) = app.external_agent.as_mut() else {
         return false;
     };
-    let Some(turn_id) = session.active_turn_id.clone() else {
-        return false;
-    };
-    let runtime = Arc::clone(&session.runtime);
-    let thread_id = session.thread_id.clone();
-    tokio::spawn(async move {
-        let _ = runtime.interrupt_turn(&thread_id, &turn_id).await;
-    });
-    app.finalize_streaming_assistant_as_interrupted();
-    app.needs_redraw = true;
-    true
+    if let Some(turn_id) = session.active_turn_id.clone() {
+        let runtime = Arc::clone(&session.runtime);
+        let thread_id = session.thread_id.clone();
+        tokio::spawn(async move {
+            let _ = runtime.interrupt_turn(&thread_id, &turn_id).await;
+        });
+        app.finalize_streaming_assistant_as_interrupted();
+        app.needs_redraw = true;
+        return true;
+    }
+    if session.turn_start_rx.is_some() {
+        session.interrupt_pending = true;
+        app.finalize_streaming_assistant_as_interrupted();
+        app.needs_redraw = true;
+        return true;
+    }
+    false
 }
 
 pub(crate) fn handle_external_approval_decision(
@@ -295,12 +345,20 @@ pub(crate) fn drain_external_agent_events(app: &mut App) -> bool {
         match rx.try_recv() {
             Ok(Ok(turn_id)) => {
                 session.turn_start_rx = None;
-                session.active_turn_id = Some(turn_id);
+                session.active_turn_id = Some(turn_id.clone());
+                if std::mem::take(&mut session.interrupt_pending) {
+                    let runtime = Arc::clone(&session.runtime);
+                    let thread_id = session.thread_id.clone();
+                    tokio::spawn(async move {
+                        let _ = runtime.interrupt_turn(&thread_id, &turn_id).await;
+                    });
+                }
                 changed = true;
             }
             Ok(Err(error)) => {
                 session.turn_start_rx = None;
                 session.active_turn_id = None;
+                session.interrupt_pending = false;
                 app.is_loading = false;
                 app.add_message(HistoryCell::System {
                     content: error.clone(),
@@ -398,7 +456,10 @@ fn apply_external_event(app: &mut App, agent_name: &str, record: RuntimeEventRec
             if kind == "agent_message" {
                 append_assistant_delta(app, delta);
             } else if kind == "agent_reasoning" && !delta.is_empty() {
-                app.status_message = Some(format!("{agent_name} thinking..."));
+                app.status_message = Some(
+                    app.tr(MessageId::ExternalAgentThinkingStatus)
+                        .replace("{agent}", agent_name),
+                );
             }
         }
         "item.started" => {
@@ -458,12 +519,13 @@ fn apply_external_event(app: &mut App, agent_name: &str, record: RuntimeEventRec
                 .get("tool_name")
                 .and_then(|value| value.as_str())
                 .unwrap_or("external_tool");
+            let fallback_desc = app.tr(MessageId::ExternalAgentToolCallFallback);
             let description = record
                 .payload
                 .get("description")
                 .or_else(|| record.payload.get("summary"))
                 .and_then(|value| value.as_str())
-                .unwrap_or("External agent tool call");
+                .unwrap_or(fallback_desc.as_ref());
             let params = record
                 .payload
                 .get("input")
@@ -489,50 +551,50 @@ fn apply_external_event(app: &mut App, agent_name: &str, record: RuntimeEventRec
                 ));
         }
         "turn.completed" => {
-            finish_streaming_assistant(app);
-            if let Some(session) = app.external_agent.as_mut() {
-                session.active_turn_id = None;
-                session.pending_approvals.clear();
-            }
-            app.is_loading = false;
-            app.status_message = None;
-        }
-        "turn.failed" => {
-            finish_streaming_assistant(app);
-            if let Some(session) = app.external_agent.as_mut() {
-                session.active_turn_id = None;
-                session.pending_approvals.clear();
-            }
-            app.is_loading = false;
-            let error = record
+            let status = record
                 .payload
-                .get("error")
+                .pointer("/turn/status")
                 .and_then(|value| value.as_str())
-                .or_else(|| {
-                    record
-                        .payload
-                        .get("turn")
-                        .and_then(|turn| turn.get("error"))
-                        .and_then(|value| value.as_str())
-                })
-                .unwrap_or("External agent turn failed");
-            app.add_message(HistoryCell::System {
-                content: format!("{agent_name}: {error}"),
-            });
-            app.push_status_toast(
-                format!("{agent_name}: {error}"),
-                StatusToastLevel::Error,
-                Some(10_000),
-            );
-        }
-        "turn.interrupted" => {
-            app.finalize_streaming_assistant_as_interrupted();
-            if let Some(session) = app.external_agent.as_mut() {
+                .unwrap_or("completed");
+            let had_pending_approvals = app.external_agent.as_mut().is_some_and(|session| {
                 session.active_turn_id = None;
+                session.interrupt_pending = false;
+                let had = !session.pending_approvals.is_empty();
                 session.pending_approvals.clear();
+                had
+            });
+            if had_pending_approvals && app.view_stack.top_kind() == Some(ModalKind::Approval) {
+                let _ = app.view_stack.pop();
             }
             app.is_loading = false;
-            app.status_message = Some(format!("{agent_name} turn interrupted"));
+            match status {
+                "failed" => {
+                    finish_streaming_assistant(app);
+                    let fallback = app.tr(MessageId::ExternalAgentTurnFailedFallback);
+                    let error = record
+                        .payload
+                        .pointer("/turn/error")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| record.payload.get("error").and_then(|value| value.as_str()))
+                        .unwrap_or(fallback.as_ref());
+                    let detail = format!("{agent_name}: {error}");
+                    app.add_message(HistoryCell::System {
+                        content: detail.clone(),
+                    });
+                    app.push_status_toast(detail, StatusToastLevel::Error, Some(10_000));
+                }
+                "interrupted" => {
+                    app.finalize_streaming_assistant_as_interrupted();
+                    app.status_message = Some(
+                        app.tr(MessageId::ExternalAgentTurnInterruptedStatus)
+                            .replace("{agent}", agent_name),
+                    );
+                }
+                _ => {
+                    finish_streaming_assistant(app);
+                    app.status_message = None;
+                }
+            }
         }
         _ => {}
     }
@@ -550,12 +612,29 @@ pub fn format_agent_not_runnable_error(row: &ExternalAgentDiscoveryRow) -> Strin
     } else {
         parts.push(format!("{} is not ready to run via ACP.", row.name));
     }
-    if let Some(login) = row
-        .login
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        && !parts[0].contains(login)
+    if row.needs_update
+        && let Some(upgrade) = row
+            .upgrade
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        && !parts.iter().any(|p| p.contains(upgrade))
+    {
+        parts.push(format!("Update with `{upgrade}`."));
+    } else if row.state == "not_installed"
+        && !row.website.trim().is_empty()
+        && !parts.iter().any(|p| p.contains(row.website.trim()))
+    {
+        parts.push(format!("See {}.", row.website.trim()));
+    } else if row.state == "installed"
+        && !row.needs_update
+        && row.reason_code.as_deref() != Some("adapter_missing")
+        && let Some(login) = row
+            .login
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        && !parts.iter().any(|p| p.contains(login))
     {
         parts.push(format!("Sign in with `{login}`."));
     }
@@ -623,7 +702,200 @@ mod tests {
         assert!(message.contains("antigravity"));
         assert!(message.contains("Antigravity"));
         assert!(message.contains("1.5.0"));
-        assert!(message.contains("agy acp --login"));
+        assert!(message.contains("agy update"));
+        assert!(!message.contains("agy acp --login"));
+    }
+
+    #[test]
+    fn resolve_external_agent_posture_preserves_permission_modes() {
+        use codewhale_engine::runtime_options::PermissionMode;
+        let config = Config::default();
+        assert_eq!(
+            resolve_external_agent_posture(Some(PermissionMode::Plan), false, &config),
+            ("ask", "plan")
+        );
+        assert_eq!(
+            resolve_external_agent_posture(Some(PermissionMode::AcceptEdits), false, &config),
+            ("accept-edits", "agent")
+        );
+        assert_eq!(
+            resolve_external_agent_posture(Some(PermissionMode::AutoReview), false, &config),
+            ("auto", "agent")
+        );
+        assert_eq!(
+            resolve_external_agent_posture(Some(PermissionMode::Ask), false, &config),
+            ("ask", "agent")
+        );
+        assert_eq!(
+            resolve_external_agent_posture(Some(PermissionMode::FullAccess), false, &config),
+            ("full-access", "yolo")
+        );
+        assert_eq!(
+            resolve_external_agent_posture(None, true, &config),
+            ("full-access", "yolo")
+        );
+    }
+
+    #[test]
+    fn apply_external_event_handles_failed_and_interrupted_turn_completed_and_pops_approval() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let options = crate::tui::app::TuiOptions {
+            model: "deepseek-chat".to_string(),
+            workspace: temp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            screen_mode: crate::tui::app::ScreenMode::Fullscreen,
+            use_mouse_capture: false,
+            mouse_capture_preference: false,
+            use_bracketed_paste: false,
+            max_subagents: 1,
+            skills_dir: temp.path().join("skills"),
+            memory_path: temp.path().join("memory"),
+            notes_path: temp.path().join("notes"),
+            mcp_config_path: temp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+            startup_notice: None,
+        };
+        let mut app = App::new(options, &config);
+        app.is_loading = true;
+        apply_external_event(
+            &mut app,
+            "OpenCode",
+            RuntimeEventRecord {
+                schema_version: 1,
+                seq: 1,
+                timestamp: chrono::Utc::now(),
+                thread_id: "thr_1".to_string(),
+                turn_id: Some("turn_1".to_string()),
+                item_id: None,
+                event: "turn.completed".to_string(),
+                payload: serde_json::json!({
+                    "turn": {
+                        "id": "turn_1",
+                        "status": "failed",
+                        "error": "auth expired"
+                    }
+                }),
+            },
+        );
+        assert!(!app.is_loading);
+        assert!(app.history.iter().any(|cell| matches!(
+            cell,
+            HistoryCell::System { content } if content.contains("OpenCode: auth expired")
+        )));
+
+        app.is_loading = true;
+        apply_external_event(
+            &mut app,
+            "OpenCode",
+            RuntimeEventRecord {
+                schema_version: 1,
+                seq: 2,
+                timestamp: chrono::Utc::now(),
+                thread_id: "thr_1".to_string(),
+                turn_id: Some("turn_2".to_string()),
+                item_id: None,
+                event: "turn.completed".to_string(),
+                payload: serde_json::json!({
+                    "turn": {
+                        "id": "turn_2",
+                        "status": "interrupted"
+                    }
+                }),
+            },
+        );
+        assert!(!app.is_loading);
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|msg| msg.contains("OpenCode"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn liveness_watchdog_and_startup_interrupt_respect_external_agent_session() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = temp.path().join("fake-acp-2.sh");
+        std::fs::write(&script_path, "#!/bin/sh\nexit 0\n").expect("write script");
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let custom_json = serde_json::json!([{
+            "id": "test-acp-liveness",
+            "name": "Test ACP Liveness",
+            "binary": script_path.display().to_string(),
+            "args": []
+        }])
+        .to_string();
+        let _env_lock = codewhale_engine::test_support::lock_test_env();
+        let _env_guard = codewhale_engine::test_support::EnvVarGuard::set(
+            codewhale_engine::fleet::agents::CUSTOM_AGENTS_ENV,
+            custom_json,
+        );
+        let config = Config::default();
+        let mut session = create_external_agent_session(
+            &config,
+            temp.path().to_path_buf(),
+            "ask",
+            "agent",
+            "test-acp-liveness".to_string(),
+            Some("Test ACP Liveness".to_string()),
+            Arc::new(codewhale_plugins::PluginRegistry::default()),
+        )
+        .await
+        .expect("ACP thread created");
+        let runtime = Arc::clone(&session.runtime);
+        let (_tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+        session.turn_start_rx = Some(rx);
+
+        let options = crate::tui::app::TuiOptions {
+            model: "deepseek-chat".to_string(),
+            workspace: temp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            screen_mode: crate::tui::app::ScreenMode::Fullscreen,
+            use_mouse_capture: false,
+            mouse_capture_preference: false,
+            use_bracketed_paste: false,
+            max_subagents: 1,
+            skills_dir: temp.path().join("skills"),
+            memory_path: temp.path().join("memory"),
+            notes_path: temp.path().join("notes"),
+            mcp_config_path: temp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: false,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+            startup_notice: None,
+        };
+        let mut app = App::new(options, &config);
+        app.runtime_turn_status = Some("completed".to_string());
+        app.is_loading = true;
+        app.external_agent = Some(session);
+
+        assert!(!crate::tui::ui::reconcile_turn_liveness(
+            &mut app,
+            std::time::Instant::now(),
+            false,
+        ));
+        assert!(app.is_loading);
+
+        assert!(interrupt_external_turn(&mut app));
+        assert!(app.external_agent.as_ref().unwrap().interrupt_pending);
+
+        let _ = runtime.shutdown_and_wait().await;
     }
 
     #[test]

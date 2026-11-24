@@ -2873,5 +2873,10 @@
   "ModelPickerExternalAgentBlockedNotice": "{agent} तैयार नहीं है: {reason}",
   "ExternalAgentSessionStarted": "{agent} (ACP) के साथ सत्र शुरू हुआ। Codewhale थ्रेड, ट्रांसक्रिप्ट और स्वीकृतियाँ रखता है।",
   "ExternalAgentSessionSwitchedBack": "Codewhale ({model}) पर वापस स्विच किया गया।",
-  "ExternalAgentSwitchBusy": "एजेंट बदलने से पहले वर्तमान टर्न पूरा होने की प्रतीक्षा करें।"
+  "ExternalAgentSwitchBusy": "एजेंट बदलने से पहले वर्तमान टर्न पूरा होने की प्रतीक्षा करें।",
+  "ModelPickerExternalAgentNotReady": "तैयार नहीं",
+  "ExternalAgentThinkingStatus": "{agent} सोच रहा है...",
+  "ExternalAgentToolCallFallback": "बाहरी एजेंट टूल कॉल",
+  "ExternalAgentTurnFailedFallback": "बाहरी एजेंट टर्न विफल",
+  "ExternalAgentTurnInterruptedStatus": "{agent} टर्न बाधित हुआ"
 }
