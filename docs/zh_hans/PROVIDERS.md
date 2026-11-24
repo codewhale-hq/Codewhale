@@ -32,6 +32,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 | WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`、`deepseek-v4-flash`、`gemini-4-neon` | `WORLDROUTER_API_KEY` |
+| onomeo | `https://onomeo.com/v1` | `deepseek-v4.1-flash`、`claude-sonnet-5.5`、`gpt-6.2-sol` | `ONOMEO_API_KEY` |
 | AtmoRouter | `https://atmorouter.dev/v1` | `zai/glm-5.3`、`zai/glm-5.3-flash`；带命名空间的 `vendor/model` ID，以实时目录为准 | `ATMOROUTER_API_KEY` |
 
 Tinker 的 OpenAI 兼容 API 和无服务器推理均为测试版。在 `/provider` 中选择 Tinker，或按英文文档配置 `[providers.tinker]`。其他公开的无服务器模型 ID 包括 `thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4` 和 `thinkingmachines/Inkling:peft:262144:sampling-nvfp4`；请手动输入所需 ID，也可以使用自己的 sampler checkpoint 路径。Codewhale 不会通过模型列表发现此路由或验证密钥；已配置模型会出现在选择器中，费用显示为未知。此通用路由目前不发送推理强度，Tinker 文档所述默认值为 0.9。实际对话、工具调用和图像输入尚未在 Codewhale 中验证。参见 [API 文档](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)和[模型列表](https://tinker-docs.thinkingmachines.ai/tinker/models/models_and_pricing/)。
@@ -47,6 +48,8 @@ Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
 
 WorldRouter 是 OpenAI 兼容网关，一个密钥即可使用 Claude、GPT、Gemini、DeepSeek、Kimi 和 GLM 等模型。模型 ID 不带前缀，例如 `claude-sonnet-5-5`、`deepseek-v4-flash`，模型列表和价格见 <https://www.worldrouter.ai/models>。以带密钥请求 `GET https://inference-api.worldrouter.ai/v1/models` 的结果为准，文档见 <https://www.worldrouter.ai/docs/quickstart>。
+
+onomeo 是 OpenAI 兼容网关，一个密钥即可使用 Claude、GPT、Gemini 和 DeepSeek 等模型。模型 ID 不带前缀，例如 `deepseek-v4.1-flash`、`claude-sonnet-5.5`、`gpt-6.2-sol`。新账号可在每日额度内免费调用默认模型 `deepseek-v4.1-flash`；Claude、GPT 和 Gemini 模型需要先充值。以带密钥请求 `GET https://onomeo.com/v1/models` 的结果为准（不带密钥返回 401）。在 <https://onomeo.com/dashboard> 创建密钥并设置 `ONOMEO_API_KEY`，文档见 <https://onomeo.com/integrations>。
 
 AtmoRouter 是 OpenAI 兼容网关，端点为 `https://atmorouter.dev/v1`。模型 ID 带命名空间，形如 `zai/glm-5.3`、`zai/glm-5.3-flash`，模型列表和价格见 <https://atmorouter.dev/models>。以带密钥请求 `GET https://atmorouter.dev/v1/models` 的结果为准。密钥在 <https://atmorouter.dev/dashboard/keys> 创建，环境变量为 `ATMOROUTER_API_KEY`，文档见 <https://atmorouter.dev/docs/quickstart>。
 

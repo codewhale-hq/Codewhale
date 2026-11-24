@@ -14,7 +14,7 @@
 pub mod bundle;
 pub mod registry;
 
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -248,16 +248,27 @@ fn bridge_choices() -> String {
 
 /// Print a numbered menu, read a 1-based selection from stdin, return the index.
 fn prompt_choice(title: &str, options: &[String]) -> Result<usize> {
-    println!();
-    println!("{title}:");
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout();
+    prompt_choice_with(title, options, &mut stdin, &mut stdout)
+}
+
+fn prompt_choice_with<R: BufRead, W: Write>(
+    title: &str,
+    options: &[String],
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<usize> {
+    writeln!(writer)?;
+    writeln!(writer, "{title}:")?;
     for (idx, opt) in options.iter().enumerate() {
-        println!("  {:>2}. {}", idx + 1, opt);
+        writeln!(writer, "  {:>2}. {}", idx + 1, opt)?;
     }
-    print!("Enter a number: ");
-    io::stdout().flush()?;
+    write!(writer, "Enter a number: ")?;
+    writer.flush()?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    reader.read_line(&mut input)?;
     let input = input.trim();
     if input.is_empty() {
         bail!("No selection made.");
@@ -265,9 +276,12 @@ fn prompt_choice(title: &str, options: &[String]) -> Result<usize> {
     let n: usize = input
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid input: {input}"))?;
+    let idx = n
+        .checked_sub(1)
+        .ok_or_else(|| anyhow::anyhow!("Selection out of range"))?;
     options
-        .get(n.saturating_sub(1))
-        .map(|_| n - 1)
+        .get(idx)
+        .map(|_| idx)
         .ok_or_else(|| anyhow::anyhow!("Selection out of range"))
 }
 
@@ -365,5 +379,26 @@ mod tests {
         let err = run_remote_setup(args).unwrap_err().to_string();
         assert!(err.contains("--apply is not implemented"), "{err}");
         assert!(!out.exists(), "--apply must not render a bundle");
+    }
+
+    #[test]
+    fn prompt_choice_rejects_zero_and_maps_one_based_selection() {
+        let options = vec!["Alpha".to_string(), "Beta".to_string()];
+        let mut out = Vec::new();
+        let err = prompt_choice_with("Pick", &options, &mut io::Cursor::new(b"0\n"), &mut out)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "Selection out of range");
+
+        let mut out = Vec::new();
+        let idx =
+            prompt_choice_with("Pick", &options, &mut io::Cursor::new(b"1\n"), &mut out).unwrap();
+        assert_eq!(idx, 0);
+
+        let mut out = Vec::new();
+        let err = prompt_choice_with("Pick", &options, &mut io::Cursor::new(b"3\n"), &mut out)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "Selection out of range");
     }
 }

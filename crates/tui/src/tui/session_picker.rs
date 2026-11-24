@@ -612,7 +612,15 @@ impl SessionPickerView {
 
     fn delete_selected(&mut self) -> Option<ViewEvent> {
         let session = self.selected_session().cloned()?;
-        let manager = SessionManager::default_location().ok()?;
+        let manager = match SessionManager::default_location() {
+            Ok(manager) => manager,
+            Err(error) => {
+                tracing::warn!(%error, "sessions directory unavailable for delete");
+                self.status =
+                    Some(tr(self.locale, MessageId::SessionsDirectoryFailed).into_owned());
+                return None;
+            }
+        };
         // A deleted document the live session still owns refuses every later
         // save, so the conversation on screen would silently stop persisting.
         let refusal = if self.current_session_id.as_deref() == Some(session.id.as_str()) {
@@ -2081,22 +2089,7 @@ pub(crate) fn format_relative_time(dt: &DateTime<chrono::Utc>, locale: Locale) -
 }
 
 fn truncate(text: &str, width: u16) -> String {
-    let max = width.max(1) as usize;
-    if text.width() <= max {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut current = 0;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
-        if current + w >= max.saturating_sub(3) {
-            break;
-        }
-        out.push(ch);
-        current += w;
-    }
-    out.push_str("...");
-    out
+    codewhale_tui_kit::ui_text::truncate_line_to_width(text, width.max(1) as usize)
 }
 
 /// Best-effort canonicalisation of a path so two recordings of the same

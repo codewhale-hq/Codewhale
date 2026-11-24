@@ -495,12 +495,13 @@ fn default_worktree_root(repo_root: &Path) -> PathBuf {
 }
 
 /// The default checkout directory for `branch`: its slug, or, when the slug
-/// had to be cut to [`WORKTREE_SLUG_MAX`], the cut slug with a short hash of
-/// the whole branch name, so two long branches sharing a prefix get their own
-/// checkouts instead of the second spawn failing on an existing path.
+/// had to be cut to [`WORKTREE_SLUG_MAX`] or collapsed non-ASCII characters,
+/// the sanitized prefix with a short hash of the whole branch name, so distinct
+/// long or non-ASCII branches get their own checkouts instead of colliding.
 fn branch_worktree_slug(branch: &str) -> String {
     let slug = sanitize_worktree_slug(branch);
-    if slug == sanitize_worktree_slug_within(branch, usize::MAX) {
+    let lossy = !branch.is_ascii() || slug != sanitize_worktree_slug_within(branch, usize::MAX);
+    if !lossy {
         return slug;
     }
     use sha2::{Digest, Sha256};
@@ -513,7 +514,11 @@ fn branch_worktree_slug(branch: &str) -> String {
     let mut prefix = slug;
     prefix.truncate(WORKTREE_SLUG_MAX - suffix.len() - 1);
     let prefix = prefix.trim_end_matches(['-', '.', '_']);
-    format!("{prefix}-{suffix}")
+    if prefix.is_empty() {
+        format!("task-{suffix}")
+    } else {
+        format!("{prefix}-{suffix}")
+    }
 }
 
 /// Longest sub-agent worktree path slug.
@@ -642,6 +647,32 @@ mod tests {
             "feature-short",
             "a branch that fits keeps its plain slug"
         );
+    }
+
+    #[test]
+    fn non_ascii_branches_get_distinct_stable_worktree_slugs() {
+        let all_non_ascii = ["功能", "構造", "таск"].map(branch_worktree_slug);
+        assert_ne!(all_non_ascii[0], all_non_ascii[1]);
+        assert_ne!(all_non_ascii[0], all_non_ascii[2]);
+        assert_ne!(all_non_ascii[1], all_non_ascii[2]);
+        for slug in &all_non_ascii {
+            assert_ne!(slug, "task");
+            assert!(slug.is_ascii());
+            assert!(slug.len() <= WORKTREE_SLUG_MAX, "{slug}");
+        }
+
+        let same_ascii_tail_a = branch_worktree_slug("功能A");
+        let same_ascii_tail_b = branch_worktree_slug("構造A");
+        assert_ne!(same_ascii_tail_a, same_ascii_tail_b);
+        assert_ne!(same_ascii_tail_a, branch_worktree_slug("a"));
+
+        let prefixed_a = branch_worktree_slug("feature/短名");
+        let prefixed_b = branch_worktree_slug("feature/另一名");
+        assert_ne!(prefixed_a, prefixed_b);
+        assert_ne!(prefixed_a, branch_worktree_slug("feature"));
+        assert_eq!(prefixed_a, branch_worktree_slug("feature/短名"));
+        assert!(prefixed_a.starts_with("feature-"), "{prefixed_a}");
+        assert!(prefixed_a.len() <= WORKTREE_SLUG_MAX, "{prefixed_a}");
     }
 
     #[test]

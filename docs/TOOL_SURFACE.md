@@ -19,9 +19,8 @@ Implementation sources:
 
 ## Default-active contract
 
-The 0.10.3 source candidate starts new turns with twelve eager native names
-plus synthetic `tool_search`. This is the current source contract, not a
-claim about the published v0.10.2 release.
+Current `main` starts new turns with twelve eager native names plus synthetic
+`tool_search`.
 
 1. `read`
 2. `write`

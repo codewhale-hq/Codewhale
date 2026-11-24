@@ -3732,7 +3732,11 @@ impl SessionManager {
         let path = self.validated_session_goal_path(session_id)?;
         let Some(goal) = goal else {
             if self.checked_existing_session_goals_dir()?.is_some() && path.exists() {
-                fs::remove_file(path)?;
+                fs::remove_file(&path)?;
+                #[cfg(unix)]
+                if let Some(parent) = path.parent() {
+                    fs::File::open(parent)?.sync_all()?;
+                }
             }
             return Ok(());
         };
@@ -6299,6 +6303,8 @@ impl SessionManager {
         if session_dir.is_dir() && fs::read_dir(&session_dir)?.next().is_none() {
             fs::remove_dir(session_dir)?;
         }
+        #[cfg(unix)]
+        fs::File::open(&self.sessions_dir)?.sync_all()?;
         Ok(())
     }
 

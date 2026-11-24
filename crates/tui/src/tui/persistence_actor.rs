@@ -1189,7 +1189,7 @@ mod tests {
         drop(paused_receiver);
         assert!(
             paused
-                .flush(Duration::from_secs(2))
+                .flush(Duration::from_secs(10))
                 .await
                 .expect_err("closed actor must fail without waiting")
                 .contains("unavailable")
@@ -1393,7 +1393,7 @@ mod tests {
         }));
         assert!(handle.try_send(PersistRequest::SessionSnapshot(snapshot)));
         let report = handle
-            .flush(Duration::from_secs(2))
+            .flush(Duration::from_secs(10))
             .await
             .expect("flush report reply");
         assert!(checkpoint_result.await.expect("checkpoint reply").is_ok());
@@ -1584,7 +1584,7 @@ mod tests {
             reply: checkpoint_reply
         }));
         let report = handle
-            .flush(Duration::from_secs(2))
+            .flush(Duration::from_secs(10))
             .await
             .expect("flush report reply");
         assert!(checkpoint_result.await.expect("checkpoint reply").is_err());

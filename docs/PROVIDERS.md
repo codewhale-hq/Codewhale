@@ -14,17 +14,13 @@ base URLs), derives context windows, output limits, capabilities, and prices
 from the resolved route, and verifies signed `registry.json` updates is owned in
 one place: [Models and providers](MODELS_AND_PROVIDERS.md).
 
-The `/provider` and `/model` pickers recommend OrcaRouter as a partner option.
-Click the recommendation or press F7 to view the Codewhale × OrcaRouter offer:
-a **30% top-up match for DeepSeek V4.1 Flash**. The pager includes the
-[redemption link](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67)
-and can copy its text. This link is part of a referral campaign; Codewhale may
-earn a referral reward on top-ups made through it.
-Current eligibility and terms are owned by the linked offer page. Viewing it
-preserves the current provider, model and credentials; redemption happens on
-OrcaRouter's site.
-The recommendation is not shown when the interface is in Simplified Chinese or
-the computer is set to a mainland China time zone or locale.
+Until the campaign ended at 2026-11-21 12:29:57 UTC, the `/provider` and
+`/model` pickers recommended OrcaRouter as a partner option, and clicking it or
+pressing F7 opened the Codewhale × OrcaRouter referral offer, a 30% top-up
+match for DeepSeek V4.1 Flash. From 0.10.4 the recommendation and F7 are gone
+after that time, judged by the computer's clock. It was never shown when the
+interface is in Simplified Chinese or the computer is set to a mainland China
+time zone or locale.
 
 DeepSeek remains the default provider, but every entry in `ProviderKind::ALL`
 is a first-class selectable provider route. `ALL` is the catalog/picker
@@ -73,6 +69,7 @@ against the vendor's own docs before trusting any value here:
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 | LLMTR | `https://llmtr.com/v1` | `minimax/minimax-m3.1-flash`; namespaced `vendor/model` ids, from the live catalog | `LLMTR_API_KEY` |
 | WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`, `deepseek-v4-flash`, `gemini-4-neon` | `WORLDROUTER_API_KEY` |
+| onomeo | `https://onomeo.com/v1` | `deepseek-v4.1-flash`, `claude-sonnet-5.5`, `gpt-6.2-sol` | `ONOMEO_API_KEY` |
 | AtmoRouter | `https://atmorouter.dev/v1` | `zai/glm-5.3`, `zai/glm-5.3-flash`; namespaced `vendor/model` ids, from the live catalog | `ATMOROUTER_API_KEY` |
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
@@ -171,6 +168,15 @@ Kimi and GLM models behind one key. Model ids are unprefixed, such as
 <https://www.worldrouter.ai/models>. The authority is
 `GET https://inference-api.worldrouter.ai/v1/models` with your key.
 Docs: <https://www.worldrouter.ai/docs/quickstart>.
+
+onomeo is an OpenAI-compatible gateway with Claude, GPT, Gemini and DeepSeek
+models behind one key. Model ids are unprefixed, such as `deepseek-v4.1-flash`,
+`claude-sonnet-5.5` or `gpt-6.2-sol`. New accounts can call
+`deepseek-v4.1-flash`, the bootstrap model, for free within daily limits;
+Claude, GPT and Gemini models need a topped-up balance. The authority is
+`GET https://onomeo.com/v1/models` with your key (it answers 401 without one).
+Create a key at <https://onomeo.com/dashboard> and set `ONOMEO_API_KEY`.
+Docs: <https://onomeo.com/integrations>.
 
 AtmoRouter is an OpenAI-compatible gateway at `https://atmorouter.dev/v1`.
 Model ids are namespaced `vendor/model` values such as `zai/glm-5.3` or

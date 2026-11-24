@@ -1102,7 +1102,6 @@ pub(crate) fn ambient_life_motion_enabled(app: &App) -> bool {
         && app.onboarding == OnboardingState::None
         && app.view_stack.is_empty()
         && app.viewport.transcript_scroll.is_at_tail()
-        && crate::tui::notifications::terminal_focused()
         && app.viewport.ocean_caps.is_none_or(|caps| {
             matches!(
                 caps.depth,

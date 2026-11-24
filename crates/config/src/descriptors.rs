@@ -479,6 +479,16 @@ mod tests {
     }
 
     #[test]
+    fn onomeo_is_a_descriptor_row() {
+        let row = provider_descriptor("onomeo").expect("onomeo");
+        assert_eq!(row.id, "onomeo");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://onomeo.com/v1");
+        assert_eq!(row.api_key_env, "ONOMEO_API_KEY");
+        assert_eq!(row.default_model, "deepseek-v4.1-flash");
+    }
+
+    #[test]
     fn descriptors_do_not_embed_model_rosters() {
         let raw = DESCRIPTORS_JSON;
         assert!(

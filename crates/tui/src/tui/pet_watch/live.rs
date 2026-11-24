@@ -442,9 +442,18 @@ fn run(
             200
         })
     };
+    let poll_every = |view: &View| {
+        Duration::from_millis(if !view.visible {
+            400
+        } else if view.motion {
+            30
+        } else {
+            200
+        })
+    };
     let mut view = read_view()?;
     loop {
-        let mut due = fetched + Duration::from_millis(if view.visible { 30 } else { 400 });
+        let mut due = fetched + poll_every(&view);
         if let Some(s) = &scene {
             if action.is_some() || appearance_patch.is_some() {
                 due = due.min(last_action + Duration::from_millis(250));
@@ -516,7 +525,7 @@ fn run(
                 Err(e) => Notice::Message(e.to_string()),
             });
         }
-        if fetched.elapsed() >= Duration::from_millis(if view.visible { 30 } else { 400 }) {
+        if fetched.elapsed() >= poll_every(&view) {
             match client
                 .get("/v1/frame")
                 .and_then(|value| serde_json::from_value::<Scene>(value).map_err(io::Error::other))
@@ -620,8 +629,17 @@ fn run(
             if s.display_language.is_some() {
                 body["locale"] = json!(view.locale);
             }
-            producer_seq = client.post("/v1/producer", &body).ok().map(|_| seq);
-            events.clear();
+            match client.post("/v1/producer", &body) {
+                Ok(_) => {
+                    producer_seq = Some(seq);
+                    events.clear();
+                }
+                Err(error) => {
+                    tracing::debug!(%error, seq, "pet producer post failed; restarting lease");
+                    producer_seq = None;
+                    events.clear();
+                }
+            }
             last_produce = Instant::now();
         } else if source.as_deref() != Some(s.source.as_str()) {
             events.clear();

@@ -54,8 +54,8 @@ struct RegistryServerEntry {
 
 impl RegistryServerEntry {
     /// Lifecycle status reported by the official registry extension.
-    /// `"active"` (or an absent extension) keeps the entry; `"deprecated"`
-    /// and `"deleted"` retire it — the aggregator guide recommends dropping
+    /// `"active"` (or an absent extension) keeps the entry; `"deprecated"`,
+    /// `"deleted"` and any status this client does not know retire it — the aggregator guide recommends dropping
     /// `deleted` entries (moderation takedowns: spam/malware/illegal) from
     /// downstream indexes, and we treat `deprecated` the same so the model
     /// is only offered servers the publisher still stands behind.
@@ -390,9 +390,34 @@ fn cache_path() -> Result<PathBuf, ToolError> {
         .map(|h| h.join(".codewhale").join("mcp-index.json"))
 }
 
-fn read_cache(path: &Path) -> Option<McpRegistryIndex> {
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+const MAX_REGISTRY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_REGISTRY_PAGES: usize = 500;
+const MAX_REGISTRY_ENTRIES: usize = 50_000;
+const MAX_REGISTRY_CURSOR_BYTES: usize = 1024;
+
+fn read_cache(path: &Path) -> anyhow::Result<Option<McpRegistryIndex>> {
+    let Some(data) = crate::mcp::read_bounded_mcp_config_file(path, MAX_REGISTRY_CACHE_BYTES)?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(&data).map(Some).map_err(|error| {
+        anyhow::anyhow!("malformed MCP Registry cache {}: {error}", path.display())
+    })
+}
+
+async fn read_cache_or_rebuild(path: &Path) -> Option<McpRegistryIndex> {
+    let owned = path.to_path_buf();
+    let read = tokio::task::spawn_blocking(move || read_cache(&owned))
+        .await
+        .unwrap_or_else(|error| Err(anyhow::anyhow!(error)));
+    read.unwrap_or_else(|error| {
+        tracing::warn!(target: "mcp", %error, "ignoring unreadable MCP Registry cache");
+        None
+    })
+}
+
+fn is_retired(entry: &RegistryServerEntry) -> bool {
+    !matches!(entry.lifecycle_status(), None | Some("active"))
 }
 
 /// True when the snapshot is fresh enough to serve without a network
@@ -419,12 +444,7 @@ fn cache_is_fresh(cache: &McpRegistryIndex, now: DateTime<Utc>) -> bool {
 fn viable_entries(entries: Vec<RegistryServerEntry>) -> Vec<McpRegistryServerEntry> {
     entries
         .into_iter()
-        .filter(|entry| {
-            !matches!(
-                entry.lifecycle_status(),
-                Some("deleted") | Some("deprecated")
-            )
-        })
+        .filter(|entry| !is_retired(entry))
         .filter_map(|entry| server_to_entry(entry.server))
         .collect()
 }
@@ -659,7 +679,7 @@ async fn load_registry_catalog(
     path: &Path,
     query: &str,
 ) -> Result<RegistryCatalogResult, ToolError> {
-    let existing = read_cache(path);
+    let existing = read_cache_or_rebuild(path).await;
     let fresh = existing
         .as_ref()
         .is_some_and(|cache| cache_is_fresh(cache, Utc::now()));
@@ -722,7 +742,8 @@ async fn fetch_registry_entries(
 ) -> Result<Vec<RegistryServerEntry>, ToolError> {
     let mut all_entries: Vec<RegistryServerEntry> = Vec::new();
     let mut cursor: Option<String> = None;
-    loop {
+    let mut seen_cursors = HashSet::new();
+    for _page in 0..MAX_REGISTRY_PAGES {
         let mut url = format!("{REGISTRY_API}?version=latest&limit={PER_PAGE}");
         if let Some(since) = updated_since {
             url.push_str(&format!(
@@ -746,15 +767,27 @@ async fn fetch_registry_entries(
         let body: RegistryResponse = serde_json::from_str(&text)
             .map_err(|e| ToolError::execution_failed(format!("Registry JSON parse: {e}")))?;
         all_entries.extend(body.servers);
+        if all_entries.len() > MAX_REGISTRY_ENTRIES {
+            return Err(ToolError::execution_failed(format!(
+                "Registry listing exceeds {MAX_REGISTRY_ENTRIES} entries"
+            )));
+        }
         cursor = body.metadata.and_then(|m| m.next_cursor);
-        if cursor.is_none() {
-            break;
+        let Some(next) = &cursor else {
+            return Ok(all_entries);
+        };
+        if next.len() > MAX_REGISTRY_CURSOR_BYTES || !seen_cursors.insert(next.clone()) {
+            return Err(ToolError::execution_failed(
+                "Registry pagination returned an oversized or repeated cursor",
+            ));
         }
         // Pace the next request so a burst of page fetches does not stall
         // the upstream (and, with many clients, each other).
         tokio::time::sleep(std::time::Duration::from_millis(PAGE_PACING_MS)).await;
     }
-    Ok(all_entries)
+    Err(ToolError::execution_failed(format!(
+        "Registry listing exceeds {MAX_REGISTRY_PAGES} pages"
+    )))
 }
 
 /// Refresh strategy: full listing, or `updated_since` delta from the
@@ -795,10 +828,7 @@ fn merge_incremental_entries(
         .collect();
     for entry in entries {
         let name = entry.server.name.clone();
-        if matches!(
-            entry.lifecycle_status(),
-            Some("deleted") | Some("deprecated")
-        ) {
+        if is_retired(&entry) {
             merged.remove(&name);
             continue;
         }
@@ -825,7 +855,7 @@ async fn sync_once(path: &Path) -> Result<(), ToolError> {
         .map_err(|e| ToolError::execution_failed(format!("HTTP client: {e}")))?;
 
     let now = Utc::now();
-    let cached = read_cache(path);
+    let cached = read_cache_or_rebuild(path).await;
     let strategy = sync_strategy(cached.as_ref(), now);
     let updated_since = match strategy {
         SyncStrategy::Full => None,
@@ -1015,12 +1045,19 @@ impl ToolSpec for StartRegistryMcpServer {
         };
 
         let path = cache_path()?;
-        let cache = read_cache(&path).ok_or_else(|| {
-            ToolError::execution_failed(format!(
-                "no current Registry cache at {}; run registry_sync first",
-                path.display()
-            ))
-        })?;
+        let read_path = path.clone();
+        let cache = tokio::task::spawn_blocking(move || read_cache(&read_path))
+            .await
+            .map_err(|error| ToolError::execution_failed(format!("Registry cache read: {error}")))?
+            .map_err(|error| {
+                ToolError::execution_failed(format!("{error:#}; run registry_sync to rebuild it"))
+            })?
+            .ok_or_else(|| {
+                ToolError::execution_failed(format!(
+                    "no current Registry cache at {}; run registry_sync first",
+                    path.display()
+                ))
+            })?;
         if cache.version != MCP_REGISTRY_CACHE_VERSION {
             return Err(ToolError::execution_failed(format!(
                 "cache at {} is from an older schema version; run registry_sync first",
@@ -1506,6 +1543,7 @@ mod tests {
             launchable("a/active", Some("active")),
             launchable("b/deprecated", Some("deprecated")),
             launchable("c/deleted", Some("deleted")),
+            launchable("c/quarantined", Some("quarantined")),
             // No `_meta` at all: treated as active.
             launchable("d/no-meta", None),
             // Missing a launchable package: dropped by the launcher filter.

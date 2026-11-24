@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-21T05:19:22Z",
-    "sha256": "560c591c6628fce58be2f62aef124e2a99f794f337bf2aabad92225cee6dbb8c"
+    "fetched_at": "2026-11-24T05:20:16Z",
+    "sha256": "1b336cd97b8b7a2ad26f0d748106a122206d5cf1f21c1a180ccf864d7a2b067d"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -1293,6 +1293,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "budget_tokens",
             "min": 1024
           }
@@ -1397,6 +1400,9 @@
         "reasoning": true,
         "reasoning_options": [
           {
+            "type": "toggle"
+          },
+          {
             "type": "effort",
             "values": [
               "low",
@@ -1464,6 +1470,9 @@
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -1579,9 +1588,6 @@
               "provider": {
                 "body": {
                   "speed": "fast"
-                },
-                "headers": {
-                  "anthropic-beta": "fast-mode-2026-02-01"
                 }
               }
             }
@@ -1599,6 +1605,9 @@
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
+          {
+            "type": "toggle"
+          },
           {
             "type": "effort",
             "values": [
@@ -2028,7 +2037,8 @@
           "output": 1.5,
           "cache_read": 0.025,
           "input_audio": 0.5
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.1-pro-preview": {
         "id": "gemini-3.1-pro-preview",
@@ -2138,7 +2148,8 @@
           "output": 9,
           "cache_read": 0.15,
           "input_audio": 1.5
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.5-flash-lite": {
         "id": "gemini-3.5-flash-lite",
@@ -2283,7 +2294,8 @@
           "output": 3.75,
           "cache_read": 0.075,
           "input_audio": 0.75
-        }
+        },
+        "status": "deprecated"
       },
       "gemini-3.8-flash": {
         "id": "gemini-3.8-flash",
@@ -2529,11 +2541,10 @@
       "gemini-flash-latest": {
         "id": "gemini-flash-latest",
         "name": "Gemini Flash Latest",
-        "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
+        "description": "Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows",
         "family": "gemini-flash",
-        "knowledge": "2026-03",
-        "release_date": "2026-08-13",
-        "last_updated": "2026-08-13",
+        "release_date": "2026-09-02",
+        "last_updated": "2026-09-02",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -2790,7 +2801,8 @@
             "text",
             "image",
             "pdf",
-            "video"
+            "video",
+            "audio"
           ],
           "output": [
             "text"
@@ -3582,6 +3594,7 @@
           "output": 14,
           "cache_read": 0.175
         },
+        "status": "deprecated",
         "experimental": {
           "modes": {
             "fast": {
@@ -5011,9 +5024,9 @@
           "output": 393216
         },
         "cost": {
-          "input": 0.9,
-          "output": 1.5,
-          "cache_read": 0.2
+          "input": 1.28,
+          "output": 2.56,
+          "cache_read": 0.108
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -5049,8 +5062,7 @@
         "cost": {
           "input": 0,
           "output": 0
-        },
-        "status": "deprecated"
+        }
       },
       "minimax/minimax-m3": {
         "id": "minimax/minimax-m3",
@@ -5125,8 +5137,8 @@
           "output": 235929
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.9,
+          "input": 0.05,
+          "output": 0.7,
           "cache_read": 0.025
         }
       },
@@ -5508,12 +5520,12 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943718
         },
         "cost": {
-          "input": 0.0399,
-          "output": 0.0784,
-          "cache_read": 0.03
+          "input": 0.12,
+          "output": 0.38,
+          "cache_read": 0.02
         }
       }
     },

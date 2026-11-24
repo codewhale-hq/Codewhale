@@ -762,7 +762,15 @@ fn describe(error: &SdkError) -> String {
     } else {
         error.message.as_str()
     };
-    match bounded_text(error.data.as_ref(), MAX_DESCRIPTION_CHARS) {
+    let data = error.data.as_ref().map(|data| match data {
+        Value::Object(fields) => ["message", "details", "error"]
+            .iter()
+            .find_map(|key| fields.get(*key).filter(|value| value.is_string()).cloned())
+            .unwrap_or_else(|| Value::String(data.to_string())),
+        Value::String(_) => data.clone(),
+        other => Value::String(other.to_string()),
+    });
+    match bounded_text(data.as_ref(), MAX_DESCRIPTION_CHARS) {
         Some(detail) => format!("{message}: {detail}"),
         None => message.to_string(),
     }
@@ -1386,6 +1394,18 @@ impl AcpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_error_detail_survives_structured_data() {
+        let error = SdkError::internal_error()
+            .data(json!({"message": "402 Payment Required: usage balance exhausted"}));
+        assert_eq!(
+            describe(&error),
+            "Internal error: 402 Payment Required: usage balance exhausted"
+        );
+        let error = SdkError::internal_error().data(json!({"status": 402}));
+        assert_eq!(describe(&error), "Internal error: {\"status\":402}");
+    }
     use crate::fleet::host::{
         FleetHostAdapter, FleetHostWorkerState, FleetWorkerCommand, FleetWorkerStartRequest,
         FleetWorkerTransport, LocalProcessFleetHostAdapter,

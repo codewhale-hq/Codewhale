@@ -118,8 +118,15 @@ fn staged_or_start_staging(latest: &str, interval_hours: u64) -> Option<bool> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    if let Err(error) = command.spawn() {
-        tracing::debug!(error = %error, "could not start background update staging");
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(error) => {
+            tracing::debug!(error = %error, "could not start background update staging");
+        }
     }
     None
 }

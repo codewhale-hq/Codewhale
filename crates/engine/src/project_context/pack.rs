@@ -246,7 +246,9 @@ fn read_readme_excerpt(workspace: &Path, entries: &[String]) -> Option<ReadmePac
             lower == "readme.md" || lower == "readme.txt" || lower == "readme"
         })?
         .clone();
-    let raw = fs::read_to_string(workspace.join(&path)).ok()?;
+    let file = fs::File::open(workspace.join(&path)).ok()?;
+    let (raw, _) =
+        crate::prompts::read_prompt_text_bounded(file, PACK_README_MAX_CHARS * 4).ok()?;
     let excerpt = truncate_chars(raw.trim(), PACK_README_MAX_CHARS);
     if excerpt.is_empty() {
         None
@@ -256,9 +258,6 @@ fn read_readme_excerpt(workspace: &Path, entries: &[String]) -> Option<ReadmePac
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
     value.chars().take(max_chars).collect::<String>()
 }
 

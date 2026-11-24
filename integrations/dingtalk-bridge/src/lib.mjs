@@ -153,7 +153,7 @@ export class DingTalkBridge {
   spawn(key, operation) {
     if (this.closed) return;
     if (this.tasks.has(key)) { this.again.set(key, operation); return; }
-    const task = Promise.resolve().then(operation).catch(() => this.report("DingTalk transport work retained for recovery"))
+    const task = Promise.resolve().then(operation).catch((error) => this.report(`DingTalk ${key} transport work retained for recovery: ${error?.stack || error?.message || String(error)}`))
       .finally(() => {
         this.tasks.delete(key);
         const next = this.again.get(key);

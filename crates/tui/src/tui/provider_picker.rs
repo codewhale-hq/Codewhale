@@ -4340,7 +4340,7 @@ impl ProviderPickerView {
             ),
         ];
         let mut lines = vec![Line::from(Span::styled(
-            "Gate 1 of 2 · choose access",
+            self.tr(MessageId::ProviderExternalGateOneHeading),
             Style::default()
                 .fg(palette::TEXT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
@@ -4382,7 +4382,8 @@ impl ProviderPickerView {
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(Span::styled(
-            "Enter continues · nothing is read or saved until Gate 2 confirms.",
+            self.tr(MessageId::ProviderExternalChoiceContinue)
+                .replace("{key}", "Enter"),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         Paragraph::new(lines)

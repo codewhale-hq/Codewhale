@@ -1,5 +1,6 @@
 //! Codewhale's engine: the one turn loop, tools, agents, context, the
 //! session store and thread manager, model clients and the extension host.
+#![recursion_limit = "512"]
 #![allow(
     clippy::too_many_arguments,
     clippy::uninlined_format_args,

@@ -1089,21 +1089,53 @@ fn open_owned_directory(
         !handles.is_empty(),
         "Codewhale credentials directory cannot be a volume root"
     );
-    let mut secure_options = fs::OpenOptions::new();
-    secure_options
-        .access_mode(FILE_GENERIC_READ | WRITE_DAC | WRITE_OWNER)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
-    let final_directory = secure_options.open(directory).with_context(|| {
+    let open_final = |access: u32| {
+        let mut secure_options = fs::OpenOptions::new();
+        secure_options
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        secure_options.open(directory)
+    };
+    let not_owned_hint = || {
         format!(
-            "opening Codewhale credentials directory for owner-only security: {}",
+            "Codewhale cannot make {} private: your account neither owns it nor has Full control \
+             of it. Take ownership of the folder, or grant your account Full control, and retry",
             crate::quote_os_path(directory)
         )
-    })?;
+    };
+    let (final_directory, holds_write_owner) =
+        match open_final(FILE_GENERIC_READ | WRITE_DAC | WRITE_OWNER) {
+            Ok(handle) => (handle, true),
+            Err(error) if error.raw_os_error() == Some(5) => {
+                let handle = open_final(FILE_GENERIC_READ | WRITE_DAC)
+                    .with_context(|| {
+                        format!(
+                            "opening Codewhale credentials directory for owner-only security: {}",
+                            crate::quote_os_path(directory)
+                        )
+                    })
+                    .with_context(not_owned_hint)?;
+                (handle, false)
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "opening Codewhale credentials directory for owner-only security: {}",
+                        crate::quote_os_path(directory)
+                    )
+                });
+            }
+        };
     validate_windows_handle_path(&final_directory, directory, true)?;
     if protect || created_final {
-        secure_windows_owner_only_handle(&final_directory, true)
-            .context("securing the current-user private directory")?;
+        let secured = if holds_write_owner {
+            secure_windows_owner_only_handle(&final_directory, true, true)
+        } else {
+            secure_windows_owner_only_handle(&final_directory, true, false)
+                .with_context(not_owned_hint)
+        };
+        secured.context("securing the current-user private directory")?;
     }
     verify_windows_owner_only_handle(&final_directory)
         .context("verifying Codewhale credentials directory ownership")?;
@@ -1189,7 +1221,7 @@ impl PrivateDirectory {
             };
             let secured = (|| -> Result<()> {
                 validate_windows_file_shape(&file, &path)?;
-                secure_windows_owner_only_handle(&file, false)
+                secure_windows_owner_only_handle(&file, false, true)
                     .context("securing a new xAI OAuth lifecycle lock")?;
                 validate_windows_owned_file_handle(&file, &path)?;
                 Ok(())
@@ -1231,7 +1263,7 @@ impl PrivateDirectory {
         let temporary_path = temporary.path().to_path_buf();
         let security_handle =
             reopen_windows_file_for_owner_security(temporary.as_file(), &temporary_path)?;
-        secure_windows_owner_only_handle(&security_handle, false)
+        secure_windows_owner_only_handle(&security_handle, false, true)
             .context("securing a new xAI OAuth temporary file before writing credentials")?;
         validate_windows_owned_file_handle(&security_handle, &temporary_path)
             .context("verifying a new xAI OAuth temporary file before writing credentials")?;
@@ -1668,6 +1700,136 @@ mod windows_tests {
             "lexically unnormalized paths remain inadmissible"
         );
     }
+
+    #[test]
+    fn owner_with_modify_but_not_full_control_secures_its_private_directory() {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+        use windows_sys::Win32::Security::{
+            AdjustTokenPrivileges, DuplicateTokenEx, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+            RevertToSelf, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED, SecurityImpersonation,
+            TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_PRIVILEGES,
+            TOKEN_QUERY, TokenImpersonation,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, WRITE_DAC, WRITE_OWNER};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, OpenProcessToken, SetThreadToken,
+        };
+
+        struct UnprivilegedThread(HANDLE, HANDLE);
+        impl Drop for UnprivilegedThread {
+            fn drop(&mut self) {
+                // SAFETY: reverts this thread and closes the two handles it owns.
+                unsafe {
+                    RevertToSelf();
+                    CloseHandle(self.1);
+                    CloseHandle(self.0);
+                }
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary root");
+        let state = root.path().join("state");
+        fs::create_dir(&state).expect("state directory");
+        let sid = CurrentWindowsUser::open()
+            .and_then(|user| user.sid_string())
+            .expect("current user SID");
+        let icacls = |args: &[&str]| {
+            let output = std::process::Command::new("icacls")
+                .arg(&state)
+                .args(args)
+                .output()
+                .expect("run icacls");
+            assert!(
+                output.status.success(),
+                "icacls {args:?}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        };
+        icacls(&["/setowner", &format!("*{sid}")]);
+        icacls(&["/inheritance:r", "/grant:r", &format!("*{sid}:(OI)(CI)M")]);
+
+        let mut process_token: HANDLE = std::ptr::null_mut();
+        let mut restricted: HANDLE = std::ptr::null_mut();
+        // SAFETY: pseudo process handle and writable outputs; both handles are
+        // owned by the guard, which reverts and closes them.
+        let _unprivileged = unsafe {
+            assert_ne!(
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_QUERY,
+                    &mut process_token
+                ),
+                0
+            );
+            assert_ne!(
+                DuplicateTokenEx(
+                    process_token,
+                    TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY | TOKEN_IMPERSONATE,
+                    std::ptr::null(),
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &mut restricted,
+                ),
+                0
+            );
+            let guard = UnprivilegedThread(process_token, restricted);
+            assert_ne!(
+                AdjustTokenPrivileges(
+                    restricted,
+                    1,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            let mut traverse = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: LUID::default(),
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            assert_ne!(
+                LookupPrivilegeValueW(
+                    std::ptr::null(),
+                    SE_CHANGE_NOTIFY_NAME,
+                    &mut traverse.Privileges[0].Luid
+                ),
+                0
+            );
+            assert_ne!(
+                AdjustTokenPrivileges(
+                    restricted,
+                    0,
+                    &traverse,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            assert_ne!(SetThreadToken(std::ptr::null(), restricted), 0);
+            guard
+        };
+
+        match fs::OpenOptions::new()
+            .access_mode(FILE_GENERIC_READ | WRITE_DAC | WRITE_OWNER)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&state)
+        {
+            Err(denied) => assert_eq!(denied.raw_os_error(), Some(5)),
+            Ok(_) => eprintln!("this account is granted WRITE_OWNER here; fallback not exercised"),
+        }
+
+        drop(
+            PrivateDirectory::open(&state)
+                .expect("the owner secures its directory without WRITE_OWNER"),
+        );
+        PrivateDirectory::inspect(&state).expect("the secured directory is current-user-only");
+    }
 }
 
 #[cfg(windows)]
@@ -1690,27 +1852,73 @@ pub(crate) fn normalize_windows_path_for_comparison(path: &Path) -> Result<Strin
 }
 
 #[cfg(windows)]
-fn secure_windows_owner_only_handle(file: &File, inherit_to_children: bool) -> Result<()> {
+fn secure_windows_owner_only_handle(
+    file: &File,
+    inherit_to_children: bool,
+    set_owner: bool,
+) -> Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+    use windows_sys::Win32::Security::Authorization::{
+        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
+    };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION, EqualSid, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     };
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
     let acl = crate::windows_identity::OwnerOnlyAcl::new(FILE_ALL_ACCESS, inherit_to_children)?;
-    // SAFETY: the file handle remains owned by `file`, and the ACL remains
-    // allocated for the duration of the call. The owner and protected DACL are
-    // committed together so the verifier never observes a half-secured file.
-    let result = unsafe {
-        SetSecurityInfo(
-            file.as_raw_handle(),
-            SE_FILE_OBJECT,
+    if !set_owner {
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: the handle remains valid and all output pointers are writable.
+        let result = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if result != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(result as i32))
+                .context("reading the owner of Codewhale-owned private storage");
+        }
+        let _descriptor = WindowsLocalAllocation(descriptor.cast());
+        // SAFETY: `owner` belongs to the live descriptor; the ACL owns its SID.
+        anyhow::ensure!(
+            !owner.is_null() && unsafe { EqualSid(owner, acl.user_sid()) } != 0,
+            "Codewhale-owned private storage is owned by another account"
+        );
+    }
+    let (security_information, owner) = if set_owner {
+        (
             OWNER_SECURITY_INFORMATION
                 | DACL_SECURITY_INFORMATION
                 | PROTECTED_DACL_SECURITY_INFORMATION,
             acl.user_sid(),
+        )
+    } else {
+        (
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+        )
+    };
+    // SAFETY: the file handle remains owned by `file`, and the ACL remains
+    // allocated for the duration of the call. The protected DACL is committed
+    // together with the owner, or after proving the owner is already the
+    // current user, so the verifier never observes a half-secured file.
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            security_information,
+            owner,
             std::ptr::null_mut(),
             acl.acl(),
             std::ptr::null(),

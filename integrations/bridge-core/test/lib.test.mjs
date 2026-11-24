@@ -18,10 +18,12 @@ import {
   preservedChatStateFields,
   readJsonSafe,
   readSse,
+  splitAtCodePoint,
   splitMessage,
   stripGroupPrefix,
   ThreadStore,
-  writeFileDurable
+  writeFileDurable,
+  observeTurn
 } from "../src/lib.mjs";
 
 test("env and primitive parsers handle bridge env conventions", () => {
@@ -373,4 +375,31 @@ test("splitMessage byte cap is opt-in", () => {
   const chunks = splitMessage(cjk, 3500, 0);
   assert.equal(chunks.length, 2); // char limit only
   assert.ok(Buffer.byteLength(chunks[0], "utf8") > 3800);
+});
+
+test("splitAtCodePoint never leaves half a surrogate pair on either side", () => {
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 3), ["ab", "😀cd"]);
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 4), ["ab😀", "cd"]);
+  assert.deepEqual(splitAtCodePoint("abc", 10), ["abc", ""]);
+});
+
+test("observeTurn advances the cursor only after a record's effect succeeds", async () => {
+  const threadId = "thread-1";
+  const events = [
+    { seq: 1, thread_id: threadId, turn_id: "turn-1", event: "item.delta", payload: { kind: "agent_message", delta: "hi" } },
+    { seq: 2, thread_id: threadId, turn_id: "turn-1", event: "approval.required", payload: { id: "a1" } }
+  ];
+  const body = events.map((record) => `data: ${JSON.stringify(record)}\n\n`).join("");
+  const cursors = [];
+  await assert.rejects(observeTurn({
+    fetchEvents: async () => new Response(body),
+    threadId,
+    turnId: "turn-1",
+    sinceSeq: 0,
+    timeoutMs: 1000,
+    saveCursor: async (cursor) => { cursors.push(cursor); },
+    onApproval: async () => { throw new Error("send failed"); },
+    onTerminal: async () => {}
+  }), /send failed/);
+  assert.deepEqual(cursors, [{ lastSeq: 1, responseText: "hi" }]);
 });

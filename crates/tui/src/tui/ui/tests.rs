@@ -1042,7 +1042,10 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
         crate::tui::work_surface::RailPanel::Context,
     );
     assert!(app.work_surface.focused);
-    handle_bracketed_paste(&mut app, "/pet status");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("/pet status"),
+    );
     assert_eq!(app.input, "/pet status");
     assert!(!app.work_surface.focused);
     assert!(app.composer_enter_would_submit(true, Instant::now()));
@@ -1068,7 +1071,7 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
         }),
     );
 
-    handle_bracketed_paste(&mut app, "");
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(""));
 
     assert!(
         app.input
@@ -6202,7 +6205,10 @@ fn credential_paste_content_never_enters_traces_or_rendered_status() {
         app.onboarding = onboarding_state;
         app.view_stack.push(picker);
         let logs = CapturedTrace::default().record(|| {
-            handle_bracketed_paste(&mut app, &secret);
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(&secret),
+            );
         });
         assert!(app.bracketed_paste_seen, "{label}");
         for (width, height) in [(80, 24), (120, 32)] {
@@ -6245,8 +6251,14 @@ fn ordinary_clipboard_text_routes_to_provider_picker_without_typing_shortcut_or_
     app.onboarding = OnboardingState::Provider;
     app.view_stack.push(picker);
 
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Text(secret.clone()),
+    );
     let logs = CapturedTrace::default().record(|| {
-        assert!(paste_text_into_provider_picker(&mut app, &secret));
+        assert!(crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Shortcut
+        ));
     });
 
     assert!(
@@ -6276,7 +6288,10 @@ fn ordinary_bracketed_paste_keeps_content_but_logs_only_metadata() {
     let ordinary = ["ordinary", "composer", "paste", "7361"].join(" ");
 
     let logs = CapturedTrace::default().record(|| {
-        handle_bracketed_paste(&mut app, &ordinary);
+        crate::tui::paste::handle_paste(
+            &mut app,
+            crate::tui::paste::PasteSource::Terminal(&ordinary),
+        );
     });
 
     assert_eq!(app.input, ordinary);
@@ -6712,7 +6727,7 @@ fn mcp_problems_are_announced_once_per_session_and_never_pinned_in_the_footer() 
         .collect::<Vec<_>>();
     let expected = format!(
         "MCP · {}: slack · failed: supabase · /mcp",
-        crate::tui::session_boot::mcp_auth_required_state_label()
+        crate::tui::session_boot::mcp_auth_required_state_label(codewhale_localization::Locale::En)
     );
     assert_eq!(announcements, vec![expected]);
     let rendered_80 = render_underwater_test_app(&mut app, 80, 30);
@@ -7638,7 +7653,10 @@ fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     );
     app.start_history_search();
     let query = app.history_search_query().unwrap().to_owned();
-    handle_bracketed_paste(&mut app, "中文输入");
+    crate::tui::paste::handle_paste(
+        &mut app,
+        crate::tui::paste::PasteSource::Terminal("中文输入"),
+    );
     assert_eq!(app.history_search_query(), Some(query.as_str()));
     let before = app.input.clone();
     route_key_to_view_stack(
@@ -17649,9 +17667,10 @@ fn ctrl_x_jobs_prefill_only_catches_running_shell_jobs_in_tasks_sidebar() {
     assert!(prefill_jobs_cancel_all_if_tasks_sidebar(&mut app));
     assert_eq!(app.input, "/jobs cancel-all");
     assert_eq!(app.cursor_position, app.input.len());
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("Press Enter to cancel all running commands")
+    assert!(
+        app.status_toasts
+            .iter()
+            .any(|toast| toast.text == "Press Enter to cancel all running commands")
     );
 }
 
@@ -18902,7 +18921,7 @@ fn update_notice_names_the_command_for_the_actual_install_method() {
         "names the npm command: {npm_block:?}"
     );
     assert!(
-        npm_block.contains("Do not use `codewhale update`"),
+        npm_block.contains("cannot update itself"),
         "warns against self-update: {npm_block:?}"
     );
     assert!(
@@ -18957,7 +18976,7 @@ fn update_notice_block_is_persistent_and_actionable() {
     );
     assert!(block.contains("v0.8.47"), "shows latest version: {block:?}");
     assert!(
-        block.contains("https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.8.47"),
+        block.contains(&codewhale_release::autoupdate::changelog_url("0.8.47")),
         "includes release-notes link: {block:?}"
     );
     assert!(
@@ -22104,6 +22123,30 @@ fn throttled_recovery_snapshot_persists_during_loading_turns() {
         t0 + RECOVERY_SNAPSHOT_INTERVAL,
         &mut last_snapshot_at,
     );
+}
+
+#[test]
+fn recovery_snapshot_waits_for_dispatch_admission_without_error() {
+    let _home = SettingsHomeGuard::new();
+    let mut app = create_test_app();
+    app.api_messages_mut()
+        .push(text_message("user", "first prompt"));
+    app.is_loading = true;
+    app.dispatch_in_flight = true;
+    let history_len = app.history.len();
+
+    let mut last_snapshot_at = None;
+    maybe_throttled_recovery_snapshot(&mut app, Instant::now(), &mut last_snapshot_at);
+    persist_recovery_snapshot(&mut app);
+
+    assert!(last_snapshot_at.is_none());
+    assert_eq!(app.history.len(), history_len);
+    assert!(
+        !app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::Error { .. }))
+    );
+    assert!(app.status_toasts.is_empty() && app.sticky_status.is_none());
 }
 
 #[tokio::test]
@@ -26223,19 +26266,27 @@ async fn model_picker_auto_restores_raw_preference_after_fixed_normalization() {
 }
 
 #[tokio::test]
-async fn auto_model_effort_picker_persists_unresolved_tier_verbatim() {
+async fn auto_model_shift_d_persists_unresolved_effort_tier_verbatim() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("auto".to_string());
     app.reasoning_effort = ReasoningEffort::Auto;
     app.reasoning_effort_preference = None;
-    let engine = mock_engine_handle();
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
 
-    apply_picker_effort_choice(
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
         &mut app,
-        &engine.handle,
+        &mut engine.handle,
+        &mut config,
+        "auto".to_string(),
+        Some(selected_identity),
         ReasoningEffort::Low,
+        "auto".to_string(),
         ReasoningEffort::Auto,
+        true,
     )
     .await;
 
@@ -26319,7 +26370,49 @@ async fn reselecting_live_model_and_thinking_is_session_local() {
 }
 
 #[tokio::test]
-async fn reselecting_live_thinking_only_persists_startup_default() {
+async fn shift_d_on_project_pinned_model_leaves_global_default_alone() {
+    let _guard = SettingsHomeGuard::new();
+    let global_config = codewhale_runtime::config::home_config_path().expect("global config path");
+    let startup_before = std::fs::read(&global_config).ok();
+    let mut app = create_test_app();
+    app.set_model_selection("deepseek-v4-pro".to_string());
+    app.reasoning_effort = ReasoningEffort::High;
+    let mut engine = mock_engine_handle();
+    let mut config =
+        <Config as Default>::default().with_legacy_root(Some("test-key".to_string()), None);
+    config.project_model = Some("deepseek-v4-pro".to_string());
+
+    let selected_identity = app.admitted_provider_identity().unwrap().clone();
+    apply_model_picker_choice(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        "deepseek-v4-pro".to_string(),
+        Some(selected_identity),
+        ReasoningEffort::High,
+        "deepseek-v4-pro".to_string(),
+        ReasoningEffort::High,
+        true,
+    )
+    .await;
+
+    assert_eq!(std::fs::read(global_config).ok(), startup_before);
+    assert_eq!(
+        codewhale_runtime::settings::Settings::load()
+            .expect("load settings")
+            .reasoning_effort
+            .as_deref(),
+        None
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("project"))
+    );
+}
+
+#[tokio::test]
+async fn reselecting_live_thinking_in_picker_is_session_local() {
     let _guard = SettingsHomeGuard::new();
     let mut app = create_test_app();
     app.set_model_selection("deepseek-v4-pro".to_string());
@@ -26339,13 +26432,13 @@ async fn reselecting_live_thinking_only_persists_startup_default() {
             .expect("load settings")
             .reasoning_effort
             .as_deref(),
-        Some("high")
+        None
     );
     assert_eq!(app.reasoning_effort_preference, Some(ReasoningEffort::High));
     assert!(
         app.status_message
             .as_deref()
-            .is_some_and(|message| message.contains("saved as startup default"))
+            .is_some_and(|message| message.contains("Thinking unchanged"))
     );
 }
 
@@ -34717,7 +34810,7 @@ fn startup_terminal_replies_allow_a_fresh_long_paste_to_send_once() {
     let mut app = App::new(create_test_options(), &Config::default());
     app.startup_input_unproven = !receipt.whole_line_proven();
     let prompt = "Keep the complete pasted draft: 日本語, café, العربية.\n".repeat(30);
-    handle_bracketed_paste(&mut app, &prompt);
+    crate::tui::paste::handle_paste(&mut app, crate::tui::paste::PasteSource::Terminal(&prompt));
     assert!(app.composer_enter_would_submit(true, Instant::now()));
     assert_eq!(
         app.handle_composer_enter(true, Instant::now()),
@@ -35505,7 +35598,8 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
     let mut app = create_test_app();
     app.current_session_id = Some("session-a".into());
     app.session_started_at = chrono::Utc::now() - chrono::Duration::minutes(1);
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    app.runtime_services.task_manager = Some(tasks.clone());
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     assert_eq!(
         app.background_finished.len(),
@@ -35513,20 +35607,20 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "first observed after completion"
     );
     app.background_finished.clear();
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(app.background_finished.is_empty(), "no repeated completion");
     let queue = root.path().join("queue.json");
     let saved = std::fs::read(&queue)?;
     std::fs::write(&queue, b"{corrupt")?;
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
     assert!(app.task_panel.iter().any(|row| row.id == record.id));
     app.current_session_id = Some("session-b".into());
     assert_eq!(
-        super::task_projection::refresh_active_task_panel(&mut app, &tasks).await,
+        super::task_projection::refresh_active_task_panel(&mut app).await,
         LiveRefresh::Changed
     );
     assert!(app.task_panel_unavailable);
@@ -35535,7 +35629,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
         "session A's stale rows cannot cross into B"
     );
     std::fs::write(queue, saved)?;
-    super::task_projection::refresh_active_task_panel(&mut app, &tasks).await;
+    super::task_projection::refresh_active_task_panel(&mut app).await;
     assert!(!app.task_panel_unavailable);
     assert!(app.task_panel.is_empty());
     tasks.shutdown_and_wait().await?;

@@ -333,12 +333,16 @@ do
     fi
     cp "$tmp/$asset" "$install_dir/bin/$target.tmp.$$"
     chmod 0755 "$install_dir/bin/$target.tmp.$$"
+    sync "$install_dir/bin/$target.tmp.$$"
     mv -f "$install_dir/bin/$target.tmp.$$" "$install_dir/bin/$target"
 done
 (cd "$install_dir/bin" && sha256sum codewhale codew codewhale-tui > .sha256.tmp)
+sync "$install_dir/bin/.sha256.tmp"
 mv -f "$install_dir/bin/.sha256.tmp" "$install_dir/bin/.sha256"
 printf '%s' "$version" > "$install_dir/bin/.version.tmp"
+sync "$install_dir/bin/.version.tmp"
 mv -f "$install_dir/bin/.version.tmp" "$install_dir/bin/.version"
+sync "$install_dir/bin"
 """
 
 

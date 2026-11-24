@@ -30,12 +30,21 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+#[cfg(all(
+    not(test),
+    any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )
+))]
+use arboard::Clipboard;
 #[cfg(any(
     target_os = "macos",
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
-use arboard::{Clipboard, ImageData};
+use arboard::ImageData;
 use base64::Engine as _;
 #[cfg(any(
     target_os = "macos",
@@ -239,6 +248,13 @@ pub enum ClipboardContent {
     Image(PastedImage),
 }
 
+/// A clipboard read: answered at once (a test double, or no readable
+/// endpoint) or still running on the reader thread.
+pub(crate) enum ClipboardRead {
+    Ready(Option<ClipboardContent>),
+    Pending(std::sync::mpsc::Receiver<Option<ClipboardContent>>),
+}
+
 struct TerminalClipboardWriteRequest {
     text: String,
     in_tmux: bool,
@@ -340,18 +356,33 @@ pub struct ClipboardHandler {
     primary_enabled: bool,
     #[cfg(test)]
     primary_text: Option<String>,
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     clipboard: Option<Clipboard>,
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     clipboard_init_attempted: bool,
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
+    ))]
+    clipboard_init_pending: Option<std::sync::mpsc::Receiver<Option<Clipboard>>>,
     #[cfg(test)]
     written_text: Vec<String>,
     #[cfg(test)]
@@ -360,6 +391,9 @@ pub struct ClipboardHandler {
     /// clipboard answers, which tests must never touch.
     #[cfg(test)]
     clipboard_content: Option<ClipboardContent>,
+    /// A read that answers when the test sends on the paired sender.
+    #[cfg(test)]
+    pending_read: Option<std::sync::mpsc::Receiver<Option<ClipboardContent>>>,
 }
 
 impl ClipboardHandler {
@@ -382,24 +416,41 @@ impl ClipboardHandler {
             primary_enabled: false,
             #[cfg(test)]
             primary_text: None,
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
             ))]
             clipboard: None,
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
             ))]
             clipboard_init_attempted: false,
+            #[cfg(all(
+                not(test),
+                any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    all(target_os = "linux", not(target_env = "ohos"))
+                )
+            ))]
+            clipboard_init_pending: None,
             #[cfg(test)]
             written_text: Vec::new(),
             #[cfg(test)]
             fail_text_writes: false,
             #[cfg(test)]
             clipboard_content: None,
+            #[cfg(test)]
+            pending_read: None,
         }
     }
 
@@ -435,20 +486,21 @@ impl ClipboardHandler {
         handler
     }
 
+    /// A clipboard whose next read is still running until the returned
+    /// sender answers it.
+    #[cfg(test)]
+    pub(crate) fn with_pending_read_for_test()
+    -> (Self, std::sync::mpsc::Sender<Option<ClipboardContent>>) {
+        let mut handler = Self::for_test(false, false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        handler.pending_read = Some(rx);
+        (handler, tx)
+    }
+
     #[cfg(test)]
     pub(crate) fn unavailable_for_test(in_ssh_session: bool) -> Self {
         let mut handler = Self::for_test(in_ssh_session, false);
         handler.fail_text_writes = true;
-        // Reads are unavailable too: never fall through to the host's real
-        // clipboard from a test.
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
-        ))]
-        {
-            handler.clipboard_init_attempted = true;
-        }
         handler
     }
 
@@ -542,10 +594,13 @@ impl ClipboardHandler {
     /// temporary thread and give it 500 ms; if it doesn't return in time the
     /// handler stays in fallback/no-op mode and `read`/`write_text` fall
     /// through to their OSC 52 and pbcopy/powershell fallbacks.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(target_os = "linux", not(target_env = "ohos"))
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        )
     ))]
     fn ensure_clipboard(&mut self) {
         // `clipboard_init_attempted` means the backend answered for good:
@@ -555,9 +610,12 @@ impl ClipboardHandler {
             return;
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(Clipboard::new().ok());
+        let rx = self.clipboard_init_pending.take().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(Clipboard::new().ok());
+            });
+            rx
         });
         // A timeout is not proof that the clipboard is unusable: a capture tool
         // holding the clipboard open can delay the open past the budget, and
@@ -570,108 +628,71 @@ impl ClipboardHandler {
                 self.clipboard_init_attempted = true;
             }
             Ok(None) => self.clipboard_init_attempted = true,
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.clipboard_init_pending = Some(rx);
                 tracing::warn!(
                     target: "codewhale_tui::clipboard",
                     "clipboard open timed out; will retry on the next paste"
                 );
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.clipboard_init_attempted = true;
+            }
         }
     }
 
-    /// Read the clipboard and return the parsed content.
+    /// Start a clipboard read without waiting on it.
+    ///
+    /// `wl-paste`, the native backend's first open and Windows' PowerShell
+    /// image fallback can each take seconds, so the read runs on its own
+    /// thread with its own backend handle and the caller polls the receiver.
+    /// `prefer_markdown` turns rich HTML into Markdown for the composer;
+    /// credentials and configuration fields read literal text.
     ///
     /// `workspace` is used as a fallback location when `~/.codewhale/` cannot
     /// be resolved (e.g. running with a stripped HOME in CI sandboxes).
-    pub fn read(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+    pub(crate) fn read(&mut self, workspace: &Path, prefer_markdown: bool) -> ClipboardRead {
+        // Tests never touch the host clipboard.
         #[cfg(test)]
-        if let Some(content) = self.clipboard_content.clone() {
-            return Some(content);
-        }
-        self.read_content(workspace, false)
-    }
-
-    /// Composer paste preserves headings, lists, links, tables and code from
-    /// rich applications. Credentials and configuration fields use `read` so
-    /// their literal text is never interpreted as Markdown.
-    pub fn read_markdown(&mut self, workspace: &Path) -> Option<ClipboardContent> {
-        #[cfg(test)]
-        if let Some(content) = self.clipboard_content.clone() {
-            return Some(content);
-        }
-        self.read_content(workspace, true)
-    }
-
-    fn read_content(
-        &mut self,
-        workspace: &Path,
-        prefer_markdown: bool,
-    ) -> Option<ClipboardContent> {
-        // With no display exported over SSH there is no synchronously readable
-        // clipboard endpoint. A forwarded X11/Wayland display is explicit and
-        // remains readable, including its image clipboard.
-        if !self.terminal_context.permits_native_read() {
-            return None;
-        }
-
-        #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
-        if !prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
-            return Some(ClipboardContent::Text(text));
-        }
-
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
-        ))]
         {
-            self.ensure_clipboard();
-            if let Some(clipboard) = self.clipboard.as_mut() {
-                if prefer_markdown
-                    && let Ok(html) = clipboard.get().html()
-                    && let Some(markdown) = clipboard_markdown(&html)
-                {
-                    return Some(ClipboardContent::Text(markdown));
-                }
-                if let Ok(text) = clipboard.get_text() {
-                    return Some(ClipboardContent::Text(text));
-                }
-
-                match clipboard.get_image() {
-                    Ok(image) => match save_image_as_png(workspace, &image) {
-                        Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
-                        Err(error) => tracing::warn!(
-                            target: "codewhale_tui::clipboard",
-                            "read: saving the clipboard image failed: {error:#}"
-                        ),
-                    },
-                    Err(error) => tracing::warn!(
+            let _ = (workspace, prefer_markdown);
+            match self.pending_read.take() {
+                Some(rx) => ClipboardRead::Pending(rx),
+                None => ClipboardRead::Ready(self.clipboard_content.clone()),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            // With no display exported over SSH there is no readable clipboard
+            // endpoint. A forwarded X11/Wayland display is explicit and remains
+            // readable, including its image clipboard.
+            if !self.terminal_context.permits_native_read() {
+                return ClipboardRead::Ready(None);
+            }
+            let workspace = workspace.to_path_buf();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("clipboard-read".to_string())
+                .spawn(move || {
+                    // The image writer creates `clipboard-images` but not a
+                    // missing state root (e.g. CODEWHALE_HOME points elsewhere).
+                    let images = codewhale_runtime::config::clipboard_images_dir(&workspace);
+                    if let Some(root) = images.parent() {
+                        let _ = std::fs::create_dir_all(root);
+                    }
+                    let _ = tx.send(read_native_clipboard(&workspace, prefer_markdown));
+                });
+            match spawned {
+                Ok(_) => ClipboardRead::Pending(rx),
+                Err(error) => {
+                    tracing::warn!(
                         target: "codewhale_tui::clipboard",
-                        "read: clipboard has no readable image: {error}"
-                    ),
-                }
-                // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
-                // Some capture tools publish the bitmap under a format that
-                // path misses, or leave it delay-rendered in a way that only
-                // resolves once another application asks: QQ's screenshot is
-                // the reported case, where the picture becomes readable only
-                // after it has been pasted somewhere else first. .NET's
-                // Clipboard.GetImage() handles those, so ask it before
-                // deciding the clipboard holds no image.
-                #[cfg(all(target_os = "windows", not(test)))]
-                if let Some(pasted) = read_image_via_powershell(workspace) {
-                    return Some(ClipboardContent::Image(pasted));
+                        "read: could not start the clipboard reader: {error}"
+                    );
+                    ClipboardRead::Ready(None)
                 }
             }
         }
-
-        #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
-        if prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
-            return Some(ClipboardContent::Text(text));
-        }
-
-        let _ = (workspace, prefer_markdown);
-        None
     }
 
     /// Write text to the clipboard.
@@ -784,6 +805,68 @@ impl ClipboardHandler {
     }
 }
 
+/// Blocking clipboard read; runs only on the `clipboard-read` thread.
+#[cfg(not(test))]
+fn read_native_clipboard(workspace: &Path, prefer_markdown: bool) -> Option<ClipboardContent> {
+    #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+    if !prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
+        return Some(ClipboardContent::Text(text));
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
+    {
+        if let Ok(mut clipboard) = Clipboard::new() {
+            if prefer_markdown
+                && let Ok(html) = clipboard.get().html()
+                && let Some(markdown) = clipboard_markdown(&html)
+            {
+                return Some(ClipboardContent::Text(markdown));
+            }
+            if let Ok(text) = clipboard.get_text() {
+                return Some(ClipboardContent::Text(text));
+            }
+
+            match clipboard.get_image() {
+                Ok(image) => match save_image_as_png(workspace, &image) {
+                    Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
+                    Err(error) => tracing::warn!(
+                        target: "codewhale_tui::clipboard",
+                        "read: saving the clipboard image failed: {error:#}"
+                    ),
+                },
+                Err(error) => tracing::warn!(
+                    target: "codewhale_tui::clipboard",
+                    "read: clipboard has no readable image: {error}"
+                ),
+            }
+            // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
+            // Some capture tools publish the bitmap under a format that
+            // path misses, or leave it delay-rendered in a way that only
+            // resolves once another application asks: QQ's screenshot is
+            // the reported case, where the picture becomes readable only
+            // after it has been pasted somewhere else first. .NET's
+            // Clipboard.GetImage() handles those, so ask it before
+            // deciding the clipboard holds no image.
+            #[cfg(all(target_os = "windows", not(test)))]
+            if let Some(pasted) = read_image_via_powershell(workspace) {
+                return Some(ClipboardContent::Image(pasted));
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+    if prefer_markdown && let Ok(text) = read_text_with_wlpaste() {
+        return Some(ClipboardContent::Text(text));
+    }
+
+    let _ = (workspace, prefer_markdown);
+    None
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 fn write_text_with_pbcopy(text: &str) -> Result<()> {
     write_text_with_stdin_command("pbcopy", &[], text, "pbcopy")
@@ -813,10 +896,13 @@ fn write_text_with_stdin_command(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run {label}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {label}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(text.as_bytes())
+    {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(anyhow::anyhow!("Failed to write to {label}: {e}"));
     }
     let _ = std::thread::Builder::new()
         .name("clipboard-wait".to_string())
@@ -1040,10 +1126,13 @@ fn clipboard_image_target(
 
 /// Encode an RGBA `ImageData` from arboard as PNG and persist it. Returns
 /// the resulting path along with metadata used to render the paste hint.
-#[cfg(any(
-    target_os = "macos",
-    target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos"))
+#[cfg(all(
+    not(test),
+    any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )
 ))]
 fn save_image_as_png(workspace: &Path, image: &ImageData) -> Result<PastedImage> {
     save_image_as_png_in(

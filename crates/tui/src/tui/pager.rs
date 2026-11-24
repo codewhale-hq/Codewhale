@@ -71,7 +71,7 @@ struct OwnedEvidence {
     ready: bool,
     pending: Option<(
         tokio_util::sync::CancellationToken,
-        tokio::sync::oneshot::Receiver<Result<EvidenceWindow, ()>>,
+        tokio::sync::oneshot::Receiver<Result<EvidenceWindow, String>>,
     )>,
 }
 
@@ -121,7 +121,7 @@ impl OwnedEvidence {
                 let result = codewhale_engine::tools::tool_result_retrieval::RetrieveToolResultTool
                     .execute(input, &context)
                     .await
-                    .map_err(|_| ())
+                    .map_err(|error| error.to_string())
                     .and_then(|result| evidence_window(&result.content, offset));
                 let _ = send.send(result);
             });
@@ -130,31 +130,32 @@ impl OwnedEvidence {
     }
 }
 
-fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> {
+fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, String> {
     use base64::Engine as _;
     if content.len()
         > EVIDENCE_WINDOW_BYTES * 2
             + codewhale_engine::tools::tool_result_retrieval::MAX_REFERENCE_BYTES * 6
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
-    let value: serde_json::Value = serde_json::from_str(content).map_err(|_| ())?;
+    let value: serde_json::Value =
+        serde_json::from_str(content).map_err(|error| error.to_string())?;
     let total = value
         .get("total_bytes")
         .and_then(serde_json::Value::as_u64)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let offset = value
         .get("offset")
         .and_then(serde_json::Value::as_u64)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let digest = value
         .get("sha256")
         .and_then(serde_json::Value::as_str)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     let data = value
         .get("data")
         .and_then(serde_json::Value::as_str)
-        .ok_or(())?;
+        .ok_or_else(|| "evidence window field missing".to_string())?;
     if value.get("mode").and_then(serde_json::Value::as_str) != Some("bytes")
         || value.get("encoding").and_then(serde_json::Value::as_str) != Some("base64")
         || offset != requested
@@ -163,11 +164,11 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
         || digest.len() != 64
         || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
-        .map_err(|_| ())?;
+        .map_err(|error| error.to_string())?;
     if bytes.len() > EVIDENCE_WINDOW_BYTES
         || bytes.len() as u64 > total - offset
         || value
@@ -175,10 +176,10 @@ fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> 
             .and_then(serde_json::Value::as_u64)
             != Some(bytes.len() as u64)
     {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     if bytes.is_empty() && offset < total {
-        return Err(());
+        return Err("evidence window rejected".to_string());
     }
     let text_prefix = match std::str::from_utf8(&bytes) {
         Ok(text) => Some(text),
@@ -1148,7 +1149,9 @@ impl ModalView for PagerView {
                 .and_then(|(_, receive)| match receive.try_recv() {
                     Ok(result) => Some(result),
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(())),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        Some(Err("evidence retrieval task ended".to_string()))
+                    }
                 })
         });
         let Some(result) = completed else {
@@ -1175,7 +1178,13 @@ impl ModalView for PagerView {
                 evidence.encoding = window.encoding;
                 evidence.ready = true;
             }
-            _ => {
+            Ok(_) => {
+                tracing::warn!("evidence window digest changed during retrieval");
+                page.copy_text = None;
+                evidence.ready = false;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "evidence window retrieval failed");
                 page.copy_text = None;
                 evidence.ready = false;
             }

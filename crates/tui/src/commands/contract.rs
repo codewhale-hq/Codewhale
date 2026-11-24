@@ -3111,7 +3111,7 @@ where
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
 }
 
-fn run_owner_blocking<T, F>(work: F) -> Result<T, String>
+pub(crate) fn run_owner_blocking<T, F>(work: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -7410,8 +7410,6 @@ mod tests {
             name: "demo".to_string(),
             scope: SkillScope::Global,
             safe_target_path: "/tmp/demo".to_string(),
-            before_digest: None,
-            after_digest: None,
             outcome,
         };
         let installed = portable_mutation_receipt(&make(TuiOutcome::Installed));

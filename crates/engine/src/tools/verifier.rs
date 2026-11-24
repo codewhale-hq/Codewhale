@@ -1477,8 +1477,14 @@ where
     let mut chunk = [0u8; 8192];
     loop {
         match pipe.read(&mut chunk).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return,
             Ok(n) => capture.push(&chunk[..n]).await,
+            Err(error) => {
+                capture
+                    .push(format!("\n[gate output read failed: {error}]\n").as_bytes())
+                    .await;
+                return;
+            }
         }
     }
 }

@@ -734,6 +734,14 @@ export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
 }
 
+export function splitAtCodePoint(text, maxChars) {
+  const value = String(text || "");
+  let cut = Math.min(value.length, Math.max(1, Math.floor(maxChars)));
+  const code = value.charCodeAt(cut - 1);
+  if (cut < value.length && cut > 1 && code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  return [value.slice(0, cut), value.slice(cut)];
+}
+
 function splitChunkByBytes(chunk, maxBytes) {
   const out = [];
   let buf = "";
@@ -1043,4 +1051,64 @@ export function activeTurnBlock(detail, state = {}) {
       runningTurn.id || activeTurnId || "(unknown)"
     }. Wait for it to finish or send /interrupt.`
   };
+}
+
+export function turnTerminalStatus(record) {
+  if (record.event === "turn.completed") return record.payload?.turn?.status || "completed";
+  if (record.event !== "turn.lifecycle") return null;
+  const status = record.payload?.turn?.status || record.payload?.status;
+  return ["failed", "canceled", "interrupted"].includes(status) ? status : null;
+}
+
+export function turnOutcomeText({ status, text, error }) {
+  if (status === "completed") return text.trim() || "Turn completed.";
+  return `Turn ${status}.${error ? `\n${error}` : ""}`;
+}
+
+export async function observeTurn({
+  fetchEvents,
+  threadId,
+  turnId,
+  sinceSeq,
+  responseText = "",
+  timeoutMs,
+  saveCursor,
+  onDelta = (text) => text,
+  onApproval = async () => {},
+  onTerminal,
+  onTimeout = async () => {}
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let text = responseText;
+  let latestSeq = Number(sinceSeq || 0);
+  try {
+    const response = await fetchEvents(latestSeq, controller.signal);
+    if (!response.ok) throw new Error(compactRuntimeError(response.status, await readJsonSafe(response)));
+    for await (const record of readThreadEvents(response, threadId)) {
+      if (record.event === "stream.end") return false;
+      latestSeq = Math.max(latestSeq, Number(record.seq || 0));
+      if (turnId && record.turn_id === turnId) {
+        if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
+          text = await onDelta(text + (record.payload.delta || ""));
+        }
+        if (record.event === "approval.required") await onApproval(record.payload || {});
+        const status = turnTerminalStatus(record);
+        if (status) {
+          const error = record.payload?.turn?.error || record.payload?.error || "";
+          await onTerminal({ status, text, error });
+          await saveCursor({ lastSeq: latestSeq, responseText: "" });
+          return true;
+        }
+      }
+      await saveCursor({ lastSeq: latestSeq, responseText: text });
+    }
+    return false;
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+    await onTimeout();
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

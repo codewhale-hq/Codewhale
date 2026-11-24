@@ -724,8 +724,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                     _ => app.tr(MessageId::SubagentsStatusRunning).into_owned(),
                 };
-                let command: String = job.command.chars().take(32).collect();
-                let ellipsis = if job.command.chars().count() > 32 {
+                let mut graphemes = unicode_segmentation::UnicodeSegmentation::graphemes(
+                    job.command.as_str(),
+                    true,
+                );
+                let command: String = graphemes.by_ref().take(32).collect();
+                let ellipsis = if graphemes.next().is_some() {
                     "…"
                 } else {
                     ""

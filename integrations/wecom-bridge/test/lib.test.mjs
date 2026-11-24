@@ -228,3 +228,11 @@ test("createStreamReply reopens once when an update is rejected", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].id, "s2");
 });
+
+test("createStreamReply rethrows when the reopened stream is also rejected", async () => {
+  const client = {
+    replyStream: async () => { throw { errcode: 846608, errmsg: "expired" }; }
+  };
+  const streamer = createStreamReply(client, {}, { genId: () => "s2" });
+  await assert.rejects(streamer.update("hello", true), (error) => error.errcode === 846608);
+});

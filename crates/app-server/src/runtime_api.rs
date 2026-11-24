@@ -6482,9 +6482,9 @@ async fn list_modes(
     )
 }
 
-async fn list_skills(
-    State(state): State<RuntimeApiState>,
-) -> Result<Json<SkillsResponse>, ApiError> {
+fn discover_skills_snapshot(
+    state: &RuntimeApiState,
+) -> (PathBuf, codewhale_skills::SkillRegistry, Vec<PathBuf>) {
     let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
@@ -6500,25 +6500,40 @@ async fn list_skills(
         &skills_config,
         Some(plugin_registry.as_ref()),
     );
-    let mut skill_state = state.skill_state.lock().await;
-    skill_state
-        .refresh()
-        .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
-    let skills = registry
-        .list()
-        .iter()
-        .map(|skill| {
-            let enabled = skill_state
-                .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
-            skill_entry_for(skill, enabled, &skills_dir)
-        })
-        .collect();
-    Ok(Json(SkillsResponse {
-        directory: skills_dir,
-        directories,
-        warnings: registry.warnings().to_vec(),
-        skills,
-    }))
+    (skills_dir, registry, directories)
+}
+
+async fn list_skills(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<SkillsResponse>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let mut skill_state = state.skill_state.blocking_lock();
+        skill_state
+            .refresh()
+            .map_err(|error| ApiError::internal(format!("refresh skill state: {error}")))?;
+        let skills = registry
+            .list()
+            .iter()
+            .map(|skill| {
+                let enabled = skill_state
+                    .is_enabled_with_legacy(&skill.name, skill.legacy_activation_name.as_deref());
+                skill_entry_for(skill, enabled, &skills_dir)
+            })
+            .collect();
+        Ok(Json(SkillsResponse {
+            directory: skills_dir,
+            directories,
+            warnings: registry.warnings().to_vec(),
+            skills,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("list skills task failed: {error}")))?
 }
 
 async fn set_skill_enabled(
@@ -6526,37 +6541,31 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let (skills_dir, skills_config) = {
-        let config = state.config.read();
-        let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let skills_config = config.skills_config();
-        (skills_dir, skills_config)
-    };
-    let plugin_registry = state
-        .plugin_discovery
-        .registry_for_workspace(&state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(
-        &state.workspace,
-        &skills_dir,
-        &skills_config,
-        Some(plugin_registry.as_ref()),
-    );
-    let exists = registry.list().iter().any(|skill| skill.name == name);
-    if !exists {
-        return Err(ApiError::not_found(format!(
-            "skill '{name}' not found in searched directories: {}",
-            format_skill_search_paths(&directories)
-        )));
-    }
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        let (_skills_dir, registry, directories) = discover_skills_snapshot(&state);
+        let exists = registry.list().iter().any(|skill| skill.name == name);
+        if !exists {
+            return Err(ApiError::not_found(format!(
+                "skill '{name}' not found in searched directories: {}",
+                format_skill_search_paths(&directories)
+            )));
+        }
 
-    let mut store = state.skill_state.lock().await;
-    store
-        .set_enabled(&name, req.enabled)
-        .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
-    Ok(Json(SetSkillEnabledResponse {
-        name,
-        enabled: req.enabled,
-    }))
+        let mut store = state.skill_state.blocking_lock();
+        store
+            .set_enabled(&name, req.enabled)
+            .map_err(|err| ApiError::internal(format!("persist skill state: {err}")))?;
+        Ok(Json(SetSkillEnabledResponse {
+            name,
+            enabled: req.enabled,
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("set skill enabled task failed: {error}")))?
 }
 
 /// `GET /v1/skills/{name}` — one skill's full routing metadata plus its body.
@@ -6579,21 +6588,7 @@ async fn get_skill_detail(
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-        let (skills_dir, skills_config) = {
-            let config = state.config.read();
-            let skills_dir = resolve_skills_dir(&config, &state.workspace);
-            let skills_config = config.skills_config();
-            (skills_dir, skills_config)
-        };
-        let plugin_registry = state
-            .plugin_discovery
-            .registry_for_workspace(&state.workspace);
-        let (registry, directories) = discover_skills_for_runtime_api(
-            &state.workspace,
-            &skills_dir,
-            &skills_config,
-            Some(plugin_registry.as_ref()),
-        );
+        let (skills_dir, registry, directories) = discover_skills_snapshot(&state);
         let Some(skill) = registry.get(&name) else {
             return Err(ApiError::not_found(format!(
                 "skill '{name}' not found in searched directories: {}",

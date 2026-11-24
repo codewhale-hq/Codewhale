@@ -91,10 +91,13 @@ pub fn report_stall(report: &StallReport) -> Option<PathBuf> {
     if let Some(path) = path.clone() {
         let body = report.record_body();
         let writer = std::thread::spawn(move || {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, body));
+            if let Err(error) = written {
+                tracing::warn!(target: "turn_stall", path = %path.display(), %error, "stall record was not written");
             }
-            let _ = std::fs::write(&path, body);
         });
         // Tests read the record right after reporting.
         #[cfg(any(test, all(feature = "test-thread-scoped-state", debug_assertions)))]
