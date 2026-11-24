@@ -4138,11 +4138,11 @@ fn every_dial_step_writes_one_permissions_receipt() {
     assert_eq!(
         receipts,
         [
-            "Permissions changed to plan",
-            "Permissions changed to auto",
+            "Permissions changed to Plan",
+            "Permissions changed to Auto-Review",
             "Permissions changed to Full Access",
-            "Permissions changed to ask",
-            "Permissions changed to accept edits",
+            "Permissions changed to Ask",
+            "Permissions changed to Accept Edits",
         ]
     );
 }

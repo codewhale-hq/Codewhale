@@ -853,15 +853,16 @@ fn turn_fold_summary_cell(
     turn: &crate::tui::history::TurnFold,
     locale: codewhale_localization::Locale,
 ) -> HistoryCell {
-    let changes = crate::tui::history::turn_fold_changes(turn, locale).map(|changes| {
-        format!(
-            "{changes} \u{00B7} {}",
-            codewhale_localization::tr(
-                locale,
-                codewhale_localization::MessageId::TurnReviewChanges
+    let changes = crate::tui::history::turn_fold_changes_in(turn, locale, ascii_safe_enabled())
+        .map(|changes| {
+            format!(
+                "{changes} \u{00B7} {}",
+                codewhale_localization::tr(
+                    locale,
+                    codewhale_localization::MessageId::TurnReviewChanges
+                )
             )
-        )
-    });
+        });
     HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "turn_work".to_string(),
         status: ToolStatus::Success,
@@ -907,7 +908,7 @@ fn agent_line_summary_cell(
             format!(
                 " \u{00B7} {} \u{00B7} {}",
                 card.workers.len(),
-                card.aggregate_status_public().label()
+                card.aggregate_status_public().label_in(locale)
             ),
         ),
     };

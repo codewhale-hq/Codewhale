@@ -5790,6 +5790,7 @@ impl ConfigView {
         let (dial, dial_ink) = crate::tui::underwater::dial_chip_for(self.locale, mode, approval);
         let footer =
             crate::tui::phase_strip::TidelineFooter::new(&theme, (dial.as_ref(), dial_ink))
+                .locale(self.locale)
                 .context_percent(context_percent);
         crate::tui::phase_strip::render_tideline_footer(
             Rect {

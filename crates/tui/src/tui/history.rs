@@ -86,8 +86,8 @@ pub use tool_run::detect_tool_runs;
 pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
 pub(crate) use turn_fold::superseded_todo_write_indices;
 pub use turn_fold::{
-    TurnFold, TurnFoldProjection, detect_turn_folds, turn_fold_changes, turn_fold_diff,
-    turn_fold_headline,
+    TurnFold, TurnFoldProjection, detect_turn_folds, turn_fold_changes, turn_fold_changes_in,
+    turn_fold_diff, turn_fold_headline,
 };
 
 #[cfg(test)]
