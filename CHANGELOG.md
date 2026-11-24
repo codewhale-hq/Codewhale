@@ -69,7 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/effort` and the reasoning-effort picker now accept `low` and `medium` on Ollama Cloud:** removed the picker's duplicate catalog effort parser in favor of `ReasoningEffort::catalog_effort_values_for_offering` and `from_catalog_token`, and aligned Ollama Cloud's picker ladder (`auto`, `off`, `low`, `medium`, `high`, `max`) with the engine. (CW-8360)
-- **Skill companion discovery includes subdirectories and non-English trigger clauses:** `load_skill` now recursively lists companion files inside skill subdirectories (sorted deterministically, skipping symlinks) and skill index shortening recognizes non-English trigger prefixes such as `Триггеры:` and `触发条件:`. (Refs #7432)
 - **Full Access is selected through `Shift+Tab` instead of the legacy yolo-compat funnel:** removed `Alt+Y`, `Alt+Shift+Y`, and the `/mode yolo|bypass|4` permission shortcut; `/mode yolo` now points to `Shift+Tab` (or `/auto`), and `/zidong` is now an alias for `/auto` (Auto-Review). Launch flags (`--yolo`, `--full-access`, `CODEWHALE_YOLO`, `default_mode = "yolo"`) keep their startup behavior.
 
 ### Fixed
@@ -87,9 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
-- Added Onomeo as a bundled provider descriptor row. Thanks [@Owaid0723666](https://github.com/Owaid0723666). (#7525)
-- Added Simplified Chinese translation of `AUTO_REVIEW.md` (`docs/zh_hans/AUTO_REVIEW.md`). Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
-- Improved runtime item-index caching and turn-reference lookup performance. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
 - **Runtime API token is cleared from the server environment after startup:** `codewhale serve` reads its runtime token once at startup and removes it from the process environment so child processes do not inherit it.
 - **Sub-agents inherit `[tools]` configuration and `[tools.overrides]`:** child agents now apply the parent configuration's tool overrides and plugin tool directory instead of falling back to defaults.
 
