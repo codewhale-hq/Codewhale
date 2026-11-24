@@ -4583,7 +4583,7 @@ mod tests {
             spec.max_spawn_depth,
             codewhale_protocol::fleet::DEFAULT_SPAWN_DEPTH
         );
-        assert_eq!(spec.max_spawn_depth, u32::MAX);
+        assert_eq!(spec.max_spawn_depth, 3);
 
         let hardened = apply_exec_hardening(spec, &codewhale_config::FleetExecConfig::default());
         let would_exceed = |spawn_depth: u32| spawn_depth + 1 > hardened.max_spawn_depth;
@@ -4594,8 +4594,8 @@ mod tests {
         assert!(!would_exceed(1), "depth-1 child must spawn to depth 2");
         assert!(!would_exceed(2), "depth-2 child must spawn to depth 3");
         assert!(
-            !would_exceed(8),
-            "default delegation continues beyond eight levels"
+            would_exceed(3),
+            "depth-3 child must not spawn past the default depth cap"
         );
     }
 

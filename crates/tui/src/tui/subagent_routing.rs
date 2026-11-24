@@ -633,6 +633,24 @@ pub(crate) fn upsert_roster_from_mailbox(
                 elapsed_ms,
             );
         }
+        MailboxMessage::BudgetExhausted { summary, .. } => {
+            let elapsed_ms = app
+                .agent_progress_meta
+                .get(agent_id)
+                .and_then(|meta| meta.started_at)
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+            upsert_roster_terminal(
+                app,
+                owner_session_id,
+                agent_id,
+                Some(&SubAgentStatus::BudgetExhausted),
+                summary,
+                None,
+                None,
+                None,
+                elapsed_ms,
+            );
+        }
         MailboxMessage::Interrupted { reason, .. } => {
             let elapsed_ms = app
                 .agent_progress_meta
@@ -1050,6 +1068,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
         MailboxMessage::Started { agent_type, .. } => agent_type.clone(),
         MailboxMessage::Completed { .. }
         | MailboxMessage::Failed { .. }
+        | MailboxMessage::BudgetExhausted { .. }
         | MailboxMessage::Interrupted { .. }
         | MailboxMessage::Cancelled { .. } => "unknown".to_string(),
         _ => return false,
@@ -1064,7 +1083,9 @@ pub(super) fn handle_subagent_mailbox_for_turn(
         // counted as running with nothing left to settle it (U05-04).
         let first_status = match &display_message {
             MailboxMessage::Completed { .. } => AgentLifecycle::Completed,
-            MailboxMessage::Failed { .. } => AgentLifecycle::Failed,
+            MailboxMessage::Failed { .. } | MailboxMessage::BudgetExhausted { .. } => {
+                AgentLifecycle::Failed
+            }
             MailboxMessage::Interrupted { .. } => AgentLifecycle::Interrupted,
             MailboxMessage::Cancelled { .. } => AgentLifecycle::Cancelled,
             _ => AgentLifecycle::Running,
@@ -1144,6 +1165,10 @@ fn bounded_mailbox_message(message: &MailboxMessage) -> MailboxMessage {
         MailboxMessage::Failed { agent_id, error } => MailboxMessage::Failed {
             agent_id: agent_id.clone(),
             error: bound_agent_activity_text(error),
+        },
+        MailboxMessage::BudgetExhausted { agent_id, summary } => MailboxMessage::BudgetExhausted {
+            agent_id: agent_id.clone(),
+            summary: bound_agent_activity_text(summary),
         },
         MailboxMessage::Interrupted { agent_id, reason } => MailboxMessage::Interrupted {
             agent_id: agent_id.clone(),
@@ -1312,6 +1337,12 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
         MailboxMessage::Failed { error, .. } => (
             AgentCurrentActivityStatus::Failed,
             Some(error.clone()),
+            None,
+            previous.as_ref().and_then(|activity| activity.step),
+        ),
+        MailboxMessage::BudgetExhausted { summary, .. } => (
+            AgentCurrentActivityStatus::Failed,
+            Some(summary.clone()),
             None,
             previous.as_ref().and_then(|activity| activity.step),
         ),

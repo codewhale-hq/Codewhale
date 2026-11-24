@@ -638,6 +638,10 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             card.status = AgentLifecycle::Failed;
             card.summary = Some(error.clone());
         }
+        MailboxMessage::BudgetExhausted { summary, .. } => {
+            card.status = AgentLifecycle::Failed;
+            card.summary = Some(summary.clone());
+        }
         MailboxMessage::Interrupted { reason, .. } => {
             card.status = AgentLifecycle::Interrupted;
             card.summary = Some(reason.clone());
@@ -701,7 +705,9 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
         | MailboxMessage::ToolCallStarted { .. } => card.upsert_worker(id, AgentLifecycle::Running),
         MailboxMessage::ToolCallCompleted { .. } => true,
         MailboxMessage::Completed { .. } => card.upsert_worker(id, AgentLifecycle::Completed),
-        MailboxMessage::Failed { .. } => card.upsert_worker(id, AgentLifecycle::Failed),
+        MailboxMessage::Failed { .. } | MailboxMessage::BudgetExhausted { .. } => {
+            card.upsert_worker(id, AgentLifecycle::Failed)
+        }
         MailboxMessage::Interrupted { .. } => card.upsert_worker(id, AgentLifecycle::Interrupted),
         MailboxMessage::Cancelled { .. } => card.upsert_worker(id, AgentLifecycle::Cancelled),
         MailboxMessage::ChildSpawned { child_id, .. } => {
