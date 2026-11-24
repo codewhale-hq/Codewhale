@@ -30,7 +30,7 @@ const CONSUMER_REFUSALS: [(u16, &str); 6] = [
 
 const DSH_CLIENT: &str = "const react = require(\"react\");\n\
 const util = require(\"./util\");\n\
-const keys = [\"sidebar.right.pane.tab\", \"settings.section\", \"conversation.session.header.utilities\"];\n\
+const keys = [\"sidebar.right.pane.tab\", \"settings.section\", \"contextMenu.icon\"];\n\
 exports.apply = function apply(ctx) { return [react, util.v, keys, ctx]; };\n";
 
 fn write_dsh_package(dir: &Path, name: &str, client: &str) -> Result<PathBuf> {
@@ -280,7 +280,7 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
             (404, "plugin_ui_seat_not_admitted"),
         ),
         (
-            "slot=workpane.panel&dsh_slot=conversation.session.header.utilities",
+            "slot=workpane.panel&dsh_slot=contextMenu.icon",
             (422, "plugin_ui_seat_unsupported"),
         ),
         ("slot=chat.node", (400, "plugin_ui_seat_unknown")),
