@@ -1677,6 +1677,23 @@ pub trait ModelHttpPolicy: std::fmt::Debug + Send + Sync {
     ) -> Result<reqwest::ClientBuilder>;
 }
 
+fn default_catalog_auto_refresh() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogConfig {
+    #[serde(default = "default_catalog_auto_refresh", alias = "autoRefresh")]
+    pub auto_refresh: bool,
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self { auto_refresh: true }
+    }
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -1841,6 +1858,8 @@ pub struct Config {
     /// reading "unset" while batches ship (#5441).
     #[serde(default)]
     pub telemetry: Option<bool>,
+    #[serde(default)]
+    pub catalog: Option<CatalogConfig>,
     #[serde(default, alias = "fallbackProviders")]
     pub fallback_providers: Vec<codewhale_config::ProviderKind>,
     pub yolo: Option<bool>,
@@ -3065,6 +3084,10 @@ pub fn approval_policy_baseline_from_permission_posture(
 // === Config Loading ===
 
 impl Config {
+    #[must_use]
+    pub fn catalog_auto_refresh_enabled(&self) -> bool {
+        self.catalog.as_ref().map_or(true, |c| c.auto_refresh)
+    }
     /// Whether Linux shell commands prefer bubblewrap confinement.
     ///
     /// On by default: an unset `prefer_bwrap` means sandboxed commands use

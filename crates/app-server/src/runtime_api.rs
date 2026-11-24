@@ -14722,6 +14722,35 @@ async fn set_config(
                 })?;
                 config_persistence::persist_root_bool_key(config_path, "strict_tool_mode", enabled)
             }
+            "telemetry" => {
+                let enabled = value.parse::<bool>().map_err(|_| {
+                    ApiError::bad_request(format!(
+                        "Invalid value '{value}' for telemetry: expected 'true' or 'false'"
+                    ))
+                })?;
+                let applied = codewhale_engine::telemetry_notice::apply_persistent_preference(
+                    state.config_path.clone(),
+                    enabled,
+                );
+                let message = applied.message(codewhale_localization::Locale::En);
+                match applied.outcome {
+                    codewhale_engine::telemetry_notice::TelemetryPreferenceOutcome::SaveFailed(
+                        _,
+                    ) => {
+                        return Err(ApiError::internal(message));
+                    }
+                    _ => {
+                        state.config.write().telemetry = Some(enabled);
+                        return Ok(Json(SetConfigResponse {
+                            key,
+                            value: enabled.to_string(),
+                            message,
+                            persisted: true,
+                            requires_reload: enabled,
+                        }));
+                    }
+                }
+            }
             "memory_enabled" => {
                 let enabled = value.parse::<bool>().map_err(|_| {
                     ApiError::bad_request(format!(
@@ -14931,6 +14960,7 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "memory_enabled",
     "search_provider",
     "prompt_suggestion",
+    "telemetry",
 ];
 
 /// A dotted-path lookup over a TOML document — used to decide `persisted`

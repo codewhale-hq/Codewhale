@@ -251,9 +251,8 @@ base_url = "https://your-gateway.example/v1"`}
         and closed enums to a first-party endpoint at telemetry.codewhale.net,
         a Cloudflare Worker whose full source is in the repository. Its storage has no IP,
         country, or geo column, records no request logs,
-        and retains records for three months. Optional PostHog forwarding requires
-        separate operator configuration and verified IP-safe egress; its retention
-        is a separate project setting. Source support does not establish activation. Set{" "}
+        and retains records for three months. Counts stay first-party only and are not
+        forwarded to third-party analytics processors. Set{" "}
         <code className="inline">telemetry_endpoint = &quot;&quot;</code> to stay
         enabled and contact nobody. It never carries conversations, code, prompts,
         files, file/repo/branch names, model content, credentials, or a per-turn or
@@ -633,7 +632,7 @@ base_url = "https://your-gateway.example/v1"`}
         关闭是会被后续版本保留的选择；显示告知绝不会代你记录任何同意。开启时，会话只会把聚合的会话、功能与错误计数以及封闭枚举 POST 到 telemetry.codewhale.net 上的第一方端点，
         那是一个 Cloudflare Worker，完整源码就在仓库里。
         它的存储中没有 IP、国家或地理位置列，不记录请求日志，保留期固定为三个月。
-        可选的 PostHog 转发需要运营方单独配置，并验证出口不会转发客户端 IP；其保留期由项目另行设置。源码支持不代表已启用。
+        计数仅保留在第一方，不转发给任何第三方分析处理方。
         若想保持启用但不联系任何服务器，设置 <code className="inline">telemetry_endpoint = &quot;&quot;</code>。
         它永远不会携带对话、代码、prompt、文件、文件/仓库/分支名、模型内容、凭据，也不发送逐轮或逐工具时间线（见<a href="https://github.com/codewhale-hq/CodeWhale/blob/main/docs/TELEMETRY.md" className="body-link">遥测 schema</a>；
         可用 <code className="inline">codewhale config set telemetry false</code> 或

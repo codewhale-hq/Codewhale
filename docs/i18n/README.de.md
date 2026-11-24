@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ In Ask, Accept Edits und Auto-Review laufen Befehle nach Möglichkeit in einer O
 
 Über `/provider` hinterlegte API-Schlüssel bleiben auf deinem Rechner; lokale Modelle brauchen keinen Schlüssel. `/cost` und die Fußzeile zeigen die Sitzungskosten, sofern Preise bekannt sind (unbekannte Preise werden als unbekannt ausgewiesen, niemals als kostenlos).
 
-Aggregierte Telemetrie ist standardmäßig aktiv (Version, Betriebssystem, Sitzungsdauer/-ergebnis, integrierte Anbieter-IDs, Funktions-/Fehlerzähler; alle 90 Tage rotierende zufällige Installations-ID; niemals Code, Prompts, Unterhaltungen, Modellnamen, Pfade oder Zugangsdaten). Deaktiviere sie mit:
+Aggregierte Telemetrie ist standardmäßig aktiv (Version, Betriebssystem, Sitzungsdauer/-ergebnis, eingebaute Anbieter-IDs, Modell-IDs aus dem mitgelieferten öffentlichen Katalog (eigene, private oder lokale Modelle werden als `other` gezählt), Token-Summen, Aufruf-/Fehlerzahlen eingebauter Werkzeuge und Funktions-/Fehlerzähler; zufällige, alle 90 Tage rotierende Installations-ID; niemals Code, Prompts, Gespräche, eigene/private Modellnamen, Datei-/Repo-/Branch-Namen, Zugangsdaten oder IP-Adressen). Du deaktivierst sie mit:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Setze `CODEWHALE_NO_UPDATE_CHECK=1`, um die GitHub-Release-Prüfung beim Start zu überspringen. Details: [Autorisierungsreihenfolge](../AUTHORIZATION_ORDER.md), [Sandboxing](../SANDBOX.md) und [Telemetrie](../TELEMETRY.md).
+Beim Start prüft Codewhale außerdem GitHub auf neue Releases (`CODEWHALE_NO_UPDATE_CHECK=1` zum Überspringen) und aktualisiert alle 24 Stunden den öffentlichen `models.dev`-Modellkatalog (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` oder `[catalog] auto_refresh = false` zum Überspringen; in CI und bei `DO_NOT_TRACK` automatisch unterdrückt). Details: [Autorisierungsreihenfolge](../AUTHORIZATION_ORDER.md), [Sandboxing](../SANDBOX.md) und [Telemetrie](../TELEMETRY.md).
 
 ## Dokumentation
 

@@ -4,7 +4,7 @@
 //! decides whether it may send anything is [`decision`]. Nothing else in the
 //! tree is permitted to construct a payload or to reach the wire, and nothing in
 //! here reads a prompt, a completion, a tool argument, a file, a path, a git
-//! remote, a branch, a model id, a provider table name, an MCP server name, an
+//! remote, a branch, a custom or private model id, a provider table name, an MCP server name, an
 //! approval rule, an error body, a panic message, or a credential.
 //!
 //! # The shape of the guarantee

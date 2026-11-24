@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -84,13 +84,13 @@ Ask, Accept Edits, Auto-Review에서는 지원하는 OS 샌드박스 안에서 �
 
 `/provider`로 추가한 API 키는 로컬 머신에만 저장되며 로컬 모델은 키가 필요 없습니다. `/cost`와 바닥글은 가격이 알려진 경우 세션 비용을 추적합니다(알 수 없는 가격은 무료가 아니라 알 수 없음으로 표시).
 
-집계 텔레메트리는 기본적으로 켜져 있습니다(버전, OS, 세션 길이/결과, 내장 제공자 ID, 기능/오류 횟수만 90일마다 교체되는 임의 설치 ID와 함께 전송하며 코드, 프롬프트, 대화, 모델 이름, 경로, 자격 증명은 전송하지 않음). 끄려면 다음을 실행하세요:
+집계 텔레메트리는 기본적으로 켜져 있습니다(버전, OS, 세션 길이/결과, 내장 제공자 ID, 내장 공개 카탈로그 모델 ID(사용자 지정·비공개·로컬 모델은 `other`로 기록), 총 토큰 수, 내장 도구 호출/오류 수, 기능/오류 횟수; 90일마다 교체되는 임의 설치 ID; 코드, 프롬프트, 대화, 사용자 지정/비공개 모델명, 파일/저장소/브랜치 이름, 자격 증명, IP 주소는 전송하지 않음). 끄려면 다음을 실행하세요:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-시작 시 GitHub 릴리스 확인을 건너뛰려면 `CODEWHALE_NO_UPDATE_CHECK=1`을 설정하세요. 자세한 내용은 [권한 부여 순서](../AUTHORIZATION_ORDER.md), [샌드박싱](../SANDBOX.md), [텔레메트리](../TELEMETRY.md)를 참고하세요.
+시작 시 GitHub 새 릴리스 확인(`CODEWHALE_NO_UPDATE_CHECK=1`로 건너뛰기)과 24시간마다 공개 `models.dev` 모델 카탈로그 새로고침도 수행합니다(`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` 또는 `[catalog] auto_refresh = false`로 건너뛰기; CI 환경 및 `DO_NOT_TRACK`에서는 자동 비활성화). 자세한 내용은 [권한 부여 순서](../AUTHORIZATION_ORDER.md), [샌드박싱](../SANDBOX.md), [텔레메트리](../TELEMETRY.md)를 참고하세요.
 
 ## 문서
 

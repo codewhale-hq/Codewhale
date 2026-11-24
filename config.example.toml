@@ -364,10 +364,11 @@ max_subagents = 64 # optional (default 64, clamped to 1-128)
 # What is never collected: prompts, completions, tool arguments, diffs, file
 # contents, filenames, paths, git remotes, repo or branch names, memory
 # entries, chat history, API keys or tokens (not even a boolean saying one
-# exists), model ids, custom provider table names, MCP server names, error or
-# panic message bodies, per-event timestamps, keystrokes, clipboard,
-# screenshots, or location. The complete schema is `docs/TELEMETRY.md`, and a
-# test asserts this file and the serializer agree.
+# exists), custom or private model ids (only bundled public-catalog model ids
+# are counted; all others map to "other"), custom provider table names, MCP
+# server names, error or panic message bodies, per-event timestamps,
+# keystrokes, clipboard, screenshots, or location. The complete schema is
+# `docs/TELEMETRY.md`, and a test asserts this file and the serializer agree.
 #
 # A repo-local `.codewhale/config.toml` can set neither key: someone else's
 # repository cannot turn your telemetry on or aim it at a host of their choosing.
@@ -380,7 +381,8 @@ max_subagents = 64 # optional (default 64, clamped to 1-128)
 #
 # That default is only ever consulted for a session that is already enabled —
 # it decides where a batch goes, never whether one exists. Nothing is sent
-# until `telemetry` is on AND the first-run notice was answered with Enable.
+# when telemetry is disabled via config, CLI flag, or an environment kill
+# switch (`CODEWHALE_TELEMETRY=0`, `DO_NOT_TRACK`).
 #
 # Two overrides, both of which beat the default:
 #
@@ -393,6 +395,11 @@ max_subagents = 64 # optional (default 64, clamped to 1-128)
 # constructed. Read that file to see precisely what would have been sent.
 # `CODEWHALE_TELEMETRY_ENDPOINT` overrides this file, and setting it to the
 # empty string means the same "contact nobody".
+#
+# Background public catalog refresh (https://models.dev/catalog.json, every 24h,
+# no credentials; suppressed automatically in CI and under DO_NOT_TRACK):
+# [catalog]
+# auto_refresh = true   # set false (or CODEWHALE_DISABLE_MODELS_DEV_FETCH=1) to disable
 #
 # `https://` is required; plain `http://` is accepted only for loopback, and no
 # environment variable overrides that refusal.

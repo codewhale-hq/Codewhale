@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:5da2c4c9d5f9 -->
+<!-- source: README.md sha256:7e0e7ebc680b -->
 <div align="center">
 
 <picture>
@@ -82,13 +82,13 @@ Dans Ask, Accept Edits et Auto-Review, les commandes tournent dans un sandbox sy
 
 Les clés API ajoutées avec `/provider` restent sur votre machine, et les modèles locaux ne demandent aucune clé. `/cost` et le pied de page suivent le coût de la session lorsque le tarif est connu (un tarif inconnu est affiché comme inconnu, jamais comme gratuit).
 
-La télémétrie agrégée est activée par défaut (version, OS, durée/issue de session, identifiants de fournisseurs intégrés, compteurs de fonctionnalités/erreurs ; identifiant d’installation aléatoire renouvelé tous les 90 jours ; jamais de code, prompts, conversations, noms de modèles, chemins ou identifiants). Désactivez-la avec :
+La télémétrie agrégée est activée par défaut (version, OS, durée/issue de session, identifiants de fournisseurs intégrés, identifiants de modèles du catalogue public intégré (les modèles personnalisés, privés ou locaux sont enregistrés comme `other`), totaux de jetons, compteurs d'appels/erreurs d'outils intégrés et compteurs de fonctionnalités/erreurs ; identifiant d'installation aléatoire renouvelé tous les 90 jours ; jamais de code, prompts, conversations, noms de modèles personnalisés/privés, noms de fichiers/dépôts/branches, identifiants ou adresses IP). Désactivez-la avec :
 
 ```bash
 codewhale config set telemetry false
 ```
 
-Définissez `CODEWHALE_NO_UPDATE_CHECK=1` pour ignorer la vérification des versions GitHub au démarrage. Détails : [ordre d’autorisation](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) et [télémétrie](../TELEMETRY.md).
+Au démarrage, Codewhale vérifie aussi les nouvelles versions sur GitHub (`CODEWHALE_NO_UPDATE_CHECK=1` pour ignorer) et actualise le catalogue public `models.dev` toutes les 24 heures (`CODEWHALE_DISABLE_MODELS_DEV_FETCH=1` ou `[catalog] auto_refresh = false` pour ignorer ; désactivé automatiquement en CI et sous `DO_NOT_TRACK`). Détails : [ordre d'autorisation](../AUTHORIZATION_ORDER.md), [sandboxing](../SANDBOX.md) et [télémétrie](../TELEMETRY.md).
 
 ## Documentation
 

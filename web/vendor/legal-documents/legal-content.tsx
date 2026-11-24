@@ -26,9 +26,8 @@ export function PrivacyContent() {
       <p>We use these service providers to run Codewhale. Each processes information only as needed to provide its service to us.</p>
       <p><strong>Stripe</strong> processes payments, calculates sales tax, and handles receipts, refunds and payment disputes when you make a purchase.</p>
       <p><strong>Vercel AI Gateway</strong> routes the Codewhale-managed AI requests paid for from your AI balance, and <strong>DeepInfra</strong>, the model provider it uses today, serves the model and processes each request. Any other managed route uses the provider or gateway the product identifies, as described below.</p>
-      <p><strong>Cloudflare</strong> hosts the Codewhale web app and API, routes and secures requests, and stores account authentication and session state.</p>
+      <p><strong>Cloudflare</strong> hosts the Codewhale web app and API, routes and secures requests, stores account authentication and session state, and stores anonymous usage totals in Cloudflare Analytics Engine when Usage data is enabled.</p>
       <p><strong>Supabase</strong> provides sign-in and the database that holds your account and product records.</p>
-      <p><strong>PostHog</strong> may receive the anonymous usage totals described under Settings, Usage data, and only while that setting is on: whole-number counts and a random install identifier that is not tied to your account, never your content.</p>
       <p><strong>Resend</strong> delivers email we send you.</p>
       <p>Services you connect yourself, such as GitHub or your own model provider, handle information under their own terms.</p>
     </section>

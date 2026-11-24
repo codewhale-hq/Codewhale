@@ -15572,7 +15572,9 @@ async fn run_interactive_prepared(
     // picker/inventory read, then kick a best-effort background refresh (#4187).
     // Failures are quiet: bundled catalog rows always remain available.
     codewhale_engine::models_dev_live::maybe_load_persisted_cache();
-    codewhale_engine::models_dev_live::spawn_background_refresh();
+    codewhale_engine::models_dev_live::spawn_background_refresh_if_enabled(
+        config.catalog_auto_refresh_enabled(),
+    );
     // Best-effort per-provider catalog refresh: fetches the active provider's
     // own /v1/models endpoint and merges live rows into the provider lake
     // alongside the Models.dev snapshot. Currently active for TelecomJS, whose

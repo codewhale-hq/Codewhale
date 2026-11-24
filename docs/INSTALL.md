@@ -143,7 +143,8 @@ box) to quit. It prints the command to resume the session later.
 Pick **one**. Several installs on one machine end up fighting over PATH (see
 [Troubleshooting](#13-troubleshooting)).
 
-**Privacy note:** Codewhale sends aggregate usage counts (PostHog) **by
+**Privacy note:** Codewhale sends aggregate usage counts to Codewhale's
+first-party endpoint (`https://telemetry.codewhale.net/v1/telemetry`) **by
 default**. To turn this off permanently:
 `codewhale config set telemetry false`, or export `CODEWHALE_TELEMETRY=0`,
 which always wins. The TUI also checks GitHub for updates at startup

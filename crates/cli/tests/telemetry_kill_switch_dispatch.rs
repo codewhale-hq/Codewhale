@@ -194,7 +194,8 @@ fn missing_preference_defaults_on_without_inventing_acceptance() {
         assert_eq!(state.telemetry_notice_decided_for.as_deref(), version);
         assert!(!state.telemetry_accepted(TELEMETRY_NOTICE_VERSION));
         assert!(evidence.stderr.contains("on by default"));
-        assert!(evidence.stderr.contains("Codewhale and PostHog"));
+        assert!(evidence.stderr.contains("Codewhale processes"));
+        assert!(!evidence.stderr.contains("PostHog"));
         assert!(
             evidence
                 .stderr

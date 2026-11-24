@@ -117,7 +117,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "BOOL",
-        help = "Control usage reporting (default on; Codewhale + PostHog; \
+        help = "Control usage reporting (default on; first-party Codewhale only; \
                 durable off: config set telemetry false; CODEWHALE_TELEMETRY=0 always wins)"
     )]
     telemetry: Option<bool>,
@@ -1971,7 +1971,7 @@ enum ConfigCommand {
     Unset {
         key: String,
     },
-    /// Review usage reporting by Codewhale and PostHog (default on).
+    /// Review first-party usage reporting by Codewhale (default on).
     Telemetry {
         /// Optional compatibility form: enable future sessions under this policy version.
         #[arg(long, value_name = "VERSION")]
@@ -13388,7 +13388,8 @@ verbosity = "concise"
             "the help string must document the always-winning opt-out: {telemetry_line}"
         );
         let help = help_for(&["codewhale", "config", "telemetry", "--help"]);
-        assert!(help.contains("PostHog"));
+        assert!(help.contains("Codewhale"));
+        assert!(!help.contains("PostHog"));
         assert!(help.contains("--accept-notice"));
     }
 

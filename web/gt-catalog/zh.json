@@ -2224,7 +2224,7 @@
         "title": "了解用量统计会发送什么",
         "blocks": [
           {
-            "p": "Codewhale 默认开启匿名用量统计，并在你第一次启动时明确告知，写明处理方是 Codewhale 和 PostHog。它具体包含："
+            "p": "Codewhale 默认开启匿名用量统计，并在你第一次启动时明确告知，由 Codewhale 第一方独立处理。它具体包含："
           },
           {
             "rows": [
@@ -2241,8 +2241,8 @@
                 "`https://telemetry.codewhale.net/v1/telemetry`，一个第一方服务，源码就在仓库中。它不存储 IP 地址、国家或位置，不保留请求日志，原始数据保存三个月；只有不含安装 id 的每日聚合总数会保留更久。"
               ],
               [
-                "PostHog",
-                "只有在服务运营方另行配置后，才会转发给 PostHog；转发的字段完全相同，不会多出任何内容。"
+                "仅第一方",
+                "计数仅保存在 Codewhale 自己的 Cloudflare Analytics Engine 采集服务中，不使用任何第三方分析处理方。"
               ]
             ]
           }

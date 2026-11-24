@@ -14,9 +14,6 @@ import { MAX_ENVELOPE_BYTES, privacySignalHeader, validateEnvelope } from "@/lib
  * this is not a claim of network anonymity. Forwarding has a 1.5-second timeout
  * with no retry. The response is
  * `{ accepted, reason? }`, never the ingest's own body.
- *
- * The PostHog token, if the ingest has one, lives there. This route never
- * holds it.
  */
 
 // No `runtime = "edge"`: @opennextjs/cloudflare does not support the edge
