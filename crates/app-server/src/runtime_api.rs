@@ -3527,6 +3527,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
         )
         .route(
+            "/v1/apps/plugins/{selector}/settings",
+            get(plugins::get_plugin_settings).put(plugins::put_plugin_settings),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/ui",
             get(plugins::get_plugin_ui),
         )

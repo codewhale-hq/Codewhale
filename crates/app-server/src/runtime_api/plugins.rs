@@ -2877,6 +2877,113 @@ pub(super) async fn put_catalog_settings(
     Ok(Json(CatalogRowEnvelope { row }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PluginSettingsPutRequest {
+    value: serde_json::Map<String, Value>,
+    #[serde(default)]
+    expected_revision: Option<String>,
+}
+
+async fn admit_plugin_settings(
+    state: &RuntimeApiState,
+    selector: &str,
+) -> Result<(String, PathBuf), ApiError> {
+    let state_for_check = state.clone();
+    let selector = selector.to_string();
+    let policy = codewhale_plugins::activation::extension_host_policy_enabled();
+    let plugin_name = tokio::task::spawn_blocking(move || {
+        let _scope = codewhale_plugins::activation::PolicyScope::propagate(policy);
+        let plugin = find_plugin(&state_for_check, &selector)?;
+        if !plugin.active() {
+            return Err(ApiError::forbidden(
+                "plugin must be trusted and enabled to access settings",
+            )
+            .with_code("plugin_settings_not_admitted"));
+        }
+        if !plugin.host_services.contains(&HostService::Settings) {
+            return Err(ApiError::forbidden(
+                "plugin has not been granted the settings host service",
+            )
+            .with_code("plugin_settings_not_granted"));
+        }
+        Ok(plugin.name)
+    })
+    .await
+    .map_err(|_| ApiError::internal("plugin settings check failed"))??;
+
+    let config_path = state
+        .config_path
+        .clone()
+        .or_else(|| state.config.read().loaded_config_path.clone())
+        .or_else(|| {
+            codewhale_runtime::config::resolve_load_config_path(None)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| {
+            codewhale_config::codewhale_home()
+                .ok()
+                .map(|home| home.join("config.toml"))
+        })
+        .ok_or_else(|| ApiError::internal("cannot resolve config.toml path for plugin settings"))?;
+    Ok((plugin_name, config_path))
+}
+
+/// `GET /v1/apps/plugins/{selector}/settings`
+pub(super) async fn get_plugin_settings(
+    State(state): State<RuntimeApiState>,
+    Path(selector): Path<String>,
+) -> Result<Json<codewhale_engine::extension_host::dsh_settings::PluginSettingsSnapshot>, ApiError>
+{
+    let (plugin_name, config_path) = admit_plugin_settings(&state, &selector).await?;
+    let snapshot = codewhale_engine::extension_host::dsh_settings::read_plugin_config_settings(
+        config_path,
+        plugin_name,
+    )
+    .await
+    .map_err(|error| match error {
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Invalid(message) => {
+            ApiError::bad_request(message).with_code("plugin_settings_invalid")
+        }
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Store => {
+            ApiError::internal("the plugin settings could not be read")
+        }
+    })?;
+    Ok(Json(snapshot))
+}
+
+/// `PUT /v1/apps/plugins/{selector}/settings`
+pub(super) async fn put_plugin_settings(
+    State(state): State<RuntimeApiState>,
+    Path(selector): Path<String>,
+    Json(req): Json<PluginSettingsPutRequest>,
+) -> Result<
+    Json<codewhale_engine::extension_host::dsh_settings::PluginSettingsWriteOutcome>,
+    ApiError,
+> {
+    let (plugin_name, config_path) = admit_plugin_settings(&state, &selector).await?;
+    let outcome = codewhale_engine::extension_host::dsh_settings::write_plugin_config_settings(
+        config_path,
+        plugin_name,
+        req.value,
+        req.expected_revision,
+    )
+    .await
+    .map_err(|error| match error {
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Invalid(message) => {
+            ApiError::bad_request(message).with_code("plugin_settings_invalid")
+        }
+        codewhale_engine::extension_host::dsh_settings::PluginSettingsError::Store => {
+            ApiError::internal("the plugin settings could not be saved")
+        }
+    })?;
+    if outcome.written {
+        reload_after_catalog_write(state).await?;
+    }
+    Ok(Json(outcome))
+}
+
 #[cfg(test)]
 mod review_tests {
     use super::{
