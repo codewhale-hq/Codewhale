@@ -71,6 +71,7 @@
     "deepseekAccount",
     "terminal",
     "attachments",
+    "agentPresets",
     "agentDefaultModel",
     "sessionProjections",
     "workspaceRegistry",

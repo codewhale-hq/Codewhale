@@ -1,6 +1,6 @@
 import { Service } from '@deepseek-ai/cordis'
 import { randomBytes } from 'node:crypto'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { ownerStorage } from '../root.ts'
 import { canonicalPath, insideKey, unlinkedKeyMatches } from './canonical-path.ts'
@@ -18,6 +18,35 @@ function activeDataDir(operation: string): string {
   return canonicalPath(owner.dataDir)
 }
 
+function assertNoEscapingAncestor(dataRoot: string, target: string, operation: string): void {
+  let current = target
+  while (current.length >= dataRoot.length) {
+    if (current === dataRoot) break
+    try {
+      const canonical = canonicalPath(current)
+      const key = insideKey(dataRoot, current)
+      if (key === undefined || key === '') {
+        if (canonical !== dataRoot) {
+          throw new Error(`${operation} refused symlink escaping plugin dataDir`)
+        }
+        break
+      }
+      if (!unlinkedKeyMatches(dataRoot, key, canonical)) {
+        throw new Error(`${operation} refused symlink escaping plugin dataDir`)
+      }
+      break
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') {
+        const next = dirname(current)
+        if (next === current) break
+        current = next
+        continue
+      }
+      throw error
+    }
+  }
+}
+
 function confinePathToDataDir(targetPath: unknown, operation: string): string {
   if (typeof targetPath !== 'string' || targetPath.length === 0 || /[\x00-\x1f\x7f]/.test(targetPath)) {
     throw new TypeError(`${operation} requires a valid file path string`)
@@ -25,36 +54,10 @@ function confinePathToDataDir(targetPath: unknown, operation: string): string {
   const dataRoot = activeDataDir(operation)
   const resolved = isAbsolute(targetPath) ? resolve(targetPath) : resolve(dataRoot, targetPath)
   const rel = insideKey(dataRoot, resolved)
-  if (rel === undefined) {
+  if (rel === undefined || rel === '') {
     throw new Error(`${operation} refused path outside plugin dataDir`)
   }
-  // Verify the parent directory chain has no symlink escaping dataRoot.
-  let ancestor = dirname(resolved)
-  while (ancestor.length >= dataRoot.length) {
-    if (ancestor === dataRoot) break
-    try {
-      const canonicalAncestor = canonicalPath(ancestor)
-      const ancestorKey = insideKey(dataRoot, ancestor)
-      if (ancestorKey === undefined || ancestorKey === '') {
-        if (canonicalAncestor !== dataRoot) {
-          throw new Error(`${operation} refused symlink escaping plugin dataDir`)
-        }
-        break
-      }
-      if (!unlinkedKeyMatches(dataRoot, ancestorKey, canonicalAncestor)) {
-        throw new Error(`${operation} refused symlink escaping plugin dataDir`)
-      }
-      break
-    } catch (error: any) {
-      if (error?.code === 'ENOENT') {
-        const next = dirname(ancestor)
-        if (next === ancestor) break
-        ancestor = next
-        continue
-      }
-      throw error
-    }
-  }
+  assertNoEscapingAncestor(dataRoot, dirname(resolved), operation)
   return resolved
 }
 
@@ -141,6 +144,9 @@ export function resolveDshHome(...segments: string[]): string {
   if (rel === undefined) {
     throw new Error('resolveDshHome refused path escaping plugin dataDir')
   }
+  if (rel !== '') {
+    assertNoEscapingAncestor(dataRoot, target, 'resolveDshHome')
+  }
   return target
 }
 
@@ -177,6 +183,7 @@ export async function writeFileAtomic(
   data: string | Uint8Array,
   options?: { encoding?: BufferEncoding, mode?: number },
 ): Promise<void> {
+  const dataRoot = activeDataDir('writeFileAtomic')
   const confined = confinePathToDataDir(targetPath, 'writeFileAtomic')
   const bytes = typeof data === 'string'
     ? Buffer.from(data, options?.encoding ?? 'utf8')
@@ -184,11 +191,27 @@ export async function writeFileAtomic(
   if (bytes.byteLength > MAX_ATOMIC_WRITE_BYTES) {
     throw new RangeError(`writeFileAtomic exceeds the ${MAX_ATOMIC_WRITE_BYTES} byte limit`)
   }
+  try {
+    const existing = await lstat(confined)
+    if (existing.isSymbolicLink()) {
+      throw new Error('writeFileAtomic refused symlink target')
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error
+  }
   const parent = dirname(confined)
   await mkdir(parent, { recursive: true })
-  const tmpPath = join(parent, `.cw-atomic-${process.pid}-${randomBytes(8).toString('hex')}.tmp`)
+  const canonicalParent = canonicalPath(parent)
+  const parentKey = insideKey(dataRoot, parent)
+  if (parentKey === undefined || (parentKey === '' ? canonicalParent !== dataRoot : !unlinkedKeyMatches(dataRoot, parentKey, canonicalParent))) {
+    throw new Error('writeFileAtomic refused symlink escaping plugin dataDir')
+  }
+  const tmpPath = join(canonicalParent, `.cw-atomic-${process.pid}-${randomBytes(8).toString('hex')}.tmp`)
   try {
-    await writeFile(tmpPath, bytes, options?.mode !== undefined ? { mode: options.mode } : undefined)
+    await writeFile(tmpPath, bytes, {
+      flag: 'wx',
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    })
     await rename(tmpPath, confined)
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => undefined)
