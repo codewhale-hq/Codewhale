@@ -828,7 +828,7 @@ async fn runtime_turn_origin_table_and_unattended_auto_review_tasks() -> Result<
     }
     fire_due_triggers_shared(&automations, &tasks).await?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + TURN_SETTLEMENT_DEADLOCK_TIMEOUT;
     loop {
         let events = owner_arc.events_since(&trigger_thread.id, None)?;
         assert!(
@@ -848,7 +848,7 @@ async fn runtime_turn_origin_table_and_unattended_auto_review_tasks() -> Result<
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "timed out waiting for send_later Auto-Review turn completion"
+            "timed out waiting for send_later Auto-Review turn completion: {events:?}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }

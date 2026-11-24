@@ -950,64 +950,17 @@ impl App {
     }
 
     /// True when this paste is the other edge of the key press that just
-    /// pasted. Shared by the composer and the modal paste route so one key
-    /// press cannot paste twice across the two.
+    /// pasted, so one key press cannot paste twice.
     pub(crate) fn clipboard_paste_within_dedupe_window(&self) -> bool {
         self.last_clipboard_paste
             .is_some_and(|last| last.elapsed() < Duration::from_millis(600))
     }
 
     /// Stamp a finished clipboard paste. Measured after the read, not before
-    /// it: `ensure_clipboard` can block for up to two seconds, and a stamp
-    /// taken before the read would let the second edge of the same key press
-    /// fall outside the window and paste again.
+    /// it: a read can take seconds, and a stamp taken before it would let the
+    /// second edge of the same key press fall outside the window.
     pub(crate) fn note_clipboard_paste(&mut self) {
         self.last_clipboard_paste = Some(Instant::now());
-    }
-
-    /// Paste from clipboard into input.
-    ///
-    /// Returns whether content was inserted. In SSH sessions without a
-    /// forwarded graphical display, the terminal client owns paste, so direct
-    /// clipboard shortcuts surface the local terminal-paste instruction while
-    /// `Event::Paste` remains the data path.
-    pub fn paste_from_clipboard(&mut self) -> bool {
-        // A terminal may forward both edges of Ctrl+V: Windows Terminal
-        // consumes the press for its own paste action and forwards only the
-        // release, while a terminal that does not own the chord forwards both.
-        // The window is measured from the end of the previous read (see
-        // `note_clipboard_paste`), so a slow clipboard open cannot push the
-        // second edge outside it.
-        if self.clipboard_paste_within_dedupe_window() {
-            return false;
-        }
-        if self.clipboard.requires_terminal_paste() {
-            self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
-            return false;
-        }
-        let content = self.clipboard.read_markdown(self.workspace.as_path());
-        self.note_clipboard_paste();
-        if let Some(content) = content {
-            self.apply_clipboard_content(content);
-            return true;
-        }
-        // The read cannot tell an empty clipboard from an unreadable one;
-        // either way the user asked to paste and nothing happened.
-        self.status_message = Some(self.tr(MessageId::ClipboardNothingToPaste).into_owned());
-        false
-    }
-
-    pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
-        match content {
-            ClipboardContent::Text(text) => {
-                self.insert_paste_text(&text);
-            }
-            ClipboardContent::Image(pasted) => {
-                let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
-                self.insert_media_attachment("image", &pasted.path, Some(&description));
-                self.status_message = Some(format!("Attached image: {description}"));
-            }
-        }
     }
 
     pub fn insert_char(&mut self, c: char) {

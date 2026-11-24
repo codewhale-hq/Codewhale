@@ -14,10 +14,12 @@
 # would expose ~/.codewhale/secrets.json, the gh token, and the whole CW
 # workspace.
 #
-# The companion change in .github/workflows/ci.yml therefore routes jobs to
-# this runner ONLY for same-repository events (pushes and PRs whose head repo
-# is codewhale-hq/CodeWhale). Fork PRs keep running on GitHub-hosted runners. Do not
-# remove that guard; without it this script is a remote-code-execution hole.
+# .github/workflows/ci.yml therefore routes jobs to this runner ONLY for a
+# workflow_dispatch in codewhale-hq/Codewhale ("Choose the macOS suite
+# runner"); every pull request, fork or not, stays on GitHub-hosted runners.
+# That guard cannot stop a fork PR that edits a workflow to name this runner's
+# labels: only requiring approval for all outside contributors' workflow runs,
+# or a runner group restricted to selected workflows, closes that path.
 #
 # Each job gets a freshly registered --ephemeral runner: the registration is
 # consumed by one job and then discarded, so a job cannot persist a runner

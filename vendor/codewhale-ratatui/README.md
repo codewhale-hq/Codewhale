@@ -27,16 +27,15 @@ Rust rendering source and controlled animation playback.
 
 ## Get started
 
-The current registry release is 0.1.2. This Engine vendor snapshot prepares
-0.2.0 and remains unpublished. Its `WorkflowRun.total` field and the total
-argument to `WorkflowRun::outcomes` use `u64`; convert existing `usize` totals
-with `as u64`. Publication requires its separate release approval. Protocol 0.10.3 must first
-be published with the shared avatar contract; the current workspace pin is local
-implementation state, not a registry publication minimum.
+The current registry release is 0.2.0. This Engine vendor snapshot prepares
+0.2.1, which requires Codewhale Protocol 0.10.4; publication requires its
+separate release approval. Since 0.2.0, the `WorkflowRun.total` field and the
+total argument to `WorkflowRun::outcomes` use `u64`; convert existing `usize`
+totals with `as u64`.
 
 ```toml
 [dependencies]
-codewhale-ratatui = "0.1.2"
+codewhale-ratatui = "0.2.0"
 ratatui = "0.30.2"
 ```
 

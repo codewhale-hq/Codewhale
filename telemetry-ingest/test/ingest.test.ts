@@ -386,6 +386,35 @@ describe("rate limiting", () => {
     expect(await response.text()).toBe("");
     expect(written).toHaveLength(0);
   });
+
+  it("caps rotating install_ids via the server-keyed ingest limiter", async () => {
+    const { env, written, ingestLimited } = harness({
+      rateLimit: true,
+      ingestRateLimit: 3,
+    });
+    const ids = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ];
+    const statuses: number[] = [];
+    for (const installId of ids) {
+      const batch = goldenBatch();
+      batch.install_id = installId;
+      const response = await worker.fetch(postJson(batch), env);
+      statuses.push(response.status);
+      expect(await response.text()).toBe("");
+    }
+    expect(statuses).toEqual([204, 204, 204, 429]);
+    expect(ingestLimited).toEqual([
+      INGEST_PATH,
+      INGEST_PATH,
+      INGEST_PATH,
+      INGEST_PATH,
+    ]);
+    expect(written).toHaveLength(12);
+  });
 });
 
 /**

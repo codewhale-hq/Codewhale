@@ -133,7 +133,7 @@ export function createStreamReply(client, frame, { rotateMs = 8 * 60_000, now = 
         streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
         openedAt = now();
         try { await send(streamId, text, finish); }
-        catch (e) { console.error("stream update failed twice", e?.errmsg || e?.message || e); }
+        catch (e) { console.error("stream update failed twice", e); throw e; }
       }
     }
   };

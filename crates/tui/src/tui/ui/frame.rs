@@ -2123,6 +2123,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     };
     let cursor_pos = composer_plan.cursor.map(|pos| (pos.x, pos.y));
     app.viewport.last_composer_area = Some(body_chunks[composer_slot]);
+    app.view_stack
+        .set_composer_top(Some(body_chunks[composer_slot].y));
     app.viewport.last_composer_content = Some(composer_plan.geometry.inner);
     app.viewport.last_composer_scroll_offset = composer_plan.scroll_offset;
     app.viewport.last_composer_top_padding = composer_plan.top_padding;
@@ -3631,7 +3633,10 @@ mod pet_main_tests {
                 Instant::now()
             ));
             assert_eq!(app.cursor_position, app.input.chars().count());
-            handle_bracketed_paste(&mut app, " pasted");
+            crate::tui::paste::handle_paste(
+                &mut app,
+                crate::tui::paste::PasteSource::Terminal(" pasted"),
+            );
             assert!(app.input.ends_with(" pasted"));
             assert!(app.view_stack.is_empty());
         }

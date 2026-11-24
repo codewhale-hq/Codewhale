@@ -314,6 +314,16 @@ pub(crate) fn underwater_motion_surface_visible(
     })
 }
 
+pub(crate) fn underwater_life_motion_requested(app: &App, obscured: bool, settled: bool) -> bool {
+    !obscured
+        && !settled
+        && crate::tui::underwater::ambient_life_motion_enabled(app)
+        && app.viewport.last_transcript_area.is_some_and(|area| {
+            area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
+                && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
+        })
+}
+
 pub(crate) fn animation_interval_ms(
     app: &App,
     status_motion: bool,

@@ -20,30 +20,10 @@
 
 /** Contributors whose PRs were merged or harvested into this release. */
 export const RELEASE_CONTRIBUTORS: string[] = [
-  "@gabsferreira",
-  "@printf033",
-  "@zhuowp",
-  "@isaacs",
-  "@7jrxt42BxFZo4iAnN4CX",
+  "@thejesh23",
+  "@NieZhuZhu",
   "@SparkofSpike",
-  "@gaord",
-  "@Lstarsky0",
-  "@asto18089",
-  "@Aboysky",
-  "@ddlw",
-  "@laozidabo",
-  "@Ricardo-M-L",
-  "@luochen211",
-  "@gannp",
-  "@Felixkw12",
-  "@MannXo",
-  "@SamhandsomeLee",
-  "@Gyuke",
-  "@vshulcz",
-  "@deosiree",
-  "@ruanchaves",
-  "@BX166",
-  "@donglovejava",
+  "@Opgeek-1",
 ];
 
 /**
@@ -55,19 +35,6 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [];
 
 /**
  * Contributors who helped with reports, reproductions, and verification.
- * Credit covers the 0.10.3 candidate reports recorded in docs/CONTRIBUTORS.md.
+ * Credit covers the 0.10.4 reports recorded in docs/CONTRIBUTORS.md.
  */
-export const RELEASE_HELPERS: string[] = [
-  "@Gabriel-Degret",
-  "@soarkit",
-  "@mickey1204",
-  "@liuyy2",
-  "@luestr",
-  "@M-Maciej",
-  "@Statter",
-  "@eugenicum",
-  "@cmdcorp6534",
-  "@Asteria1028",
-  "@ychu824",
-  "@swf1996120",
-];
+export const RELEASE_HELPERS: string[] = ["@diegovskytl"];

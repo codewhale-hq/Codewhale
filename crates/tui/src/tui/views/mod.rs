@@ -1315,11 +1315,6 @@ pub enum ViewEvent {
     /// setup; this is pick/select only.
     FleetRosterOpenFleetsRequested,
 
-    /// The Fleet list view asks the host to open a saved Fleet's detail view.
-    FleetListOpenDetailRequested {
-        name: String,
-        scope: codewhale_engine::fleet::store::FleetScope,
-    },
     /// A Fleet store mutation happened (select/save/delete/rename/copy).
     /// The message is the exact receipt; the host refreshes roster state.
     FleetStoreChanged {
@@ -1539,6 +1534,7 @@ pub struct ViewStack {
     /// approval, elevation or question prompt that only then became visible.
     top_since: Option<std::time::Instant>,
     approval_dock_canvas: Option<Rect>,
+    composer_top: Option<u16>,
 }
 
 /// What one [`ViewStack::tick`] produced: events to handle, and whether the
@@ -1568,6 +1564,7 @@ impl ViewStack {
             focus_texture_theme: None,
             top_since: None,
             approval_dock_canvas: None,
+            composer_top: None,
         }
     }
 
@@ -1745,6 +1742,10 @@ impl ViewStack {
         self.approval_dock_canvas = canvas;
     }
 
+    pub fn set_composer_top(&mut self, top: Option<u16>) {
+        self.composer_top = top;
+    }
+
     #[must_use]
     pub fn top_docked_height(&self, width: u16) -> u16 {
         self.views
@@ -1757,6 +1758,17 @@ impl ViewStack {
             && let Some(dock) = self.approval_dock_canvas
         {
             return dock.intersection(area);
+        }
+        if view.kind() == ModalKind::LaunchResumeConfirm
+            && let Some(top) = self.composer_top
+        {
+            let above = Rect {
+                height: top.saturating_sub(area.y).min(area.height),
+                ..area
+            };
+            if above.height >= crate::tui::launch_resume_confirm::MIN_CANVAS_HEIGHT {
+                return above;
+            }
         }
         area
     }

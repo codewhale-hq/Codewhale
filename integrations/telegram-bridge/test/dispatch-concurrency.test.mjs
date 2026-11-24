@@ -76,7 +76,7 @@ test("polling persists offsets only after successful update handling", async () 
   assert.match(pollTelegram, /await handleIncomingUpdate\(update\);\s*await markUpdateHandled\(update\);/);
   assert.match(
     pollTelegram,
-    /catch \(error\) {\s*console\.error\("failed to handle incoming Telegram update", error\);\s*break;\s*}/
+    /catch \(error\) {\s*console\.error\("failed to handle incoming Telegram update", error\);\s*if \(isPermanentTelegramError\(error\)\) {\s*await markUpdateHandled\(update\);\s*continue;\s*}\s*await delay\(telegramRetryDelayMs\(error\)\);\s*break;\s*}/
   );
   assert.match(markUpdateHandled, /const nextOffset = Math\.max\(updateOffset, Number\(update\.update_id\) \+ 1\);/);
   assert.match(markUpdateHandled, /await threadStore\.setCursor\("telegram\.update_offset", updateOffset\);/);

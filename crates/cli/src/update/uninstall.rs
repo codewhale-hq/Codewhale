@@ -32,17 +32,12 @@ impl CommandReceipt {
         receipt.verify_owned()?;
         let bytes = receipt.read_bounded(MAX_RECEIPT)?;
         let text = std::str::from_utf8(&bytes).context("command receipt is not UTF-8")?;
-        let hashes = parse_checksum_manifest(text)?;
-        if hashes.is_empty()
-            || hashes.len() > COMMANDS.len()
-            || text.lines().count() != hashes.len()
-            || hashes.keys().any(|name| !COMMANDS.contains(&name.as_str()))
-        {
-            bail!(
+        let hashes = installs::parse_command_receipt(text).with_context(|| {
+            format!(
                 "Invalid command ownership receipt {}; no files were changed",
                 directory.join(RECEIPT).display()
-            );
-        }
+            )
+        })?;
         let names: Vec<&str> = hashes.keys().map(String::as_str).collect();
         let mut files = GuardedFile::open_command_siblings(&directory, &names)?;
         for (name, digest) in &hashes {

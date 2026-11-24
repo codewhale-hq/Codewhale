@@ -12041,8 +12041,10 @@ fn canonical_stream_config_env_clamps_and_keepalive_disable() {
     assert_eq!(config.tcp_keepalive(), None);
     assert_eq!(config.http2_keep_alive_interval(), None);
     assert_eq!(config.http2_keep_alive_timeout(), Duration::from_secs(20));
-    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
+    let positive: Config = toml::from_str("[stream]\nopen_timeout_secs=12\nopen_retries=0\nchunk_timeout_secs=14\ntcp_keepalive_secs=9000\nhttp2_keep_alive_interval_secs=9000\nhttp2_keep_alive_timeout_secs=9000\n").unwrap();
     assert_eq!(positive.stream_open_timeout(), Duration::from_secs(12));
+    assert_eq!(config.stream_retry_limits().open_retries, 1);
+    assert_eq!(positive.stream_retry_limits().open_retries, 0);
     assert_eq!(positive.stream_chunk_timeout_secs(), 14);
     assert_eq!(positive.tcp_keepalive(), Some(Duration::from_secs(3600)));
     assert_eq!(

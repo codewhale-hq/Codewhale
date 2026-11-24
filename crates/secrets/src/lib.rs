@@ -34,6 +34,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use codewhale_paths::codewhale_home_is_explicit;
+
+const MAX_SECRETS_FILE_BYTES: u64 = 4 * 1024 * 1024;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -623,16 +625,25 @@ impl FileKeyringStore {
 
     fn load_unlocked(&self) -> Result<FileSecretsBlob, SecretsError> {
         use std::io::Read as _;
-        let mut file =
-            match file_lock::open_private(&self.path, false, file_lock::StoreFile::Content) {
-                Ok(file) => file,
-                Err(SecretsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(FileSecretsBlob::default());
-                }
-                Err(error) => return Err(error),
-            };
+        let file = match file_lock::open_private(&self.path, false, file_lock::StoreFile::Content) {
+            Ok(file) => file,
+            Err(SecretsError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(FileSecretsBlob::default());
+            }
+            Err(error) => return Err(error),
+        };
         let mut raw = String::new();
-        file.read_to_string(&mut raw)?;
+        file.take(MAX_SECRETS_FILE_BYTES + 1)
+            .read_to_string(&mut raw)?;
+        if raw.len() as u64 > MAX_SECRETS_FILE_BYTES {
+            return Err(SecretsError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "secrets file {} exceeds {MAX_SECRETS_FILE_BYTES} bytes",
+                    self.path.display()
+                ),
+            )));
+        }
         if raw.trim().is_empty() {
             return Ok(FileSecretsBlob::default());
         }
@@ -652,6 +663,15 @@ impl FileKeyringStore {
             }
         }
         let body = serde_json::to_string_pretty(blob)?;
+        if body.len() as u64 > MAX_SECRETS_FILE_BYTES {
+            return Err(SecretsError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "secrets file {} would exceed {MAX_SECRETS_FILE_BYTES} bytes",
+                    self.path.display()
+                ),
+            )));
+        }
         write_private_file(&self.path, body.as_bytes())?;
         #[cfg(unix)]
         {
@@ -768,6 +788,8 @@ fn atomic_write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsErro
     #[cfg(unix)]
     file_lock::require_private_mode(tmp.as_file(), path, file_lock::StoreFile::Content)?;
     tmp.persist(path).map_err(|e| SecretsError::Io(e.error))?;
+    #[cfg(unix)]
+    let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
     Ok(())
 }
 
@@ -1326,6 +1348,34 @@ pub fn env_first<'a>(vars: &[&'a str]) -> Option<(&'a str, String)> {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn file_store_rejects_an_oversized_secrets_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secrets.json");
+        let store = FileKeyringStore::new(&path);
+        store.set("key", "value").unwrap();
+        let oversized = vec![b' '; MAX_SECRETS_FILE_BYTES as usize + 1];
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, &oversized))
+            .unwrap();
+        let err = store.get("key").unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn file_store_refuses_a_save_that_would_exceed_the_read_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FileKeyringStore::new(tmp.path().join("secrets.json"));
+        store.set("key", "value").unwrap();
+        let huge = "x".repeat(MAX_SECRETS_FILE_BYTES as usize);
+        assert!(store.set("big", &huge).is_err());
+        assert_eq!(store.get("key").unwrap().as_deref(), Some("value"));
+        store.delete("key").unwrap();
+    }
 
     #[test]
     fn normalize_api_key_strips_each_invisible_character_class() {

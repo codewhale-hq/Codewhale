@@ -539,7 +539,10 @@ impl ConfigToml {
                 // are u64. Reject invalid types before touching the document.
                 let max = if matches!(
                     field,
-                    "max_resumes" | "max_transparent_retries" | "max_stream_errors"
+                    "open_retries"
+                        | "max_resumes"
+                        | "max_transparent_retries"
+                        | "max_stream_errors"
                 ) {
                     i64::from(u32::MAX)
                 } else {

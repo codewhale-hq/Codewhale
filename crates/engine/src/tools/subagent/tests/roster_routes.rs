@@ -887,7 +887,11 @@ async fn fleet_editor_save_reload_reaches_type_only_admission_without_a_model_re
     assert!(bodies.lock().unwrap().is_empty());
     let requested = manager.write().await.cancel_agent(&id).unwrap();
     let settled = settle_requested_child(&manager, requested).await;
-    assert_eq!(settled.status, SubAgentStatus::Cancelled);
+    assert_eq!(
+        settled.status,
+        SubAgentStatus::Cancelled,
+        "settled={settled:?}"
+    );
     assert_eq!(
         manager.read().await.agents[&id].status,
         SubAgentStatus::Cancelled
@@ -1035,7 +1039,11 @@ model = "deepseek-v4-pro"
         assert!(bodies.lock().unwrap().is_empty());
         let requested = manager.write().await.cancel_agent(&id).unwrap();
         let settled = settle_requested_child(&manager, requested).await;
-        assert_eq!(settled.status, SubAgentStatus::Cancelled);
+        assert_eq!(
+            settled.status,
+            SubAgentStatus::Cancelled,
+            "settled={settled:?}"
+        );
         assert_eq!(
             manager.read().await.agents[&id].status,
             SubAgentStatus::Cancelled
@@ -1208,7 +1216,11 @@ model = "deepseek/deepseek-v4-flash"
             assert!(bodies.lock().unwrap().is_empty());
             let requested = manager.write().await.cancel_agent(&id).unwrap();
             let settled = settle_requested_child(&manager, requested).await;
-            assert_eq!(settled.status, SubAgentStatus::Cancelled);
+            assert_eq!(
+                settled.status,
+                SubAgentStatus::Cancelled,
+                "settled={settled:?}"
+            );
             assert_eq!(
                 manager.read().await.agents[&id].status,
                 SubAgentStatus::Cancelled

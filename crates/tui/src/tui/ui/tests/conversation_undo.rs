@@ -163,6 +163,7 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
         )
         .await
         .unwrap();
+        app.runtime_services.task_manager = Some(tasks.clone());
         let mut backend = ColorCompatBackend::new(
             std::io::stdout(),
             codewhale_palette::ColorDepth::Monochrome,
@@ -179,7 +180,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
                 &mut terminal,
                 &mut app,
                 &mut handle,
-                &tasks,
                 &mut config,
                 commands::CommandResult {
                     message: None,
@@ -248,7 +248,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
                 &mut terminal,
                 &mut app,
                 &mut handle,
-                &tasks,
                 &mut config,
                 result,
             )
@@ -348,7 +347,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
                 &mut terminal,
                 &mut app,
                 &mut handle,
-                &tasks,
                 &mut config,
                 result,
             )
@@ -397,7 +395,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -412,7 +409,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -426,7 +422,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -485,7 +480,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
                 &mut terminal,
                 &mut app,
                 &mut handle,
-                &tasks,
                 &mut config,
                 commands::CommandResult {
                     message: None,
@@ -534,7 +528,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -573,7 +566,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -603,7 +595,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -625,7 +616,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -671,7 +661,6 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             result,
         )
@@ -747,6 +736,7 @@ async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
     let mut engine = mock_engine_handle();
 
     let mut app = create_test_app();
+    app.runtime_services.task_manager = Some(tasks.clone());
     app.push_history_cell(HistoryCell::User {
         content: "original prompt".into(),
     });
@@ -768,7 +758,6 @@ async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
         &mut terminal,
         &mut app,
         &mut engine.handle,
-        &tasks,
         &mut config,
         result,
     )
@@ -899,6 +888,7 @@ fn range_undo_refuses_in_flight_child_and_restores_settled_delegated_writes_acro
         )
         .await
         .unwrap();
+        app.runtime_services.task_manager = Some(tasks.clone());
         let mut backend = ColorCompatBackend::new(
             std::io::stdout(),
             codewhale_palette::ColorDepth::Monochrome,
@@ -911,7 +901,6 @@ fn range_undo_refuses_in_flight_child_and_restores_settled_delegated_writes_acro
             &mut terminal,
             &mut app,
             &mut handle,
-            &tasks,
             &mut config,
             commands::CommandResult {
                 message: None,

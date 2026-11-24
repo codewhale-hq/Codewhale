@@ -10,6 +10,7 @@ import {
   helpText,
   isAllowed,
   isGroupChat,
+  isPermanentTelegramError,
   isTelegramMarkdownParseError,
   latestRunningTurn,
   looksLikePollingConflict,
@@ -42,7 +43,8 @@ import {
   ThreadStore as CoreThreadStore,
   ApprovalOwnershipError,
   decideApproval as decideRuntimeApproval,
-  settleStoredApproval
+  settleStoredApproval,
+  splitAtCodePoint
 } from "../../bridge-core/src/lib.mjs";
 
 const TYPING_INTERVAL_MS = 2000;
@@ -159,6 +161,11 @@ async function pollTelegram() {
           await markUpdateHandled(update);
         } catch (error) {
           console.error("failed to handle incoming Telegram update", error);
+          if (isPermanentTelegramError(error)) {
+            await markUpdateHandled(update);
+            continue;
+          }
+          await delay(telegramRetryDelayMs(error));
           break;
         }
       }
@@ -729,8 +736,9 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
         responseText += record.payload.delta || "";
         const now = Date.now();
         if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          await sendTurnText(chatId, responseText.slice(0, config.maxReplyChars));
-          responseText = responseText.slice(config.maxReplyChars);
+          const [head, rest] = splitAtCodePoint(responseText, config.maxReplyChars);
+          await sendTurnText(chatId, head);
+          responseText = rest;
           sentProgressAt = now;
         }
       }

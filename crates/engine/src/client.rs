@@ -4787,22 +4787,33 @@ impl CodewhaleClient {
         ));
     }
 
-    async fn maybe_probe_recovery(&self) {
+    async fn spawn_recovery_probe(&self) {
+        if self.claim_recovery_probe().await {
+            let client = self.clone();
+            tokio::spawn(async move { client.run_recovery_probe().await });
+        }
+    }
+
+    async fn claim_recovery_probe(&self) -> bool {
         if model_listing_unavailable(self.api_provider, &self.base_url) {
-            return;
+            return false;
         }
         let should_probe = {
             let mut health = self.connection_health.lock().await;
             mark_recovery_probe_if_due(&mut health, Instant::now())
         };
         if !should_probe {
-            return;
+            return false;
         }
         if !provider_api_key_verification_is_observed_for_route(self.api_provider, &self.base_url) {
             self.mark_request_success().await;
             logging::info("Skipping /models recovery probe for provider without a models endpoint");
-            return;
+            return false;
         }
+        true
+    }
+
+    async fn run_recovery_probe(&self) {
         let health_url = api_url(&self.base_url, "models");
         let request = self
             .models_http_client
@@ -5222,7 +5233,7 @@ impl CodewhaleClient {
                     codewhale_runtime::retry_status::failed(last.to_string());
                     self.mark_request_failure("non-streaming request envelope exceeded")
                         .await;
-                    self.maybe_probe_recovery().await;
+                    self.spawn_recovery_probe().await;
                     return Err(anyhow::Error::new(last));
                 }
             }
@@ -5257,7 +5268,7 @@ impl CodewhaleClient {
                     err.last_error,
                     LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
                 ) {
-                    self.maybe_probe_recovery().await;
+                    self.spawn_recovery_probe().await;
                 }
                 // Keep the structured `LlmError` downcastable so failure
                 // surfaces can classify auth/rate-limit/invalid-request
@@ -5412,7 +5423,10 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
     // The variant, never the payload. Every `LlmError` variant carries the raw
     // provider HTTP body verbatim, and a 400 from a content filter routinely
     // echoes the prompt.
-    if matches!(err, LlmError::NetworkError(_) | LlmError::Timeout(_)) {
+    if matches!(
+        err,
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } | LlmError::Timeout(_)
+    ) {
         codewhale_telemetry::session_counters()
             .bump_error(codewhale_telemetry::ErrorCounter::NetworkError);
     }
@@ -5426,7 +5440,7 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
             ("rate_limited", human)
         }
         LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
-        LlmError::NetworkError(_) => (
+        LlmError::NetworkError(_) | LlmError::HeaderTimeout { .. } => (
             "network_error",
             "network error; request outcome unknown".to_string(),
         ),
@@ -7414,9 +7428,8 @@ pub fn stream_first_response_bound(open: Duration, idle: Duration) -> Duration {
         .saturating_add(stream_entry::first_byte_timeout(idle))
 }
 
-#[cfg(test)]
 pub use stream_entry::first_byte_timeout as stream_first_byte_timeout;
-pub use stream_entry::is_stream_open_transport_failure;
+pub use stream_entry::{is_stream_open_transport_failure, stream_open_header_timeout};
 pub mod wire;
 
 // Retain the crate-visible accounting helpers at the existing client seam.

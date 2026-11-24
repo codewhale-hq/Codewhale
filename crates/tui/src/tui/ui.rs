@@ -47,7 +47,6 @@ use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMo
 
 use crate::commands;
 use crate::tui::auto_router;
-use crate::tui::clipboard::ClipboardContent;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
@@ -1037,7 +1036,6 @@ async fn execute_command_input(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
@@ -1082,7 +1080,7 @@ async fn execute_command_input(
         app.api_key_env_only =
             codewhale_runtime::config::active_provider_uses_env_only_api_key(config);
     }
-    apply_command_result(terminal, app, engine_handle, task_manager, config, result).await
+    apply_command_result(terminal, app, engine_handle, config, result).await
 }
 
 #[derive(Debug, Clone)]

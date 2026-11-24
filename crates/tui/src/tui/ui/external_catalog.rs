@@ -25,7 +25,6 @@ pub(crate) async fn apply_external_catalog_change(
     terminal: &mut AppTerminal,
     app: &mut App,
     engine_handle: &mut EngineHandle,
-    task_manager: &SharedTaskManager,
     config: &mut Config,
     change: ExternalCatalogChange,
 ) -> Result<()> {
@@ -53,7 +52,7 @@ pub(crate) async fn apply_external_catalog_change(
             message,
             AppAction::PluginRegistryChanged,
         );
-        apply_command_result(terminal, app, engine_handle, task_manager, config, result).await?;
+        apply_command_result(terminal, app, engine_handle, config, result).await?;
     }
     if change.mcp {
         let extensions_was_open = app.view_stack.extensions_is_top();

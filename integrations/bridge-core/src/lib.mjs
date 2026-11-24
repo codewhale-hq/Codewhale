@@ -712,26 +712,34 @@ export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   // Materialize code points once; all chunking below works on index ranges
   // instead of re-running Array.from over the shrinking remainder.
   const chars = Array.from(value);
+  const byteLimit = Math.floor(Number(maxBytes) || 0);
   let chunks;
-  if (chars.length <= limit) {
+  if (chars.length <= limit && (byteLimit <= 0 || Buffer.byteLength(value, "utf8") <= byteLimit)) {
     chunks = value ? [value] : [];
   } else {
     chunks = [];
     let offset = 0;
     let openFence = null;
     while (offset < chars.length) {
-      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence);
+      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence, byteLimit);
       chunks.push(next.chunk);
       offset = next.offset;
       openFence = next.openFence;
     }
   }
-  const byteLimit = Math.floor(Number(maxBytes) || 0);
   if (byteLimit <= 0) return chunks;
   // Transport caps such as WeCom's 4096-byte message limit are measured in
   // UTF-8 bytes, not characters: a 3500-character CJK reply is ~10.5 KB and
   // gets silently truncated. Split any oversized chunk on code-point bounds.
   return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
+}
+
+export function splitAtCodePoint(text, maxChars) {
+  const value = String(text || "");
+  let cut = Math.min(value.length, Math.max(1, Math.floor(maxChars)));
+  const code = value.charCodeAt(cut - 1);
+  if (cut < value.length && cut > 1 && code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  return [value.slice(0, cut), value.slice(cut)];
 }
 
 function splitChunkByBytes(chunk, maxBytes) {
@@ -752,7 +760,7 @@ function splitChunkByBytes(chunk, maxBytes) {
   return out;
 }
 
-function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
+function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence, maxBytes = 0) {
   const prefix = openFence !== null ? `\`\`\`${openFence}\n` : "";
   const prefixLength = charLength(prefix);
   let payloadLimit = Math.max(1, maxChars - prefixLength);
@@ -766,10 +774,11 @@ function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
       nextOpenFence !== null && splitAt < chars.length ? (body.endsWith("\n") ? "```" : "\n```") : "";
     // prefix/suffix are ASCII fence markup, so string length == code points.
     const overflow = prefixLength + (splitAt - offset) + suffix.length - maxChars;
-    if (overflow <= 0 || payloadLimit === 1) {
+    const byteOverflow = maxBytes > 0 ? Buffer.byteLength(`${body}${suffix}`, "utf8") - maxBytes : 0;
+    if ((overflow <= 0 && byteOverflow <= 0) || payloadLimit === 1) {
       return { chunk: `${body}${suffix}`, offset: splitAt, openFence: nextOpenFence };
     }
-    payloadLimit = Math.max(1, payloadLimit - overflow);
+    payloadLimit = Math.max(1, payloadLimit - Math.max(overflow, Math.ceil(byteOverflow / 4)));
   }
 }
 

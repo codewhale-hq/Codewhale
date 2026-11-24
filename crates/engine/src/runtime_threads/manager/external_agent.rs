@@ -3,7 +3,7 @@ use std::sync::mpsc as std_mpsc;
 use super::*;
 use crate::fleet::acp::{
     AcpCanceller, AcpClient, AcpError, AcpHandler, AgentIdentity, AgentOptions, AgentTokenUsage,
-    PermissionAnswer, PromptReply, SessionOffer, refusal,
+    Control, PermissionAnswer, PromptReply, SessionOffer, refusal,
 };
 use crate::fleet::agents::ExternalAgentLaunch;
 use crate::fleet::host::{
@@ -28,6 +28,9 @@ static OPTIONS_PROBES: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
         Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_OPTION_PROBES))
     });
 const KILLED_REASON: &str = "The agent did not stop; Codewhale ended its process.";
+const ASK_MODES: &[&str] = &["default", "manual", "suggest"];
+const NO_EDIT_MODES: &[&str] = &["read-only", "readonly", "plan", "ask"];
+const POSTURE_NOT_ENFORCED: &str = "posture_not_enforced";
 
 pub(crate) struct ExternalThreadState {
     pub(super) session: Arc<ExternalSession>,
@@ -44,6 +47,8 @@ pub(crate) struct ExternalActiveTurn {
 enum SessionCommand {
     Prompt {
         text: String,
+        permission: ApprovalMode,
+        plan: bool,
         signals: mpsc::Sender<AgentSignal>,
         cancel: CancellationToken,
     },
@@ -55,6 +60,7 @@ enum AgentSignal {
         params: Value,
         reply: std_mpsc::Sender<PermissionAnswer>,
     },
+    Posture(Value),
     Finished(Result<PromptReply, String>),
 }
 
@@ -120,17 +126,94 @@ impl AcpHandler for ForwardingHandler {
     }
 }
 
+fn posture_modes(permission: ApprovalMode, plan: bool) -> Option<Vec<&'static str>> {
+    if plan {
+        return Some(
+            std::iter::once("plan")
+                .chain(NO_EDIT_MODES.iter().copied())
+                .collect(),
+        );
+    }
+    match permission {
+        ApprovalMode::Never => Some(NO_EDIT_MODES.to_vec()),
+        ApprovalMode::Suggest | ApprovalMode::Auto => {
+            Some(ASK_MODES.iter().chain(NO_EDIT_MODES).copied().collect())
+        }
+        ApprovalMode::AcceptEdits | ApprovalMode::Bypass => None,
+    }
+}
+
+fn posture_choice(control: Option<&Control>, wanted: &[&str]) -> Option<String> {
+    let control = control.filter(|control| control.unavailable.is_none())?;
+    control
+        .current
+        .as_deref()
+        .filter(|current| wanted.contains(current))
+        .or_else(|| wanted.iter().copied().find(|id| control.offers(id)))
+        .map(str::to_string)
+}
+
+fn apply_posture(
+    client: &mut AcpClient,
+    session_id: &str,
+    mode: &mut Option<Control>,
+    permission: ApprovalMode,
+    plan: bool,
+) -> Result<Option<Value>, String> {
+    let Some(wanted) = posture_modes(permission, plan) else {
+        return Ok(None);
+    };
+    let chosen = posture_choice(mode.as_ref(), &wanted);
+    if let (Some(control), Some(value)) = (mode.as_mut(), chosen.as_ref()) {
+        client
+            .apply_control(session_id, control, value, SETUP_TIMEOUT)
+            .map_err(|error| {
+                label(
+                    Some(&Value::String(format!(
+                        "The agent refused mode `{value}`, which Codewhale needs to keep this session's approval posture: {error}"
+                    ))),
+                    "the agent refused its mode",
+                )
+            })?;
+        control.current = Some(value.clone());
+    }
+    let enforced = chosen.is_some();
+    Ok(Some(json!({
+        "posture": codewhale_runtime::runtime_policy::approval_wire(permission),
+        "plan": plan,
+        "agent_mode": chosen.or_else(|| mode.as_ref().and_then(|control| control.current.clone())),
+        "enforced": enforced,
+        "code": (!enforced).then_some(POSTURE_NOT_ENFORCED),
+        "reason": (!enforced).then_some(
+            "This agent offers no mode that asks before edits; Codewhale's approvals apply only when the agent asks."
+        ),
+    })))
+}
+
 fn run_session(
     mut client: AcpClient,
     session_id: String,
+    mut mode: Option<Control>,
     commands: std_mpsc::Receiver<SessionCommand>,
 ) {
     while let Ok(SessionCommand::Prompt {
         text,
+        permission,
+        plan,
         signals,
         cancel,
     }) = commands.recv()
     {
+        match apply_posture(&mut client, &session_id, &mut mode, permission, plan) {
+            Ok(Some(posture)) => {
+                let _ = signals.blocking_send(AgentSignal::Posture(posture));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = signals.blocking_send(AgentSignal::Finished(Err(error)));
+                continue;
+            }
+        }
         let mut handler = ForwardingHandler {
             signals: signals.clone(),
         };
@@ -311,7 +394,7 @@ fn start_session_blocking(
         AgentProcess::spawn(&log_root, worker_id.clone(), &workspace, &launch)?;
     client.abort_requests_on(Some(abandoned));
     let choices = executor_choices(&executor);
-    let setup = (|| -> Result<(AgentIdentity, String)> {
+    let setup = (|| -> Result<(AgentIdentity, String, Option<Control>)> {
         let identity = client.initialize(SETUP_TIMEOUT)?;
         let (session_id, offer) = match executor.foreign_session_id.as_deref() {
             Some(session_id) => {
@@ -331,9 +414,9 @@ fn start_session_blocking(
             }
         };
         apply_choices(&mut client, &session_id, &offer, &choices)?;
-        Ok((identity, session_id))
+        Ok((identity, session_id, offer.control("mode").cloned()))
     })();
-    let (identity, session_id) =
+    let (identity, session_id, mode) =
         setup.map_err(|error| sign_in_or(error, &launch.agent_name, login))?;
     if !valid_id(&session_id) {
         bail!("{} named an invalid session id", launch.agent_name);
@@ -344,7 +427,7 @@ fn start_session_blocking(
     let session_for_thread = session_id.clone();
     std::thread::Builder::new()
         .name(format!("acp-{}", launch.agent_id))
-        .spawn(move || run_session(client, session_for_thread, receiver))
+        .spawn(move || run_session(client, session_for_thread, mode, receiver))
         .map_err(|error| anyhow!("starting the agent session thread failed: {error}"))?;
     Ok(SessionStart {
         session: ExternalSession {
@@ -737,7 +820,7 @@ impl RuntimeThreadManager {
             .clone()
             .ok_or_else(|| anyhow!("thread {} has no external executor", thread.id))?;
         executor.validate()?;
-        let agent = crate::fleet::agents::find(&executor.agent_id)
+        let (default_name, login) = crate::fleet::agents::agent_meta(&executor.agent_id)
             .ok_or_else(|| anyhow!("No external agent is named `{}`.", executor.agent_id))?;
         let launch = crate::fleet::agents::launch(&executor.agent_id).await?;
         let log_root = self
@@ -751,7 +834,6 @@ impl RuntimeThreadManager {
         let workspace = thread.workspace.clone();
         let add_dirs = thread.add_dirs.clone();
         let starting = executor.clone();
-        let login = agent.login;
         let abandoned = self.cancel_token.child_token();
         let _abandon = abandoned.clone().drop_guard();
         let (started, _loading) = tokio::task::spawn_blocking(move || {
@@ -771,7 +853,7 @@ impl RuntimeThreadManager {
         let session = Arc::new(session);
         let store = self.store.clone();
         let persisted_thread = thread.id.clone();
-        let agent_name = label(Some(&Value::String(identity.name.clone())), agent.name);
+        let agent_name = label(Some(&Value::String(identity.name.clone())), &default_name);
         let agent_version = label(Some(&Value::String(identity.version.clone())), "0");
         let started_payload = json!({
             "agent_id": executor.agent_id,
@@ -816,7 +898,7 @@ impl RuntimeThreadManager {
 
     pub async fn external_agent_options(&self, agent_id: &str, cwd: &Path) -> Result<AgentOptions> {
         self.ensure_accepting_execution()?;
-        let agent = crate::fleet::agents::find(agent_id).ok_or_else(|| {
+        let (_, login) = crate::fleet::agents::agent_meta(agent_id).ok_or_else(|| {
             crate::fleet::agents::ExecutorUnavailable::new(
                 crate::fleet::agents::ExecutorUnavailable::UNKNOWN_AGENT,
                 format!("No external agent is named `{agent_id}`."),
@@ -832,7 +914,7 @@ impl RuntimeThreadManager {
             "cwd {} is not a directory",
             workspace.display()
         );
-        let launch = crate::fleet::agents::launch(agent.id).await?;
+        let launch = crate::fleet::agents::launch(agent_id).await?;
         let log_root = self
             .session_store_binding()
             .data_dir
@@ -847,7 +929,6 @@ impl RuntimeThreadManager {
             () = abandoned.cancelled() => bail!("Runtime is shutting down; execution admission is closed"),
         };
         self.ensure_accepting_execution()?;
-        let login = agent.login;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             probe_options_blocking(log_root, workspace, launch, login, abandoned)
@@ -1204,6 +1285,8 @@ impl RuntimeThreadManager {
             let (signals, receiver) = mpsc::channel(16);
             let sent = session.send(SessionCommand::Prompt {
                 text: prompt,
+                permission,
+                plan: plan_mode,
                 signals: signals.clone(),
                 cancel,
             });
@@ -1269,6 +1352,20 @@ impl RuntimeThreadManager {
                         .await
                     };
                     let _ = reply.send(answer);
+                }
+                Some(AgentSignal::Posture(posture)) => {
+                    if let Err(error) = self
+                        .emit_event(
+                            &thread.id,
+                            Some(&turn_id),
+                            None,
+                            "turn.agent_posture",
+                            posture,
+                        )
+                        .await
+                    {
+                        tracing::warn!(thread_id = %thread.id, turn_id = %turn_id, %error, "recording an external agent's posture failed");
+                    }
                 }
                 Some(AgentSignal::Finished(result)) => {
                     break result.map(|reply| {
@@ -1839,10 +1936,10 @@ impl RuntimeThreadManager {
             });
         let (status, error) = match (&outcome, projection.failure.take()) {
             (_, Some(failure)) => (RuntimeTurnStatus::Failed, Some(failure)),
-            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
-            (Ok(reason), None) if reason == "cancelled" || interrupted => {
+            (Ok(reason), None) if interrupted || reason == "cancelled" => {
                 (RuntimeTurnStatus::Interrupted, None)
             }
+            (Ok(reason), None) if reason == "end_turn" => (RuntimeTurnStatus::Completed, None),
             (Ok(reason), None) => (
                 RuntimeTurnStatus::Failed,
                 Some(format!(
@@ -1920,8 +2017,6 @@ impl RuntimeThreadManager {
         })
         .await
         .context("external turn settlement worker failed")??;
-        self.emit_turn_completed_if_missing(&turn, false).await?;
-
         let session_lost = outcome.is_err();
         let removed = {
             let mut active = self.active.lock().await;
@@ -1939,6 +2034,7 @@ impl RuntimeThreadManager {
                 None
             }
         };
+        self.emit_turn_completed_if_missing(&turn, false).await?;
         if let Some(state) = removed {
             let _ = tokio::task::spawn_blocking(move || state.session.stop_blocking()).await;
             let reason = match &outcome {
@@ -2089,5 +2185,49 @@ pub(super) async fn await_agent_settlement(
         Ok(Ok(Some(false))) => bail!("the agent's approval decision could not be recorded"),
         Ok(Ok(None) | Err(_)) => Ok(false),
         Err(_) => bail!("the agent's approval decision was not recorded in time"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleet::acp::SessionOffer;
+
+    fn mode_control(current: &str, modes: &[&str]) -> Option<Control> {
+        let available: Vec<Value> = modes
+            .iter()
+            .map(|id| json!({"id": id, "name": id}))
+            .collect();
+        SessionOffer::from_session_result(
+            &json!({"modes": {"currentModeId": current, "availableModes": available}}),
+        )
+        .control("mode")
+        .cloned()
+    }
+
+    #[test]
+    fn ask_posture_picks_an_agent_mode_that_cannot_edit_unasked() {
+        let ask = posture_modes(ApprovalMode::Suggest, false).unwrap();
+        let devin = mode_control("accept-edits", &["accept-edits", "ask"]);
+        assert_eq!(posture_choice(devin.as_ref(), &ask).as_deref(), Some("ask"));
+        let claude = mode_control("acceptEdits", &["default", "acceptEdits", "plan"]);
+        assert_eq!(
+            posture_choice(claude.as_ref(), &ask).as_deref(),
+            Some("default")
+        );
+        let codex = mode_control("auto", &["read-only", "auto", "full-access"]);
+        assert_eq!(
+            posture_choice(codex.as_ref(), &ask).as_deref(),
+            Some("read-only")
+        );
+        let plan = posture_modes(ApprovalMode::Suggest, true).unwrap();
+        assert_eq!(
+            posture_choice(claude.as_ref(), &plan).as_deref(),
+            Some("plan")
+        );
+        let yolo = mode_control("yolo", &["yolo"]);
+        assert_eq!(posture_choice(yolo.as_ref(), &ask), None);
+        assert_eq!(posture_choice(None, &ask), None);
+        assert!(posture_modes(ApprovalMode::Bypass, false).is_none());
     }
 }

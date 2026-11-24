@@ -5,11 +5,15 @@
 //! `App.paste_burst` (`tui::paste_burst`); these helpers wire it to the key
 //! event loop and the composer's text buffer.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, looks_like_slash_command_input};
+use super::clipboard::{ClipboardContent, ClipboardRead};
+use super::shell_key_routing::Focus;
+use super::views::ModalKind;
+use codewhale_localization::MessageId;
 use codewhale_tui_kit::paste_burst::CharDecision;
 
 /// Terminals known to deliver `Event::Paste` for a real paste.
@@ -183,6 +187,211 @@ fn in_command_context(app: &App) -> bool {
     looks_like_slash_command_input(&composite)
 }
 
+/// Where a paste came from. Every paste, terminal-delivered or read from the
+/// clipboard, reaches [`handle_paste`]: the one place that decides who owns
+/// it and whether the clipboard has to be asked at all.
+pub(crate) enum PasteSource<'a> {
+    /// `Event::Paste`: the terminal already delivered the text. Windows
+    /// Terminal sends an empty one for an image-only clipboard ("send an empty
+    /// bracketed paste even if the clipboard was empty"), which is the only
+    /// signal a TUI gets that the person pasted.
+    Terminal(&'a str),
+    /// Cmd/Ctrl+V reached Codewhale, or the mouse menu's Paste: read the
+    /// clipboard.
+    Shortcut,
+    /// Only the release of Ctrl+V arrived: the terminal took the chord and
+    /// delivers any text itself, so only an image is Codewhale's to attach.
+    ReleaseOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteTarget {
+    TerminalPanel,
+    HistorySearch,
+    ProviderPicker,
+    Modal,
+    Composer,
+}
+
+/// A clipboard read still running on the reader thread. One at a time: a
+/// paste while it runs is the other edge of the same key press, or a repeat
+/// the person will see land once the read answers.
+pub(crate) struct PendingPaste {
+    target: PasteTarget,
+    image_only: bool,
+    started: Instant,
+    rx: std::sync::mpsc::Receiver<Option<ClipboardContent>>,
+}
+
+/// The slowest read finishes inside this: two `wl-paste` waits of 2 s, or
+/// PowerShell's 10 s image fallback plus the backend open. A reader stuck
+/// past it is abandoned so the next paste can start a fresh one.
+const PENDING_PASTE_LIMIT: Duration = Duration::from_secs(15);
+const PENDING_PASTE_POLL: Duration = Duration::from_millis(16);
+
+fn paste_target(app: &App) -> PasteTarget {
+    if app.focus() == Focus::TerminalPanel && app.work_surface.last_area.is_some() {
+        PasteTarget::TerminalPanel
+    } else if app.view_stack.top_kind() == Some(ModalKind::ProviderPicker) {
+        PasteTarget::ProviderPicker
+    } else if !app.view_stack.is_empty() {
+        PasteTarget::Modal
+    } else if app.is_history_search_active() {
+        PasteTarget::HistorySearch
+    } else {
+        PasteTarget::Composer
+    }
+}
+
+/// Route one paste. Returns whether the paste was taken; a clipboard shortcut
+/// the focused surface does not paste into (a terminal panel, a non-credential
+/// modal) is left for that surface's own key handling.
+pub(crate) fn handle_paste(app: &mut App, source: PasteSource<'_>) -> bool {
+    let target = paste_target(app);
+    match source {
+        PasteSource::Terminal(text) => {
+            tracing::debug!(
+                paste_bytes = text.len(),
+                paste_chars = text.chars().count(),
+                "Received bracketed paste event"
+            );
+            app.bracketed_paste_seen = true;
+            if text.is_empty() && target == PasteTarget::Composer {
+                request_clipboard(app, target, false, true);
+            } else {
+                deliver_text(app, target, text);
+            }
+            true
+        }
+        PasteSource::Shortcut => match target {
+            PasteTarget::TerminalPanel | PasteTarget::Modal => false,
+            _ => {
+                request_clipboard(app, target, false, false);
+                true
+            }
+        },
+        PasteSource::ReleaseOnly => {
+            if target == PasteTarget::Composer {
+                request_clipboard(app, target, true, true);
+            }
+            true
+        }
+    }
+}
+
+fn request_clipboard(app: &mut App, target: PasteTarget, image_only: bool, quiet: bool) {
+    // A terminal may forward both edges of Ctrl+V. The window runs from the
+    // end of the previous read, so a slow read cannot push the second edge
+    // outside it, and a read still running absorbs that edge outright.
+    if app.pending_paste.is_some() || app.clipboard_paste_within_dedupe_window() {
+        return;
+    }
+    // In SSH sessions without a forwarded display the terminal client owns
+    // paste: a direct shortcut gets the local terminal-paste instruction and
+    // `Event::Paste` stays the data path.
+    if app.clipboard.requires_terminal_paste() {
+        if !quiet {
+            app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
+            app.note_clipboard_paste();
+        }
+        return;
+    }
+    let prefer_markdown = target == PasteTarget::Composer && !image_only;
+    match app.clipboard.read(app.workspace.as_path(), prefer_markdown) {
+        ClipboardRead::Ready(content) => finish_paste(app, target, image_only, content),
+        ClipboardRead::Pending(rx) => {
+            app.pending_paste = Some(PendingPaste {
+                target,
+                image_only,
+                started: Instant::now(),
+                rx,
+            });
+        }
+    }
+}
+
+/// Apply a finished clipboard read. Called from the event loop every tick.
+pub(crate) fn poll_pending_paste(app: &mut App) {
+    let Some(pending) = app.pending_paste.as_ref() else {
+        return;
+    };
+    let content = match pending.rx.try_recv() {
+        Ok(content) => content,
+        Err(std::sync::mpsc::TryRecvError::Empty)
+            if pending.started.elapsed() < PENDING_PASTE_LIMIT =>
+        {
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "codewhale_tui::clipboard",
+                "clipboard read did not answer; abandoned"
+            );
+            app.pending_paste = None;
+            return;
+        }
+    };
+    let Some(pending) = app.pending_paste.take() else {
+        return;
+    };
+    if paste_target(app) == pending.target {
+        finish_paste(app, pending.target, pending.image_only, content);
+    } else {
+        // Focus moved while the clipboard answered: the paste belonged to a
+        // surface that is gone, and must not land in whatever replaced it (a
+        // credential must never reach the composer under a closed picker).
+        app.note_clipboard_paste();
+    }
+}
+
+/// Shortens the event loop's wait while a clipboard read is running.
+pub(crate) fn pending_paste_poll_delay(app: &App) -> Option<Duration> {
+    app.pending_paste.as_ref().map(|_| PENDING_PASTE_POLL)
+}
+
+fn finish_paste(
+    app: &mut App,
+    target: PasteTarget,
+    image_only: bool,
+    content: Option<ClipboardContent>,
+) {
+    app.note_clipboard_paste();
+    app.needs_redraw = true;
+    match content {
+        // Images go only to the composer; an open credential modal consumes
+        // and ignores one rather than leaking it to the draft beneath.
+        Some(ClipboardContent::Image(pasted)) if target == PasteTarget::Composer => {
+            crate::tui::work_surface::release_focus(app);
+            let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
+            app.insert_media_attachment("image", &pasted.path, Some(&description));
+            app.status_message = Some(format!("Attached image: {description}"));
+        }
+        Some(ClipboardContent::Text(text)) if !image_only => deliver_text(app, target, &text),
+        // The read cannot tell an empty clipboard from an unreadable one;
+        // either way the person asked to paste and nothing happened.
+        None if !image_only && target == PasteTarget::Composer => {
+            app.status_message = Some(app.tr(MessageId::ClipboardNothingToPaste).into_owned());
+        }
+        _ => {}
+    }
+}
+
+fn deliver_text(app: &mut App, target: PasteTarget, text: &str) {
+    match target {
+        PasteTarget::TerminalPanel => {
+            crate::tui::work_surface::handle_terminal_paste(app, text);
+        }
+        PasteTarget::HistorySearch => app.history_search_insert_str(text),
+        PasteTarget::ProviderPicker | PasteTarget::Modal => {
+            let _ = app.view_stack.handle_paste(text);
+        }
+        PasteTarget::Composer => {
+            crate::tui::work_surface::release_focus(app);
+            app.insert_paste_text(text);
+        }
+    }
+}
+
 #[cfg(test)]
 mod bracketed_paste_trust_tests {
     use super::{terminal_delivers_bracketed_paste, terminal_identity_allows_paste_bypass};
@@ -264,6 +473,50 @@ mod tests {
 
     fn plain(ch: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn a_clipboard_read_lands_when_it_answers_and_absorbs_the_second_edge() {
+        let mut app = test_app();
+        let (clipboard, tx) = crate::tui::clipboard::ClipboardHandler::with_pending_read_for_test();
+        app.clipboard = clipboard;
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        assert!(pending_paste_poll_delay(&app).is_some());
+
+        // The other edge of the same chord arrives while the read runs.
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        poll_pending_paste(&mut app);
+        assert!(app.input.is_empty());
+
+        tx.send(Some(ClipboardContent::Text("pasted".to_string())))
+            .unwrap();
+        poll_pending_paste(&mut app);
+        assert_eq!(app.input, "pasted");
+        assert!(app.pending_paste.is_none());
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        assert_eq!(app.input, "pasted");
+    }
+
+    #[test]
+    fn a_clipboard_read_for_a_surface_that_closed_is_dropped() {
+        let mut app = test_app();
+        let (clipboard, tx) = crate::tui::clipboard::ClipboardHandler::with_pending_read_for_test();
+        app.clipboard = clipboard;
+        assert!(handle_paste(&mut app, PasteSource::Shortcut));
+        // Focus moves to history search before the clipboard answers.
+        app.start_history_search();
+
+        tx.send(Some(ClipboardContent::Text("sk-secret".to_string())))
+            .unwrap();
+        poll_pending_paste(&mut app);
+
+        assert!(app.input.is_empty(), "{}", app.input);
+        assert!(app.pending_paste.is_none());
+        assert!(
+            !app.history_search_query()
+                .unwrap_or_default()
+                .contains("sk-secret")
+        );
     }
 
     #[test]
@@ -823,6 +1076,217 @@ mod tests {
         bracketed.insert_paste_text(&payload);
         assert_eq!(bracketed.input, raw.input);
         assert_eq!(bracketed.cursor_position, character_count);
+    }
+
+    /// Drive a raw (non-bracketed) paste one key event per character.
+    ///
+    /// Intermediate chunks are committed by `handle_paste_burst_key` itself
+    /// (`insert_str` right after each `take_chunk_if_full`); this helper only
+    /// commits the tail, through `App::take_paste_burst_flush_if_enabled` — the
+    /// same non-test entry `event_loop.rs` calls, so the fixture cannot pass
+    /// against a test-only stub.
+    ///
+    /// `input == payload` alone cannot prove chunking: a buffer that never
+    /// flushes still ends up correct once the tail lands, so deleting a
+    /// `take_chunk_if_full()` check would pass unnoticed. The probe at 60%
+    /// fails in exactly that case — the composer is still nearly empty
+    /// because everything is sitting in the burst buffer.
+    ///
+    /// The probe names no cap, but it is not cap-independent: it needs
+    /// `floor(0.6·P / cap) · cap ≥ P/3`, i.e. roughly `cap < 4P/15 ≈ 0.27·P`.
+    /// For these fixtures that is ~72 KiB against the 64 KiB cap, so there is
+    /// margin — but raising `PASTE_BURST_MAX_BYTES` past that fraction of a
+    /// fixture would fail this test on a healthy build. Widen the payload
+    /// along with the cap.
+    ///
+    /// # What this cannot see
+    ///
+    /// The third `take_chunk_if_full()` call, the one after
+    /// `append_newline_if_active` in the `KeyCode::Enter` arm, is out of reach
+    /// here: this loop sends no newline, and the 60% probe would fail on a run
+    /// that deliberately parks the buffer just under the cap. That site has its
+    /// own fixture — `pasted_newline_crossing_the_chunk_cap_flushes_immediately`
+    /// — which fills to `CAP - 1` bytes and then sends one newline, so the
+    /// composer length directly reports whether the Enter arm flushed.
+    ///
+    /// An earlier revision of this comment argued the site needed no test at
+    /// all because deleting it "leaves the text complete". That was half right
+    /// and dangerous: the *text* survives, but the flush moves from the Enter
+    /// to the next plain character, and an assertion placed between the two
+    /// sees it. What was untestable was content equality, not the behaviour.
+    fn feed_raw_paste(app: &mut App, payload: &str) {
+        use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
+
+        let probe_at = payload.chars().count() * 3 / 5;
+        let mut now = Instant::now();
+        for (index, ch) in payload.chars().enumerate() {
+            now += Duration::from_micros(100);
+            let key = if ch == '\n' {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            } else {
+                plain(ch)
+            };
+            assert!(
+                handle_paste_burst_key(app, &key, now),
+                "raw paste character {ch:?} must be handled by paste-burst detection"
+            );
+            if index + 1 == probe_at {
+                assert!(
+                    app.input.len() * 3 >= payload.len(),
+                    "60% into a multi-chunk paste the composer holds {} of {} bytes: the \
+                     burst buffer is accumulating the paste instead of flushing chunks",
+                    app.input.len(),
+                    payload.len()
+                );
+            }
+        }
+        let flush_at = now + PasteBurst::recommended_active_flush_delay();
+        let FlushResult::TextContinuation(tail) = app.take_paste_burst_flush_if_enabled(flush_at)
+        else {
+            panic!("an oversized raw paste must flush its final continuation, not a first `Paste`");
+        };
+        app.insert_str(&tail);
+    }
+
+    /// #7403, ASCII append path only: every character here takes
+    /// `KeyCode::Char` → `on_plain_char` → `handle_paste_burst_decision`, and
+    /// nothing else.
+    ///
+    /// The mixed-script fixture above cannot stand in for this. Each CJK or
+    /// emoji character re-enters the separate `!c.is_ascii()` branch in
+    /// `handle_paste_burst_key`, whose own `take_chunk_if_full()` call flushes
+    /// the buffer and hides a missing check on the ASCII side — delete only
+    /// the ASCII-path check and that test stays green. This payload has no
+    /// non-ASCII byte and, deliberately, no newline either: an Enter reaches
+    /// `append_newline_if_active`, whose chunk check would stand in again.
+    ///
+    /// # What this one is for
+    ///
+    /// One failure mode, precisely: the ASCII-path chunk check going away.
+    /// Delete it and the buffer accumulates the whole paste, so the 60% probe
+    /// finds the composer empty (0 of 273 000 bytes) and fails.
+    ///
+    /// It is the *wrong* fixture for #7403's original drop rule, and that is
+    /// arithmetic rather than an oversight: every byte here is one UTF-8 byte
+    /// wide, so the buffer fills to exactly the cap every cycle and a
+    /// `len + ch.len_utf8() <= cap` guard always admits the character. Injecting
+    /// that rule leaves this test green (0 bytes lost); the CJK fixture below,
+    /// whose characters are 3–4 bytes wide, loses its tail and fails.
+    #[test]
+    fn ascii_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "cw-7403-ascii-paste-chunking".repeat(9_750);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, non-ASCII append path only: a CJK-only burst stays in the
+    /// `!c.is_ascii()` branch for its whole length, so this is the only
+    /// fixture that exercises that branch's `take_chunk_if_full()` call in
+    /// isolation. A mixed payload keeps ASCII nearby and that check would
+    /// flush on the next ASCII character, masking the gap. Again no newline,
+    /// for the same reason as the ASCII case.
+    ///
+    /// # What this one is for
+    ///
+    /// Two failure modes: the non-ASCII-path chunk check going away (the 60%
+    /// probe then finds 3 of 342 000 bytes), and #7403's original drop rule
+    /// coming back. The second works here and not in the ASCII fixture because
+    /// these characters are 3–4 bytes wide: the buffer no longer fills to
+    /// exactly the cap, the guard rejects the character that would cross it,
+    /// and the paste loses its tail.
+    #[test]
+    fn cjk_only_raw_paste_over_the_chunk_cap_lands_complete() {
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        let payload = "漢字テスト🐳".repeat(18_000);
+        assert!(
+            payload.len() > 256 * 1024,
+            "fixture must exceed four 64 KiB chunk caps, got {} bytes",
+            payload.len()
+        );
+
+        feed_raw_paste(&mut app, &payload);
+
+        assert_eq!(app.input, payload);
+        assert_eq!(app.cursor_position, payload.chars().count());
+    }
+
+    /// #7403, Enter append path: the third `take_chunk_if_full`, the one right
+    /// after `append_newline_if_active`.
+    ///
+    /// The other fixtures cannot reach it. They carry no newline, and their
+    /// 60% probe would fail on a run that deliberately keeps the composer
+    /// empty — so this test fills the burst buffer to just under the cap and
+    /// then sends exactly one newline.
+    ///
+    /// That newline is the only thing that can flush the buffer at this point:
+    /// no plain character follows, so neither the ASCII nor the non-ASCII
+    /// check gets a turn. The composer length is therefore a direct readout of
+    /// whether the Enter arm flushed. Delete that `take_chunk_if_full` and the
+    /// buffer sits at the cap while the composer stays empty, and the
+    /// assertion below fails.
+    ///
+    /// This is why the tail flush in `feed_raw_paste` is not the only place
+    /// chunking can be observed — an earlier revision of these docs claimed
+    /// no content assertion could see this site, which was wrong.
+    #[test]
+    fn pasted_newline_crossing_the_chunk_cap_flushes_immediately() {
+        // Mirrors `PASTE_BURST_MAX_BYTES`, which is private to `codewhale-tui-kit`.
+        const CAP: usize = 64 * 1024;
+
+        let mut app = test_app();
+        app.use_paste_burst_detection = true;
+        app.bracketed_paste_seen = false;
+        app.bracketed_paste_trusted = false;
+
+        // Fill to CAP - 1 bytes. The plain-character checks fire at `>= CAP`,
+        // so nothing flushes yet and the composer must stay empty.
+        let mut now = Instant::now();
+        while app.paste_burst.held_text().len() < CAP - 1 {
+            now += Duration::from_micros(100);
+            assert!(handle_paste_burst_key(&mut app, &plain('x'), now));
+            assert!(
+                app.input.is_empty(),
+                "the buffer must not cross the cap while filling; it holds {} bytes",
+                app.paste_burst.held_text().len()
+            );
+        }
+        let buffered = app.paste_burst.held_text().len();
+        assert_eq!(
+            buffered,
+            CAP - 1,
+            "fill loop must stop one byte under the cap"
+        );
+
+        now += Duration::from_micros(100);
+        assert!(handle_paste_burst_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            now
+        ));
+
+        assert_eq!(
+            app.input.len(),
+            CAP,
+            "a pasted newline that crosses the cap must flush the buffer at once instead \
+             of waiting for the next plain character"
+        );
     }
 
     #[test]

@@ -499,6 +499,7 @@ where
 #[serde(deny_unknown_fields)]
 pub struct StreamConfig {
     pub open_timeout_secs: Option<u64>,
+    pub open_retries: Option<u32>,
     pub chunk_timeout_secs: Option<u64>,
     pub force_http1: Option<bool>,
     pub max_resumes: Option<u32>,
@@ -2114,6 +2115,9 @@ pub struct Config {
     /// defaults, including when it equals the previously saved model.
     #[serde(skip)]
     pub environment_model_applied: bool,
+
+    #[serde(skip)]
+    pub project_model: Option<String>,
 
     #[serde(skip)]
     pub route_provenance: RouteProvenance,
@@ -7150,6 +7154,7 @@ impl Config {
             stream
                 .and_then(|cfg| cfg.max_stream_errors)
                 .or_else(|| tui.and_then(|cfg| cfg.stream_max_errors)),
+            stream.and_then(|cfg| cfg.open_retries),
         )
     }
 
@@ -7234,6 +7239,7 @@ impl Config {
         let limits = self.stream_retry_limits();
         StreamConfig {
             open_timeout_secs: Some(self.stream_open_timeout().as_secs()),
+            open_retries: Some(limits.open_retries),
             chunk_timeout_secs: Some(self.stream_chunk_timeout_secs()),
             force_http1: Some(self.force_http1()),
             max_resumes: Some(limits.max_resumes),
@@ -9748,6 +9754,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.route_preferences_version),
         environment_model_applied: override_cfg.environment_model_applied
             || base.environment_model_applied,
+        project_model: override_cfg.project_model.or(base.project_model),
         route_provenance: base.route_provenance,
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
@@ -9840,6 +9847,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         stream: match (base.stream, override_cfg.stream) {
             (Some(base), Some(over)) => Some(StreamConfig {
                 open_timeout_secs: over.open_timeout_secs.or(base.open_timeout_secs),
+                open_retries: over.open_retries.or(base.open_retries),
                 chunk_timeout_secs: over.chunk_timeout_secs.or(base.chunk_timeout_secs),
                 force_http1: over.force_http1.or(base.force_http1),
                 max_resumes: over.max_resumes.or(base.max_resumes),

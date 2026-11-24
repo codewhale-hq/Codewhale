@@ -31,6 +31,11 @@ on:
         required: false
         default: 7
         type: number
+      macos_runner:
+        description: macOS build runner (default follows the CW_SELF_HOSTED_MAC repository variable; self-hosted is the codewhale-mac runner; hosted forces macos-latest)
+        required: false
+        default: default
+        type: string
     secrets:
       CODEWHALE_RELEASE_SIGNING_KEY:
         description: Ed25519 release key (PEM). Absent means the release ships unsigned.
@@ -53,7 +58,29 @@ jobs:
     name: Pin caller SHA to this run
     timeout-minutes: 10
     runs-on: ubuntu-24.04
+    outputs:
+      macos_self_hosted: ${{ steps.macos.outputs.self_hosted }}
     steps:
+      - name: Choose the macOS build runner
+        id: macos
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          THIS_REPO: ${{ github.repository }}
+          REQUESTED: ${{ inputs.macos_runner }}
+          SWITCH: ${{ vars.CW_SELF_HOSTED_MAC }}
+        run: |
+          set -euo pipefail
+          # Only a v* tag push or a dispatch in this repository (write access required) may build shipping binaries on the self-hosted Mac.
+          self_hosted=false
+          if [ "${THIS_REPO}" = codewhale-hq/Codewhale ] && { [ "${EVENT_NAME}" = workflow_dispatch ] || { [ "${EVENT_NAME}" = push ] && [[ "${EVENT_REF}" == refs/tags/v* ]]; }; }; then
+            case "${REQUESTED:-default}" in
+              self-hosted) self_hosted=true ;;
+              hosted) ;;
+              *) if [ "${SWITCH}" = true ]; then self_hosted=true; fi ;;
+            esac
+          fi
+          echo "self_hosted=${self_hosted}" >> "${GITHUB_OUTPUT}"
       - name: Require source_sha equals github.sha
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -162,12 +189,45 @@ jobs:
             cli_artifact: codewhale-ohos-arm64
             shim_artifact: codew-ohos-arm64
             compat_tui_artifact: codewhale-tui-ohos-arm64
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'macos-') && needs.pin.outputs.macos_self_hosted == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]') || (matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os) }}
     needs: pin
     steps:
+      - name: Fresh rustup, Cargo home and temp for a self-hosted release build
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          fresh="${RUNNER_TEMP}/release-home"
+          rm -rf "${fresh}"
+          mkdir -p "${fresh}/tmp"
+          export HOME="${fresh}" CARGO_HOME="${fresh}/.cargo" RUSTUP_HOME="${fresh}/.rustup"
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          read -ra flags <<< "${RUSTFLAGS}"
+          for prefix in "${CARGO_HOME}=/cargo" "$(cd "${fresh}" && pwd -P)/.cargo=/cargo" \
+            "${GITHUB_WORKSPACE}=/codewhale" "$(cd "${GITHUB_WORKSPACE}" && pwd -P)=/codewhale"; do
+            flags+=("--remap-path-prefix=${prefix}")
+          done
+          {
+            echo "HOME=${HOME}"
+            echo "CARGO_HOME=${CARGO_HOME}"
+            echo "RUSTUP_HOME=${RUSTUP_HOME}"
+            echo "TMPDIR=${fresh}/tmp"
+            echo "CARGO_BUILD_JOBS=6"
+            echo "CW_RELEASE_HOME=${fresh}"
+            printf 'CARGO_ENCODED_RUSTFLAGS=%s\n' "$(IFS=$'\037'; echo "${flags[*]}")"
+          } >> "${GITHUB_ENV}"
+          echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
       # No ref: — GITHUB_SHA only. CodeQL treats workflow_call checkout-with-ref
       # and any ref named *sha* as an untrusted checkout (cache-poisoning).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Start the self-hosted release build from an empty target
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target
+          test -z "$(git status --porcelain --ignored)"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-07-18
         with:
           toolchain: 1.100.0
@@ -192,6 +252,7 @@ jobs:
       # explicit stable toolchain + rust-cache's Cargo.lock / rust-toolchain
       # hash. Never interpolate github.event, github.ref, github.sha, or inputs.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: runner.environment != 'self-hosted'
         with:
           cache-bin: false
           prefix-key: v1-${{ runner.os }}-${{ runner.arch }}-stable
@@ -266,10 +327,38 @@ jobs:
             echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${linker}"
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=${ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           } >> "${GITHUB_ENV}"
+      - name: Hold this machine's build lock (self-hosted)
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          if [ -z "${CODEWHALE_BUILD_LOCK_FILE:-}" ]; then
+            echo "CODEWHALE_BUILD_LOCK_FILE is not set on this runner; building without the machine lock."
+            exit 0
+          fi
+          hold="$RUNNER_TEMP/cw-build-lock.hold"
+          ready="$RUNNER_TEMP/cw-build-lock.ready"
+          log="$RUNNER_TEMP/cw-build-lock.log"
+          touch "$hold"
+          rm -f "$ready"
+          # shellcheck disable=SC2016
+          nohup python3 scripts/build-lock.py "$CODEWHALE_BUILD_LOCK_FILE" -- \
+            sh -c 'touch "$1"; while [ -e "$2" ]; do sleep 2; done' _ "$ready" "$hold" \
+            >"$log" 2>&1 &
+          shown=0
+          until [ -e "$ready" ]; do
+            if [ "$shown" -eq 0 ] && [ -s "$log" ]; then cat "$log"; shown=1; fi
+            sleep 2
+          done
+          cat "$log"
+          echo "CODEWHALE_BUILD_LOCK_HELD=1" >> "$GITHUB_ENV"
       - name: Build
         if: ${{ !endsWith(matrix.target, '-unknown-linux-musl') && matrix.platform != 'ohos-arm64' }}
         shell: bash
         run: cargo build --profile dist --locked --target ${{ matrix.target }} -p codewhale-cli
+      - name: Release this machine's build lock (self-hosted)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/cw-build-lock.hold"
       - name: Install OpenHarmony native SDK
         if: matrix.platform == 'ohos-arm64'
         id: ohos-sdk
@@ -289,7 +378,7 @@ jobs:
           mirror: true
       - name: Install Java for the OpenHarmony binary signer
         if: matrix.platform == 'ohos-arm64'
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: '17'
@@ -494,6 +583,10 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
           overwrite: true
+      - name: Remove the fresh release home (self-hosted)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: rm -rf -- "${CW_RELEASE_HOME:?}" target
 
   bundle:
     timeout-minutes: 15

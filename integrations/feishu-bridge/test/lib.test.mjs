@@ -233,3 +233,15 @@ test("validateBridgeConfig rejects unsafe group pairing and token mismatch", () 
   assert.match(result.errors.map((item) => item.code).join(","), /token_mismatch/);
   assert.match(result.warnings.map((item) => item.code).join(","), /group_without_prefix/);
 });
+
+test("validateBridgeConfig rejects a reply limit above Feishu's text cap", () => {
+  const result = validateBridgeConfig(
+    { FEISHU_MAX_REPLY_CHARS: "40000" },
+    { workspaceRoot: "/opt/whalebro", runtimeEnv: {} }
+  );
+  assert.match(result.errors.map((item) => item.code).join(","), /invalid_max_reply_chars/);
+});
+
+test("helpText names Codewhale, not the old DeepSeek brand", () => {
+  assert.doesNotMatch(helpText(), /DeepSeek/);
+});

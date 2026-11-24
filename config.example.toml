@@ -1194,6 +1194,7 @@ base_url = "https://api.deepseek.com/beta"
 # Legacy [tui] stream_* keys remain fallbacks when a canonical field is absent.
 [stream]
 open_timeout_secs = 180     # response headers, including connect (0 = env/default, 5-600)
+open_retries = 1            # re-sends after no response headers arrived in time (0 = off, 0-3)
 chunk_timeout_secs = 900    # per-SSE-chunk idle bound (0 = default, 1-3600)
 max_resumes = 3             # proven pre-dispatch connection recovery (0 = off, 0-10)
 max_transparent_retries = 2 # compatibility value; interrupted streams never reissue

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
 /// Terminal reasons shared by TUI, JSONL, Fleet, and benchmark receipts.
@@ -78,15 +76,6 @@ pub fn classify_turn_termination(
     match status {
         TurnOutcomeStatus::Completed => RunTerminationReason::Resolved,
         TurnOutcomeStatus::Interrupted => RunTerminationReason::Canceled,
-        // A provider-declared incomplete response is the terminal cause even
-        // if an earlier tool in the same run needed approval. Historical
-        // approval evidence must not relabel model truncation.
-        TurnOutcomeStatus::Failed
-            if matches!(error_category, Some(ErrorCategory::InvalidInput)) =>
-        {
-            RunTerminationReason::ModelError
-        }
-        TurnOutcomeStatus::Failed if approval_required => RunTerminationReason::ApprovalRequired,
         TurnOutcomeStatus::Failed => match error_category {
             Some(ErrorCategory::Budget) => RunTerminationReason::BudgetExhausted,
             Some(ErrorCategory::Timeout) => RunTerminationReason::Timeout,
@@ -102,66 +91,10 @@ pub fn classify_turn_termination(
             Some(ErrorCategory::State | ErrorCategory::Internal) => {
                 RunTerminationReason::InfrastructureError
             }
+            None if approval_required => RunTerminationReason::ApprovalRequired,
             None if tool_error_seen => RunTerminationReason::ToolError,
             None => RunTerminationReason::Unresolved,
         },
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VerificationOutcome {
-    NotRun,
-    PassedFirstAttempt,
-    PassedAfterRepair,
-    Failed,
-    Incomplete,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerificationReceipt {
-    pub command: String,
-    pub outcome: VerificationOutcome,
-    pub attempts: u32,
-    pub duration_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunReceipt {
-    pub reason: RunTerminationReason,
-    pub summary: String,
-    #[serde(default)]
-    pub files_changed: Vec<PathBuf>,
-    #[serde(default)]
-    pub verification: Vec<VerificationReceipt>,
-    #[serde(default)]
-    pub remaining_risks: Vec<String>,
-}
-
-impl RunReceipt {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.summary.trim().is_empty() {
-            return Err("run receipt summary cannot be empty".to_string());
-        }
-        if self.reason == RunTerminationReason::Resolved
-            && self
-                .verification
-                .iter()
-                .any(|receipt| receipt.outcome == VerificationOutcome::Failed)
-        {
-            return Err("resolved run cannot contain a failed verification receipt".to_string());
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn pass_at_one(&self) -> bool {
-        !self.verification.is_empty()
-            && self.verification.iter().all(|receipt| {
-                receipt.outcome == VerificationOutcome::PassedFirstAttempt && receipt.attempts == 1
-            })
     }
 }
 
@@ -176,25 +109,6 @@ mod tests {
             3
         );
         assert!(!RunTerminationReason::ApprovalRequired.is_success());
-    }
-
-    #[test]
-    fn repair_success_is_not_pass_at_one() {
-        let receipt = RunReceipt {
-            reason: RunTerminationReason::Resolved,
-            summary: "fixed".to_string(),
-            files_changed: vec![PathBuf::from("src/lib.rs")],
-            verification: vec![VerificationReceipt {
-                command: "cargo test".to_string(),
-                outcome: VerificationOutcome::PassedAfterRepair,
-                attempts: 2,
-                duration_ms: 10,
-                artifact: None,
-            }],
-            remaining_risks: Vec::new(),
-        };
-        assert!(!receipt.pass_at_one());
-        assert!(receipt.validate().is_ok());
     }
 
     #[test]
@@ -252,6 +166,42 @@ mod tests {
             ),
             RunTerminationReason::ModelError,
             "historical approval evidence must not hide terminal truncation"
+        );
+    }
+
+    #[test]
+    fn typed_error_categories_precede_approval_required_fallback() {
+        use crate::core::events::TurnOutcomeStatus;
+        use codewhale_error_taxonomy::ErrorCategory;
+
+        for (category, expected) in [
+            (ErrorCategory::Budget, RunTerminationReason::BudgetExhausted),
+            (ErrorCategory::Timeout, RunTerminationReason::Timeout),
+            (ErrorCategory::Network, RunTerminationReason::ModelError),
+            (ErrorCategory::Tool, RunTerminationReason::ToolError),
+            (
+                ErrorCategory::State,
+                RunTerminationReason::InfrastructureError,
+            ),
+            (
+                ErrorCategory::Internal,
+                RunTerminationReason::InfrastructureError,
+            ),
+        ] {
+            assert_eq!(
+                classify_turn_termination(TurnOutcomeStatus::Failed, Some(category), false, true),
+                expected,
+                "typed category {category:?} must win over historical approval_required"
+            );
+        }
+
+        assert_eq!(
+            classify_turn_termination(TurnOutcomeStatus::Failed, None, false, true),
+            RunTerminationReason::ApprovalRequired
+        );
+        assert_eq!(
+            classify_turn_termination(TurnOutcomeStatus::Failed, None, true, true),
+            RunTerminationReason::ApprovalRequired
         );
     }
 }

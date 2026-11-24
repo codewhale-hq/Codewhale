@@ -611,7 +611,14 @@ impl Engine {
                             approval_deliveries.push(Box::pin(async move {
                                 match decision {
                                     Ok(reply) => handle.accept_child_approval(id, reply).await,
-                                    Err(_) => handle.deny_tool_call_unavailable(id).await,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            %error,
+                                            %id,
+                                            "child approval decision failed; denying as unavailable"
+                                        );
+                                        handle.deny_tool_call_unavailable(id).await
+                                    }
                                 }
                             }));
                         }

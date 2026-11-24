@@ -5695,6 +5695,13 @@ async fn rerouted_task_note(manager: &SharedSubAgentManager, agent_id: &str) -> 
 /// notably the workflow `run_id` that `finish_workflow_controller` sends for a
 /// detached nested workflow. Those fail closed here rather than being waited
 /// on.
+fn is_failed_delivery_verification_status(status: &str) -> bool {
+    matches!(
+        status,
+        "deliverable_missing" | "claim_mismatch" | "verification_incomplete"
+    )
+}
+
 async fn completion_from_manager(
     manager: SharedSubAgentManager,
     agent_id: &str,
@@ -5718,10 +5725,7 @@ async fn completion_from_manager(
         let completion = match snapshot.status {
             SubAgentStatus::Completed
                 if verification.as_ref().is_some_and(|receipt| {
-                    matches!(
-                        receipt.status.as_str(),
-                        "deliverable_missing" | "claim_mismatch"
-                    )
+                    is_failed_delivery_verification_status(&receipt.status)
                 }) =>
             {
                 TaskCompletion::Failed {
@@ -11826,6 +11830,19 @@ FINAL RECEIPT
             }
             other => panic!("expected a fail-closed failure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn failed_delivery_verification_status_includes_verification_incomplete() {
+        assert!(is_failed_delivery_verification_status(
+            "deliverable_missing"
+        ));
+        assert!(is_failed_delivery_verification_status("claim_mismatch"));
+        assert!(is_failed_delivery_verification_status(
+            "verification_incomplete"
+        ));
+        assert!(!is_failed_delivery_verification_status("verified"));
+        assert!(!is_failed_delivery_verification_status("not_required"));
     }
 
     #[tokio::test]

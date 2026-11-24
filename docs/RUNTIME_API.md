@@ -4026,9 +4026,10 @@ usage and outcome. An observed send or absent response headers do not prove
 provider acceptance or free work. Unknown primary outcomes remain unpriced in
 the turn diagnostics and usage totals; known primary usage stays in parent
 accounting. These receipts do not yet reconcile late cumulative primary usage.
-Inference automatically retries only an ordinary rate limit or a proven
-transient connection failure before dispatch. A later explicit user turn is a
-new request, not an automatic replay of an uncertain request.
+Inference automatically retries only an ordinary rate limit, a proven
+transient connection failure before dispatch, or a request that received no
+response headers (`stream.open_retries` times, default once). A later explicit
+user turn is a new request, not an automatic replay of an uncertain request.
 
 `turn.completed` carries the turn's authoritative cumulative token usage in
 `payload.turn.usage`, including routed work. It replaces the running token

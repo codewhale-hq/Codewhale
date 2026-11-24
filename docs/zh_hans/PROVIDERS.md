@@ -31,6 +31,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
+| WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`、`deepseek-v4-flash`、`gemini-4-neon` | `WORLDROUTER_API_KEY` |
 
 Tinker 的 OpenAI 兼容 API 和无服务器推理均为测试版。在 `/provider` 中选择 Tinker，或按英文文档配置 `[providers.tinker]`。其他公开的无服务器模型 ID 包括 `thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4` 和 `thinkingmachines/Inkling:peft:262144:sampling-nvfp4`；请手动输入所需 ID，也可以使用自己的 sampler checkpoint 路径。Codewhale 不会通过模型列表发现此路由或验证密钥；已配置模型会出现在选择器中，费用显示为未知。此通用路由目前不发送推理强度，Tinker 文档所述默认值为 0.9。实际对话、工具调用和图像输入尚未在 Codewhale 中验证。参见 [API 文档](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)和[模型列表](https://tinker-docs.thinkingmachines.ai/tinker/models/models_and_pricing/)。
 
@@ -43,6 +44,8 @@ Wafer 是 OpenAI 兼容的无服务器目录。Chat Completions 发往 `https://
 
 Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
+
+WorldRouter 是 OpenAI 兼容网关，一个密钥即可使用 Claude、GPT、Gemini、DeepSeek、Kimi 和 GLM 等模型。模型 ID 不带前缀，例如 `claude-sonnet-5-5`、`deepseek-v4-flash`，模型列表和价格见 <https://www.worldrouter.ai/models>。以带密钥请求 `GET https://inference-api.worldrouter.ai/v1/models` 的结果为准，文档见 <https://www.worldrouter.ai/docs/quickstart>。
 
 使用 `/provider tencent` 选择腾讯 TokenHub 国际端点，模型 ID 为 `hy4`，密钥环境变量为 `TENCENT_API_KEY`。腾讯文档给出的上下文为 1M，最大输入为 960K，最大输出为 64K，并支持图像、工具和推理。可用模型以认证后的 `/v1/models` 为准；若列表未提供限制信息，仍使用兼容路由的保守默认值，可将 `providers.tencent.model_context_windows.hy4` 显式设为 `1000000`，不影响同一网关上的其他模型。直连价格未经核验，不会套用 OpenRouter 的价格。OpenRouter 上的正式版 ID 是 `tencent/hy4`，支持 1,048,576 上下文、65,536 最大输出及 `none`、`low`、`high` 推理级别。预览版和现有 HY3 选择保持不变。文档见 <https://www.tencentcloud.com/document/product/1300/80695>。
 OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其他提供商相同；它们不在上表之列。在 `/provider` 中，直接输入即可筛选列表（未绑定行操作的字母）；`Ctrl+T` 探测所选行的 `/models`，只记录可达性（2xx 并不代表模型可用）。
@@ -895,7 +898,7 @@ python3 scripts/check-provider-registry.py
 
 提供商运营方在真实流量上测得的三种“看起来像别的问题”的故障：
 
-- **冷模型看起来像坏了。** 对提供商尚未加载的模型，首次调用可能需要 90 到 150 秒，预热后降到一秒甚至更短。在把超时当作“模型不可用”之前，先调大 `[stream].open_timeout_secs`（默认 180 秒，最多 600 秒）。
+- **冷模型看起来像坏了。** 对提供商尚未加载的模型，首次调用可能需要 90 到 150 秒，预热后降到一秒甚至更短。在把超时当作“模型不可用”之前，先调大 `[stream].open_timeout_secs`（默认 180 秒，最多 600 秒）。在这段时间内没有收到响应头的请求会自动重新发送一次（`[stream].open_retries`）。
 - **列出不等于可调用。** 目录里可见的条目仍可能每次调用都失败。若每次尝试都返回相同的错误文本（例如“resources busy”的 502），那不是暂时性故障：真正繁忙的上游会在其间返回成功。使用模型前先探测，并停止重试每次都以相同方式失败的模型。
 - **被截断的回答可能报告 `stop`。** 推理模型可能把整个 `max_tokens` 额度花在推理上。当提供商报告的 `completion_tokens` 恰好等于请求的 `max_tokens`，且结束原因为 `stop` 时，Codewhale 把该回合视为在上限处被截断而非已完成（`codewhale-models` 中的 `stop_contradicts_output_ceiling`）；用相同提示重试会在相同数量处停止，因此应调高上限或缩短任务。提供商未报告用量时不做任何推断。
 

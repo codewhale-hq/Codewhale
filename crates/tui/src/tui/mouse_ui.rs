@@ -895,13 +895,6 @@ pub(crate) fn apply_sidebar_row_action(app: &mut App, action: SidebarRowAction) 
                 action: CommandPaletteAction::ExecuteCommand { command },
             }]
         }
-        SidebarRowAction::PrefillCommand(command) => {
-            app.input = command;
-            app.cursor_position = app.input.len();
-            app.status_message = Some(app.tr(MessageId::SidebarDestructiveArmed).into_owned());
-            app.needs_redraw = true;
-            Vec::new()
-        }
         SidebarRowAction::ShowSubagentsPanel => {
             use crate::tui::work_surface::RailPanel;
             // The register header is a two-way door: opening the Agents panel
@@ -1639,19 +1632,6 @@ fn push_work_row_entries(app: &App, mouse: MouseEvent, entries: &mut Vec<Context
                 .replace("{command}", &command);
             entries.push(row(label, SidebarRowAction::Command(command)).primary());
         }
-        // Stages a destructive command in the composer; Enter there runs it.
-        Some(SidebarRowAction::PrefillCommand(command)) => {
-            let label = app
-                .tr(MessageId::CtxMenuRunCommand)
-                .replace("{command}", &command);
-            entries.push(
-                row(
-                    format!("{label}…"),
-                    SidebarRowAction::PrefillCommand(command),
-                )
-                .primary(),
-            );
-        }
         None => {}
     }
     // Copy the row's full text (rows can't be mouse-selected, so the menu is
@@ -1765,7 +1745,7 @@ pub(crate) fn apply_context_menu_action(
             }
         }
         ContextMenuAction::Paste => {
-            app.paste_from_clipboard();
+            crate::tui::paste::handle_paste(app, crate::tui::paste::PasteSource::Shortcut);
         }
         ContextMenuAction::Row(action) => {
             outcome = ContextMenuOutcome::Events(apply_sidebar_row_action(app, action));
