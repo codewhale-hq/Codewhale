@@ -1309,11 +1309,13 @@ dependencies = [
  "codewhale-app-server-protocol",
  "codewhale-paths",
  "codewhale-release",
+ "codewhale-util",
  "reqwest",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 

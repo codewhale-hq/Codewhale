@@ -22,28 +22,68 @@ pub(crate) fn expand_home(path: PathBuf) -> PathBuf {
 /// directories are 0700 and a new file 0600 (existing modes are left alone).
 /// Hook and lifecycle events carry tool payloads, prompts, and paths; under
 /// an ordinary umask the old defaults were readable by every local user.
-pub(crate) async fn open_private_append(path: &Path) -> Result<tokio::fs::File> {
+pub(crate) fn open_private_append_sync(path: &Path) -> Result<std::fs::File> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        let mut dirs = tokio::fs::DirBuilder::new();
+        let mut dirs = std::fs::DirBuilder::new();
         dirs.recursive(true);
         #[cfg(unix)]
-        dirs.mode(0o700);
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            dirs.mode(0o700);
+        }
         dirs.create(parent)
-            .await
             .with_context(|| format!("failed to create sink directory {}", parent.display()))?;
     }
-    let mut options = tokio::fs::OpenOptions::new();
+    let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
-    options.mode(0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
     options
         .open(path)
-        .await
         .with_context(|| format!("failed to open sink file {}", path.display()))
 }
+
+pub(crate) fn open_private_lock_file_sync(outbox_path: &Path) -> Result<std::fs::File> {
+    let mut lock_name = outbox_path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("outbox"));
+    lock_name.push(".lock");
+    let lock_path = match outbox_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            let mut dirs = std::fs::DirBuilder::new();
+            dirs.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                dirs.mode(0o700);
+            }
+            dirs.create(parent)
+                .with_context(|| format!("failed to create sink directory {}", parent.display()))?;
+            parent.join(lock_name)
+        }
+        _ => PathBuf::from(lock_name),
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&lock_path)
+        .with_context(|| format!("failed to open lock file {}", lock_path.display()))
+}
+
+/// Header carrying the stable per-event idempotency key across webhook retries.
+pub const WEBHOOK_IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
 
 /// HTTP transport for lifecycle outbox webhooks: POSTs a JSON payload to a
 /// remote endpoint. Failed requests are retried up to 2 times with exponential
@@ -74,13 +114,22 @@ impl WebhookHookSink {
         }
     }
 
-    /// POST an arbitrary JSON payload to the configured endpoint.
+    /// POST an arbitrary JSON payload to the configured endpoint with a stable
+    /// `Idempotency-Key` header reused across retries.
     ///
     /// This is the delivery path behind the lifecycle outbox fan-out.
-    pub async fn post_payload(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn post_payload(
+        &self,
+        payload: serde_json::Value,
+        idempotency_key: &str,
+    ) -> Result<()> {
         let mut retries = 0usize;
         loop {
-            let mut request = self.client.post(&self.url).json(&payload);
+            let mut request = self
+                .client
+                .post(&self.url)
+                .header(WEBHOOK_IDEMPOTENCY_KEY_HEADER, idempotency_key)
+                .json(&payload);
             if let Some(token) = self.bearer_token.as_deref().filter(|t| !t.is_empty()) {
                 request = request.bearer_auth(token);
             }
@@ -136,7 +185,7 @@ mod tests {
             std::process::id()
         ));
         let path = root.join("nested").join("events.jsonl");
-        open_private_append(&path).await.expect("open");
+        open_private_append_sync(&path).expect("open");
         let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         let dir_mode = std::fs::metadata(path.parent().unwrap())
             .unwrap()

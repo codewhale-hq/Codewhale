@@ -15,7 +15,6 @@ release_crates=(
   codewhale-workflow
   codewhale-workflow-js
   codewhale-execpolicy
-  codewhale-hooks
   codewhale-tools
   codewhale-error-taxonomy
   codewhale-config
@@ -39,6 +38,7 @@ release_crates=(
   # Shared helpers used by runtime, snapshot, plugins, skills, lsp, tui and
   # dependencies, so it must publish before all of them.
   codewhale-util
+  codewhale-hooks
   # Headless runtime split out of the TUI (docs/design/TUI_DECONSTRUCTION.md).
   # Depends on config, core, memory, models and util; the published tui depends
   # on it, so it publishes after those and before tui.
