@@ -1875,7 +1875,6 @@
   "SidebarTodoLabel": "До виконання",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · залишилося {remaining}",
   "SidebarStopControl": "стоп",
-  "SidebarDestructiveArmed": "Руйнівну дію активовано — натисніть Enter для підтвердження або очистіть чернетку для скасування",
   "WorkSurfaceStopConfirmHint": "підтвердити зупинку · Esc скасовує",
   "CoordinationWorkTitle": "Координаційна робота",
   "CoordinationSummaryDecisions": "{count} рішень",

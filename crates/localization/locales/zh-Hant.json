@@ -1892,7 +1892,6 @@
   "SidebarTodoLabel": "待辦",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · 剩餘 {remaining}",
   "SidebarStopControl": "停止",
-  "SidebarDestructiveArmed": "破壞性操作已就緒 — 按 Enter 確認，或清空草稿以取消",
   "WorkSurfaceStopConfirmHint": "確認停止 · Esc 取消",
   "CoordinationWorkTitle": "協調工作",
   "CoordinationSummaryDecisions": "{count} 項決策",

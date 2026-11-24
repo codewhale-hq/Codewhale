@@ -2056,3 +2056,104 @@ async fn deepseek_responses_stream_decodes_title_annotations_refusal_and_usage()
             && usage.as_ref().and_then(|u| u.server_tool_use.as_ref()).and_then(|s| s.tool_fetch) == Some(2)
     )));
 }
+
+#[test]
+fn responses_stop_reason_fails_closed_on_missing_or_unrecognized_status() {
+    assert_eq!(
+        responses_stop_reason(&json!({"status": "completed"}), false),
+        "end_turn"
+    );
+    assert_eq!(
+        responses_stop_reason(&json!({"status": "completed"}), true),
+        "tool_use"
+    );
+    for (response, expected) in [
+        (json!({}), "incomplete:unknown_status"),
+        (json!({"status": null}), "incomplete:unknown_status"),
+        (json!({"status": ""}), "incomplete:unknown_status"),
+        (json!({"status": 123}), "incomplete:unknown_status"),
+        (
+            json!({"status": "bogus"}),
+            "incomplete:unknown_status:bogus",
+        ),
+        (
+            json!({"status": "failed"}),
+            "incomplete:unknown_status:failed",
+        ),
+    ] {
+        for saw_tool_call in [false, true] {
+            let reason = responses_stop_reason(&response, saw_tool_call);
+            assert_eq!(reason, expected, "{response}");
+            assert!(
+                codewhale_models::is_incomplete_stop_reason(Some(&reason)),
+                "{response}: {reason}"
+            );
+            assert!(
+                !codewhale_models::is_output_limit_stop_reason(Some(&reason)),
+                "{response}: {reason}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn standard_responses_stream_fails_closed_when_completion_status_is_missing_or_unknown() {
+    for (sse_body, expected) in [
+        (
+            "data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+            "incomplete:unknown_status",
+        ),
+        (
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":null}}\n\n",
+            "incomplete:unknown_status",
+        ),
+        (
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"bogus\"}}\n\n",
+            "incomplete:unknown_status:bogus",
+        ),
+        (
+            "data: {\"type\":\"response.completed\"}\n\n",
+            "incomplete:unknown_status",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = CodewhaleClient::new(&test_codex_config(&server)).expect("client");
+        client.responses_profile_id = Some(profile_for_provider(ProviderKind::Openai).id);
+        let stream = client
+            .handle_responses_stream(
+                &client
+                    .prepare_outbound_request(minimal_responses_request(), true)
+                    .expect("prepare"),
+            )
+            .await
+            .expect("stream opens");
+        let events: Vec<Result<StreamEvent>> =
+            tokio::time::timeout(std::time::Duration::from_secs(5), stream.collect())
+                .await
+                .expect("stream ends");
+
+        let stop_reason = events.iter().find_map(|event| match event {
+            Ok(StreamEvent::MessageDelta { delta, .. }) => delta.stop_reason.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            stop_reason.as_deref(),
+            Some(expected),
+            "{sse_body}: {events:?}"
+        );
+        assert!(
+            codewhale_models::is_incomplete_stop_reason(stop_reason.as_deref()),
+            "{sse_body}: {stop_reason:?}"
+        );
+    }
+}

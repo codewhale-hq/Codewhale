@@ -1894,7 +1894,6 @@
   "SidebarTodoLabel": "할 일",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining}개 남음",
   "SidebarStopControl": "중지",
-  "SidebarDestructiveArmed": "파괴적 작업이 준비되었습니다 — Enter를 누르면 확인, 초안을 지우면 취소됩니다",
   "WorkSurfaceStopConfirmHint": "중지 확인 · Esc로 취소",
   "CoordinationWorkTitle": "조정 작업",
   "CoordinationSummaryDecisions": "결정 {count}개",

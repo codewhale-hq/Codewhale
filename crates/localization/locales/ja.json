@@ -1894,7 +1894,6 @@
   "SidebarTodoLabel": "To-do",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · 残り{remaining}",
   "SidebarStopControl": "停止",
-  "SidebarDestructiveArmed": "破壊的操作が実行待ちです — Enter で確定、取り消すには下書きをクリアしてください",
   "WorkSurfaceStopConfirmHint": "停止を確認 · Esc でキャンセル",
   "CoordinationWorkTitle": "調整作業",
   "CoordinationSummaryDecisions": "{count} 件の決定",
