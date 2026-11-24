@@ -289,6 +289,10 @@
     "path_canonicalize": 4,
     "std_fs": 1
   },
+  "crates/engine/src/tools/workflow/verified_candidate/mod.rs": {
+    "path_canonicalize": 5,
+    "thread_sleep": 1
+  },
   "crates/engine/src/vision/tools.rs": {
     "path_canonicalize": 2
   },
@@ -299,6 +303,12 @@
     "std_fs": 11
   },
   "crates/execpolicy/src/toml_rules.rs": {
+    "std_fs": 1
+  },
+  "crates/hooks/src/lib.rs": {
+    "std_fs": 4
+  },
+  "crates/hooks/src/lifecycle_outbox.rs": {
     "std_fs": 1
   },
   "crates/lane/src/runtime.rs": {
