@@ -135,7 +135,7 @@ jobs:
         if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
-          if [ "${GITHUB_REF}" = refs/heads/main ]; then rw=READ_WRITE; else rw=READ_ONLY; fi
+          rw=READ_WRITE
           {
             echo "SCCACHE_GHA_ENABLED=true"
             echo "SCCACHE_GHA_RW_MODE=${rw}"
