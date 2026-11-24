@@ -1,7 +1,8 @@
 import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
@@ -91,7 +92,7 @@ async function createHarness() {
 
 test('webServer exact and prefix routes handle GET/POST JSON round-trip and query strings', async () => {
   const { owners, makeOwner } = await createHarness()
-  const { owner, ctx } = makeOwner('plugin-a', 'tok-a', '/tmp/plugin-a')
+  const { owner, ctx } = makeOwner('plugin-a', 'tok-a', join(tmpdir(), 'plugin-a'))
   try {
     const disposeGet = ctx.webServer.register({
       kind: 'exact',
@@ -174,8 +175,8 @@ test('webServer exact and prefix routes handle GET/POST JSON round-trip and quer
 
 test('webServer enforces strict owner isolation between plugins', async () => {
   const { owners, makeOwner } = await createHarness()
-  const a = makeOwner('plugin-a', 'tok-iso-a', '/tmp/a')
-  const b = makeOwner('plugin-b', 'tok-iso-b', '/tmp/b')
+  const a = makeOwner('plugin-a', 'tok-iso-a', join(tmpdir(), 'a'))
+  const b = makeOwner('plugin-b', 'tok-iso-b', join(tmpdir(), 'b'))
   try {
     a.ctx.webServer.get('/secret', (_req, res) => {
       res.end('from-a')
@@ -203,7 +204,7 @@ test('webServer enforces strict owner isolation between plugins', async () => {
 
 test('webServer enforces request and response body size caps', async () => {
   const { owners, makeOwner } = await createHarness()
-  const { owner, ctx } = makeOwner('plugin-cap', 'tok-cap', '/tmp/cap')
+  const { owner, ctx } = makeOwner('plugin-cap', 'tok-cap', join(tmpdir(), 'cap'))
   try {
     ctx.webServer.post('/echo', (_req, res) => {
       res.end('ok')
@@ -238,7 +239,8 @@ test('webServer enforces request and response body size caps', async () => {
 
 test('connection.fetch, connection.rpc, requestRejection, sessionTitle, and profileContext work', async () => {
   const { owners, makeOwner } = await createHarness()
-  const { owner, ctx } = makeOwner('plugin-extras', 'tok-extras', '/tmp/plugin-extras')
+  const extrasDir = resolve(join(tmpdir(), 'plugin-extras'))
+  const { owner, ctx } = makeOwner('plugin-extras', 'tok-extras', extrasDir)
   try {
     assert.equal(ctx.connection.isLoopback, true)
     assert.equal(ctx.connection.requestRejection({ headers: { host: '127.0.0.1:4319' } }), null)
@@ -286,8 +288,8 @@ test('connection.fetch, connection.rpc, requestRejection, sessionTitle, and prof
     disposeTitle()
 
     assert.equal(ctx.profileContext.name, 'codewhale')
-    assert.equal(ctx.profileContext.dir, '/tmp/plugin-extras')
-    assert.equal(ctx.profileContext.installAnchor, '/tmp/plugin-extras')
+    assert.equal(ctx.profileContext.dir, extrasDir)
+    assert.equal(ctx.profileContext.installAnchor, extrasDir)
   } finally {
     clearOwnerRoutes('tok-extras')
   }
@@ -295,7 +297,7 @@ test('connection.fetch, connection.rpc, requestRejection, sessionTitle, and prof
 
 test('profileContext fails closed without scoped dataDir, sessionTitle is owner-isolated, and fetch streams enforce 8 MiB cap', async () => {
   const { owners, makeOwner } = await createHarness()
-  const a = makeOwner('plugin-sec-a', 'tok-sec-a', '/tmp/sec-a')
+  const a = makeOwner('plugin-sec-a', 'tok-sec-a', join(tmpdir(), 'sec-a'))
   const b = makeOwner('plugin-sec-b', 'tok-sec-b', undefined)
   try {
     assert.throws(() => b.ctx.profileContext.dir, /scoped dataDir/)
