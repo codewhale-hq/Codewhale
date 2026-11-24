@@ -3143,9 +3143,9 @@ pub(crate) async fn handle_view_events(
                 agent_id,
                 agent_name,
             } => {
-                crate::tui::external_agent::switch_to_external_agent(
+                Box::pin(crate::tui::external_agent::switch_to_external_agent(
                     app, config, agent_id, agent_name,
-                )
+                ))
                 .await;
             }
             ViewEvent::ModelPickerDismissed {

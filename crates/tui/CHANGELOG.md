@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
+- Added Onomeo as a bundled provider descriptor row. Thanks [@Owaid0723666](https://github.com/Owaid0723666). (#7525)
+- Added Simplified Chinese translation of `AUTO_REVIEW.md` (`docs/zh_hans/AUTO_REVIEW.md`). Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
+- Improved runtime item-index caching and turn-reference lookup performance. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
 
 ## [0.10.4] - 2026-11-23
 
