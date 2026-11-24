@@ -123,11 +123,15 @@ impl Fixture {
 
 #[cfg(target_os = "linux")]
 fn bwrap_available() -> bool {
-    Path::new("/usr/bin/bwrap").exists()
+    let available = Path::new("/usr/bin/bwrap").exists()
         && Command::new("/usr/bin/bwrap")
             .arg("--version")
             .output()
-            .is_ok_and(|output| output.status.success())
+            .is_ok_and(|output| output.status.success());
+    if !available && std::env::var_os("CI").is_some() {
+        panic!("Linux CI requires /usr/bin/bwrap so verified_candidate evaluator tests execute");
+    }
+    available
 }
 
 #[test]

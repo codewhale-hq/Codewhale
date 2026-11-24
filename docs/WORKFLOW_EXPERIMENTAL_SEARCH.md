@@ -85,7 +85,10 @@ JSON input on stdin and emits one JSON value on stdout. The host compares that
 value with the frozen expected value and counts the cases it actually ran.
 Candidate self-verdicts, shell output, and claimed test counts are never the
 oracle. The oracle is read by the host, not imported into the candidate
-process.
+process. Held-out gates run under `holdout_confidentiality: "feedback_only"`:
+candidate-facing receipts report gate verdicts and counts without exposing
+held-out case inputs or expected outputs, while per-case replay evidence stays
+inside the private host-owned run directory.
 
 ## Isolation and retained evidence
 

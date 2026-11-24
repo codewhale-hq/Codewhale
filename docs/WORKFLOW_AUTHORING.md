@@ -206,8 +206,10 @@ evidence, evaluator hash, hard gates, scoring rule, budgets, write scope,
 rounds, and review-only integration policy before admission; it is a design,
 not shipped code.
 
-The current JS starter supports structured generation and read-only review with
-`strategy: "search"`. Runtime-owned command gates, hidden evaluation, benchmark
-scoring, and clean-baseline replay are an explicit host seam still to wire; a
-candidate's self-verdict must never be promoted into evaluator truth. See
-[Workflow Experimental Search](WORKFLOW_EXPERIMENTAL_SEARCH.md).
+The current JS starter (`workflows/operate_best_of_n.workflow.js`) supports
+structured generation and read-only review with `strategy: "search"`, and
+exposes `task.verifyCandidate` when `args.evaluator` is provided so runtime-owned
+command gates, held-out evaluation, and clean-baseline replay run through the
+host evaluator (Linux bubblewrap). Benchmark scoring and automated promotion
+remain separate; a candidate's self-verdict is never promoted into evaluator
+truth. See [Workflow Experimental Search](WORKFLOW_EXPERIMENTAL_SEARCH.md).
