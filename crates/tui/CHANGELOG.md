@@ -109,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Choose an external ACP agent in the terminal:** `/model` now lists installed external ACP agents (`antigravity`, `opencode`, `copilot`, `dsh`, and others) alongside Codewhale models, showing why non-runnable agents are blocked and what to run, and `codewhale --agent <id>` / `codewhale exec --agent <id>` starts an interactive or headless session through the Engine ACP executor. (CW-8361)
+- **MCP server and external sandbox backend hardening:** `codewhale serve --mcp` now applies the configured sandbox mode, bubblewrap settings, read deny-list, and external sandbox backend to its tool context and refuses all shell and terminal tool aliases when `tool_launcher` is set; failed external sandbox backend initialization in the engine now fails closed instead of falling back to local execution.
 
 ## [0.10.4] - 2026-11-23
 

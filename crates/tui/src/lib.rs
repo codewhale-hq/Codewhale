@@ -3389,15 +3389,7 @@ async fn run_async_main_dispatch(
                 )?;
                 if args.mcp {
                     let config = load_structural_config_from_cli(&cli)?;
-                    let skills_dir = config.skills_dir();
-                    let skills_config = std::sync::Arc::new(config.skills_config());
-                    codewhale_app_server::mcp_server::run_mcp_server(
-                        workspace,
-                        skills_dir,
-                        skills_config,
-                        config.tool_launcher.is_some(),
-                    )
-                    .await
+                    codewhale_app_server::mcp_server::run_mcp_server(workspace, &config).await
                 } else if http_selected {
                     let (mut config, config_profile) =
                         load_config_from_cli_with_effective_profile(&cli)?;
