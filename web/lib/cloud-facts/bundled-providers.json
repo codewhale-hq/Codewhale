@@ -2299,6 +2299,25 @@
       },
       "wire_policy": "chat_completions"
     },
+    "trustedrouter": {
+      "aliases": [
+        "trusted-router"
+      ],
+      "api_key_env": "TRUSTEDROUTER_API_KEY",
+      "auth": {
+        "env_vars": [
+          "TRUSTEDROUTER_API_KEY"
+        ],
+        "secret_slot": "trustedrouter"
+      },
+      "base_url": "https://api.trustedrouter.com/v1",
+      "credential_url": "https://trustedrouter.com/console/api-keys",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://trustedrouter.com/docs",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "tsubasa": {
       "api_key_env": "TSUBASA_API_KEY",
       "auth": {
