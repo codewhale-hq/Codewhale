@@ -14,10 +14,9 @@
 //! here.
 //!
 //! The foreground pet observer consumes the event projection, retaining only
-//! lifecycle metadata. Other projections remain compile-time parity guards;
-//! dead-code is allowed here rather than hiding those guards behind a test cfg
-//! (which would let `cargo build` pass with an unmapped variant).
-#![allow(dead_code)]
+//! lifecycle metadata. Other projections remain compile-time parity guards in
+//! normal builds as public items rather than behind a test cfg (which would let
+//! `cargo build` pass with an unmapped variant).
 
 use std::collections::BTreeMap;
 

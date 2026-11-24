@@ -778,6 +778,7 @@ impl FleetLedger {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Change a task's terminal projection only if the exact attempt and event
     /// observed by the verifier are still current. A concurrent restart changes
     /// both the attempt counter and lifecycle sequence, so late verification
@@ -1528,6 +1529,7 @@ impl FleetLedger {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn record_alert(
         &self,
         run_id: &FleetRunId,
@@ -1763,6 +1765,7 @@ impl FleetLedger {
         Ok(state)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     /// Claim the next available inbox task for `worker_id`. Returns the
     /// enqueued entry and appends a lease record.
     pub fn claim_next(

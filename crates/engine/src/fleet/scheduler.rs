@@ -106,6 +106,7 @@ impl FleetScheduler {
         Ok(report)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn cancel_run(&self, run_id: &FleetRunId, reason: &str) -> Result<FleetSchedulerReport> {
         let state = self.ledger.rebuild_state()?;
         let mut report = FleetSchedulerReport::default();
