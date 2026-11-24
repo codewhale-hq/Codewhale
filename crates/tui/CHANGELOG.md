@@ -27,6 +27,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Verified candidate evaluator for experimental search workflows:** `workflows/operate_best_of_n.workflow.js` now supports an optional host-owned `args.evaluator` (`task.verifyCandidate`) that freezes a clean Git baseline, seals candidate diffs, and replays public and held-out gates inside Linux bubblewrap with `proposal_only` receipts. Thanks [@axobase001](https://github.com/axobase001). (#7294)
+### Changed
+
+- **Cross-process item index cache and owner-only indexing:** cached the item index across processes and skipped non-owner records during indexing. Thanks [@gaord](https://github.com/gaord). (#7446, #7522)
+- **Simplified Chinese Auto-Review documentation:** added `docs/zh_hans/AUTO_REVIEW.md`. Thanks [@Goldloli](https://github.com/Goldloli). (#7521)
+- **Bundled Onomeo provider:** added Onomeo as a bundled OpenAI-compatible provider descriptor (`ONOMEO_API_KEY`). Thanks [@Owaid0723666](https://github.com/Owaid0723666). (#7525)
+- **One paste path in the terminal and off-thread clipboard reads:** simplified Ctrl+V handling to a single press/release edge rule and moved clipboard file reads off the UI thread. (#7516)
+- **`/model` splits use-now from saving the default:** pressing `Enter` switches the current session's model immediately while `Shift+D` saves it as the default route. (#7517)
+- **Standalone `/pet` dot whale:** every terminal draws the dot whale directly from its own session activity without depending on the companion source session. (#7514)
+- **Removed confirmed dead-code candidates:** deleted unused TUI, Fleet, and skills items identified in the dead-code sweep. Thanks [@luochen211](https://github.com/luochen211). (#7491, Refs #7270)
+- **Single owned `TaskManager` slot:** routed TUI `TaskManager` consumers through `App`'s single slot ahead of session-switch store adoption. Thanks [@Serendo](https://github.com/Serendo). (#7507)
+- **Website & docs refresh:** updated real desktop screenshots, contributor wall, and `/settings` + slash-command documentation. (#7511)
+
+### Fixed
+
+- **Responses cache-miss usage fidelity & conformance fixtures:** kept missing `input_tokens` cache-miss counts unknown (`None`) instead of fabricating zero and added Responses stream usage normalization fixtures. Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee). (#7527, #7528)
+- **Security hardening across read-only shell git, automations, remote runtime probes, hooks, grant persistence, and URL/log redaction:** hardened read-only and auto-approved git commands against repository config helper hooks; rejected elevated automation permissions and unattended full-access dispatch; removed bearer tokens from systemd unit command lines and generated runbooks; enforced HTTPS without redirect following on non-loopback webhooks; failed closed on grant persistence errors and surfaced posture-save failures; scrubbed malformed URLs, git remotes, and tool-call logs; and blocked loopback, link-local, metadata, and IPv6-embedded private addresses in remote runtime probes.
+- **Engine, app-server, extension host, fleet, subagent, RLM, config, hooks, and VS Code/bridge hardening:** addressed public audit findings across engine core, subagents, app-server lease rollback, extension host, fleet work graph, RLM batch guards, config, skills/plugins/secrets, bridges, and component hardening. Thanks [@NieZhuZhu](https://github.com/NieZhuZhu) (#7481, #7483, #7484, #7489, #7492, #7493, #7495, #7501). (#7498, #7499, #7503, #7515)
+- **ACP Ask-posture enforcement & discovery hardening:** enforced host-side Ask approval gating for external ACP agents and hardened external-agent discovery. (#7504)
+- **Windows desktop-shell exclusion (`ShellExperienceHost.exe`):** matched `ShellExperienceHost.exe` case-insensitively in the Windows desktop-shell filter. Thanks [@deosiree](https://github.com/deosiree). (#7513, Refs #7474)
+- **Background shell ambient scene & idle CPU:** fixed ambient scene polling when background shells are active. (#7518, Refs #6728)
+- **Contributor fixes & CI stability:** landed community fix from [@WTFitsmemyself](https://github.com/WTFitsmemyself) (#7496) and tuned Windows CI linker/test ceilings (#7512).
+### Security
+
+- Hardened shell execution-policy deny matching across seven bypass classes: `ssh -o ProxyCommand`/`LocalCommand` (including under `-N`), `screen -X`/`-Q` (including with `-r`/`-R`/`-d`), `kubectl exec`/`run`/`debug`, `docker`/`podman` `container`/`compose` groups (`run`/`exec`/`create`, `buildx bake --call`, `--health-cmd`), `parallel --compress-program`/`--decompress-program` and `bwrap --args`, shell `-c` aliases (`oil`, `ysh`, `pdksh`, `loksh`, `rksh`, `ion`, `ngs`) plus `gawk -i`/`-l` and `pwsh -`/piped stdin, and quoted dynamic words in `find`/`docker`/non-inert `--` tails plus separated `nix -c` shell-string payloads. (#7397)
+### Fixed
+
+- **Environment overrides and `approval_policy` consistency:** `CODEWHALE_ALLOW_SHELL` (along with `CODEWHALE_YOLO`, `CODEWHALE_SANDBOX_NETWORK_ACCESS`, and `CODEWHALE_PREFER_BWRAP`) now accepts `yes` and `on` in addition to `1` and `true`; an unknown `CODEWHALE_PROVIDER` now warns and skips only provider-scoped overrides instead of dropping every subsequent environment override; `CODEWHALE_MAX_SUBAGENTS` and project/overlay `max_subagents` now take precedence over a file's `[subagents] max_concurrent`; and `approval_policy` now accepts `ask` and `auto-review` in `codewhale config set`, `config.toml` validation, and project-config tightening.
+### Added
+
+- **Expanded DeepSeek Harness 0.2.2 host compatibility:** switched on the brokered `attachments` service, added pure-API exports (`ReasoningEffortId`, `KNOWN_SESSION_EVENT_TYPES`, `deriveEventMessage`, and streaming/message helpers) and plugin-scoped module shims (`@deepseek-ai/dsh-credentials`, `@deepseek-ai/dsh-settings` with read-only host `locale`, `@deepseek-ai/dsh-home-paths` and `@deepseek-ai/dsh-atomic-write` confined to the plugin `dataDir`, `@deepseek-ai/dsh-skill`, and `@deepseek-ai/dsh-typert-protocol`), and added `ctx.tools.guard` (deny-only), `subagents.getProvider('fork')`, command `invocation.agent.session`, `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, policy-guarded `web`, and read-only `tools/result` projection.
+
+### Fixed
+
+- **DSH importer scan cap and named group closures:** raised the npm dependency scanner's per-file limit to 8 MiB (matching `PLUGIN_UI_MAX_BYTES`) so bundled client JS assets in packages like `dsh-pet`, `dsh-univer-office`, and `dsh-genui` pass import review, and included named `group: true` modules such as `dsh-mnemon/bundle` in the reviewed module closure. (CW-8289)
 
 ### Fixed
 
