@@ -1242,7 +1242,8 @@ const REBINDING_BUILTINS: &[&str] = &[
 /// Shells whose `-c` argument is a command line to be parsed, not an operand.
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "ash", "fish", "csh", "tcsh", "rbash",
-    "yash", "elvish", "nu", "xonsh", "oksh", "posh", "osh",
+    "yash", "elvish", "nu", "xonsh", "oksh", "posh", "osh", "oil", "ysh", "pdksh", "loksh", "rksh",
+    "ion", "ngs",
 ];
 
 /// The commands a shell line would run, plus what could not be resolved.
@@ -1926,7 +1927,14 @@ impl Expander {
                                                 SHELL_NAMES.contains(&name.as_str())
                                                     || matches!(
                                                         name.as_str(),
-                                                        "source" | "." | "at" | "batch"
+                                                        "source"
+                                                            | "."
+                                                            | "at"
+                                                            | "batch"
+                                                            | "pwsh"
+                                                            | "powershell"
+                                                            | "dbclient"
+                                                            | "mosh"
                                                     )
                                                     || (name == "ssh"
                                                         && ssh_reads_stdin(
@@ -2199,6 +2207,17 @@ impl Expander {
                     }
                 }
                 "parallel" => {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head,
+                        &dynamic,
+                        None,
+                        &["compress-program", "decompress-program"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
                     let inner: Vec<usize> = heads
                         .heads
                         .iter()
@@ -2233,7 +2252,12 @@ impl Expander {
                         self.dynamic = true;
                     }
                 }
-                "powershell" | "pwsh" => self.record_powershell(tokens, head, &dynamic, depth),
+                "powershell" | "pwsh" => {
+                    if line.stdin_piped {
+                        self.dynamic = true;
+                    }
+                    self.record_powershell(line, head, &dynamic, depth);
+                }
                 "awk" | "gawk" | "mawk" | "nawk" | "goawk" => {
                     self.record_awk_program(tokens, head, &dynamic, depth);
                 }
@@ -2269,12 +2293,20 @@ impl Expander {
         for at in 0..tokens.len() {
             if tokens[at] == "--" && line.quoted[at] == WordQuote::Unquoted && at + 1 < tokens.len()
             {
-                self.record_extra_deny(&slice_line(line, at + 1), depth + 1);
+                let inert = heads
+                    .heads
+                    .iter()
+                    .rev()
+                    .find(|&&head| head < at)
+                    .is_some_and(|&head| {
+                        INERT_DASH_DASH_HEADS.contains(&command_name(&tokens[head]).as_str())
+                    });
+                self.record_extra_deny(&slice_line(line, at + 1), inert, depth + 1);
             }
         }
     }
 
-    fn record_extra_deny(&mut self, sub: &Line, depth: usize) {
+    fn record_extra_deny(&mut self, sub: &Line, inert: bool, depth: usize) {
         if depth > MAX_DEPTH {
             self.extra_deny_dropped = true;
             return;
@@ -2324,6 +2356,7 @@ impl Expander {
         self.deny_suffix_depths = std::mem::take(&mut child.deny_suffix_depths);
         let child_dropped = child.extra_deny_dropped;
         let child_cap_dropped = child.extra_deny_cap_dropped;
+        self.dynamic |= child_dropped | (!inert && child.dynamic);
         for cmd in child.extra_deny {
             self.emit_extra_deny(cmd);
         }
@@ -2344,6 +2377,21 @@ impl Expander {
     ) {
         let tokens = &line.words;
         let mut truncated = false;
+        if name == "bwrap" {
+            if tokens[head + 1..]
+                .iter()
+                .any(|token| token == "--args" || token.starts_with("--args="))
+            {
+                self.dynamic = true;
+            }
+        } else if matches!(name, "docker" | "podman")
+            && tokens.iter().any(|token| token == "buildx")
+            && tokens
+                .iter()
+                .any(|token| token == "--call" || token.starts_with("--call="))
+        {
+            self.dynamic = true;
+        }
         match name {
             "nix" => {
                 for verb_idx in launcher_verb_targets(
@@ -2394,6 +2442,7 @@ impl Expander {
                         self.dynamic |= dynamic[at];
                         if attached.is_empty() {
                             if at + 1 < tokens.len() {
+                                self.code_payload(&tokens[at + 1], dynamic[at + 1], depth);
                                 self.record(&slice_line(line, at + 1), depth + 1);
                             }
                         } else {
@@ -2474,7 +2523,25 @@ impl Expander {
                     }
                 }
             }
-            "ssh" => {
+            "ssh" | "dbclient" | "mosh" => {
+                for (payload, payload_dynamic) in
+                    ssh_option_payloads(&tokens[head + 1..], &dynamic[head + 1..])
+                {
+                    self.code_payload(&payload, payload_dynamic, depth);
+                }
+                if name == "mosh" {
+                    for (payload, payload_dynamic) in option_payloads(
+                        tokens,
+                        head,
+                        dynamic,
+                        None,
+                        &["ssh", "server", "client"],
+                        true,
+                        tokens.len(),
+                    ) {
+                        self.code_payload(&payload, payload_dynamic, depth);
+                    }
+                }
                 if ssh_skips_remote_command(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
@@ -2508,6 +2575,18 @@ impl Expander {
                 }
             }
             "screen" => {
+                for at in head + 1..tokens.len() {
+                    if tokens[at] != "-X" && tokens[at] != "-Q" {
+                        continue;
+                    }
+                    let rest = &tokens[at + 1..];
+                    if rest.is_empty() {
+                        self.dynamic |= dynamic[at];
+                        continue;
+                    }
+                    let rest_dynamic = dynamic[at + 1..].iter().any(|d| *d);
+                    self.record_screen_x(&rest.join(" "), rest_dynamic, depth);
+                }
                 if screen_attaches_only(&tokens[head + 1..], &dynamic[head + 1..]) {
                     return;
                 }
@@ -2656,19 +2735,86 @@ impl Expander {
                         launcher.global,
                         &mut truncated,
                     ) {
-                        let Some(verb) = tokens.get(verb_idx).map(String::as_str) else {
+                        let mut verb_idx = verb_idx;
+                        let mut verb = tokens.get(verb_idx).map(String::as_str);
+                        if let Some(group) = verb
+                            && launcher.groups.contains(&group)
+                        {
+                            verb_idx += 1;
+                            let value_opts: &[&str] = match group {
+                                "compose" => &[
+                                    "f",
+                                    "file",
+                                    "p",
+                                    "project-name",
+                                    "env-file",
+                                    "project-directory",
+                                    "profile",
+                                    "parallel",
+                                    "ansi",
+                                    "log-level",
+                                    "config",
+                                    "H",
+                                    "host",
+                                    "context",
+                                    "tlscacert",
+                                    "tlscert",
+                                    "tlskey",
+                                    "progress",
+                                    "policy",
+                                    "build-arg",
+                                    "builder",
+                                ],
+                                _ => &[],
+                            };
+                            while let Some(word) = tokens.get(verb_idx) {
+                                if !word.starts_with('-') || word == "--" {
+                                    break;
+                                }
+                                let opt_name =
+                                    word.trim_start_matches('-').split('=').next().unwrap_or("");
+                                verb_idx += if !word.contains('=') && value_opts.contains(&opt_name)
+                                {
+                                    2
+                                } else {
+                                    1
+                                };
+                            }
+                            verb = tokens.get(verb_idx).map(String::as_str);
+                        }
+                        let Some(verb) = verb else {
                             continue;
                         };
                         if !launcher.verbs.contains(&verb) {
                             continue;
                         }
-                        let is_container_run = matches!(name, "docker" | "podman") && verb == "run";
+                        let is_container_run =
+                            matches!(name, "docker" | "podman") && matches!(verb, "run" | "create");
+                        if is_container_run {
+                            for at in verb_idx + 1..tokens.len() {
+                                if tokens[at] == "--" {
+                                    break;
+                                }
+                                if let Some(value) = tokens[at].strip_prefix("--health-cmd=") {
+                                    self.code_payload(value, dynamic[at], depth);
+                                } else if tokens[at] == "--health-cmd"
+                                    && let Some(value) = tokens.get(at + 1)
+                                {
+                                    self.code_payload(value, dynamic[at + 1], depth);
+                                }
+                            }
+                        }
                         let entrypoints_before = |end: usize| {
                             if !is_container_run {
                                 return Vec::new();
                             }
                             let end = end.min(tokens.len()).max(verb_idx + 1);
-                            find_entrypoints(&tokens[verb_idx + 1..end], dynamic, verb_idx + 1)
+                            find_entrypoints(
+                                &tokens[verb_idx + 1..end],
+                                dynamic,
+                                &line.quoted,
+                                verb_idx + 1,
+                            )
                         };
                         if is_container_run {
                             let image_spec = Wrapper {
@@ -3422,13 +3568,8 @@ impl Expander {
     /// a bare operand may start code too (Windows PowerShell's default).
     /// PowerShell syntax is only approximated by the POSIX parser, which is
     /// enough to find the command words a deny rule names.
-    fn record_powershell(
-        &mut self,
-        tokens: &[String],
-        head: usize,
-        dynamic: &[bool],
-        depth: usize,
-    ) {
+    fn record_powershell(&mut self, line: &Line, head: usize, dynamic: &[bool], depth: usize) {
+        let tokens = &line.words;
         let rest = |at: usize| {
             (
                 tokens[at..].join(" "),
@@ -3450,6 +3591,7 @@ impl Expander {
             }
             let option = option.to_ascii_lowercase();
             if option.is_empty() {
+                self.dynamic |= tokens[at] == "-";
                 continue;
             }
             if "command".starts_with(option.as_str()) {
@@ -3467,9 +3609,43 @@ impl Expander {
                 return;
             }
             if "file".starts_with(option.as_str()) {
-                // A script file is opaque, as it is for every other shell.
+                match tokens.get(at + 1).map(String::as_str) {
+                    Some(operand)
+                        if is_runtime_script_file(
+                            operand,
+                            dynamic.get(at + 1).copied().unwrap_or(false),
+                        ) =>
+                    {
+                        self.dynamic = true;
+                    }
+                    None if line.stdin_piped || line.heredoc => self.dynamic = true,
+                    _ => {}
+                }
                 return;
             }
+        }
+    }
+
+    fn record_screen_x(&mut self, joined: &str, dynamic: bool, depth: usize) {
+        if depth > MAX_DEPTH {
+            self.dynamic = true;
+            return;
+        }
+        let Some(words) = shlex::split(joined) else {
+            return;
+        };
+        let rest = |at: usize| words[at..].join(" ");
+        match words.first().map(String::as_str) {
+            Some("at") if words.len() > 2 => self.record_screen_x(&rest(2), dynamic, depth + 1),
+            Some("stuff") | Some("exec") | Some("shell") | Some("screen") if words.len() > 1 => {
+                self.code_payload(&rest(1), dynamic, depth);
+            }
+            Some("eval") | Some("command") if words.len() > 1 => {
+                self.record_screen_x(&rest(1), dynamic, depth + 1);
+            }
+            Some("source") | Some("process") => {}
+            Some(_) => self.code_payload(joined, dynamic, depth),
+            None => {}
         }
     }
 
@@ -3478,8 +3654,13 @@ impl Expander {
         let tokens = &line.words;
         let mut index = head + 1;
         while index < tokens.len() {
-            if line.dynamic[index] && (tokens[index].is_empty() || tokens[index].starts_with('-')) {
-                self.dynamic = true;
+            if line.dynamic[index] {
+                if index + 1 < tokens.len() {
+                    self.record(&slice_line(line, index + 1), depth + 1);
+                }
+                if tokens[index].is_empty() || tokens[index].starts_with('-') {
+                    self.dynamic = true;
+                }
             }
             if matches!(
                 tokens[index].as_str(),
@@ -3562,14 +3743,14 @@ impl Expander {
                                 push_script(&mut scripts, &mut self.dynamic, v, d);
                             }
                         }
-                        "file" | "exec" => {
+                        "file" | "exec" | "include" | "load" => {
                             has_script_option = true;
                             options_done |= opt == "exec";
                             if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i) {
                                 self.dynamic |= is_runtime_script_file(v, d);
                             }
                         }
-                        "field-separator" | "assign" | "include" | "load"
+                        "field-separator" | "assign"
                             if inline.is_none() && i + 1 < tokens.len() =>
                         {
                             i += 1;
@@ -3590,7 +3771,7 @@ impl Expander {
                                 }
                                 break;
                             }
-                            'f' | 'E' => {
+                            'f' | 'E' | 'i' | 'l' => {
                                 has_script_option = true;
                                 options_done |= ch == 'E';
                                 if let Some((v, d)) = take_opt_val(inline, tokens, dynamic, &mut i)
@@ -3605,8 +3786,11 @@ impl Expander {
                                     if let Some(src) = v.strip_prefix("source=") {
                                         has_script_option = true;
                                         push_script(&mut scripts, &mut self.dynamic, src, d);
-                                    } else if let Some(file) =
-                                        v.strip_prefix("file=").or_else(|| v.strip_prefix("exec="))
+                                    } else if let Some(file) = v
+                                        .strip_prefix("file=")
+                                        .or_else(|| v.strip_prefix("exec="))
+                                        .or_else(|| v.strip_prefix("include="))
+                                        .or_else(|| v.strip_prefix("load="))
                                     {
                                         has_script_option = true;
                                         options_done |= v.starts_with("exec=");
@@ -3615,7 +3799,7 @@ impl Expander {
                                 }
                                 break;
                             }
-                            'F' | 'v' | 'i' | 'l' => {
+                            'F' | 'v' => {
                                 if inline.is_none() && i + 1 < tokens.len() {
                                     i += 1;
                                 }
@@ -4584,6 +4768,7 @@ fn parse_sed_replacement(chars: &[char], start: usize, delim: char) -> (String, 
 
 struct VerbLauncher {
     program: &'static str,
+    groups: &'static [&'static str],
     verbs: &'static [&'static str],
     global: &'static Wrapper,
     subcmd: &'static Wrapper,
@@ -5319,9 +5504,134 @@ const HELM_GLOBAL_SPEC: Wrapper = Wrapper {
     operands: 0,
 };
 
+const KUBECTL_GLOBAL_SPEC: Wrapper = Wrapper {
+    name: "kubectl",
+    short_values: "nsv",
+    short_switches: "h",
+    long_values: &[
+        "as",
+        "as-group",
+        "as-uid",
+        "certificate-authority",
+        "client-certificate",
+        "client-key",
+        "cluster",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "password",
+        "profile",
+        "profile-output",
+        "request-timeout",
+        "server",
+        "token",
+        "username",
+        "vmodule",
+    ],
+    long_switches: &[
+        "help",
+        "insecure-skip-tls-verify",
+        "show-managed-fields",
+        "version",
+    ],
+    operands: 0,
+};
+
+const KUBECTL_EXEC_SPEC: Wrapper = Wrapper {
+    name: "kubectl-exec",
+    short_values: "cfF",
+    short_switches: "itqQ",
+    long_values: &[
+        "container",
+        "filename",
+        "pod-running-timeout",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "server",
+        "as",
+        "token",
+        "request-timeout",
+    ],
+    long_switches: &["stdin", "tty", "quiet"],
+    operands: 1,
+};
+
+const KUBECTL_RUN_SPEC: Wrapper = Wrapper {
+    name: "kubectl-run",
+    short_values: "cfF",
+    short_switches: "itqQ",
+    long_values: &[
+        "container",
+        "filename",
+        "pod-running-timeout",
+        "context",
+        "kubeconfig",
+        "namespace",
+        "server",
+        "as",
+        "token",
+        "request-timeout",
+        "image",
+        "image-pull-policy",
+        "restart",
+        "env",
+        "port",
+        "labels",
+        "overrides",
+        "serviceaccount",
+        "annotations",
+        "target",
+        "profile",
+        "set-image",
+        "copy-to",
+        "grace-period",
+        "dry-run",
+        "output",
+        "sort-by",
+        "template",
+        "type",
+        "vmodule",
+        "field-manager",
+        "field-validation",
+        "cluster",
+        "password",
+        "username",
+        "tls-server-name",
+        "validate",
+        "wait",
+        "generator",
+        "kustomize",
+        "subresource",
+    ],
+    long_switches: &[
+        "stdin",
+        "tty",
+        "quiet",
+        "command",
+        "attach",
+        "cascade",
+        "force",
+        "leave-stdin-open",
+        "privileged",
+        "rm",
+        "expose",
+        "interactive",
+        "now",
+        "save-config",
+        "ignore-not-found",
+        "recursive",
+        "insecure-skip-tls-verify",
+        "disable-compression",
+        "windows-line-endings",
+    ],
+    operands: 1,
+};
+
 static VERB_LAUNCHERS: &[VerbLauncher] = &[
     VerbLauncher {
         program: "uv",
+        groups: &[],
         verbs: &["run"],
         global: &UV_GLOBAL_SPEC,
         subcmd: &UV_RUN_SPEC,
@@ -5329,6 +5639,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "poetry",
+        groups: &[],
         verbs: &["run"],
         global: &POETRY_SPEC,
         subcmd: &POETRY_SPEC,
@@ -5336,6 +5647,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "pipx",
+        groups: &[],
         verbs: &["run"],
         global: &PIPX_RUN_SPEC,
         subcmd: &PIPX_RUN_SPEC,
@@ -5343,6 +5655,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "bundle",
+        groups: &[],
         verbs: &["exec"],
         global: &BUNDLE_GLOBAL_SPEC,
         subcmd: &BUNDLE_EXEC_SPEC,
@@ -5350,6 +5663,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "bundler",
+        groups: &[],
         verbs: &["exec"],
         global: &BUNDLE_GLOBAL_SPEC,
         subcmd: &BUNDLE_EXEC_SPEC,
@@ -5357,6 +5671,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "perf",
+        groups: &[],
         verbs: &["stat", "record", "trace", "ftrace"],
         global: &PERF_GLOBAL_SPEC,
         subcmd: &PERF_SUB_SPEC,
@@ -5364,13 +5679,15 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "docker",
-        verbs: &["run"],
+        groups: &["container", "compose"],
+        verbs: &["run", "create"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_RUN_SPEC,
         shell_string: false,
     },
     VerbLauncher {
         program: "docker",
+        groups: &["container", "compose"],
         verbs: &["exec"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_EXEC_SPEC,
@@ -5378,20 +5695,39 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "podman",
-        verbs: &["run"],
+        groups: &["container"],
+        verbs: &["run", "create"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_RUN_SPEC,
         shell_string: false,
     },
     VerbLauncher {
         program: "podman",
+        groups: &["container"],
         verbs: &["exec"],
         global: &DOCKER_GLOBAL_SPEC,
         subcmd: &DOCKER_EXEC_SPEC,
         shell_string: false,
     },
     VerbLauncher {
+        program: "kubectl",
+        groups: &[],
+        verbs: &["exec"],
+        global: &KUBECTL_GLOBAL_SPEC,
+        subcmd: &KUBECTL_EXEC_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
+        program: "kubectl",
+        groups: &[],
+        verbs: &["run", "debug"],
+        global: &KUBECTL_GLOBAL_SPEC,
+        subcmd: &KUBECTL_RUN_SPEC,
+        shell_string: false,
+    },
+    VerbLauncher {
         program: "launchctl",
+        groups: &[],
         verbs: &["asuser", "bsexec"],
         global: &EMPTY_WRAPPER_SPEC,
         subcmd: &ONE_OPERAND_SPEC,
@@ -5399,6 +5735,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "oc",
+        groups: &[],
         verbs: &["rsh", "exec", "debug", "run"],
         global: &OC_GLOBAL_SPEC,
         subcmd: &OC_EXEC_SPEC,
@@ -5406,6 +5743,7 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "op",
+        groups: &[],
         verbs: &["run"],
         global: &OP_GLOBAL_SPEC,
         subcmd: &OP_RUN_SPEC,
@@ -5413,11 +5751,79 @@ static VERB_LAUNCHERS: &[VerbLauncher] = &[
     },
     VerbLauncher {
         program: "opam",
+        groups: &[],
         verbs: &["exec"],
         global: &OPAM_SPEC,
         subcmd: &OPAM_SPEC,
         shell_string: false,
     },
+];
+
+const INERT_DASH_DASH_HEADS: &[&str] = &[
+    "[",
+    "basename",
+    "base64",
+    "cat",
+    "chgrp",
+    "chmod",
+    "chown",
+    "comm",
+    "cp",
+    "cut",
+    "date",
+    "dd",
+    "df",
+    "diff",
+    "dirname",
+    "du",
+    "echo",
+    "egrep",
+    "fgrep",
+    "file",
+    "grep",
+    "groups",
+    "gunzip",
+    "gzip",
+    "head",
+    "hexdump",
+    "hostname",
+    "id",
+    "less",
+    "ln",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "more",
+    "mv",
+    "od",
+    "printenv",
+    "printf",
+    "pwd",
+    "readlink",
+    "realpath",
+    "rgrep",
+    "rmdir",
+    "seq",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
+    "sort",
+    "stat",
+    "strings",
+    "tail",
+    "tar",
+    "tee",
+    "test",
+    "touch",
+    "tr",
+    "uname",
+    "uniq",
+    "wc",
+    "whoami",
+    "xxd",
+    "yes",
 ];
 
 fn slice_line(line: &Line, start: usize) -> Line {
@@ -5668,7 +6074,28 @@ fn build_prefixed_line(prefix: &str, prefix_idx: usize, line: &Line, rest_start:
     }
 }
 
-fn find_entrypoints(tokens: &[String], dynamic: &[bool], base: usize) -> Vec<(String, usize)> {
+fn docker_run_takes_value(token: &str) -> bool {
+    if let Some(long) = token.strip_prefix("--") {
+        match long.split_once('=') {
+            Some(_) => false,
+            None => DOCKER_RUN_SPEC.long_values.contains(&long),
+        }
+    } else {
+        token.len() > 1
+            && token.starts_with('-')
+            && token
+                .chars()
+                .next_back()
+                .is_some_and(|flag| DOCKER_RUN_SPEC.short_values.contains(flag))
+    }
+}
+
+fn find_entrypoints(
+    tokens: &[String],
+    dynamic: &[bool],
+    quoted: &[WordQuote],
+    base: usize,
+) -> Vec<(String, usize)> {
     let mut found = Vec::new();
     let mut i = 0usize;
     while i < tokens.len() {
@@ -5683,10 +6110,71 @@ fn find_entrypoints(tokens: &[String], dynamic: &[bool], base: usize) -> Vec<(St
         }
         if let Some(val) = token.strip_prefix("--entrypoint=") {
             found.push((val.to_string(), base + i));
+        } else if dynamic[base + i]
+            && token != "--entrypoint"
+            && !is_known_quoted_inline_value(token, quoted[base + i], &DOCKER_RUN_SPEC, false)
+        {
+            found.push((String::new(), base + i));
+        }
+        if !dynamic[base + i] && docker_run_takes_value(token) {
+            i += 1;
         }
         i += 1;
     }
     found
+}
+
+fn ssh_option_payloads(args: &[String], dynamic: &[bool]) -> Vec<(String, bool)> {
+    let mut payloads = Vec::new();
+    let mut local = Vec::new();
+    let mut permit_local = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        let token = args[i].as_str();
+        let option = if token == "-o" {
+            i += 1;
+            args.get(i)
+                .map(|value| (value.as_str(), dynamic.get(i).copied().unwrap_or(false)))
+        } else {
+            token
+                .strip_prefix("-o")
+                .filter(|rest| !rest.is_empty())
+                .map(|rest| (rest, dynamic[i]))
+        };
+        if let Some((option, option_dynamic)) = option {
+            let option = option.trim_start_matches([' ', '\t']);
+            let (name, value) = match option.find(['=', ' ', '\t']) {
+                Some(at) => {
+                    let name = &option[..at];
+                    let mut value = option[at..].trim_start_matches([' ', '\t']);
+                    if let Some(rest) = value.strip_prefix('=') {
+                        value = rest.trim_start_matches([' ', '\t']);
+                    }
+                    (name, value)
+                }
+                None => (option, ""),
+            };
+            match name.to_ascii_lowercase().as_str() {
+                "proxycommand" => payloads.push((value.to_string(), option_dynamic)),
+                "localcommand" => local.push((value.to_string(), option_dynamic)),
+                "permitlocalcommand" => {
+                    permit_local |= value
+                        .split([' ', '\t'])
+                        .next()
+                        .is_some_and(|yes| yes.eq_ignore_ascii_case("yes"))
+                }
+                _ if option_dynamic => {
+                    payloads.push((String::new(), true));
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if permit_local {
+        payloads.extend(local);
+    }
+    payloads
 }
 
 fn ssh_reads_stdin(tokens: &[String], dynamic: &[bool], quoted: &[WordQuote], head: usize) -> bool {
@@ -5756,7 +6244,7 @@ fn screen_attaches_only(args: &[String], dynamic: &[bool]) -> bool {
         for (at, flag) in flags.char_indices() {
             if flag == 'm' {
                 has_m = true;
-            } else if matches!(flag, 'r' | 'R' | 'X' | 'Q') {
+            } else if matches!(flag, 'r' | 'R') {
                 attach = true;
             }
             if SCREEN_SPEC.short_values.contains(flag) {
