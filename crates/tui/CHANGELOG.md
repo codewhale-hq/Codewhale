@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Expanded DeepSeek Harness 0.2.2 host compatibility:** switched on the brokered `attachments` service, added pure-API exports (`ReasoningEffortId`, `KNOWN_SESSION_EVENT_TYPES`, `deriveEventMessage`, and streaming/message helpers) and plugin-scoped module shims (`@deepseek-ai/dsh-credentials`, `@deepseek-ai/dsh-settings` with read-only host `locale`, `@deepseek-ai/dsh-home-paths` and `@deepseek-ai/dsh-atomic-write` confined to the plugin `dataDir`, `@deepseek-ai/dsh-skill`, and `@deepseek-ai/dsh-typert-protocol`), and added `ctx.tools.guard` (deny-only), `subagents.getProvider('fork')`, command `invocation.agent.session`, `agentPresets`, `agentDefaultModel`, `sessionProjections`, `workspaceRegistry`, `typertGateway`, policy-guarded `web`, and read-only `tools/result` projection.
+
+### Fixed
+
+- **DSH importer scan cap and named group closures:** raised the npm dependency scanner's per-file limit to 8 MiB (matching `PLUGIN_UI_MAX_BYTES`) so bundled client JS assets in packages like `dsh-pet`, `dsh-univer-office`, and `dsh-genui` pass import review, and included named `group: true` modules such as `dsh-mnemon/bundle` in the reviewed module closure. (CW-8289)
+
 ## [0.10.4] - 2026-11-23
 
 Codewhale v0.10.4 is a hotfix release. Ctrl+V no longer pastes text twice in Windows Terminal, which also doubled API keys pasted into `/provider`; the fix was checked on a real Windows Terminal. `codewhale update` no longer refuses a release binary because an unrelated `cargo install` left a Cargo record beside it. The refusal happens inside the installed 0.10.3, so an install it affects cannot update itself to 0.10.4: rerun the installer once (`curl -fsSL https://codewhale.net/install.sh | sh` on macOS and Linux, or `install.bat` from the 0.10.4 Windows archive), and later updates work. `/provider` now works for projects on a second Windows drive such as D:, Computer Use installs from the Marketplace, and every terminal draws the dot whale in `/pet`. `url` is updated to 2.5.9 for RUSTSEC-2026-0592. DeepSeek Harness compatibility is limited: of 32 published packages tried unmodified, 2 activate in the terminal; [DSH compatibility](docs/DSH_COMPATIBILITY.md) lists each one.

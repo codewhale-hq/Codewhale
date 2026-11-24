@@ -24,6 +24,18 @@ import {readFileSync} from 'node:fs'
 import { canonicalPath, insideKey, pathKey, unlinkedKeyMatches } from './canonical-path.ts'
 import { RUNTIME } from '../runtime.ts'
 import { prepareBunSource, REVIEWED_IMPORT } from './bun-closure.ts'
+import * as dshMessageCompat from './dsh-message-compat.js'
+import {
+  dshAtomicWriteModule,
+  dshCredentialsModule,
+  dshHomePathsModule,
+  dshSessionSurfaceModule,
+  dshSettingsModule,
+  dshSkillModule,
+  dshSubagentModule,
+  dshTypertProtocolModule,
+  dshWorkspaceModule,
+} from './dsh-shims.ts'
 import compatibility from './compatibility.json' with { type: 'json' }
 
 const SCHEME = 'codewhale-host:'
@@ -253,19 +265,61 @@ let installed = false
  * Install the hooks once, publishing `modules` (key → module namespace) as the
  * singletons plugin code will see.
  */
+function withDefaultDshModules(modules: Record<string, Record<string, unknown>>): Record<string, Record<string, unknown>> {
+  const llmDefaults: Record<string, unknown> = {
+    createUserMessage: dshMessageCompat.createUserMessage,
+    createAssistantMessage: dshMessageCompat.createAssistantMessage,
+    createSystemMessage: dshMessageCompat.createSystemMessage,
+    createToolResultMessage: dshMessageCompat.createToolResultMessage,
+    freezeMessage: dshMessageCompat.freezeMessage,
+    contentHasImage: dshMessageCompat.contentHasImage,
+    ReasoningEffortId: dshMessageCompat.ReasoningEffortId,
+    MessageId: dshMessageCompat.MessageId,
+    ToolCallId: dshMessageCompat.ToolCallId,
+    isAgentLoopRequest: dshMessageCompat.isAgentLoopRequest,
+    resolveRetryPolicy: dshMessageCompat.resolveRetryPolicy,
+    boundContextSummary: dshMessageCompat.boundContextSummary,
+    BlockAssembler: dshMessageCompat.BlockAssembler,
+    LlmAdapter: dshMessageCompat.LlmAdapter,
+    LlmError: dshMessageCompat.LlmError,
+    HarnessError: dshMessageCompat.HarnessError,
+  }
+  const sessionDefaults: Record<string, unknown> = {
+    SessionId: dshMessageCompat.SessionId,
+    SESSION_FORMAT_VERSION: dshMessageCompat.SESSION_FORMAT_VERSION,
+    KNOWN_SESSION_EVENT_TYPES: dshMessageCompat.KNOWN_SESSION_EVENT_TYPES,
+    deriveEventMessage: dshMessageCompat.deriveEventMessage,
+  }
+  return {
+    'dsh-credentials': dshCredentialsModule as unknown as Record<string, unknown>,
+    'dsh-settings': dshSettingsModule as unknown as Record<string, unknown>,
+    'dsh-home-paths': dshHomePathsModule as unknown as Record<string, unknown>,
+    'dsh-atomic-write': dshAtomicWriteModule as unknown as Record<string, unknown>,
+    'dsh-skill': dshSkillModule as unknown as Record<string, unknown>,
+    'dsh-typert-protocol': dshTypertProtocolModule as unknown as Record<string, unknown>,
+    'dsh-workspace': dshWorkspaceModule as unknown as Record<string, unknown>,
+    'dsh-session-surface': dshSessionSurfaceModule as unknown as Record<string, unknown>,
+    'dsh-subagent': dshSubagentModule as unknown as Record<string, unknown>,
+    ...modules,
+    'dsh-llm-values': { ...llmDefaults, ...(modules['dsh-llm-values'] ?? {}) },
+    'dsh-session-values': { ...sessionDefaults, ...(modules['dsh-session-values'] ?? {}) },
+  }
+}
+
 export function installResolveHooks(modules: Record<string, Record<string, unknown>>) {
   if (installed) return
   installed = true
-  ;(globalThis as any)[REGISTRY_KEY] = modules
+  const merged = withDefaultDshModules(modules)
+  ;(globalThis as any)[REGISTRY_KEY] = merged
   if (RUNTIME.name === 'bun') {
-    installBunResolver(modules)
+    installBunResolver(merged)
     return
   }
   nodeModule.registerHooks({
     resolve(specifier, context, nextResolve) {
       const key = classifySpecifier(specifier)
       if (key !== null) {
-        if (!(key in modules)) throw new UnsupportedPeerError(specifier)
+        if (!(key in merged)) throw new UnsupportedPeerError(specifier)
         return { url: `${SCHEME}${key}`, format: 'module', shortCircuit: true }
       }
       const caller=closureAt(context.parentURL)
@@ -284,7 +338,7 @@ export function installResolveHooks(modules: Record<string, Record<string, unkno
     load(url, context, nextLoad) {
       if (url.startsWith(SCHEME)) {
         const key = url.slice(SCHEME.length)
-        return { format: 'module', source: virtualSource(key, modules[key]), shortCircuit: true }
+        return { format: 'module', source: virtualSource(key, merged[key]), shortCircuit: true }
       }
       const result=nextLoad(url, context)
       const closure=closureAt(url)

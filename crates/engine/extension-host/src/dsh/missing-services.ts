@@ -13,7 +13,6 @@ export const PROVIDED_SERVICES: ReadonlySet<string> = new Set(Object.values(comp
 
 const UNPROVIDED_REASONS: ReadonlyArray<readonly [(name: string) => boolean, string]> = [
   [(name) => name === 'webServer' || name === 'connection', 'DSH Web UI services; Codewhale has no plugin web server'],
-  [(name) => name === 'agentPresets', 'the DSH 0.2.2 agent-preset registry is not adopted'],
   [(name) => name.startsWith('@deepseek-ai/dsh-client-'), 'DSH client UI services'],
 ]
 

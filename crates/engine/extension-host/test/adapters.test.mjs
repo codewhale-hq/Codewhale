@@ -57,6 +57,13 @@ test('the shipped adapter table holds the reviewed adapters, and the root still 
     'pluginManager',
     'deepseekAccount',
     'terminal',
+    'attachments',
+    'agentPresets',
+    'agentDefaultModel',
+    'sessionProjections',
+    'workspaceRegistry',
+    'typertGateway',
+    'web',
   ])
   assert.ok(new HostRoot(rpc, 'plugin'))
   assert.ok(new HostRoot(rpc, 'builtin'))
