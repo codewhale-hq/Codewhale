@@ -7408,8 +7408,6 @@ mod tests {
             name: "demo".to_string(),
             scope: SkillScope::Global,
             safe_target_path: "/tmp/demo".to_string(),
-            before_digest: None,
-            after_digest: None,
             outcome,
         };
         let installed = portable_mutation_receipt(&make(TuiOutcome::Installed));

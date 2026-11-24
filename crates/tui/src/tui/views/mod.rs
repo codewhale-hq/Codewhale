@@ -1315,11 +1315,6 @@ pub enum ViewEvent {
     /// setup; this is pick/select only.
     FleetRosterOpenFleetsRequested,
 
-    /// The Fleet list view asks the host to open a saved Fleet's detail view.
-    FleetListOpenDetailRequested {
-        name: String,
-        scope: codewhale_engine::fleet::store::FleetScope,
-    },
     /// A Fleet store mutation happened (select/save/delete/rename/copy).
     /// The message is the exact receipt; the host refreshes roster state.
     FleetStoreChanged {

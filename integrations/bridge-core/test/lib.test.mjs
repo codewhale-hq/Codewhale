@@ -18,6 +18,7 @@ import {
   preservedChatStateFields,
   readJsonSafe,
   readSse,
+  splitAtCodePoint,
   splitMessage,
   stripGroupPrefix,
   ThreadStore,
@@ -373,4 +374,10 @@ test("splitMessage byte cap is opt-in", () => {
   const chunks = splitMessage(cjk, 3500, 0);
   assert.equal(chunks.length, 2); // char limit only
   assert.ok(Buffer.byteLength(chunks[0], "utf8") > 3800);
+});
+
+test("splitAtCodePoint never leaves half a surrogate pair on either side", () => {
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 3), ["ab", "😀cd"]);
+  assert.deepEqual(splitAtCodePoint("ab😀cd", 4), ["ab😀", "cd"]);
+  assert.deepEqual(splitAtCodePoint("abc", 10), ["abc", ""]);
 });

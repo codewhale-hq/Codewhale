@@ -18,10 +18,14 @@ export interface RuntimeEvent {
   payload: unknown;
 }
 
+export const MAX_SSE_FRAME_CHARS = 2 * 1024 * 1024;
+
 export class SseParser {
   private buffer = "";
 
-  /** Feed one raw chunk; returns the complete events it finished. */
+  constructor(private readonly maxFrameChars = MAX_SSE_FRAME_CHARS) {}
+
+  /** Feed one raw chunk; returns the complete events it finished. Throws when an unterminated frame outgrows the limit. */
   push(chunk: string): RuntimeEvent[] {
     this.buffer += chunk;
     const events: RuntimeEvent[] = [];
@@ -34,6 +38,10 @@ export class SseParser {
         events.push(event);
       }
       boundary = this.nextBoundary();
+    }
+    if (this.buffer.length > this.maxFrameChars) {
+      this.buffer = "";
+      throw new Error("Runtime event frame exceeds the size limit.");
     }
     return events;
   }

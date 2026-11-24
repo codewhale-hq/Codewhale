@@ -55,6 +55,7 @@ const HIDDEN_RM: &[&str] = &[
     "source <(echo rm x)",
     "find . -exec rm {} +",
     "find . -execdir rm {} \\;",
+    "find . -delete",
     "if true; then rm x; fi",
     "while rm x; do :; done",
     "until rm x; do :; done",

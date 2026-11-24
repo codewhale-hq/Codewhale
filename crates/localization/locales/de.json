@@ -1875,7 +1875,6 @@
   "SidebarTodoLabel": "Zu erledigen",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining} übrig",
   "SidebarStopControl": "Stopp",
-  "SidebarDestructiveArmed": "Destruktive Aktion scharf — Enter zur Bestätigung oder Entwurf leeren zum Abbrechen",
   "WorkSurfaceStopConfirmHint": "Stopp bestätigen · Esc bricht ab",
   "CoordinationWorkTitle": "Koordinierungsarbeit",
   "CoordinationSummaryDecisions": "{count} Entscheidungen",

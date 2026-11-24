@@ -129,8 +129,7 @@ pub struct FleetDetailView {
 }
 
 impl FleetDetailView {
-    /// Open a saved Fleet by name and scope. The caller (the list view) names
-    /// the scope explicitly, so ambiguity is impossible here.
+    #[cfg(test)]
     pub fn open(app: &App, config: &Config, name: &str, scope: FleetScope) -> Option<Self> {
         Self::open_for_member(app, config, name, scope, None)
     }

@@ -1875,7 +1875,6 @@
   "SidebarTodoLabel": "करने योग्य",
   "WorkSurfaceTodoProgress": "{label} {completed}/{total} · {remaining} शेष",
   "SidebarStopControl": "रोकें",
-  "SidebarDestructiveArmed": "विनाशकारी कार्रवाई सक्रिय — पुष्टि के लिए Enter दबाएँ या रद्द के लिए मसौदा साफ़ करें",
   "WorkSurfaceStopConfirmHint": "रोकने की पुष्टि · Esc रद्द करता है",
   "CoordinationWorkTitle": "समन्वय कार्य",
   "CoordinationSummaryDecisions": "{count} निर्णय",

@@ -734,6 +734,14 @@ export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
 }
 
+export function splitAtCodePoint(text, maxChars) {
+  const value = String(text || "");
+  let cut = Math.min(value.length, Math.max(1, Math.floor(maxChars)));
+  const code = value.charCodeAt(cut - 1);
+  if (cut < value.length && cut > 1 && code >= 0xd800 && code <= 0xdbff) cut -= 1;
+  return [value.slice(0, cut), value.slice(cut)];
+}
+
 function splitChunkByBytes(chunk, maxBytes) {
   const out = [];
   let buf = "";

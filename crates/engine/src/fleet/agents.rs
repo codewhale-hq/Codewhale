@@ -9,7 +9,7 @@ use tokio::process::Command;
 pub const FIXTURE_AGENT_ENV: &str = "CODEWHALE_ACP_FIXTURE_AGENT";
 pub const FIXTURE_AGENT_ID: &str = "fixture";
 pub const CUSTOM_AGENTS_ENV: &str = "CODEWHALE_CUSTOM_ACP_AGENTS";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_VERSION_CHARS: usize = 80;
 const MAX_VERSION_BYTES: usize = 8192;
 const MAX_VERSION_STDERR_BYTES: usize = 64 * 1024;
@@ -31,6 +31,7 @@ impl ExecutorUnavailable {
     pub const BELOW_MIN_VERSION: &'static str = "below_min_version";
     pub const NEEDS_SIGN_IN: &'static str = "needs_sign_in";
     pub const NO_ACP: &'static str = "no_acp";
+    pub const VERSION_UNKNOWN: &'static str = "version_unknown";
     pub const EXECUTOR_NOT_SUPPORTED: &'static str = "executor_not_supported";
     pub const ENVIRONMENT_NOT_SUPPORTED: &'static str = "environment_not_supported";
 
@@ -135,19 +136,6 @@ pub const AGENTS: &[ExternalAgent] = &[
         min_version: Some("1.5.0"),
         upgrade: Some("agy update"),
         login: Some("agy acp --login"),
-        adapter: None,
-        adapter_binary: None,
-        adapter_cli_env: None,
-    },
-    ExternalAgent {
-        id: "gemini",
-        name: "Gemini CLI",
-        binary: "gemini",
-        acp_args: Some(&["--acp"]),
-        website: "https://geminicli.com",
-        min_version: Some("0.65.0"),
-        upgrade: Some("npm i -g @google/gemini-cli@latest"),
-        login: Some("gemini"),
         adapter: None,
         adapter_binary: None,
         adapter_cli_env: None,
@@ -1138,7 +1126,7 @@ mod tests {
 
     #[test]
     fn registry_rows_are_unique_with_verified_commands() {
-        assert_eq!(AGENTS.len(), 25);
+        assert_eq!(AGENTS.len(), 24);
         let mut ids: Vec<&str> = AGENTS.iter().map(|agent| agent.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -1161,7 +1149,6 @@ mod tests {
             "codex",
             "dsh",
             "antigravity",
-            "gemini",
             "cursor",
             "cline",
             "devin",

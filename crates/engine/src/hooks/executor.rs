@@ -611,7 +611,7 @@ const HOOK_PIPE_CAPTURE_MAX_BYTES: usize = 64 * 1024;
 /// Largest serialized `updatedInput` object accepted from a decision hook.
 /// This is intentionally smaller than the pipe cap so the surrounding JSON
 /// and other fields still have headroom.
-const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
+pub const HOOK_UPDATED_INPUT_MAX_BYTES: usize = 32 * 1024;
 
 /// Largest replacement message accepted from `message_submit`.
 const HOOK_MESSAGE_REPLACEMENT_MAX_CHARS: usize = 32_000;
