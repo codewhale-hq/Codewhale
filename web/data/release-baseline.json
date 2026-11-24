@@ -1,42 +1,42 @@
 {
   "format": "codewhale.release-baseline.v1",
-  "tag": "v0.10.3",
-  "version": "0.10.3",
+  "tag": "v0.10.4",
+  "version": "0.10.4",
   "features": [
     {
       "id": "undo-range",
       "name": "Request range undo",
       "summary": "/undo select rewinds a chosen request and its file changes; Runtime clients can preview and confirm an exact turn range.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "unix-uninstall",
       "name": "Receipt-owned uninstall",
       "summary": "Remove a receipt-owned release install or print its package manager's command; data kept unless --purge-data.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "install-cleanup",
       "name": "Installation cleanup",
       "summary": "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "auto-update",
       "name": "Automatic updates",
       "summary": "Release-binary installs download updates in the background and apply them at the next start; update --rollback undoes.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "cloud-computer-dispatch",
       "name": "Cloud computer conversations",
       "summary": "Dispatch, inspect, continue and stop one account cloud conversation from terminal and desktop, saved whales included.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "shell-tool",
@@ -85,7 +85,7 @@
       "name": "MCP tool approval rules",
       "summary": "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "exec-policy",
@@ -127,7 +127,7 @@
       "name": "Plugin creator",
       "summary": "Enables the built-in plugin_manager tool and Creator mode host module while Rust retains permission gates.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "finance-host",
@@ -239,7 +239,7 @@
       "name": "Answerless output-limit recovery",
       "summary": "Opt-in bounded answer retries after an output-limit stop, including Fleet, with request-scoped nudge receipts.",
       "status": "flagged",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "fleet",
@@ -281,7 +281,7 @@
       "name": "Reminders into the same thread",
       "summary": "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "task-suggestions",
@@ -323,14 +323,14 @@
       "name": "Present final files",
       "summary": "Declare existing workspace files as final deliverables with a read-only handoff receipt.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "show-data",
       "name": "Charts in the transcript",
       "summary": "Read-only show_data tool: display sparklines, labelled bars or trends, with matching text summaries.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "read-media",
@@ -351,14 +351,14 @@
       "name": "Pasted image cleanup",
       "summary": "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "sessions-migrate",
       "name": "Workspace session migration",
       "summary": "codewhale sessions migrate updates saved sessions, checkpoints, and Runtime thread bindings after a workspace rename.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "memory",
@@ -435,7 +435,7 @@
       "name": "Attested watch events",
       "summary": "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "compatibility-tool-free-turns",
@@ -582,7 +582,7 @@
       "name": "Conversation export",
       "summary": "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.3.31"
     },
     {
       "id": "live-thinking",
@@ -596,7 +596,7 @@
       "name": "Local model reasoning compatibility",
       "summary": "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "workbar",
@@ -673,7 +673,7 @@
       "name": "Local whale voice",
       "summary": "Edit SOUL.md for a local whale and inspect the personality captured for each turn.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "profile-constitution",
@@ -701,56 +701,56 @@
       "name": "Instruction budgets",
       "summary": "Global and project standing instructions get separate token budgets, with every trim or skip reported.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "github-action-review",
       "name": "GitHub Action review",
       "summary": "Generate pinned workflows for automatic or authorized mention reviews; publish findings with recorded evidence.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.1"
     },
     {
       "id": "telegram-agent",
       "name": "Telegram agent bridge",
       "summary": "Use an Engine from Telegram with durable prompt recovery, human-owned approvals and retained replies.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.8.53"
     },
     {
       "id": "dingtalk-agent",
       "name": "DingTalk agent bridge",
       "summary": "Connect an internal DingTalk app to the same Engine with scoped identity and durable message recovery.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "compaction-archive-recall",
       "name": "Compaction archive recall",
       "summary": "context_archive_search and context_archive_get read the pre-compaction transcript a summary replaced.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "usage-statistics",
       "name": "Usage statistics",
       "summary": "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "cache-call-receipts",
       "name": "Per-call cache receipts",
       "summary": "/cache calls shows bounded native receipts with frozen prices, selected currency and missing cache telemetry.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "local-proxy-fallback",
       "name": "Local proxy fallback",
       "summary": "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "rate-limit-recovery",
@@ -764,14 +764,14 @@
       "name": "Custom Responses profile",
       "summary": "A custom provider with wire = responses can name an allowlisted responses_profile; omitted means standard.",
       "status": "stable",
-      "since": "unreleased"
+      "since": "0.10.3"
     },
     {
       "id": "native-runtime-attachment",
       "name": "Native Runtime attachment",
       "summary": "Attach-only native clients select an authenticated existing owner and a fixed workspace.",
       "status": "experimental",
-      "since": "unreleased"
+      "since": "0.10.3"
     }
   ],
   "providers": [

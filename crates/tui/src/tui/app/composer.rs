@@ -997,6 +997,21 @@ impl App {
         false
     }
 
+    pub(crate) fn attach_clipboard_image(&mut self) -> bool {
+        if self.clipboard_paste_within_dedupe_window() || self.clipboard.requires_terminal_paste() {
+            return false;
+        }
+        let content = self.clipboard.read(self.workspace.as_path());
+        self.note_clipboard_paste();
+        match content {
+            Some(image @ ClipboardContent::Image(_)) => {
+                self.apply_clipboard_content(image);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
         match content {
             ClipboardContent::Text(text) => {

@@ -123,6 +123,7 @@ jobs:
         # while the run is queued behind the concurrency group.
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
       - name: Verify expected commit
         shell: bash
         env:
@@ -148,6 +149,19 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Refresh published release facts
+        # Clear CLOUDFLARE_API_TOKEN so only the deploy step sees the Cloudflare credential.
+        env:
+          CLOUDFLARE_API_TOKEN: ''
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/sync-latest-release.mjs
+          node scripts/derive-facts.mjs
+          node scripts/derive-release-docs.mjs
+          node scripts/check-cloud-facts.mjs
+          node scripts/check-facts.mjs
+          node scripts/check-release-docs.mjs
       - name: Record deployed/source drift
         # Read-only and credential-free. A mismatch is the normal state here —
         # it is the gap this run is about to close — so this step reports

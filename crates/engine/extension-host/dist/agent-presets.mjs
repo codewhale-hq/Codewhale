@@ -13218,6 +13218,33 @@ var init_compatibility = __esm({
 // src/dsh/resolve-hooks.ts
 import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL2 } from "node:url";
 import { resolve as resolve2, isAbsolute as isAbsolute2, dirname as dirname2 } from "node:path";
+function packageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+function classifySpecifier(specifier) {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.includes(":")) return null;
+  if (Object.hasOwn(SINGLETONS, specifier)) return SINGLETONS[specifier];
+  const name = packageName(specifier);
+  if (Object.hasOwn(SINGLETONS, name)) {
+    if (specifier !== name) throw new UnsupportedPeerError(specifier);
+    return SINGLETONS[name];
+  }
+  if (name.startsWith("@deepseek-ai/dsh-") || name.startsWith("@deepseek-ai/cordis-")) {
+    throw new UnsupportedPeerError(name);
+  }
+  return null;
+}
+function explainImportError(error) {
+  const match = error instanceof Error ? /Cannot find package '([^']+)'/.exec(error.message) : null;
+  if (!match) return error;
+  try {
+    classifySpecifier(match[1]);
+  } catch (unsupported) {
+    return unsupported;
+  }
+  return error;
+}
 function keyIn(closure, path2) {
   const canonical = insideKey(closure.canonicalRoot, path2);
   if (canonical !== void 0) return canonical;
@@ -13269,7 +13296,7 @@ function closureAt(url) {
     if (inside !== void 0) return { root, receipt, path: inside };
   }
 }
-var SINGLETONS, reviewedClosures;
+var SINGLETONS, UnsupportedPeerError, reviewedClosures;
 var init_resolve_hooks = __esm({
   "src/dsh/resolve-hooks.ts"() {
     "use strict";
@@ -13278,7 +13305,44 @@ var init_resolve_hooks = __esm({
     init_bun_closure();
     init_compatibility();
     SINGLETONS = compatibility_default.module_singletons;
+    UnsupportedPeerError = class extends Error {
+      constructor(specifier) {
+        super(`requires \`${specifier}\`, which the Codewhale extension host does not provide`);
+        this.specifier = specifier;
+        this.name = "UnsupportedPeerError";
+      }
+      specifier;
+    };
     reviewedClosures = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/dsh/missing-services.ts
+function describeMissingServices(names, { scoped: classifyScoped = true } = {}) {
+  const absent = names.filter((name) => !classifyScoped || !PROVIDED_SERVICES.has(name));
+  const scoped = names.filter((name) => classifyScoped && PROVIDED_SERVICES.has(name));
+  const parts = [];
+  if (absent.length > 0) {
+    const owned = absent.filter((name) => REFUSED_SERVICES.has(name));
+    const reasons = [...new Set(absent.flatMap((name) => UNPROVIDED_REASONS.filter(([matches]) => matches(name)).map(([, reason]) => reason)))];
+    parts.push(`${quoted(absent)}, not provided by the Codewhale extension host in this phase` + (reasons.length > 0 ? ` (${reasons.join("; ")})` : "") + (owned.length > 0 ? `; ${quoted(owned)} belong${owned.length === 1 ? "s" : ""} to the Codewhale core and no reviewed bridge exposes ${owned.length === 1 ? "it" : "them"} yet` : ""));
+  }
+  if (scoped.length > 0) parts.push(`${quoted(scoped)}, provided by the host but unavailable in this scope`);
+  return parts.join("; ");
+}
+var REFUSED_SERVICES, PROVIDED_SERVICES, UNPROVIDED_REASONS, quoted;
+var init_missing_services = __esm({
+  "src/dsh/missing-services.ts"() {
+    "use strict";
+    init_compatibility();
+    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
+    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
+    UNPROVIDED_REASONS = [
+      [(name) => name === "webServer" || name === "connection", "DSH Web UI services; Codewhale has no plugin web server"],
+      [(name) => name === "agentPresets", "the DSH 0.2.2 agent-preset registry is not adopted"],
+      [(name) => name.startsWith("@deepseek-ai/dsh-client-"), "DSH client UI services"]
+    ];
+    quoted = (names) => names.map((name) => `\`${name}\``).join(", ");
   }
 });
 
@@ -14558,6 +14622,12 @@ function validateInventory(group) {
     if (entry.subtree) validateInventory(entry.subtree.root);
   }
 }
+function describeCause(error) {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+function fiberStateName(state) {
+  return Object.entries(FiberState).find(([, value]) => value === state)?.[0] ?? String(state);
+}
 async function mountReviewedComposition(ctx, baseUrl, spec) {
   const review = reviewComposition(spec);
   function groups(rows) {
@@ -14667,6 +14737,7 @@ var init_composition = __esm({
     init_skill_filesystem();
     init_shell_hooks();
     init_resolve_hooks();
+    init_missing_services();
     init_persona();
     init_agent_presets();
     init_cot_translation();
@@ -14708,7 +14779,24 @@ var init_composition = __esm({
       /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
       commit() {
       }
+      importFailures = /* @__PURE__ */ new Map();
+      importFailure(name) {
+        return this.importFailures.has(name) ? { error: this.importFailures.get(name) } : void 0;
+      }
       import(name) {
+        this.importFailures.delete(name);
+        const record3 = (error) => {
+          this.importFailures.set(name, error);
+          throw error;
+        };
+        try {
+          const imported = this.importRow(name);
+          return imported instanceof Promise ? imported.catch(record3) : imported;
+        } catch (error) {
+          return record3(error);
+        }
+      }
+      importRow(name) {
         if (name === PERSONA) return reviewedPersonaModule;
         if (name === AGENT_PRESETS) return defineReviewedAgentPresets(mountReviewedComposition);
         if (name === "cordis:group" || name === "@deepseek-ai/cordis-plugin-group") return ReviewedGroup;
@@ -14778,10 +14866,15 @@ var init_composition = __esm({
         validateInventory(this.tree.root);
         for (const entry of this.tree.entries()) {
           if (entry.disabled) continue;
-          if (!entry.fiber || entry.fiber.uid === null) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} failed activation`);
+          const row = `composition row ${JSON.stringify(entry.options.id ?? entry.options.name)}`;
+          if (!entry.fiber || entry.fiber.uid === null) {
+            const failure = this.tree.importFailure(entry.options.name);
+            throw new Error(failure !== void 0 ? `${row} failed activation: ${describeCause(explainImportError(failure.error))}` : `${row} failed activation (${entry.fiber ? `fiber ${fiberStateName(entry.fiber.state)}` : "no fiber"}); see the logged error above`, failure !== void 0 ? { cause: failure.error } : void 0);
+          }
           await entry.fiber.await();
           const missing = Object.keys(entry.fiber.inject).filter((name) => entry.fiber.ctx.get(name) === void 0);
-          if (missing.length || entry.fiber.state !== FiberState.ACTIVE) throw new Error(`composition row ${JSON.stringify(entry.options.id ?? entry.options.name)} is not active`);
+          if (missing.length) throw new Error(`${row} requires ${describeMissingServices(missing)}`);
+          if (entry.fiber.state !== FiberState.ACTIVE) throw new Error(`${row} is not active (fiber ${fiberStateName(entry.fiber.state)})`);
         }
         const leaked = leakedServices(this.ctx, this.ctx.fiber);
         if (leaked.length) throw new Error(`composition published shared-root services: ${leaked.join(", ")}`);
@@ -16163,8 +16256,9 @@ var init_settings = __esm({
           constructor(ctx) {
             super(ctx, "settings");
           }
-          async describe() {
-            return [descriptor(await host.broker(this.ctx, "settings", "describe", {}))];
+          describe() {
+            host.brokerTicket(this.ctx, "settings");
+            return host.broker(this.ctx, "settings", "describe", {}).then((row) => [descriptor(row)]);
           }
           async update(ns, patch, expectedRevision) {
             return this.write(ns, "update", { patch: plain2(patch, "a settings patch") }, expectedRevision);
@@ -16522,7 +16616,7 @@ var init_commands = __esm({
 
 // src/root.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-var REFUSED_SERVICES, PROVIDED_SERVICES, CORDIS_SERVICES, ownerStorage;
+var CORDIS_SERVICES, ownerStorage;
 var init_root = __esm({
   "src/root.ts"() {
     "use strict";
@@ -16532,6 +16626,7 @@ var init_root = __esm({
     init_rpc();
     init_dsh_message_compat();
     init_resolve_hooks();
+    init_missing_services();
     init_compatibility();
     init_dsh_tools_compat();
     init_json();
@@ -16547,8 +16642,6 @@ var init_root = __esm({
     init_skills();
     init_tier();
     init_commands();
-    REFUSED_SERVICES = new Set(compatibility_default.refused_services);
-    PROVIDED_SERVICES = new Set(Object.values(compatibility_default.provided_services).flat());
     CORDIS_SERVICES = new Set(compatibility_default.provided_services.cordis);
     ownerStorage = new AsyncLocalStorage2();
   }

@@ -11,8 +11,8 @@ description = "Fetch + verified disk cache for the Codewhale cloud facts channel
 workspace = true
 
 [dependencies]
-codewhale-config = { path = "../config", version = "0.10.3" }
-codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.4" }
+codewhale-release = { path = "../release", version = "0.10.4" }
 reqwest.workspace = true
 libc.workspace = true
 serde.workspace = true

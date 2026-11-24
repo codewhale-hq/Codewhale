@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/codewhale-hq/codewhale-ratatui",
   "commit": "2ad795b37782990844fd9cc2d78bac460929365a",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "upstream_version": "0.1.0",
   "version_note": "version identifies the current Engine vendored Cargo package. The top-level commit/files and earlier update records retain historical snapshot provenance. runtime_update records the selected current upstream behavior and retained Engine adaptations; this is not a whole-repository mirror.",
   "license": "MIT",
@@ -294,13 +294,29 @@
         "sha256": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
       },
       "src/components/native_composer.rs": {
-        "reason": "public paint and full available height without a menu",
-        "sha256": "c3d536c6c86faac5c81733790ec856d0e2169e4fdcc0b26d194a2d9e88bc9d97"
+        "reason": "public paint and full available height without a menu; bounded composer wrapping for long non-ASCII drafts",
+        "sha256": "f6d082267037fdac248b37f6a35109aace538d104a6746d707dc5746ce0f75e4"
       },
       "Cargo.toml": {
-        "reason": "Engine package 0.2.0 and local protocol dependency",
-        "sha256": "fe27335251c06037cabdab9866e0ca5fa7c320e384d965fc4e65a95c141a8902"
+        "reason": "Engine package 0.2.1 and local protocol dependency",
+        "sha256": "bd990e6110d09e71710df77f94b7a126230fafb003ce7c90bfa5cf0062fa76e7"
+      },
+      "src/components/motion.rs": {
+        "reason": "Engine activity sweep (ACTIVITY_SWEEP_* and activity_sweep_strength) driven by the 5.4.0 motion tokens",
+        "sha256": "0043ca04f13a861a3b332c786c99e8e32692abec9a2d10527de829b9906200c4"
       }
+    }
+  },
+  "design_5_4_update": {
+    "commit": "e7b6003e553a31276703f53315130101ccc702c6",
+    "scope": "Design tokens 5.4.0: generated roles, appearance-aware theme, named palettes and the vendored tokens.rs. Other upstream changes between e8c2746 and e7b6003 are outside this source synchronization.",
+    "local_changes": "None: these five files match upstream at this commit byte for byte. motion.rs carries the 5.4.0 sweep constants plus the Engine activity sweep recorded under runtime_update.retained_engine_adaptations.",
+    "files": {
+      "src/roles.rs": "f8ea3567a7b04390525131f7dd2ce02f4cc4b30dc1b331c7f0610c6df8cedefc",
+      "src/theme.rs": "efcb750efe749815e0834977c1c3df6419cbdde3b0070f4cb572325e409259de",
+      "src/tui_palettes.rs": "7bae01e430dd5bf33e0450f10462fec6ae28e16306e6a97d4a7b5946d9772276",
+      "assets/tui-palettes.json": "d6e214a2edc4416bb9cc7d0d18df18ab3ec6272eeb9bd37a759424b838834708",
+      "vendor/codewhale-design/tokens.rs": "0350649d604cb82669fd43f8f4da5caa4f4c3e52a9760a735db7367e94be1d72"
     }
   },
   "habitat_update": {
@@ -313,6 +329,7 @@
       "src/components/habitat_poses.rs": "a9572968ddcf12b427404a4d41e11a3a0c9596c6dda06415d224eb84930e0919",
       "src/gallery/habitat.rs": "12c46ce0ad9baee3931b5dff330bf42ed54ee55f72380692ed33ee109b69108b",
       "examples/habitat.rs": "c063f79997fd3fdde9c853fd85b20a1b61b1ec4270ae71231b4e1437c8a8d9b7"
-    }
+    },
+    "upstream_main_note": "b18d770 is the review branch head. Upstream main merged it as 0481d4e with further Habitat fixes (strict truecolor-only glow, no fg-equals-bg glyphs, ultrawide whale spacing, wide-grapheme clearance) that are not vendored here."
   }
 }

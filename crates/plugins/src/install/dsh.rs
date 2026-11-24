@@ -3554,21 +3554,25 @@ pub fn convert_package_with_network(
         )?;
     }
     let loaded = load_bundle(&package)?;
-    let _staged_npm = if let Some(policy) = network {
-        if let Some(dir) = super::npm_deps::maybe_stage_with_dependencies(
+    let staged_npm = if let Some(policy) = network {
+        if let Some(stage) = super::npm_deps::maybe_stage_with_dependencies(
             &package.root,
             &loaded.manifest,
             &loaded.entries,
             policy,
         )? {
-            package = Package::open(dir.path())?;
-            Some(dir)
+            package = Package::open(stage.path())?;
+            Some(stage)
         } else {
             None
         }
     } else {
         None
     };
+    let fetched_npm = staged_npm
+        .as_ref()
+        .map(|stage| stage.fetched.clone())
+        .unwrap_or_default();
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
     let mut client_closures = Vec::new();
@@ -3584,6 +3588,9 @@ pub fn convert_package_with_network(
     )?;
     let requires_native = !native_rows.is_empty();
     let mut notes = loaded.notes;
+    if let Some(note) = fetched_npm_note(&fetched_npm) {
+        notes.push(note);
+    }
     let mut components = Components::default();
     if !requires_native {
         components.walk(&package, &loaded.entries, None)?;
@@ -3890,7 +3897,7 @@ pub fn convert_package_with_network(
     };
     output_files.add(
         "CONVERSION.md".into(),
-        conversion_markdown(&conversion).into_bytes(),
+        conversion_markdown(&conversion, !fetched_npm.is_empty()).into_bytes(),
     )?;
     let mut counts = json!({
         "skills": conversion.skills.len(),
@@ -3948,7 +3955,30 @@ pub fn convert_package_with_network(
     Ok(conversion)
 }
 
-fn conversion_markdown(conversion: &DshConversion) -> String {
+const MAX_FETCHED_NPM_NAMES: usize = 40;
+
+pub(super) fn fetched_npm_note(fetched: &[String]) -> Option<String> {
+    if fetched.is_empty() {
+        return None;
+    }
+    let shown = fetched
+        .iter()
+        .take(MAX_FETCHED_NPM_NAMES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = fetched.len().saturating_sub(MAX_FETCHED_NPM_NAMES);
+    Some(format!(
+        "Fetched from registry.npmjs.org (sha512-verified; install scripts not run): {shown}{}",
+        if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+pub(super) fn conversion_markdown(conversion: &DshConversion, fetched_npm: bool) -> String {
     let mut lines = vec![
         "# Conversion receipt".to_string(),
         String::new(),
@@ -4036,10 +4066,18 @@ fn conversion_markdown(conversion: &DshConversion) -> String {
         );
         lines.push(String::new());
     }
+    lines.push(if fetched_npm {
+        "No selected-package code, package manager, install hook or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    } else {
+        "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration."
+    }.to_string());
+    lines.push(if fetched_npm {
+        "No environment variable values were resolved. Files inside the selected package and the npm packages listed under Bundle diagnostics were read;"
+    } else {
+        "No environment variable values were resolved. Only files inside the selected package were read;"
+    }.to_string());
     lines.extend(
         [
-            "No selected-package code, package manager, install hook, network request or credential lookup ran; the pinned pure review evaluator parsed configuration.",
-            "No environment variable values were resolved. Only files inside the selected package were read;",
             "host paths are never inferred from expressions or copied.",
             "Companion skill files and packaged Node source were copied as data.",
             "Local MCP runs with host-user process authority, not an OS sandbox; stdio does not confine its network or files.",

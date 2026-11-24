@@ -17,11 +17,15 @@ before(async () => {
   process.on('exit', () => rmSync(dir, { recursive: true, force: true }))
 })
 
-function service(answers, pluginName = 'fixture.plugin') {
+function service(answers, pluginName = 'fixture.plugin', { ticketed = true } = {}) {
   const calls = []
   const host = {
     tier: 'plugin',
     ownerOf: () => ({ pluginName }),
+    brokerTicket: (ctx, name) => {
+      if (!ticketed) throw new Error(`the ${name} broker is only available to a live tool invocation the core gave a ticket for it`)
+      return { invocation: {}, ticket: 'ticket-1' }
+    },
     broker: async (ctx, name, method, input) => {
       calls.push({ name, method, input })
       const answer = answers[method]
@@ -80,4 +84,16 @@ test('a stale edit is a conflict and a broker refusal reaches the plugin as the 
   const refused = service({ update: new Error('that setting is outside this plugin\'s reviewed settings'), describe: new Error('the settings broker is not available yet') })
   await assert.rejects(refused.settings.update('fixture.plugin', { internal: 1 }), /outside this plugin's reviewed settings/)
   await assert.rejects(refused.settings.describe(), /not available yet/)
+})
+
+test('describe outside a ticketed tool invocation refuses synchronously, before any broker call', () => {
+  const { settings, calls } = service({ describe: row }, 'fixture.plugin', { ticketed: false })
+  assert.throws(() => settings.describe(), /only available to a live tool invocation/)
+  let locale = 'zh'
+  try {
+    const forms = settings.describe()
+    if (Array.isArray(forms)) locale = 'host'
+  } catch {}
+  assert.equal(locale, 'zh')
+  assert.deepEqual(calls, [])
 })

@@ -1,4 +1,5 @@
 name: Release candidate
+run-name: ${{ inputs.nightly && 'Nightly release candidate' || 'Release candidate' }}
 
 # Safe pre-publication artifact proof. This workflow never creates a tag or
 # release and never writes to a registry, container repository, tap, or deploy.
@@ -9,6 +10,19 @@ on:
         description: Exact 40-character commit selected by --ref (must match the dispatch SHA)
         required: true
         type: string
+      nightly:
+        description: Nightly build of main (nightly-candidate.yml). Allows an undated CHANGELOG and never signs the manifest
+        required: false
+        default: false
+        type: boolean
+      macos_runner:
+        description: macOS shipping-build runner (default follows the CW_SELF_HOSTED_MAC repository variable; self-hosted is the codewhale-mac runner)
+        type: choice
+        default: default
+        options:
+          - default
+          - self-hosted
+          - hosted
 
 permissions:
   contents: read
@@ -75,9 +89,17 @@ jobs:
         # release.yml only accepts an RC receipt for the exact tag SHA, so an
         # RC on an undated "Unreleased candidate" changelog could never
         # authorize a release. Fail here, before the long parity and artifact
-        # builds, instead of at tag time.
+        # builds, instead of at tag time. A nightly build of undated main
+        # skips the flag; release.yml reruns it on the tag SHA, so that
+        # receipt still cannot authorize an undated release.
+        env:
+          NIGHTLY: ${{ inputs.nightly }}
         run: |
-          ./scripts/release/check-versions.sh --require-dated-release
+          if [[ "${NIGHTLY}" == "true" ]]; then
+            ./scripts/release/check-versions.sh
+          else
+            ./scripts/release/check-versions.sh --require-dated-release
+          fi
           ./scripts/release/check-ohos-deps.sh
       - name: Reconfirm clean source snapshot
         run: git diff --exit-code
@@ -139,5 +161,6 @@ jobs:
       compiled_host_run_id: ${{ vars.CODEWHALE_COMPILED_HOST_QUALIFICATION_RUN_ID || '' }}
       compiled_host_targets: ${{ vars.CODEWHALE_COMPILED_HOST_TARGETS || 'linux-x64,macos-arm64,windows-x64' }}
       retention_days: 7
+      macos_runner: ${{ inputs.macos_runner }}
     secrets:
-      CODEWHALE_RELEASE_SIGNING_KEY: ${{ secrets.CODEWHALE_RELEASE_SIGNING_KEY }}
+      CODEWHALE_RELEASE_SIGNING_KEY: ${{ !inputs.nightly && secrets.CODEWHALE_RELEASE_SIGNING_KEY || '' }}
