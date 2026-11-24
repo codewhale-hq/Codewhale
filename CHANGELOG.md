@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Hardened shell execution-policy deny matching across seven bypass classes: `ssh -o ProxyCommand`/`LocalCommand` (including under `-N`), `screen -X`/`-Q` (including with `-r`/`-R`/`-d`), `kubectl exec`/`run`/`debug`, `docker`/`podman` `container`/`compose` groups (`run`/`exec`/`create`, `buildx bake --call`, `--health-cmd`), `parallel --compress-program`/`--decompress-program` and `bwrap --args`, shell `-c` aliases (`oil`, `ysh`, `pdksh`, `loksh`, `rksh`, `ion`, `ngs`) plus `gawk -i`/`-l` and `pwsh -`/piped stdin, and quoted dynamic words in `find`/`docker`/non-inert `--` tails plus separated `nix -c` shell-string payloads. (#7397)
+### Fixed
+
+- **Environment overrides and `approval_policy` consistency:** `CODEWHALE_ALLOW_SHELL` (along with `CODEWHALE_YOLO`, `CODEWHALE_SANDBOX_NETWORK_ACCESS`, and `CODEWHALE_PREFER_BWRAP`) now accepts `yes` and `on` in addition to `1` and `true`; an unknown `CODEWHALE_PROVIDER` now warns and skips only provider-scoped overrides instead of dropping every subsequent environment override; `CODEWHALE_MAX_SUBAGENTS` and project/overlay `max_subagents` now take precedence over a file's `[subagents] max_concurrent`; and `approval_policy` now accepts `ask` and `auto-review` in `codewhale config set`, `config.toml` validation, and project-config tightening.
 
 ### Fixed
 
