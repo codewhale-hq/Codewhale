@@ -283,6 +283,14 @@ descriptor:standardcompute	models/standardcompute	variant-models-prefix	models/s
 descriptor:standardcompute	standardcompute	default	standardcompute	standardcompute	standardcompute	standardcompute	standardcompute	standardcompute	-	standardcompute	chat	-	route_canonical
 descriptor:standardcompute	standardcompute/standardcompute	variant-provider-prefix	standardcompute/standardcompute	standardcompute/standardcompute	standardcompute/standardcompute	standardcompute/standardcompute	standardcompute/standardcompute	standardcompute/standardcompute	-	standardcompute/standardcompute	chat	-	route_canonical
 descriptor:standardcompute	totally-unknown-model-x	unknown	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	-	totally-unknown-model-x	chat	-	route_canonical
+descriptor:synap	"  qwen3-coder-30b  "	variant-whitespace	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	-	qwen3-coder-30b	chat	-	route_canonical
+descriptor:synap	QWEN3-CODER-30B	variant-uppercase	QWEN3-CODER-30B	QWEN3-CODER-30B	QWEN3-CODER-30B	QWEN3-CODER-30B	QWEN3-CODER-30B	QWEN3-CODER-30B	-	QWEN3-CODER-30B	chat	-	route_canonical
+descriptor:synap	auto	sentinel-auto	auto	auto	auto	auto	auto	auto	-	custom-model	chat	-	route_canonical,route_wire
+descriptor:synap	deepseek-v4-pro	foreign-deepseek	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	deepseek-v4-pro	-	deepseek-v4-pro	chat	-	route_canonical
+descriptor:synap	models/qwen3-coder-30b	variant-models-prefix	models/qwen3-coder-30b	models/qwen3-coder-30b	models/qwen3-coder-30b	models/qwen3-coder-30b	models/qwen3-coder-30b	models/qwen3-coder-30b	-	models/qwen3-coder-30b	chat	-	route_canonical
+descriptor:synap	qwen3-coder-30b	default	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	qwen3-coder-30b	-	qwen3-coder-30b	chat	-	route_canonical
+descriptor:synap	synap/qwen3-coder-30b	variant-provider-prefix	synap/qwen3-coder-30b	synap/qwen3-coder-30b	synap/qwen3-coder-30b	synap/qwen3-coder-30b	synap/qwen3-coder-30b	synap/qwen3-coder-30b	-	synap/qwen3-coder-30b	chat	-	route_canonical
+descriptor:synap	totally-unknown-model-x	unknown	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	totally-unknown-model-x	-	totally-unknown-model-x	chat	-	route_canonical
 descriptor:tencent	"  hy4  "	variant-whitespace	hy4	hy4	hy4	hy4	hy4	hy4	-	hy4	chat	-	route_canonical
 descriptor:tencent	HY4	variant-uppercase	HY4	HY4	HY4	HY4	HY4	HY4	-	HY4	chat	-	route_canonical
 descriptor:tencent	auto	sentinel-auto	auto	auto	auto	auto	auto	auto	-	custom-model	chat	-	route_canonical,route_wire
