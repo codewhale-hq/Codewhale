@@ -444,7 +444,10 @@ pub async fn execute_one_step(
 ) -> Result<SkillOneStepReceipt> {
     match request {
         SkillOneStepRequest::Install { spec, target } => match local_path_spec(&spec) {
-            Some(raw) => install_local(raw, target, started_by, ctx),
+            Some(raw) => {
+                let raw = raw.to_string();
+                off_runtime(ctx, move |ctx| install_local(&raw, target, started_by, ctx)).await
+            }
             None => {
                 let source = InstallSource::parse(&spec)?;
                 install_remote(source, target, started_by, ctx).await
@@ -462,7 +465,10 @@ pub async fn execute_one_step(
             scope,
             expected_digest,
         }) => {
-            let resolved = resolve_owned_skill_by_name(ctx, &name, scope)?;
+            let resolved = off_runtime(ctx, move |ctx| {
+                resolve_owned_skill_by_name(ctx, &name, scope)
+            })
+            .await?;
             update_skill(
                 resolved.id,
                 expected_digest.or(Some(resolved.digest)),
@@ -472,7 +478,7 @@ pub async fn execute_one_step(
             .await
         }
         SkillOneStepRequest::Mutation(sync) => {
-            let receipt = execute_sync(sync, ctx)?;
+            let receipt = off_runtime(ctx, move |ctx| execute_sync(sync, ctx)).await?;
             Ok(SkillOneStepReceipt {
                 receipt,
                 summary: String::new(),
@@ -1537,31 +1543,30 @@ fn place_package(req: &PlaceRequest<'_>) -> Result<String> {
     package_digest::compute_package_digest(&staging)
         .context("staged package failed digest validation")?;
 
-    let mut backup_path: Option<PathBuf> = None;
+    let mut backup: Option<(tempfile::TempDir, PathBuf)> = None;
     if dest_exists {
         validate_owned_child(skills_dir, dest, true)?;
-        let backup = skills_dir.join(format!("{segment}.bak"));
-        if validate_owned_child(skills_dir, &backup, false)? {
-            fs::remove_dir_all(&backup).with_context(|| {
-                format!("failed to clean stale backup dir {}", backup.display())
-            })?;
-        }
-        fs::rename(dest, &backup)
+        let backup_dir = tempfile::Builder::new()
+            .prefix(".backup-")
+            .tempdir_in(skills_dir)
+            .with_context(|| format!("failed to create backup dir in {}", skills_dir.display()))?;
+        let backup_slot = backup_dir.path().join(segment);
+        fs::rename(dest, &backup_slot)
             .with_context(|| format!("failed to backup {}", dest.display()))?;
         if let Err(err) = fs::rename(&staging, dest) {
-            let _ = fs::rename(&backup, dest);
-            let _ = fs::remove_dir_all(&staging);
+            let _ = fs::rename(&backup_slot, dest);
             return Err(err).context("failed to replace destination with new package");
         }
-        backup_path = Some(backup);
+        let _ = staging_dir.keep();
+        backup = Some((backup_dir, backup_slot));
     } else if validate_owned_child(skills_dir, dest, false)? {
         bail!(
             "{} appeared while the package was staged; aborted",
             dest.display()
         );
-    } else if let Err(err) = fs::rename(&staging, dest) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(err).context("failed to install package");
+    } else {
+        fs::rename(&staging, dest).context("failed to install package")?;
+        let _ = staging_dir.keep();
     }
     validate_owned_target_chain(anchor, skills_dir, true)?;
     validate_owned_child(skills_dir, dest, true)?;
@@ -1580,15 +1585,14 @@ fn place_package(req: &PlaceRequest<'_>) -> Result<String> {
 
     match finalize {
         Ok(after) => {
-            if let Some(backup) = backup_path.take() {
-                fs::remove_dir_all(&backup).ok();
-            }
+            drop(backup);
             Ok(after)
         }
         Err(err) => {
             let _ = fs::remove_dir_all(dest);
-            if let Some(backup) = backup_path.take() {
-                let _ = fs::rename(&backup, dest);
+            if let Some((backup_dir, backup_slot)) = backup.take() {
+                let _ = fs::rename(&backup_slot, dest);
+                drop(backup_dir);
             }
             Err(err)
         }
@@ -2767,5 +2771,146 @@ mod tests {
                 .join("SKILL.md")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn place_package_aborts_cleanly_if_destination_appears_while_staged() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let source = tmp.path().join("src-skill");
+        write_skill(&source, "alpha", "incoming");
+        let source_dir = source.join("alpha");
+        let expected_digest = package_digest::compute_package_digest(&source_dir).unwrap();
+
+        write_skill(&skills_dir, "alpha", "already-there");
+        let dest = skills_dir.join("alpha");
+        let before_digest = package_digest::compute_package_digest(&dest).unwrap();
+
+        let err = place_package(&PlaceRequest {
+            skills_dir: &skills_dir,
+            anchor: &workspace,
+            source: &source_dir,
+            expected_digest: &expected_digest,
+            dest: &dest,
+            segment: "alpha",
+            dest_exists: false,
+            spec: "path:src",
+            installed_name: "alpha",
+        })
+        .expect_err("appearing destination must abort install");
+        assert!(err.to_string().contains("appeared while"), "{err}");
+        assert_eq!(
+            package_digest::compute_package_digest(&dest).unwrap(),
+            before_digest
+        );
+        let leftovers: Vec<_> = fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover staging dirs: {leftovers:?}");
+    }
+
+    #[test]
+    fn place_package_concurrent_same_name_leaves_no_staging_or_mixed_digest() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let skills_dir = workspace.join(".codewhale").join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let src_a = tmp.path().join("a");
+        let src_b = tmp.path().join("b");
+        write_skill(&src_a, "alpha", "payload-a");
+        write_skill(&src_b, "alpha", "payload-b");
+        let dir_a = src_a.join("alpha");
+        let dir_b = src_b.join("alpha");
+        let dig_a = package_digest::compute_package_digest(&dir_a).unwrap();
+        let dig_b = package_digest::compute_package_digest(&dir_b).unwrap();
+        let dest = skills_dir.join("alpha");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (res_a, res_b) = std::thread::scope(|scope| {
+            let skills_dir = skills_dir.as_path();
+            let workspace = workspace.as_path();
+            let dest = dest.as_path();
+            let dir_a = dir_a.as_path();
+            let dir_b = dir_b.as_path();
+            let dig_a = dig_a.as_str();
+            let dig_b = dig_b.as_str();
+            let b1 = std::sync::Arc::clone(&barrier);
+            let t1 = scope.spawn(move || {
+                b1.wait();
+                place_package(&PlaceRequest {
+                    skills_dir,
+                    anchor: workspace,
+                    source: dir_a,
+                    expected_digest: dig_a,
+                    dest,
+                    segment: "alpha",
+                    dest_exists: false,
+                    spec: "path:a",
+                    installed_name: "alpha",
+                })
+            });
+            let b2 = std::sync::Arc::clone(&barrier);
+            let t2 = scope.spawn(move || {
+                b2.wait();
+                place_package(&PlaceRequest {
+                    skills_dir,
+                    anchor: workspace,
+                    source: dir_b,
+                    expected_digest: dig_b,
+                    dest,
+                    segment: "alpha",
+                    dest_exists: false,
+                    spec: "path:b",
+                    installed_name: "alpha",
+                })
+            });
+            (t1.join().unwrap(), t2.join().unwrap())
+        });
+
+        assert!(res_a.is_ok() || res_b.is_ok(), "at least one must succeed");
+        if let Ok(after) = &res_a {
+            assert_eq!(after, &dig_a);
+        }
+        if let Ok(after) = &res_b {
+            assert_eq!(after, &dig_b);
+        }
+        let final_digest = package_digest::compute_package_digest(&dest).unwrap();
+        assert!(
+            final_digest == dig_a || final_digest == dig_b,
+            "final destination must match one uncorrupted source"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with('.') || name.ends_with(".bak")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover staging/backup dirs: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_runtime_runs_skill_mutation_off_the_caller_worker_thread() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let network = NetworkPolicy::default();
+        let c = ctx(&workspace, &home, &network);
+        let caller_thread = std::thread::current().id();
+        let blocking_thread = off_runtime(&c, |_| Ok(std::thread::current().id()))
+            .await
+            .unwrap();
+        assert_ne!(caller_thread, blocking_thread);
     }
 }

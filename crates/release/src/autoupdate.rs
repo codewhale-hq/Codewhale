@@ -247,11 +247,12 @@ fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 
 pub fn store_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let dir = path.parent().context("state path has no parent")?;
-    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(value)?)
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("failed to write {}", path.display()))
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("state path has no valid file name")?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    crate::installs::write_file_atomically(dir, name, &bytes, false)
 }
 
 #[must_use]
