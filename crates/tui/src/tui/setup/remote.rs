@@ -148,7 +148,7 @@ pub(super) struct SetupRemoteFacts {
 
 impl SetupRemoteFacts {
     pub(super) fn from_app(app: &App) -> Self {
-        Self::from_app_with_env(app, &|name| std::env::var(name).ok())
+        Self::from_app_with_env(app, &codewhale_app_server::runtime_api::runtime_env_var)
     }
 
     /// Test seam: the env lookup is injected so the hostile-token and

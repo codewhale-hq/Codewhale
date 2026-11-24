@@ -2151,6 +2151,7 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
     // other outcome keeps it.
     let startup_sandbox_mode = resolve_startup_sandbox_mode_for_hardening();
     codewhale_sandbox::process_hardening::apply_process_hardening(startup_sandbox_mode.as_deref());
+    codewhale_app_server::runtime_api::capture_runtime_token_environment();
 
     if args.get(1).is_some_and(|arg| arg == "pet") {
         let root = crate::tui::pet_watch::owner::directory()?;

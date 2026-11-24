@@ -181,6 +181,41 @@ struct RuntimeTokenEnvironment {
     legacy_alias_used: bool,
 }
 
+const RUNTIME_TOKEN_ENV_NAMES: [&str; 2] = [RUNTIME_TOKEN_ENV, LEGACY_RUNTIME_TOKEN_ENV];
+
+static CAPTURED_RUNTIME_TOKEN_ENV: std::sync::OnceLock<[Option<String>; 2]> =
+    std::sync::OnceLock::new();
+
+pub fn capture_runtime_token_environment() {
+    CAPTURED_RUNTIME_TOKEN_ENV.get_or_init(|| RUNTIME_TOKEN_ENV_NAMES.map(take_env_var));
+}
+
+pub fn runtime_env_var(name: &str) -> Option<String> {
+    let index = RUNTIME_TOKEN_ENV_NAMES
+        .iter()
+        .position(|known| *known == name);
+    match (index, CAPTURED_RUNTIME_TOKEN_ENV.get()) {
+        (Some(index), Some(captured)) => captured[index].clone(),
+        _ => std::env::var(name).ok(),
+    }
+}
+
+fn take_env_var(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok();
+    #[cfg(unix)]
+    if let Ok(key) = std::ffi::CString::new(name) {
+        let stored = unsafe { libc::getenv(key.as_ptr()) };
+        if !stored.is_null() {
+            let len = unsafe { libc::strlen(stored) };
+            for offset in 0..len {
+                unsafe { std::ptr::write_volatile(stored.add(offset), 0) };
+            }
+        }
+    }
+    unsafe { std::env::remove_var(name) };
+    value
+}
+
 const DESKTOP_BROWSER_OWNER_ENV: &str = "CODEWHALE_BROWSER_OWNER_PUBLIC_KEY";
 
 fn desktop_browser_owner_env() -> Option<String> {
@@ -2358,7 +2393,7 @@ pub async fn run_http_server(
                 .context("authenticated owner disappeared before control attachment")?
             }
             _ => {
-                let environment = runtime_token_environment(&|name| std::env::var(name).ok());
+                let environment = runtime_token_environment(&runtime_env_var);
                 let selection = crate::RuntimeListenerSelection {
                     workers: options.workers,
                     workspace: workspace.clone(),
@@ -2461,7 +2496,7 @@ pub async fn run_http_server(
     // Repair the saved-session store once per server start (#6144); this
     // server's own store is open by now, so it reads as in use.
     codewhale_engine::session_reconcile::spawn_background_reconcile(None);
-    let runtime_token_env = runtime_token_environment(&|name| std::env::var(name).ok());
+    let runtime_token_env = runtime_token_environment(&runtime_env_var);
     let runtime_token_alias_warning =
         runtime_token_alias_warning(options.auth_token.as_deref(), &runtime_token_env);
     let resolved_auth = resolve_runtime_auth(
