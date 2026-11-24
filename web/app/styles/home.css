@@ -10,7 +10,7 @@
 
 .home {
   --home-gap: clamp(5rem, 9vw, 8rem);
-  --home-band: #dceef3;
+  --home-band: #e9f0f9;
   --whale-w: 4.5rem;
   --whale-rise: var(--brand-light);
   --whale-deep: var(--brand-deep);
@@ -21,7 +21,7 @@
   overflow-x: clip;
 }
 :root[data-theme="dark"] .home {
-  --home-band: #071326;
+  --home-band: #090e19;
   --whale-rise: #3594d8;
   --whale-deep: #2b70d5;
   --whale-pouch: #dcecf8;

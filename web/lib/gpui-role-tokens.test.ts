@@ -74,8 +74,8 @@ describe("role tokens", () => {
         expect(hex(scheme[role]), `${mode}.${role}`).toBe(gpui(mode, name));
       }
     }
-    expect(hex(light().bg)).toBe("#f1f5f9");
-    expect(hex(pinnedDark().bg)).toBe("#030508");
+    expect(hex(light().bg)).toBe("#f4f7fc");
+    expect(hex(pinnedDark().bg)).toBe("#05070b");
     expect(CSS).not.toMatch(/--kit-(warm-paper|foam|mist|bioluminescence|ink|slate)/);
   });
 

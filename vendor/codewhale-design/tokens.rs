@@ -1,7 +1,7 @@
-// Generated from Codewhale design 5.4.0; sha256 deef1a3948e0c8b58851ae1b9920ce3afcdd8ada90ca0b3aa7fcaeedf25a25a8. Do not edit.
+// Generated from Codewhale design 5.5.0; sha256 b154b28c796626428f20b38db59ee6449aa876831ae04d4ddceb3cb1fce8185c. Do not edit.
 #![allow(dead_code)]
 
-pub const VERSION: &str = "5.4.0";
+pub const VERSION: &str = "5.5.0";
 #[derive(Clone, Copy, Debug)]
 pub struct Colors {
     pub background: u32,
@@ -27,117 +27,117 @@ pub struct Colors {
     pub diff_remove: u32,
 }
 pub const DARK: Colors = Colors {
-    background: 0x030508,
-    foreground: 0xe8edf2,
-    surface: 0x04070c,
-    muted_foreground: 0xaebcc9,
-    subagent: 0xb8c7d6,
-    disabled: 0x7f8c9a,
-    border: 0x2a3648,
-    sidebar: 0x0d121b,
-    primary: 0x0b48bb,
+    background: 0x05070b,
+    foreground: 0xedf1f7,
+    surface: 0x080b11,
+    muted_foreground: 0xb2bfcd,
+    subagent: 0xbccad9,
+    disabled: 0x828f9e,
+    border: 0x263040,
+    sidebar: 0x0f131c,
+    primary: 0x0b4cc4,
     primary_foreground: 0xffffff,
-    accent: 0x8fbdff,
-    hover: 0x253244,
-    selected: 0x182232,
-    attention: 0xeab982,
-    live: 0x86d3be,
-    live_peak: 0xdff7f0,
-    danger: 0xeea59d,
-    border_strong: 0x8a98a6,
-    ocean_depth: 0x0d1624,
-    diff_add: 0x22392f,
-    diff_remove: 0x45302f,
+    accent: 0x94beff,
+    hover: 0x202938,
+    selected: 0x18202e,
+    attention: 0xf0be82,
+    live: 0x7fdfc8,
+    live_peak: 0xe3fcf4,
+    danger: 0xf4a8a0,
+    border_strong: 0x8a97a8,
+    ocean_depth: 0x0b111c,
+    diff_add: 0x1d352a,
+    diff_remove: 0x422b2c,
 };
 pub const LIGHT: Colors = Colors {
-    background: 0xf1f5f9,
-    foreground: 0x1b2a35,
-    surface: 0xfbfcfd,
-    muted_foreground: 0x47515a,
-    subagent: 0x3b4a56,
-    disabled: 0x6f7780,
-    border: 0xd5dce3,
-    sidebar: 0xf9fafc,
-    primary: 0x0b48bb,
+    background: 0xf4f7fc,
+    foreground: 0x162230,
+    surface: 0xfefeff,
+    muted_foreground: 0x45515f,
+    subagent: 0x374553,
+    disabled: 0x68727f,
+    border: 0xd5dde8,
+    sidebar: 0xfcfdfe,
+    primary: 0x0b4cc4,
     primary_foreground: 0xffffff,
-    accent: 0x2056c2,
-    hover: 0xdde6f0,
-    selected: 0xd2dde9,
-    attention: 0x7d4e08,
-    live: 0x1b695a,
-    live_peak: 0x0d4035,
-    danger: 0xa32934,
-    border_strong: 0x6e7883,
-    ocean_depth: 0xf6f9fc,
-    diff_add: 0xd2eadd,
+    accent: 0x1552c6,
+    hover: 0xe2eaf4,
+    selected: 0xd6e1f0,
+    attention: 0x7b4b06,
+    live: 0x146857,
+    live_peak: 0x0b3f33,
+    danger: 0xa42531,
+    border_strong: 0x687381,
+    ocean_depth: 0xf7f9fc,
+    diff_add: 0xd2ebdd,
     diff_remove: 0xf8e1dd,
 };
 pub fn colors(dark: bool) -> Colors {
     if dark { DARK } else { LIGHT }
 }
-pub const WATER_DARK_0: u32 = 0x0b1e3a;
-pub const WATER_DARK_35: u32 = 0x071326;
-pub const WATER_DARK_75: u32 = 0x04090f;
-pub const WATER_DARK_100: u32 = 0x030508;
-pub const GLASS_DARK_CLEAR_FILL: u32 = 0x141c28;
-pub const GLASS_DARK_CLEAR_FILL_ALPHA: f32 = 0.4;
-pub const GLASS_DARK_CLEAR_BLUR_PX: f32 = 12.0;
-pub const GLASS_DARK_FROSTED_FILL: u32 = 0x141c28;
-pub const GLASS_DARK_FROSTED_FILL_ALPHA: f32 = 0.58;
-pub const GLASS_DARK_FROSTED_BLUR_PX: f32 = 24.0;
-pub const GLASS_DARK_SOLID_FILL: u32 = 0x141c28;
+pub const WATER_DARK_0: u32 = 0x0d1422;
+pub const WATER_DARK_36: u32 = 0x090e19;
+pub const WATER_DARK_74: u32 = 0x060910;
+pub const WATER_DARK_100: u32 = 0x05070b;
+pub const GLASS_DARK_CLEAR_FILL: u32 = 0x141a25;
+pub const GLASS_DARK_CLEAR_FILL_ALPHA: f32 = 0.42;
+pub const GLASS_DARK_CLEAR_BLUR_PX: f32 = 14.0;
+pub const GLASS_DARK_FROSTED_FILL: u32 = 0x141a25;
+pub const GLASS_DARK_FROSTED_FILL_ALPHA: f32 = 0.64;
+pub const GLASS_DARK_FROSTED_BLUR_PX: f32 = 28.0;
+pub const GLASS_DARK_SOLID_FILL: u32 = 0x141a25;
 pub const GLASS_DARK_SOLID_FILL_ALPHA: f32 = 1.0;
 pub const GLASS_DARK_SOLID_BLUR_PX: f32 = 0.0;
 pub const GLASS_DARK_BORDER: u32 = 0xffffff;
-pub const GLASS_DARK_BORDER_ALPHA: f32 = 0.09;
+pub const GLASS_DARK_BORDER_ALPHA: f32 = 0.1;
 pub const GLASS_DARK_HIGHLIGHT: u32 = 0xffffff;
-pub const GLASS_DARK_HIGHLIGHT_ALPHA: f32 = 0.14;
-pub const SHEET_DARK_FILL: u32 = 0x05080d;
-pub const SHEET_DARK_FILL_ALPHA: f32 = 0.74;
+pub const GLASS_DARK_HIGHLIGHT_ALPHA: f32 = 0.16;
+pub const SHEET_DARK_FILL: u32 = 0x090c13;
+pub const SHEET_DARK_FILL_ALPHA: f32 = 0.8;
 pub const SHEET_DARK_BORDER: u32 = 0xffffff;
-pub const SHEET_DARK_BORDER_ALPHA: f32 = 0.05;
+pub const SHEET_DARK_BORDER_ALPHA: f32 = 0.075;
 pub const CARD_DARK_FILL: u32 = 0xffffff;
-pub const CARD_DARK_FILL_ALPHA: f32 = 0.035;
+pub const CARD_DARK_FILL_ALPHA: f32 = 0.04;
 pub const CARD_DARK_BORDER: u32 = 0xffffff;
-pub const CARD_DARK_BORDER_ALPHA: f32 = 0.08;
+pub const CARD_DARK_BORDER_ALPHA: f32 = 0.095;
 pub const CHANGE_BAR_DARK_FILL: u32 = 0xffffff;
-pub const CHANGE_BAR_DARK_FILL_ALPHA: f32 = 0.04;
+pub const CHANGE_BAR_DARK_FILL_ALPHA: f32 = 0.045;
 pub const CHANGE_BAR_DARK_BORDER: u32 = 0xffffff;
-pub const CHANGE_BAR_DARK_BORDER_ALPHA: f32 = 0.09;
-pub const SUBAGENT_TAG_DARK_FILL: u32 = 0x8fbdff;
-pub const SUBAGENT_TAG_DARK_FILL_ALPHA: f32 = 0.08;
-pub const SUBAGENT_TAG_DARK_BORDER: u32 = 0x8fbdff;
-pub const SUBAGENT_TAG_DARK_BORDER_ALPHA: f32 = 0.2;
-pub const WORKBAR_DARK_FILL: u32 = 0x0b121d;
-pub const WORKBAR_DARK_FILL_ALPHA: f32 = 0.68;
+pub const CHANGE_BAR_DARK_BORDER_ALPHA: f32 = 0.1;
+pub const SUBAGENT_TAG_DARK_FILL: u32 = 0x94beff;
+pub const SUBAGENT_TAG_DARK_FILL_ALPHA: f32 = 0.09;
+pub const SUBAGENT_TAG_DARK_BORDER: u32 = 0x94beff;
+pub const SUBAGENT_TAG_DARK_BORDER_ALPHA: f32 = 0.24;
+pub const WORKBAR_DARK_FILL: u32 = 0x0e131d;
+pub const WORKBAR_DARK_FILL_ALPHA: f32 = 0.74;
 pub const WORKBAR_DARK_BORDER: u32 = 0xffffff;
-pub const WORKBAR_DARK_BORDER_ALPHA: f32 = 0.08;
+pub const WORKBAR_DARK_BORDER_ALPHA: f32 = 0.09;
 pub const WORKBAR_DARK_TRACK: u32 = 0xffffff;
-pub const WORKBAR_DARK_TRACK_ALPHA: f32 = 0.12;
-pub const WATER_LIGHT_0: u32 = 0xbfe1f2;
-pub const WATER_LIGHT_30: u32 = 0xdceef3;
-pub const WATER_LIGHT_62: u32 = 0xe7f0f6;
-pub const WATER_LIGHT_100: u32 = 0xf1f5f9;
+pub const WORKBAR_DARK_TRACK_ALPHA: f32 = 0.13;
+pub const WATER_LIGHT_0: u32 = 0xe2ebf7;
+pub const WATER_LIGHT_32: u32 = 0xe9f0f9;
+pub const WATER_LIGHT_65: u32 = 0xeff4fb;
+pub const WATER_LIGHT_100: u32 = 0xf4f7fc;
 pub const GLASS_LIGHT_CLEAR_FILL: u32 = 0xffffff;
-pub const GLASS_LIGHT_CLEAR_FILL_ALPHA: f32 = 0.4;
-pub const GLASS_LIGHT_CLEAR_BLUR_PX: f32 = 12.0;
+pub const GLASS_LIGHT_CLEAR_FILL_ALPHA: f32 = 0.48;
+pub const GLASS_LIGHT_CLEAR_BLUR_PX: f32 = 14.0;
 pub const GLASS_LIGHT_FROSTED_FILL: u32 = 0xffffff;
-pub const GLASS_LIGHT_FROSTED_FILL_ALPHA: f32 = 0.55;
-pub const GLASS_LIGHT_FROSTED_BLUR_PX: f32 = 24.0;
+pub const GLASS_LIGHT_FROSTED_FILL_ALPHA: f32 = 0.72;
+pub const GLASS_LIGHT_FROSTED_BLUR_PX: f32 = 28.0;
 pub const GLASS_LIGHT_SOLID_FILL: u32 = 0xffffff;
 pub const GLASS_LIGHT_SOLID_FILL_ALPHA: f32 = 1.0;
 pub const GLASS_LIGHT_SOLID_BLUR_PX: f32 = 0.0;
-pub const GLASS_LIGHT_BORDER: u32 = 0x1f3340;
-pub const GLASS_LIGHT_BORDER_ALPHA: f32 = 0.12;
+pub const GLASS_LIGHT_BORDER: u32 = 0x182838;
+pub const GLASS_LIGHT_BORDER_ALPHA: f32 = 0.11;
 pub const GLASS_LIGHT_HIGHLIGHT: u32 = 0xffffff;
-pub const GLASS_LIGHT_HIGHLIGHT_ALPHA: f32 = 0.75;
-pub const SHEET_LIGHT_FILL: u32 = 0xfcfdfe;
-pub const SHEET_LIGHT_FILL_ALPHA: f32 = 0.88;
-pub const SHEET_LIGHT_BORDER: u32 = 0x1f3340;
-pub const SHEET_LIGHT_BORDER_ALPHA: f32 = 0.1;
+pub const GLASS_LIGHT_HIGHLIGHT_ALPHA: f32 = 0.88;
+pub const SHEET_LIGHT_FILL: u32 = 0xffffff;
+pub const SHEET_LIGHT_FILL_ALPHA: f32 = 0.92;
+pub const SHEET_LIGHT_BORDER: u32 = 0x182838;
+pub const SHEET_LIGHT_BORDER_ALPHA: f32 = 0.09;
 pub const CARD_LIGHT_FILL: u32 = 0xffffff;
 pub const CARD_LIGHT_FILL_ALPHA: f32 = 1.0;
-pub const CARD_LIGHT_BORDER: u32 = 0x1f3340;
+pub const CARD_LIGHT_BORDER: u32 = 0x182838;
 pub const CARD_LIGHT_BORDER_ALPHA: f32 = 0.1;
 pub const CHANGE_BAR_LIGHT_FILL: u32 = 0x1b2a35;
 pub const CHANGE_BAR_LIGHT_FILL_ALPHA: f32 = 0.035;
@@ -233,8 +233,8 @@ pub const EASING_OUT: [f32; 4] = [0.0, 0.0, 0.2, 1.0];
 pub const EASING_IN: [f32; 4] = [0.4, 0.0, 1.0, 1.0];
 pub const EASING_PANEL: [f32; 4] = [0.2, 0.1, 0.16, 1.0];
 pub const EASING_SINE: [f32; 4] = [0.37, 0.0, 0.63, 1.0];
-pub const OMBRE_RISE: u32 = 0x1775c9;
-pub const OMBRE_DEEP: u32 = 0x0b48bb;
+pub const OMBRE_RISE: u32 = 0x176fd0;
+pub const OMBRE_DEEP: u32 = 0x0b4cc4;
 pub const SELECTION_OPACITY: f32 = 0.28;
 pub const PRIMARY_HOVER_OPACITY: f32 = 0.9;
 pub const MONO_PX: f32 = 13.0;

@@ -281,10 +281,6 @@
       "src/components/motion.rs": "7b41b6616ff61513d098cd2710a5912d8bece9704d8fdc6c0e8dbb5a5f158251"
     },
     "retained_engine_adaptations": {
-      "src/components/workbar.rs": {
-        "reason": "Terminal panel and nine-item order",
-        "sha256": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
-      },
       "Cargo.toml": {
         "reason": "Engine package 0.2.1 and local protocol dependency",
         "sha256": "bd990e6110d09e71710df77f94b7a126230fafb003ce7c90bfa5cf0062fa76e7"
@@ -327,6 +323,14 @@
       "src/components/native_composer.rs": "f6d082267037fdac248b37f6a35109aace538d104a6746d707dc5746ce0f75e4",
       "src/components/motion.rs": "0043ca04f13a861a3b332c786c99e8e32692abec9a2d10527de829b9906200c4",
       "src/components/native_chrome.rs": "f0d43491f7ccfdb1f625db2f6a73bb5cad2dfe99435dbc0704004e68f9f95dea"
+    }
+  },
+  "workbar_upstream_sync": {
+    "commit": "fdf993cd36b0c1a73d6f95203d46bd0f946d8509",
+    "scope": "PR #29 upstreamed WorkbarPanel::Terminal and nine-item workbar order into canonical codewhale-ratatui; retired src/components/workbar.rs from retained_engine_adaptations.",
+    "local_changes": "None: src/components/workbar.rs matches upstream codewhale-hq/codewhale-ratatui main at fdf993cd byte for byte. Only Cargo.toml remains in retained_engine_adaptations.",
+    "files": {
+      "src/components/workbar.rs": "2fd780b1cb80a04de8b999c5c182a9a7ff86a8c431f9606eb41f5adb3d31970d"
     }
   }
 }
