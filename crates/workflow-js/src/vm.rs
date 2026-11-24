@@ -13,10 +13,11 @@
 //! and `Date`/`Math.random` are overridden to throw so recorded runs stay
 //! deterministic for replay.
 
+use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rquickjs::function::{Async, Func};
 use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, CaughtError, Ctx, Promise, Value};
@@ -819,17 +820,22 @@ fn install_host(
         .map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))?;
     globals.set("args", args_value).map_err(init_err)?;
 
+    let tickets = TaskTickets::default();
     let task_driver = driver.clone();
     let task_cancel = cancel.clone();
     let task_runtime = host_runtime.clone();
+    let task_tickets = tickets.clone();
     globals
         .set(
             "__workflow_task",
-            Func::from(Async(move |opts_json: String| {
+            Func::from(Async(move |opts_json: String, ticket: u32| {
                 let driver = task_driver.clone();
                 let cancel = task_cancel.clone();
                 let host_runtime = task_runtime.clone();
-                async move { task_host(opts_json, driver, cancel, host_runtime).await }
+                let tickets = task_tickets.clone();
+                async move {
+                    task_host(opts_json, ticket, tickets, driver, cancel, host_runtime).await
+                }
             })),
         )
         .map_err(init_err)?;
@@ -846,6 +852,18 @@ fn install_host(
                 let runtime = verifier_runtime.clone();
                 async move { verify_candidate_host(call_json, driver, cancel, runtime).await }
             })),
+        )
+        .map_err(init_err)?;
+
+    let cancel_driver = driver.clone();
+    globals
+        .set(
+            "__workflow_cancel_tasks",
+            Func::from(move |group: Vec<u32>| {
+                for task_id in tickets.cancel(&group) {
+                    cancel_driver.cancel_task(&task_id);
+                }
+            }),
         )
         .map_err(init_err)?;
 
@@ -979,11 +997,15 @@ fn init_err(err: rquickjs::Error) -> WorkflowJsError {
 /// failure actually happened — never re-derived from the message text.
 async fn task_host(
     opts_json: String,
+    ticket: u32,
+    tickets: TaskTickets,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
     host_runtime: Handle,
 ) -> String {
-    let outcome = task_host_inner(opts_json, driver, cancel, host_runtime).await;
+    tickets.open(ticket);
+    let outcome = task_host_inner(opts_json, ticket, &tickets, driver, cancel, host_runtime).await;
+    tickets.close(ticket);
     let envelope = match outcome {
         Ok(value) => serde_json::json!({ "value": value }),
         Err(TaskError { kind, message }) => {
@@ -1082,6 +1104,59 @@ fn cancelled_task() -> TaskError {
     TaskError::new(TaskErrorKind::Cancelled, "task(): run cancelled")
 }
 
+#[derive(Clone, Default)]
+struct TaskTickets(Arc<Mutex<HashMap<u32, TicketState>>>);
+
+#[derive(Default)]
+struct TicketState {
+    task_id: Option<String>,
+    cancelled: bool,
+}
+
+impl TaskTickets {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, TicketState>> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn open(&self, ticket: u32) {
+        self.lock().insert(ticket, TicketState::default());
+    }
+
+    fn close(&self, ticket: u32) {
+        self.lock().remove(&ticket);
+    }
+
+    fn started(&self, ticket: u32, task_id: &str) -> bool {
+        let mut tickets = self.lock();
+        let Some(state) = tickets.get_mut(&ticket) else {
+            return false;
+        };
+        state.task_id = Some(task_id.to_string());
+        state.cancelled
+    }
+
+    fn is_cancelled(&self, ticket: u32) -> bool {
+        self.lock()
+            .get(&ticket)
+            .is_some_and(|state| state.cancelled)
+    }
+
+    fn cancel(&self, group: &[u32]) -> Vec<String> {
+        let mut tickets = self.lock();
+        group
+            .iter()
+            .filter_map(|ticket| {
+                let state = tickets.get_mut(ticket)?;
+                if state.cancelled {
+                    return None;
+                }
+                state.cancelled = true;
+                state.task_id.clone()
+            })
+            .collect()
+    }
+}
+
 /// A terminal `responseSchema` failure, already receipted by [`fail_schema`].
 fn schema_task(message: String) -> TaskError {
     TaskError::new(TaskErrorKind::Schema, message)
@@ -1089,6 +1164,8 @@ fn schema_task(message: String) -> TaskError {
 
 async fn task_host_inner(
     opts_json: String,
+    ticket: u32,
+    tickets: &TaskTickets,
     driver: Arc<dyn WorkflowDriver>,
     cancel: CancelHandle,
     host_runtime: Handle,
@@ -1151,6 +1228,9 @@ async fn task_host_inner(
         .await?
         .map_err(|err| TaskError::new(TaskErrorKind::from(&err), err.to_string()))?;
         let task_id = spawned_task.task_id;
+        if tickets.started(ticket, &task_id) {
+            driver.cancel_task(&task_id);
+        }
         let completion_rx = spawned_task.completion;
         let completion = tokio::select! {
             _ = cancel.cancelled() => return Err(cancelled_task()),
@@ -1227,7 +1307,7 @@ async fn task_host_inner(
                 Some("budget exhausted".to_string()),
             )));
         }
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() || tickets.is_cancelled(ticket) {
             return Err(cancelled_task());
         }
         current = repair_request(&request, attempt + 1, &error, &raw);
@@ -1660,6 +1740,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   // globalThis so scripts only see the documented Workflow surface (#4129).
   const hostTask = __workflow_task;
   const hostVerifyCandidate = __workflow_verify_candidate;
+  const hostCancelTasks = __workflow_cancel_tasks;
   const hostLog = __workflow_log;
   const hostEverySlotFailed = __workflow_every_slot_failed;
   const hostSlotDropped = __workflow_slot_dropped;
@@ -1745,11 +1826,16 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     return results;
   };
 
+  let taskTickets = 0;
+  const failFastGroups = [];
+
   globalThis.task = async (opts) => {
     if (opts === null || typeof opts !== "object") {
       throw new TypeError("task(): expected an options object");
     }
-    const envelope = JSON.parse(await hostTask(JSON.stringify(opts)));
+    const ticket = ++taskTickets;
+    for (const group of failFastGroups) group.push(ticket);
+    const envelope = JSON.parse(await hostTask(JSON.stringify(opts), ticket));
     if (envelope.error !== undefined) {
       const err = new Error(envelope.error);
       // The host always names the kind; a missing one means an envelope this
@@ -1786,8 +1872,14 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     const failFast = mode === "fail-fast";
     const partial = mode === "partial";
     const errors = [];
+    const group = failFast ? [] : null;
+    let groupFailed = false;
+    const cancelGroup = () => {
+      groupFailed = true;
+      hostCancelTasks(group);
+    };
     // Returns the slot value, or throws to reject the whole fan-out.
-    const onSlotError = (index, err) => {
+    const slotError = (index, err) => {
       const kind = taskErrorKind(err);
       const message = taskErrorText(err);
       stampKind(err, kind);
@@ -1819,18 +1911,35 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       hostSlotDropped("parallel", kind, index);
       return null;
     };
-    const slots = thunks.map((thunk, index) => {
+    const onSlotError = (index, err) => {
       try {
-        return Promise.resolve(typeof thunk === "function" ? thunk() : thunk)
-          .catch((err) => onSlotError(index, err));
-      } catch (err) {
-        try {
-          return onSlotError(index, err);
-        } catch (rethrown) {
-          return Promise.reject(rethrown);
-        }
+        return slotError(index, err);
+      } catch (rethrown) {
+        if (group !== null) cancelGroup();
+        throw rethrown;
       }
-    });
+    };
+    if (group !== null) failFastGroups.push(group);
+    let slots;
+    try {
+      slots = thunks.map((thunk, index) => {
+        try {
+          return Promise.resolve(typeof thunk === "function" ? thunk() : thunk)
+            .catch((err) => onSlotError(index, err));
+        } catch (err) {
+          try {
+            return onSlotError(index, err);
+          } catch (rethrown) {
+            return Promise.reject(rethrown);
+          }
+        }
+      });
+    } finally {
+      if (group !== null) {
+        failFastGroups.splice(failFastGroups.indexOf(group), 1);
+        if (groupFailed) hostCancelTasks(group);
+      }
+    }
     return Promise.all(slots).then((results) => {
       // A fan-out where nothing survived is a dead fan-out, not resilience.
       // The default stays ergonomic (the array still resolves) but the run
@@ -1996,6 +2105,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   for (const name of [
     "__workflow_task",
     "__workflow_verify_candidate",
+    "__workflow_cancel_tasks",
     "__workflow_log",
     "__workflow_every_slot_failed",
     "__workflow_slot_dropped",

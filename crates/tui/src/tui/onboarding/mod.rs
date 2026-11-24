@@ -398,7 +398,7 @@ fn mark_onboarded_at_path(path: PathBuf) -> std::io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, "")?;
+    codewhale_util::utils::write_atomic(&path, b"")?;
     Ok(path)
 }
 

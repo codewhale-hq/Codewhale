@@ -2424,17 +2424,15 @@ fn cleanup_stale_pack_temps_in(
 // use a tighter budget so a regression that deadlocks a child on its own
 // output fails in seconds instead of hanging for the full window.
 #[cfg(not(any(test, feature = "test-support")))]
-const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(any(test, feature = "test-support"))]
-const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run a pre-configured git command under [`GIT_COMMAND_TIMEOUT`] with both
 /// pipes drained while the child runs (the same concurrent drain
 /// `Command::output` performs). Every git invocation in this module goes
 /// through here, so a wedged git — stalled NFS/FUSE, hung hook — degrades
 /// the snapshot with an error instead of hanging the turn pipeline.
-/// (`delta.rs`'s read-view git commands are not routed here yet; that is a
-/// known follow-up.)
 ///
 /// The timeout path kills the child and reaps it on a detached thread: on a
 /// hard-wedged mount git can sit in uninterruptible kernel I/O where even

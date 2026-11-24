@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Maximum number of results to return to avoid overwhelming output
 const MAX_RESULTS: usize = 100;
+const MAX_RESULTS_LIMIT: usize = 1_000;
 
 /// Maximum file size to search (skip large binaries)
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
@@ -148,7 +149,8 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Max matches (or files in files_only/count) to return (default: 100)."
+                    "maximum": MAX_RESULTS_LIMIT,
+                    "description": "Max matches (or files in files_only/count) to return (default: 100, max: 1000)."
                 }
             },
             "required": ["pattern"]
@@ -178,7 +180,8 @@ impl ToolSpec for GrepFilesTool {
         let replace_default_excludes = optional_bool(&input, "replace_default_excludes", false)?;
         let mode = parse_grep_mode(&input)?;
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
-            .unwrap_or(MAX_RESULTS);
+            .unwrap_or(MAX_RESULTS)
+            .min(MAX_RESULTS_LIMIT);
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -225,7 +228,13 @@ impl ToolSpec for GrepFilesTool {
             crate::tools::file::resolve_guarded_display_path(context, path_str, "grep_files")?;
 
         let workspace = context.workspace.clone();
-        let cancel_token = context.cancel_token.clone();
+        let cancel_token = Some(
+            context
+                .cancel_token
+                .as_ref()
+                .map(CancellationToken::child_token)
+                .unwrap_or_default(),
+        );
         let follow_symlinks = context.follow_symlinks;
 
         // The directory walk and per-file regex are synchronous blocking work.
@@ -434,6 +443,7 @@ where
         return Err(grep_cancelled());
     }
 
+    let _worker_cancel_guard = cancel_token.clone().map(CancellationToken::drop_guard);
     let task = tokio::task::spawn_blocking(search);
     let result = match cancel_token {
         Some(token) => {

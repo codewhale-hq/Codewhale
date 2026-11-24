@@ -2475,6 +2475,25 @@ fn restored_history_drops_the_wire_reasoning_placeholder() {
     ));
 }
 
+#[test]
+fn archived_context_with_malformed_level_is_not_rendered_as_archive() {
+    let msg = Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text:
+                "<archived_context level=\"high\" range=\"msg 0-4\">\nSummary\n</archived_context>"
+                    .to_string(),
+            cache_control: None,
+        }],
+    };
+    let cells = super::history_cells_from_message(&msg);
+    assert!(
+        !cells
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::ArchivedContext { .. }))
+    );
+}
+
 /// Compaction writes an `<archived_context>` envelope whose attributes are the
 /// only record of what was dropped. Attribute parsing must survive spaces and
 /// punctuation inside the values, or the summary reads with a mangled range.

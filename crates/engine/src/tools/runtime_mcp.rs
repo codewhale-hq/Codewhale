@@ -319,6 +319,11 @@ impl ToolSpec for StartRuntimeMcpServer {
             .map(sanitize_name)
             .unwrap_or(parsed.name)
             .replace('_', "-");
+        if server_name.is_empty() {
+            return Err(ToolError::invalid_input(
+                "MCP server name must contain at least one ASCII letter, digit or '-'",
+            ));
+        }
 
         // Underscores in server names would cause tool name collision.
         // Tool names are formatted as mcp_{server}_{tool}; underscores in

@@ -9,7 +9,7 @@ import path from "node:path";
 import url from "node:url";
 import {
   ApprovalOwnershipError, THREAD_NOT_OWNED_MESSAGE, ThreadOwnershipError, ThreadStore, decideApproval, settleStoredApproval,
-  admitTurn, createRuntimeClient, activeTurnBlock, latestRunningTurn, readThreadEvents, readJsonSafe, compactRuntimeError
+  admitTurn, createRuntimeClient, activeTurnBlock, latestRunningTurn, readThreadEvents, readJsonSafe, compactRuntimeError, observeTurn, turnOutcomeText
 } from "../src/lib.mjs";
 import { isAllowed, isGroupChat } from "../../telegram-bridge/src/lib.mjs";
 import { incomingIdentity as wecomIdentity } from "../../wecom-bridge/src/lib.mjs";
@@ -435,7 +435,7 @@ test("WeCom shipping SSE and natural approval callback use durable Runtime-turn 
       { event: "stream.end", thread_id: threadId, last_seq: 1, retryable: true, reason: "runtime_shutdown" }];
     const pendingApprovals = new Map();
     const values = environment(store, runtime, {
-      ...lib, authHeaders: runtime.authHeaders, readThreadEvents, readJsonSafe, compactRuntimeError,
+      ...lib, authHeaders: runtime.authHeaders, observeTurn, turnOutcomeText,
       config: { runtimeUrl: runtime.runtimeUrl, turnTimeoutMs: 1000, approvalTimeoutMs: 10000 },
       pendingApprovals, generateReqId: () => "stream-fixture", client: { replyStream: async () => {} }
     });

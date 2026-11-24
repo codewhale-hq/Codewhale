@@ -470,7 +470,7 @@
     "path_canonicalize": 1
   },
   "crates/tui/src/commands/user_commands.rs": {
-    "std_fs": 5
+    "std_fs": 3
   },
   "crates/tui/src/commands/user_registry.rs": {
     "std_fs": 2

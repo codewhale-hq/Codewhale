@@ -451,7 +451,9 @@ impl Broker {
                 }
                 Ok::<_, anyhow::Error>(())
             };
-            let _ = run.await;
+            if let Err(error) = run.await {
+                tracing::error!(target: "mcp", server = %reading.name, %error, "MCP stdio reader stopped");
+            }
             reading.cancel();
             if let Some(mut broker) = reading.broker.lock().await.take() {
                 broker.shutdown().await;

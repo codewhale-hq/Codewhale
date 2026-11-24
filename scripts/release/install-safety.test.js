@@ -534,14 +534,14 @@ const helpWithout = "Usage: codewhale [OPTIONS] [PROMPT]...\n\nCommands:\n  upda
 const helpWith = `${helpWithout}\n  uninstall   Remove this receipt-owned release install`;
 for (const kind of ["website", "archive"]) {
   for (const [label, help, supported] of [["without", helpWithout, false], ["with", helpWith, true]]) {
-    test(`${kind}: a binary ${label} an uninstall command ${supported ? "gets" : "never gets"} the uninstall and update-mode lines`, t => {
+    test(`${kind}: a binary ${label} an uninstall command ${supported ? "gets" : "never gets"} the uninstall line, and the update mode comes from the binary`, t => {
       const f = fixture(t, kind);
       f.env.INSTALL_TEST_HELP = help;
       f.env.SHELL = "/bin/bash";
       const result = f.run();
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.includes("uninstall --yes"), supported, result.stdout);
-      assert.equal(result.stdout.includes("update.mode"), supported, result.stdout);
+      assert.equal(result.stdout.includes("update.mode"), false, result.stdout);
       assert.equal(/codewhale uninstall/.test(result.stdout), supported, result.stdout);
       assert.equal(result.stdout.includes("this release has no uninstall command"), !supported, result.stdout);
       if (!supported) {

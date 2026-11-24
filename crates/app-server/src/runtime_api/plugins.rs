@@ -2205,20 +2205,34 @@ pub(super) async fn revoke_plugin_api(
 // Handlers — marketplaces
 // ---------------------------------------------------------------------------
 
+async fn with_marketplace_store<T: Send + 'static>(
+    state: &RuntimeApiState,
+    work: impl FnOnce(RuntimeApiState, MarketplaceStore) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = open_marketplace_store(&state)?;
+        work(state, store)
+    })
+    .await
+    .map_err(|_| ApiError::internal("marketplace store task failed"))?
+}
+
 /// `GET /v1/apps/marketplaces`
 pub(super) async fn list_marketplaces(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<MarketplacesResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let registry = registry_for_state(&state);
-    Ok(Json(MarketplacesResponse {
-        marketplaces: marketplace_state
+    let marketplaces = with_marketplace_store(&state, |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let registry = registry_for_state(&state);
+        Ok(marketplace_state
             .catalogs()
             .iter()
             .map(|(name, entry)| marketplace_catalog_entry(name, entry, &registry))
-            .collect(),
-    }))
+            .collect())
+    })
+    .await?;
+    Ok(Json(MarketplacesResponse { marketplaces }))
 }
 
 /// `GET /v1/apps/marketplaces/{name}`
@@ -2226,16 +2240,19 @@ pub(super) async fn get_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceCatalogEntry>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    Ok(Json(marketplace_catalog_entry(
-        &name,
-        entry,
-        &registry_for_state(&state),
-    )))
+    let entry = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        Ok(marketplace_catalog_entry(
+            &name,
+            entry,
+            &registry_for_state(&state),
+        ))
+    })
+    .await?;
+    Ok(Json(entry))
 }
 
 /// `POST /v1/apps/marketplaces`
@@ -2243,21 +2260,23 @@ pub(super) async fn add_marketplace(
     State(state): State<RuntimeApiState>,
     Json(req): Json<AddMarketplaceRequest>,
 ) -> Result<(StatusCode, Json<MarketplaceActionResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
-        .map_err(ApiError::bad_request)?;
-    store
-        .add(&loaded.entry.catalog.id.clone(), loaded.entry)
-        .map_err(ApiError::conflict)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(MarketplaceActionResponse {
+    let response = with_marketplace_store(&state, move |state, store| {
+        let loaded = load_catalog_document(&req.name, &state.workspace, &req.path)
+            .map_err(ApiError::bad_request)?;
+        let candidate_count = loaded.candidate_count;
+        let warning_count = loaded.warning_count;
+        store
+            .add(&loaded.entry.catalog.id.clone(), loaded.entry)
+            .map_err(ApiError::conflict)?;
+        Ok(MarketplaceActionResponse {
             name: req.name,
             action: "added",
-            candidate_count: Some(loaded.candidate_count),
-            warning_count: Some(loaded.warning_count),
-        }),
-    ))
+            candidate_count: Some(candidate_count),
+            warning_count: Some(warning_count),
+        })
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `DELETE /v1/apps/marketplaces/{name}`
@@ -2265,10 +2284,13 @@ pub(super) async fn remove_marketplace(
     State(state): State<RuntimeApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<MarketplaceActionResponse>, ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let removed = store
-        .remove(&name)
-        .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))?;
+    let target = name.clone();
+    let removed = with_marketplace_store(&state, move |_, store| {
+        store
+            .remove(&target)
+            .map_err(|error| ApiError::internal(format!("remove marketplace: {error}")))
+    })
+    .await?;
     if !removed {
         return Err(ApiError::not_found(format!(
             "marketplace '{name}' not found"
@@ -2292,48 +2314,53 @@ pub(super) async fn install_marketplace_candidate_api(
     Path(name): Path<String>,
     Json(req): Json<InstallMarketplaceCandidateRequest>,
 ) -> Result<(StatusCode, Json<PluginMutationResponse>), ApiError> {
-    let store = open_marketplace_store(&state)?;
-    let marketplace_state = load_marketplace_state(&store)?;
-    let entry = marketplace_state
-        .get(&name)
-        .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
-    let candidate = entry
-        .catalog
-        .candidate_by_name(&req.candidate)
-        .ok_or_else(|| {
-            ApiError::not_found(format!(
-                "candidate '{}' not found in marketplace '{name}'",
+    let spec = with_marketplace_store(&state, move |state, store| {
+        let marketplace_state = load_marketplace_state(&store)?;
+        let entry = marketplace_state
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("marketplace '{name}' not found")))?;
+        let candidate = entry
+            .catalog
+            .candidate_by_name(&req.candidate)
+            .ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "candidate '{}' not found in marketplace '{name}'",
+                    req.candidate
+                ))
+            })?;
+        let registry = registry_for_state(&state);
+        match resolve_candidate_install(entry, candidate, &registry) {
+            CatalogInstallResolution::Supported { spec, .. } => Ok(spec),
+            CatalogInstallResolution::AlreadyPresent { reason, .. } => {
+                Err(ApiError::conflict(reason))
+            }
+            CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
+                "candidate '{}' cannot be installed by Codewhale: {reason}",
                 req.candidate
-            ))
-        })?;
-    let registry = registry_for_state(&state);
-    match resolve_candidate_install(entry, candidate, &registry) {
-        CatalogInstallResolution::Supported { spec, .. } => {
-            let response = run_plugin_mutation(
-                &state,
-                PluginMutationRequest::Install {
-                    source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
-                        |error| {
-                            ApiError::internal(format!(
-                                "resolved install spec '{spec}' no longer parses: {error:#}"
-                            ))
-                        },
-                    )?,
-                },
-            )
-            .await?;
-            Ok((StatusCode::CREATED, Json(response)))
+            ))),
+            CatalogInstallResolution::HasErrors { diagnostics } => {
+                Err(ApiError::conflict(format!(
+                    "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
+                    req.candidate
+                )))
+            }
         }
-        CatalogInstallResolution::AlreadyPresent { reason, .. } => Err(ApiError::conflict(reason)),
-        CatalogInstallResolution::Unsupported { reason } => Err(ApiError::conflict(format!(
-            "candidate '{}' cannot be installed by Codewhale: {reason}",
-            req.candidate
-        ))),
-        CatalogInstallResolution::HasErrors { diagnostics } => Err(ApiError::conflict(format!(
-            "candidate '{}' has parse errors and cannot be installed: {diagnostics}",
-            req.candidate
-        ))),
-    }
+    })
+    .await?;
+    let response = run_plugin_mutation(
+        &state,
+        PluginMutationRequest::Install {
+            source: codewhale_plugins::install::PluginInstallSource::parse(&spec).map_err(
+                |error| {
+                    ApiError::internal(format!(
+                        "resolved install spec '{spec}' no longer parses: {error:#}"
+                    ))
+                },
+            )?,
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 // ---------------------------------------------------------------------------

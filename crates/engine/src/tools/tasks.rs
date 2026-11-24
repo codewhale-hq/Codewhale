@@ -828,9 +828,10 @@ impl TasksTool {
         if let Some(path) = log_path {
             metadata["artifact_path"] = json!(path);
         }
-        Ok(ToolResult::json(&content)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?
-            .with_metadata(metadata))
+        let mut result =
+            ToolResult::json(&content).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        result.success = status == "passed";
+        Ok(result.with_metadata(metadata))
     }
 
     async fn execute_pr_attempt_record(
@@ -2169,6 +2170,7 @@ mod tests {
             )
             .await
             .expect("gate runs");
+        assert!(!result.success, "a timed-out gate must not report success");
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["timed_out"], true, "{metadata}");
         // What the gate wrote before the timeout is kept.

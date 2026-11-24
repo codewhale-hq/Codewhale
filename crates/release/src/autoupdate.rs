@@ -202,6 +202,19 @@ pub struct UpdateState {
     pub last_stage_attempt_unix: u64,
     #[serde(default)]
     pub last_stage_version: Option<String>,
+    /// Why the last background stage or start-up apply failed, kept until one
+    /// succeeds so `doctor` and the update notice can show it.
+    #[serde(default)]
+    pub last_failure: Option<String>,
+}
+
+/// Park (or with `None`, clear) the reason the last automatic update failed.
+pub fn record_failure(home: &Path, reason: Option<String>) {
+    let mut state = load_state(home);
+    if state.last_failure != reason {
+        state.last_failure = reason;
+        let _ = store_state(home, &state);
+    }
 }
 
 #[must_use]
@@ -257,6 +270,27 @@ pub fn discard_staged(home: &Path) {
 #[must_use]
 pub fn load_previous(home: &Path) -> Option<PreviousBinary> {
     load_json(&previous_dir(home).join("previous.json"))
+}
+
+/// Why `codewhale update --rollback` would refuse to go from `current` back
+/// to `previous`, or `None` when it would roll back. Workspace state migrated
+/// by v0.10.3 cannot be verified against earlier releases.
+#[must_use]
+pub fn rollback_blocker(previous: &str, current: &str) -> Option<String> {
+    let (Ok(previous_version), Ok(current_version)) = (
+        crate::parse_release_version(previous),
+        crate::parse_release_version(current),
+    ) else {
+        return Some(format!(
+            "cannot compare v{previous} with v{current}, so rollback is disabled"
+        ));
+    };
+    let triple = |v: &semver::Version| (v.major, v.minor, v.patch);
+    (triple(&current_version) >= (0, 10, 3) && triple(&previous_version) <= (0, 10, 3)).then(|| {
+        format!(
+            "rollback to v{previous} is disabled because its compatibility with migrated workspace state cannot be verified"
+        )
+    })
 }
 
 #[must_use]

@@ -1047,7 +1047,12 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
         // first log write) left the lane `pending` forever; reconcile skips
         // pending lanes. Close it as failed. A lane a backend already made
         // terminal is left as it is.
-        let _ = reg.mark_terminal_if_active(&mut record, LaneStatus::Failed);
+        if let Err(mark) = reg.mark_terminal_if_active(&mut record, LaneStatus::Failed) {
+            return Err(error.context(format!(
+                "lane {} start failed and could not be closed as failed: {mark:#}",
+                record.id
+            )));
+        }
         return Err(error);
     }
     println!("started {}", record.id);
@@ -1517,9 +1522,22 @@ fn resolve_against_workspace(path: &Path, workspace: &Path) -> PathBuf {
     }
 }
 
+const MAX_WORKFLOW_SOURCE_BYTES: u64 = 1024 * 1024;
+
 fn validate_workflow_source_file(path: &Path) -> Result<()> {
-    let source =
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let mut source = String::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(MAX_WORKFLOW_SOURCE_BYTES + 1)
+                .read_to_string(&mut source)
+        })
+        .with_context(|| format!("read {}", path.display()))?;
+    if source.len() as u64 > MAX_WORKFLOW_SOURCE_BYTES {
+        bail!(
+            "workflow source {} exceeds {MAX_WORKFLOW_SOURCE_BYTES} bytes",
+            path.display()
+        );
+    }
     if source.trim_start().starts_with("export default workflow(")
         || source.trim_start().starts_with("workflow(")
         || source.contains("\nworkflow(")
@@ -9961,6 +9979,15 @@ verbosity = "concise"
             resolve_workflow_source_path("workflows/stopship.workflow.js", None, &workspace)
                 .expect("explicit workflow path");
         assert!(explicit.ends_with("workflows/stopship.workflow.js"));
+    }
+
+    #[test]
+    fn workflow_source_validation_refuses_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.workflow.js");
+        std::fs::write(&path, vec![b' '; MAX_WORKFLOW_SOURCE_BYTES as usize + 1]).unwrap();
+        let err = validate_workflow_source_file(&path).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
     #[test]

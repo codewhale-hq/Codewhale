@@ -1081,6 +1081,36 @@ async fn parallel_fail_fast_rejects_with_the_typed_slot_error() {
 }
 
 #[tokio::test]
+async fn parallel_fail_fast_cancels_still_running_siblings() {
+    let driver = Arc::new(FakeDriver::new());
+    driver.on("alpha", FakeReply::Never);
+    driver.on_with_delay(
+        "beta",
+        FakeReply::Fail("boom".to_string()),
+        Duration::from_millis(50),
+    );
+    let value = run(
+        &driver,
+        r#"
+        try {
+            await parallel([
+                () => task({ description: "alpha" }),
+                () => task({ description: "beta" }),
+            ], { mode: "fail-fast" });
+            return "no-error";
+        } catch (err) {
+            return err.kind;
+        }
+        "#,
+        json!(null),
+    )
+    .await
+    .unwrap();
+    assert_eq!(value, json!("agent"));
+    assert_eq!(driver.cancelled_tasks(), vec!["agent_0001".to_string()]);
+}
+
+#[tokio::test]
 async fn task_errors_carry_typed_kinds() {
     let driver = Arc::new(FakeDriver::new());
     driver.on("budget", FakeReply::BudgetExhausted("limit 10".to_string()));
@@ -1621,6 +1651,7 @@ async fn sandbox_global_inventory_fails_closed_on_new_host_leaks() {
     // Internal host helpers must not be script-visible.
     for internal in [
         "__workflow_task",
+        "__workflow_cancel_tasks",
         "__workflow_log",
         "__workflow_every_slot_failed",
         "__workflow_slot_dropped",

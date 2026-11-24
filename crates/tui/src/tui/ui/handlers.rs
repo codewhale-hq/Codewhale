@@ -34,6 +34,22 @@ pub(crate) fn sync_fleet_roster(app: &mut App, config: &Config, engine_handle: &
 /// deleting a team has to update the view the user pops back to — otherwise
 /// it keeps painting the pre-change team. Cursor and detail scroll survive,
 /// because losing them is the disruption the back path exists to avoid.
+fn refresh_parked_fleet_list(app: &mut App, config: &Config) {
+    if app.view_stack.top_kind() != Some(ModalKind::FleetList) {
+        return;
+    }
+    let Some(mut view) = app.view_stack.pop() else {
+        return;
+    };
+    if let Some(list) = view
+        .as_any_mut()
+        .downcast_mut::<crate::tui::views::fleet_list::FleetListView>()
+    {
+        list.reload(app, config);
+    }
+    app.view_stack.push_boxed(view);
+}
+
 pub(crate) fn refresh_parked_fleet_roster(app: &mut App, config: &Config) {
     if app.view_stack.top_kind() != Some(ModalKind::FleetRoster) {
         return;
@@ -1381,7 +1397,17 @@ pub(crate) async fn handle_skill_mutation_requested(
 
     let workspace = app.workspace.clone();
     let home = codewhale_paths::user_home();
-    let cfg = codewhale_plugins::providers::load_config(None, None).unwrap_or_default();
+    let cfg = match codewhale_plugins::providers::load_config(None, None) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::warn!(error = %err, "skills config unavailable; refusing skill mutation");
+            let status = format!("Skill mutation refused: config could not be loaded ({err:#})");
+            app.set_sticky_status(status.clone(), StatusToastLevel::Error, None);
+            refresh_skills_manager_if_open(app, Some(status), focus.as_ref());
+            app.needs_redraw = true;
+            return;
+        }
+    };
     let network = cfg
         .network
         .clone()
@@ -2639,6 +2665,7 @@ pub(crate) async fn handle_view_events(
             ViewEvent::FleetStoreChanged { message } => {
                 app.status_message = Some(message);
                 sync_fleet_roster(app, config, engine_handle);
+                refresh_parked_fleet_list(app, config);
                 refresh_parked_fleet_roster(app, config);
             }
             // #5954: the roster emits (rather than emit-and-closes) these, so
@@ -2917,16 +2944,36 @@ pub(crate) async fn handle_view_events(
                 preset,
                 state,
                 message,
-            } => match apply_setup_runtime_preset(app, config, preset, state) {
-                Ok(summary) => {
-                    sync_mode_update(app, engine_handle).await;
-                    app.status_message = Some(format!("{message} {summary}"));
+            } => {
+                let applied = match tokio::runtime::Handle::try_current() {
+                    Ok(handle)
+                        if handle.runtime_flavor()
+                            == tokio::runtime::RuntimeFlavor::MultiThread =>
+                    {
+                        tokio::task::block_in_place(|| {
+                            apply_setup_runtime_preset(app, config, preset, state)
+                        })
+                    }
+                    _ => apply_setup_runtime_preset(app, config, preset, state),
+                };
+                match applied {
+                    Ok(summary) => {
+                        sync_mode_update(app, engine_handle).await;
+                        app.push_status_toast(
+                            format!("{message} {summary}"),
+                            StatusToastLevel::Success,
+                            None,
+                        );
+                    }
+                    Err(err) => {
+                        app.set_sticky_status(
+                            format!("Runtime preset could not be applied: {err:#}"),
+                            StatusToastLevel::Error,
+                            None,
+                        );
+                    }
                 }
-                Err(err) => {
-                    app.status_message =
-                        Some(format!("Runtime preset could not be applied: {err:#}"));
-                }
-            },
+            }
             ViewEvent::SetupOpenProviderRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
                     let runtime_status = query_provider_runtime_status(engine_handle).await;

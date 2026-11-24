@@ -1575,15 +1575,16 @@ impl ToolSpec for ReviewTool {
             ReviewSource::Diff { diff, .. } => diff.clone(),
             ReviewSource::File { .. } => String::new(),
         };
-        let tool_workspace = match &source {
-            ReviewSource::PullRequest { view, .. } => {
-                super::review_core::repository_tool_workspace(
-                    &context.workspace,
-                    Some(view.head_sha.as_str()),
-                )
-            }
-            _ => super::review_core::repository_tool_workspace(&context.workspace, None),
+        let required_head = match &source {
+            ReviewSource::PullRequest { view, .. } => Some(view.head_sha.clone()),
+            _ => None,
         };
+        let workspace = context.workspace.clone();
+        let tool_workspace = tokio::task::spawn_blocking(move || {
+            super::review_core::repository_tool_workspace(&workspace, required_head.as_deref())
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("review workspace check failed: {e}")))?;
         let triage = super::review_triage::triage_review(&review_diff);
         let reserve_percent =
             crate::route_budget::review_visible_text_reserve_percent(&route.model);
@@ -1957,6 +1958,17 @@ fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSour
     if !path.is_file() {
         return Err(ToolError::invalid_input(format!(
             "Target is not a file: {}",
+            path.display()
+        )));
+    }
+    let len = fs::metadata(&path)
+        .map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
+        })?
+        .len();
+    if len > (MAX_MAX_CHARS as u64).saturating_mul(4) {
+        return Err(ToolError::invalid_input(format!(
+            "File {} is {len} bytes, too large to review (max_chars limit is {MAX_MAX_CHARS})",
             path.display()
         )));
     }

@@ -580,9 +580,6 @@ say "Usage reporting is on by default (counts only, never your code or conversat
 say ""
 say "Use this installation: \"$install_dir/codewhale\""
 say "Future updates: \"$install_dir/codewhale\" update"
-if [ "$supports_uninstall" -eq 1 ]; then
-  say "Updates install automatically; turn off with: codewhale config set update.mode notify"
-fi
 path_selected=1
 for command_name in codewhale codew; do
   resolved="$(command -v "$command_name" 2>/dev/null || true)"

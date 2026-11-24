@@ -289,6 +289,8 @@ pub trait WorkflowDriver: Send + Sync {
     /// Cancel every in-flight task belonging to this run. Idempotent.
     fn cancel_all(&self);
 
+    fn cancel_task(&self, _task_id: &str) {}
+
     /// Current snapshot of the run's shared token pool.
     fn budget(&self) -> BudgetSnapshot;
 
