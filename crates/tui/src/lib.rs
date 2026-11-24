@@ -2814,7 +2814,7 @@ async fn run_async_main_dispatch(
                     return crate::doctor::run_restore(stamp);
                 }
                 if args.installs {
-                    return crate::doctor::run_installs_report(args.json, args.brief);
+                    return run_doctor_installs_report(&cli, &args);
                 }
                 let config = match load_doctor_config_from_cli(&cli, &args) {
                     Ok(config) => config,
@@ -11132,6 +11132,17 @@ fn load_config_from_cli(cli: &Cli) -> Result<Config> {
 /// a provider endpoint. Keep credential-bearing environment values out of the
 /// regular diagnostic configuration so an unrelated renderer or error path
 /// cannot disclose them.
+/// Kept out of line so the config it loads never widens the debug poll frame
+/// of the top-level dispatch future, which runs at near-zero stack margin.
+#[inline(never)]
+fn run_doctor_installs_report(cli: &Cli, args: &DoctorArgs) -> Result<()> {
+    let update = (args.brief && !args.json)
+        .then(|| load_doctor_config_from_cli(cli, args).ok())
+        .flatten()
+        .map(|config| config.update_config());
+    crate::doctor::run_installs_report(args.json, args.brief, update.as_ref())
+}
+
 fn load_doctor_config_from_cli(cli: &Cli, args: &DoctorArgs) -> Result<Config> {
     if args.probe_api || args.probe_local {
         return load_config_from_cli(cli);

@@ -1500,19 +1500,26 @@ impl UpdateNotice {
             "Run `/update install` here (preview it with a bare `/update`), or `codewhale update` in a shell, then restart Codewhale."
                 .to_string()
         } else {
+            let exe = std::env::current_exe().unwrap_or_default();
             format!(
-                "Installed via {label}. Run `{command}`, then restart Codewhale.\n\
-                 Do not use `codewhale update` here — it would replace a binary {label} manages.",
-                label = install.label(),
-                command = install.update_command()
+                "{} Then restart Codewhale.",
+                codewhale_release::installs::update_answer(install, &exe)
             )
         };
+        let failure = codewhale_config::codewhale_home()
+            .ok()
+            .and_then(|home| codewhale_release::autoupdate::load_state(&home).last_failure)
+            .map(|reason| {
+                format!("\nThe last automatic update failed: {reason}. Details: codewhale doctor")
+            })
+            .unwrap_or_default();
         format!(
             "Update available: v{current} -> v{latest}\n\
-             Release notes: https://github.com/codewhale-hq/CodeWhale/releases/tag/v{latest}\n\
-             {action}",
+             Release notes: {notes}\n\
+             {action}{failure}",
             current = self.current,
-            latest = self.latest
+            latest = self.latest,
+            notes = codewhale_release::autoupdate::changelog_url(&self.latest),
         )
     }
 }

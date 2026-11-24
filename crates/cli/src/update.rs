@@ -62,7 +62,6 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     let executable_identity = update_executable_identity()?;
     let current_exe = executable_identity.path.clone();
     let install_method = InstallMethod::detect(&current_exe);
-    let protected_location = protected_update_path(&current_exe);
     let legacy_binary = is_legacy_binary(&current_exe);
     ensure_supported_release_target(std::env::consts::OS, std::env::consts::ARCH)?;
 
@@ -83,19 +82,11 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
         println!();
         println!("{}", legacy_binary_message(&current_exe));
     }
-    if let Some(warning) = managed_install_warning(install_method) {
+    if !install_method.supports_self_update() {
         println!();
-        println!("{warning}");
+        println!("{}", installs::update_answer(install_method, &current_exe));
         if !check_only {
             bail!("The package-managed executable was not changed.");
-        }
-    }
-    if protected_location {
-        println!(
-            "System/package directory: in-place self-update is disabled.\n\n{GITHUB_MIGRATION_HELP}"
-        );
-        if !check_only {
-            bail!("The system/package executable was not changed.");
         }
     }
 
@@ -112,18 +103,13 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
                     "This build is not a published release ({build_version}); the {latest_tag} release artifact replaces it."
                 );
             }
-            if install_method.supports_self_update() && !protected_location {
+            if install_method.supports_self_update() {
                 println!(
                     "Update available. Run `{} update` to install {latest_tag}.",
                     current_exe.display()
                 );
-            } else if !install_method.supports_self_update() {
-                println!(
-                    "Update available. Use the GitHub installation instructions above, or `{}` for this package-managed copy.",
-                    install_method.update_command()
-                );
             } else {
-                println!("Update available. Use the GitHub installation instructions above.");
+                println!("Update available: {latest_tag}, through the owner named above.");
             }
             println!(
                 "Release source: {}",
@@ -218,13 +204,17 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             }
             Ok(())
         });
-    if let Err(error) = replaced {
-        if let Some(host) = &mut host_update {
-            host.rollback()
-                .context("compiled-host rollback failed; retained backup path is reported below")?;
+    let kept_previous = match replaced {
+        Ok(kept) => kept,
+        Err(error) => {
+            if let Some(host) = &mut host_update {
+                host.rollback().context(
+                    "compiled-host rollback failed; retained backup path is reported below",
+                )?;
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
+    };
     if let Some(host) = &host_update {
         println!(
             "Updated the qualified compiled image, notices and relink source beside this CLI; Node remains default."
@@ -235,6 +225,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     }
     if let Ok(home) = codewhale_config::codewhale_home() {
         autoupdate::discard_staged(&home);
+        autoupdate::record_failure(&home, None);
         let mut state = autoupdate::load_state(&home);
         if state.skip_version.take().is_some() {
             let _ = autoupdate::store_state(&home, &state);
@@ -248,7 +239,8 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
          \n\
          Restart the application to use the new version.\n\
          What's new: {notes}\n\
-         Undo: codewhale update --rollback",
+         {undo}",
+        undo = undo_hint(kept_previous, latest_tag),
         source = download.source.describe(),
         notes = autoupdate::changelog_url(latest_tag),
         targets = plan
@@ -301,7 +293,6 @@ fn divergent_aliases(plan: &UpdatePlan, identity: &UpdateExecutableIdentity) -> 
             meta.is_file()
                 && same_owner(&meta, &identity.path)
                 && InstallMethod::from_path(target).supports_self_update()
-                && !protected_update_path(target)
                 && std::fs::read(target).is_ok_and(|bytes| sha256_hex(&bytes) != identity.file_hash)
                 && installs::is_codewhale_binary(target)
         })
@@ -342,7 +333,7 @@ fn replace_command_paths(
     bytes: &[u8],
     divergent: &[PathBuf],
     before_replace: &mut dyn FnMut() -> Result<()>,
-) -> Result<()> {
+) -> Result<bool> {
     let home = codewhale_config::codewhale_home().ok();
     #[cfg(unix)]
     let mut command_receipt = uninstall::CommandReceipt::capture(&identity.path)?;
@@ -350,11 +341,14 @@ fn replace_command_paths(
     let had_receipt = command_receipt.is_some();
     #[cfg(windows)]
     let had_receipt = uninstall::CommandReceipt::capture(&identity.path)?.is_some();
-    match &home {
-        Some(home) => save_previous(home, identity)
-            .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?,
-        None => println!("Codewhale home is unavailable; `codewhale update --rollback` will not have this version."),
-    }
+    let kept_previous = match &home {
+        Some(home) => {
+            save_previous(home, identity)
+                .context("could not keep the current version for `codewhale update --rollback`; nothing was replaced")?;
+            true
+        }
+        None => false,
+    };
     if !divergent.is_empty() {
         let home = home
             .as_deref()
@@ -413,7 +407,7 @@ fn replace_command_paths(
     if !had_receipt {
         adopt_receipt_for(&identity.path, bytes);
     }
-    Ok(())
+    Ok(kept_previous)
 }
 
 #[cfg(any(unix, windows))]
@@ -446,9 +440,23 @@ fn adopt_receipt_for(executable: &Path, bytes: &[u8]) {
 }
 
 pub fn run_stage(beta: bool, proxy_arg: Option<String>) -> Result<()> {
+    let result = stage_release(beta, proxy_arg);
+    if let Ok(home) = codewhale_config::codewhale_home() {
+        autoupdate::record_failure(
+            &home,
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("the background download failed: {error:#}")),
+        );
+    }
+    result
+}
+
+fn stage_release(beta: bool, proxy_arg: Option<String>) -> Result<()> {
     let identity = update_executable_identity()?;
     let exe = identity.path.clone();
-    if !InstallMethod::detect(&exe).supports_self_update() || protected_update_path(&exe) {
+    if !InstallMethod::detect(&exe).supports_self_update() {
         bail!("This copy is not a release-binary install; nothing was staged.");
     }
     if compiled_host::required_for(&exe)? {
@@ -561,7 +569,6 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         return;
     };
     if !InstallMethod::detect(&identity.path).supports_self_update()
-        || protected_update_path(&identity.path)
         || identity
             .path
             .parent()
@@ -573,6 +580,12 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
     }
     let version = staged.version.clone();
     let fail = |reason: String| {
+        autoupdate::record_failure(
+            &home,
+            Some(format!(
+                "v{version} could not be applied at start: {reason}"
+            )),
+        );
         eprintln!(
             "Couldn't apply v{version} ({reason}). Still on v{current}. Details: codewhale doctor"
         );
@@ -646,13 +659,16 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
         }
         replace_command_paths(&identity, &plan, &bytes, &divergent, &mut || Ok(()))
     })();
-    if let Err(error) = applied {
-        return fail(format!("{error:#}"));
-    }
+    let kept_previous = match applied {
+        Ok(kept) => kept,
+        Err(error) => return fail(format!("{error:#}")),
+    };
     autoupdate::discard_staged(&home);
+    autoupdate::record_failure(&home, None);
     eprintln!(
-        "Updated to v{version} · What's new: {} · Undo: codewhale update --rollback",
-        autoupdate::changelog_url(&version)
+        "Updated to v{version} · What's new: {} · {}",
+        autoupdate::changelog_url(&version),
+        undo_hint(kept_previous, &version)
     );
     #[cfg(unix)]
     {
@@ -673,12 +689,11 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
 pub fn run_rollback() -> Result<()> {
     let identity = update_executable_identity()?;
     let method = InstallMethod::detect(&identity.path);
-    if let Some(warning) = managed_install_warning(method) {
-        println!("{warning}");
-        bail!("The package-managed executable was not changed.");
-    }
-    if protected_update_path(&identity.path) {
-        bail!("System/package directory: rollback is disabled here.");
+    if !method.supports_self_update() {
+        bail!(
+            "This copy belongs to {label}, so `codewhale update --rollback` did not change it; install the version you want with {label}.",
+            label = method.label()
+        );
     }
     let home = codewhale_config::codewhale_home()?;
     let previous = autoupdate::load_previous(&home)
@@ -695,26 +710,10 @@ pub fn run_rollback() -> Result<()> {
         return Ok(());
     }
     let current = env!("CARGO_PKG_VERSION");
-    let current_version = codewhale_release::parse_release_version(current).context(
-        "Cannot determine the running version; rollback did not replace the executable.",
-    )?;
-    let previous_version = codewhale_release::parse_release_version(&previous.version).context(
-        "Cannot determine the previous version; rollback did not replace the executable.",
-    )?;
-    if (
-        current_version.major,
-        current_version.minor,
-        current_version.patch,
-    ) >= (0, 10, 3)
-        && (
-            previous_version.major,
-            previous_version.minor,
-            previous_version.patch,
-        ) <= (0, 10, 3)
-    {
+    if let Some(blocker) = autoupdate::rollback_blocker(&previous.version, current) {
         bail!(
-            "Rollback to v{} is disabled because its compatibility with migrated workspace state cannot be verified. Rollback did not replace the executable or change workspace state. Continue using v{current} and keep your workspace data.",
-            previous.version
+            "{}. Rollback did not replace the executable or change workspace state. Continue using v{current} and keep your workspace data.",
+            capitalized(&blocker)
         );
     }
     preflight_downloaded_binary(&autoupdate::binary_name(), &bytes)?;
@@ -727,14 +726,15 @@ pub fn run_rollback() -> Result<()> {
         identity.path.display(),
         previous.version
     );
-    replace_command_paths(&identity, &plan, &bytes, &[], &mut || Ok(()))?;
+    let kept_previous = replace_command_paths(&identity, &plan, &bytes, &[], &mut || Ok(()))?;
     let mut state = autoupdate::load_state(&home);
     state.skip_version = Some(current.to_string());
     autoupdate::store_state(&home, &state)?;
     autoupdate::discard_staged(&home);
     println!(
-        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. Undo: codewhale update --rollback",
-        previous.version
+        "Rolled back to v{}. v{current} will not be installed automatically again; the next newer release will. {}",
+        previous.version,
+        undo_hint(kept_previous, &previous.version)
     );
     Ok(())
 }
@@ -764,21 +764,34 @@ fn verify_manifest_asset(download: &DownloadPlan, name: &str, bytes: &[u8]) -> R
     Ok(())
 }
 
-/// Explain how to move to GitHub releases without overwriting managed files.
-fn managed_install_warning(method: InstallMethod) -> Option<String> {
-    if method.supports_self_update() {
-        return None;
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The undo hint after replacing the running executable with `installed`,
+/// only when a kept previous version exists and `--rollback` would accept it.
+fn undo_hint(kept_previous: bool, installed: &str) -> String {
+    let previous = kept_previous
+        .then(codewhale_config::codewhale_home)
+        .and_then(Result::ok)
+        .and_then(|home| autoupdate::load_previous(&home));
+    undo_hint_for(previous.as_ref().map(|p| p.version.as_str()), installed)
+}
+
+/// `--rollback` runs from the installed binary, so the blocker is judged
+/// against `installed`, not the version printing the hint.
+fn undo_hint_for(previous: Option<&str>, installed: &str) -> String {
+    let Some(previous) = previous else {
+        return "No rollback: the previous version was not kept.".to_string();
+    };
+    match autoupdate::rollback_blocker(previous, installed) {
+        Some(blocker) => format!("No rollback: {blocker}."),
+        None => format!("Undo: codewhale update --rollback (back to v{previous})"),
     }
-    if method == InstallMethod::DesktopApp {
-        return Some(codewhale_release::install::DESKTOP_APP_UPDATE_HELP.to_string());
-    }
-    Some(format!(
-        "This executable is managed by {label}; in-place self-update is disabled.\n\n\
-         {GITHUB_MIGRATION_HELP}\n\n\
-         To retain this secondary {label} installation, run `{command}`.",
-        label = method.label(),
-        command = method.update_command()
-    ))
 }
 
 /// Resolve the executable that the updater is allowed to replace.
@@ -1102,7 +1115,7 @@ fn validate_primary_update_identity(identity: &UpdateExecutableIdentity) -> Resu
 /// Only the running binary and copies of those exact bytes are ours to update.
 /// Command names alone do not establish ownership of an existing sibling.
 fn validate_update_target(target: &Path, identity: &UpdateExecutableIdentity) -> Result<()> {
-    if !InstallMethod::from_path(target).supports_self_update() || protected_update_path(target) {
+    if !InstallMethod::from_path(target).supports_self_update() {
         bail!(
             "Refusing to replace managed/system path {}.\n\n{GITHUB_MIGRATION_HELP}",
             target.display()
@@ -1133,27 +1146,6 @@ fn validate_update_target(target: &Path, identity: &UpdateExecutableIdentity) ->
         );
     }
     Ok(())
-}
-
-fn protected_update_path(path: &Path) -> bool {
-    [
-        "/usr/bin",
-        "/usr/sbin",
-        "/bin",
-        "/sbin",
-        "/nix/store",
-        "/gnu/store",
-    ]
-    .iter()
-    .any(|prefix| path.starts_with(prefix))
-        || path.components().any(|component| {
-            component.as_os_str().to_str().is_some_and(|name| {
-                name.eq_ignore_ascii_case("Windows")
-                    || name.eq_ignore_ascii_case("WindowsApps")
-                    || name.eq_ignore_ascii_case("scoop")
-                    || name.eq_ignore_ascii_case("chocolatey")
-            })
-        })
 }
 
 fn replacement_parent(target: &Path) -> &Path {
@@ -2771,6 +2763,21 @@ mod tests {
     /// Release-source environment variables are process-wide, so the tests that
     /// exercise override precedence take this lock and restore what they found.
     static UPDATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn undo_hint_is_judged_against_the_installed_version() {
+        // 0.10.3 -> 0.10.4: the installed v0.10.4 refuses to roll back to v0.10.3.
+        let hint = undo_hint_for(Some("0.10.3"), "v0.10.4");
+        assert!(hint.starts_with("No rollback:"), "{hint}");
+        // An updater older than v0.10.3 must not offer an undo the new binary refuses.
+        assert!(undo_hint_for(Some("0.10.2"), "0.10.4").starts_with("No rollback:"));
+        assert_eq!(
+            undo_hint_for(Some("0.10.4"), "0.10.5"),
+            "Undo: codewhale update --rollback (back to v0.10.4)"
+        );
+        assert!(undo_hint_for(None, "0.10.5").starts_with("No rollback:"));
+    }
+
     const UPDATE_ENV_VARS: &[&str] = &[
         codewhale_release::RELEASE_BASE_URL_ENV,
         codewhale_release::LEGACY_RELEASE_BASE_URL_ENV,
@@ -3334,25 +3341,43 @@ mod tests {
     }
 
     #[test]
-    fn managed_installs_offer_github_migration_and_secondary_manager_command() {
-        let npm = managed_install_warning(InstallMethod::Npm).expect("npm is package-managed");
-        assert!(npm.contains("npm install -g codewhale@latest"));
-        assert!(npm.contains("in-place self-update is disabled"));
-        assert!(npm.contains("https://codewhale.net/install.sh"));
-        assert!(npm.contains("command -v codewhale codew"));
-
-        let brew =
-            managed_install_warning(InstallMethod::Homebrew).expect("brew is package-managed");
-        assert!(brew.contains("brew upgrade codewhale"));
-
-        assert!(managed_install_warning(InstallMethod::Cargo).is_some());
-
-        let omarchy =
-            managed_install_warning(InstallMethod::Omarchy).expect("Omarchy is package-managed");
-        assert!(omarchy.contains("omarchy update"));
-
-        // A plain release binary is exactly what this updater is for.
-        assert!(managed_install_warning(InstallMethod::Binary).is_none());
+    fn package_managed_answers_name_their_owner_in_one_line() {
+        for (method, exe, command) in [
+            (
+                InstallMethod::Npm,
+                "/usr/local/lib/node_modules/codewhale/bin/codewhale",
+                "npm install -g codewhale@latest",
+            ),
+            (
+                InstallMethod::Homebrew,
+                "/opt/homebrew/Cellar/codewhale/0.10.4/bin/codewhale",
+                "brew upgrade codewhale",
+            ),
+            (
+                InstallMethod::Cargo,
+                "/home/u/.cargo/bin/codewhale",
+                "cargo install codewhale-cli --locked --force",
+            ),
+            (
+                InstallMethod::Omarchy,
+                "/usr/bin/codewhale",
+                "omarchy update",
+            ),
+        ] {
+            let answer = installs::update_answer(method, Path::new(exe));
+            let exact = installs::manager_update_command(method, Path::new(exe));
+            assert!(exact.starts_with(command), "{exact}");
+            assert!(answer.contains(&format!("`{exact}`")), "{answer}");
+            assert!(answer.contains("cannot update itself"), "{answer}");
+            assert!(!answer.contains('\n'), "{answer}");
+        }
+        assert!(
+            installs::update_answer(
+                InstallMethod::Binary,
+                Path::new("/home/u/.local/bin/codewhale")
+            )
+            .contains("updates itself")
+        );
     }
 
     #[test]
@@ -3385,28 +3410,6 @@ mod tests {
         for beta in [false, true] {
             run_update(beta, false, None)
                 .expect("an older pinned version must return before any download");
-        }
-    }
-
-    #[test]
-    fn system_paths_are_protected_but_user_release_paths_are_allowed() {
-        for path in [
-            "/usr/bin/codewhale",
-            "/usr/sbin/codewhale",
-            "/bin/codewhale",
-            "/nix/store/pkg/bin/codewhale",
-            "/gnu/store/pkg/bin/codewhale",
-            "/Users/u/scoop/apps/codewhale/codewhale.exe",
-            "/Windows/System32/codewhale.exe",
-        ] {
-            assert!(protected_update_path(Path::new(path)), "{path}");
-        }
-        for path in [
-            "/usr/local/bin/codewhale",
-            "/home/u/.local/bin/codewhale",
-            "/data/data/com.termux/files/usr/bin/codewhale",
-        ] {
-            assert!(!protected_update_path(Path::new(path)), "{path}");
         }
     }
 
