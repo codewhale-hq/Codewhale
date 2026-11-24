@@ -3771,6 +3771,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         ))
         .merge(api_routes)
         .merge(account::routes(&state))
+        .fallback(web::web_fallback)
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
