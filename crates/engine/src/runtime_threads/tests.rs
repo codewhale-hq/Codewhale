@@ -742,6 +742,73 @@ mod recovery {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn damaged_thread_record_rebuilds_from_event_log_on_load_and_list() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let manager = RuntimeThreadManager::open(
+            config(),
+            dir.path().to_path_buf(),
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                title: Some("Recovered session".to_string()),
+                ..CreateThreadRequest::default()
+            })
+            .await?;
+        let thread_path = dir
+            .path()
+            .join("runtime")
+            .join("threads")
+            .join(format!("{}.json", thread.id));
+
+        std::fs::write(&thread_path, b"{{{corrupt thread record")?;
+        let loaded = manager.store.load_thread(&thread.id)?;
+        assert_eq!(loaded.id, thread.id);
+        assert_eq!(loaded.workspace, thread.workspace);
+        assert_eq!(loaded.title.as_deref(), Some("Recovered session"));
+        assert_eq!(
+            serde_json::from_str::<ThreadRecord>(&std::fs::read_to_string(&thread_path)?)?.id,
+            thread.id
+        );
+
+        std::fs::write(&thread_path, b"truncated-garbage")?;
+        let (threads, skipped) = manager.store.list_threads_lenient()?;
+        assert!(
+            skipped.is_empty(),
+            "expected rebuild, got skipped={skipped:?}"
+        );
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].id, thread.id);
+        assert_eq!(threads[0].title.as_deref(), Some("Recovered session"));
+
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("threads")
+                .join("thr_mismatched.json"),
+            b"not-json",
+        )?;
+        let wrong_event = serde_json::json!({
+            "seq": 1,
+            "thread_id": "thr_mismatched",
+            "kind": "thread.started",
+            "payload": { "thread": thread },
+            "created_at": Utc::now(),
+        });
+        std::fs::write(
+            dir.path()
+                .join("runtime")
+                .join("events")
+                .join("thr_mismatched.jsonl"),
+            format!("{wrong_event}\n"),
+        )?;
+        assert!(manager.store.load_thread("thr_mismatched").is_err());
+        let (_, skipped) = manager.store.list_threads_lenient()?;
+        assert_eq!(skipped.len(), 1);
+        Ok(())
+    }
+
     /// A thread can carry `session_id` without a checkpoint: the binding
     /// outlived the field that records where its prefix ends (45 of 124 threads
     /// in one real store). Such a thread resolves its prefix by walking turn

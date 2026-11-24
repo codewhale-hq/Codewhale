@@ -6154,7 +6154,10 @@ impl Engine {
         loop {
             let poll_outcome = tokio::select! {
                 biased;
-                _ = stream_cancel.cancelled() => None,
+                _ = stream_cancel.cancelled() => {
+                    drop(stream);
+                    break;
+                }
                 pending = self.wait_turn_steer() => {
                     pending_steers.push(pending);
                     steer_preempted = true;
@@ -6822,7 +6825,7 @@ impl Engine {
         // goes through the same finalization gate a normal ContentBlockStop
         // applies, and is later announced with the same finalized input — which is
         // also why no mid-stream parse is needed (#6213 T4).
-        if !steer_preempted {
+        if !steer_preempted && !self.cancel_token.is_cancelled() {
             for tool_idx in std::mem::take(&mut current_tool_indices).into_values() {
                 let Some(tool_state) = tool_uses.get_mut(tool_idx) else {
                     continue;
@@ -8252,6 +8255,53 @@ mod tests {
             Some("first_signature")
         );
         assert!(outcome.tool_uses[1].thought_signature.is_none());
+    }
+
+    #[tokio::test]
+    async fn process_stream_drops_stalled_stream_promptly_on_cancel() {
+        use crate::llm_client::mock::canned;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let tmp = tempdir().unwrap();
+        let (mut engine, _model, _rx) = stream_backpressure_fixture(tmp.path(), 16);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let drop_flag = DropFlag(Arc::clone(&dropped));
+        let stalled = async_stream::stream! {
+            let _guard = drop_flag;
+            yield Ok(canned::text_delta(0, "partial before stall"));
+            std::future::pending::<()>().await;
+        };
+        let cancel = engine.cancel_token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.process_stream(
+                Box::pin(stalled),
+                &stream_backpressure_request(),
+                Instant::now(),
+                None,
+            ),
+        )
+        .await
+        .expect("cancelled stalled stream must settle promptly");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "cancel took {:?}",
+            started.elapsed()
+        );
+        assert!(dropped.load(Ordering::SeqCst), "stalled stream was dropped");
+        assert_eq!(outcome.current_text_visible, "partial before stall");
     }
 
     #[tokio::test]

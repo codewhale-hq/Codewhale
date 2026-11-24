@@ -3678,6 +3678,7 @@ pub struct RuntimeThreadManager {
     pub(super) turn_monitors: Arc<parking_lot::Mutex<Vec<RuntimeCompletion>>>,
     pub(super) event_monitors: Arc<parking_lot::Mutex<Vec<RuntimeCompletion>>>,
     pub(super) event_reader_wake: Arc<Notify>,
+    pub(super) turn_settled: Arc<Notify>,
     pub(super) event_pump_stop: CancellationToken,
     pub(super) _event_pump_owner: Arc<tokio_util::sync::DropGuard>,
     pub(super) active: Arc<Mutex<ActiveThreads>>,
@@ -4740,6 +4741,7 @@ impl RuntimeThreadManager {
             turn_monitors: Arc::new(parking_lot::Mutex::new(Vec::new())),
             event_monitors: Arc::new(parking_lot::Mutex::new(Vec::new())),
             event_reader_wake: Arc::new(Notify::new()),
+            turn_settled: Arc::new(Notify::new()),
             event_pump_stop: event_pump_stop.clone(),
             _event_pump_owner: Arc::new(event_pump_stop.drop_guard()),
             active: Arc::new(Mutex::new(ActiveThreads::default())),
@@ -15836,6 +15838,10 @@ source_usage_records: Default::default(),
             crate::extension_host::command::validate_reference(reference, thread_id).await.map_err(anyhow::Error::msg)?;
         }
         let acceptance_rx = {
+            // If a stop was just requested on this thread, give the stopping
+            // turn a short bounded window to finish settling before rejecting
+            // the follow-up turn as busy.
+            self.wait_for_stopping_turn_to_settle(thread_id).await;
             // Lock order is active -> thread_mutation. Neither guard crosses
             // an await, and spawning the owned lifecycle task is synchronous.
             // The operation claim is an OS-backed file lock, so another
@@ -16049,6 +16055,29 @@ source_usage_records: Default::default(),
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
         self.interrupt_turn_in_workspace(thread_id, turn_id, None)
             .await
+    }
+
+    async fn wait_for_stopping_turn_to_settle(&self, thread_id: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let notified = self.turn_settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let is_stopping = self
+                .active
+                .lock()
+                .await
+                .engines
+                .get(thread_id)
+                .and_then(|state| state.active_turn.as_ref())
+                .is_some_and(|turn| turn.interrupt_requested);
+            if !is_stopping {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return;
+            }
+        }
     }
 
     pub async fn interrupt_turn_in_workspace(
@@ -20486,6 +20515,7 @@ source_usage_records: Default::default(),
             }
             touch_lru(&mut active.lru, &thread_id);
         }
+        self.turn_settled.notify_waiters();
 
         // The same terminal boundary settles the durable goal loop: usage is
         // written back, the model's terminal decision is mirrored, and the

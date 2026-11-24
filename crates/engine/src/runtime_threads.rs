@@ -3391,6 +3391,49 @@ impl RuntimeThreadStore {
         remove_file_if_exists(&path)
     }
 
+    pub fn rebuild_thread_from_event_log(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
+        validated_record_id(thread_id, "thread id")?;
+        let mut rebuilt: Option<ThreadRecord> = None;
+        let mut latest_turn_id: Option<String> = None;
+        let mut latest_ts: Option<DateTime<Utc>> = None;
+        self.for_each_event(thread_id, |event| {
+            latest_ts = Some(match latest_ts {
+                Some(prev) => prev.max(event.created_at),
+                None => event.created_at,
+            });
+            if let Some(turn_id) = event.turn_id.as_deref()
+                && !turn_id.trim().is_empty()
+            {
+                latest_turn_id = Some(turn_id.to_string());
+            }
+            if matches!(event.kind.as_str(), "thread.started" | "thread.updated")
+                && let Some(raw_thread) = event.payload.get("thread")
+                && let Ok(candidate) = serde_json::from_value::<ThreadRecord>(raw_thread.clone())
+                && candidate.id == thread_id
+            {
+                if candidate.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
+                    bail!(
+                        "Thread schema v{} is newer than supported v{}",
+                        candidate.schema_version,
+                        MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION
+                    );
+                }
+                rebuilt = Some(candidate);
+            }
+            Ok(())
+        })?;
+        let Some(mut record) = rebuilt else {
+            return Ok(None);
+        };
+        if let Some(turn_id) = latest_turn_id {
+            record.latest_turn_id = Some(turn_id);
+        }
+        if let Some(ts) = latest_ts {
+            record.updated_at = record.updated_at.max(ts);
+        }
+        Ok(Some(record))
+    }
+
     pub fn load_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
         let path = self.thread_path(thread_id)?;
         let raw = read_store_file(&path).with_context(|| {
@@ -3401,14 +3444,28 @@ impl RuntimeThreadStore {
                 &path,
             )
         })?;
-        let record: ThreadRecord = serde_json::from_str(&raw).with_context(|| {
-            RuntimeStoreRecordFailure::new(
-                RuntimeStoreOperation::Parse,
-                RuntimeStoreRecordKind::Thread,
-                thread_id,
-                &path,
-            )
-        })?;
+        let record: ThreadRecord = match serde_json::from_str(&raw) {
+            Ok(record) => record,
+            Err(parse_err) => {
+                if let Ok(Some(rebuilt)) = self.rebuild_thread_from_event_log(thread_id) {
+                    tracing::warn!(
+                        target: "runtime",
+                        thread_id,
+                        "rebuilt damaged thread record from event log"
+                    );
+                    let _ = self.save_thread(&rebuilt);
+                    return Ok(rebuilt);
+                }
+                return Err(parse_err).with_context(|| {
+                    RuntimeStoreRecordFailure::new(
+                        RuntimeStoreOperation::Parse,
+                        RuntimeStoreRecordKind::Thread,
+                        thread_id,
+                        &path,
+                    )
+                });
+            }
+        };
         if record.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
             bail!(
                 "Thread schema v{} is newer than supported v{}",
@@ -3509,8 +3566,24 @@ impl RuntimeThreadStore {
                 }) {
                 Ok(thread) => thread,
                 Err(error) => {
-                    skipped.push(format!("{error:#}"));
-                    continue;
+                    let rebuilt =
+                        path.file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .and_then(|thread_id| {
+                                self.rebuild_thread_from_event_log(thread_id).ok().flatten()
+                            });
+                    if let Some(thread) = rebuilt {
+                        tracing::warn!(
+                            target: "runtime",
+                            thread_id = %thread.id,
+                            "rebuilt damaged thread record from event log during thread listing"
+                        );
+                        let _ = self.save_thread(&thread);
+                        thread
+                    } else {
+                        skipped.push(format!("{error:#}"));
+                        continue;
+                    }
                 }
             };
             if thread.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {

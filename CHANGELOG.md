@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
+- **Faster stop settlement and damaged thread record recovery:** cancelling a stalled provider stream now drops the stream immediately and skips post-stream tool finalization, and follow-up turns sent while a stop is settling wait briefly for turn completion instead of failing as busy; damaged `threads/thr_*.json` records are now rebuilt from their intact `events/thr_*.jsonl` log (with strict thread-id and schema-version checks) and repaired atomically on disk instead of disappearing from the session list. (CW-8391)
 
 ## [0.10.4] - 2026-11-23
 
