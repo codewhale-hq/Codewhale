@@ -2755,8 +2755,7 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
         "{show_before}"
     );
     assert!(
-        show_before
-            .contains("attachments (Images in the conversation): this version does not offer it"),
+        show_before.contains("attachments (Images in the conversation): can use"),
         "{show_before}"
     );
 
@@ -2832,8 +2831,9 @@ fn plugin_list_and_show_name_the_approver_and_who_turned_it_on() {
         "{show_withheld}"
     );
     assert!(
-        show_withheld
-            .contains("attachments (Images in the conversation): this version does not offer it"),
+        show_withheld.contains(
+            "attachments (Images in the conversation): off for now: `peer-plain` is turned on and its review does not include it"
+        ),
         "{show_withheld}"
     );
 

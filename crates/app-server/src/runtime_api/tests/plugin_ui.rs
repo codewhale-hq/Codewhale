@@ -497,7 +497,7 @@ async fn plugin_ui_dsh_client_with_unprovided_modules_or_ambient_dependencies_is
     let host_module = write_dsh_package(
         tmp.path(),
         "hostmod",
-        "require(\"@deepseek-ai/dsh-client-ui-primitives\");\nconst k = \"sidebar.right.pane.tab\";\n",
+        "require(\"@deepseek-ai/dsh-unprovided-host-module\");\nconst k = \"sidebar.right.pane.tab\";\n",
     )?;
     let esm = write_dsh_package(
         tmp.path(),
