@@ -123,3 +123,49 @@ impl SandboxBackend for OpenSandboxBackend {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn exec_parse_error_preserves_serde_cause() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = socket.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"stdout":"ok"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+        });
+
+        let backend = OpenSandboxBackend::new(format!("http://{addr}"), None, 5).unwrap();
+        let err = backend.exec("echo ok", &HashMap::new()).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to parse OpenSandbox response at line"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("missing field") && msg.contains("stderr"),
+            "expected serde cause in error, got: {msg}"
+        );
+        let _ = server.await;
+    }
+}

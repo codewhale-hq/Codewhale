@@ -900,7 +900,15 @@ async fn sync_one_skill(
             sha256,
             url: url.clone(),
         };
-        let meta_json = serde_json::to_string(&meta).unwrap_or_default();
+        let meta_json = match serde_json::to_string(&meta) {
+            Ok(json) => json,
+            Err(err) => {
+                return SkillSyncOutcome::Failed {
+                    name: name.to_string(),
+                    reason: format!("failed to serialize cache metadata: {err:#}"),
+                };
+            }
+        };
         if let Err(err) = tokio::fs::write(final_path.join(".cache-meta.json"), meta_json).await {
             return SkillSyncOutcome::Failed {
                 name: name.to_string(),
@@ -2230,6 +2238,90 @@ mod tests {
             "the hop to an allow-listed local name must be refused"
         );
         assert_eq!(internal_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_one_skill_reports_failure_when_cache_meta_cannot_be_written() {
+        let skill_body = "---\nname: demo\ndescription: test\n---\nbody\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            skill_body.len(),
+            skill_body
+        );
+        let (addr, _hits) = counting_server(response).await;
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("cache");
+        // Occupy `.cache-meta.json` with a directory so writing the file fails portably.
+        std::fs::create_dir_all(cache_dir.join("demo/.cache-meta.json")).unwrap();
+        let entry = RegistryEntry {
+            source: format!("http://{addr}/SKILL.md"),
+            description: None,
+            keywords: Vec::new(),
+            domains: Vec::new(),
+        };
+        let policy = NetworkPolicy {
+            default: Decision::Allow.into(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            proxy: Vec::new(),
+            proxy_fake_ip_cidrs: Vec::new(),
+            audit: false,
+        };
+        let outcome = sync_one_skill("demo", &entry, &policy, &cache_dir, 64 * 1024).await;
+        assert!(
+            matches!(
+                outcome,
+                SkillSyncOutcome::Failed { ref name, ref reason }
+                    if name == "demo" && reason.contains("cache metadata")
+            ),
+            "expected Failed when .cache-meta.json is unwritable, got: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn marker_writes_are_atomic_and_truncated_marker_fails_closed_on_update() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        write_installed_from_v2(
+            &skill_dir,
+            "https://example.invalid/demo.tar.gz",
+            Some("https://example.invalid/demo.tar.gz"),
+            "abc123",
+            "def456",
+            "demo",
+        )
+        .unwrap();
+        write_trust_v2(&skill_dir, "def456").unwrap();
+
+        let mut names: Vec<String> = std::fs::read_dir(&skill_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                INSTALLED_FROM_MARKER.to_string(),
+                TRUSTED_MARKER.to_string()
+            ]
+        );
+
+        // Truncated `.installed-from` must fail closed during update.
+        std::fs::write(skill_dir.join(INSTALLED_FROM_MARKER), "").unwrap();
+        let err = update_with_registry(
+            "demo",
+            root.path(),
+            64 * 1024,
+            &NetworkPolicy::default(),
+            DEFAULT_REGISTRY_URL,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("malformed .installed-from"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
