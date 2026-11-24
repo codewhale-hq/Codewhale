@@ -8469,76 +8469,71 @@ impl RuntimeThreadManager {
             Some(id) => {
                 crate::whale_soul::validate_id(&id).map_err(|e| anyhow!(e.to_string()))?;
                 let id_for_load = id.clone();
-                let maybe_whale = codewhale_runtime::runtime_control::owner_work(move || {
-                    match crate::whale_soul::get_whale(&id_for_load) {
-                        Ok(whale) => Ok(Some(whale)),
-                        Err(crate::whale_soul::WhaleError::NotFound(_)) => Ok(None),
-                        Err(err) => Err(anyhow!(err.to_string())),
-                    }
+                let whale = codewhale_runtime::runtime_control::owner_work(move || {
+                    crate::whale_soul::get_whale(&id_for_load)
+                        .map_err(|err| anyhow!(err.to_string()))
                 })
                 .await?;
-                if let Some(whale) = maybe_whale {
-                    if req.executor.is_none()
-                        && req.route_selection.is_none()
-                        && req.model.as_deref().is_none_or(|m| m.trim().is_empty())
+                if req.executor.is_none()
+                    && req.route_selection.is_none()
+                    && req.model.as_deref().is_none_or(|m| m.trim().is_empty())
+                    && req
+                        .model_provider
+                        .as_deref()
+                        .is_none_or(|p| p.trim().is_empty())
+                    && req
+                        .model_provider_id
+                        .as_deref()
+                        .is_none_or(|p| p.trim().is_empty())
+                {
+                    if let Some(agent_id) = whale.external_agent_id.clone() {
+                        req.executor = Some(CreateThreadExecutor {
+                            kind: super::EXECUTOR_KIND_ACP.to_string(),
+                            agent_id,
+                            config: CreateThreadExecutorConfig {
+                                model: whale.model.clone(),
+                            },
+                        });
+                    } else {
+                        if whale.model_provider_id.is_some() {
+                            req.model_provider_id = whale.model_provider_id.clone();
+                        }
+                        if whale.model.is_some() {
+                            req.model = whale.model.clone();
+                        }
+                    }
+                } else if req.executor.is_none() && req.route_selection.is_none() {
+                    if req
+                        .model_provider_id
+                        .as_deref()
+                        .is_none_or(|p| p.trim().is_empty())
                         && req
                             .model_provider
                             .as_deref()
                             .is_none_or(|p| p.trim().is_empty())
-                        && req
-                            .model_provider_id
-                            .as_deref()
-                            .is_none_or(|p| p.trim().is_empty())
+                        && whale.model_provider_id.is_some()
                     {
-                        if let Some(agent_id) = whale.external_agent_id.clone() {
-                            req.executor = Some(CreateThreadExecutor {
-                                kind: super::EXECUTOR_KIND_ACP.to_string(),
-                                agent_id,
-                                config: CreateThreadExecutorConfig {
-                                    model: whale.model.clone(),
-                                },
-                            });
-                        } else {
-                            if whale.model_provider_id.is_some() {
-                                req.model_provider_id = whale.model_provider_id.clone();
-                            }
-                            if whale.model.is_some() {
-                                req.model = whale.model.clone();
-                            }
-                        }
-                    } else if req.executor.is_none() && req.route_selection.is_none() {
-                        if req
-                            .model_provider_id
-                            .as_deref()
-                            .is_none_or(|p| p.trim().is_empty())
-                            && req
-                                .model_provider
-                                .as_deref()
-                                .is_none_or(|p| p.trim().is_empty())
-                            && whale.model_provider_id.is_some()
-                        {
-                            req.model_provider_id = whale.model_provider_id.clone();
-                        }
-                        if req.model.as_deref().is_none_or(|m| m.trim().is_empty())
-                            && whale.model.is_some()
-                        {
-                            req.model = whale.model.clone();
-                        }
+                        req.model_provider_id = whale.model_provider_id.clone();
                     }
-                    if req
-                        .permission_posture
-                        .as_deref()
-                        .is_none_or(|p| p.trim().is_empty())
-                        && req.auto_approve.is_none()
+                    if req.model.as_deref().is_none_or(|m| m.trim().is_empty())
+                        && whale.model.is_some()
                     {
-                        let default_posture = if req.parent_thread_id.is_some() {
-                            whale.child_posture.or(whale.permission_posture)
-                        } else {
-                            whale.permission_posture
-                        };
-                        if let Some(posture) = default_posture {
-                            req.permission_posture = Some(posture);
-                        }
+                        req.model = whale.model.clone();
+                    }
+                }
+                if req
+                    .permission_posture
+                    .as_deref()
+                    .is_none_or(|p| p.trim().is_empty())
+                    && req.auto_approve.is_none()
+                {
+                    let default_posture = if req.parent_thread_id.is_some() {
+                        whale.child_posture.or(whale.permission_posture)
+                    } else {
+                        whale.permission_posture
+                    };
+                    if let Some(posture) = default_posture {
+                        req.permission_posture = Some(posture);
                     }
                 }
                 Some(id)
@@ -19071,20 +19066,48 @@ source_usage_records: Default::default(),
                                             obj.get("tool_input").and_then(Value::as_str).and_then(
                                                 |text| serde_json::from_str::<Value>(text).ok(),
                                             );
-                                        if let Some(card) =
+                                        let card = if !output.success {
                                             crate::whale_cards::attach_whale_card_metadata(
                                                 crate::whale_cards::WhaleCardProducerInput {
                                                     tool_name: &name,
                                                     tool_input: parsed_input.as_ref(),
                                                     detail: item.detail.as_deref().unwrap_or(""),
-                                                    is_error: !output.success,
+                                                    is_error: true,
                                                     metadata: obj,
                                                     artifacts: &refs,
                                                     workspace_roots: &artifact_workspace_roots,
                                                     secrets: &receipt_secrets,
                                                 },
                                             )
+                                        } else if obj.contains_key("whale_card")
+                                            || !crate::whale_cards::is_write_or_edit_tool(&name)
                                         {
+                                            None
+                                        } else {
+                                            let tool_name = name.clone();
+                                            let detail = item.detail.clone().unwrap_or_default();
+                                            let artifacts = refs.clone();
+                                            let workspace_roots = artifact_workspace_roots.clone();
+                                            let secrets = receipt_secrets.clone();
+                                            tokio::task::spawn_blocking(move || {
+                                                crate::whale_cards::attach_whale_card_metadata(
+                                                    crate::whale_cards::WhaleCardProducerInput {
+                                                        tool_name: &tool_name,
+                                                        tool_input: parsed_input.as_ref(),
+                                                        detail: &detail,
+                                                        is_error: false,
+                                                        metadata: &serde_json::Map::new(),
+                                                        artifacts: &artifacts,
+                                                        workspace_roots: &workspace_roots,
+                                                        secrets: &secrets,
+                                                    },
+                                                )
+                                            })
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                        };
+                                        if let Some(card) = card {
                                             obj.insert("whale_card".to_string(), card);
                                         }
                                     }

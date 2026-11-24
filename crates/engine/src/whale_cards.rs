@@ -195,7 +195,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn is_write_or_edit_tool(name: &str) -> bool {
+pub(crate) fn is_write_or_edit_tool(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.contains("write") || lower.contains("edit") || lower.contains("patch")
 }

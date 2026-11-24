@@ -59,6 +59,20 @@ async fn whale_id_thread_applies_whale_defaults_and_injects_soul_and_memory_into
     ]));
     manager.set_test_model_client(mock.clone());
 
+    let unknown = manager
+        .create_thread(CreateThreadRequest {
+            workspace: Some(workspace.clone()),
+            whale_id: Some("release-captian".into()),
+            ..Default::default()
+        })
+        .await;
+    assert!(
+        unknown
+            .as_ref()
+            .is_err_and(|err| err.to_string().contains("does not exist")),
+        "a whale_id that names no whale must be refused: {unknown:?}"
+    );
+
     let thread = manager
         .create_thread(CreateThreadRequest {
             workspace: Some(workspace.clone()),

@@ -1,3 +1,26 @@
+
+## Specialist whales
+
+Named local whales live beside the default one in `~/.codewhale/whales/<id>/`, each with `whale.toml` (identity, name, purpose, colour, model, provider, ACP agent and postures), `SOUL.md` and an optional `MEMORY.md`, under the same private-file rules as the local whale voice. Every route requires the host Runtime token.
+
+- `GET /v1/whales` lists the default whale first, then named whales by id. `POST /v1/whales` creates one from a JSON body with `name` and optional `id`, `purpose`, `color`, `soul`, `memory`, `model`, `modelProviderId`, `externalAgentId`, `permissionPosture`, `childPosture`; without an `id` it derives one from the name. It returns HTTP 201.
+- `GET /v1/whales/{id}` reads one whale. `PATCH /v1/whales/{id}` changes the fields it names and needs the current `revision` quoted in `If-Match`; a stale revision returns HTTP 412. `DELETE /v1/whales/{id}` removes a named whale. The default whale cannot be deleted (HTTP 400).
+- `POST /v1/whales/{id}/recycle` starts a fresh home thread for the whale and returns it with the previous home thread id. The previous thread and the whale's `SOUL.md` and `MEMORY.md` are kept. An optional `If-Match` fences the home update.
+- `POST /v1/threads` with `whale_id` binds the thread to that whale: its turns load the whale's `SOUL.md` and `MEMORY.md` instead of the default whale's, and the whale's model, provider, ACP agent and posture apply where the request does not set them. A child thread prefers the whale's `childPosture`. A `whale_id` that names no whale returns HTTP 400 instead of starting an ordinary thread.
+
+Ids are lowercase letters, digits, `-` and `_`, at most 64 characters, starting with a letter or digit, and never a Windows device name. Deleting a whale refuses, before removing anything, when its folder holds anything Codewhale did not write there (a subfolder, a link or another file); move it out and retry.
+
+### Whale cards
+
+A completed tool item can carry `metadata.whale_card`, a structured card a client can draw inline. `kind` is `markdown_artifact` after a write or edit of a Markdown file in the workspace (title, path, a bounded preview and word count), `maintenance_warning` after a failed repository maintenance command, or `connection_required` after a connector returns HTTP 401 or an OAuth error. Card text passes through the same secret redaction as the receipt.
+
+### Known limitations
+
+- A thread is bound to a whale by id only. Deleting a whale and creating a new one with the same id gives the old threads the new whale's `SOUL.md` and `MEMORY.md`.
+- Deleting a recycled home thread does not clear the whale's `home_thread_id`. A recycle refused at its final revision check leaves the thread it created.
+- A whale whose provider is a non-active Ollama route with no saved model may fail to start a thread until the catalog has seen Ollama's models.
+- `connection_required` cards name the connector by splitting the tool name, so an MCP server whose name contains `_` is reported by its first part.
+- A `MEMORY.md` that cannot be read (too large, not UTF-8, not private) also blocks reading and saving the default whale's `SOUL.md`.
 # Codewhale Engine Runtime API & Integration Contract
 
 > 阅读简体中文版：[zh_hans/RUNTIME_API.md](zh_hans/RUNTIME_API.md)。

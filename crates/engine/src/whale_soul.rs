@@ -894,6 +894,12 @@ pub fn set_home_thread_id(
     Ok((previous, saved))
 }
 
+fn is_managed_whale_entry(name: &str) -> bool {
+    matches!(name, MANIFEST_FILE | SOUL_FILE | MEMORY_FILE | LOCK_FILE)
+        || (name.starts_with(".xai-oauth-write-") && name.ends_with(".tmp"))
+        || name.starts_with(".tmp")
+}
+
 pub fn delete_whale(id: &str) -> std::result::Result<(), WhaleError> {
     let id = validate_id(id)?;
     if id == DEFAULT_ID {
@@ -935,9 +941,17 @@ pub fn delete_whale(id: &str) -> std::result::Result<(), WhaleError> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(&path)? {
         let entry = entry?;
-        if let Some(name) = entry.file_name().to_str() {
-            names.push(name.to_owned());
+        let name = entry.file_name();
+        let managed =
+            entry.file_type()?.is_file() && name.to_str().is_some_and(is_managed_whale_entry);
+        if !managed {
+            return Err(WhaleError::Conflict(format!(
+                "Whale '{id}' was not deleted: its folder also holds {}, which Codewhale did not create. Move it out of {} and retry",
+                name.to_string_lossy(),
+                path.display()
+            )));
         }
+        names.push(name.to_string_lossy().into_owned());
     }
     drop(lock);
     for name in names {
@@ -1188,6 +1202,38 @@ mod tests {
             Err(WhaleError::NotFound(_))
         ));
         assert_eq!(list_whales().expect("list after delete").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_refuses_a_whale_folder_with_unmanaged_entries_and_keeps_its_files() -> Result<()> {
+        let _lock = lock_test_env();
+        let temp = tempfile::tempdir()?;
+        let cw_home = temp.path().join("cw-home");
+        let _guard = EnvVarGuard::set("CODEWHALE_HOME", &cw_home);
+
+        create_whale(CreateWhaleInput {
+            id: Some("keeper".into()),
+            name: "Keeper".into(),
+            soul: Some("Keep this voice.".into()),
+            memory: Some("Keep this memory.".into()),
+            ..Default::default()
+        })
+        .expect("create keeper whale");
+        let folder = cw_home.join("whales").join("keeper");
+        std::fs::create_dir(folder.join("notes"))?;
+
+        assert!(matches!(
+            delete_whale("keeper"),
+            Err(WhaleError::Conflict(_))
+        ));
+        let kept = get_whale("keeper").expect("keeper survives a refused delete");
+        assert_eq!(kept.soul, "Keep this voice.");
+        assert_eq!(kept.memory.as_deref(), Some("Keep this memory."));
+
+        std::fs::remove_dir(folder.join("notes"))?;
+        delete_whale("keeper").expect("delete once the folder holds only whale files");
+        assert!(!folder.exists());
         Ok(())
     }
 }

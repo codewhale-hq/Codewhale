@@ -2078,7 +2078,7 @@
   "WhaleStateThinking": "Berpikir",
   "WhaleStateWorking": "Bekerja",
   "WhaleStateWaiting": "Menunggu Anda",
-  "WhaleStateBlocked": "Terblokir",
+  "WhaleStateBlocked": "Gagal",
   "WhaleStateOffline": "Luring",
   "AgentStatusParked": "dijeda",
   "AgentStatusParkedRecovery": "tidak ada yang menunggunya; gunakan resume_from untuk melanjutkan atau cancel untuk membuangnya",
