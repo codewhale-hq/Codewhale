@@ -349,6 +349,101 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExternalAgentDiscoveryRow {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub acp: Option<String>,
+    #[serde(default)]
+    pub website: String,
+    #[serde(default)]
+    pub min_version: Option<String>,
+    #[serde(default)]
+    pub upgrade: Option<String>,
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub adapter: Option<String>,
+    #[serde(default)]
+    pub adapter_installed: bool,
+    #[serde(default)]
+    pub needs_update: bool,
+    #[serde(default)]
+    pub runnable: bool,
+    #[serde(default)]
+    pub custom: bool,
+    #[serde(default)]
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn discover_external_agents() -> Vec<ExternalAgentDiscoveryRow> {
+    let Json(value) = list_external_agents().await;
+    value
+        .get("agents")
+        .cloned()
+        .and_then(|agents| serde_json::from_value(agents).ok())
+        .unwrap_or_default()
+}
+
+pub async fn discover_external_agent(id: &str) -> Option<ExternalAgentDiscoveryRow> {
+    let id = id.trim();
+    if id == codewhale_engine::fleet::agents::FIXTURE_AGENT_ID {
+        let agent = codewhale_engine::fleet::agents::find(id)?;
+        let row = match codewhale_engine::fleet::agents::launch(id).await {
+            Ok(_) => ExternalAgentDiscoveryRow {
+                id: agent.id.to_string(),
+                name: agent.name.to_string(),
+                state: "installed".to_string(),
+                version: None,
+                acp: Some("native".to_string()),
+                website: agent.website.to_string(),
+                min_version: None,
+                upgrade: None,
+                login: None,
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: true,
+                custom: false,
+                reason_code: None,
+                reason: None,
+            },
+            Err(unavailable) => ExternalAgentDiscoveryRow {
+                id: agent.id.to_string(),
+                name: agent.name.to_string(),
+                state: "not_installed".to_string(),
+                version: None,
+                acp: None,
+                website: agent.website.to_string(),
+                min_version: None,
+                upgrade: None,
+                login: None,
+                adapter: None,
+                adapter_installed: false,
+                needs_update: false,
+                runnable: false,
+                custom: false,
+                reason_code: Some(unavailable.code.to_string()),
+                reason: Some(unavailable.message),
+            },
+        };
+        return Some(row);
+    }
+    if let Some(agent) = AGENTS.iter().find(|agent| agent.id == id) {
+        return serde_json::from_value(describe(agent).await).ok();
+    }
+    if let Some(custom) = codewhale_engine::fleet::agents::find_custom(id) {
+        return serde_json::from_value(describe_custom(custom).await).ok();
+    }
+    None
+}
+
 pub(super) async fn list_external_agents() -> Json<Value> {
     let customs = custom_agents();
     let custom_ids: Vec<String> = customs.iter().map(|c| c.id.clone()).collect();

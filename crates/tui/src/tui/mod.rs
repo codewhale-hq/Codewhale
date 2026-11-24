@@ -37,6 +37,7 @@ pub(crate) mod control_socket;
 pub(crate) mod conversation_mode;
 pub(crate) mod coordination_detail;
 pub mod display_refresh;
+pub mod external_agent;
 pub mod external_editor;
 pub mod feedback_picker;
 pub mod file_frecency;

@@ -21,8 +21,8 @@ export const NATIVE_TERMINAL_VIEWS = [
     narrow: "cols48/01-model-picker",
     label: { en: "Model", zh: "模型" },
     description: {
-      en: "The model picker, searched for deepseek-flash, lists the same model from several providers.",
-      zh: "在模型选择器中搜索 deepseek-flash，会列出多个提供商提供的同一个模型。",
+      en: "The model picker, searched for qwen3, lists the same model family across local Ollama and hosted providers.",
+      zh: "在模型选择器中搜索 qwen3，会列出本地 Ollama 与多个托管提供商的同系列模型。",
     },
   },
   {
@@ -31,8 +31,8 @@ export const NATIVE_TERMINAL_VIEWS = [
     narrow: "cols48/03-task-diff",
     label: { en: "Edit", zh: "编辑" },
     description: {
-      en: "deepseek-flash read two files and edited ls.py. Accept Edits applied the edit and shows the diff.",
-      zh: "deepseek-flash 读取了两个文件并编辑了 ls.py。Accept Edits 模式直接应用了修改，并显示差异。",
+      en: "qwen3:4b read the files and edited ls.py. Accept Edits applied the edit and shows the diff.",
+      zh: "qwen3:4b 读取文件并编辑了 ls.py。Accept Edits 模式直接应用了修改，并显示差异。",
     },
   },
   {
@@ -80,8 +80,8 @@ export const NATIVE_TERMINAL_VIEWS = [
 export const NATIVE_TERMINAL_COPY = {
   title: { en: "Explore the terminal", zh: "探索终端界面" },
   description: {
-    en: "These views come from real sessions on a development build of 0.10.3, which is not released yet: deepseek-flash through DeepSeek's API, in Accept Edits.",
-    zh: "这些画面来自真实会话，运行在尚未发布的 0.10.3 开发版本上：通过 DeepSeek API 使用 deepseek-flash，处于 Accept Edits 模式。",
+    en: "These views come from real sessions on the published 0.10.4 release: qwen3:4b through local Ollama, in Accept Edits.",
+    zh: "这些画面来自真实会话，运行在已发布的 0.10.4 版本上：通过本地 Ollama 使用 qwen3:4b，处于 Accept Edits 模式。",
   },
   viewsLabel: { en: "Terminal views", zh: "终端视图" },
 } satisfies Record<string, LocalizedText>;

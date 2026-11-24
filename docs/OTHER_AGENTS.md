@@ -33,7 +33,20 @@ discover an existing installation with supported access. [Google account migrati
 
 ## Start a session
 
-You can start the session directly through the Runtime API. In a Bash shell
+### From the terminal
+
+Open `/model` in the TUI to choose either a Codewhale model or an installed external ACP agent under **Other agents (ACP)**. Agents that are installed but not ready show why (for example, a missing adapter or older version) alongside their sign-in command.
+
+For scripts or direct launch, pass `--agent <id>`:
+
+```bash
+codewhale --agent opencode
+codewhale exec --agent opencode "Summarize this project without changing files."
+```
+
+### From the Runtime API
+
+You can also start the session directly through the Runtime API. In a Bash shell
 inside the project folder, start the local server. Keep the token private.
 
 ```bash

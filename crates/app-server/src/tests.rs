@@ -671,7 +671,7 @@ async fn failed_config_set_keeps_the_stdio_bridge() {
     let token = ["sk-live-", "Z7qX4mNb2Vc9Lk3PwR8t"].concat();
     for (key, value) in [
         ("telemetry", "not-a-bool"),
-        ("approval_policy", "ask"),
+        ("approval_policy", "bogus"),
         ("sandbox_mode", "full"),
         ("verbosity", "quiet"),
         ("approval_policy", token.as_str()),

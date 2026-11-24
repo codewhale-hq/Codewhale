@@ -133,6 +133,8 @@ struct Cli {
     /// With `--resume` or `--continue` it must match the session's saved mode.
     #[arg(long = "conversation-mode", value_name = "MODE")]
     conversation_mode: Option<String>,
+    #[arg(long = "agent", value_name = "AGENT_ID")]
+    agent: Option<String>,
 }
 
 impl std::ops::Deref for Cli {
@@ -563,6 +565,8 @@ struct ExecArgs {
     /// resumed session it must match the session's saved mode.
     #[arg(long = "conversation-mode", value_name = "MODE")]
     conversation_mode: Option<String>,
+    #[arg(long = "agent", value_name = "AGENT_ID")]
+    agent: Option<String>,
     #[arg(
         value_name = "PROMPT",
         trailing_var_arg = true,
@@ -3116,6 +3120,42 @@ async fn run_async_main_dispatch(
                     config.extra_trusted_paths = extra;
                 }
                 let prompt = resolve_exec_prompt(&args)?;
+                if let Some(agent_id) = args
+                    .agent
+                    .as_deref()
+                    .or(cli.agent.as_deref())
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    if args.resume.is_some() || args.session_id.is_some() || args.continue_session {
+                        bail!(
+                            "--agent cannot be combined with --resume, --session-id, or --continue."
+                        );
+                    }
+                    let auto_mode = args.auto
+                        || cli.yolo
+                        || config.yolo.unwrap_or(false)
+                        || cli.permission_mode
+                            == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
+                    let (posture, mode) = tui::external_agent::resolve_external_agent_posture(
+                        cli.permission_mode,
+                        auto_mode,
+                        &config,
+                    );
+                    return run_exec_external_agent(
+                        &config,
+                        agent_id,
+                        &prompt,
+                        workspace,
+                        posture,
+                        mode,
+                        auto_mode,
+                        args.json,
+                        args.output_format,
+                        std::sync::Arc::clone(&plugin_registry),
+                    )
+                    .await;
+                }
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
                 validate_exec_tool_authority_resume(
                     args.tool_authority_json.as_deref(),
@@ -15090,8 +15130,7 @@ fn merge_project_config_with_approval_baseline(
     if let Some(v) = table.get("max_subagents").and_then(toml::Value::as_integer)
         && v > 0
     {
-        config.max_subagents =
-            Some((v as usize).clamp(1, codewhale_runtime::config::MAX_SUBAGENTS));
+        config.set_max_subagents_override(v as usize);
     }
     if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
         if v {
@@ -15610,6 +15649,43 @@ async fn run_interactive_prepared(
         || cli.permission_mode
             == Some(codewhale_engine::runtime_options::PermissionMode::FullAccess);
 
+    let launch_external_agent = if let Some(agent_id) = cli
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if resume_session_id.is_some() || cli.continue_session || cli.resume.is_some() {
+            exit_refused(
+                "codewhale",
+                "--agent cannot be combined with --resume or --continue.",
+            );
+        }
+        let discovered = match tui::external_agent::validate_external_agent_for_cli(agent_id).await
+        {
+            Ok(row) => row,
+            Err(error) => exit_refused("codewhale", &error.to_string()),
+        };
+        let (posture, mode) =
+            tui::external_agent::resolve_external_agent_posture(cli.permission_mode, yolo, config);
+        match tui::external_agent::create_external_agent_session(
+            config,
+            workspace.clone(),
+            posture,
+            mode,
+            discovered.id,
+            Some(discovered.name),
+            std::sync::Arc::clone(&plugin_registry),
+        )
+        .await
+        {
+            Ok(session) => Some(session),
+            Err(error) => exit_refused("codewhale", &error.to_string()),
+        }
+    } else {
+        None
+    };
+
     Box::pin(tui::run_tui(
         config,
         tui::TuiOptions {
@@ -15639,8 +15715,169 @@ async fn run_interactive_prepared(
         pending_telemetry_notice,
         launch_conversation_mode,
         cli.permission_mode,
+        launch_external_agent,
     ))
     .await
+}
+
+async fn run_exec_external_agent(
+    config: &Config,
+    agent_id: &str,
+    prompt: &str,
+    workspace: PathBuf,
+    posture: &str,
+    mode: &str,
+    auto_mode: bool,
+    json_output: bool,
+    output_format: ExecOutputFormat,
+    plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+) -> Result<()> {
+    let discovered = tui::external_agent::validate_external_agent_for_cli(agent_id).await?;
+    let mut session = tui::external_agent::create_external_agent_session(
+        config,
+        workspace,
+        posture,
+        mode,
+        discovered.id,
+        Some(discovered.name),
+        plugin_registry,
+    )
+    .await?;
+    let turn = session
+        .runtime
+        .start_turn(
+            &session.thread_id,
+            codewhale_engine::runtime_threads::manager::StartTurnRequest {
+                prompt: prompt.to_string(),
+                permission_posture: Some(posture.to_string()),
+                mode: Some(mode.to_string()),
+                auto_approve: auto_mode.then_some(true),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let mut response_text = String::new();
+    let mut failure: Option<String> = None;
+    loop {
+        match session.events_rx.recv().await {
+            Ok(record) if record.thread_id == session.thread_id => match record.event.as_str() {
+                "item.delta" => {
+                    let kind = record
+                        .payload
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let delta = record
+                        .payload
+                        .get("delta")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if kind == "agent_message" && !delta.is_empty() {
+                        response_text.push_str(delta);
+                        if !json_output && output_format == ExecOutputFormat::Text {
+                            print!("{delta}");
+                            let _ = io::stdout().flush();
+                        } else if output_format == ExecOutputFormat::StreamJson {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "type": "delta",
+                                    "agent_id": session.agent_id,
+                                    "thread_id": session.thread_id,
+                                    "turn_id": turn.id,
+                                    "text": delta,
+                                })
+                            );
+                        }
+                    }
+                }
+                "approval.required" => {
+                    if let Some(approval_id) = record
+                        .payload
+                        .get("approval_id")
+                        .or_else(|| record.payload.get("id"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let decision = if auto_mode {
+                            codewhale_engine::runtime_threads::manager::ExternalApprovalDecision::Allow {
+                                remember: false,
+                            }
+                        } else {
+                            codewhale_engine::runtime_threads::manager::ExternalApprovalDecision::Deny {
+                                remember: false,
+                            }
+                        };
+                        let _ = session
+                            .runtime
+                            .deliver_external_approval(approval_id, decision)
+                            .await;
+                    }
+                }
+                "turn.completed" => {
+                    let status = record
+                        .payload
+                        .pointer("/turn/status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("completed");
+                    match status {
+                        "failed" => {
+                            failure = Some(
+                                record
+                                    .payload
+                                    .pointer("/turn/error")
+                                    .and_then(|v| v.as_str())
+                                    .or_else(|| {
+                                        record.payload.get("error").and_then(|v| v.as_str())
+                                    })
+                                    .unwrap_or("External agent turn failed")
+                                    .to_string(),
+                            );
+                        }
+                        "interrupted" => {
+                            failure = Some("External agent turn interrupted".to_string());
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+    let _ = session.runtime.shutdown_and_wait().await;
+    if let Some(error) = failure {
+        bail!("{}: {error}", session.agent_name);
+    }
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "agent_id": session.agent_id,
+                "agent_name": session.agent_name,
+                "thread_id": session.thread_id,
+                "turn_id": turn.id,
+                "response": response_text,
+            })
+        );
+    } else if output_format == ExecOutputFormat::StreamJson {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "completed",
+                "agent_id": session.agent_id,
+                "agent_name": session.agent_name,
+                "thread_id": session.thread_id,
+                "turn_id": turn.id,
+                "response": response_text,
+            })
+        );
+    } else if !response_text.is_empty() && !response_text.ends_with('\n') {
+        println!();
+    }
+    Ok(())
 }
 
 fn validate_cli_permission_mode(

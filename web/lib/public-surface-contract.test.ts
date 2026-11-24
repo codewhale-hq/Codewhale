@@ -582,7 +582,7 @@ done
     expect(readmeImage).toEqual(websiteImage);
     expect(statSync(new URL(matrix.screenshot.readme, root)).size).toBeLessThan(500_000);
     expect(matrix.screenshot.terminal).toContain("real PTY capture");
-    expect(matrix.screenshot.capture).toContain("development build");
+    expect(matrix.screenshot.capture).toMatch(/published.*release|development build/);
     expect(matrix.screenshot.model).toBe(TERMINAL_SCREENSHOT.model);
     expect(matrix.screenshot.sourceCommit).toBe(TERMINAL_SCREENSHOT.sourceCommit);
     const provenance = JSON.parse(text("web/lib/terminal-captures/released/provenance.json"));
