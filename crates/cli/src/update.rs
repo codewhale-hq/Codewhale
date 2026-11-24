@@ -625,7 +625,13 @@ pub fn apply_staged_at_start(argv: &[std::ffi::OsString]) {
             && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
         if !accepted {
             staged.declined = true;
-            let _ = autoupdate::store_staged(&home, &staged);
+            if let Err(error) = autoupdate::store_staged(&home, &staged) {
+                tracing::warn!(error = %format!("{error:#}"), "could not record declined update");
+                eprintln!(
+                    "Kept v{current}, but the decision was not saved ({error:#}); you will be asked again."
+                );
+                return;
+            }
             eprintln!("Kept v{current}. Run `codewhale update` whenever you want v{version}.");
             return;
         }

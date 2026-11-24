@@ -88,17 +88,21 @@ pub(super) fn carry_approval_across_product_edit(
     path: &Path,
     original: Option<&str>,
     written: &str,
-) {
-    let Some(original) = original else { return };
+) -> anyhow::Result<()> {
+    let Some(original) = original else {
+        return Ok(());
+    };
     if path.file_name() != Some(std::ffi::OsStr::new("mcp.json")) {
-        return;
+        return Ok(());
     }
-    let Some(dir) = path.parent() else { return };
+    let Some(dir) = path.parent() else {
+        return Ok(());
+    };
     if dir.file_name() != Some(std::ffi::OsStr::new(".codewhale")) {
-        return;
+        return Ok(());
     }
     let Some(workspace) = dir.parent().map(super::normalize_workspace_path) else {
-        return;
+        return Ok(());
     };
     let digest = |text: &str| -> String {
         Sha256::digest(text.as_bytes())
@@ -113,15 +117,17 @@ pub(super) fn carry_approval_across_product_edit(
     if receipt.as_deref() != Some(digest(original).as_str())
         || !codewhale_runtime::config::is_workspace_trusted(&workspace)
     {
-        return;
+        return Ok(());
     }
-    if codewhale_runtime::config::save_workspace_project_receipt(
+    codewhale_runtime::config::save_workspace_project_receipt(
         &workspace,
         codewhale_runtime::config::MCP_RECEIPT_KEY,
         &digest(written),
     )
-    .is_err()
-    {
-        tracing::warn!(target: "mcp", "Could not carry project MCP approval across an edit");
-    }
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "MCP config saved, but its project approval could not be updated; run /mcp review and /mcp approve again"
+        )
+    })?;
+    Ok(())
 }

@@ -6,14 +6,17 @@
 //! without a second snapshot or a second store.
 
 use std::collections::HashSet;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use sha2::{Digest, Sha256};
 
 use super::{SnapshotId, SnapshotRepo};
-use codewhale_dependencies::ExternalTool;
+use crate::repo::GIT_COMMAND_TIMEOUT;
+use codewhale_dependencies::{ExternalTool, run_bounded_git_with_timeout};
 
 /// Blobs above this size are reported by size only: hashing them for a
 /// Preview list is not worth the I/O, and the read route refuses them anyway.
@@ -72,7 +75,13 @@ fn git(repo: &SnapshotRepo) -> io::Result<Command> {
 }
 
 fn git_output(repo: &SnapshotRepo, args: &[&str]) -> io::Result<Vec<u8>> {
-    let output = git(repo)?.args(args).output()?;
+    let mut command = git(repo)?;
+    command.args(args);
+    let output = run_bounded_git_with_timeout(
+        &mut command,
+        args.first().copied().unwrap_or_default(),
+        GIT_COMMAND_TIMEOUT,
+    )?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "git {} failed: {}",
@@ -247,53 +256,57 @@ impl SnapshotRepo {
             .take()
             .ok_or_else(|| io::Error::other("cat-file stdout unavailable"))?;
         let mut reader = BufReader::new(stdout);
-        let mut facts = Vec::with_capacity(blobs.len());
-        let mut header = String::new();
-        let mut buffer = vec![0_u8; 64 * 1024];
-        for (index, _) in blobs {
-            header.clear();
-            reader.read_line(&mut header)?;
-            let mut parts = header.split_whitespace();
-            let (Some(_), Some("blob"), Some(size)) = (parts.next(), parts.next(), parts.next())
-            else {
-                let _ = child.kill();
-                return Err(io::Error::other(format!(
-                    "cat-file returned an unexpected header: {}",
-                    header.trim()
-                )));
-            };
-            let size: u64 = size
-                .parse()
-                .map_err(|_| io::Error::other("cat-file returned an invalid size"))?;
-            let mut hasher = (size <= DELTA_HASH_MAX_BYTES).then(Sha256::new);
-            let mut remaining = size;
-            while remaining > 0 {
-                let want = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(0);
-                let read = reader.read(&mut buffer[..want])?;
-                if read == 0 {
+        let child = Arc::new(Mutex::new(child));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        {
+            let child = Arc::clone(&child);
+            let timed_out = Arc::clone(&timed_out);
+            std::thread::spawn(move || {
+                if done_rx.recv_timeout(GIT_COMMAND_TIMEOUT) == Err(mpsc::RecvTimeoutError::Timeout)
+                {
+                    timed_out.store(true, Ordering::SeqCst);
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.kill();
+                    }
+                }
+            });
+        }
+        let read = read_blob_facts(&mut reader, blobs);
+        drop(done_tx);
+        match read {
+            Ok(facts) => {
+                writer
+                    .join()
+                    .map_err(|_| io::Error::other("cat-file writer panicked"))??;
+                child
+                    .lock()
+                    .map_err(|_| io::Error::other("cat-file child lock poisoned"))?
+                    .wait()?;
+                Ok(facts)
+            }
+            Err(error) => {
+                if let Ok(mut child) = child.lock() {
+                    let _ = child.kill();
+                }
+                std::thread::spawn(move || {
+                    let _ = writer.join();
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.wait();
+                    }
+                });
+                if timed_out.load(Ordering::SeqCst) {
                     return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "cat-file ended inside a blob",
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "git cat-file timed out after {}s",
+                            GIT_COMMAND_TIMEOUT.as_secs()
+                        ),
                     ));
                 }
-                if let Some(hasher) = hasher.as_mut() {
-                    hasher.update(&buffer[..read]);
-                }
-                remaining -= read as u64;
+                Err(error)
             }
-            let mut newline = [0_u8; 1];
-            reader.read_exact(&mut newline)?;
-            facts.push((
-                *index,
-                size,
-                hasher.map(|hasher| codewhale_runtime::hashing::hex_bytes(hasher.finalize())),
-            ));
         }
-        writer
-            .join()
-            .map_err(|_| io::Error::other("cat-file writer panicked"))??;
-        child.wait()?;
-        Ok(facts)
     }
 
     /// The bytes of regular file `rel` in snapshot `id`, or `None` when the
@@ -375,6 +388,53 @@ impl SnapshotRepo {
             .filter_map(safe_display)
             .collect())
     }
+}
+
+fn read_blob_facts(
+    reader: &mut impl BufRead,
+    blobs: &[(usize, String)],
+) -> io::Result<Vec<(usize, u64, Option<String>)>> {
+    let mut facts = Vec::with_capacity(blobs.len());
+    let mut header = String::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    for (index, _) in blobs {
+        header.clear();
+        reader.read_line(&mut header)?;
+        let mut parts = header.split_whitespace();
+        let (Some(_), Some("blob"), Some(size)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(io::Error::other(format!(
+                "cat-file returned an unexpected header: {}",
+                header.trim()
+            )));
+        };
+        let size: u64 = size
+            .parse()
+            .map_err(|_| io::Error::other("cat-file returned an invalid size"))?;
+        let mut hasher = (size <= DELTA_HASH_MAX_BYTES).then(Sha256::new);
+        let mut remaining = size;
+        while remaining > 0 {
+            let want = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(0);
+            let read = reader.read(&mut buffer[..want])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "cat-file ended inside a blob",
+                ));
+            }
+            if let Some(hasher) = hasher.as_mut() {
+                hasher.update(&buffer[..read]);
+            }
+            remaining -= read as u64;
+        }
+        let mut newline = [0_u8; 1];
+        reader.read_exact(&mut newline)?;
+        facts.push((
+            *index,
+            size,
+            hasher.map(|hasher| codewhale_runtime::hashing::hex_bytes(hasher.finalize())),
+        ));
+    }
+    Ok(facts)
 }
 
 #[cfg(test)]
@@ -557,5 +617,16 @@ mod tests {
         assert_eq!(safe_display(b".git/config"), None);
         assert_eq!(safe_display(b"bad\xff.txt"), None);
         assert_eq!(safe_display(b""), None);
+    }
+
+    #[test]
+    fn blob_facts_returns_an_error_for_a_missing_object() {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, _home) = repo(root.path());
+        let missing = "1".repeat(40);
+        let err = repo
+            .blob_facts(&[(0, missing.clone()), (1, missing)])
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected header"), "{err}");
     }
 }

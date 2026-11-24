@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Fetched, RefreshError, STATE_SUBDIR, Settings, checked_url, fetch_limited, fetch_suppressed,
-    read_bounded_regular,
+    off_runtime, read_bounded_regular,
 };
 
 pub const ENV_REGISTRY_URL: &str = "CODEWHALE_REGISTRY_URL";
@@ -208,9 +208,13 @@ where
         return Err(RefreshError::Disabled);
     }
     let path = settings.cache_file();
-    let mut cache = cache_for(settings, path.as_deref());
-    let fetched = if let Some(local) = &settings.local_path {
-        read_bounded_regular(local, MAX_REGISTRY_ENVELOPE_BYTES)
+    let mut cache = {
+        let (settings, path) = (settings.clone(), path.clone());
+        off_runtime(move || Ok(cache_for(&settings, path.as_deref()))).await?
+    };
+    let fetched = if let Some(local) = settings.local_path.clone() {
+        off_runtime(move || read_bounded_regular(&local, MAX_REGISTRY_ENVELOPE_BYTES))
+            .await
             .map(|bytes| Fetched::Body { bytes, etag: None })?
     } else {
         if suppress_network {

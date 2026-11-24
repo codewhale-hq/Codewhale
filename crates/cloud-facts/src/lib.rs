@@ -371,6 +371,14 @@ fn read_bounded_regular(path: &Path, limit: usize) -> Result<Vec<u8>, RefreshErr
     Ok(bytes)
 }
 
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, RefreshError> + Send + 'static,
+) -> Result<T, RefreshError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| RefreshError::Io(e.to_string()))?
+}
+
 fn load_cache(path: &Path) -> Option<PersistedCache> {
     let bytes = read_bounded_regular(path, MAX_CACHE_BYTES).ok()?;
     let cache: PersistedCache = serde_json::from_slice(&bytes).ok()?;
@@ -732,11 +740,16 @@ where
     if !overlay::is_current(&ticket) {
         return Err(RefreshError::Superseded);
     }
-    let mut cache = cache_for(settings, keys)?;
+    let mut cache = {
+        let (settings, keys) = (settings.clone(), keys.to_vec());
+        off_runtime(move || cache_for(&settings, &keys)).await?
+    };
     let path = settings.cache_file();
     let now = now_unix();
-    let fetched = if let Some(local) = &settings.local_path {
-        read_bounded_regular(local, MAX_BODY_BYTES).map(|bytes| Fetched::Body { bytes, etag: None })
+    let fetched = if let Some(local) = settings.local_path.clone() {
+        off_runtime(move || read_bounded_regular(&local, MAX_BODY_BYTES))
+            .await
+            .map(|bytes| Fetched::Body { bytes, etag: None })
     } else {
         if suppress_network {
             return Err(RefreshError::Suppressed);
