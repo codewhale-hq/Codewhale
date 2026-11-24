@@ -1656,6 +1656,22 @@
       },
       "wire_policy": "chat_completions"
     },
+    "onomeo": {
+      "api_key_env": "ONOMEO_API_KEY",
+      "auth": {
+        "env_vars": [
+          "ONOMEO_API_KEY"
+        ],
+        "secret_slot": "onomeo"
+      },
+      "base_url": "https://onomeo.com/v1",
+      "credential_url": "https://onomeo.com/dashboard",
+      "discovery": "models_endpoint",
+      "docs_url": "https://onomeo.com/integrations",
+      "origin": "descriptor",
+      "wire": "openai-compatible",
+      "wire_policy": "openai-compatible"
+    },
     "openai": {
       "aliases": [
         "open-ai"

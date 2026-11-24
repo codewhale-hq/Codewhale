@@ -69,6 +69,7 @@ against the vendor's own docs before trusting any value here:
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 | LLMTR | `https://llmtr.com/v1` | `minimax/minimax-m3.1-flash`; namespaced `vendor/model` ids, from the live catalog | `LLMTR_API_KEY` |
 | WorldRouter | `https://inference-api.worldrouter.ai/v1` | `claude-sonnet-5-5`, `deepseek-v4-flash`, `gemini-4-neon` | `WORLDROUTER_API_KEY` |
+| onomeo | `https://onomeo.com/v1` | `deepseek-v4.1-flash`, `claude-sonnet-5.5`, `gpt-6.2-sol` | `ONOMEO_API_KEY` |
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
 Tinker in `/provider` or configure the named route below. Its documented
@@ -166,6 +167,15 @@ Kimi and GLM models behind one key. Model ids are unprefixed, such as
 <https://www.worldrouter.ai/models>. The authority is
 `GET https://inference-api.worldrouter.ai/v1/models` with your key.
 Docs: <https://www.worldrouter.ai/docs/quickstart>.
+
+onomeo is an OpenAI-compatible gateway with Claude, GPT, Gemini and DeepSeek
+models behind one key. Model ids are unprefixed, such as `deepseek-v4.1-flash`,
+`claude-sonnet-5.5` or `gpt-6.2-sol`. New accounts can call
+`deepseek-v4.1-flash`, the bootstrap model, for free within daily limits;
+Claude, GPT and Gemini models need a topped-up balance. The authority is
+`GET https://onomeo.com/v1/models` with your key (it answers 401 without one).
+Create a key at <https://onomeo.com/dashboard> and set `ONOMEO_API_KEY`.
+Docs: <https://onomeo.com/integrations>.
 
 Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
 `tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.
