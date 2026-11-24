@@ -75,6 +75,8 @@ test('every curated method is defined on the class that serves it', () => {
     agentPresets: ['dsh/host-services.ts', 'AgentPresetsService'], agentDefaultModel: ['dsh/host-services.ts', 'AgentDefaultModelService'],
     sessionProjections: ['dsh/host-services.ts', 'SessionProjectionsService'], workspaceRegistry: ['dsh/host-services.ts', 'WorkspaceRegistryService'],
     typertGateway: ['dsh/host-services.ts', 'TypertGatewayService'], web: ['dsh/host-services.ts', 'WebService'],
+    webServer: ['dsh/webserver.ts', 'WebServerService'], connection: ['dsh/webserver.ts', 'ConnectionService'],
+    sessionTitle: ['dsh/webserver.ts', 'SessionTitleService'], profileContext: ['dsh/webserver.ts', 'ProfileContextService'],
   }
   const cordis = { events: ['events', ['on', 'once', 'emit']], reflect: ['reflect', ['provide', 'get']], registry: ['registry', ['get', 'resolve']] }
   const agentsSource = text(src('dsh/agents.ts'))
@@ -92,6 +94,8 @@ test('every curated method is defined on the class that serves it', () => {
     for (const m of service.methods) {
       if (service.key === 'subagents' && m.name === 'result') assert.match(agentsSource, /^\s*get result\(\)/m, 'subagents.result is a getter')
       else if (service.key === 'subagents' && m.name === 'dispose') assert.match(agentsSource, /^\s*dispose\(\)/m, 'subagents.dispose')
+      else if (service.key === 'connection' && (m.name === 'fetch.register' || m.name === 'rpc.handle')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name.split('.')[0]}\\(\\)`, 'm'), `${service.key}.${m.name}`)
+      else if (service.key === 'profileContext' && (m.name === 'dir' || m.name === 'installAnchor')) assert.match(body, new RegExp(`^\\s*get\\s+${m.name}\\(\\)`, 'm'), `${service.key}.${m.name}`)
       else assert.ok(defines(body, m.name), `${service.key}.${m.name}`)
     }
   }
@@ -141,7 +145,7 @@ test('the refused events equal the list in root.ts', () => {
 
 test('the Service provider answers a directory, one contract, and refuses a name the host lacks', async () => {
   const directory = await ask('host', 'Service', 'listService')
-  assert.equal(directory.services.length, 32)
+  assert.equal(directory.services.length, 36)
   assert.ok(!directory.services.some((s) => s.key === 'fs'))
   const one = await ask('host', 'Service', 'listService', { service: 'prompt' })
   assert.equal(one.service.methods[0].name, 'registerSection')
