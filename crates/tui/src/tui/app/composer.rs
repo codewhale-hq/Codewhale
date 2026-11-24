@@ -576,12 +576,6 @@ impl ComposerState {
         self.vim_enabled && self.vim_mode == VimMode::Normal
     }
 
-    /// Returns `true` when vim mode is active and the composer is in Visual mode.
-    #[must_use]
-    pub fn vim_is_visual_mode(&self) -> bool {
-        self.vim_enabled && self.vim_mode == VimMode::Visual
-    }
-
     pub fn stash_current_input_for_recovery(&mut self) {
         // Before stashing, expand any truncated paste so the saved draft
         // contains the full text, not the truncated preview (#3263).
@@ -1515,7 +1509,7 @@ impl App {
         self.vim_mode = VimMode::Insert;
     }
 
-    /// Return to Normal mode from Insert or Visual (vim `Esc`).
+    /// Return to Normal mode from Insert (vim `Esc`).
     pub fn vim_enter_normal(&mut self) {
         self.vim_mode = VimMode::Normal;
         self.vim_pending_d = false;

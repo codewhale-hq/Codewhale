@@ -2411,15 +2411,6 @@ impl CommandModePolicyContext for ModePolicyAdapter<'_> {
         }
     }
 
-    fn select_yolo_compat(&mut self) -> codewhale_command_contract::facets::CommandModeSelection {
-        use codewhale_command_contract::facets::CommandModeSelection;
-        match self.host.app.borrow_mut().select_yolo_compat() {
-            crate::tui::app::SettingSelection::Changed => CommandModeSelection::Changed,
-            crate::tui::app::SettingSelection::PersistedSame => CommandModeSelection::PersistedSame,
-            crate::tui::app::SettingSelection::Refused => CommandModeSelection::Refused,
-        }
-    }
-
     fn mode_startup_default_receipt(&self, mode: CommandMode) -> String {
         self.host
             .app
@@ -2440,11 +2431,6 @@ impl CommandModePolicyContext for ModePolicyAdapter<'_> {
         from_command_mode(mode)
             .display_name_localized(locale)
             .to_string()
-    }
-
-    fn yolo_compat_label(&self) -> String {
-        let locale = self.host.app.borrow().ui_locale;
-        codewhale_localization::tr(locale, MessageId::HotbarActionModeYoloName).to_string()
     }
 }
 

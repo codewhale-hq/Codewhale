@@ -1068,7 +1068,6 @@ impl App {
                     config,
                 )
                 .suspended_allow_warnings,
-            shell_access_editable,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),

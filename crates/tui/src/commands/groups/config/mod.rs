@@ -82,7 +82,7 @@ static STATUSLINE_INFO: CommandInfo = CommandInfo {
 };
 static MODE_INFO: CommandInfo = CommandInfo {
     name: "mode",
-    aliases: &["jihua", "zidong"],
+    aliases: &["jihua"],
     usage: config::MODE_USAGE,
     description_key: "cmd_mode_description",
 };

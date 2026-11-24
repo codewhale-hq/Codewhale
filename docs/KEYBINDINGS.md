@@ -34,7 +34,7 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` | Select the workbar panel: Tasks / Agents / Context / Files |
 | `Ctrl-Alt-0`         | Toggle the workbar off / back to the bottom placement          |
 | `Alt-L`              | Open the pager for the last message (composer empty)             |
-| `Alt-P` / `Alt-A` / `Alt-Y` | Jump to Plan / Work, or request Full Access (`Alt-Y` is the legacy permission channel — Work + Full Access — not a separate mode; it honors a locked approval policy) |
+| `Alt-P` / `Alt-A` | Jump to Plan / Work |
 | `Ctrl-X` (Activity workbar) | Cancel all running background shell jobs                  |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast. During a compact that is serving an in-flight turn, Esc stops the turn (the compact is collateral). |
 

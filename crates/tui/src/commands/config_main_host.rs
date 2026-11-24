@@ -3761,32 +3761,35 @@ mod tests {
     }
 
     #[test]
-    fn test_mode_yolo_sets_all_flags() {
-        for use_alias in [false, true] {
+    fn test_mode_yolo_hints_shift_tab_and_zidong_aliases_auto() {
+        for legacy in ["yolo", "bypass", "4"] {
             let mut app = create_test_app();
-            // Switch to Agent first to guarantee a clean starting state regardless of
-            // user settings on the host machine.
             let _ = mode_command(&mut app, Some("agent"));
-            let result = if use_alias {
-                crate::commands::execute("/zidong", &mut app)
-            } else {
-                mode_command(&mut app, Some("yolo"))
-            };
-            // YOLO is invisible Work+Bypass shorthand — user-facing copy names Full Access (Work).
+            let before_approval = app.approval_mode;
+            let before_trust = app.trust_mode;
+            let before_shell = app.allow_shell;
+            let result = mode_command(&mut app, Some(legacy));
             assert!(
                 result
                     .message
-                    .unwrap()
-                    .contains("Switched to Full Access (Work)")
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Shift+Tab"),
+                "expected Shift+Tab hint for /mode {legacy}, got {:?}",
+                result.message
             );
-            assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
-            assert!(app.allow_shell);
-            assert!(app.trust_mode);
-            assert!(app.yolo);
-            assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-            // The deprecated YOLO alias remaps to Agent mode (M6 compat shim).
-            assert_eq!(app.mode, AppMode::Agent);
+            assert_eq!(result.action, None);
+            assert!(!app.yolo);
+            assert_eq!(app.approval_mode, before_approval);
+            assert_eq!(app.trust_mode, before_trust);
+            assert_eq!(app.allow_shell, before_shell);
         }
+
+        let mut app = create_test_app();
+        let zidong = crate::commands::execute("/zidong", &mut app);
+        let auto = crate::commands::execute("/auto", &mut app);
+        assert_eq!(zidong.action, auto.action);
+        assert!(!app.yolo);
     }
 
     #[test]

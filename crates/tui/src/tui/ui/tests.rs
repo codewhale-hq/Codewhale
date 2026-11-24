@@ -11027,31 +11027,15 @@ async fn mode_change_update_notifies_engine() {
     let _ = app.set_mode(AppMode::Plan);
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
-    assert!(
-        apply_yolo_compat_update(
-            &mut app,
-            &engine.handle,
-            &codewhale_runtime::config::Config::default()
-        )
-        .await
-    );
+    assert!(apply_mode_update(&mut app, &engine.handle, AppMode::Agent).await);
 
     match engine.rx_op.recv().await.expect("change mode op") {
         codewhale_engine::core::ops::Op::ChangeMode {
             mode,
-            allow_shell,
-            trust_mode,
-            auto_approve,
-            approval_mode,
             configured_sandbox_mode,
+            ..
         } => {
-            // The deprecated YOLO alias lands in Agent mode with full-access
-            // compat policies (M6 shim); the engine sees the remapped mode.
             assert_eq!(mode, AppMode::Agent);
-            assert!(allow_shell);
-            assert!(trust_mode);
-            assert!(auto_approve);
-            assert_eq!(approval_mode, ApprovalMode::Bypass);
             assert_eq!(configured_sandbox_mode, app.configured_sandbox_mode);
         }
         other => panic!("expected ChangeMode, got {other:?}"),

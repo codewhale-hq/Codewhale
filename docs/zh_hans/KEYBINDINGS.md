@@ -36,7 +36,7 @@
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` | 选择任务面板（workbar）的面板：Tasks / Agents / Context / Files |
 | `Ctrl-Alt-0` | 关闭任务面板（workbar）/ 恢复到底部位置 |
 | `Alt-L` | 为最后一条消息打开分页器（输入框为空） |
-| `Alt-P` / `Alt-A` / `Alt-Y` | 跳到 Plan / Work，或请求 Full Access（`Alt-Y` 是旧的权限通道——Work + Full Access——不是独立模式；它遵循锁定的审批策略） |
+| `Alt-P` / `Alt-A` | 跳到 Plan / Work |
 | `Ctrl-X`（Activity 任务面板） | 取消所有正在运行的后台 shell 任务 |
 | `Esc` | 关闭最上层模态框 · 取消斜杠菜单 · 关闭 toast。当压缩正在为一个进行中的回合服务时，`Esc` 会停止该回合（压缩随之中断） |
 

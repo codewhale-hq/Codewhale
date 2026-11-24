@@ -832,7 +832,7 @@
   "KbCycleThinking": "Перемикати рівень міркувань для активного провайдера (Ctrl+T)",
   "KbCyclePermissions": "Змінити доступ: Питати → Приймати правки → Plan → Автоогляд → Повний доступ (Shift+Tab)",
   "KbJumpPlanAgentYolo": "Активувати слоти Hotbar",
-  "KbAltJumpPlanAgentYolo": "Перехід до Plan / Work або запит Full Access (застарілий псевдонім)",
+  "KbAltJumpPlanAgentYolo": "Перехід до Plan / Work",
   "KbFocusSidebar": "Фокус на робочій панелі Tasks / Agents / Context / Pinned",
   "KbSessionPicker": "Відкрити вибір сеансу",
   "KbUpdateInstall": "Перевірити й встановити останнє оновлення Codewhale (`/update install`)",

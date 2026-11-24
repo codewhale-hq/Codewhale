@@ -72,7 +72,7 @@ Workflow 通过同一个子智能体运行时执行命名步骤；Fleet 管理�
 
 ## 模式持久化
 
-交互式选择模式也会设置新会话启动时的模式。`Shift+Tab` 拨盘、`Alt+A` / `Alt+P` / `Alt+Y` 快捷键、Hotbar 的 Plan/Work 动作和 `/mode` 都会把 `default_mode` 写入 `~/.codewhale/settings.toml`，所以切换到 Plan 会在重启后保留。写入发生在事件循环之外；如果失败，TUI 会用警告提示（toast）说明，而不是在下次启动时静默回退。
+交互式选择模式也会设置新会话启动时的模式。`Shift+Tab` 拨盘、`Alt+A` / `Alt+P` 快捷键、Hotbar 的 Plan/Work 动作和 `/mode` 都会把 `default_mode` 写入 `~/.codewhale/settings.toml`，所以切换到 Plan 会在重启后保留。写入发生在事件循环之外；如果失败，TUI 会用警告提示（toast）说明，而不是在下次启动时静默回退。
 
 模式、思考强度和模型选择器共享一个串行化的写入器，所以最后的选择就是磁盘上的选择——连续快速按 Shift+Tab 也不会让恰好最后完成的那次写入成为最终持久化的值——模式写入也永远不会回滚 `default_model` 等无关的键。
 

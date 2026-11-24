@@ -50,7 +50,7 @@ fn the_real_built_in_catalog_refuses_every_name_alias_and_mode_alias() {
     assert!(!profile.palette_runs_directly);
     assert!(row("lane").unlisted);
     assert!(row("goal").subcommands.iter().any(|verb| verb == "blocked"));
-    let mut owned = vec!["jihua".to_string(), "zidong".to_string()];
+    let mut owned = vec!["jihua".to_string()];
     for info in crate::commands::command_infos() {
         owned.push(info.name.to_string());
         owned.extend(info.aliases.iter().map(|alias| (*alias).to_string()));

@@ -657,11 +657,51 @@ pub(super) fn handle_transcript_space(app: &mut App) -> bool {
     true
 }
 
+async fn apply_launch_action(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    action: crate::tui::underwater::LaunchAction,
+) -> Result<bool> {
+    match action {
+        crate::tui::underwater::LaunchAction::None => {}
+        crate::tui::underwater::LaunchAction::ReturnToSession => app.launch.dismiss(),
+        crate::tui::underwater::LaunchAction::NewSession => {
+            let result = begin_launch_session(app, None);
+            if apply_command_result(terminal, app, engine_handle, config, result).await? {
+                return Ok(true);
+            }
+        }
+        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
+            crate::tui::underwater::open_launch_resume_confirm(app, &session_id);
+        }
+        crate::tui::underwater::LaunchAction::ShowRecent => {
+            app.launch.expand_recent();
+        }
+        crate::tui::underwater::LaunchAction::BrowseSessions => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            app.view_stack.push(
+                SessionPickerView::new(&app.workspace, app.ui_locale)
+                    .with_current_session(app.current_session_id.as_deref()),
+            );
+        }
+        crate::tui::underwater::LaunchAction::McpManager => {
+            app.launch.dissolve_card(app.ambient_clock_ms);
+            open_mcp_extensions(app);
+        }
+        crate::tui::underwater::LaunchAction::Help => {
+            toggle_help_view(app);
+        }
+    }
+    app.needs_redraw = true;
+    Ok(false)
+}
+
 pub(super) fn queue_auto_review_retry_from_r(app: &mut App) -> bool {
     if !app.view_stack.is_empty()
         || app.is_history_search_active()
         || app.vim_is_normal_mode()
-        || app.vim_is_visual_mode()
         || !app.input.is_empty()
         || app.mode != AppMode::Agent
         || app.approval_mode != ApprovalMode::Auto
@@ -731,7 +771,6 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         {
             true
         }
-        codewhale_tui_kit::paste_burst::FlushResult::Typed(_) if app.vim_is_visual_mode() => true,
         codewhale_tui_kit::paste_burst::FlushResult::Typed(ch) => {
             let mention_menu_limit = app.mention_menu_limit;
             if app.vim_is_normal_mode()
@@ -6186,61 +6225,11 @@ pub(crate) async fn run_event_loop(
                 if app.pending_launch_action.is_none() {
                     restore_launch_card_after_view_close(app);
                 }
-                if let Some(action) = app.pending_launch_action.take() {
-                    match action {
-                        crate::tui::underwater::LaunchAction::None => {}
-                        crate::tui::underwater::LaunchAction::ReturnToSession => {
-                            app.launch.dismiss()
-                        }
-                        crate::tui::underwater::LaunchAction::NewSession => {
-                            let result = begin_launch_session(app, None);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
-                            let result = resume_launch_session(app, &session_id);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ShowRecent => {
-                            app.launch.expand_recent();
-                        }
-                        crate::tui::underwater::LaunchAction::BrowseSessions => {
-                            // A launched command dissolves the card; Esc
-                            // out of the picker brings it back.
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            app.view_stack.push(
-                                SessionPickerView::new(&app.workspace, app.ui_locale)
-                                    .with_current_session(app.current_session_id.as_deref()),
-                            );
-                        }
-                        crate::tui::underwater::LaunchAction::McpManager => {
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            open_mcp_extensions(app);
-                        }
-                        crate::tui::underwater::LaunchAction::Help => {
-                            toggle_help_view(app);
-                        }
-                    }
-                    app.needs_redraw = true;
+                if let Some(action) = app.pending_launch_action.take()
+                    && apply_launch_action(terminal, app, &mut engine_handle, config, action)
+                        .await?
+                {
+                    return Ok(());
                 }
                 if let Some(chord) = app.pending_composer_submit.take() {
                     if dispatch_session_composer_submit(
@@ -6888,51 +6877,11 @@ pub(crate) async fn run_event_loop(
                             launch_locale,
                         )
                     });
-                    match action {
-                        crate::tui::underwater::LaunchAction::None => {}
-                        crate::tui::underwater::LaunchAction::ReturnToSession => {
-                            app.launch.dismiss()
-                        }
-                        crate::tui::underwater::LaunchAction::NewSession => {
-                            let result = begin_launch_session(app, None);
-                            if apply_command_result(
-                                terminal,
-                                app,
-                                &mut engine_handle,
-                                config,
-                                result,
-                            )
-                            .await?
-                            {
-                                return Ok(());
-                            }
-                        }
-                        crate::tui::underwater::LaunchAction::ResumeSession(session_id) => {
-                            crate::tui::underwater::open_launch_resume_confirm(app, &session_id);
-                        }
-                        crate::tui::underwater::LaunchAction::ShowRecent => {
-                            app.launch.expand_recent();
-                        }
-                        crate::tui::underwater::LaunchAction::BrowseSessions => {
-                            // A launched command dissolves the card; Esc
-                            // out of the picker brings it back.
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            app.view_stack.push(
-                                SessionPickerView::new(&app.workspace, app.ui_locale)
-                                    .with_current_session(app.current_session_id.as_deref()),
-                            );
-                        }
-                        crate::tui::underwater::LaunchAction::McpManager => {
-                            app.launch.dissolve_card(app.ambient_clock_ms);
-                            open_mcp_extensions(app);
-                        }
-                        crate::tui::underwater::LaunchAction::Help => {
-                            toggle_help_view(app);
-                        } // `handle_launch_key` never yields this; the mouse send
-                          // path above is the only producer. The arm keeps the
-                          // match exhaustive.
+                    if apply_launch_action(terminal, app, &mut engine_handle, config, action)
+                        .await?
+                    {
+                        return Ok(());
                     }
-                    app.needs_redraw = true;
                     continue;
                 }
             }
@@ -7491,7 +7440,7 @@ pub(crate) async fn run_event_loop(
                     crate::tui::agent_focus::exit_focus(app);
                     continue;
                 }
-                // Vim composer mode: Esc from Insert/Visual → Normal.
+                // Vim composer mode: Esc from Insert → Normal.
                 // This arm runs before the generic Esc handler so Insert mode
                 // Esc doesn't accidentally cancel an in-flight request.
                 KeyCode::Esc
@@ -8170,20 +8119,12 @@ pub(crate) async fn run_event_loop(
                     apply_mode_update(app, &engine_handle, AppMode::Agent).await;
                     continue;
                 }
-                KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_yolo_compat_update(app, &engine_handle, config).await;
-                    continue;
-                }
                 KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                     apply_mode_update(app, &engine_handle, AppMode::Plan).await;
                     continue;
                 }
                 KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::ALT) => {
                     apply_mode_update(app, &engine_handle, AppMode::Agent).await;
-                    continue;
-                }
-                KeyCode::Char('Y') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_yolo_compat_update(app, &engine_handle, config).await;
                     continue;
                 }
                 KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -8202,13 +8143,6 @@ pub(crate) async fn run_event_loop(
                 {
                     vim_mode::handle_vim_normal_key(app, c);
                     continue;
-                }
-                // Vim composer: in Visual mode plain chars are ignored
-                // (no text insertion until `i` / `a` enters Insert).
-                KeyCode::Char(_)
-                    if app.vim_is_visual_mode() && is_plain_char && app.view_stack.is_empty() =>
-                {
-                    // absorb — Visual mode not yet fully implemented
                 }
                 KeyCode::Char(c) if is_plain_char => {
                     app.insert_char(c);
