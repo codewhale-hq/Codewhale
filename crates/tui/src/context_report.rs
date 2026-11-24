@@ -1056,12 +1056,12 @@ mod tests {
         fs::create_dir(&skill_dir).expect("create skill directory");
         fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: fixture-skill-preview\ndescription: A long fixture description used to verify that catalog shortening stays visible.\n---\nInstructions.\n",
+            "---\nname: fixture-skill-preview\ndescription: A long fixture description used to verify that catalog shortening stays visible, padded well past the one hundred and twenty character preview cap.\n---\nInstructions.\n",
         )
         .expect("write skill");
 
         let config: Config = toml::from_str(&format!(
-            "skills_dir = {}\n[skills]\nlisting_max_description_chars = 8",
+            "skills_dir = {}",
             toml::Value::String(skills.path().to_string_lossy().into_owned())
         ))
         .expect("read config");

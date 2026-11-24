@@ -208,11 +208,11 @@ Sources to keep in sync (full architecture and rules in
 - `crates/config/src/provider_kind.rs` and `crates/runtime/src/config.rs` -
   provider identity serde, captured configured provider identities, environment
   precedence, and Rust route/auth behavior.
-- `crates/config/assets/catalog_corrections.json` and
-  `crates/config/assets/models_dev.bundled.json` - field holds and reviewed
-  intrinsic model facts (`thought_signatures_required`, `thinking_can_disable`,
-  transports, reference prices, and source receipts) rendered into the offline
-  seed by `scripts/catalog_models_dev.py`.
+- `crates/config/assets/catalog_corrections.json` - field holds and the only
+  table of reviewed intrinsic model facts (`thought_signatures_required`,
+  `thinking_can_disable`, transports, reference prices, and source receipts);
+  `crates/config/assets/models_dev.bundled.json` is the offline seed rendered
+  by `scripts/catalog_models_dev.py` without them.
 - `crates/engine/src/provider_lake.rs`, `route_budget.rs`, and `pricing.rs` -
   derive context windows, output limits, capabilities, and prices from the
   resolved route and catalog offerings.

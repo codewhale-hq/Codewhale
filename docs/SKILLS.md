@@ -269,7 +269,7 @@ Collision and prompt-budget invariants asserted today:
 | Single alias owner | No two bundled skills may claim the same alias. |
 | No duplicate entries | Each canonical name renders at most one catalogue line; aliases render zero. |
 | Budget headroom | The shipped pack alone renders under the window-scaled skills budget (2,400 characters at the default 128k window, the index floor) with **no** "additional skills omitted" line, so user skills are never silently displaced. |
-| Bounded preview | Descriptions stay single-line and respect `[skills] listing_max_description_chars` (default 120) in the catalog preview. |
+| Bounded preview | Descriptions stay single-line and stay within 120 characters in the catalog preview. |
 
 ### Locale-aware routing metadata
 
@@ -367,9 +367,9 @@ does not run readiness probes and does not block mutations on readiness.
 
 ## Config knobs
 
-Parent and child sessions discover skills on demand through `load_skill`. `/context` and `codewhale doctor --context-json` estimate a catalog preview and record zero prompt tokens for it. `[skills] listing_max_description_chars` sets the preview's per-entry ceiling (1–40,000, default 120). `listing_budget_fraction` sets its share of the resolved route window (greater than 0 and at most 1, default 0.002), estimated at four characters per token with a 2,400-character floor and 40,000-character ceiling. Explicit profile values override inherited values independently.
+Parent and child sessions discover skills on demand through `load_skill`. `/context` and `codewhale doctor --context-json` estimate a catalog preview and record zero prompt tokens for it. The preview caps each description at 120 characters and takes 0.2% of the resolved route window, estimated at four characters per token with a 2,400-character floor and 40,000-character ceiling.
 
-The preview favors `Use when:` triggers and shortens descriptions before falling back to names. When descriptions are shortened, the context report includes a count in the preview detail. Descriptions exceeding the configured cap without a recognized trigger produce a load warning. `/skills inspect` shows a localized note with the same effective cap.
+The preview favors `Use when:` triggers and shortens descriptions before falling back to names. When descriptions are shortened, the context report includes a count in the preview detail. Descriptions exceeding the cap without a recognized trigger produce a load warning. `/skills inspect` shows a localized note with the same cap.
 
 `load_skill name="list"` shows concise descriptions for project and Codewhale skills and counts global compatible skills by source. Use `name="list-all"` or `include_external=true` to list those skills individually. A multi-word `query` searches names, aliases, and full descriptions across both groups. Loading an exact name returns the full skill body. For filesystem skills, the companion list covers regular files beside `SKILL.md`. Use paths documented in the skill body to find material in subdirectories.
 
@@ -382,8 +382,6 @@ skills_dir = "/path/to/skills"
 # When true, runtime discovery skips cross-tool roots (.claude, .agents, …).
 # Owned Codewhale roots and an explicit skills_dir override still apply.
 scan_codewhale_only = false
-listing_max_description_chars = 120
-listing_budget_fraction = 0.002
 
 # Optional registry / install size overrides used by --remote, sync, and install.
 # registry_url = "https://…"

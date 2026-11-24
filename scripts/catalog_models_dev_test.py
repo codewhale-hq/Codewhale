@@ -415,13 +415,13 @@ class CommittedSeedTests(unittest.TestCase):
         proc = run_script("seed", "render", "--check")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_reviewed_source_is_exactly_embedded_without_mutating_lock(self) -> None:
+    def test_reviewed_facts_live_only_in_corrections_without_mutating_lock(self) -> None:
         data = json.loads(SEED.read_text())
         source = json.loads((ROOT / "crates/config/assets/catalog_corrections.json").read_text())
-        self.assertEqual(data["_reviewed"], source["reviewed"])
+        self.assertNotIn("_reviewed", data)
         lock = json.loads((ROOT / "scripts/catalog/models_dev_seed.lock.json").read_text())
         self.assertIn(f"fetched {lock['source']['fetched_at']}", data["_meta"]["upstream"])
-        ids = [row["id"] for row in data["_reviewed"]["public_models"]]
+        ids = [row["id"] for row in source["reviewed"]["public_models"]]
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_reviewed_malformed_and_duplicate_public_facts_are_refused(self) -> None:

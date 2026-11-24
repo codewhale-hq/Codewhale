@@ -177,7 +177,7 @@ These stay hand-maintained or release-lane work. The scheduled PR below refreshe
 |---|---|
 | `models_dev.bundled.json` | Offline seed, generated from a reviewed spec and a pinned lock (see below); refreshed by the scheduled PR or a maintainer slice, never at runtime |
 | `provider_descriptors.json` default model IDs | Product choice, not pure catalog dump; constant projections are generated |
-| `catalog_corrections.json` `reviewed` | Intrinsic/selector/transport compatibility facts with exact source receipts; generated into the same seed |
+| `catalog_corrections.json` `reviewed` | Intrinsic/selector/transport compatibility facts with exact source receipts; the only reviewed-facts table, read alongside the seed |
 | Rust pricing policy | Vendor billing windows, independent USD/CNY rates, withheld/tiered behavior; pure reference observations live in the reviewed supplement |
 | New `ProviderKind` / wire dialect | Needs code, not only JSON |
 
@@ -280,7 +280,7 @@ hand: CI runs `seed render --check` and fails on any difference.
 | `scripts/catalog/models_dev_seed.lock.json` | The referenced upstream rows, allowlisted, plus the source URL, fetch time and sha256 | `seed lock` only |
 | `crates/config/assets/catalog_corrections.json` | Deliberate holds: withheld prices, clamped limits, reasoning controls | Hand, reviewed; applies online too |
 | `crates/config/assets/catalog_corrections.json` `reviewed` | Source-preserved intrinsic facts, completion references, public labels/source-support dates, pure route facts and reference prices (per-provider model naming rules live in `provider_descriptors.json`; see [`MODELS_AND_PROVIDERS.md`](./MODELS_AND_PROVIDERS.md)) | Hand, reviewed; source receipts retained |
-| `crates/config/assets/models_dev.bundled.json` | The rendered seed including the reviewed supplement | `seed render` only |
+| `crates/config/assets/models_dev.bundled.json` | The rendered seed (no reviewed facts; those stay in `catalog_corrections.json`) | `seed render` only |
 
 The spec selects and maps; it cannot state a value that disagrees with
 upstream (unknown keys are refused). If an upstream value is wrong for a

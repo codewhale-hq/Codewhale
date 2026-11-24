@@ -150,7 +150,7 @@ export async function deriveFactsFromRemote(ghToken?: string): Promise<RepoFacts
     fetchText("npm/codewhale/package.json", source.revision, ghToken),
     fetchText("LICENSE", source.revision, ghToken),
     fetchText("web/lib/facts.generated.ts", source.revision, ghToken),
-    fetchText("crates/config/assets/models_dev.bundled.json", source.revision, ghToken),
+    fetchText("crates/config/assets/catalog_corrections.json", source.revision, ghToken),
     fetchLatestPublishedRelease(ghToken),
   ]);
 

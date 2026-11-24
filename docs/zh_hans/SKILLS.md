@@ -189,7 +189,7 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 | 单一别名所有者 | 不得有两个内置 skills 声称同一别名。 |
 | 无重复条目 | 每个规范名称最多渲染一行目录；别名渲染零行。 |
 | 预算余量 | 随附包单独渲染时低于随窗口缩放的 skills 预算（默认 128k 窗口下为 2,400 字符，即索引下限），且**没有**“additional skills omitted”行，因此用户 skills 永远不会被静默挤掉。 |
-| 预览大小限制 | 技能目录预览中的描述保持单行，长度受 `[skills] listing_max_description_chars` 限制（默认 120）。 |
+| 预览大小限制 | 技能目录预览中的描述保持单行，长度不超过 120 个字符。 |
 
 ### 区域感知的路由元数据
 
@@ -265,9 +265,9 @@ ASCII 名称保留现有命令拼写。包含非 ASCII 字符的名称会获得�
 
 ## 配置项
 
-父代理和子代理均通过 `load_skill` 按需发现技能。`/context` 和 `codewhale doctor --context-json` 会估算技能目录预览的大小，并将该预览占用的提示词 token 数记为零。`[skills] listing_max_description_chars` 设置预览中单条描述的上限（1–40,000，默认 120）。`listing_budget_fraction` 设置预览占当前路由上下文窗口的比例（大于 0 且不大于 1，默认 0.002），按每 token 四个字符估算，最低 2,400 字符，最高 40,000 字符。配置档中的两个值分别覆盖继承值。
+父代理和子代理均通过 `load_skill` 按需发现技能。`/context` 和 `codewhale doctor --context-json` 会估算技能目录预览的大小，并将该预览占用的提示词 token 数记为零。预览中单条描述上限为 120 个字符，预览占当前路由上下文窗口的 0.2%，按每 token 四个字符估算，最低 2,400 字符，最高 40,000 字符。
 
-预览优先保留 `Use when:` 触发条件，先缩短描述，再退到仅显示名称。如果描述被缩短，上下文报告会在预览详情中显示条目数量。描述超过配置上限且没有可识别的触发条件时会产生加载警告。`/skills inspect` 会显示包含实际上限的本地化提示。
+预览优先保留 `Use when:` 触发条件，先缩短描述，再退到仅显示名称。如果描述被缩短，上下文报告会在预览详情中显示条目数量。描述超过上限且没有可识别的触发条件时会产生加载警告。`/skills inspect` 会显示包含该上限的本地化提示。
 
 `load_skill name="list"` 显示项目技能和 Codewhale 技能的简短描述，并按来源统计全局兼容技能。使用 `name="list-all"` 或 `include_external=true` 逐项列出这些技能。多词 `query` 会搜索两组技能的名称、别名和完整描述。按确切名称加载可获取完整的技能正文。对于文件系统中的技能，配套文件列表仅列出与 `SKILL.md` 同级的常规文件。子目录中的资料可通过技能正文记录的路径查找。
 
@@ -279,8 +279,6 @@ skills_dir = "/path/to/skills"
 # 为 true 时，运行时发现会跳过跨工具根目录（.claude、.agents 等）。
 # 拥有方 Codewhale 根目录与显式 skills_dir 覆盖项仍然生效。
 scan_codewhale_only = false
-listing_max_description_chars = 120
-listing_budget_fraction = 0.002
 # 仅在明确需要把项目顶层 skills/ 当作技能目录时启用。
 flat_workspace_root = false
 

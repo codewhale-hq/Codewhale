@@ -160,7 +160,7 @@ POST /v1/providers/{id}/models/refresh?force_catalog=true
 |---|---|
 | `models_dev.bundled.json` | 离线种子，由经过审阅的 spec 和固定的 lock 生成（见下文）；通过 PR 刷新，而不是在运行时刷新 |
 | `provider_descriptors.json` 默认模型 ID | 产品选择，不是纯目录导出；常量投影由生成器维护 |
-| `catalog_corrections.json` 的 `reviewed` | 带精确来源回执的固有/选择器/传输兼容事实；生成到同一种子 |
+| `catalog_corrections.json` 的 `reviewed` | 带精确来源回执的固有/选择器/传输兼容事实；唯一的 reviewed 事实表，与种子一同读取 |
 | Rust 价格策略 | 厂商计费窗口、人民币换算及扣留/分级行为；纯参考观察保存在 reviewed 补充资料 |
 | 新的 `ProviderKind` / 线协议方言 | 需要代码，光有 JSON 不够 |
 
@@ -205,7 +205,7 @@ CI 会运行 `seed render --check`，出现任何差异都会失败。
 | `scripts/catalog/models_dev_seed.lock.json` | 被引用的上游行（已按允许列表过滤），以及来源 URL、抓取时间和 sha256 | 只由 `seed lock` 写入 |
 | `crates/config/assets/catalog_corrections.json` | 有意的压制：扣留的价格、收紧的上限、推理控制 | 人工，经审阅；在线时同样生效 |
 | `crates/config/assets/catalog_corrections.json` 的 `reviewed` | 保留来源的固有事实、限定范围别名、补全引用、公开标签/源码支持日期、纯路由事实与参考价格 | 人工审查；保留来源回执 |
-| `crates/config/assets/models_dev.bundled.json` | 包含 reviewed 补充资料的渲染种子 | 只由 `seed render` 写入 |
+| `crates/config/assets/models_dev.bundled.json` | 渲染种子（不含 reviewed 事实，它们只在 `catalog_corrections.json` 中） | 只由 `seed render` 写入 |
 
 spec 只负责选择和映射；它不能写出与上游不一致的值（未知的键会被拒绝）。
 如果某个上游值对某条 Codewhale 路由不对，就加一条修正。修正对种子和实时行都生效；

@@ -859,8 +859,14 @@ fn bundled_asset_parses() {
         !catalog.providers.is_empty(),
         "bundled asset must carry provider rows"
     );
-    // The helper returns the same parsed catalog.
-    assert_eq!(*bundled_models_dev_catalog(), catalog);
+    assert!(catalog.reviewed.revision.is_empty());
+    let bundled = bundled_models_dev_catalog();
+    assert_eq!(bundled.providers, catalog.providers);
+    assert_eq!(bundled.models, catalog.models);
+    assert_eq!(
+        bundled.reviewed,
+        super::corrections::bundled_corrections().reviewed
+    );
 }
 
 #[test]

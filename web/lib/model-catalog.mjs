@@ -3,7 +3,7 @@
 export function parseModelCatalog(input) {
   let data;
   try { data = typeof input === "string" ? JSON.parse(input) : input; } catch { return null; }
-  const reviewed = data?._reviewed;
+  const reviewed = data?.reviewed;
   if (!reviewed || typeof reviewed.revision !== "string" || !reviewed.revision ||
       !reviewed.intrinsic || typeof reviewed.intrinsic !== "object" || Array.isArray(reviewed.intrinsic) ||
       !Array.isArray(reviewed.public_models) || !reviewed.public_models.length) return null;

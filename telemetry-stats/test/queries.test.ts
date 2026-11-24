@@ -96,14 +96,16 @@ describe("queries", () => {
     const catalog = JSON.parse(readFileSync(new URL("../../crates/config/assets/models_dev.bundled.json", import.meta.url), "utf8")) as {
       models?: Record<string, unknown>;
       providers?: Record<string, { models?: Record<string, unknown> }>;
-      _reviewed?: { intrinsic?: Record<string, unknown> };
+    };
+    const corrections = JSON.parse(readFileSync(new URL("../../crates/config/assets/catalog_corrections.json", import.meta.url), "utf8")) as {
+      reviewed?: { intrinsic?: Record<string, unknown> };
     };
     const ids = new Set<string>();
     for (const id of Object.keys(catalog.models ?? {})) ids.add(id.toLowerCase());
     for (const provider of Object.values(catalog.providers ?? {})) {
       for (const id of Object.keys(provider.models ?? {})) ids.add(id.toLowerCase());
     }
-    for (const id of Object.keys(catalog._reviewed?.intrinsic ?? {})) ids.add(id.toLowerCase());
+    for (const id of Object.keys(corrections.reviewed?.intrinsic ?? {})) ids.add(id.toLowerCase());
     expect(ids.size).toBeGreaterThan(0);
 
     const { runner } = fakeRunner((sql) =>
