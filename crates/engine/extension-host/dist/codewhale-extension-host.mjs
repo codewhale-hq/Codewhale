@@ -22427,6 +22427,28 @@ function matchRoute(ownerToken, method, path2) {
   }
   return bestPrefix;
 }
+async function readBoundedResponseBody(response) {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BODY_BYTES) {
+        await reader.cancel().catch(() => void 0);
+        throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    reader.releaseLock();
+  }
+}
 async function runFetchRoute(route, method, urlPath, headers, body, signal) {
   const init = {
     method,
@@ -22436,10 +22458,7 @@ async function runFetchRoute(route, method, urlPath, headers, body, signal) {
   };
   const request = new Request(`http://127.0.0.1${urlPath}`, init);
   const response = await route.fetchHandler(request);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > MAX_RESPONSE_BODY_BYTES) {
-    throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`);
-  }
+  const bytes = await readBoundedResponseBody(response);
   const outHeaders = [];
   response.headers.forEach((value, name) => {
     outHeaders.push({ name, value });
@@ -22491,6 +22510,9 @@ async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner
     throw new RpcError(ErrorCode.InvalidParams, `unsupported HTTP method ${params.method}`);
   }
   const normalizedPath = normalizePath(params.path);
+  if (params.body_base64 && params.body_base64.length > Math.ceil(MAX_REQUEST_BODY_BYTES / 3) * 4 + 4) {
+    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+  }
   const body = params.body_base64 ? Buffer.from(params.body_base64, "base64") : Buffer.alloc(0);
   if (body.length > MAX_REQUEST_BODY_BYTES) {
     throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
@@ -22511,6 +22533,7 @@ async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner
   const timer = setTimeout(() => timeoutController.abort(), deadlineMs);
   timer.unref?.();
   const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+  let onOuterAbort;
   try {
     const run = runWithOwner(owner, async () => {
       if (route.mode === "fetch") {
@@ -22528,14 +22551,19 @@ async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner
       const handlerReturn = route.nodeHandler(req, res);
       await Promise.resolve(handlerReturn);
       if (!res.writableEnded) {
-        await Promise.race([
-          donePromise,
-          new Promise((_, reject) => {
-            const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
-            if (combinedSignal.aborted) onAbort();
-            else combinedSignal.addEventListener("abort", onAbort, { once: true });
-          })
-        ]);
+        let onInnerAbort;
+        try {
+          await Promise.race([
+            donePromise,
+            new Promise((_, reject) => {
+              onInnerAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+              if (combinedSignal.aborted) onInnerAbort();
+              else combinedSignal.addEventListener("abort", onInnerAbort, { once: true });
+            })
+          ]);
+        } finally {
+          if (onInnerAbort) combinedSignal.removeEventListener("abort", onInnerAbort);
+        }
       }
       const out = result();
       return {
@@ -22546,12 +22574,13 @@ async function dispatchPluginRoute(host2, params, signal, runWithOwner = (_owner
       };
     });
     const aborted = new Promise((_, reject) => {
-      const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
-      if (combinedSignal.aborted) onAbort();
-      else combinedSignal.addEventListener("abort", onAbort, { once: true });
+      onOuterAbort = () => reject(new RpcError(ErrorCode.Cancelled, "plugin route timed out or cancelled"));
+      if (combinedSignal.aborted) onOuterAbort();
+      else combinedSignal.addEventListener("abort", onOuterAbort, { once: true });
     });
     return await Promise.race([run, aborted]);
   } finally {
+    if (onOuterAbort) combinedSignal.removeEventListener("abort", onOuterAbort);
     clearTimeout(timer);
   }
 }

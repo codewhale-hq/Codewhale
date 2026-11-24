@@ -720,26 +720,23 @@ exports.apply = function (ctx) {
         ))
         .send()
         .await?;
-    assert_eq!(css_via_query.status(), StatusCode::OK);
-    let csp = css_via_query
+    assert_eq!(css_via_query.status(), StatusCode::PRECONDITION_REQUIRED);
+
+    let css_csp = css
         .headers()
         .get("content-security-policy")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(csp.contains("script-src 'self'"), "{csp}");
-    assert!(csp.contains("style-src 'self' 'unsafe-inline'"), "{csp}");
-    assert!(csp.contains("connect-src 'self'"), "{csp}");
-
-    let stale_query = client
-        .get(format!(
-            "{asset_base}source/lib/style.css?cw_rev=%22stale%22"
-        ))
-        .send()
-        .await?;
-    assert_eq!(stale_query.status(), StatusCode::PRECONDITION_FAILED);
+    assert_eq!(css_csp, "default-src 'none'; sandbox");
+    assert_eq!(
+        css.headers()
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-referrer")
+    );
 
     let oversized_route = client
-        .post(format!("{base}/{name}/routes/api/upload"))
+        .post(format!("{base}/{name}/route/api/upload"))
         .header("If-Match", &revision)
         .body(vec![b'a'; 4 * 1024 * 1024 + 64])
         .send()

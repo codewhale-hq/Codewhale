@@ -292,3 +292,53 @@ test('connection.fetch, connection.rpc, requestRejection, sessionTitle, and prof
     clearOwnerRoutes('tok-extras')
   }
 })
+
+test('profileContext fails closed without scoped dataDir, sessionTitle is owner-isolated, and fetch streams enforce 8 MiB cap', async () => {
+  const { owners, makeOwner } = await createHarness()
+  const a = makeOwner('plugin-sec-a', 'tok-sec-a', '/tmp/sec-a')
+  const b = makeOwner('plugin-sec-b', 'tok-sec-b', undefined)
+  try {
+    assert.throws(() => b.ctx.profileContext.dir, /scoped dataDir/)
+    assert.throws(() => b.ctx.profileContext.installAnchor, /scoped dataDir/)
+
+    const bEvents = []
+    const disposeB = b.ctx.sessionTitle.register((id, title) => bEvents.push([id, title]))
+    a.ctx.sessionTitle.rename('sess-shared', 'Plugin A Private')
+    assert.equal(a.ctx.sessionTitle.get('sess-shared'), 'Plugin A Private')
+    assert.equal(b.ctx.sessionTitle.get('sess-shared'), undefined)
+    assert.deepEqual(bEvents, [])
+    disposeB()
+
+    a.ctx.connection.fetch.register({
+      path: '/api/stream-huge',
+      methods: ['GET'],
+      fetch: () => {
+        const chunk = new Uint8Array(1024 * 1024)
+        let sent = 0
+        const stream = new ReadableStream({
+          pull(controller) {
+            if (sent >= 9) {
+              controller.close()
+              return
+            }
+            sent += 1
+            controller.enqueue(chunk)
+          },
+        })
+        return new Response(stream, { status: 200 })
+      },
+    })
+
+    await assert.rejects(
+      () => dispatchPluginRoute(
+        { owners },
+        { owner: a.owner.ref, method: 'GET', path: '/api/stream-huge', headers: [], deadline_ms: 5000 },
+        new AbortController().signal,
+      ),
+      /response exceeded/,
+    )
+  } finally {
+    clearOwnerRoutes('tok-sec-a')
+    clearOwnerRoutes('tok-sec-b')
+  }
+})

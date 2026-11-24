@@ -6,8 +6,10 @@
  * 1. In `crates/engine/extension-host/src/dsh/adapters.ts`:
  *      import { DSH_WEBSERVER_ADAPTERS } from './webserver.ts'
  *      // spread `...DSH_WEBSERVER_ADAPTERS` into `DSH_ADAPTERS`
- * 2. In `crates/engine/extension-host/src/dsh/compatibility.json`:
- *      add `"webServer"`, `"connection"`, `"sessionTitle"`, `"profileContext"` to `provided_services.host`
+ * 2. In both `compatibility.json` copies (`crates/engine/extension-host/src/dsh/compatibility.json`
+ *    and `crates/plugins/src/dsh_compatibility.json`):
+ *      add `"webServer"`, `"connection"`, `"sessionTitle"`, `"profileContext"` to
+ *      BOTH `provided_services.dsh` AND `refused_services`.
  */
 import { EventEmitter } from 'node:events'
 import { isAbsolute, resolve } from 'node:path'
@@ -388,6 +390,29 @@ function matchRoute(ownerToken: string, method: string, path: string): StoredRou
   return bestPrefix
 }
 
+async function readBoundedResponseBody(response: Response): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0)
+  const reader = response.body.getReader()
+  const chunks: Buffer[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      total += value.byteLength
+      if (total > MAX_RESPONSE_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`)
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength))
+    }
+    return Buffer.concat(chunks, total)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 async function runFetchRoute(
   route: StoredRoute,
   method: string,
@@ -404,10 +429,7 @@ async function runFetchRoute(
   }
   const request = new Request(`http://127.0.0.1${urlPath}`, init)
   const response = await route.fetchHandler!(request)
-  const bytes = Buffer.from(await response.arrayBuffer())
-  if (bytes.length > MAX_RESPONSE_BODY_BYTES) {
-    throw new RpcError(ErrorCode.ExecutionFailed, `plugin route response exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`)
-  }
+  const bytes = await readBoundedResponseBody(response)
   const outHeaders: PluginRouteHeaderWire[] = []
   response.headers.forEach((value, name) => {
     outHeaders.push({ name, value })
@@ -476,6 +498,9 @@ export async function dispatchPluginRoute(
     throw new RpcError(ErrorCode.InvalidParams, `unsupported HTTP method ${params.method}`)
   }
   const normalizedPath = normalizePath(params.path)
+  if (params.body_base64 && params.body_base64.length > Math.ceil(MAX_REQUEST_BODY_BYTES / 3) * 4 + 4) {
+    throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`)
+  }
   const body = params.body_base64 ? Buffer.from(params.body_base64, 'base64') : Buffer.alloc(0)
   if (body.length > MAX_REQUEST_BODY_BYTES) {
     throw new RpcError(ErrorCode.InvalidParams, `request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`)
@@ -496,6 +521,7 @@ export async function dispatchPluginRoute(
   const timer = setTimeout(() => timeoutController.abort(), deadlineMs)
   timer.unref?.()
   const combinedSignal = AbortSignal.any([signal, timeoutController.signal])
+  let onOuterAbort: (() => void) | undefined
 
   try {
     const run = runWithOwner(owner, async () => {
@@ -514,14 +540,19 @@ export async function dispatchPluginRoute(
       const handlerReturn = route.nodeHandler!(req, res)
       await Promise.resolve(handlerReturn)
       if (!res.writableEnded) {
-        await Promise.race([
-          donePromise,
-          new Promise<never>((_, reject) => {
-            const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, 'plugin route timed out or cancelled'))
-            if (combinedSignal.aborted) onAbort()
-            else combinedSignal.addEventListener('abort', onAbort, { once: true })
-          }),
-        ])
+        let onInnerAbort: (() => void) | undefined
+        try {
+          await Promise.race([
+            donePromise,
+            new Promise<never>((_, reject) => {
+              onInnerAbort = () => reject(new RpcError(ErrorCode.Cancelled, 'plugin route timed out or cancelled'))
+              if (combinedSignal.aborted) onInnerAbort()
+              else combinedSignal.addEventListener('abort', onInnerAbort, { once: true })
+            }),
+          ])
+        } finally {
+          if (onInnerAbort) combinedSignal.removeEventListener('abort', onInnerAbort)
+        }
       }
       const out = result()
       return {
@@ -533,12 +564,13 @@ export async function dispatchPluginRoute(
     })
 
     const aborted = new Promise<never>((_, reject) => {
-      const onAbort = () => reject(new RpcError(ErrorCode.Cancelled, 'plugin route timed out or cancelled'))
-      if (combinedSignal.aborted) onAbort()
-      else combinedSignal.addEventListener('abort', onAbort, { once: true })
+      onOuterAbort = () => reject(new RpcError(ErrorCode.Cancelled, 'plugin route timed out or cancelled'))
+      if (combinedSignal.aborted) onOuterAbort()
+      else combinedSignal.addEventListener('abort', onOuterAbort, { once: true })
     })
     return await Promise.race([run, aborted])
   } finally {
+    if (onOuterAbort) combinedSignal.removeEventListener('abort', onOuterAbort)
     clearTimeout(timer)
   }
 }
@@ -712,9 +744,17 @@ function extractSessionId(session: unknown): string | undefined {
 
 export const sessionTitleAdapter: DshAdapter = {
   service: 'sessionTitle',
-  define() {
-    const titles = new Map<string, string>()
-    const listeners = new Set<(sessionId: string, title: string) => void>()
+  define(host) {
+    const titlesByOwner = new Map<string, Map<string, string>>()
+    const listenersByOwner = new Map<string, Set<(sessionId: string, title: string) => void>>()
+
+    const requireOwnerToken = (ctx: unknown): string => {
+      const owner = host.ownerOf(ctx)
+      if (!owner || owner.state === 'disposed' || owner.disposing) {
+        throw new RpcError(ErrorCode.NotAvailable, 'sessionTitle requires an active extension owner')
+      }
+      return owner.ref.owner_token
+    }
 
     class SessionTitleService extends Service {
       constructor(ctx: any) {
@@ -722,39 +762,58 @@ export const sessionTitleAdapter: DshAdapter = {
       }
 
       get(session: unknown): string | undefined {
+        const ownerToken = requireOwnerToken(this.ctx)
         const id = extractSessionId(session)
-        return id ? titles.get(id) : undefined
+        return id ? titlesByOwner.get(ownerToken)?.get(id) : undefined
       }
 
       rename(session: unknown, title: unknown): string {
+        const ownerToken = requireOwnerToken(this.ctx)
         const id = extractSessionId(session)
         if (!id) throw new RpcError(ErrorCode.InvalidParams, 'sessionTitle.rename requires a session or session id')
         if (typeof title !== 'string') throw new RpcError(ErrorCode.InvalidParams, 'sessionTitle.rename requires a string title')
         const cleaned = title.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 256)
         if (!cleaned) throw new RpcError(ErrorCode.InvalidParams, 'sessionTitle.rename requires a non-empty title')
+        let titles = titlesByOwner.get(ownerToken)
+        if (!titles) {
+          titles = new Map()
+          titlesByOwner.set(ownerToken, titles)
+        }
         if (!titles.has(id) && titles.size >= MAX_SESSION_TITLES) {
           const oldest = titles.keys().next().value
           if (oldest !== undefined) titles.delete(oldest)
         }
         titles.set(id, cleaned)
-        for (const listener of listeners) {
-          try {
-            listener(id, cleaned)
-          } catch {
-            // Listener failures stay isolated.
+        const listeners = listenersByOwner.get(ownerToken)
+        if (listeners) {
+          for (const listener of listeners) {
+            try {
+              listener(id, cleaned)
+            } catch {
+              // Listener failures stay isolated.
+            }
           }
         }
         return cleaned
       }
 
       register(listener: (sessionId: string, title: string) => void): () => void {
+        const ownerToken = requireOwnerToken(this.ctx)
         if (typeof listener !== 'function') {
           throw new RpcError(ErrorCode.InvalidParams, 'sessionTitle.register requires a function')
         }
         return (this.ctx as any).effect(() => {
+          let listeners = listenersByOwner.get(ownerToken)
+          if (!listeners) {
+            listeners = new Set()
+            listenersByOwner.set(ownerToken, listeners)
+          }
           listeners.add(listener)
           return () => {
-            listeners.delete(listener)
+            const current = listenersByOwner.get(ownerToken)
+            if (!current) return
+            current.delete(listener)
+            if (current.size === 0) listenersByOwner.delete(ownerToken)
           }
         }, 'sessionTitle.register')
       }
@@ -777,10 +836,10 @@ export const profileContextAdapter: DshAdapter = {
 
       get dir(): string {
         const owner = host.ownerOf(this.ctx)
-        if (owner?.dataDir && isAbsolute(owner.dataDir)) {
-          return resolve(owner.dataDir)
+        if (!owner?.dataDir || !isAbsolute(owner.dataDir)) {
+          throw new RpcError(ErrorCode.NotAvailable, 'profileContext requires an active owner with a scoped dataDir')
         }
-        return resolve(process.cwd())
+        return resolve(owner.dataDir)
       }
 
       get installAnchor(): string {
