@@ -153,8 +153,11 @@ for (const [event, repo, requested, variable, expected] of [
 for (const [file, source] of fs.readdirSync(path.join(repoRoot, ".github/workflows")).map((f) => [f, read(`.github/workflows/${f}`)])) {
   for (const [, value] of source.matchAll(/^[ \t]*runs-on:[ \t]*(.+)$/gm)) {
     if (!/self-hosted|codewhale-mac/.test(value)) continue;
-    assert.equal(file, "ci-test-suite.yml", `${file}: only the CI suite may name the self-hosted runner`);
-    assert.match(value, /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /, "the self-hosted label must be gated by the self_hosted input");
+    assert.ok(["ci-test-suite.yml", "release-artifacts.yml"].includes(file), `${file}: only the CI suite and the release build may name the self-hosted runner`);
+    const gate = file === "ci-test-suite.yml"
+      ? /^\$\{\{ inputs\.self_hosted && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /
+      : /^\$\{\{ startsWith\(matrix\.os, 'macos-'\) && needs\.pin\.outputs\.macos_self_hosted == 'true' && fromJSON\('\["self-hosted","macOS","ARM64","codewhale-mac"\]'\) \|\| /;
+    assert.match(value, gate, `${file}: the self-hosted label must be gated by its trusted-run decision`);
   }
 }
 
@@ -1254,6 +1257,44 @@ for (const [label, source] of [
   assert.ok(tags.length > 0, `${label} must declare a Rust build image`);
   assert.deepEqual([...new Set(tags)], [pinnedTag], `${label}: Rust build images must match rust-toolchain.toml`);
 }
+
+const releaseMacosStep = namedStep(artifacts, "Choose the macOS build runner").match(/        run: \|\n([\s\S]*)/)[1].replace(/^ {10}/gm, "");
+for (const [event, ref, repo, requested, variable, expected] of [
+  ["pull_request", "refs/pull/1/merge", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["pull_request_target", "refs/heads/main", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/heads/main", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/tags/nightly", "codewhale-hq/Codewhale", "self-hosted", "true", "false"],
+  ["schedule", "refs/heads/main", "codewhale-hq/Codewhale", "default", "true", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "someone/Codewhale", "self-hosted", "true", "false"],
+  ["push", "refs/tags/v0.10.4", "someone/Codewhale", "default", "true", "false"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "default", "false", "false"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "default", "true", "true"],
+  ["push", "refs/tags/v0.10.4", "codewhale-hq/Codewhale", "hosted", "true", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "codewhale-hq/Codewhale", "", "", "false"],
+  ["workflow_dispatch", "refs/heads/ci/x", "codewhale-hq/Codewhale", "self-hosted", "false", "true"],
+]) {
+  const out = path.join(fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cw-release-macos-")), "out");
+  execFileSync("bash", ["-c", releaseMacosStep], {
+    env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, EVENT_NAME: event, EVENT_REF: ref, THIS_REPO: repo, REQUESTED: requested, SWITCH: variable },
+  });
+  assert.equal(fs.readFileSync(out, "utf8"), `self_hosted=${expected}\n`, `release macOS runner: ${event} ${ref} ${repo} ${requested}/${variable}`);
+}
+const releaseBuildRunsOn = jobBlock(artifacts, "build").match(/^    runs-on: (.+)$/m)[1];
+assert.equal(
+  releaseBuildRunsOn,
+  `\${{ startsWith(matrix.os, 'macos-') && needs.pin.outputs.macos_self_hosted == 'true' && fromJSON('["self-hosted","macOS","ARM64","codewhale-mac"]') || (matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os) }}`,
+  "only macOS release builds may use the self-hosted Mac, and only when pin chose it",
+);
+const releaseBuild = jobBlock(artifacts, "build");
+const freshReleaseHome = namedStep(releaseBuild, "Fresh rustup, Cargo home and temp for a self-hosted release build");
+assert.match(freshReleaseHome, /rm -rf "\$\{fresh\}"/);
+for (const remap of [/"\$\{CARGO_HOME\}=\/cargo"/, /"\$\(cd "\$\{fresh\}" && pwd -P\)\/\.cargo=\/cargo"/, /"\$\{GITHUB_WORKSPACE\}=\/codewhale"/, /"\$\(cd "\$\{GITHUB_WORKSPACE\}" && pwd -P\)=\/codewhale"/]) {
+  assert.match(freshReleaseHome, remap, "self-hosted shipping binaries must not embed the build machine's home or workspace paths");
+}
+assert.match(freshReleaseHome, /CARGO_ENCODED_RUSTFLAGS=/);
+assert.match(namedStep(releaseBuild, "Start the self-hosted release build from an empty target"), /rm -rf target\n\s+test -z "\$\(git status --porcelain --ignored\)"/);
+assert.match(releaseBuild, /uses: Swatinem\/rust-cache@[^\n]+\n        if: runner\.environment != 'self-hosted'\n/, "self-hosted shipping builds must not restore or save a shared cache");
+assert.match(candidate, /^      macos_runner: \$\{\{ inputs\.macos_runner \}\}$/m);
 
 let pinnedRunsOn = 0;
 for (const [file, source] of workflowSources) {

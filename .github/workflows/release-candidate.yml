@@ -15,6 +15,14 @@ on:
         required: false
         default: false
         type: boolean
+      macos_runner:
+        description: macOS shipping-build runner (default follows the CW_SELF_HOSTED_MAC repository variable; self-hosted is the codewhale-mac runner)
+        type: choice
+        default: default
+        options:
+          - default
+          - self-hosted
+          - hosted
 
 permissions:
   contents: read
@@ -153,5 +161,6 @@ jobs:
       compiled_host_run_id: ${{ vars.CODEWHALE_COMPILED_HOST_QUALIFICATION_RUN_ID || '' }}
       compiled_host_targets: ${{ vars.CODEWHALE_COMPILED_HOST_TARGETS || 'linux-x64,macos-arm64,windows-x64' }}
       retention_days: 7
+      macos_runner: ${{ inputs.macos_runner }}
     secrets:
       CODEWHALE_RELEASE_SIGNING_KEY: ${{ !inputs.nightly && secrets.CODEWHALE_RELEASE_SIGNING_KEY || '' }}
