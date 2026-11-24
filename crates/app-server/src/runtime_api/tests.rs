@@ -2931,6 +2931,120 @@ async fn workspace_and_automation_endpoints_work() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn automation_endpoints_reject_permission_elevation_and_unattended_elevated_dispatch()
+-> Result<()> {
+    let root = tempfile::tempdir()?;
+    let (automation_tx, automation_rx) = oneshot::channel();
+    let Some((addr, _runtime_threads, handle)) =
+        spawn_test_server_with_root_token_mobile_workspace_and_overrides(
+            root.path().to_path_buf(),
+            root.path().join("sessions"),
+            None,
+            false,
+            root.path().join("workspace"),
+            TestServerOverrides {
+                automation_handles: Some(automation_tx),
+                ..Default::default()
+            },
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let (automations, tasks) = automation_rx.await?;
+    let client = codewhale_release::tls::reqwest_client();
+
+    for (label, extra) in [
+        ("auto_approve", json!({"auto_approve": true})),
+        ("trust_mode", json!({"trust_mode": true})),
+        ("allow_shell", json!({"allow_shell": true})),
+        (
+            "all",
+            json!({"auto_approve": true, "trust_mode": true, "allow_shell": true}),
+        ),
+    ] {
+        let mut body = json!({
+            "name": format!("elevated-{label}"),
+            "prompt": "summarize",
+            "rrule": "FREQ=HOURLY;INTERVAL=1",
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let response = client
+            .post(format!("http://{addr}/v1/automations"))
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "create {label}");
+        assert!(
+            response
+                .text()
+                .await?
+                .contains("automation permissions may not be elevated"),
+            "create {label}"
+        );
+    }
+    assert!(automations.lock().await.list_automations()?.is_empty());
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/v1/automations"))
+        .json(&json!({
+            "name": "safe-automation",
+            "prompt": "summarize",
+            "rrule": "FREQ=HOURLY;INTERVAL=1",
+            "status": "paused"
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let automation_id = created["id"]
+        .as_str()
+        .context("missing automation id")?
+        .to_string();
+
+    for (label, patch) in [
+        ("auto_approve", json!({"auto_approve": true})),
+        ("trust_mode", json!({"trust_mode": true})),
+        ("allow_shell", json!({"allow_shell": true})),
+    ] {
+        let response = client
+            .patch(format!("http://{addr}/v1/automations/{automation_id}"))
+            .json(&patch)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "patch {label}");
+        assert!(
+            response
+                .text()
+                .await?
+                .contains("automation permissions may not be elevated"),
+            "patch {label}"
+        );
+    }
+
+    let mut tampered = automations.lock().await.get_automation(&automation_id)?;
+    tampered.auto_approve = Some(true);
+    tampered.trust_mode = Some(true);
+    tampered.allow_shell = Some(true);
+    automations.lock().await.save_automation(&tampered)?;
+
+    let run_response = client
+        .post(format!("http://{addr}/v1/automations/{automation_id}/run"))
+        .json(&json!({}))
+        .send()
+        .await?;
+    assert_eq!(run_response.status(), StatusCode::BAD_REQUEST);
+    assert!(run_response.text().await?.contains("elevated permissions"));
+    assert!(tasks.list_tasks(None).await?.is_empty());
+
+    handle.abort();
+    Ok(())
+}
+
 fn test_fleet_route_config() -> codewhale_runtime::config::Config {
     let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.deepseek.api_key = Some("test-key".to_string());

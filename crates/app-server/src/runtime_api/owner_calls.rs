@@ -533,12 +533,11 @@ async fn execute_native(
             return Ok(serde_json::to_value(scoped)?);
         }
         N::CreateAutomation(params) => {
-            if params.body.auto_approve.unwrap_or(false) || params.body.trust_mode.unwrap_or(false)
-            {
-                return api(Err(ApiError::bad_request(
-                    "automation permissions may not be elevated",
-                )));
-            }
+            api(reject_automation_permission_elevation(
+                None,
+                params.body.trust_mode,
+                params.body.auto_approve,
+            ))?;
             native_thread(&state, &params.body.destination_thread_id).await?;
             let headers = native_headers(&params.operation_key)?;
             let mut body = serde_json::to_value(params.body)?;
