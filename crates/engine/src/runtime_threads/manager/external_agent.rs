@@ -509,7 +509,7 @@ fn clean_text(text: &str) -> String {
 const TRUNCATED_MARKER: &str = "\n[truncated]";
 
 fn push_bounded(detail: &mut String, text: &str) {
-    if detail.len() >= MAX_DETAIL_BYTES {
+    if detail.len() >= MAX_DETAIL_BYTES || detail.ends_with(TRUNCATED_MARKER) {
         return;
     }
     let room = MAX_DETAIL_BYTES - detail.len();
@@ -517,11 +517,20 @@ fn push_bounded(detail: &mut String, text: &str) {
         detail.push_str(text);
         return;
     }
-    let mut cut = room.saturating_sub(TRUNCATED_MARKER.len());
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
+    let max_body = MAX_DETAIL_BYTES.saturating_sub(TRUNCATED_MARKER.len());
+    if detail.len() > max_body {
+        let mut keep = max_body;
+        while !detail.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        detail.truncate(keep);
+    } else {
+        let mut cut = max_body - detail.len();
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        detail.push_str(&text[..cut]);
     }
-    detail.push_str(&text[..cut]);
     detail.push_str(TRUNCATED_MARKER);
 }
 
@@ -531,7 +540,7 @@ struct CappedByteCount {
 
 impl std::io::Write for CappedByteCount {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.bytes += buf.len();
+        self.bytes = self.bytes.saturating_add(buf.len());
         if self.bytes > MAX_INPUT_BYTES {
             return Err(std::io::Error::other("over cap"));
         }
@@ -2263,6 +2272,62 @@ mod tests {
         push_bounded(&mut detail, &"x".repeat(MAX_DETAIL_BYTES * 2));
         assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
         assert!(detail.ends_with(TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn push_bounded_truncates_near_cap_without_exceeding_limit() {
+        let mut detail = "a".repeat(MAX_DETAIL_BYTES - 1);
+        push_bounded(&mut detail, "中文补充内容");
+        assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
+        assert!(detail.ends_with(TRUNCATED_MARKER));
+
+        let mut multibyte_detail = "中".repeat((MAX_DETAIL_BYTES - 4) / 3);
+        assert!(multibyte_detail.len() > MAX_DETAIL_BYTES - TRUNCATED_MARKER.len());
+        assert!(multibyte_detail.len() < MAX_DETAIL_BYTES);
+        push_bounded(&mut multibyte_detail, "更多文本");
+        assert!(
+            multibyte_detail.len() <= MAX_DETAIL_BYTES,
+            "{}",
+            multibyte_detail.len()
+        );
+        assert!(multibyte_detail.ends_with(TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn push_bounded_multibyte_truncation_stays_idempotent() {
+        let mut detail = String::new();
+        push_bounded(&mut detail, &"中".repeat(MAX_DETAIL_BYTES));
+        assert!(detail.len() <= MAX_DETAIL_BYTES, "{}", detail.len());
+        assert!(detail.ends_with(TRUNCATED_MARKER));
+        let after_first = detail.clone();
+
+        push_bounded(&mut detail, "follow-up update");
+        push_bounded(&mut detail, "!");
+        assert_eq!(detail, after_first);
+        assert_eq!(detail.matches(TRUNCATED_MARKER).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_agent_settlement_errors_when_channel_closes_without_outcome() {
+        let (tx, rx) = watch::channel(None);
+        drop(tx);
+        let error = await_agent_settlement(rx)
+            .await
+            .expect_err("closed settlement channel must fail")
+            .to_string();
+        assert!(error.contains("closed"), "{error}");
+
+        let (tx, rx) = watch::channel(Some(true));
+        assert!(await_agent_settlement(rx).await.expect("settled true"));
+        drop(tx);
+
+        let (tx, rx) = watch::channel(Some(false));
+        let failed = await_agent_settlement(rx)
+            .await
+            .expect_err("settled false must fail")
+            .to_string();
+        assert!(failed.contains("could not be recorded"), "{failed}");
+        drop(tx);
     }
 
     #[test]
