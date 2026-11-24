@@ -451,6 +451,7 @@ const HIDDEN_RM: &[&str] = &[
     "ssh -N -o 'PermitLocalCommand = yes' -o 'LocalCommand=rm x' host",
     "ssh -o ' PermitLocalCommand=yes' -o 'LocalCommand=rm x' host",
     "ssh -o 'PermitLocalCommand\t=\tyes' -o 'LocalCommand=rm x' host",
+    "ssh -o \"PermitLocalCommand=$YES\" -o 'LocalCommand=rm x' host",
     "ssh -o \"$OPT\" host",
     "echo 'rm x' | mosh host",
     "echo 'rm x' | dbclient host",
@@ -465,6 +466,7 @@ const HIDDEN_RM: &[&str] = &[
     "screen -dr -X exec rm x",
     "screen -R s -X screen rm",
     "screen -r s -Q stuff 'rm x\n'",
+    "screen -X \"exec 'rm x\"",
     // kubectl exec / run / debug.
     "kubectl exec pod rm x",
     "kubectl exec pod -- rm x",
