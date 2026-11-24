@@ -73,6 +73,17 @@ export async function apply(ctx) {
     await writeFileAtomic(nested, JSON.stringify({ ok: true }))
   })
   await assert.rejects(writeFileAtomic(join(home, '..', 'escape.txt'), 'nope'), /outside plugin dataDir/)
+  await assert.rejects(writeFileAtomic('.', 'nope'), /outside plugin dataDir/)
+  await assert.rejects(writeFileAtomic(home, 'nope'), /outside plugin dataDir/)
+  assert.throws(() => ctx.root.provide('agentPresets', { fake: true }), /may not provide core service \`agentPresets\`/)
+
+  ctx.tools.register({
+    name: 'advisory_timeout_tool',
+    description: 'tool with advisory timeoutMs',
+    parameters: { type: 'object', properties: {} },
+    timeoutMs: 15000,
+    async execute() { return 'ok' },
+  })
 
   const disposePreset = ctx.agentPresets.register({ id: 'p1', name: 'Preset 1' })
   assert.equal((await ctx.agentPresets.list()).length, 1)
@@ -181,4 +192,45 @@ export function apply(ctx) {
   const refused = (await activate(host, 'bad-approval-listener', badEvent.entry)).result
   assert.equal(refused.status, 'failed')
   assert.match(refused.diagnostic, /DSH lifecycle approval\/request is not projected/)
+
+  const childGuardPlugin = tempPlugin(`
+export const name = 'child-guard-refusal'
+export const inject = ['tools', 'subagents']
+export function apply(ctx) {
+  ctx.on('agent/created', ({ agent }) => {
+    agent.ctx.tools.guard(() => 'deny')
+  })
+  ctx.tools.register({
+    name: 'trigger_child_guard',
+    description: 'trigger child guard refusal',
+    parameters: { type: 'object', properties: {} },
+    async execute(_input, exec) {
+      await ctx.subagents.startActivation({
+        provider: 'fork',
+        childId: 'child-1',
+        request: { parent: exec.agent, prompt: [{ type: 'text', text: 'hi' }] },
+      })
+      return 'unexpected'
+    },
+  })
+}
+`)
+  t.after(() => childGuardPlugin.cleanup())
+  const childAct = await activate(host, 'child-guard-refusal', childGuardPlugin.entry)
+  assert.equal(childAct.result.status, 'ok', childAct.result.diagnostic)
+  const triggerReg = host.registry.find((entry) => entry.op === 'register' && entry.kind === 'tool' && entry.spec.name === 'trigger_child_guard')
+  assert.ok(triggerReg)
+  await assert.rejects(
+    host.call('tool/call', {
+      handle: triggerReg.handle,
+      call_id: 'cg-1',
+      input: {},
+      workspace: '/tmp/ws',
+      session_id: 'sess-cg',
+      subagent_ticket: 'sub-tkt',
+      deadline_ms: 5000,
+    }),
+    /child tools\.guard is not supported/,
+  )
+  assert.deepEqual(await host.call('ext/deactivate', { owner: childAct.ref }), { disposed: true, leaked: [] })
 })

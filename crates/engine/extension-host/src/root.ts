@@ -1,4 +1,5 @@
 import { ReviewedLoader, installCompositionLoader } from './dsh/composition.ts'
+import { REVIEWED_AGENT_PRESETS_BRAND } from './dsh/agent-presets.ts'
 import { BUILTIN_DSH_ADAPTERS, DSH_ADAPTERS, type AdapterHost, type DshAdapter } from './dsh/adapters.ts'
 /**
  * The Cordis root that plugin fibers run under.
@@ -227,10 +228,11 @@ export class HostRoot {
       if (REFUSED_SERVICES.has(name)) {
         const shim = shimClasses.get(name)
         const hostShim = shim !== undefined && !shimsProvided.has(name) && value instanceof (shim as any)
-        if (!hostShim) {
+        const reviewedPreset = name === 'agentPresets' && value !== null && typeof value === 'object' && (value as any)[REVIEWED_AGENT_PRESETS_BRAND] === true
+        if (!hostShim && !reviewedPreset) {
           throw new Error(`extension may not provide core service \`${name}\`: the Codewhale core owns it`)
         }
-        shimsProvided.add(name)
+        if (hostShim) shimsProvided.add(name)
       }
       return originalProvide.call(this, name, value, ...rest)
     }
@@ -950,8 +952,11 @@ function validateDefinition(definition: any) {
     }
     assertSupportedJsonSchema(definition.output.schema)
   }
-  for (const field of ['when', 'projectContent', 'finalizeContent', 'timeoutMs']) {
+  for (const field of ['when', 'projectContent', 'finalizeContent']) {
     if (definition[field] !== undefined) throw new TypeError(`tool \`${definition.name}\` requires unsupported DSH execution field \`${field}\``)
+  }
+  if (definition.timeoutMs !== undefined && (typeof definition.timeoutMs !== 'number' || !Number.isFinite(definition.timeoutMs) || definition.timeoutMs <= 0)) {
+    throw new TypeError(`tool \`${definition.name}\` timeoutMs must be a finite positive number`)
   }
   if (definition.deferLoading !== undefined && typeof definition.deferLoading !== 'boolean') throw new TypeError(`tool \`${definition.name}\` deferLoading must be boolean`)
 }
