@@ -530,7 +530,7 @@ async fn plugin_services_are_can_use_or_not_offered() -> Result<()> {
     assert_eq!(ws_before_peer["state"], "can_use");
     assert!(ws_before_peer.get("withheld_by").is_none());
     let att_before_peer = find_service(active_services, "attachments");
-    assert_eq!(att_before_peer["state"], "not_offered");
+    assert_eq!(att_before_peer["state"], "can_use");
     assert!(att_before_peer.get("withheld_by").is_none());
 
     plugin_ui::install_active(&client, &base, peer_src.display().to_string()).await?;

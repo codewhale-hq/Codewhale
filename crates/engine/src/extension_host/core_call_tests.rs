@@ -2302,8 +2302,7 @@ async fn dsh_broker_services_are_granted_by_one_check_and_an_ungranted_service_i
     assert!(
         DshService::ALL
             .into_iter()
-            .all(|service| (service == DshService::Attachments)
-                ^ super::dsh_broker::offered(service))
+            .all(super::dsh_broker::offered)
     );
     assert!(f.manager.shared.broker_services(&f.owner).is_empty());
     let none = f.begin(7, &f.owner);

@@ -3850,7 +3850,7 @@ fn dsh_named_group_module_is_included_in_reviewed_module_closure() {
     let out = tmp.path().join("out-named-group");
     dsh::convert_package(&pkg, &out).unwrap();
     let comp: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(out.join("dsh-composition.json")).unwrap())
+        serde_json::from_str(&fs::read_to_string(out.join("native/composition.json")).unwrap())
             .unwrap();
     let modules = comp["modules"].as_array().unwrap();
     assert!(

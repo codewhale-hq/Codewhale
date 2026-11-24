@@ -3819,11 +3819,17 @@ mod tests {
         assert!(result.is_error);
         assert_eq!(app.mode, AppMode::Agent);
         let result = mode_command(&mut app, Some("4"));
-        // "4" still routes to the deprecated YOLO alias, which lands in Agent
-        // mode with bypass approvals (M6 compat shim).
-        assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
+        assert!(result.action.is_none());
         assert_eq!(app.mode, AppMode::Agent);
-        assert!(app.yolo);
+        assert!(!app.yolo);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Full Access is a permission posture")),
+            "{:?}",
+            result.message
+        );
     }
 
     #[test]
