@@ -34,12 +34,13 @@ async function certs(team: string, fetchImpl: typeof fetch, now: number): Promis
 }
 
 export function teamName(env: Env): string {
-  const name = (env.ACCESS_TEAM_DOMAIN ?? "")
+  const withoutScheme = (env.ACCESS_TEAM_DOMAIN ?? "")
     .trim()
     .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "")
-    .replace(/\.cloudflareaccess\.com$/, "");
+    .replace(/^https?:\/\//, "");
+  const slash = withoutScheme.indexOf("/");
+  const host = slash >= 0 ? withoutScheme.slice(0, slash) : withoutScheme;
+  const name = host.replace(/\.cloudflareaccess\.com$/, "");
   return /^[a-z0-9-]+$/.test(name) ? name : "";
 }
 

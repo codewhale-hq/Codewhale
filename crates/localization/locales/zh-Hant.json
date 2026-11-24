@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "無法儲存導覽進度：{error}",
   "FeatureIntroFlagSaveFailed": "無法儲存功能提示設定：{error}",
   "QueueFullNotice": "後續訊息佇列已滿（{max} 則）；你的訊息已放回輸入框。",
-  "ConfigLookupFailed": "無法讀取 `{key}`：設定載入失敗（{error}）"
+  "ConfigLookupFailed": "無法讀取 `{key}`：設定載入失敗（{error}）",
+  "CtxMenuNoSelectionToOpen": "沒有可開啟的所選內容",
+  "CtxMenuSelectionCleared": "已清除選擇",
+  "CtxMenuNoSelectionToClear": "沒有可清除的選擇",
+  "CtxMenuNoDetailsForLine": "該行沒有可用詳情",
+  "CtxMenuExtensionUnlisted": "該擴充套件已不在列表中",
+  "CtxMenuCellHidden": "已隱藏條目",
+  "CtxMenuCellShown": "已顯示條目",
+  "CtxMenuHiddenCellsRestored": "已還原 {count} 個隱藏條目",
+  "CtxMenuNoSelectionToCopy": "沒有可複製的所選內容"
 }

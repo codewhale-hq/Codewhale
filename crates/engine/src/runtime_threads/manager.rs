@@ -218,41 +218,78 @@ fn agent_mail_address(owner_id: &str, thread: &ThreadRecord) -> Result<AgentMail
     Ok(address)
 }
 
+fn ascii_starts_with_ignore_case(value: &str, prefix: &[u8]) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn ascii_contains_ignore_case(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn normalized_key_ends_with(name: &str, suffix: &[u8]) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() < suffix.len() {
+        return false;
+    }
+    bytes[bytes.len() - suffix.len()..]
+        .iter()
+        .zip(suffix)
+        .all(|(&actual, &expected)| {
+            let normalized = if actual == b'-' {
+                b'_'
+            } else {
+                actual.to_ascii_lowercase()
+            };
+            normalized == expected
+        })
+}
+
 pub(super) fn agent_mail_token_is_credential(token: &str) -> bool {
     let trimmed = token
         .trim_matches(|ch: char| ch.is_ascii_punctuation() && !matches!(ch, '_' | '-' | '=' | ':'));
-    let lower = trimmed.to_ascii_lowercase();
     if [
-        "sk-",
-        "sk_",
-        "rk-",
-        "pk-",
-        "ghp_",
-        "gho_",
-        "ghu_",
-        "ghs_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "xoxa-",
-        "akia",
-        "aiza",
-        "eyj",
+        b"sk-".as_slice(),
+        b"sk_",
+        b"rk-",
+        b"pk-",
+        b"ghp_",
+        b"gho_",
+        b"ghu_",
+        b"ghs_",
+        b"github_pat_",
+        b"xoxb-",
+        b"xoxp-",
+        b"xoxa-",
+        b"akia",
+        b"aiza",
+        b"eyj",
     ]
     .iter()
-    .any(|prefix| lower.starts_with(prefix))
+    .any(|prefix| ascii_starts_with_ignore_case(trimmed, prefix))
     {
         return true;
     }
-    let Some((name, _)) = lower.split_once(['=', ':']) else {
+    let Some((name, _)) = trimmed.split_once(['=', ':']) else {
         return false;
     };
-    let normalized = name.replace('-', "_");
-    normalized.ends_with("api_key")
-        || normalized.ends_with("token")
-        || normalized.ends_with("secret")
-        || normalized.ends_with("password")
-        || normalized.ends_with("passwd")
+    [
+        b"api_key".as_slice(),
+        b"token",
+        b"secret",
+        b"password",
+        b"passwd",
+    ]
+    .iter()
+    .any(|suffix| normalized_key_ends_with(name, suffix))
 }
 
 async fn runtime_receipt_locale() -> codewhale_localization::Locale {
@@ -284,10 +321,7 @@ pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
         } else if ["bearer", "basic", "digest", "apikey"]
             .iter()
             .any(|scheme| token.eq_ignore_ascii_case(scheme))
-            || token
-                .as_bytes()
-                .windows("authorization:".len())
-                .any(|window| window.eq_ignore_ascii_case(b"authorization:"))
+            || ascii_contains_ignore_case(token, b"authorization:")
         {
             redact_next_credential = true;
             "[redacted-credential]"
@@ -326,30 +360,35 @@ pub(super) fn sanitize_agent_mail_text(raw: &str, max_bytes: usize) -> String {
             break;
         }
     }
-    out.trim().to_string()
+    let trimmed_len = out.trim_end().len();
+    out.truncate(trimmed_len);
+    out
 }
 
 pub(super) fn agent_mail_looks_like_raw_transcript(raw: &str) -> bool {
-    let lower = raw.to_ascii_lowercase();
     if [
-        "<turn_meta>",
-        "<assistant",
-        "<tool_result",
-        "\"messages\":",
-        "\"role\":\"assistant\"",
-        "\"role\": \"assistant\"",
+        b"<turn_meta>".as_slice(),
+        b"<assistant",
+        b"<tool_result",
+        b"\"messages\":",
+        b"\"role\":\"assistant\"",
+        b"\"role\": \"assistant\"",
     ]
     .iter()
-    .any(|marker| lower.contains(marker))
+    .any(|marker| ascii_contains_ignore_case(raw, marker))
     {
         return true;
     }
-    lower.lines().any(|line| {
+    raw.lines().any(|line| {
         let line = line.trim_start();
-        line.starts_with("assistant:")
-            || line.starts_with("system:")
-            || line.starts_with("tool:")
-            || line.starts_with("tool_result:")
+        [
+            b"assistant:".as_slice(),
+            b"system:",
+            b"tool:",
+            b"tool_result:",
+        ]
+        .iter()
+        .any(|prefix| ascii_starts_with_ignore_case(line, prefix))
     })
 }
 

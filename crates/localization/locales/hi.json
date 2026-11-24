@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "ऑनबोर्डिंग प्रगति सहेजी नहीं जा सकी: {error}",
   "FeatureIntroFlagSaveFailed": "फ़ीचर टिप सेटिंग सहेजी नहीं जा सकी: {error}",
   "QueueFullNotice": "फ़ॉलो-अप कतार भर गई है ({max} संदेश); आपका संदेश वापस कंपोज़र में है।",
-  "ConfigLookupFailed": "`{key}` नहीं पढ़ा जा सका: कॉन्फ़िग लोड नहीं हो सका ({error})"
+  "ConfigLookupFailed": "`{key}` नहीं पढ़ा जा सका: कॉन्फ़िग लोड नहीं हो सका ({error})",
+  "CtxMenuNoSelectionToOpen": "खोलने के लिए कोई चयन नहीं है",
+  "CtxMenuSelectionCleared": "चयन हटाया गया",
+  "CtxMenuNoSelectionToClear": "हटाने के लिए कोई चयन नहीं है",
+  "CtxMenuNoDetailsForLine": "उस पंक्ति के लिए कोई विवरण उपलब्ध नहीं है",
+  "CtxMenuExtensionUnlisted": "वह एक्सटेंशन अब सूची में नहीं है",
+  "CtxMenuCellHidden": "सेल छिपाया गया",
+  "CtxMenuCellShown": "सेल दिखाया गया",
+  "CtxMenuHiddenCellsRestored": "{count} छिपे हुए सेल पुनर्स्थापित किए गए",
+  "CtxMenuNoSelectionToCopy": "कॉपी करने के लिए कोई चयन नहीं है"
 }

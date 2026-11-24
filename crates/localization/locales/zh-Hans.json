@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "无法保存引导进度：{error}",
   "FeatureIntroFlagSaveFailed": "无法保存功能提示设置：{error}",
   "QueueFullNotice": "后续消息队列已满（{max} 条）；你的消息已放回输入框。",
-  "ConfigLookupFailed": "无法读取 `{key}`：配置加载失败（{error}）"
+  "ConfigLookupFailed": "无法读取 `{key}`：配置加载失败（{error}）",
+  "CtxMenuNoSelectionToOpen": "没有可打开的所选内容",
+  "CtxMenuSelectionCleared": "已清除选择",
+  "CtxMenuNoSelectionToClear": "没有可清除的选择",
+  "CtxMenuNoDetailsForLine": "该行没有可用详情",
+  "CtxMenuExtensionUnlisted": "该扩展已不在列表中",
+  "CtxMenuCellHidden": "已隐藏条目",
+  "CtxMenuCellShown": "已显示条目",
+  "CtxMenuHiddenCellsRestored": "已恢复 {count} 个隐藏条目",
+  "CtxMenuNoSelectionToCopy": "没有可复制的所选内容"
 }

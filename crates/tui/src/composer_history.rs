@@ -106,23 +106,45 @@ fn read_history_from(path: &Path) -> std::io::Result<Vec<String>> {
     } else {
         (path.with_file_name(LEGACY_HISTORY_FILE_NAME), false)
     };
-    let file = match fs::File::open(source) {
+    let file = match fs::File::open(&source) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
     let mut entries = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
+    let mut reader = BufReader::new(file);
+    let mut raw = Vec::new();
+    let mut line_number = 0usize;
+    loop {
+        raw.clear();
+        let bytes_read = reader.read_until(b'\n', &mut raw)?;
+        if bytes_read == 0 {
+            break;
+        }
+        line_number += 1;
+        if raw.ends_with(b"\n") {
+            raw.pop();
+            if raw.ends_with(b"\r") {
+                raw.pop();
+            }
+        }
+        let Ok(line) = std::str::from_utf8(&raw) else {
+            tracing::warn!(
+                "Skipping invalid UTF-8 line {} in composer history at {}",
+                line_number,
+                source.display()
+            );
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
         entries.push(if encoded {
             // Keep a malformed record as text rather than losing it on
             // the next append/rewrite.
-            serde_json::from_str::<String>(&line).unwrap_or(line)
+            serde_json::from_str::<String>(line).unwrap_or_else(|_| line.to_string())
         } else {
-            line
+            line.to_string()
         });
     }
     Ok(entries)
@@ -563,6 +585,34 @@ mod tests {
     fn missing_file_loads_empty() {
         let (_tmp, path) = temp_history_path();
         assert!(load_history_from(&path).is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_line_is_skipped_without_dropping_valid_history() {
+        let (_tmp, path) = temp_history_path();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\"before corruption\"\n");
+        bytes.extend_from_slice(b"bad \xff\xfe bytes\n");
+        bytes.extend_from_slice(b"\"after corruption\"\n");
+        std::fs::write(&path, bytes).expect("write history with corrupt line");
+
+        assert_eq!(
+            load_history_from(&path),
+            vec![
+                "before corruption".to_string(),
+                "after corruption".to_string(),
+            ]
+        );
+
+        append_history_to(&path, "new entry");
+        assert_eq!(
+            load_history_from(&path),
+            vec![
+                "before corruption".to_string(),
+                "after corruption".to_string(),
+                "new entry".to_string(),
+            ]
+        );
     }
 
     /// Regression for #1927 — the dispatched append path must return
