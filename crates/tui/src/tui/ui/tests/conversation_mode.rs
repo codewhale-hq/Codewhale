@@ -289,6 +289,7 @@ async fn a_resync_of_the_open_conversation_keeps_its_mode() {
         .await
         .unwrap()
     };
+    app.runtime_services.task_manager = Some(tasks.clone());
     let mut backend = ColorCompatBackend::new(
         std::io::stdout(),
         codewhale_palette::ColorDepth::Monochrome,
@@ -310,14 +311,7 @@ async fn a_resync_of_the_open_conversation_keeps_its_mode() {
         };
         tokio::time::timeout(
             Duration::from_secs(60),
-            apply_command_result(
-                &mut terminal,
-                &mut app,
-                &mut handle,
-                &tasks,
-                &mut config,
-                result,
-            ),
+            apply_command_result(&mut terminal, &mut app, &mut handle, &mut config, result),
         )
         .await
         .expect("the re-sync finished")

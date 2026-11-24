@@ -250,7 +250,6 @@ pub(crate) fn persist_auto_router(
 pub(crate) async fn handle_router_request(
     app: &mut App,
     config: &mut Config,
-    task_manager: &codewhale_engine::task_manager::TaskManager,
     request: RouterRequest,
 ) {
     match request {
@@ -266,7 +265,21 @@ pub(crate) async fn handle_router_request(
             });
         }
         RouterRequest::Test(preset) => test_preset(app, config, preset).await,
-        RouterRequest::Save(preset) => save_preset(app, config, task_manager, preset).await,
+        RouterRequest::Save(preset) => {
+            // Reads the App's slot: only a save needs the manager, so no other
+            // request has to wait for one to exist.
+            let Some(task_manager) = app.task_manager() else {
+                app.add_message(HistoryCell::System {
+                    content: codewhale_localization::tr(
+                        app.ui_locale,
+                        codewhale_localization::MessageId::TaskInventoryUnavailable,
+                    )
+                    .to_string(),
+                });
+                return;
+            };
+            save_preset(app, config, &task_manager, preset).await
+        }
     }
 }
 
