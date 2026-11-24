@@ -3227,6 +3227,9 @@ pub(crate) async fn handle_view_events(
                 app.status_message = Some(message);
                 app.needs_redraw = true;
             }
+            ViewEvent::StatusToast { message, level } => {
+                apply_status_toast_event(app, message, level);
+            }
             ViewEvent::TopbarRoutePickerRequested => {
                 open_provider_picker(app, config, engine_handle).await;
             }
@@ -3572,6 +3575,10 @@ pub(crate) async fn handle_view_events(
     }
 
     Ok(false)
+}
+
+pub(super) fn apply_status_toast_event(app: &mut App, message: String, level: StatusToastLevel) {
+    app.push_status_toast(message, level, None);
 }
 
 /// Keep the very large modal-event dispatcher out of the already-large TUI

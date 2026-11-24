@@ -37965,3 +37965,23 @@ fn prose_after_an_interposed_thinking_block_returns_to_the_assistant_cell() {
         "the buffered reasoning must reach its own card before the relabel"
     );
 }
+
+#[test]
+fn status_toast_event_pushes_typed_error_toast_visible_when_done() {
+    let mut app = create_test_app();
+    let message =
+        "! other_code/model is locked — Open /provider and select other_code to authenticate, then refresh."
+            .to_string();
+
+    super::handlers::apply_status_toast_event(&mut app, message.clone(), StatusToastLevel::Error);
+
+    assert!(
+        app.status_message.is_none(),
+        "typed StatusToast events must not write to the legacy status_message sink"
+    );
+    let toast = app
+        .active_status_toast(crate::tui::underwater::ShellPhase::Done)
+        .expect("error toast must stay visible when ShellPhase::Done");
+    assert_eq!(toast.level, StatusToastLevel::Error);
+    assert_eq!(toast.text, message);
+}
