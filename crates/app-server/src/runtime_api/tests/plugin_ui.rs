@@ -761,24 +761,37 @@ async fn plugin_settings_round_trip_conflicts_and_security_boundaries() -> Resul
 
     let no_settings_pkg = write_dsh_package(tmp.path(), "nosettings", DSH_CLIENT)?;
     let settings_pkg = tmp.path().join("withsettings");
-    fs::create_dir_all(&settings_pkg)?;
+    fs::create_dir_all(settings_pkg.join("skills/greet"))?;
     fs::write(
         settings_pkg.join("package.json"),
         serde_json::json!({
             "name": "dsh-with-settings",
             "version": "1.0.0",
             "main": "./index.js",
-            "dsh": { "engines": { "dsh": "^0.2.2-rc.1" }, "bundle": { "patch": "./cordis.patch.yml" } }
+            "exports": { "./client": { "default": "./client.js" } },
+            "dsh": {
+                "engines": { "dsh": "^0.2.2-rc.1" },
+                "bundle": { "patch": "./cordis.patch.yml" },
+                "client": { "platform": "web" }
+            }
         })
         .to_string(),
     )?;
     fs::write(
         settings_pkg.join("cordis.patch.yml"),
-        "- insert:\n  - id: main\n    name: \"./index.js\"\n",
+        "- insert:\n  - id: main\n    name: \"./index.js\"\n  - id: skills\n    name: \"@deepseek-ai/dsh-skill-filesystem\"\n    config:\n      customSkillDirs:\n        - ./skills\n",
+    )?;
+    fs::write(
+        settings_pkg.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Greets a person\n---\nSay hi.\n",
     )?;
     fs::write(
         settings_pkg.join("index.js"),
         "export const name = 'with-settings';\nexport const inject = ['settings'];\nexport function apply() {}\n",
+    )?;
+    fs::write(
+        settings_pkg.join("client.js"),
+        "exports.apply = function apply(ctx) { return ctx.settings; };\n",
     )?;
 
     let Some((addr, handle)) = spawn_plugin_api_server(root.clone(), workspace).await? else {
