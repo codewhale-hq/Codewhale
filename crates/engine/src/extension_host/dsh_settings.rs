@@ -698,7 +698,7 @@ pub async fn write_plugin_config_settings(
         ));
     }
     let turn = Arc::clone(&TURN).lock_owned().await;
-    let outcome = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let _turn = turn;
         let mut result: Result<PluginSettingsWriteOutcome, PluginSettingsError> =
             Err(PluginSettingsError::Store);
@@ -755,8 +755,7 @@ pub async fn write_plugin_config_settings(
         }
     })
     .await
-    .map_err(|_| PluginSettingsError::Store)?;
-    outcome
+    .map_err(|_| PluginSettingsError::Store)?
 }
 
 #[cfg(test)]

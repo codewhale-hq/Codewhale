@@ -962,7 +962,7 @@ async fn a_real_node_host_enforces_attachments_registration_and_projects_image_r
     unreg_engine.sync().await.unwrap();
     assert!(matches!(
         unreg_manager.owner_state(&unreg_id),
-        Some(OwnerState::Ready)
+        Some(OwnerState::Active)
     ));
     unreg_manager.shutdown().await;
 
