@@ -4431,8 +4431,17 @@ impl App {
         };
         self.revoke_approvable_auto_review_receipts();
         self.set_agent_runtime_baseline(self.mode_prefs.agent_allow_shell, trust_mode, next);
-        if !self.approval_policy_locked() {
-            let _ = Self::persist_permission_posture(next);
+        if !self.approval_policy_locked()
+            && let Err(err) = Self::persist_permission_posture(next)
+        {
+            tracing::warn!(%err, "failed to persist auto-review paused permission posture");
+            let warning = format!(
+                "Auto-Review paused for this session only: could not save TUI posture ({err}); previous posture will reload on restart"
+            );
+            self.add_message(HistoryCell::System {
+                content: warning.clone(),
+            });
+            self.push_status_toast(warning, StatusToastLevel::Warning, Some(10_000));
         }
         self.needs_redraw = true;
     }

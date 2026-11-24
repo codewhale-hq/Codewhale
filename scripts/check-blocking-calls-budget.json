@@ -22,7 +22,7 @@
     "std_fs": 6
   },
   "crates/app-server/src/remote_setup/bundle.rs": {
-    "std_fs": 2
+    "std_fs": 3
   },
   "crates/app-server/src/runtime_api.rs": {
     "path_canonicalize": 4

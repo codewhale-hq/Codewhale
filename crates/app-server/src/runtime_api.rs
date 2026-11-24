@@ -8934,6 +8934,20 @@ async fn automation_admission_test_point(state: &RuntimeApiState) {
     }
 }
 
+pub(crate) fn reject_automation_permission_elevation(
+    allow_shell: Option<bool>,
+    trust_mode: Option<bool>,
+    auto_approve: Option<bool>,
+) -> Result<(), ApiError> {
+    if allow_shell.unwrap_or(false) || trust_mode.unwrap_or(false) || auto_approve.unwrap_or(false)
+    {
+        return Err(ApiError::bad_request(
+            "automation permissions may not be elevated",
+        ));
+    }
+    Ok(())
+}
+
 async fn create_automation(
     State(state): State<RuntimeApiState>,
     headers: HeaderMap,
@@ -8948,6 +8962,7 @@ async fn create_automation_in_workspace(
     req: CreateAutomationRequest,
     expected_workspace: Option<PathBuf>,
 ) -> Result<Response, ApiError> {
+    reject_automation_permission_elevation(req.allow_shell, req.trust_mode, req.auto_approve)?;
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
     #[cfg(test)]
     if expected_workspace.is_some() {
@@ -9009,6 +9024,7 @@ async fn update_automation(
     headers: HeaderMap,
     Json(mut req): Json<UpdateAutomationRequest>,
 ) -> Result<Response, ApiError> {
+    reject_automation_permission_elevation(req.allow_shell, req.trust_mode, req.auto_approve)?;
     require_destination_thread(&state, req.destination_thread_id.as_deref()).await?;
     req.expected_revision = req.expected_revision.or(query.expected_revision);
     automation_mutation(

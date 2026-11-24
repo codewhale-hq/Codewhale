@@ -371,6 +371,7 @@ struct Inner {
     dir: Option<PathBuf>,
     grants: Vec<Grant>,
     degraded: Option<String>,
+    persist_failed: bool,
     stamp: Option<(std::time::SystemTime, u64)>,
 }
 
@@ -381,6 +382,9 @@ impl Inner {
     }
 
     fn refresh(&mut self) {
+        if self.persist_failed || self.degraded.is_some() {
+            return;
+        }
         let Some(dir) = &self.dir else {
             return;
         };
@@ -431,12 +435,30 @@ impl Inner {
         Ok(())
     }
 
-    fn commit_tightening(&mut self, grants: Vec<Grant>, events: Vec<GrantEvent>) {
-        if let Err(error) = self.persist(&grants, &events) {
-            tracing::warn!(target: "approval", %error, "grant revocation evidence could not be written");
-        }
+    fn commit_tightening(
+        &mut self,
+        grants: Vec<Grant>,
+        events: Vec<GrantEvent>,
+    ) -> std::io::Result<()> {
         self.grants = grants;
-        self.stamp = self.file_stamp();
+        match self.persist(&self.grants, &events) {
+            Ok(()) => {
+                self.stamp = self.file_stamp();
+                Ok(())
+            }
+            Err(error) => {
+                self.persist_failed = true;
+                self.degraded = Some(format!(
+                    "grant revocation evidence could not be persisted: {error}"
+                ));
+                tracing::error!(
+                    target: "approval",
+                    %error,
+                    "grant tightening could not be persisted; store degraded and failing closed"
+                );
+                Err(error)
+            }
+        }
     }
 
     fn sweep(&mut self, now: DateTime<Utc>) {
@@ -458,7 +480,7 @@ impl Inner {
             }
         }
         if !events.is_empty() {
-            self.commit_tightening(grants, events);
+            let _ = self.commit_tightening(grants, events);
         }
     }
 
@@ -471,7 +493,7 @@ impl Inner {
         by: &str,
         reason: &str,
         tighten: bool,
-    ) -> Vec<Grant> {
+    ) -> Result<Vec<Grant>, GrantError> {
         self.refresh();
         let mut grants = self.grants.clone();
         let mut events = Vec::new();
@@ -499,15 +521,17 @@ impl Inner {
             changed.push(grant.clone());
         }
         if changed.is_empty() {
-            return changed;
+            return Ok(changed);
         }
         if tighten {
-            self.commit_tightening(grants, events);
-            changed
-        } else if self.commit(grants, events).is_ok() {
-            changed
+            self.commit_tightening(grants, events)?;
+            Ok(changed)
         } else {
-            Vec::new()
+            if let Some(degraded) = &self.degraded {
+                return Err(GrantError::Degraded(degraded.clone()));
+            }
+            self.commit(grants, events)?;
+            Ok(changed)
         }
     }
 }
@@ -530,6 +554,7 @@ impl GrantStore {
             dir: Some(dir.to_path_buf()),
             grants: Vec::new(),
             degraded: None,
+            persist_failed: false,
             stamp: None,
         };
         let path = dir.join(GRANTS_FILE);
@@ -557,7 +582,7 @@ impl GrantStore {
         if let Some(reason) = &inner.degraded {
             tracing::warn!(target: "approval", %reason, "standing grants are unavailable; every call asks");
         }
-        inner.transition(
+        let _ = inner.transition(
             |grant| {
                 grant.effect == GrantEffect::Allow
                     && matches!(grant.scope, GrantScope::Thread { .. })
@@ -593,13 +618,14 @@ impl GrantStore {
             return Err(GrantError::InvalidScope);
         }
         let mut inner = self.inner.lock();
-        if let Some(reason) = &inner.degraded
-            && inner.dir.is_none()
-        {
+        if let Some(reason) = &inner.degraded {
             return Err(GrantError::Degraded(reason.clone()));
         }
         let now = Utc::now();
         inner.sweep(now);
+        if let Some(reason) = &inner.degraded {
+            return Err(GrantError::Degraded(reason.clone()));
+        }
         let matcher_digest = new.matcher.digest();
         if let Some(existing) = inner.grants.iter().find(|grant| {
             matches!(grant.state, GrantState::Active | GrantState::Suspended)
@@ -688,6 +714,9 @@ impl GrantStore {
         if let Some(deny) = best(GrantEffect::Deny, &|_| true) {
             return GrantVerdict::Deny(deny);
         }
+        if inner.persist_failed || inner.degraded.is_some() {
+            return GrantVerdict::NoMatch;
+        }
         let allow = best(GrantEffect::Allow, &|grant| {
             grant.applies_to.origins.contains(&query.origin)
                 && match query.posture {
@@ -706,8 +735,14 @@ impl GrantStore {
     /// must ask instead.
     pub fn record_use(&self, grant_id: &str) -> Result<(), GrantError> {
         let mut inner = self.inner.lock();
+        if let Some(reason) = &inner.degraded {
+            return Err(GrantError::Degraded(reason.clone()));
+        }
         let now = Utc::now();
         inner.sweep(now);
+        if let Some(reason) = &inner.degraded {
+            return Err(GrantError::Degraded(reason.clone()));
+        }
         let mut grants = inner.grants.clone();
         let Some(grant) = grants
             .iter_mut()
@@ -744,7 +779,7 @@ impl GrantStore {
         scope: Option<&GrantScope>,
         by: &str,
         reason: &str,
-    ) -> Option<Grant> {
+    ) -> Result<Option<Grant>, GrantError> {
         let mut inner = self.inner.lock();
         let select = |grant: &Grant| {
             grant.grant_id == grant_id && scope.is_none_or(|scope| &grant.scope == scope)
@@ -757,7 +792,7 @@ impl GrantStore {
             by,
             reason,
             true,
-        );
+        )?;
         if done.is_empty() {
             done = inner.transition(
                 select,
@@ -767,13 +802,18 @@ impl GrantStore {
                 by,
                 reason,
                 true,
-            );
+            )?;
         }
-        done.pop()
+        Ok(done.pop())
     }
 
     /// End every grant of a thread (archive or delete).
-    pub fn revoke_thread(&self, thread_id: &str, by: &str, reason: &str) -> Vec<Grant> {
+    pub fn revoke_thread(
+        &self,
+        thread_id: &str,
+        by: &str,
+        reason: &str,
+    ) -> Result<Vec<Grant>, GrantError> {
         let mut inner = self.inner.lock();
         let select = |grant: &Grant| matches!(&grant.scope, GrantScope::Thread { thread_id: id } if id == thread_id);
         let mut done = inner.transition(
@@ -784,7 +824,7 @@ impl GrantStore {
             by,
             reason,
             true,
-        );
+        )?;
         done.extend(inner.transition(
             select,
             GrantState::Suspended,
@@ -793,22 +833,25 @@ impl GrantStore {
             by,
             reason,
             true,
-        ));
-        done
+        )?);
+        Ok(done)
     }
 
     /// Reactivate a thread's grants suspended by a restart. Call only from an
     /// authenticated resume; rehydrating a wait never restores authority.
     pub fn resume_thread(&self, thread_id: &str) -> Vec<Grant> {
-        self.inner.lock().transition(
-            |grant| matches!(&grant.scope, GrantScope::Thread { thread_id: id } if id == thread_id),
-            GrantState::Suspended,
-            GrantState::Active,
-            "resumed",
-            "authenticated_resume",
-            "thread resumed by an authenticated client",
-            false,
-        )
+        self.inner
+            .lock()
+            .transition(
+                |grant| matches!(&grant.scope, GrantScope::Thread { thread_id: id } if id == thread_id),
+                GrantState::Suspended,
+                GrantState::Active,
+                "resumed",
+                "authenticated_resume",
+                "thread resumed by an authenticated client",
+                false,
+            )
+            .unwrap_or_default()
     }
 
     pub fn standing_grants(&self) -> Result<Vec<Grant>, String> {
@@ -817,6 +860,9 @@ impl GrantStore {
             return Err(reason.clone());
         }
         inner.sweep(Utc::now());
+        if let Some(reason) = &inner.degraded {
+            return Err(reason.clone());
+        }
         Ok(inner
             .grants
             .iter()
@@ -830,6 +876,9 @@ impl GrantStore {
     pub fn thread_grants(&self, thread_id: &str) -> Vec<Grant> {
         let mut inner = self.inner.lock();
         inner.sweep(Utc::now());
+        if inner.persist_failed || inner.degraded.is_some() {
+            return Vec::new();
+        }
         inner
             .grants
             .iter()
@@ -862,4 +911,103 @@ fn hex_digest(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn sample_workspace_grant(effect: GrantEffect, grouping_key: &str) -> NewGrant {
+        NewGrant {
+            effect,
+            scope: GrantScope::Workspace {
+                workspace_id: "ws_test".to_string(),
+            },
+            matcher: GrantMatcher {
+                tool_class: "shell".to_string(),
+                grouping_key: Some(grouping_key.to_string()),
+                ..GrantMatcher::default()
+            },
+            tool_name: "exec_shell".to_string(),
+            redacted_summary: format!("run {grouping_key}"),
+            limits: GrantLimits::default(),
+            applies_to: GrantAppliesTo::default(),
+            principal: "user".to_string(),
+            surface: GrantSurface::Tui,
+            decider: GrantDecider::HumanCard,
+            source_approval_id: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn query_for(grouping_key: &str) -> GrantQuery<'_> {
+        GrantQuery {
+            thread_id: "thr_1",
+            workspace_id: "ws_test",
+            origin: GrantOrigin::Interactive,
+            posture: GrantPosture::Ask,
+            tool_class: "shell",
+            exact_digest: "dig_1",
+            grouping_key,
+            argv: &[],
+            net_host: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoke_persist_failure_returns_error_marks_degraded_and_fails_closed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = GrantStore::open(tmp.path());
+        let allow = store
+            .create(sample_workspace_grant(GrantEffect::Allow, "cargo test"))
+            .unwrap();
+        let deny = store
+            .create(sample_workspace_grant(GrantEffect::Deny, "rm -rf"))
+            .unwrap();
+        let _ = deny;
+        assert!(matches!(
+            store.evaluate(&query_for("cargo test")),
+            GrantVerdict::Allow(_)
+        ));
+        assert!(matches!(
+            store.evaluate(&query_for("rm -rf")),
+            GrantVerdict::Deny(_)
+        ));
+
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let revoke_result = store.revoke(&allow.grant_id, None, "user", "revoke test");
+        assert!(
+            matches!(revoke_result, Err(GrantError::Io(_))),
+            "expected Io error on read-only grants dir, got {revoke_result:?}"
+        );
+        assert!(store.degraded_reason().is_some());
+        assert!(store.standing_grants().is_err());
+        assert_eq!(
+            store.evaluate(&query_for("cargo test")),
+            GrantVerdict::NoMatch,
+            "degraded store must fail closed for standing allows"
+        );
+        assert!(
+            matches!(store.evaluate(&query_for("rm -rf")), GrantVerdict::Deny(_)),
+            "standing denies must remain enforced while degraded"
+        );
+        assert!(matches!(
+            store.record_use(&allow.grant_id),
+            Err(GrantError::Degraded(_))
+        ));
+        assert!(matches!(
+            store.create(sample_workspace_grant(GrantEffect::Allow, "cargo clippy")),
+            Err(GrantError::Degraded(_))
+        ));
+
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    }
 }

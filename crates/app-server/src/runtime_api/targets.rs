@@ -19,7 +19,7 @@
 //!   GET  /v1/cloud            — hosted computers: control-plane owned
 //!   POST /v1/cloud/attach     — 501
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use axum::Json;
@@ -122,6 +122,94 @@ pub(super) struct RemoteConnectRequest {
     endpoint: String,
 }
 
+fn is_blocked_remote_probe_ip(ip: &IpAddr) -> bool {
+    if codewhale_net::guard::is_cloud_metadata_ip(ip) {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.octets()[0] == 0
+                || v4.is_multicast()
+                || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => {
+            if codewhale_net::guard::embedded_ipv4_addrs(*v6)
+                .iter()
+                .any(|v4| is_blocked_remote_probe_ip(&IpAddr::V4(*v4)))
+            {
+                return true;
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || matches!(v6.segments(), [0xfe80..=0xfebf, ..])
+        }
+    }
+}
+
+fn is_loopback_hostname(host: &str) -> bool {
+    let bare = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    bare == "localhost" || bare == "localhost.localdomain" || bare.ends_with(".localhost")
+}
+
+fn parse_literal_ip(host: &str) -> Option<IpAddr> {
+    host.strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse()
+        .ok()
+}
+
+enum ProbeTargetResolution {
+    Pinned(Option<(String, IpAddr)>),
+    Unreachable(String),
+}
+
+async fn validate_and_resolve_probe_target(
+    host: &str,
+    port: u16,
+) -> Result<ProbeTargetResolution, ApiError> {
+    const BLOCKED_MSG: &str =
+        "remote probe refuses loopback, link-local, metadata, unspecified, and multicast targets";
+
+    if is_loopback_hostname(host) {
+        return Err(ApiError::bad_request(BLOCKED_MSG));
+    }
+    if let Some(ip) = parse_literal_ip(host) {
+        if is_blocked_remote_probe_ip(&ip) {
+            return Err(ApiError::bad_request(BLOCKED_MSG));
+        }
+        return Ok(ProbeTargetResolution::Pinned(None));
+    }
+    let resolved =
+        match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::lookup_host((host, port))).await {
+            Ok(Ok(addrs)) => addrs.collect::<Vec<SocketAddr>>(),
+            Ok(Err(error)) => return Ok(ProbeTargetResolution::Unreachable(error.to_string())),
+            Err(_) => {
+                return Ok(ProbeTargetResolution::Unreachable(
+                    "timed out resolving endpoint host".to_string(),
+                ));
+            }
+        };
+    if resolved.is_empty() {
+        return Ok(ProbeTargetResolution::Unreachable(
+            "endpoint host resolved to no addresses".to_string(),
+        ));
+    }
+    for addr in &resolved {
+        if is_blocked_remote_probe_ip(&addr.ip()) {
+            return Err(ApiError::bad_request(BLOCKED_MSG));
+        }
+    }
+    Ok(ProbeTargetResolution::Pinned(Some((
+        host.to_string(),
+        resolved[0].ip(),
+    ))))
+}
+
 /// Probe a candidate remote endpoint's `/v1/runtime/info`. The probe is
 /// unauthenticated against the remote on purpose: this route must never be a
 /// bearer-token forwarding primitive, and `runtime/info` answers signed-out
@@ -146,17 +234,35 @@ pub(super) async fn remote_connect(
     let host = url
         .host_str()
         .ok_or_else(|| ApiError::bad_request("endpoint must name a host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| ApiError::bad_request("endpoint must specify a valid port"))?;
     // Origin only — the runtime API always serves at /v1 regardless of the
     // path a user pasted.
     let origin = match url.port() {
         Some(port) => format!("{}://{host}:{port}", url.scheme()),
         None => format!("{}://{host}", url.scheme()),
     };
+    let dns_pin = match validate_and_resolve_probe_target(host, port).await? {
+        ProbeTargetResolution::Pinned(pin) => pin,
+        ProbeTargetResolution::Unreachable(detail) => {
+            return Ok(Json(json!({
+                "ok": false,
+                "endpoint": origin,
+                "reason": "unreachable",
+                "detail": detail,
+            })));
+        }
+    };
     let probe_url = format!("{origin}/v1/runtime/info");
 
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let mut builder = codewhale_net::guard::guarded_reqwest_client_builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(PROBE_TIMEOUT)
+        .timeout(PROBE_TIMEOUT);
+    if let Some((pin_host, pin_ip)) = dns_pin {
+        builder = builder.resolve(&pin_host, SocketAddr::new(pin_ip, port));
+    }
+    let client = builder
         .build()
         .map_err(|error| ApiError::internal(format!("probe client unavailable: {error}")))?;
     let mut response = match client.get(&probe_url).send().await {
@@ -286,4 +392,78 @@ pub(super) async fn placement_preview(
     Ok(Json(
         json!({ "execution": "preview", "evidence": "operator_declared", "grants_execution": false, "decisions": decisions }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_probe_blocks_loopback_metadata_unspecified_and_multicast_ips() {
+        for blocked in [
+            "127.0.0.1",
+            "127.255.255.254",
+            "169.254.169.254",
+            "169.254.0.1",
+            "100.100.100.200",
+            "0.0.0.0",
+            "0.1.2.3",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:0.0.0.0",
+            "::ffff:0:127.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::0.0.0.0",
+            "64:ff9b:1::127.0.0.1",
+            "2002:7f00:1::",
+            "2001:0:7f00:1::",
+        ] {
+            let ip: IpAddr = blocked.parse().unwrap();
+            assert!(
+                is_blocked_remote_probe_ip(&ip),
+                "{blocked} should be blocked"
+            );
+        }
+        for allowed in [
+            "192.168.1.5",
+            "10.0.0.12",
+            "100.64.0.1",
+            "93.184.216.34",
+            "fd7a:115c:a1e0::1",
+            "2606:2800:220:1:248:1893:25c8:1946",
+        ] {
+            let ip: IpAddr = allowed.parse().unwrap();
+            assert!(
+                !is_blocked_remote_probe_ip(&ip),
+                "{allowed} should be allowed for remote runtime probes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_and_resolve_probe_target_blocks_localhost_and_metadata() {
+        for host in [
+            "localhost",
+            "sub.localhost",
+            "localhost.localdomain",
+            "127.0.0.1",
+            "[::1]",
+            "169.254.169.254",
+            "[fe80::1]",
+            "0.0.0.0",
+            "[::]",
+            "224.0.0.1",
+        ] {
+            assert!(
+                validate_and_resolve_probe_target(host, 7878).await.is_err(),
+                "{host} should be rejected"
+            );
+        }
+    }
 }

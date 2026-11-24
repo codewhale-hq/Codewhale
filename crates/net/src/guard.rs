@@ -156,6 +156,14 @@ pub fn is_cloud_metadata_ip(ip: &IpAddr) -> bool {
     }
 }
 
+pub fn embedded_ipv4_addrs(v6: Ipv6Addr) -> Vec<Ipv4Addr> {
+    let mut addrs = embedded_ipv4(v6);
+    if let Some(local_nat64) = local_use_nat64_ipv4_layouts(v6) {
+        addrs.extend(local_nat64);
+    }
+    addrs
+}
+
 fn embedded_ipv4(v6: Ipv6Addr) -> Vec<Ipv4Addr> {
     let octets = v6.octets();
     let tail = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);

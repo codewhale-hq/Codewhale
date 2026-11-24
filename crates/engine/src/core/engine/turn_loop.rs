@@ -6662,8 +6662,11 @@ impl Engine {
                             // usually disabled.
                             if codewhale_runtime::logging::is_verbose() {
                                 codewhale_runtime::logging::info(format!(
-                                    "Tool '{}' input delta: {} (buffer now: {})",
-                                    tool_state.name, partial_json, tool_state.input_buffer
+                                    "Tool '{}' (id='{}') input delta: {} bytes (buffer now: {} bytes)",
+                                    tool_state.name,
+                                    tool_state.id,
+                                    partial_json.len(),
+                                    tool_state.input_buffer.len()
                                 ));
                             }
                             // The buffer is the only mid-stream state: nothing
@@ -6797,10 +6800,14 @@ impl Engine {
                     if let Some(tool_idx) = current_tool_indices.remove(&index)
                         && let Some(tool_state) = tool_uses.get_mut(tool_idx)
                     {
-                        codewhale_runtime::logging::info(format!(
-                            "Tool '{}' block stop. Buffer: '{}'",
-                            tool_state.name, tool_state.input_buffer
-                        ));
+                        if codewhale_runtime::logging::is_verbose() {
+                            codewhale_runtime::logging::info(format!(
+                                "Tool '{}' (id='{}') block stop ({} bytes)",
+                                tool_state.name,
+                                tool_state.id,
+                                tool_state.input_buffer.len()
+                            ));
+                        }
                         self.finalize_streamed_tool_input(tool_state).await;
                     }
                 }
@@ -6975,8 +6982,8 @@ impl Engine {
     async fn finalize_streamed_tool_input(&self, tool_state: &mut ToolUseState) {
         if tool_state.input_buffer.trim().is_empty() {
             codewhale_runtime::logging::warn(format!(
-                "Tool '{}' input buffer is empty, using initial input: {:?}",
-                tool_state.name, tool_state.input
+                "Tool '{}' (id='{}') input buffer is empty, using initial input",
+                tool_state.name, tool_state.id
             ));
             return;
         }
@@ -6984,15 +6991,21 @@ impl Engine {
             .filter(|parsed| !parsed.structure_synthesized);
         if let Some(parsed) = final_parse {
             tool_state.input = parsed.value;
-            codewhale_runtime::logging::info(format!(
-                "Tool '{}' final input: {:?}",
-                tool_state.name, tool_state.input
-            ));
+            if codewhale_runtime::logging::is_verbose() {
+                codewhale_runtime::logging::info(format!(
+                    "Tool '{}' (id='{}') finalized input ({} bytes)",
+                    tool_state.name,
+                    tool_state.id,
+                    tool_state.input_buffer.len()
+                ));
+            }
             return;
         }
         codewhale_runtime::logging::warn(format!(
-            "Tool '{}' failed to parse final input buffer: '{}'",
-            tool_state.name, tool_state.input_buffer
+            "Tool '{}' (id='{}') failed to parse final input buffer ({} bytes)",
+            tool_state.name,
+            tool_state.id,
+            tool_state.input_buffer.len()
         ));
         let error = malformed_tool_arguments_error(&tool_state.input_buffer);
         tool_state.input_parse_error = Some(error);
