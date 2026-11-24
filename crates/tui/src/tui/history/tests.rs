@@ -2585,6 +2585,102 @@ fn replay_routes_repair_receipts_and_plan_calls_to_typed_cells() {
     assert_eq!(cell.snapshot.items[0].status, StepStatus::Completed);
 }
 
+#[test]
+fn replay_update_plan_uses_tool_result_status() {
+    let plan_call = |id: &str| Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            execution_id: None,
+            id: id.to_string(),
+            name: "update_plan".to_string(),
+            input: serde_json::json!({
+                "plan": [{ "step": "update", "status": "in_progress" }]
+            }),
+            caller: None,
+            thought_signature: None,
+        }],
+    };
+    let tool_result = |id: &str, is_error: Option<bool>| Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            execution_id: None,
+            tool_use_id: id.to_string(),
+            content: if is_error == Some(true) {
+                "invalid plan".to_string()
+            } else {
+                "Plan updated".to_string()
+            },
+            is_error,
+            content_blocks: None,
+        }],
+    };
+
+    let failed_call = plan_call("plan-fail");
+    let failed_transcript = vec![failed_call.clone(), tool_result("plan-fail", Some(true))];
+    let failed_cells =
+        super::history_cells_from_message_with_results(&failed_call, &failed_transcript);
+    let [HistoryCell::Tool(ToolCell::PlanUpdate(failed_cell))] = failed_cells.as_slice() else {
+        panic!("expected failed update_plan cell, got {failed_cells:?}");
+    };
+    assert_eq!(failed_cell.status, ToolStatus::Failed);
+
+    let ok_call = plan_call("plan-ok");
+    let ok_transcript = vec![ok_call.clone(), tool_result("plan-ok", None)];
+    let ok_cells = super::history_cells_from_message_with_results(&ok_call, &ok_transcript);
+    let [HistoryCell::Tool(ToolCell::PlanUpdate(ok_cell))] = ok_cells.as_slice() else {
+        panic!("expected succeeded update_plan cell, got {ok_cells:?}");
+    };
+    assert_eq!(ok_cell.status, ToolStatus::Success);
+
+    let missing_call = plan_call("plan-orphan");
+    let missing_transcript = vec![missing_call.clone()];
+    let missing_cells =
+        super::history_cells_from_message_with_results(&missing_call, &missing_transcript);
+    let [HistoryCell::Tool(ToolCell::PlanUpdate(missing_cell))] = missing_cells.as_slice() else {
+        panic!("expected orphan update_plan cell, got {missing_cells:?}");
+    };
+    assert_eq!(missing_cell.status, ToolStatus::Failed);
+}
+
+#[test]
+fn exploring_cell_compact_status_prefix_uses_locale() {
+    let locale = codewhale_localization::Locale::ZhHans;
+    let long_label = "crates/tui/src/tui/history/very_long_exploring_entry_label_path.rs";
+    for (status, english) in [
+        (ToolStatus::Running, "live"),
+        (ToolStatus::Success, "done"),
+        (ToolStatus::Hydrated, "loaded"),
+        (ToolStatus::Stopped, "stopped"),
+        (ToolStatus::Warning, "issue"),
+        (ToolStatus::Failed, "failed"),
+    ] {
+        let cell = super::ExploringCell {
+            entries: vec![super::ExploringEntry {
+                label: long_label.to_string(),
+                search: false,
+                status,
+                error: None,
+            }],
+        };
+        let rendered = cell
+            .lines_with_motion_and_locale(48, true, locale)
+            .iter()
+            .skip(1)
+            .map(line_to_plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let localized = super::tool_status_label(status, locale);
+        assert!(
+            rendered.contains(localized.as_ref()),
+            "expected localized status `{localized}` for {status:?}, got: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(english),
+            "unexpected English status `{english}` for {status:?}, got: {rendered:?}"
+        );
+    }
+}
+
 /// The runtime appends a `<turn_meta>` block to the user's message. It is
 /// scaffolding and must be hidden — but only when it is the trailing block the
 /// runtime appended. A user who types the same tag is quoting, not injecting,

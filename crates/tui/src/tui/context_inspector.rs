@@ -1633,4 +1633,32 @@ mod tests {
         assert!(rendered.contains("Auto compact: off"), "{rendered}");
         assert!(!rendered.contains("makes room at"), "{rendered}");
     }
+
+    #[test]
+    fn push_tools_keeps_details_hint_when_active_tools_fill_cap() {
+        let mut app = test_app();
+        for index in 0..=MAX_TOOL_ROWS {
+            let tool_id = format!("tool-{index}");
+            app.active_tool_details.insert(
+                tool_id.clone(),
+                ToolDetailRecord {
+                    tool_id,
+                    tool_name: format!("read_file_{index}"),
+                    input: serde_json::json!({}),
+                    output: None,
+                },
+            );
+        }
+        let mut out = String::new();
+        push_tools(&mut out, &app, Locale::En);
+        let details = crate::tui::shell_key_routing::display_chord(
+            crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::ToolDetails,
+            )
+            .footer_chord,
+        );
+        let expected_hint =
+            tr(Locale::En, MessageId::CtxInspVHint).replace("{details}", details.as_ref());
+        assert!(out.contains(&expected_hint), "{out}");
+    }
 }

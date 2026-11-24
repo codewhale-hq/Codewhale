@@ -787,11 +787,11 @@ fn shell_denial_covers_every_code_executing_action_or_names_an_exemption() {
         ),
         (
             "workflow/start",
-            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
         ),
         (
             "workflow/run",
-            "runs sub-agents that inherit this deny list; the verify input is denied by the flag list below",
+            "runs sub-agents that inherit this deny list; verify and args.evaluator are denied by execution_envelope",
         ),
         (
             "workflow/cancel",
@@ -961,6 +961,15 @@ fn shell_denial_keeps_only_the_bounded_verifier_its_default_gate() {
     let workflow_verify = json!({"action":"run", "script":"return 1;", "verify":true});
     assert!(enforce_tool_denial(&operator, "workflow", &workflow_verify).is_err());
     assert!(enforce_tool_denial(&verifier, "workflow", &workflow_verify).is_ok());
+    let workflow_evaluator = json!({
+        "action": "run",
+        "args": {
+            "strategy": "search",
+            "evaluator": {"manifestPath": "/trusted/evaluator.json"}
+        }
+    });
+    assert!(enforce_tool_denial(&operator, "workflow", &workflow_evaluator).is_err());
+    assert!(enforce_tool_denial(&verifier, "workflow", &workflow_evaluator).is_err());
 
     let surface = ToolSurfacePolicy::new(
         crate::tools::ToolRegistry::new(verifier.clone()),
@@ -992,12 +1001,15 @@ fn shell_denial_covers_workflow_completion_verification_but_not_plain_runs() {
         json!({"action":"run", "verify":true, "script":"return 1;"}),
         json!({"action":"wait", "verify":true}),
         json!({"action":" RUN ", "verify":true}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
+        json!({"action":"start", "args":{"evaluator":{"manifestPath":"/trusted/evaluator.json"}}}),
     ] {
         assert!(tool_call_denied(Some(&rules), "workflow", &input), "{input}");
     }
     for input in [
         json!({"action":"run", "script":"return 1;"}),
         json!({"action":"run", "verify":false}),
+        json!({"action":"run", "args":{"strategy":"search", "evaluator":null}}),
         json!({"action":"status", "run_id":"workflow_1"}),
         json!({"action":"cancel", "run_id":"workflow_1"}),
     ] {

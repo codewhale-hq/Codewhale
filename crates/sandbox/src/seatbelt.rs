@@ -586,10 +586,11 @@ pub(crate) fn darwin_user_temp_dir() -> Option<PathBuf> {
     get_darwin_confstr_dir(libc::_CS_DARWIN_USER_TEMP_DIR)
 }
 
-/// Detect sandbox denial from command output.
-///
-/// Returns true if the output suggests the sandbox blocked an operation.
-pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
+fn detect_denial_with_localized(
+    exit_code: i32,
+    stderr: &str,
+    localized_eperm: Option<&str>,
+) -> bool {
     if exit_code == 0 {
         return false;
     }
@@ -603,6 +604,15 @@ pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
     ];
 
     denial_patterns.iter().any(|p| stderr.contains(p))
+        || localized_eperm.is_some_and(|msg| !msg.is_empty() && stderr.contains(msg))
+}
+
+/// Detect sandbox denial from command output.
+///
+/// Returns true if the output suggests the sandbox blocked an operation.
+pub fn detect_denial(exit_code: i32, stderr: &str) -> bool {
+    let localized = super::localized_errno_message(libc::EPERM);
+    detect_denial_with_localized(exit_code, stderr, localized.as_deref())
 }
 
 #[cfg(test)]
@@ -1027,5 +1037,22 @@ mod existing_tests {
         assert!(detect_denial(1, "Sandbox: ls denied file-write*"));
         assert!(!detect_denial(0, "Operation not permitted"));
         assert!(!detect_denial(1, "File not found"));
+    }
+
+    #[test]
+    fn test_detect_denial_matches_localized_eperm() {
+        let localized = "Операция запрещена";
+        assert!(detect_denial_with_localized(
+            1,
+            &format!("rm: /protected: {localized}"),
+            Some(localized),
+        ));
+        assert!(!detect_denial_with_localized(0, localized, Some(localized),));
+        assert!(!detect_denial_with_localized(
+            1,
+            "File not found",
+            Some(localized),
+        ));
+        assert!(super::super::localized_errno_message(libc::EPERM).is_some());
     }
 }

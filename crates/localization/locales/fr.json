@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Impossible d'enregistrer la progression de l'accueil : {error}",
   "FeatureIntroFlagSaveFailed": "Impossible d'enregistrer le paramètre de l'astuce : {error}",
   "QueueFullNotice": "La file de suivi est pleine ({max} messages) ; votre message est revenu dans la zone de saisie.",
-  "ConfigLookupFailed": "Impossible de lire `{key}` : le chargement de la configuration a échoué ({error})"
+  "ConfigLookupFailed": "Impossible de lire `{key}` : le chargement de la configuration a échoué ({error})",
+  "CtxMenuNoSelectionToOpen": "Aucune sélection à ouvrir",
+  "CtxMenuSelectionCleared": "Sélection effacée",
+  "CtxMenuNoSelectionToClear": "Aucune sélection à effacer",
+  "CtxMenuNoDetailsForLine": "Aucun détail disponible pour cette ligne",
+  "CtxMenuExtensionUnlisted": "Cette extension ne figure plus dans la liste",
+  "CtxMenuCellHidden": "Cellule masquée",
+  "CtxMenuCellShown": "Cellule affichée",
+  "CtxMenuHiddenCellsRestored": "{count} cellule(s) masquée(s) restaurée(s)",
+  "CtxMenuNoSelectionToCopy": "Aucune sélection à copier"
 }

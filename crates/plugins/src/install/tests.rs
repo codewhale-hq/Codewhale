@@ -1194,6 +1194,66 @@ async fn remote_update_with_unchanged_archive_repairs_altered_install() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dsh_update_with_unchanged_package_repairs_altered_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins = tmp.path().join("plugins");
+    let pkg = write_dsh_base_package(
+        &tmp.path().join("dsh-repair"),
+        serde_json::json!({
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+        }),
+        "[]\n",
+    );
+    fs::create_dir_all(pkg.join("commands")).unwrap();
+    fs::write(pkg.join("commands/hello.md"), "hello v1\n").unwrap();
+    fs::write(
+        pkg.join("plugin.json"),
+        serde_json::json!({
+            "$schema": "https://agent-plugins.org/schemas/plugin.json",
+            "name": "dsh-repair",
+            "version": "1.0.0",
+            "extensions": {
+                "net.codewhale": {
+                    "commands": {"path": "commands"}
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let outcome = install(
+        PluginInstallSource::parse(pkg.to_str().unwrap()).unwrap(),
+        &plugins,
+        DEFAULT_MAX_SIZE_BYTES,
+        &allow_all(),
+        false,
+        &no_conflict(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, PluginInstallOutcome::Installed(_)));
+
+    let installed_cmd = plugins.join("dsh-repair/commands/hello.md");
+    fs::write(&installed_cmd, "tampered\n").unwrap();
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::Updated(_)
+    ));
+    assert_eq!(fs::read_to_string(&installed_cmd).unwrap(), "hello v1\n");
+    assert!(matches!(
+        update("dsh-repair", &plugins, DEFAULT_MAX_SIZE_BYTES, &allow_all())
+            .await
+            .unwrap(),
+        PluginUpdateResult::NoChange
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn marketplace_archive_selects_only_requested_bundle_and_updates_same_source() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins = tmp.path().join("plugins");

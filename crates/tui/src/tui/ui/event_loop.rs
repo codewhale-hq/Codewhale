@@ -1265,7 +1265,10 @@ pub async fn run_tui(
                 Ok(goal) => {
                     let saved_id = saved.metadata.id.clone();
                     match apply_loaded_session_with_goal(&mut app, config, saved, goal.as_ref()) {
-                        Ok(()) => {
+                        // A store cannot be adopted here: this runs before
+                        // `TaskManager::start`, so the binding the launch path
+                        // uses is read from the same metadata below (#6207).
+                        Ok(_) => {
                             lease.commit();
                             app.status_message = Some(format!(
                                 "Resumed session: {}",
@@ -1534,7 +1537,17 @@ pub async fn run_tui(
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
-    if let Err(error) = task_manager.shutdown_and_wait().await {
+    // Settle the store this host actually owns at exit. A session switch may
+    // have adopted another store, and shutting down the launch-time handle
+    // would leave the adopted one undrained — its queued work never settled
+    // and its process-owner lock released only by the process ending.
+    if let Some(current_tasks) = app
+        .runtime_services
+        .task_manager
+        .clone()
+        .or_else(|| Some(task_manager.clone()))
+        && let Err(error) = current_tasks.shutdown_and_wait().await
+    {
         tracing::error!(%error, "Task manager shutdown remains incomplete");
     }
 

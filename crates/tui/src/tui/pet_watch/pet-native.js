@@ -1201,9 +1201,17 @@ class PetLiveTape {
             throw error;
         }
         const previous = this.sequence;
-        this.sequence = packet.sequence;
-        if (previous === undefined || packet.sequence <= previous)
+        if (previous === undefined) {
+            this.sequence = packet.sequence;
             return;
+        }
+        if (packet.sequence === 0 && previous > 0) {
+            this.sequence = 0;
+            return;
+        }
+        if (packet.sequence <= previous)
+            return;
+        this.sequence = packet.sequence;
         return packet;
     }
 }

@@ -1430,6 +1430,25 @@ fn parse_responses_usage_derives_cache_miss_and_reasoning() {
 }
 
 #[test]
+fn parse_responses_usage_leaves_cache_miss_unset_without_input_total() {
+    let mut usage = json!({
+        "output_tokens": 7,
+        "input_tokens_details": { "cached_tokens": 3 }
+    });
+    let parsed = parse_responses_usage(&usage);
+    assert_eq!(parsed.input_tokens, 0);
+    assert_eq!(parsed.output_tokens, 7);
+    assert_eq!(parsed.prompt_cache_hit_tokens, Some(3));
+    assert_eq!(parsed.prompt_cache_miss_tokens, None);
+
+    usage["prompt_cache_miss_tokens"] = json!(0);
+    assert_eq!(
+        parse_responses_usage(&usage).prompt_cache_miss_tokens,
+        Some(0)
+    );
+}
+
+#[test]
 fn parse_responses_usage_saturates_u64_fields() {
     let parsed = parse_responses_usage(&json!({
         "input_tokens": u64::MAX,

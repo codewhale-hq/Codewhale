@@ -25,7 +25,12 @@ impl Default for SetupOperateFacts {
 }
 
 impl SetupOperateFacts {
-    pub(super) fn from_app_config(app: &App, config: &Config, provider_ready: bool) -> Self {
+    pub(super) fn from_app_config(
+        app: &App,
+        config: &Config,
+        provider_ready: bool,
+        roster: &codewhale_engine::fleet::roster::FleetRoster,
+    ) -> Self {
         let provider_identity = app.provider_identity_for_persistence();
         let identity = app
             .admitted_provider_identity()
@@ -78,11 +83,6 @@ impl SetupOperateFacts {
             )
         };
 
-        let roster = codewhale_engine::fleet::identity::load_effective_roster(
-            &config.fleet_config(),
-            &app.workspace,
-            Some(app.plugin_registry.as_ref()),
-        );
         let roster_members = roster.members().len();
         let origin_count = |origin| {
             roster

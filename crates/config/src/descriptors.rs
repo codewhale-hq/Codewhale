@@ -437,6 +437,22 @@ mod tests {
     }
 
     #[test]
+    fn atmorouter_is_a_descriptor_row() {
+        let row = provider_descriptor("atmorouter").expect("atmorouter");
+        assert_eq!(row.id, "atmorouter");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://atmorouter.dev/v1");
+        assert_eq!(row.api_key_env, "ATMOROUTER_API_KEY");
+        assert_eq!(row.default_model, "zai/glm-5.3");
+        assert_eq!(
+            provider_descriptor("atmo_router")
+                .as_ref()
+                .map(|row| row.id.as_str()),
+            Some("atmorouter")
+        );
+    }
+
+    #[test]
     fn opper_is_a_descriptor_row() {
         let row = provider_descriptor("opper").expect("opper");
         assert_eq!(row.id, "opper");
@@ -453,6 +469,23 @@ mod tests {
     }
 
     #[test]
+    fn trustedrouter_is_a_descriptor_row() {
+        let row = provider_descriptor("trustedrouter").expect("trustedrouter");
+        assert_eq!(row.id, "trustedrouter");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://api.trustedrouter.com/v1");
+        assert_eq!(row.api_key_env, "TRUSTEDROUTER_API_KEY");
+        assert_eq!(row.default_model, "deepseek/deepseek-v4-flash");
+        assert_eq!(row.discovery, DescriptorDiscovery::PublicModelsEndpoint);
+        assert_eq!(
+            provider_descriptor("trusted_router")
+                .map(|row| row.id)
+                .as_deref(),
+            Some("trustedrouter")
+        );
+    }
+
+    #[test]
     fn llmtr_is_a_descriptor_row() {
         let row = provider_descriptor("llmtr").expect("llmtr");
         assert_eq!(row.id, "llmtr");
@@ -460,6 +493,16 @@ mod tests {
         assert_eq!(row.base_url, "https://llmtr.com/v1");
         assert_eq!(row.api_key_env, "LLMTR_API_KEY");
         assert_eq!(row.default_model, "minimax/minimax-m3.1-flash");
+    }
+
+    #[test]
+    fn onomeo_is_a_descriptor_row() {
+        let row = provider_descriptor("onomeo").expect("onomeo");
+        assert_eq!(row.id, "onomeo");
+        assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
+        assert_eq!(row.base_url, "https://onomeo.com/v1");
+        assert_eq!(row.api_key_env, "ONOMEO_API_KEY");
+        assert_eq!(row.default_model, "deepseek-v4.1-flash");
     }
 
     #[test]
@@ -554,7 +597,7 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 18);
+        assert_eq!(bundled_provider_descriptors().len(), 21);
         let wafer = provider_descriptor("wafer").expect("wafer");
         assert_eq!(wafer.base_url, "https://pass.wafer.ai/v1");
         assert_eq!(wafer.default_model, "GLM-5.3");

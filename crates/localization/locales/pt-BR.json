@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Não foi possível salvar o progresso da integração: {error}",
   "FeatureIntroFlagSaveFailed": "Não foi possível salvar a configuração da dica de recurso: {error}",
   "QueueFullNotice": "A fila de acompanhamento está cheia ({max} mensagens); sua mensagem voltou para o editor.",
-  "ConfigLookupFailed": "Não foi possível ler `{key}`: a configuração não pôde ser carregada ({error})"
+  "ConfigLookupFailed": "Não foi possível ler `{key}`: a configuração não pôde ser carregada ({error})",
+  "CtxMenuNoSelectionToOpen": "Nenhuma seleção para abrir",
+  "CtxMenuSelectionCleared": "Seleção limpa",
+  "CtxMenuNoSelectionToClear": "Nenhuma seleção para limpar",
+  "CtxMenuNoDetailsForLine": "Nenhum detalhe disponível para essa linha",
+  "CtxMenuExtensionUnlisted": "Essa extensão não está mais listada",
+  "CtxMenuCellHidden": "Célula oculta",
+  "CtxMenuCellShown": "Célula exibida",
+  "CtxMenuHiddenCellsRestored": "{count} célula(s) oculta(s) restaurada(s)",
+  "CtxMenuNoSelectionToCopy": "Nenhuma seleção para copiar"
 }

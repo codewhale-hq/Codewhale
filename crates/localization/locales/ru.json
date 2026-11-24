@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Не удалось сохранить прогресс первоначальной настройки: {error}",
   "FeatureIntroFlagSaveFailed": "Не удалось сохранить настройку подсказки: {error}",
   "QueueFullNotice": "Очередь последующих сообщений заполнена ({max} сообщений); ваше сообщение возвращено в поле ввода.",
-  "ConfigLookupFailed": "Не удалось прочитать `{key}`: не удалось загрузить конфигурацию ({error})"
+  "ConfigLookupFailed": "Не удалось прочитать `{key}`: не удалось загрузить конфигурацию ({error})",
+  "CtxMenuNoSelectionToOpen": "Нет выделения для открытия",
+  "CtxMenuSelectionCleared": "Выделение снято",
+  "CtxMenuNoSelectionToClear": "Нет выделения для снятия",
+  "CtxMenuNoDetailsForLine": "Для этой строки нет подробностей",
+  "CtxMenuExtensionUnlisted": "Это расширение больше не в списке",
+  "CtxMenuCellHidden": "Ячейка скрыта",
+  "CtxMenuCellShown": "Ячейка показана",
+  "CtxMenuHiddenCellsRestored": "Восстановлено скрытых ячеек: {count}",
+  "CtxMenuNoSelectionToCopy": "Нет выделения для копирования"
 }

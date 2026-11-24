@@ -394,6 +394,7 @@ const MAX_REGISTRY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REGISTRY_PAGES: usize = 500;
 const MAX_REGISTRY_ENTRIES: usize = 50_000;
 const MAX_REGISTRY_CURSOR_BYTES: usize = 1024;
+const MAX_REGISTRY_PAGE_BYTES: usize = 8 * 1024 * 1024;
 
 fn read_cache(path: &Path) -> anyhow::Result<Option<McpRegistryIndex>> {
     let Some(data) = crate::mcp::read_bounded_mcp_config_file(path, MAX_REGISTRY_CACHE_BYTES)?
@@ -417,7 +418,19 @@ async fn read_cache_or_rebuild(path: &Path) -> Option<McpRegistryIndex> {
 }
 
 fn is_retired(entry: &RegistryServerEntry) -> bool {
-    !matches!(entry.lifecycle_status(), None | Some("active"))
+    match entry.lifecycle_status() {
+        None | Some("active") => false,
+        Some("deprecated" | "deleted") => true,
+        Some(other) => {
+            tracing::warn!(
+                target: "mcp",
+                server = %entry.server.name,
+                status = %other,
+                "retiring MCP Registry server with unrecognized lifecycle status"
+            );
+            true
+        }
+    }
 }
 
 /// True when the snapshot is fresh enough to serve without a network
@@ -733,6 +746,40 @@ fn spawn_background_sync(path: &Path) -> bool {
     true
 }
 
+struct RegistryFetchLimits {
+    max_pages: usize,
+    max_entries: usize,
+    max_page_bytes: usize,
+    page_pacing: std::time::Duration,
+}
+
+async fn read_bounded_response_bytes(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ToolError> {
+    if let Some(len) = resp.content_length()
+        && len > max_bytes as u64
+    {
+        return Err(ToolError::execution_failed(format!(
+            "Registry response body exceeds {max_bytes} bytes"
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Registry body: {e}")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ToolError::execution_failed(format!(
+                "Registry response body exceeds {max_bytes} bytes"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 /// Paginate the listing; with `updated_since`, only servers updated after
 /// it. The filter MUST be repeated on every page — the cursor alone does
 /// not carry it (verified against the live API). Never writes anything.
@@ -740,11 +787,31 @@ async fn fetch_registry_entries(
     client: &reqwest::Client,
     updated_since: Option<DateTime<Utc>>,
 ) -> Result<Vec<RegistryServerEntry>, ToolError> {
+    fetch_registry_entries_from(
+        client,
+        REGISTRY_API,
+        updated_since,
+        RegistryFetchLimits {
+            max_pages: MAX_REGISTRY_PAGES,
+            max_entries: MAX_REGISTRY_ENTRIES,
+            max_page_bytes: MAX_REGISTRY_PAGE_BYTES,
+            page_pacing: std::time::Duration::from_millis(PAGE_PACING_MS),
+        },
+    )
+    .await
+}
+
+async fn fetch_registry_entries_from(
+    client: &reqwest::Client,
+    base_url: &str,
+    updated_since: Option<DateTime<Utc>>,
+    limits: RegistryFetchLimits,
+) -> Result<Vec<RegistryServerEntry>, ToolError> {
     let mut all_entries: Vec<RegistryServerEntry> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
-    for _page in 0..MAX_REGISTRY_PAGES {
-        let mut url = format!("{REGISTRY_API}?version=latest&limit={PER_PAGE}");
+    for _page in 0..limits.max_pages {
+        let mut url = format!("{base_url}?version=latest&limit={PER_PAGE}");
         if let Some(since) = updated_since {
             url.push_str(&format!(
                 "&updated_since={}",
@@ -760,16 +827,14 @@ async fn fetch_registry_entries(
             .await
             .and_then(reqwest::Response::error_for_status)
             .map_err(|e| ToolError::execution_failed(format!("Registry API: {e}")))?;
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("Registry body: {e}")))?;
-        let body: RegistryResponse = serde_json::from_str(&text)
+        let bytes = read_bounded_response_bytes(resp, limits.max_page_bytes).await?;
+        let body: RegistryResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ToolError::execution_failed(format!("Registry JSON parse: {e}")))?;
         all_entries.extend(body.servers);
-        if all_entries.len() > MAX_REGISTRY_ENTRIES {
+        if all_entries.len() > limits.max_entries {
             return Err(ToolError::execution_failed(format!(
-                "Registry listing exceeds {MAX_REGISTRY_ENTRIES} entries"
+                "Registry listing exceeds {} entries",
+                limits.max_entries
             )));
         }
         cursor = body.metadata.and_then(|m| m.next_cursor);
@@ -781,12 +846,13 @@ async fn fetch_registry_entries(
                 "Registry pagination returned an oversized or repeated cursor",
             ));
         }
-        // Pace the next request so a burst of page fetches does not stall
-        // the upstream (and, with many clients, each other).
-        tokio::time::sleep(std::time::Duration::from_millis(PAGE_PACING_MS)).await;
+        if !limits.page_pacing.is_zero() {
+            tokio::time::sleep(limits.page_pacing).await;
+        }
     }
     Err(ToolError::execution_failed(format!(
-        "Registry listing exceeds {MAX_REGISTRY_PAGES} pages"
+        "Registry listing exceeds {} pages",
+        limits.max_pages
     )))
 }
 
@@ -1952,5 +2018,236 @@ mod tests {
         eprintln!("--- catalog payload (what the model sees) ---");
         eprintln!("{}", result.content);
         eprintln!("=== end ===\n");
+    }
+
+    #[test]
+    fn unknown_lifecycle_statuses_are_retired_in_full_and_incremental_sync() {
+        let launchable = |name: &str, status: Option<&str>| {
+            parse_server_entry(
+                json!({
+                    "name": name,
+                    "description": "d",
+                    "packages": [{
+                        "registryType": "npm",
+                        "identifier": "@test/pkg",
+                        "version": "1.0.0",
+                        "runtimeHint": "npx",
+                        "transport": "stdio",
+                        "packageArguments": [],
+                        "runtimeArguments": [],
+                        "environmentVariables": null
+                    }]
+                }),
+                status,
+            )
+        };
+
+        let full = viable_entries(vec![
+            launchable("a/active", Some("active")),
+            launchable("b/upper-deleted", Some("DELETED")),
+            launchable("c/retired", Some("retired")),
+            launchable("d/trailing-space", Some("active ")),
+        ]);
+        let full_names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(full_names, ["a/active"]);
+
+        let base = vec![
+            cache_entry("a/keep", "old"),
+            cache_entry("b/upper-deleted", "old"),
+            cache_entry("c/retired", "old"),
+        ];
+        let merged = merge_incremental_entries(
+            &base,
+            vec![
+                launchable("b/upper-deleted", Some("DELETED")),
+                launchable("c/retired", Some("retired")),
+            ],
+        );
+        let merged_names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(merged_names, ["a/keep"]);
+    }
+
+    #[test]
+    fn read_cache_distinguishes_missing_corrupt_and_oversized_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("missing.json");
+        assert!(read_cache(&missing).expect("missing is Ok(None)").is_none());
+
+        let corrupt = tmp.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{not valid json").expect("write corrupt cache");
+        let err = read_cache(&corrupt)
+            .err()
+            .expect("corrupt cache must fail, not report missing");
+        assert!(
+            err.to_string().contains("malformed MCP Registry cache"),
+            "unexpected error: {err}"
+        );
+
+        let oversized = tmp.path().join("oversized.json");
+        std::fs::write(&oversized, "x".repeat(256)).expect("write oversized file");
+        let size_err = crate::mcp::read_bounded_mcp_config_file(&oversized, 64)
+            .expect_err("oversized file must be rejected");
+        assert!(
+            size_err.to_string().contains("exceeds"),
+            "unexpected size error: {size_err}"
+        );
+    }
+
+    async fn spawn_mock_registry(
+        raw_replies: Vec<String>,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock registry");
+        let addr = listener.local_addr().expect("mock registry addr");
+        let handle = tokio::spawn(async move {
+            let mut served = 0usize;
+            for reply in raw_replies {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut req_buf = [0u8; 4096];
+                let _ = stream.read(&mut req_buf).await;
+                let _ = stream.write_all(reply.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                served += 1;
+            }
+            served
+        });
+        (format!("http://{addr}/v0.1/servers"), handle)
+    }
+
+    fn http_json_reply(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn test_registry_client() -> reqwest::Client {
+        crate::platform_client_builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("test client")
+    }
+
+    #[tokio::test]
+    async fn fetch_registry_entries_rejects_repeated_cursor() {
+        let page =
+            json!({ "servers": [], "metadata": { "nextCursor": "same-cursor" } }).to_string();
+        let (url, server) =
+            spawn_mock_registry(vec![http_json_reply(&page), http_json_reply(&page)]).await;
+        let err = fetch_registry_entries_from(
+            &test_registry_client(),
+            &url,
+            None,
+            RegistryFetchLimits {
+                max_pages: 10,
+                max_entries: 100,
+                max_page_bytes: 64 * 1024,
+                page_pacing: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .err()
+        .expect("repeated cursor must fail");
+        assert!(err.to_string().contains("repeated cursor"), "{err}");
+        assert_eq!(server.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_registry_entries_rejects_oversized_cursor() {
+        let huge_cursor = "a".repeat(MAX_REGISTRY_CURSOR_BYTES + 1);
+        let page = json!({ "servers": [], "metadata": { "nextCursor": huge_cursor } }).to_string();
+        let (url, server) = spawn_mock_registry(vec![http_json_reply(&page)]).await;
+        let err = fetch_registry_entries_from(
+            &test_registry_client(),
+            &url,
+            None,
+            RegistryFetchLimits {
+                max_pages: 10,
+                max_entries: 100,
+                max_page_bytes: 64 * 1024,
+                page_pacing: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .err()
+        .expect("oversized cursor must fail");
+        assert!(err.to_string().contains("oversized"), "{err}");
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_registry_entries_enforces_page_limit() {
+        let p1 = json!({ "servers": [], "metadata": { "nextCursor": "c1" } }).to_string();
+        let p2 = json!({ "servers": [], "metadata": { "nextCursor": "c2" } }).to_string();
+        let (url, server) =
+            spawn_mock_registry(vec![http_json_reply(&p1), http_json_reply(&p2)]).await;
+        let err = fetch_registry_entries_from(
+            &test_registry_client(),
+            &url,
+            None,
+            RegistryFetchLimits {
+                max_pages: 2,
+                max_entries: 100,
+                max_page_bytes: 64 * 1024,
+                page_pacing: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .err()
+        .expect("exceeding max_pages must fail");
+        assert!(err.to_string().contains("exceeds 2 pages"), "{err}");
+        assert_eq!(server.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_registry_entries_rejects_oversized_response_body() {
+        let oversized_body = format!("{{\"servers\":[],\"pad\":\"{}\"}}", "x".repeat(512));
+
+        // 1. Declared Content-Length over the cap.
+        let (url, server) = spawn_mock_registry(vec![http_json_reply(&oversized_body)]).await;
+        let err = fetch_registry_entries_from(
+            &test_registry_client(),
+            &url,
+            None,
+            RegistryFetchLimits {
+                max_pages: 5,
+                max_entries: 100,
+                max_page_bytes: 128,
+                page_pacing: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .err()
+        .expect("declared oversized body must be refused");
+        assert!(err.to_string().contains("exceeds 128 bytes"), "{err}");
+        assert_eq!(server.await.unwrap(), 1);
+
+        // 2. Streaming body without Content-Length over the cap.
+        let streaming_reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{oversized_body}"
+        );
+        let (url, server) = spawn_mock_registry(vec![streaming_reply]).await;
+        let err = fetch_registry_entries_from(
+            &test_registry_client(),
+            &url,
+            None,
+            RegistryFetchLimits {
+                max_pages: 5,
+                max_entries: 100,
+                max_page_bytes: 128,
+                page_pacing: std::time::Duration::ZERO,
+            },
+        )
+        .await
+        .err()
+        .expect("streaming oversized body must be refused");
+        assert!(err.to_string().contains("exceeds 128 bytes"), "{err}");
+        assert_eq!(server.await.unwrap(), 1);
     }
 }

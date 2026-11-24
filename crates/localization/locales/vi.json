@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Không thể lưu tiến trình giới thiệu: {error}",
   "FeatureIntroFlagSaveFailed": "Không thể lưu cài đặt mẹo tính năng: {error}",
   "QueueFullNotice": "Hàng đợi tin nhắn tiếp theo đã đầy ({max} tin); tin nhắn của bạn đã được đưa lại vào ô soạn.",
-  "ConfigLookupFailed": "Không thể đọc `{key}`: không tải được cấu hình ({error})"
+  "ConfigLookupFailed": "Không thể đọc `{key}`: không tải được cấu hình ({error})",
+  "CtxMenuNoSelectionToOpen": "Không có vùng chọn để mở",
+  "CtxMenuSelectionCleared": "Đã xóa vùng chọn",
+  "CtxMenuNoSelectionToClear": "Không có vùng chọn để xóa",
+  "CtxMenuNoDetailsForLine": "Không có chi tiết cho dòng đó",
+  "CtxMenuExtensionUnlisted": "Tiện ích mở rộng đó không còn trong danh sách",
+  "CtxMenuCellHidden": "Đã ẩn ô",
+  "CtxMenuCellShown": "Đã hiện ô",
+  "CtxMenuHiddenCellsRestored": "Đã khôi phục {count} ô bị ẩn",
+  "CtxMenuNoSelectionToCopy": "Không có vùng chọn để sao chép"
 }

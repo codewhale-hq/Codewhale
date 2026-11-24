@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "No se pudo guardar el progreso de la configuración inicial: {error}",
   "FeatureIntroFlagSaveFailed": "No se pudo guardar la configuración del consejo de funciones: {error}",
   "QueueFullNotice": "La cola de seguimiento está llena ({max} mensajes); tu mensaje volvió al editor.",
-  "ConfigLookupFailed": "No se pudo leer `{key}`: la configuración no se pudo cargar ({error})"
+  "ConfigLookupFailed": "No se pudo leer `{key}`: la configuración no se pudo cargar ({error})",
+  "CtxMenuNoSelectionToOpen": "No hay selección para abrir",
+  "CtxMenuSelectionCleared": "Selección limpiada",
+  "CtxMenuNoSelectionToClear": "No hay selección para limpiar",
+  "CtxMenuNoDetailsForLine": "No hay detalles disponibles para esa línea",
+  "CtxMenuExtensionUnlisted": "Esa extensión ya no figura en la lista",
+  "CtxMenuCellHidden": "Celda oculta",
+  "CtxMenuCellShown": "Celda visible",
+  "CtxMenuHiddenCellsRestored": "{count} celda(s) oculta(s) restaurada(s)",
+  "CtxMenuNoSelectionToCopy": "No hay selección para copiar"
 }

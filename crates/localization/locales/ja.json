@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "オンボーディングの進行状況を保存できませんでした: {error}",
   "FeatureIntroFlagSaveFailed": "機能ヒントの設定を保存できませんでした: {error}",
   "QueueFullNotice": "フォローアップのキューが満杯です（{max} 件）。メッセージは入力欄に戻されました。",
-  "ConfigLookupFailed": "`{key}` を読み取れませんでした: 設定の読み込みに失敗しました ({error})"
+  "ConfigLookupFailed": "`{key}` を読み取れませんでした: 設定の読み込みに失敗しました ({error})",
+  "CtxMenuNoSelectionToOpen": "開く選択がありません",
+  "CtxMenuSelectionCleared": "選択を解除しました",
+  "CtxMenuNoSelectionToClear": "解除する選択がありません",
+  "CtxMenuNoDetailsForLine": "その行の詳細は利用できません",
+  "CtxMenuExtensionUnlisted": "その拡張機能は一覧にもうありません",
+  "CtxMenuCellHidden": "セルを隠しました",
+  "CtxMenuCellShown": "セルを表示しました",
+  "CtxMenuHiddenCellsRestored": "隠れていた {count} 件のセルを復元しました",
+  "CtxMenuNoSelectionToCopy": "コピーする選択がありません"
 }

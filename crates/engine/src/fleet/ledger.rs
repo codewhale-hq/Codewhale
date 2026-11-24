@@ -782,6 +782,7 @@ impl FleetLedger {
     /// observed by the verifier are still current. A concurrent restart changes
     /// both the attempt counter and lifecycle sequence, so late verification
     /// can never fail the replacement attempt.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn mark_task_terminal_status_if_unchanged(
         &self,
@@ -1528,6 +1529,7 @@ impl FleetLedger {
         })
     }
 
+    #[cfg(test)]
     pub fn record_alert(
         &self,
         run_id: &FleetRunId,
@@ -1765,6 +1767,7 @@ impl FleetLedger {
 
     /// Claim the next available inbox task for `worker_id`. Returns the
     /// enqueued entry and appends a lease record.
+    #[cfg(test)]
     pub fn claim_next(
         &self,
         worker_id: &str,

@@ -2856,5 +2856,14 @@
   "OnboardingMarkFailed": "Einrichtungsfortschritt konnte nicht gespeichert werden: {error}",
   "FeatureIntroFlagSaveFailed": "Einstellung für den Funktionstipp konnte nicht gespeichert werden: {error}",
   "QueueFullNotice": "Die Warteschlange für Folgenachrichten ist voll ({max} Nachrichten); deine Nachricht steht wieder im Eingabefeld.",
-  "ConfigLookupFailed": "`{key}` konnte nicht gelesen werden: Die Konfiguration konnte nicht geladen werden ({error})"
+  "ConfigLookupFailed": "`{key}` konnte nicht gelesen werden: Die Konfiguration konnte nicht geladen werden ({error})",
+  "CtxMenuNoSelectionToOpen": "Keine Auswahl zum Öffnen",
+  "CtxMenuSelectionCleared": "Auswahl aufgehoben",
+  "CtxMenuNoSelectionToClear": "Keine Auswahl zum Aufheben",
+  "CtxMenuNoDetailsForLine": "Für diese Zeile sind keine Details verfügbar",
+  "CtxMenuExtensionUnlisted": "Diese Erweiterung ist nicht mehr aufgeführt",
+  "CtxMenuCellHidden": "Zelle ausgeblendet",
+  "CtxMenuCellShown": "Zelle eingeblendet",
+  "CtxMenuHiddenCellsRestored": "{count} ausgeblendete Zelle(n) wiederhergestellt",
+  "CtxMenuNoSelectionToCopy": "Keine Auswahl zum Kopieren"
 }
