@@ -57,11 +57,13 @@ const PLUGIN_UI_SEATS: [&str; 6] = [
     "command.row",
 ];
 const DSH_BOOTSTRAP_ENTRY: &str = "__codewhale_dsh_bootstrap.js";
-const DSH_FRAME_MODULES: [&str; 4] = [
+const DSH_FRAME_MODULES: [&str; 6] = [
     "react",
     "react-dom",
     "react-dom/client",
     "react/jsx-runtime",
+    "@deepseek-ai/dsh-client-store",
+    "@deepseek-ai/dsh-client-ui-primitives",
 ];
 const DSH_ROUTE_METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -3037,6 +3039,33 @@ exports.apply = function () {
         assert_eq!(review.url, None);
         assert_eq!(review.command, stdio.command);
         assert_eq!(review.args, stdio.args);
+    }
+
+    #[test]
+    fn dsh_closure_admits_client_store_and_ui_primitives_but_not_unknown_hosts() {
+        let conversion = |hosts: &[&str]| {
+            serde_json::json!({"client_closures": [{
+                "root": "", "entry": "client.js", "files": {"client.js": "hash"},
+                "host_provided": hosts,
+                "imports": {"client.js": {}}
+            }]})
+        };
+        let verified = vec![(
+            "client.js".to_string(),
+            b"exports.apply = function () { return [require('@deepseek-ai/dsh-client-store'), require('@deepseek-ai/dsh-client-ui-primitives')]; };".to_vec(),
+        )];
+        let admitted = dsh_client_closure(&conversion(&[
+            "react",
+            "@deepseek-ai/dsh-client-store",
+            "@deepseek-ai/dsh-client-ui-primitives",
+        ]))
+        .unwrap();
+        assert_eq!(dsh_closure_unsupported(&admitted, &verified), None);
+        let refused = dsh_client_closure(&conversion(&["@deepseek-ai/dsh-client-api"])).unwrap();
+        assert!(
+            dsh_closure_unsupported(&refused, &verified)
+                .is_some_and(|reason| reason.contains("@deepseek-ai/dsh-client-api"))
+        );
     }
 
     #[test]
