@@ -6123,11 +6123,24 @@ impl RuntimeThreadManager {
     pub(super) fn take_approval_grants(&self, thread_id: &str) -> Vec<RuntimeApprovalGrant> {
         crate::extension_host::end_remote_session(thread_id);
         self.auto_review_blocks.lock().remove(thread_id);
-        self.grants
+        match self
+            .grants
             .revoke_thread(thread_id, "runtime", "thread archived or deleted")
-            .iter()
-            .map(RuntimeApprovalGrant::from_grant)
-            .collect()
+        {
+            Ok(grants) => grants
+                .iter()
+                .map(RuntimeApprovalGrant::from_grant)
+                .collect(),
+            Err(error) => {
+                tracing::error!(
+                    target: "approval",
+                    thread_id,
+                    %error,
+                    "failed to persist thread grant revocation; grant store is now degraded"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Revoke one session grant. Returns `false` when the thread holds no
@@ -6141,7 +6154,8 @@ impl RuntimeThreadManager {
             Some(&scope),
             "authenticated_client",
             "revoked by an authenticated client",
-        ) else {
+        )?
+        else {
             return Ok(false);
         };
         let revoked = RuntimeApprovalGrant::from_grant(&revoked);

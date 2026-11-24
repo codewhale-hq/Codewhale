@@ -957,7 +957,6 @@ impl Engine {
                     dispatch,
                     duration_ms,
                     error_kind = kind,
-                    error = %err,
                     "tool.exec.end",
                 );
             }
