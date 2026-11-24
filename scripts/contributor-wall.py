@@ -142,7 +142,7 @@ def refresh() -> None:
     display.update({re.sub(r"[^a-z0-9]", "", (u.get("name") or "").lower()): u["login"]
                     for u in known.values() if u.get("name") and u["login"] in people})
     aliases = json.loads(DATA.read_text()).get("unlinked_aliases", {}) if DATA.exists() else {}
-    unlinked = set()
+    unlinked = {login for login, why in sources.items() if login.lower() not in known and why & {"commit", "co-author", "merged pull request"}}
     for n in names:
         key = re.sub(r"[^a-z0-9]", "", n.lower())
         if key and key in display:

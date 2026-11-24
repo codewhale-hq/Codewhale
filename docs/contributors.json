@@ -1,6 +1,6 @@
 {
  "generated_by": "scripts/contributor-wall.py refresh",
- "github_contributor_list": 229,
+ "github_contributor_list": 230,
  "people": [
   {
    "login": "0gl20shk0sbt36",
@@ -3066,6 +3066,7 @@
   {
    "login": "WTFitsmemyself",
    "credited_for": [
+    "commit",
     "merged pull request"
    ]
   },
@@ -3431,6 +3432,7 @@
   "bluth",
   "chatman-media",
   "codgo",
+  "dajiaohuang",
   "douglarek",
   "kurise",
   "LeHaiDang",
@@ -3438,6 +3440,7 @@
   "liuhq",
   "liushiao",
   "liuyang",
+  "lucaszhu-hue",
   "markchang",
   "ningjingkun",
   "ornn.ban",
