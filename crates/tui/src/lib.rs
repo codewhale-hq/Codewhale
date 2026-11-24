@@ -193,14 +193,6 @@ enum Commands {
     },
     /// Create default AGENTS.md in current directory
     Init,
-    /// Sign in to your Codewhale account (use the `codewhale` CLI).
-    Login {
-        /// Legacy provider-key flag: rejected with a redirect to `auth set`.
-        #[arg(long, hide = true)]
-        api_key: Option<String>,
-    },
-    /// Remove the saved API key
-    Logout,
     /// Manage provider authentication flows.
     Auth(TuiAuthArgs),
     /// List cached models, or update catalogs for configured providers
@@ -2985,8 +2977,6 @@ async fn run_async_main_dispatch(
                 format,
             ),
             Commands::Init => init_project(),
-            Commands::Login { api_key } => run_login(api_key),
-            Commands::Logout => run_logout(),
             Commands::Auth(args) => match args.command {
                 TuiAuthCommand::XaiDevice => run_xai_device_auth(cli.config.as_deref()).await,
                 TuiAuthCommand::Chatgpt => run_chatgpt_pkce_auth(cli.config.as_deref()).await,
@@ -11352,27 +11342,6 @@ fn apply_saved_reasoning_preference(
     };
     config.reasoning_effort = Some(reasoning_effort.clone());
     config.reasoning_effort_inferred_from_legacy_alias = false;
-}
-
-fn run_login(api_key: Option<String>) -> Result<()> {
-    if api_key.is_some() {
-        bail!(
-            "`login --api-key` is not account sign-in. \
-             Use `codewhale login` for the Codewhale account, \
-             or `codewhale auth set --provider <id>` for a provider key."
-        );
-    }
-    bail!(
-        "This binary's `login` command does not store provider keys. \
-         Use the `codewhale` CLI: `codewhale login` for the Codewhale account device flow, \
-         or `codewhale auth set --provider <id>` for a provider key."
-    );
-}
-
-fn run_logout() -> Result<()> {
-    config::clear_api_key()?;
-    println!("Cleared saved API key.");
-    Ok(())
 }
 
 async fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MCP stdio shutdown kills the process group before reaping a timed-out leader:** when a stdio MCP server ignores `SIGTERM` past the shutdown grace period, `process_broker` now signals its `ProcessTree` before reaping the leader child so descendants are terminated while the process group ID is still pinned. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX). (Refs #6558)
 - **`/rlm` now reaches the discoverable `rlm` tool:** `/rlm` no longer tells the model to emit ```` ```repl ```` fences or forbid `rlm` actions, and the canonical `rlm` tool (`open`, `eval`, `configure`, `close`, `session_objects`) is discoverable via `tool_search` while legacy `rlm_*` aliases stay hidden. (CW-8360)
+- **Removed duplicate TUI `login` and `logout` subcommands reachable through `codewhale run`:** `codewhale run logout` no longer clears saved provider API keys and `codewhale run login` is removed; use `codewhale login`, `codewhale logout`, and `codewhale auth ...` instead. (CW-8360)
 
 ## [0.10.4] - 2026-11-23
 
