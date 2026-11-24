@@ -286,6 +286,10 @@
     "path_canonicalize": 4,
     "std_fs": 1
   },
+  "crates/engine/src/tools/workflow/verified_candidate/mod.rs": {
+    "path_canonicalize": 5,
+    "thread_sleep": 1
+  },
   "crates/engine/src/vision/tools.rs": {
     "path_canonicalize": 2
   },
