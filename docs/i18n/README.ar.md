@@ -1,23 +1,21 @@
-<!-- source: README.md sha256:8f9ce64ce19c -->
+<!-- source: README.md sha256:5da2c4c9d5f9 -->
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../brand/mark-reversed.svg">
-  <img src="../../brand/mark-mono.svg" alt="Codewhale" width="72" height="72">
+  <source media="(prefers-color-scheme: dark)" srcset="../../brand/wordmark-inverted.svg">
+  <img src="../../brand/wordmark.svg" alt="Codewhale" width="320">
 </picture>
 
-<h1>يمكن أن يكون النموذج ملكًا لأي أحد. أما الوكيل فينبغي أن يكون ملكًا لك.</h1>
-
-Codewhale وكيل برمجة مفتوح المصدر يعمل في الطرفية لديك، ومكتوب بلغة Rust. يعمل مع أي نموذج، ويستطيع توزيع مهمة واحدة على عدة وكلاء، وكل سطر فيه متاح لك لتقرأه.
+**وكيل برمجة مفتوح المصدر بلغة Rust لطرفيتك. أي نموذج، أساطيل متعددة الوكلاء، عزل على مستوى نظام التشغيل، وإيصالات قابلة للتحقق.**
 
 ```bash
 curl -fsSL https://codewhale.net/install.sh | sh
 ```
 
-يثبّت هذا الأمر أحدث إصدار على macOS أو Linux، ولا يحتاج إلى حساب. طرق التثبيت على [Windows وnpm وCargo](#التثبيت) في الأسفل.
-
 [![Latest release](https://img.shields.io/github/v/release/codewhale-hq/Codewhale?label=release)](https://github.com/codewhale-hq/Codewhale/releases/latest)
 [![CI](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml/badge.svg)](https://github.com/codewhale-hq/Codewhale/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
+[![npm](https://img.shields.io/npm/v/codewhale?label=npm)](https://www.npmjs.com/package/codewhale)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](../../LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/37gfS3ksug)
 
@@ -25,17 +23,15 @@ curl -fsSL https://codewhale.net/install.sh | sh
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Tiếng Việt](README.vi.md) · [Bahasa Indonesia](README.id.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [Русский](README.ru.md) · [Українська](README.uk.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [繁體中文](README.zh-TW.md) · [हिन्दी](README.hi.md) · [Türkçe](README.tr.md) · [Italiano](README.it.md) · [Polski](README.pl.md) · [Català](README.ca.md)
 
-<sub>هذه الترجمة مسودة آلية ولم يراجعها بعد متحدث أصلي.</sub>
+<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale v0.10.4 في الطرفية بعد مهمة حقيقية على Ollama المحلي (qwen3:4b): عدّل ملف ls.py، وانتظر الموافقة قبل تشغيل python3 -m unittest -v test_ls.py، وشغّل اختبارين ناجحين ثم عرض النتيجة.">
 
-<img src="../../web/public/codewhale-tui-latest.png" width="760" alt="Codewhale في الطرفية بعد مهمة حقيقية على deepseek-flash. شغّل python3 -m unittest -v test_ls.py فنجح اختباران، ويذكر أنه أضاف الخيار --json إلى ls.py. يعرض سطر الحالة accept edits و deepseek-flash.">
-
-<sub>جلسة حقيقية على إصدار تطوير من 0.10.3: كتب deepseek-flash التعديل عبر واجهة DeepSeek البرمجية، وسمحتَ بتشغيل الاختبارات مرة واحدة.</sub>
+<sub>جلسة حقيقية على الإصدار المنشور Codewhale v0.10.4 (48669ad108fa) باستخدام Ollama المحلي (qwen3:4b) في وضع Accept Edits.</sub>
 
 </div>
 
 ## التثبيت
 
-يضع الأمر أعلاه `codewhale` الذي جرى التحقق من مجموعه الاختباري واسمه المختصر `codew` في `~/.local/bin`. إذا قالت الصدفة بعد ذلك `command not found`، فاتبع ملاحظة PATH التي يطبعها المثبّت ([التفاصيل](../INSTALL.md#put-it-on-your-path)). يحدّثه الأمر `codewhale update`.
+يضع سكربت التثبيت أعلاه الملف التنفيذي `codewhale` المتحقق من بصمته والاختصار `codew` في `~/.local/bin` على macOS وLinux. إذا أبلغت الصدفة عن `command not found`، فأضف `~/.local/bin` إلى `PATH` ([التفاصيل](../INSTALL.md#put-it-on-your-path)). وللترقية في المكان نفسه شغّل `codewhale update`.
 
 ```bash
 winget install --id HunterBown.CodeWhale --exact --source winget  # Windows x64
@@ -43,121 +39,76 @@ npm install -g codewhale                                          # wraps the sa
 cargo install codewhale-cli --locked                              # builds from source; can trail GitHub Releases
 ```
 
-تتوفر ملفات ثنائية جاهزة لأنظمة Linux وmacOS وWindows على x64 وarm64. تجد Scoop وNix وHomebrew على Linux وAndroid وTermux (معاينة) والتنزيل اليدوي في [دليل التثبيت](../INSTALL.md)، والحاويات في [Docker](../DOCKER.md). استخدم طريقة تثبيت واحدة لكل جهاز؛ وإلا ستوجد نسختان في `PATH` وتعمل التي تُعثر عليها أولًا.
+تتوفر ملفات تنفيذية جاهزة لأنظمة Linux وmacOS وWindows (معماريتي x64 وarm64). تجد طرق Scoop وNix وHomebrew على Linux وAndroid/Termux (معاينة) والتنزيل اليدوي في [docs/INSTALL.md](../INSTALL.md)، وصور الحاويات في [docs/DOCKER.md](../DOCKER.md). استخدم طريقة تثبيت واحدة لكل جهاز حتى لا يحجب ملفان تنفيذيان بعضهما في `PATH`.
 
 ## البدء السريع
 
-1. احفظ عملك بـ commit أو stash، ثم شغّل `codewhale` من جذر مستودع git. افتراضيًا يطبّق تعديلات الملفات في المستودع دون أن يسأل، ويسأل قبل كل أمر shell لا يقتصر على القراءة.
-2. شغّل `/provider` (أو اضغط `F3`)، واختر مزوّدًا، والصق مفتاح API الخاص به، واختر نموذجًا. المزوّد الافتراضي هو DeepSeek. عند أول تشغيل دون مفتاح، يسألك Codewhale عن مزوّد حين ترسل رسالتك الأولى، ويقترح نموذجًا محليًا إذا استجاب خادم Ollama محلي.
-3. اكتب مهمة:
+1. احفظ عملك عبر commit أو stash، ثم شغّل `codewhale` من جذر مستودع git.
+2. شغّل `/provider` (أو اضغط `F3`) لاختيار مزوّد، ولصق مفتاح API، واختيار نموذج. DeepSeek هو الافتراضي؛ وإذا لم يكن هناك مفتاح مُعَدّ وكان خادم Ollama محلي يستجيب، فسيعرض Codewhale نماذجه عند أول رسالة لك.
+3. أعطه مهمة:
 
 ```text
 Fix the failing tests and explain what changed.
 ```
 
-تعمل أوامر القراءة فقط فورًا. أما أي أمر آخر في الصدفة فيسأل عنه Codewhale أولًا: `y` يشغّله مرة واحدة، و`a` يسمح بالأوامر المشابهة طوال بقية المحادثة، و`n` يرفضه. يتراجع `/undo` عن طلبك الأخير وتغييرات ملفاته، ويعرض `/help` الأوامر والمفاتيح.
+تعمل أوامر القراءة فقط فورًا. أما أوامر الصدفة التي تُحدث تغييرات فتطلب الموافقة: `y` للتشغيل مرة واحدة، و`a` للسماح بالأوامر المطابقة لبقية الجلسة، و`n` للرفض. شغّل `/undo` للتراجع عن آخر دورة وتعديلات ملفاتها، أو `/help` لعرض الأوامر واختصارات المفاتيح.
 
-في السكربتات وCI، يشغّل `codewhale exec` مهمة واحدة دون الواجهة. اقرأ [التشغيل دون واجهة](../INSTALL.md#headless-scripts-ci) قبل أن تمنحه الأدوات عبر `--auto`، لأن `--auto` يستخدم Full Access ما لم تضف بيئة معزولة.
+## القدرات
 
-## ما الذي يفعله
+- **أكثر من 50 مزوّدًا مدمجًا والنماذج المحلية:** Anthropic وOpenAI وDeepSeek (`deepseek-flash` / V4.1 Flash افتراضيًا؛ [التفاصيل](../PROVIDERS.md#deepseek-v41-flash)) وGoogle وMistral وMoonshot وOpenRouter وxAI، وأي نقطة نهاية متوافقة مع OpenAI، وبيئات التشغيل المحلية عبر Ollama أو vLLM أو SGLang. بدّل النماذج أثناء الجلسة عبر `/model`، ووجّه كل دورة عبر `/model auto` (`/router`)، وافحص زمن الاستجابة والتكلفة عبر `/turn inspect`. راجع [المزوّدون](../PROVIDERS.md).
+- **الإيصالات والتراجع:** يسجّل `/receipts` (أو `codewhale receipts --last` بعد الخروج) الملفات المعدّلة والأوامر واستدعاءات الويب/MCP والوكلاء الفرعيين والموافقات والإخفاقات. يتراجع `/undo` عن آخر دورة في خطوة واحدة، بينما يعيد `/restore` مساحة العمل إلى لقطة سابقة (يتطلب `/trust on` أو Full Access). راجع [الإيصالات](../RECEIPTS.md).
+- **الوكلاء الفرعيون والأساطيل وسير العمل:** نفّذ أهدافًا متعددة الدورات عبر `/goal`، وفوّض المهام إلى [وكلاء فرعيين](../SUBAGENTS.md)، ونسّق [أساطيل (Fleets)](../FLEET.md) بأدوار ونماذج محددة، أو شغّل [مسارات عمل](../WORKFLOW_AUTHORING.md) محفوظة داخل المستودع.
+- **MCP والمهارات والخطافات والإضافات:** اربط [خوادم MCP](../MCP.md) و[المهارات](../SKILLS.md) و[الإضافات](../PLUGINS.md) و[خطافات](../HOOKS.md) دورة الحياة. يجمع وضع الكود التجريبي (`execute_tools`) عدة استدعاءات MCP/إضافات ضمن قواعد الموافقة المعتادة. ويبقى [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) الاختياري لنظام macOS معطّلًا حتى تراجعه وتفعّله صراحةً.
+- **توافق مباشر:** يقرأ `AGENTS.md` تلقائيًا. ويمكنك تفعيل `CLAUDE.md` أو `.cursorrules` أو `.github/copilot-instructions.md` عبر `project_instruction_imports` في [config.example.toml](../../config.example.toml). استورد إعدادات Claude Code وخوادم MCP عبر `/import-claude`، أو ثبّت إضافات Claude Code (المهارات والأوامر وملفات الوكلاء وMCP) وإضافات DeepSeek Harness (DSH) عبر `/plugin install` ([التفاصيل](../CLAUDE_PLUGIN_COMPAT.md)).
 
-أعطِ Codewhale مهمة، فيقرأ المستودع ويعدّل الملفات وينفّذ الأوامر حتى تكتمل المهمة أو يحتاج إلى ردّك. تسرد [ملاحظات أحدث إصدار](https://github.com/codewhale-hq/Codewhale/releases/latest) أحدث التغييرات، ويضم [سجل التغييرات](../../CHANGELOG.md) كل إصدار.
+## نقاط الدخول
 
-### أي نموذج
-
-يأتي مدمجًا مع أكثر من 40 مزوّدًا، منها Anthropic وOpenAI وDeepSeek وGoogle وMistral وMoonshot وOpenRouter وxAI. تعمل أي نقطة نهاية متوافقة مع OpenAI، وكذلك النماذج المحلية عبر Ollama أو vLLM أو SGLang. النموذج الافتراضي هو `deepseek-flash` من DeepSeek، ويخدمه الآن DeepSeek V4.1 Flash ([التفاصيل](../PROVIDERS.md#deepseek-v41-flash)).
-
-يبدّل `/model` النموذج بين الأدوار، ويختار `/model auto` نموذجًا لكل دور (ويحدد `/router` طريقة الاختيار). يعرض `/turn inspect` النموذج الذي استخدمه دور ما وكلفته والمدة التي استغرقها. راجع [المزوّدون](../PROVIDERS.md).
-
-### الإيصالات والتراجع
-
-يسرد `/receipts`، أو `codewhale receipts --last` بعد الخروج، الملفات التي غيّرتها الجلسة، والأوامر التي شغّلتها، واستدعاءات الويب وMCP، والوكلاء الذين بدأتهم، وكل موافقة ومن أعطاها، وما فشل. يتراجع `/undo` عن طلبك الأخير والملفات التي غيّرها في خطوة واحدة. يعيد `/restore` مساحة العمل كلها إلى لقطة سابقة، ولأن ذلك يكتب فوق التعديلات اللاحقة فهو يحتاج إلى `/trust on` أو Full Access. راجع [الإيصالات](../RECEIPTS.md).
-
-### عدة وكلاء على مهمة واحدة
-
-يحدد `/goal` هدفًا يستمر عبر الأدوار. يستطيع Codewhale توزيع العمل على [وكلاء فرعيين](../SUBAGENTS.md)، أو تشغيل [Fleet](../FLEET.md) من الوكلاء لكل منهم دوره ونموذجه، أو اتباع [سير عمل](../WORKFLOW_AUTHORING.md) محفوظ في المستودع.
-
-### الإضافات البرمجية
-
-صِل [خوادم MCP](../MCP.md)، وأضف [المهارات](../SKILLS.md) و[الإضافات البرمجية](../PLUGINS.md)، وشغّل [الخطافات](../HOOKS.md) عند أحداث الجلسة والأدوات. يتيح وضع الشيفرة (تجريبي، ومفعّل افتراضيًا) للنموذج كتابة برنامج `execute_tools` واحد يستدعي عدة أدوات MCP وأدوات إضافات؛ ويظل كل استدعاء خاضعًا لقواعد الموافقة لديك ويحتفظ بإيصاله. [Computer Use](https://github.com/codewhale-hq/codewhale-cu-plugin) إضافة منفصلة تصدر بشكل مستقل (تجريبية، على macOS فقط)، وتبقى معطّلة حتى تراجع صلاحياتها وتفعّلها.
-
-### طرق التشغيل
-
-| الأمر | ما يفعله |
+| الأمر | الغرض |
 | --- | --- |
 | `codewhale` | تطبيق الطرفية التفاعلي |
-| `codewhale exec "…"` | مهمة واحدة دون الواجهة، للسكربتات وCI ([التشغيل دون واجهة](../INSTALL.md#headless-scripts-ci)) |
+| `codewhale exec "…"` | مشغّل مهمة واحدة دون واجهة للسكربتات وCI ([الدليل](../INSTALL.md#headless-scripts-ci)؛ يستخدم `--auto` وضع Full Access ما لم يكن معزولًا) |
 | `codewhale web` | عميل ويب محلي على `127.0.0.1` ([الدليل](../WEB.md)) |
-| `codewhale review --pr N` | مراجعة استشارية لطلب سحب على GitHub؛ يشغّلها [إعداد بوت GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) بمفتاح النموذج الخاص بك |
-| `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)، واجهة HTTP محلية للخيوط والأحداث والموافقات وتغييرات الملفات في كل دور |
-| `codewhale serve --acp` | بروتوكول Agent Client Protocol عبر stdio، لمحررات مثل Zed |
+| `codewhale review --pr N` | مراجعة استشارية لطلبات السحب على GitHub؛ [إعداد بوت GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) يعمل بمفتاحك الخاص |
+| `codewhale app-server --http` | واجهة HTTP محلية لـ [Runtime API](../RUNTIME_API.md) للمحادثات والأحداث والموافقات وفروقات كل دورة |
+| `codewhale serve --acp` | بروتوكول Agent Client Protocol عبر stdio لمحررات مثل Zed |
 
-يتشارك تطبيق الطرفية و`exec` و`web` وRuntime API محركًا واحدًا ([البنية](../ARCHITECTURE.md)). تتصل به [إضافة VS Code](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode) التي يصونها المجتمع من الشريط الجانبي ([المصدر](https://github.com/HengQuWorld/CodeWhale-VSCode)).
+تشترك جميع نقاط الدخول في محرك Rust واحد ([البنية المعمارية](../ARCHITECTURE.md)). وتتصل [إضافة VS Code](https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode) التي يرعاها المجتمع ([المصدر](https://github.com/HengQuWorld/CodeWhale-VSCode)) بالمحرك نفسه. راجع [ملاحظات أحدث إصدار](https://github.com/codewhale-hq/Codewhale/releases/latest) و[خارطة الطريق](../ROADMAP.md) لحالة الإصدار وسطح المكتب والسحابة.
 
-## كيف يبقى آمنًا
+## الأذونات والعزل والخصوصية
 
-قرص واحد يحدد ما يستطيع Codewhale فعله من تلقاء نفسه. يديره `Shift+Tab` بالترتيب: **Ask → Accept Edits → Plan → Auto-Review → Full Access**. **Accept Edits**، وهو الافتراضي، يطبّق تعديلات الملفات داخل مستودع git دون أن يسأل، ويسأل قبل الأوامر. **Ask** يسأل قبل كل تعديل على ملف وقبل كل أمر. **Plan** يقرأ ويبحث ولا يغيّر شيئًا. **Auto-Review** يترك للقواعد ولنموذج مراجِع الموافقة على الاستدعاءات الروتينية ويرفض العالية الخطورة؛ انتقل إلى Ask لتوافق عليها بنفسك. **Full Access** لا يسأل أبدًا ويعطّل sandbox الخاص بـ Codewhale، مع بقاء قواعد المستودع والسياسة المُدارة سارية. لا يُستخدم `Tab` إلا للإكمال ولا يغيّر الوضع أبدًا، وأُلغي Operate. التفاصيل في [دليل الأوضاع](../MODES.md).
+يدوّر `Shift+Tab` بين أوضاع الأذونات: **Ask → Accept Edits → Plan → Auto-Review → Full Access** (`Tab` للإكمال التلقائي فقط). يطبّق **Accept Edits** (الافتراضي) التعديلات داخل مستودع git ويسأل قبل تنفيذ الأوامر. يسأل **Ask** عند كل تعديل وأمر. ويعمل **Plan** للقراءة فقط. يستخدم **Auto-Review** قواعد ونموذج مراجعة للموافقة على الاستدعاءات الروتينية ومنع عالية الخطورة. ويتجاوز **Full Access** طلبات الموافقة ويعطّل عزل نظام التشغيل (مع بقاء قواعد المستودع والسياسات المُدارة سارية). راجع [الأوضاع](../MODES.md).
 
-في Ask وAccept Edits وAuto-Review تعمل الأوامر داخل بيئة معزولة من نظام التشغيل إن وُجدت: Seatbelt على macOS، وbubblewrap على Linux إذا كان مثبتًا. لا يملك Windows بيئة معزولة من النظام بعد، ويوقف Full Access البيئة المعزولة. داخل البيئة المعزولة لا تستطيع أوامر الصدفة وجلسات الطرفية قراءة مخازن بيانات الاعتماد مثل `~/.ssh` و`~/.aws` وملفات `.env`. يعرض `/preview-request` معاينة محجوبة البيانات الحساسة للطلب التالي دون إرساله.
+في أوضاع Ask وAccept Edits وAuto-Review، تعمل الأوامر داخل بيئة عزل لنظام التشغيل حيثما توفرت: Seatbelt على macOS وbubblewrap على Linux (لا يتوفر عزل نظام تشغيل على Windows بعد). لا تستطيع الأوامر المعزولة وجلسات الطرفية قراءة مسارات بيانات الاعتماد مثل `~/.ssh` أو `~/.aws` أو ملفات `.env`. شغّل `/preview-request` لفحص الطلب الصادر بعد تنقيحه قبل إرساله.
 
-لا تحتاج إلى حساب، وتبقى المفاتيح التي تضيفها عبر `/provider` على جهازك. حين تستخدم مفتاح API الخاص بك تدفع للمزوّد مباشرة، ولا تحتاج النماذج المحلية إلى مفتاح. يعرض التذييل و`/cost` كلفة الجلسة حين يكون السعر معروفًا، ويظهر السعر غير المعروف على أنه غير معروف، لا على أنه مجاني أبدًا.
+تبقى مفاتيح API المضافة عبر `/provider` على جهازك، ولا تحتاج النماذج المحلية إلى مفتاح. ويتتبع `/cost` والشريط السفلي إنفاق الجلسة عندما تكون الأسعار معروفة (ويُعرض السعر غير المعروف كغير معروف، لا كمجاني أبدًا).
 
-القياس عن بُعد مفعّل افتراضيًا. يرسل أعدادًا مجمّعة (الإصدار والمنصة، ومدة الجلسة ونتيجتها، والمزوّدين المدمجين الذين استخدمتهم، وأعداد الميزات والأخطاء) مع معرّف تثبيت عشوائي يتغير كل 90 يومًا، ولا يرسل أبدًا المحادثات أو الشيفرة أو الموجّهات أو أسماء النماذج أو أسماء الملفات أو المستودعات أو بيانات الاعتماد. يوقفه هذا الأمر:
+القياس عن بُعد المُجمّع مفعّل افتراضيًا (الإصدار، نظام التشغيل، مدة الجلسة ونتيجتها، معرّفات المزوّدين المدمجين، عدادات الميزات والأخطاء؛ معرّف تثبيت عشوائي يتجدد كل 90 يومًا؛ ولا يُرسل أبدًا الكود أو المطالبات أو المحادثات أو أسماء النماذج أو المسارات أو بيانات الاعتماد). لتعطيله:
 
 ```bash
 codewhale config set telemetry false
 ```
 
-عند البدء يتحقق Codewhale أيضًا من GitHub بحثًا عن إصدار جديد؛ اضبط `CODEWHALE_NO_UPDATE_CHECK=1` لتخطي ذلك. المزيد في [ترتيب التفويض](../AUTHORIZATION_ORDER.md) و[البيئة المعزولة](../SANDBOX.md) و[القياس عن بُعد](../TELEMETRY.md).
-
-## إلى أين يتجه
-
-يتحول Codewhale إلى بيئة واحدة تمتد عبر طرفيتك وتطبيق سطح المكتب والمتصفح وحواسيب السحابة، يديرها كلها محرك واحد. يبيّن كل جزء أدناه أين يقف اليوم.
-
-| الجزء | الحالة | اليوم |
-| --- | --- | --- |
-| تطبيق الطرفية | منشور | ثبّته على macOS أو Linux أو Windows وشغّل `codewhale` في أي مستودع. |
-| عميل المتصفح المحلي | منشور | شغّل `codewhale web` لقراءة المحادثة وإرسال مهمة والرد على طلبات الموافقة في متصفحك؛ يأتي مع الطرفية ولا يحتاج إلى حساب. |
-| عدة وكلاء على مهمة واحدة | منشور | الوكلاء الفرعيون وFleet وسير العمل تتيح لعدة وكلاء تقاسم مهمة واحدة، لكل منهم دوره. |
-| تطبيق سطح المكتب | قيد التطوير، دون تنزيل | نبني تطبيقًا لسطح المكتب على المحرك نفسه، وليس له تنزيل عام بعد. |
-| حواسيب السحابة | بالدعوة فقط | حواسيب السحابة بالدعوة فقط، ونحن نبنيها لتتمكن الجلسة من مواصلة العمل على جهاز في السحابة. |
-| جلسة واحدة عبرها كلها | قيد البناء | نبني جلسة واحدة ترافقك من الطرفية إلى سطح المكتب والمتصفح والسحابة، وتبقى ملكًا لك طوال الطريق. |
-
-توضح [خريطة الطريق](../ROADMAP.md) ما يشمله كل إصدار وأين يمكنك المساعدة.
-
-## إن كنت قادمًا من وكيل آخر
-
-يقرأ Codewhale ملف `AGENTS.md` من تلقاء نفسه. أما ملفات التعليمات المكتوبة لأدوات أخرى، مثل `CLAUDE.md` و`.cursorrules` و`.github/copilot-instructions.md`، فلا تُحمَّل إلا إذا فعّلتها بنفسك عبر `project_instruction_imports = ["claude"]` (أو `"cursor"` و`"cline"` و`"windsurf"` و`"copilot"` و`"all"`) في إعداداتك؛ راجع [config.example.toml](../../config.example.toml). ينبّهك Codewhale حين يجد ملفًا من هذا النوع لم يحمّله.
-
-يجهّز `/import-claude` استيرادًا لإعدادات Claude Code وخوادم MCP لديك لتراجعه. يقبل `/plugin install` إضافات Claude Code التي تحتوي على مهارات وأوامر وملفات تعريف وكلاء وخوادم MCP، ويرفض الإضافات التي تحتاج إلى خطافات أو خوادم LSP ([التفاصيل](../CLAUDE_PLUGIN_COMPAT.md)).
+اضبط `CODEWHALE_NO_UPDATE_CHECK=1` لتخطي فحص إصدارات GitHub عند بدء التشغيل. التفاصيل: [ترتيب التفويض](../AUTHORIZATION_ORDER.md)، و[العزل](../SANDBOX.md)، و[القياس عن بُعد](../TELEMETRY.md).
 
 ## التوثيق
 
-تتبع هذه الأدلة الفرع الرئيسي، لذا قد تصف تغييرات لم تصل إلى أحدث إصدار بعد.
+تتبع الأدلة فرع `main` وقد تصف تغييرات لم تصل بعد إلى أحدث إصدار.
 
-| ابدأ من هنا | المرجع |
+| ابدأ هنا | المرجع |
 | --- | --- |
 | [دليل المستخدم](../GUIDE.md) | [الإعدادات](../CONFIGURATION.md) |
-| [التثبيت](../INSTALL.md) | [البنية](../ARCHITECTURE.md) |
+| [التثبيت](../INSTALL.md) | [البنية المعمارية](../ARCHITECTURE.md) |
 | [المزوّدون والنماذج المحلية](../PROVIDERS.md) | [Runtime API](../RUNTIME_API.md) |
-| [الأوضاع والأذونات](../MODES.md) | [كتابة الإضافات](../PLUGIN_AUTHORING.md) |
+| [الأوضاع والأذونات](../MODES.md) | [تطوير الإضافات](../PLUGIN_AUTHORING.md) |
 | [اختصارات المفاتيح](../KEYBINDINGS.md) | [الإيصالات](../RECEIPTS.md) |
-| [مراجعة طلبات السحب على GitHub](../GITHUB_ACTION.md) | [كل التوثيق](../README.md) |
+| [مراجعة طلبات السحب على GitHub](../GITHUB_ACTION.md) | [جميع الوثائق](../README.md) |
 
-## المساهمة
+## المساهمة والترخيص
 
-يبني Codewhale في العلن الأشخاص الذين يستخدمونه، بلغات كثيرة.
+<a href="../CONTRIBUTORS.md#everyone"><img src="../assets/contributors.png" width="760" alt="جدار المساهمين في Codewhale"></a>
 
-<a href="../CONTRIBUTORS.md#everyone"><img src="../assets/contributors.png" width="760" alt="جدار المساهمين في Codewhale: صورة رمزية لكل شخص له في Codewhale شيفرة أو commit مشترك في التأليف أو طلب سحب جرى استكماله أو بلاغ نُسب إليه، والعدد الإجمالي في الأعلى."></a>
+يتابع [جدار المساهمين](../CONTRIBUTORS.md) (`scripts/contributor-wall.py`) الكود والمساهمات المشتركة وطلبات السحب المرحلة والبلاغات المعتمدة. تُرسل بلاغات الأخطاء ومقترحات الميزات إلى [Issues](https://github.com/codewhale-hq/Codewhale/issues/new/choose)، والأسئلة إلى [Discussions](https://github.com/codewhale-hq/Codewhale/discussions)، وتجد إرشادات طلبات السحب وهيكلة المشروع في [CONTRIBUTING.md](../../CONTRIBUTING.md) ([بنية المشروع](../../CONTRIBUTING.md#project-structure)). انضم إلينا على [Discord](https://discord.gg/37gfS3ksug) أو أضف `hunterbown` على WeChat للانضمام إلى مجموعة Whale Brothers.
 
-يعدّ [جدار المساهمين](../CONTRIBUTORS.md) كل من له في Codewhale شيفرة أو commit مشترك في التأليف أو طلب سحب جرى استكماله أو بلاغ نُسب إليه، بمن فيهم من تُغفلهم قائمة المساهمين في GitHub نفسها. يعيد `scripts/contributor-wall.py` إنشاء الصورة والقائمة من سجل git ومن GitHub.
+بدأ Codewhale باسم `deepseek-tui` ويحافظ على التوافق الرجعي مع إعداداته وجلساته. يُصان المشروع بشكل مستقل ولا يرتبط بـ DeepSeek أو أي مزوّد نماذج آخر.
 
-كل ملاحظة مرحّب بها: خطأ، أو فكرة، أو شيء بدا أو بدا استخدامه غير صحيح. [افتح issue](https://github.com/codewhale-hq/Codewhale/issues/new/choose) لأي من ذلك؛ والـ issue أيضًا أفضل مكان لبدء ميزة جديدة. طلبات السحب مرحّب بها للإصلاحات والترجمات والمزوّدين والعمل المخطط له. الأسئلة مكانها [Discussions](https://github.com/codewhale-hq/Codewhale/discussions). يوضح [دليل المساهمة](../../CONTRIBUTING.md) أين يذهب كل نوع من المساعدة، وكيف يُدمج عملك باسمك، و[أين يوجد كل شيء](../../CONTRIBUTING.md#project-structure).
-
-تحدّث على [Discord](https://discord.gg/37gfS3ksug)، أو أضف المشرف Hunter على WeChat (`hunterbown`) واطلب الانضمام إلى مجموعة Whale Brothers. الجميع مرحّب بهم.
-
-## التاريخ والترخيص
-
-بدأ Codewhale باسم `deepseek-tui` وما زال يقرأ إعدادات ذلك المشروع وجلساته. يُصان على نحو مستقل، ولا ينتمي إلى DeepSeek أو إلى أي مزوّد نماذج آخر.
-
-[MIT](../../LICENSE). الشيفرة المقتبسة من مشاريع أخرى مفتوحة المصدر مدرجة في إشعارات الأطراف الثالثة الخاصة بـ[المصادر المضمّنة](../../THIRD_PARTY_NOTICES.md) و[التصاميم المقتبسة](../THIRD_PARTY_NOTICES.md).
+[MIT](../../LICENSE). إشعارات الطرف الثالث: [المصادر المضمّنة](../../THIRD_PARTY_NOTICES.md) و[التصاميم المكيّفة](../THIRD_PARTY_NOTICES.md).
