@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **DSH importer scan cap and named group closures:** raised the npm dependency scanner's per-file limit to 8 MiB (matching `PLUGIN_UI_MAX_BYTES`) so bundled client JS assets in packages like `dsh-pet`, `dsh-univer-office`, and `dsh-genui` pass import review, and included named `group: true` modules such as `dsh-mnemon/bundle` in the reviewed module closure. (CW-8289)
+- **Engine-brokered plugin web server and DSH client asset/route runtime:** added the sandboxed `plugin_route/dispatch` extension-host RPC, owner-isolated `webServer` / `connection` / `sessionTitle` / `profileContext` adapters (`DSH_WEBSERVER_ADAPTERS`), bounded Runtime API route forwarding (`/v1/apps/plugins/{selector}/routes/{*path}` returning `404 plugin_route_not_found` or `503 plugin_host_unavailable` instead of `501`), sanitized response headers, safe plugin UI CSP, and `?cw_rev=` browser revision fallback for reviewed CSS/image/font/JSON assets.
 
 ### Fixed
 

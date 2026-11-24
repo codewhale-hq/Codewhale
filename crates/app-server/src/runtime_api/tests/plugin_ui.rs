@@ -369,9 +369,9 @@ async fn plugin_ui_dsh_client_serves_admitted_seats_and_denies_and_revokes() -> 
         .header("If-Match", &revision)
         .send()
         .await?;
-    assert_eq!(routed.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(routed.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: serde_json::Value = routed.json().await?;
-    assert_eq!(body["error"]["code"], "plugin_route_not_served");
+    assert_eq!(body["error"]["code"], "plugin_host_unavailable");
     assert_eq!(
         client.post(&route).send().await?.status(),
         StatusCode::PRECONDITION_REQUIRED
@@ -712,6 +712,39 @@ exports.apply = function (ctx) {
     assert_eq!(raw_js.status(), StatusCode::NOT_FOUND);
     let body: serde_json::Value = raw_js.json().await?;
     assert_eq!(body["error"]["code"], "plugin_ui_file_not_reviewed");
+
+    let css_via_query = client
+        .get(format!(
+            "{asset_base}source/lib/style.css?cw_rev={}",
+            urlencoding::encode(&revision)
+        ))
+        .send()
+        .await?;
+    assert_eq!(css_via_query.status(), StatusCode::OK);
+    let csp = css_via_query
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(csp.contains("script-src 'self'"), "{csp}");
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"), "{csp}");
+    assert!(csp.contains("connect-src 'self'"), "{csp}");
+
+    let stale_query = client
+        .get(format!(
+            "{asset_base}source/lib/style.css?cw_rev=%22stale%22"
+        ))
+        .send()
+        .await?;
+    assert_eq!(stale_query.status(), StatusCode::PRECONDITION_FAILED);
+
+    let oversized_route = client
+        .post(format!("{base}/{name}/routes/api/upload"))
+        .header("If-Match", &revision)
+        .body(vec![b'a'; 4 * 1024 * 1024 + 64])
+        .send()
+        .await?;
+    assert_eq!(oversized_route.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     handle.abort();
     Ok(())
