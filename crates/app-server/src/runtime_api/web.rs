@@ -69,6 +69,7 @@ impl RuntimeWebState {
         Self::new_with_ttls_and_dist(BOOTSTRAP_TTL, WEB_SESSION_TTL, web_dist_dir)
     }
 
+    #[cfg(test)]
     fn new_with_ttls(bootstrap_ttl: Duration, session_ttl: Duration) -> (Self, String) {
         Self::new_with_ttls_and_dist(bootstrap_ttl, session_ttl, None)
     }
