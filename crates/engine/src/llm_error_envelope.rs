@@ -654,7 +654,8 @@ mod tests {
     fn provider_failure_cause_extracts_structured_fields_from_llm_errors() {
         let header_timeout: anyhow::Error = LlmError::HeaderTimeout {
             waited: std::time::Duration::from_secs(45),
-            phase: "SSE stream",
+            http1: false,
+            retried: 0,
         }
         .into();
         let cause = ProviderFailureCause::from_llm_error(&header_timeout, Some("open"));

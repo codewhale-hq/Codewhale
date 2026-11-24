@@ -9380,7 +9380,8 @@ mod tests {
         });
         let err: anyhow::Error = crate::llm_client::LlmError::HeaderTimeout {
             waited: std::time::Duration::from_secs(30),
-            phase: "SSE stream",
+            http1: false,
+            retried: 0,
         }
         .into();
         let cause =
