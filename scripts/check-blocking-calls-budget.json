@@ -22,7 +22,7 @@
     "std_fs": 6
   },
   "crates/app-server/src/remote_setup/bundle.rs": {
-    "std_fs": 2
+    "std_fs": 3
   },
   "crates/app-server/src/runtime_api.rs": {
     "path_canonicalize": 4
@@ -69,7 +69,7 @@
   },
   "crates/cli/src/update/uninstall.rs": {
     "path_canonicalize": 8,
-    "std_fs": 11
+    "std_fs": 10
   },
   "crates/cloud-facts/src/lib.rs": {
     "std_fs": 1
@@ -98,7 +98,7 @@
     "std_fs": 8
   },
   "crates/config/src/user_constitution.rs": {
-    "std_fs": 6
+    "std_fs": 2
   },
   "crates/core/src/fragments.rs": {
     "std_fs": 7
@@ -132,7 +132,7 @@
     "path_canonicalize": 2
   },
   "crates/engine/src/extension_host/mod.rs": {
-    "std_fs": 7
+    "std_fs": 4
   },
   "crates/engine/src/extension_host/supervisor.rs": {
     "path_canonicalize": 7,
@@ -227,9 +227,6 @@
   "crates/engine/src/tools/lsp.rs": {
     "path_canonicalize": 2
   },
-  "crates/engine/src/tools/mcp_registry.rs": {
-    "std_fs": 1
-  },
   "crates/engine/src/tools/plugin.rs": {
     "std_fs": 3
   },
@@ -299,6 +296,12 @@
     "std_fs": 1
   },
   "crates/execpolicy/src/toml_rules.rs": {
+    "std_fs": 1
+  },
+  "crates/hooks/src/lib.rs": {
+    "std_fs": 4
+  },
+  "crates/hooks/src/lifecycle_outbox.rs": {
     "std_fs": 1
   },
   "crates/lane/src/runtime.rs": {
@@ -445,7 +448,7 @@
     "thread_sleep": 1
   },
   "crates/telemetry/src/envelope.rs": {
-    "std_fs": 2
+    "std_fs": 1
   },
   "crates/tui/examples/zz_perf_probe.rs": {
     "std_fs": 1
@@ -523,7 +526,7 @@
     "std_fs": 1
   },
   "crates/tui/src/tui/onboarding/mod.rs": {
-    "std_fs": 2
+    "std_fs": 1
   },
   "crates/tui/src/tui/pet_watch/live.rs": {
     "thread_sleep": 1
